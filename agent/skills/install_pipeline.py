@@ -320,6 +320,13 @@ class InstallPipelineSkill:
               This keeps validation fast (<10 min) and reproducible.
             - If the genome needs an index for this tool and it doesn't exist yet,
               build it with run_command before the main test run.
+            - **Reusing prior pipeline outputs:** If this tool takes BAM/VCF as input
+              (e.g. variant callers, post-alignment QC tools), look for already-validated
+              BAM files in existing pipeline test directories (e.g. bwa_samtools_test/)
+              before generating new ones. Use `find {project_root / self.config['paths']['test_data_dir']} -name "*.bam" -not -name "*.bai"`
+              to locate them. Prefer the sorted, indexed BAM from the most recent aligner pipeline.
+              You still need a matching .fai index for the same reference FASTA — build it with
+              `samtools faidx` using samtools from the new conda env if needed.
 
             ### Phase 4 — Validation loop (one step per package)
             For each package in pipeline order:
@@ -335,6 +342,14 @@ class InstallPipelineSkill:
             - Call build_docker_image.
             - Call save_pipeline_spec with the complete record of what was installed,
               how it was tested, and the Docker image tag.
+            - The spec MUST include:
+              - `status`: "fully_validated" if all steps passed, else "failed"
+              - `pipeline_steps`: a list of dicts, one per tool invocation, each with:
+                `step` (int), `tool`, `subcommand` (if any), `command` (full command string),
+                `status` ("validated" or "failed"), and optionally `returncode`,
+                `validation` (dict or string), `output_size_bytes`, `version`.
+              Do NOT use a flat `test` dict — always use the `pipeline_steps` list format
+              so the HTML report renders correctly.
 
             ## Rules
             - Always use absolute paths in commands.

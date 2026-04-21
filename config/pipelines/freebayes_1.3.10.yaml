@@ -1,0 +1,64 @@
+pipeline_name: freebayes
+description: Haplotype-based variant calling using FreeBayes for SNP and indel detection
+  from aligned sequencing reads.
+conda_env: bioinf_freebayes
+python_version: '3.11'
+docker_image: null
+docker_note: "Docker build skipped \u2014 Docker daemon not running in this environment.\
+  \ Re-run build_docker_image when Docker is available."
+packages:
+- name: freebayes
+  version: 1.3.10
+  channel: bioconda
+  conda_spec: freebayes=1.3.10
+  description: Bayesian haplotype-based polymorphism discovery and genotyping. Takes
+    sorted, indexed BAM files and a reference FASTA; outputs VCF with SNPs, indels,
+    MNPs, and complex variants.
+  input_types:
+  - bam
+  output_types:
+  - vcf
+  verified: true
+  verify_command: freebayes --version 2>&1 | head -3
+  verify_output: 'version:  v1.3.10'
+- name: samtools
+  channel: bioconda
+  conda_spec: samtools
+  note: Required for BAM indexing, .fai reference index generation, and htslib compatibility
+- name: bwa
+  channel: bioconda
+  conda_spec: bwa
+  note: Co-installed for htslib compatibility
+- name: conda-pack
+  channel: conda-forge
+  conda_spec: conda-pack
+  note: Required for Docker image packaging
+test:
+  strategy: Reused existing sorted BAM from bwa_samtools_test pipeline (chr22 exome,
+    sample HG00096/SRR1517830). Built .fai index for chr22.fa with samtools faidx.
+  reference: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa
+  reference_fai: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa.fai
+  input_bam: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/aligned_sorted.bam
+  output_dir: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/
+  output_vcf: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/variants.vcf
+  run_command: freebayes -f /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa
+    --min-mapping-quality 20 --min-base-quality 20 --min-alternate-fraction 0.2 --min-alternate-count
+    2 /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/aligned_sorted.bam
+    > /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/variants.vcf
+    2> /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/freebayes.log
+  parameters:
+    --min-mapping-quality: 20
+    --min-base-quality: 20
+    --min-alternate-fraction: 0.2
+    --min-alternate-count: 2
+  validation:
+    passed: true
+    output_size_bytes: 194031
+    total_lines: 507
+    header_lines: 62
+    variant_records: 445
+    variant_types:
+    - snp
+    - complex
+    sample_name: HG00096
+    chromosome: chr22

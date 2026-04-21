@@ -67,12 +67,16 @@ def _status_badge(spec: dict) -> str:
         return _badge("⏳ In Progress", "skip")
     if status and status != "unknown":
         return _badge("✗ " + status, "fail")
-    # Infer from pipeline steps when the sub-agent omits a top-level status
+    # Infer from pipeline_steps list
     steps = spec.get("pipeline_steps", [])
     if steps and all(s.get("status") == "validated" for s in steps):
         return _badge("✓ Validated", "pass")
     if steps:
         return _badge("⏳ Partial", "skip")
+    # Infer from flat test dict (alternate spec format)
+    test = spec.get("test", {})
+    if isinstance(test, dict) and test.get("validation", {}).get("passed"):
+        return _badge("✓ Validated", "pass")
     return _badge("Unknown", "skip")
 
 
@@ -106,14 +110,22 @@ def _docker_section(spec: dict) -> str:
 
 
 def _packages_table(spec: dict) -> str:
-    packages = [p for p in spec.get("packages", []) if p.get("name") != "conda-pack"]
+    skip = {"conda-pack"}
+    packages = [p for p in spec.get("packages", []) if p.get("name") not in skip]
     if not packages:
         return ""
     rows = []
     for p in packages:
         hp = p.get("homepage", "")
         link = f'<a href="{hp}" target="_blank">{hp}</a>' if hp else "—"
-        version = p.get("version") or p.get("resolved_version") or p.get("conda_spec", "").split("=")[-1] or "—"
+        # Only use conda_spec as version fallback when it contains "=" (e.g. "bwa=0.7.19")
+        conda_spec = p.get("conda_spec", "")
+        conda_ver = conda_spec.split("=")[-1] if "=" in conda_spec else ""
+        version = p.get("version") or p.get("resolved_version") or conda_ver or "—"
+        # Skip co-dep entries that have no description and no real version
+        is_codep = not p.get("description") and version == "—" and p.get("note")
+        if is_codep:
+            continue
         rows.append(
             f"<tr><td><strong>{p.get('name','')}</strong></td>"
             f"<td>{version}</td>"
@@ -224,6 +236,46 @@ def _steps_section(spec: dict) -> str:
 </div>"""
 
 
+def _test_section_compat(spec: dict) -> str:
+    """Render the flat `test` dict used by single-tool pipelines as a step block."""
+    if spec.get("pipeline_steps"):
+        return ""
+    test = spec.get("test")
+    if not isinstance(test, dict):
+        return ""
+    cmd = test.get("run_command", "")
+    validation = test.get("validation", {})
+    passed = validation.get("passed", False) if isinstance(validation, dict) else bool(validation)
+    vr_lines = ""
+    if isinstance(validation, dict):
+        for k, v in validation.items():
+            if k == "passed":
+                continue
+            vr_lines += f'<div class="val-row" style="font-size:0.85rem"><code>{k}</code>: {v}</div>'
+    val_html = (
+        f'<div class="val-row">{"✅" if passed else "❌"} {"validated" if passed else "failed"}</div>'
+        + vr_lines
+    )
+    strategy = test.get("strategy", "")
+    strat_html = f'<p style="font-size:0.85rem;color:#475569;margin-bottom:0.5rem">{strategy}</p>' if strategy else ""
+    tool_label = spec.get("pipeline_name") or spec.get("name", "pipeline")
+    return f"""
+<div class="section">
+  <h2>⚙️ Pipeline Steps &amp; Usage</h2>
+  <div class="step-block">
+    <div class="step-header">
+      <span class="step-num">1</span>
+      {tool_label}
+      <span style="margin-left:auto;font-size:0.8rem;color:{'#16a34a' if passed else '#dc2626'}">{'✓ validated' if passed else '✗ failed'}</span>
+    </div>
+    {strat_html}
+    <strong style="font-size:0.85rem;color:#475569">Command:</strong>
+    <pre>{cmd}</pre>
+    <div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong>{val_html}</div>
+  </div>
+</div>"""
+
+
 def _usage_guide(spec: dict) -> str:
     steps = spec.get("pipeline_steps", [])
     env = spec.get("conda_env", "bioinf_<name>")
@@ -287,6 +339,7 @@ def generate(spec: dict) -> str:
         _packages_table(spec),
         _test_data_section(spec),
         _steps_section(spec),
+        _test_section_compat(spec),
         _usage_guide(spec),
         _docker_section(spec),
         _notes_section(spec),
