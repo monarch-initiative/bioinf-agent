@@ -25,6 +25,7 @@ import yaml
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
+from agent.skills.report_builder import generate as generate_report
 from agent.skills.test_runner import TestRunner
 from agent.validators.output_validator import OutputValidator
 
@@ -464,10 +465,22 @@ class InstallPipelineSkill:
     def _save_spec(self, spec: dict) -> dict:
         pipelines_dir = Path(__file__).parent.parent.parent / self.config["paths"]["pipelines_dir"]
         pipelines_dir.mkdir(parents=True, exist_ok=True)
-        out_path = pipelines_dir / f"{spec.get('name', 'pipeline')}.yaml"
-        with open(out_path, "w") as f:
+
+        name = spec.get("pipeline_name") or spec.get("name", "pipeline")
+        primary = next(
+            (p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {}
+        )
+        version = primary.get("version", "")
+        stem = f"{name}_{version}" if version else name
+
+        yaml_path = pipelines_dir / f"{stem}.yaml"
+        with open(yaml_path, "w") as f:
             yaml.dump(spec, f, default_flow_style=False, sort_keys=False)
-        return {"saved": str(out_path)}
+
+        html_path = pipelines_dir / f"{stem}.html"
+        html_path.write_text(generate_report(spec))
+
+        return {"saved_yaml": str(yaml_path), "saved_html": str(html_path)}
 
 
 def _short(inp: dict) -> str:
