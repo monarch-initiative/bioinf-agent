@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/
+
+# Conda environments (large, reproducible via bootstrap)
+envs/
+
+# Downloaded reference data (large, reproducible via bootstrap)
+data/genomes/hg38_full/
+data/genomes/hg38_chr22/
+data/genomes/ecoli_k12/
+data/genomes/mm10_chr19/
+data/test_data/exome_pcr_free_SRR1291026/
+data/test_data/rnaseq_small_paired_human/
+data/test_data/wgs_small_paired_human/
+data/test_data/chipseq_small_human/
+data/test_data/atac_small_human/
+data/test_data/nanopore_small_human/
+data/test_data/wgs_ecoli_small/
+
+# Generated Docker artifacts (large)
+docker_images/*/
+
+# Generated pipeline configs are artifacts — commit selectively
+# config/pipelines/  ← uncomment to exclude generated pipeline specs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

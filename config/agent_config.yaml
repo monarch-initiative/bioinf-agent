@@ -1,0 +1,31 @@
+paths:
+  genomes_dir: ./data/genomes
+  test_data_dir: ./data/test_data
+  pipelines_dir: ./config/pipelines
+  conda_envs_prefix: ./envs
+  docker_output_dir: ./docker_images
+
+conda:
+  base_channels:
+    - bioconda
+    - conda-forge
+    - defaults
+  python_version: "3.11"
+  env_prefix: "bioinf_"
+
+docker:
+  base_image: "ubuntu:22.04"
+  platform: "linux/amd64"
+  registry: ""
+  hpc:
+    singularity_compatible: true
+    no_root_user: true
+    labels:
+      hpc_compatible: "true"
+      maintainer: ""
+
+agent:
+  model: "claude-sonnet-4-6"
+  max_iterations: 60
+  install_timeout_seconds: 3600
+  test_timeout_seconds: 1800
