@@ -82,8 +82,18 @@ def _status_badge(spec: dict) -> str:
 
 def _docker_section(spec: dict) -> str:
     docker = spec.get("docker", {})
+    # Also handle flat docker_image / docker_note / docker_build_status fields
     if not docker:
-        return ""
+        tag = spec.get("docker_image") or spec.get("docker_build_status", "")
+        note = spec.get("docker_note") or spec.get("docker_build_status", "")
+        if not tag and not note:
+            return ""
+        docker = {
+            "build_attempted": bool(tag or note),
+            "build_success": bool(tag and tag not in ("null", "None")),
+            "image_tag": tag if tag and tag not in ("null", "None") else None,
+            "reason": note,
+        }
     attempted = docker.get("build_attempted", False)
     success = docker.get("build_success", False)
     tag = docker.get("image_tag") or "—"
@@ -279,12 +289,19 @@ def _test_section_compat(spec: dict) -> str:
 def _usage_guide(spec: dict) -> str:
     steps = spec.get("pipeline_steps", [])
     env = spec.get("conda_env", "bioinf_<name>")
+    # Fall back to flat test.run_command when pipeline_steps absent
     if not steps:
-        return ""
-    cmds = "\n\n".join(
-        f"# Step {s.get('step','?')}: {s.get('tool','')}\n{s.get('command','')}"
-        for s in steps
-    )
+        test = spec.get("test", {})
+        cmd = test.get("run_command", "") if isinstance(test, dict) else ""
+        if not cmd:
+            return ""
+        name = spec.get("pipeline_name") or spec.get("name", "pipeline")
+        cmds = f"# {name}\n{cmd}"
+    else:
+        cmds = "\n\n".join(
+            f"# Step {s.get('step','?')}: {s.get('tool','')}\n{s.get('command','')}"
+            for s in steps
+        )
     doc_links = []
     for p in spec.get("packages", []):
         hp = p.get("homepage", "")
@@ -305,7 +322,19 @@ def _usage_guide(spec: dict) -> str:
 
 
 def _notes_section(spec: dict) -> str:
-    notes = spec.get("notes", [])
+    notes = list(spec.get("notes", []))
+    # Collect notes from flat fields when no explicit notes list
+    if not notes:
+        if spec.get("docker_note"):
+            notes.append(spec["docker_note"])
+        if spec.get("docker_build_status"):
+            notes.append(spec["docker_build_status"])
+        for p in spec.get("packages", []):
+            if p.get("note") and p.get("name") not in ("conda-pack",):
+                notes.append(f"<strong>{p['name']}</strong>: {p['note']}")
+        test = spec.get("test", {})
+        if isinstance(test, dict) and test.get("strategy"):
+            notes.append(f"Test strategy: {test['strategy']}")
     if not notes:
         return ""
     items = "".join(f"<li style='margin-bottom:0.3rem'>{n}</li>" for n in notes)
