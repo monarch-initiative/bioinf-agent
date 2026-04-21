@@ -16,9 +16,12 @@ from typing import Any
 class OutputValidator:
     def __init__(self, config: dict):
         self.config = config
+        self._project_root = Path(__file__).parent.parent.parent.resolve()
+        self._envs_dir = self._project_root / config["paths"]["conda_envs_prefix"]
 
-    def validate(self, file_path: str, expected_type: str) -> dict[str, Any]:
+    def validate(self, file_path: str, expected_type: str, env_name: str | None = None) -> dict[str, Any]:
         path = Path(file_path)
+        self._env_name = env_name
 
         if not path.exists():
             return {"passed": False, "file": file_path, "error": "File does not exist"}
@@ -66,23 +69,16 @@ class OutputValidator:
         return {"passed": True, "has_header": has_header, "sample_lines": len(data_lines)}
 
     def _check_bam(self, path: Path) -> dict:
-        ret = subprocess.run(
-            ["samtools", "quickcheck", str(path)],
-            capture_output=True, text=True, timeout=60,
-        )
+        ret = self._run_tool(["samtools", "quickcheck", str(path)], timeout=60)
         if ret.returncode != 0:
-            # samtools may not be in PATH — fall back to magic bytes
+            # samtools not available — fall back to BAM magic bytes check
             with open(path, "rb") as f:
                 magic = f.read(4)
             if magic[:3] == b"\x1f\x8b\x08":
-                return {"passed": True, "note": "BAM magic OK (samtools not in PATH for full check)"}
-            return {"passed": False, "error": f"samtools quickcheck: {ret.stderr[:200]}"}
+                return {"passed": True, "note": "BAM magic OK (samtools unavailable for full check)"}
+            return {"passed": False, "error": f"samtools quickcheck failed: {ret.stderr[:200]}"}
 
-        # Get flagstat for a richer check
-        stat = subprocess.run(
-            ["samtools", "flagstat", str(path)],
-            capture_output=True, text=True, timeout=120,
-        )
+        stat = self._run_tool(["samtools", "flagstat", str(path)], timeout=120)
         if stat.returncode == 0:
             return {"passed": True, "flagstat": stat.stdout[:500]}
         return {"passed": True, "note": "BAM quickcheck passed"}
@@ -128,16 +124,13 @@ class OutputValidator:
         }
 
     def _check_bcf(self, path: Path) -> dict:
-        ret = subprocess.run(
-            ["bcftools", "stats", str(path)],
-            capture_output=True, text=True, timeout=60,
-        )
+        ret = self._run_tool(["bcftools", "stats", str(path)], timeout=60)
         if ret.returncode == 0:
             return {"passed": True, "note": "bcftools stats OK"}
         with open(path, "rb") as f:
             magic = f.read(3)
         if magic == b"BCF":
-            return {"passed": True, "note": "BCF magic OK (bcftools not in PATH)"}
+            return {"passed": True, "note": "BCF magic OK (bcftools unavailable for full check)"}
         return {"passed": False, "error": ret.stderr[:200]}
 
     def _check_bed(self, path: Path) -> dict:
@@ -198,6 +191,17 @@ class OutputValidator:
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
+
+    def _run_tool(self, cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+        """Run a tool, preferring the binary inside the active conda env if set."""
+        if self._env_name:
+            env_bin = self._envs_dir / self._env_name / "bin" / cmd[0]
+            if env_bin.exists():
+                cmd = [str(env_bin)] + cmd[1:]
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(e))
 
     def _head_lines(self, path: Path, n: int) -> list[str]:
         try:
