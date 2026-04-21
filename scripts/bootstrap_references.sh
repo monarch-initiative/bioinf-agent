@@ -27,6 +27,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
+# Prefer conda's Python (has pyyaml) over the macOS system python3
+_conda_python() {
+    # Try CONDA_PREFIX, then common miniforge/miniconda/anaconda locations
+    for candidate in \
+        "${CONDA_PREFIX:-__none__}/bin/python3" \
+        "$HOME/miniforge3/bin/python3" \
+        "$HOME/miniconda3/bin/python3" \
+        "$HOME/anaconda3/bin/python3" \
+        "$(command -v python3 2>/dev/null)"
+    do
+        [[ -x "$candidate" ]] && "$candidate" -c "import yaml" 2>/dev/null && { echo "$candidate"; return; }
+    done
+    echo "python3"  # fallback — check_deps will catch the missing yaml
+}
+PYTHON="$(_conda_python)"
+
 # ── defaults ──────────────────────────────────────────────────────────────────
 GENOME_TARGET="all"
 DATA_TARGET="all"
@@ -50,13 +66,13 @@ die()  { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
 check_deps() {
     local missing=()
-    for dep in curl python3; do
+    for dep in curl; do
         command -v "$dep" &>/dev/null || missing+=("$dep")
     done
-    if ! python3 -c "import yaml" 2>/dev/null; then
+    if ! "$PYTHON" -c "import yaml" 2>/dev/null; then
         missing+=("pyyaml (pip install pyyaml)")
     fi
-    [[ ${#missing[@]} -gt 0 ]] && die "Missing required tools: ${missing[*]}"
+    if [[ ${#missing[@]} -gt 0 ]]; then die "Missing required tools: ${missing[*]}"; fi
 }
 
 # Download with progress bar; skip if file already exists and is non-empty
@@ -73,7 +89,7 @@ download() {
 
 mark_available() {
     local manifest="$1" key="$2" id="$3"
-    python3 - <<EOF
+    "$PYTHON" - <<EOF
 import yaml, pathlib
 p = pathlib.Path("$manifest")
 data = yaml.safe_load(p.read_text()) or {}
@@ -106,7 +122,7 @@ bootstrap_hg38_full() {
             "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz" \
             "$fasta_gz"
         log "  Decompressing hg38.fa.gz (~26 GB uncompressed — this takes a while)..."
-        zcat "$fasta_gz" > "$fasta"
+        gzip -dc "$fasta_gz" > "$fasta"
         rm -f "$fasta_gz"
         log "  Decompression done."
     fi
@@ -133,7 +149,7 @@ bootstrap_hg38_full() {
             "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_45/gencode.v45.annotation.gtf.gz" \
             "$out_dir/genes.gtf.gz"
         log "  Decompressing annotation GTF..."
-        zcat "$out_dir/genes.gtf.gz" > "$gtf"
+        gzip -dc "$out_dir/genes.gtf.gz" > "$gtf"
         rm -f "$out_dir/genes.gtf.gz"
     fi
 
@@ -154,7 +170,7 @@ bootstrap_hg38_chr22() {
         download \
             "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/chromosomes/chr22.fa.gz" \
             "$out_dir/chr22.fa.gz"
-        zcat "$out_dir/chr22.fa.gz" > "$fasta"
+        gzip -dc "$out_dir/chr22.fa.gz" > "$fasta"
         rm -f "$out_dir/chr22.fa.gz"
     fi
 
@@ -169,7 +185,7 @@ bootstrap_hg38_chr22() {
         download \
             "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_45/gencode.v45.annotation.gtf.gz" \
             "$out_dir/full_annotation.gtf.gz"
-        zcat "$out_dir/full_annotation.gtf.gz" | awk '$1=="chr22"' > "$gtf"
+        gzip -dc "$out_dir/full_annotation.gtf.gz" | awk '$1=="chr22"' > "$gtf"
         rm -f "$out_dir/full_annotation.gtf.gz"
     fi
 
@@ -190,7 +206,7 @@ bootstrap_ecoli_k12() {
         download \
             "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.fna.gz" \
             "$out_dir/ecoli.fa.gz"
-        zcat "$out_dir/ecoli.fa.gz" > "$fasta"
+        gzip -dc "$out_dir/ecoli.fa.gz" > "$fasta"
         rm -f "$out_dir/ecoli.fa.gz"
     fi
 
@@ -204,7 +220,7 @@ bootstrap_ecoli_k12() {
         download \
             "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.gff.gz" \
             "$out_dir/genes.gff.gz"
-        zcat "$out_dir/genes.gff.gz" > "$gtf"
+        gzip -dc "$out_dir/genes.gff.gz" > "$gtf"
         rm -f "$out_dir/genes.gff.gz"
     fi
 
@@ -214,23 +230,25 @@ bootstrap_ecoli_k12() {
     log "=== ecoli_k12 ready. ==="
 }
 
-# ── Test data: SRR1291026 (real PCR-free exome, male human) ───────────────────
-download_exome_SRR1291026() {
-    log "=== exome_pcr_free_SRR1291026: Real PCR-free exome (SRR1291026) ==="
-    local out_dir="$PROJECT_ROOT/data/test_data/exome_pcr_free_SRR1291026"
+# ── Test data: SRR1517830 (exome, HG00096, 1000 Genomes) ─────────────────────
+download_exome_SRR1517830() {
+    log "=== exome_SRR1517830: Exome HG00096 (SRR1517830) ==="
+    local out_dir="$PROJECT_ROOT/data/test_data/exome_SRR1517830"
     mkdir -p "$out_dir"
 
     download \
-        "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR129/006/SRR1291026/SRR1291026_1.fastq.gz" \
-        "$out_dir/SRR1291026_1.fastq.gz"
+        "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_1.fastq.gz" \
+        "$out_dir/SRR1517830_1.fastq.gz"
 
     download \
-        "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR129/006/SRR1291026/SRR1291026_2.fastq.gz" \
-        "$out_dir/SRR1291026_2.fastq.gz"
+        "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_2.fastq.gz" \
+        "$out_dir/SRR1517830_2.fastq.gz"
 
-    # Quick sanity check — peek at first read of R1
+    # Quick sanity check — first line of R1 must start with @
     log "  Verifying R1 integrity..."
-    if zcat "$out_dir/SRR1291026_1.fastq.gz" 2>/dev/null | head -4 | grep -q "^@"; then
+    local first_line
+    first_line=$(gzip -dc "$out_dir/SRR1517830_1.fastq.gz" 2>/dev/null | head -1 || true)
+    if [[ "$first_line" == @* ]]; then
         log "  R1 FASTQ header OK."
     else
         warn "R1 header check failed — file may be incomplete."
@@ -238,8 +256,8 @@ download_exome_SRR1291026() {
 
     mark_available \
         "$PROJECT_ROOT/data/test_data/manifest.yaml" \
-        "datasets" "exome_pcr_free_SRR1291026"
-    log "=== SRR1291026 ready. ==="
+        "datasets" "exome_SRR1517830"
+    log "=== SRR1517830 ready. ==="
 }
 
 # ── Smoke-test datasets (synthetic, generated from chr22) ─────────────────────
@@ -250,7 +268,7 @@ generate_smoke_datasets() {
         return 0
     fi
 
-    python3 - <<'EOF'
+    "$PYTHON" - <<'EOF'
 import yaml, sys
 sys.path.insert(0, ".")
 from agent.skills.test_runner import TestRunner
@@ -293,10 +311,10 @@ esac
 
 case "$DATA_TARGET" in
     all)
-        download_exome_SRR1291026
+        download_exome_SRR1517830
         generate_smoke_datasets
         ;;
-    exome)  download_exome_SRR1291026 ;;
+    exome)  download_exome_SRR1517830 ;;
     smoke)  generate_smoke_datasets ;;
     none)   log "Skipping test data." ;;
     *) die "Unknown --data value: $DATA_TARGET" ;;
