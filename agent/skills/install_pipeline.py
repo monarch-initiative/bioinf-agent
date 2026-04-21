@@ -524,7 +524,7 @@ class InstallPipelineSkill:
         primary = next(
             (p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {}
         )
-        version = primary.get("version", "")
+        version = primary.get("version") or primary.get("resolved_version", "")
         stem = f"{name}_{version}" if version else name
 
         yaml_path = pipelines_dir / f"{stem}.yaml"

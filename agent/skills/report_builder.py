@@ -60,12 +60,20 @@ def _badge(text: str, kind: str = "pass") -> str:
 
 
 def _status_badge(spec: dict) -> str:
-    status = spec.get("status", "unknown")
+    status = spec.get("status", "")
     if status in ("fully_validated", "complete"):
         return _badge("✓ Validated", "pass")
     if status == "in_progress":
         return _badge("⏳ In Progress", "skip")
-    return _badge("✗ " + status, "fail")
+    if status and status != "unknown":
+        return _badge("✗ " + status, "fail")
+    # Infer from pipeline steps when the sub-agent omits a top-level status
+    steps = spec.get("pipeline_steps", [])
+    if steps and all(s.get("status") == "validated" for s in steps):
+        return _badge("✓ Validated", "pass")
+    if steps:
+        return _badge("⏳ Partial", "skip")
+    return _badge("Unknown", "skip")
 
 
 def _docker_section(spec: dict) -> str:
@@ -105,9 +113,10 @@ def _packages_table(spec: dict) -> str:
     for p in packages:
         hp = p.get("homepage", "")
         link = f'<a href="{hp}" target="_blank">{hp}</a>' if hp else "—"
+        version = p.get("version") or p.get("resolved_version") or p.get("conda_spec", "").split("=")[-1] or "—"
         rows.append(
             f"<tr><td><strong>{p.get('name','')}</strong></td>"
-            f"<td>{p.get('version','')}</td>"
+            f"<td>{version}</td>"
             f"<td>{p.get('channel','')}</td>"
             f"<td>{p.get('description','')}</td>"
             f"<td>{link}</td></tr>"
@@ -153,10 +162,22 @@ def _steps_section(spec: dict) -> str:
     blocks = []
     for s in steps:
         tool = s.get("tool", "")
-        version = s.get("version", "")
+        subcommand = s.get("subcommand", "")
+        tool_label = f"{tool} {subcommand}".strip() if subcommand else tool
+        version = s.get("version") or s.get("resolved_version", "")
         cmd = s.get("command", "")
-        rc = s.get("returncode", "?")
-        validation = s.get("validation", {})
+        rc = s.get("returncode")
+        status = s.get("status", "")
+
+        # Exit code label: show numeric code when available, otherwise step status
+        if rc is not None:
+            exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{"#16a34a" if rc == 0 else "#dc2626"}">exit {rc}</span>'
+        elif status == "validated":
+            exit_html = '<span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>'
+        else:
+            exit_html = ""
+
+        validation = s.get("validation") or s.get("validation_details")
 
         val_html = ""
         if isinstance(validation, dict):
@@ -172,6 +193,8 @@ def _steps_section(spec: dict) -> str:
                 val_html += f'<div class="val-row">{icon} <code>{fname}</code> {size_str}</div>'
         elif validation:
             val_html = f'<div class="val-row">{"✅" if validation else "❌"} {validation}</div>'
+        elif status == "validated":
+            val_html = '<div class="val-row">✅ validated</div>'
 
         outputs = s.get("outputs", {})
         out_html = ""
@@ -185,8 +208,8 @@ def _steps_section(spec: dict) -> str:
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">{s.get('step', '?')}</span>
-    {tool} {version}
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit {rc}</span>
+    {tool_label} {version}
+    {exit_html}
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>{cmd}</pre>
@@ -244,7 +267,7 @@ def _notes_section(spec: dict) -> str:
 def generate(spec: dict) -> str:
     name = spec.get("pipeline_name") or spec.get("name", "pipeline")
     primary = next((p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {})
-    version = primary.get("version", "")
+    version = primary.get("version") or primary.get("resolved_version", "")
     env = spec.get("conda_env", "")
     created = spec.get("created_at") or spec.get("created", "")
     if created:
