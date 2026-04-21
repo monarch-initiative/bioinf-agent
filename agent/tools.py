@@ -118,6 +118,12 @@ def dispatch_outer_tool(name: str, inputs: dict, config: dict) -> dict[str, Any]
 def _tool_install_pipeline(inputs: dict, config: dict) -> dict:
     from agent.skills.install_pipeline import InstallPipelineSkill
 
+    pkgs = ", ".join(
+        p["name"] + (f"@{p['version']}" if p.get("version") and p["version"] != "latest" else "")
+        for p in inputs["packages"]
+    )
+    print(f"\n[pipeline] {inputs['pipeline_name']}  ({pkgs})")
+
     skill = InstallPipelineSkill(config)
     return skill.run(
         pipeline_name=inputs["pipeline_name"],

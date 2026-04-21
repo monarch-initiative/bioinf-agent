@@ -15,6 +15,7 @@ Runs a sub-agent loop (its own Claude tool-use conversation) that:
 import json
 import subprocess
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -245,6 +246,18 @@ SUB_TOOLS = [
     },
 ]
 
+_TOOL_PHASES = {
+    "search_package":          "Phase 1 · Research",
+    "create_conda_env":        "Phase 2 · Install",
+    "install_packages":        "Phase 2 · Install",
+    "verify_installation":     "Phase 2 · Install",
+    "list_available_resources": "Phase 3 · Test data",
+    "download_resource":       "Phase 3 · Test data",
+    "run_command":             "Phase 4 · Execution",
+    "validate_output":         "Phase 4 · Validation",
+    "build_docker_image":      "Phase 5 · Docker",
+    "save_pipeline_spec":      "Phase 6 · Save",
+}
 
 # ---------------------------------------------------------------------------
 # Skill
@@ -293,6 +306,18 @@ class InstallPipelineSkill:
             - Based on your understanding of what each tool does, select the most
               appropriate test dataset. Prefer data that is already available on disk.
             - If no suitable data is available, call download_resource.
+            - **Default test strategy (always apply unless the tool makes it inappropriate):**
+              1. Reference genome: extract a single chromosome to keep index builds fast.
+                 Prefer "{self.config['testing']['preferred_chromosome']}", fall back to
+                 "{self.config['testing']['fallback_chromosome']}", or the first sequence
+                 in the FASTA for non-human/non-mouse organisms.
+              2. Reads: subset to {self.config['testing']['max_reads']:,} paired-end reads
+                 (or single-end if the dataset is single-end). Use head/gzip to subset
+                 without downloading extra data.
+              3. Write all test outputs (extracted reference, subset reads, index files,
+                 analysis outputs) to a dedicated subdirectory under the test_data dir
+                 named after the pipeline (e.g. {pipeline_name}_test/).
+              This keeps validation fast (<10 min) and reproducible.
             - If the genome needs an index for this tool and it doesn't exist yet,
               build it with run_command before the main test run.
 
@@ -300,7 +325,7 @@ class InstallPipelineSkill:
             For each package in pipeline order:
             - Construct a reasonable test command using the test data.
               Use sensible default parameters appropriate for small test data.
-              Write outputs to a temp subdirectory under the test_data dir.
+              Write outputs to the {pipeline_name}_test/ subdirectory.
             - Call run_command to execute it.
             - If the command succeeds, call validate_output on the primary output.
             - If validation passes, record the step as validated.
@@ -344,6 +369,10 @@ class InstallPipelineSkill:
             "status": "in_progress",
         }
 
+        _current_phase = None
+        _phase_start = time.time()
+        _job_start = time.time()
+
         max_iterations = self.config["agent"]["max_iterations"]
         for iteration in range(max_iterations):
             response = self.client.messages.create(
@@ -358,7 +387,8 @@ class InstallPipelineSkill:
 
             if response.stop_reason == "end_turn":
                 pipeline_spec["status"] = "complete"
-                # Extract final text summary
+                elapsed = time.time() - _job_start
+                print(f"\n  ✓ Pipeline complete ({elapsed:.0f}s total)")
                 for block in response.content:
                     if hasattr(block, "text"):
                         pipeline_spec["final_summary"] = block.text
@@ -368,7 +398,14 @@ class InstallPipelineSkill:
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
-                        print(f"    [install] {block.name}({_short(block.input)})")
+                        phase = _TOOL_PHASES.get(block.name, "Running")
+                        if phase != _current_phase:
+                            if _current_phase:
+                                print(f"    ({time.time() - _phase_start:.0f}s)")
+                            print(f"\n  ── {phase} ", end="", flush=True)
+                            _current_phase = phase
+                            _phase_start = time.time()
+                        _print_tool_call(block.name, block.input)
                         result = self._dispatch(block.name, block.input, pipeline_spec, env_name)
                         tool_results.append(
                             {
@@ -380,6 +417,7 @@ class InstallPipelineSkill:
                 messages.append({"role": "user", "content": tool_results})
         else:
             pipeline_spec["status"] = "timeout"
+            print(f"\n  ✗ Timed out after {time.time() - _job_start:.0f}s")
 
         return pipeline_spec
 
@@ -497,6 +535,25 @@ class InstallPipelineSkill:
         html_path.write_text(generate_report(spec))
 
         return {"saved_yaml": str(yaml_path), "saved_html": str(html_path)}
+
+
+_TOOL_LABELS = {
+    "search_package":           lambda i: i.get("package_name", ""),
+    "create_conda_env":         lambda i: i.get("env_name", ""),
+    "install_packages":         lambda i: ", ".join(p.get("spec", "") for p in i.get("packages", [])),
+    "verify_installation":      lambda i: i.get("package_name", ""),
+    "list_available_resources": lambda i: i.get("resource_type", ""),
+    "download_resource":        lambda i: i.get("resource_id", ""),
+    "run_command":              lambda i: (i.get("command", "")[:60] + "…") if len(i.get("command", "")) > 60 else i.get("command", ""),
+    "validate_output":          lambda i: Path(i.get("file_path", "")).name + f" [{i.get('expected_type','')}]",
+    "build_docker_image":       lambda i: i.get("pipeline_name", ""),
+    "save_pipeline_spec":       lambda i: i.get("spec", {}).get("pipeline_name", ""),
+}
+
+
+def _print_tool_call(name: str, inputs: dict) -> None:
+    label = _TOOL_LABELS.get(name, lambda i: "")(inputs)
+    print(f"\n      · {name}: {label}" if label else f"\n      · {name}", end="", flush=True)
 
 
 def _short(inp: dict) -> str:

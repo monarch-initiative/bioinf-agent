@@ -29,3 +29,12 @@ agent:
   max_iterations: 60
   install_timeout_seconds: 3600
   test_timeout_seconds: 1800
+
+testing:
+  # Max reads to subset from test FASTQ files for validation runs
+  max_reads: 100000
+  # For human/mouse genomes, restrict the reference to this chromosome to keep
+  # index builds and alignments fast. Falls back to chr1 if not found.
+  preferred_chromosome: "chr22"
+  fallback_chromosome: "chr1"
+  # For non-standard organisms (no "chr" prefix), use the first sequence in the FASTA
