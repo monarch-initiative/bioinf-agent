@@ -157,12 +157,28 @@ def _test_data_section(spec: dict) -> str:
     td = spec.get("test_data")
     if not td:
         return ""
+
+    def _val(keys, default="—"):
+        for k in keys:
+            v = td.get(k)
+            if v:
+                return v
+        return default
+
+    dataset_id = _val(["dataset_id", "reads_source"])
+    type_val = td.get("type") or td.get("reads_subset") or "—"
+    subtype = td.get("subtype", "")
+    type_display = f"{type_val} / {subtype}" if subtype else type_val
+    organism = _val(["organism"])
+    genome_build = _val(["genome_build", "reference"])
+    description = _val(["description"])
+
     fields = [
-        ("Dataset ID", td.get("dataset_id", "—")),
-        ("Type", f"{td.get('type','—')} / {td.get('subtype','—')}"),
-        ("Organism", td.get("organism", "—")),
-        ("Genome build", td.get("genome_build", "—")),
-        ("Description", td.get("description", "—")),
+        ("Dataset ID", dataset_id),
+        ("Type", type_display),
+        ("Organism", organism),
+        ("Genome build", genome_build),
+        ("Description", description),
     ]
     for fk in ("r1", "r2", "reads"):
         if td.get(fk):
