@@ -159,12 +159,19 @@ def _steps_section(spec: dict) -> str:
         validation = s.get("validation", {})
 
         val_html = ""
-        for fname, vr in validation.items():
-            ok = vr.get("passed", False)
-            size = vr.get("size_bytes", 0)
-            size_str = f"{size / 1024:.1f} KB" if size else ""
-            icon = "✅" if ok else "❌"
-            val_html += f'<div class="val-row">{icon} <code>{fname}</code> {size_str}</div>'
+        if isinstance(validation, dict):
+            for fname, vr in validation.items():
+                if isinstance(vr, dict):
+                    ok = vr.get("passed", False)
+                    size = vr.get("size_bytes", 0)
+                    size_str = f"{size / 1024:.1f} KB" if size else ""
+                else:
+                    ok = bool(vr)
+                    size_str = ""
+                icon = "✅" if ok else "❌"
+                val_html += f'<div class="val-row">{icon} <code>{fname}</code> {size_str}</div>'
+        elif validation:
+            val_html = f'<div class="val-row">{"✅" if validation else "❌"} {validation}</div>'
 
         outputs = s.get("outputs", {})
         out_html = ""

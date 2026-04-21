@@ -199,6 +199,13 @@ SUB_TOOLS = [
                         "'bed', 'bigwig', 'counts_matrix', 'gtf', 'gff', 'log', 'any'"
                     ),
                 },
+                "env_name": {
+                    "type": "string",
+                    "description": (
+                        "Conda env name. Always pass this — it lets the validator call "
+                        "samtools/bcftools from inside the env rather than system PATH."
+                    ),
+                },
             },
             "required": ["file_path", "expected_type"],
         },
@@ -309,6 +316,11 @@ class InstallPipelineSkill:
             - If a step fails, diagnose and retry up to 2 times before reporting failure.
             - Prefer bioconda > conda-forge > defaults channel priority.
             - conda-pack must be installed in the env before building the image.
+            - Always pass env_name to validate_output so samtools/bcftools are resolved
+              from inside the conda env rather than the system PATH.
+            - htslib: samtools, bcftools, and bwa (for CRAM support) all link against htslib.
+              Install them all in the same conda solve to guarantee a compatible htslib version.
+              Do NOT install them in separate install_packages calls if it can be avoided.
         """).strip()
 
         messages = [
@@ -415,7 +427,11 @@ class InstallPipelineSkill:
             return result
 
         if name == "validate_output":
-            result = self.validator.validate(inputs["file_path"], inputs["expected_type"])
+            result = self.validator.validate(
+                inputs["file_path"],
+                inputs["expected_type"],
+                env_name=inputs.get("env_name", env_name),
+            )
             if result.get("passed"):
                 self._record_step_validation(pipeline_spec, inputs["file_path"], result)
             return result
