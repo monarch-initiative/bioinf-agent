@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>bwa_samtools — Pipeline Report</title>
+<title>bwa_samtools 0.7.19-r1273 — Pipeline Report</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -54,16 +54,16 @@ footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem
 <body>
 <div class="page">
   <header>
-    <h1>bwa_samtools</h1>
+    <h1>bwa_samtools 0.7.19-r1273</h1>
     <div class="meta">Align short reads to a reference genome with BWA, then process alignments (sort, index, convert) with SAMtools.</div>
-    <div style="margin-top:0.75rem"><span class="badge">bioinf_bwa_samtools</span> <span class="badge fail">✗ unknown</span> <span class="badge">2025-04-20 00:00 UTC</span></div>
+    <div style="margin-top:0.75rem"><span class="badge">bioinf_bwa_samtools</span> <span class="badge pass">✓ Validated</span> <span class="badge">2025-04-20 00:00 UTC</span></div>
   </header>
   
 <div class="section">
   <h2>📦 Packages</h2>
   <table>
     <thead><tr><th>Package</th><th>Version</th><th>Channel</th><th>Description</th><th>Documentation</th></tr></thead>
-    <tbody><tr><td><strong>bwa</strong></td><td></td><td>bioconda</td><td>The BWA read mapper — Burrows-Wheeler Aligner for short-read alignment to a reference genome</td><td>—</td></tr><tr><td><strong>samtools</strong></td><td></td><td>bioconda</td><td>Tools for dealing with SAM, BAM and CRAM files — sort, index, flagstat, idxstats, view</td><td>—</td></tr></tbody>
+    <tbody><tr><td><strong>bwa</strong></td><td>0.7.19-r1273</td><td>bioconda</td><td>The BWA read mapper — Burrows-Wheeler Aligner for short-read alignment to a reference genome</td><td>—</td></tr><tr><td><strong>samtools</strong></td><td>1.23.1</td><td>bioconda</td><td>Tools for dealing with SAM, BAM and CRAM files — sort, index, flagstat, idxstats, view</td><td>—</td></tr></tbody>
   </table>
 </div>
 <div class="section">
@@ -82,19 +82,19 @@ footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">1</span>
-    bwa 
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit ?</span>
+    bwa index 
+    <span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>bwa index /path/to/chr22.fa</pre>
   
-  
+  <div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong><div class="val-row">✅ validated</div></div>
 </div>
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">2</span>
-    bwa 
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit ?</span>
+    bwa mem 
+    <span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>bwa mem -t 4 -R '@RG\tID:SRR1517830\tSM:HG00096\tPL:ILLUMINA\tLB:exome' chr22.fa reads_R1.fastq.gz reads_R2.fastq.gz > aligned.sam</pre>
@@ -104,30 +104,30 @@ footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">3</span>
-    samtools 
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit ?</span>
+    samtools sort 
+    <span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>samtools sort -@ 4 -o aligned_sorted.bam aligned.sam</pre>
   
-  
+  <div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong><div class="val-row">✅ validated</div></div>
 </div>
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">4</span>
-    samtools 
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit ?</span>
+    samtools index 
+    <span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>samtools index aligned_sorted.bam</pre>
   
-  
+  <div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong><div class="val-row">✅ validated</div></div>
 </div>
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">5</span>
-    samtools 
-    <span style="margin-left:auto;font-size:0.8rem;color:#64748b">exit ?</span>
+    samtools flagstat + idxstats 
+    <span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>samtools flagstat aligned_sorted.bam && samtools idxstats aligned_sorted.bam</pre>
