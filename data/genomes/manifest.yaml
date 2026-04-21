@@ -1,90 +1,119 @@
 genomes:
-  - id: hg38_full
-    species: homo_sapiens
-    common_name: human
-    build: hg38
-    chromosomes: [all]
-    path: hg38_full/
-    files:
-      fasta: genome.fa
-      fai: genome.fa.fai
-      dict: genome.dict
-      gtf: genes.gtf
-    indexes:
-      bwa: indexes/bwa/genome
-      bwa_mem2: indexes/bwa_mem2/genome
-      star: indexes/star/
-      bowtie2: indexes/bowtie2/genome
-      hisat2: indexes/hisat2/genome
-      minimap2: indexes/minimap2/genome.mmi
-    size_gb: 3.2
-    description: "Full human hg38 genome (UCSC bigZips, all chromosomes + decoys) — use for real data validation"
-    source: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz"
-    annotation_source: "GENCODE v45 comprehensive annotation"
-    tags: [human, grch38, hg38, full, wgs, exome, rnaseq, chip, atac]
-    available: false
-
-  - id: hg38_chr22
-    species: homo_sapiens
-    common_name: human
-    build: hg38
-    chromosomes: [chr22]
-    path: hg38_chr22/
-    files:
-      fasta: genome.fa
-      fai: genome.fa.fai
-      dict: genome.dict
-      gtf: genes.gtf
-    indexes:
-      bwa: indexes/bwa/genome
-      bwa_mem2: indexes/bwa_mem2/genome
-      star: indexes/star/
-      bowtie2: indexes/bowtie2/genome
-      hisat2: indexes/hisat2/genome
-      minimap2: indexes/minimap2/genome.mmi
-    size_mb: 52
-    description: "Human chr22 only — fast smoke-test genome, not for real data"
-    tags: [human, grch38, hg38, small, smoke_test]
-    available: false
-
-  - id: mm10_chr19
-    species: mus_musculus
-    common_name: mouse
-    build: mm10
-    chromosomes: [chr19]
-    path: mm10_chr19/
-    files:
-      fasta: genome.fa
-      fai: genome.fa.fai
-      dict: genome.dict
-      gtf: genes.gtf
-    indexes:
-      bwa: indexes/bwa/genome
-      star: indexes/star/
-      bowtie2: indexes/bowtie2/genome
-      hisat2: indexes/hisat2/genome
-    size_mb: 61
-    description: "Mouse chr19 only — fast for CI/test runs"
-    tags: [mouse, mm10, small, testing, rnaseq, wgs]
-    available: false
-
-  - id: ecoli_k12
-    species: escherichia_coli
-    common_name: e_coli
-    build: k12_mg1655
-    chromosomes: [all]
-    path: ecoli_k12/
-    files:
-      fasta: genome.fa
-      fai: genome.fa.fai
-      dict: genome.dict
-      gtf: genes.gtf
-    indexes:
-      bwa: indexes/bwa/genome
-      star: indexes/star/
-      bowtie2: indexes/bowtie2/genome
-      minimap2: indexes/minimap2/genome.mmi
-    size_mb: 5
-    description: "E. coli K-12 complete genome — very small, great for smoke tests"
-    tags: [ecoli, bacteria, tiny, testing, rnaseq, wgs, assembly]
-    available: false
+- id: hg38_full
+  species: homo_sapiens
+  common_name: human
+  build: hg38
+  chromosomes:
+  - all
+  path: hg38_full/
+  files:
+    fasta: genome.fa
+    fai: genome.fa.fai
+    dict: genome.dict
+    gtf: genes.gtf
+  indexes:
+    bwa: indexes/bwa/genome
+    bwa_mem2: indexes/bwa_mem2/genome
+    star: indexes/star/
+    bowtie2: indexes/bowtie2/genome
+    hisat2: indexes/hisat2/genome
+    minimap2: indexes/minimap2/genome.mmi
+  size_gb: 3.2
+  description: "Full human hg38 genome (UCSC bigZips, all chromosomes + decoys) \u2014\
+    \ use for real data validation"
+  source: https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz
+  annotation_source: GENCODE v45 comprehensive annotation
+  tags:
+  - human
+  - grch38
+  - hg38
+  - full
+  - wgs
+  - exome
+  - rnaseq
+  - chip
+  - atac
+  available: true
+- id: hg38_chr22
+  species: homo_sapiens
+  common_name: human
+  build: hg38
+  chromosomes:
+  - chr22
+  path: hg38_chr22/
+  files:
+    fasta: genome.fa
+    fai: genome.fa.fai
+    dict: genome.dict
+    gtf: genes.gtf
+  indexes:
+    bwa: indexes/bwa/genome
+    bwa_mem2: indexes/bwa_mem2/genome
+    star: indexes/star/
+    bowtie2: indexes/bowtie2/genome
+    hisat2: indexes/hisat2/genome
+    minimap2: indexes/minimap2/genome.mmi
+  size_mb: 52
+  description: "Human chr22 only \u2014 fast smoke-test genome, not for real data"
+  tags:
+  - human
+  - grch38
+  - hg38
+  - small
+  - smoke_test
+  available: false
+- id: mm10_chr19
+  species: mus_musculus
+  common_name: mouse
+  build: mm10
+  chromosomes:
+  - chr19
+  path: mm10_chr19/
+  files:
+    fasta: genome.fa
+    fai: genome.fa.fai
+    dict: genome.dict
+    gtf: genes.gtf
+  indexes:
+    bwa: indexes/bwa/genome
+    star: indexes/star/
+    bowtie2: indexes/bowtie2/genome
+    hisat2: indexes/hisat2/genome
+  size_mb: 61
+  description: "Mouse chr19 only \u2014 fast for CI/test runs"
+  tags:
+  - mouse
+  - mm10
+  - small
+  - testing
+  - rnaseq
+  - wgs
+  available: false
+- id: ecoli_k12
+  species: escherichia_coli
+  common_name: e_coli
+  build: k12_mg1655
+  chromosomes:
+  - all
+  path: ecoli_k12/
+  files:
+    fasta: genome.fa
+    fai: genome.fa.fai
+    dict: genome.dict
+    gtf: genes.gtf
+  indexes:
+    bwa: indexes/bwa/genome
+    star: indexes/star/
+    bowtie2: indexes/bowtie2/genome
+    minimap2: indexes/minimap2/genome.mmi
+  size_mb: 5
+  description: "E. coli K-12 complete genome \u2014 very small, great for smoke tests"
+  tags:
+  - ecoli
+  - bacteria
+  - tiny
+  - testing
+  - rnaseq
+  - wgs
+  - assembly
+  available: false
