@@ -13,6 +13,9 @@ from pathlib import Path
 
 import anthropic
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from agent.tools import OUTER_TOOLS, dispatch_outer_tool
 
