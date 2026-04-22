@@ -38,6 +38,7 @@ ACCESSION="SRR1517830"
 SAMPLE="HG00096"
 SAMPLE_KEY="${SAMPLE}_${ACCESSION}"
 SUBSET="100K"
+FILE_KEY="${SAMPLE_KEY}_${SUBSET}"    # used as filename prefix for all artifacts
 NUM_READS=100000
 EBI_BASE="ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/${ACCESSION}"
 
@@ -134,8 +135,8 @@ FULL_R1="$SOURCES_DIR/$ACCESSION/${ACCESSION}_1.fastq.gz"
 FULL_R2="$SOURCES_DIR/$ACCESSION/${ACCESSION}_2.fastq.gz"
 
 READS_DIR="$CORE_DIR/short_read/paired_end/exome"
-SUBSET_R1="$READS_DIR/${ACCESSION}_R1_${SUBSET}.fastq.gz"
-SUBSET_R2="$READS_DIR/${ACCESSION}_R2_${SUBSET}.fastq.gz"
+SUBSET_R1="$READS_DIR/${FILE_KEY}_R1.fastq.gz"
+SUBSET_R2="$READS_DIR/${FILE_KEY}_R2.fastq.gz"
 LINES=$((NUM_READS * 4))
 
 if [[ ! -f "$FULL_R1" ]]; then
@@ -167,7 +168,7 @@ else
 fi
 
 # Write sample metadata sidecar (model-driven via Python)
-SAMPLE_META="$READS_DIR/${ACCESSION}_sample_meta.yaml"
+SAMPLE_META="$READS_DIR/${SAMPLE_KEY}_sample_meta.yaml"
 if [[ ! -f "$SAMPLE_META" ]]; then
   log "Writing sample metadata sidecar..."
   python3 - <<PYEOF
@@ -190,15 +191,15 @@ meta = SampleMeta(
     },
     subsets={
         "$SUBSET": SubsetInfo(
-            r1="short_read/paired_end/exome/${ACCESSION}_R1_${SUBSET}.fastq.gz",
-            r2="short_read/paired_end/exome/${ACCESSION}_R2_${SUBSET}.fastq.gz",
+            r1="short_read/paired_end/exome/${FILE_KEY}_R1.fastq.gz",
+            r2="short_read/paired_end/exome/${FILE_KEY}_R2.fastq.gz",
             num_reads=$NUM_READS,
             available=True,
         )
     },
 )
 meta.write("$SAMPLE_META")
-print("[setup_core_test_data] Sample metadata written.")
+print("[setup_core_test_data] Sample metadata written: $SAMPLE_META")
 PYEOF
 else
   skip "$SAMPLE_META"
@@ -208,9 +209,9 @@ fi
 # 5. BWA mem + samtools sort/index
 # ---------------------------------------------------------------------------
 BWA_OUT_DIR="$CORE_DIR/pipeline_outputs/bwa_samtools"
-BAM="$BWA_OUT_DIR/${SAMPLE_KEY}_aligned_sorted.bam"
-SAM="$BWA_OUT_DIR/${SAMPLE_KEY}_aligned.sam"
-BWA_LOG="$BWA_OUT_DIR/${SAMPLE_KEY}_bwa_mem.log"
+BAM="$BWA_OUT_DIR/${FILE_KEY}_aligned_sorted.bam"
+SAM="$BWA_OUT_DIR/${FILE_KEY}_aligned.sam"
+BWA_LOG="$BWA_OUT_DIR/${FILE_KEY}_bwa_mem.log"
 
 if [[ ! -f "$BAM" ]]; then
   log "Running bwa mem + samtools sort/index..."
@@ -229,8 +230,8 @@ fi
 # 6. FreeBayes variant calling
 # ---------------------------------------------------------------------------
 FB_OUT_DIR="$CORE_DIR/pipeline_outputs/freebayes"
-VCF="$FB_OUT_DIR/${SAMPLE_KEY}_variants.vcf"
-FB_LOG="$FB_OUT_DIR/${SAMPLE_KEY}_freebayes.log"
+VCF="$FB_OUT_DIR/${FILE_KEY}_variants.vcf"
+FB_LOG="$FB_OUT_DIR/${FILE_KEY}_freebayes.log"
 
 if [[ ! -f "$VCF" ]]; then
   log "Running freebayes..."
@@ -273,10 +274,10 @@ python3 scripts/gen_provenance.py \
   --assay-type exome \
   --end-type paired_end \
   --database EBI_SRA \
-  --r1 "../../short_read/paired_end/exome/${ACCESSION}_R1_${SUBSET}.fastq.gz" \
-  --r2 "../../short_read/paired_end/exome/${ACCESSION}_R2_${SUBSET}.fastq.gz" \
-  --outputs "${SAMPLE_KEY}_aligned.sam:sam,${SAMPLE_KEY}_aligned_sorted.bam:bam:indexed,${SAMPLE_KEY}_aligned_sorted.bam.bai:bai" \
-  --out "$BWA_OUT_DIR/${SAMPLE_KEY}_provenance.yaml"
+  --r1 "../../short_read/paired_end/exome/${FILE_KEY}_R1.fastq.gz" \
+  --r2 "../../short_read/paired_end/exome/${FILE_KEY}_R2.fastq.gz" \
+  --outputs "${FILE_KEY}_aligned.sam:sam,${FILE_KEY}_aligned_sorted.bam:bam:indexed,${FILE_KEY}_aligned_sorted.bam.bai:bai" \
+  --out "$BWA_OUT_DIR/${FILE_KEY}_provenance.yaml"
 
 python3 scripts/gen_provenance.py \
   --pipeline freebayes \
@@ -286,12 +287,12 @@ python3 scripts/gen_provenance.py \
   --chromosome "$CHROM" \
   --reference "../../genome/${CHROM}.fa" \
   --reference-fai "../../genome/${CHROM}.fa.fai" \
-  --bam "../bwa_samtools/${SAMPLE_KEY}_aligned_sorted.bam" \
-  --bai "../bwa_samtools/${SAMPLE_KEY}_aligned_sorted.bam.bai" \
+  --bam "../bwa_samtools/${FILE_KEY}_aligned_sorted.bam" \
+  --bai "../bwa_samtools/${FILE_KEY}_aligned_sorted.bam.bai" \
   --upstream-pipelines bwa_samtools \
   --parameters="--min-mapping-quality:20,--min-base-quality:20,--min-alternate-fraction:0.2,--min-alternate-count:2" \
-  --outputs "${SAMPLE_KEY}_variants.vcf:vcf" \
-  --out "$FB_OUT_DIR/${SAMPLE_KEY}_provenance.yaml"
+  --outputs "${FILE_KEY}_variants.vcf:vcf" \
+  --out "$FB_OUT_DIR/${FILE_KEY}_provenance.yaml"
 
 log "Provenance files written."
 

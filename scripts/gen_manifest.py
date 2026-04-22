@@ -95,31 +95,31 @@ def _sequencing_data_section(core_dir: Path) -> dict:
                 except Exception as e:
                     print(f"[gen_manifest] WARN: could not parse {meta_file}: {e}", file=sys.stderr)
 
-            # If no sidecars, create a minimal entry from FASTQ filenames
+            # If no sidecars, create a minimal entry from FASTQ filenames.
+            # Expected naming: {sample}_{accession}_{subset}_R1.fastq.gz
             if not samples_list:
-                r1_files = sorted(assay_dir.glob("*_R1_*.fastq.gz"))
+                r1_files = sorted(assay_dir.glob("*_R1.fastq.gz"))
                 seen: set[str] = set()
                 for r1 in r1_files:
-                    # Expected naming: {accession}_R1_{subset}.fastq.gz
-                    parts = r1.stem.replace(".fastq", "").split("_R1_")
-                    if len(parts) != 2:
+                    base = r1.name.replace("_R1.fastq.gz", "")  # {sample}_{accession}_{subset}
+                    if base in seen:
                         continue
-                    accession, subset = parts
-                    if accession in seen:
-                        continue
-                    seen.add(accession)
-                    r2 = assay_dir / f"{accession}_R2_{subset}.fastq.gz"
+                    seen.add(base)
+                    # Infer subset from last underscore-delimited token (e.g. "100K")
+                    parts = base.rsplit("_", 1)
+                    subset = parts[-1] if len(parts) == 2 else ""
+                    r2 = assay_dir / f"{base}_R2.fastq.gz"
                     samples_list.append({
-                        "accession": accession,
+                        "file_key": base,
                         "subsets": {
                             subset: {
                                 "r1": f"short_read/{end_type}/{assay_type}/{r1.name}",
                                 "r2": (f"short_read/{end_type}/{assay_type}/{r2.name}"
                                        if r2.exists() else None),
-                                "num_reads": int(subset.rstrip("KMG")) * (
-                                    1000 if subset.endswith("K") else
-                                    1_000_000 if subset.endswith("M") else 1
-                                ),
+                                "num_reads": (
+                                    int(subset.rstrip("KMG")) *
+                                    (1_000_000 if subset.endswith("M") else 1000)
+                                ) if subset else 0,
                                 "available": r1.exists(),
                             }
                         },

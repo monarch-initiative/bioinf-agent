@@ -42,38 +42,38 @@ sequencing_data:
           r2: ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_2.fastq.gz
         subsets:
           100K:
-            r1: short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz
-            r2: short_read/paired_end/exome/SRR1517830_R2_100K.fastq.gz
+            r1: short_read/paired_end/exome/HG00096_SRR1517830_100K_R1.fastq.gz
+            r2: short_read/paired_end/exome/HG00096_SRR1517830_100K_R2.fastq.gz
             num_reads: 100000
             available: true
 pipeline_outputs:
   bwa_samtools:
     available: true
     samples:
-      HG00096_SRR1517830:
-        provenance: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_provenance.yaml
+      HG00096_SRR1517830_100K:
+        provenance: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_provenance.yaml
         files:
-        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_aligned.sam
+        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned.sam
           type: sam
-          size_bytes: 45425394
-        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_aligned_sorted.bam
+          size_bytes: 45425410
+        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam
           type: bam
-          size_bytes: 10185439
-        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_aligned_sorted.bam.bai
+          size_bytes: 10185440
+        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam.bai
           type: bai
           size_bytes: 52736
-        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_aligned_sorted.bam.bai
+        - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam.bai
           type: bai
           size_bytes: 52736
   freebayes:
     available: true
     samples:
-      HG00096_SRR1517830:
-        provenance: pipeline_outputs/freebayes/HG00096_SRR1517830_provenance.yaml
+      HG00096_SRR1517830_100K:
+        provenance: pipeline_outputs/freebayes/HG00096_SRR1517830_100K_provenance.yaml
         files:
-        - path: pipeline_outputs/freebayes/HG00096_SRR1517830_variants.vcf
+        - path: pipeline_outputs/freebayes/HG00096_SRR1517830_100K_variants.vcf
           type: vcf
-          size_bytes: 194142
+          size_bytes: 194135
           variant_records: 445
     upstream_pipelines:
     - bwa_samtools
