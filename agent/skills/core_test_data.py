@@ -2,8 +2,8 @@
 CoreTestData — download and register new sequencing data in core_test_data.
 
 No sub-agent loop needed: the flow is deterministic.
-  1. Download reads from EBI SRA to data/sources/{accession}/ (cache)
-  2. Subset to N reads into core_test_data_{build}/short_read/{end_type}/{assay_type}/
+  1. Stream-download + subset reads directly from EBI SRA (no intermediate cache)
+  2. Measure read length from the subset FASTQ
   3. Write SampleMeta YAML sidecar (or merge subset into existing)
   4. Rebuild manifest via gen_manifest.py
 """
@@ -38,12 +38,20 @@ def _ebi_urls(accession: str) -> dict[str, str]:
     }
 
 
-def _download(url: str, dest: Path) -> bool:
-    r = subprocess.run(
-        ["curl", "-fsSL", "--retry", "3", "-o", str(dest), url],
-        capture_output=True, timeout=600,
+def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
+    """Stream URL → gunzip → head → gzip → dst. No intermediate file on disk."""
+    lines = num_reads * 4
+    tmp = dst.with_suffix(".tmp.gz")
+    cmd = (
+        f"(set +o pipefail; curl -fsSL --retry 3 '{url}' | gunzip | head -{lines}) "
+        f"| gzip > {tmp}"
     )
-    return r.returncode == 0 and dest.exists() and dest.stat().st_size > 0
+    subprocess.run(cmd, shell=True, capture_output=True, executable="/bin/bash")
+    if tmp.exists() and tmp.stat().st_size > 0:
+        tmp.rename(dst)
+        return True
+    tmp.unlink(missing_ok=True)
+    return False
 
 
 def _measure_read_length(fastq_gz: Path) -> int | None:
@@ -56,15 +64,6 @@ def _measure_read_length(fastq_gz: Path) -> int | None:
         return None
 
 
-def _subset(src: Path, dst: Path, num_reads: int) -> bool:
-    lines = num_reads * 4
-    subprocess.run(
-        f"(set +o pipefail; gunzip -c {src} | head -{lines}) | gzip > {dst}",
-        shell=True, capture_output=True, executable="/bin/bash",
-    )
-    return dst.exists() and dst.stat().st_size > 0
-
-
 def add_core_test_data(
     config: dict,
     accession: str,
@@ -75,7 +74,7 @@ def add_core_test_data(
     subset: str = "100K",
 ) -> dict[str, Any]:
     """
-    Download, subset, and register a new sequencing dataset in core_test_data.
+    Stream-download, subset, and register a new sequencing dataset.
     Idempotent: skips any step whose output already exists.
     """
     if not sample:
@@ -87,12 +86,9 @@ def add_core_test_data(
     project_root = Path(__file__).parent.parent.parent.resolve()
     data_dir = project_root / config["paths"]["data_dir"]
 
-    core_dir   = data_dir / f"core_test_data_{genome_build}"
-    reads_dir  = core_dir / "short_read" / end_type / assay_type
-    sources_dir = data_dir / "sources" / accession
-
+    core_dir  = data_dir / f"core_test_data_{genome_build}"
+    reads_dir = core_dir / "short_read" / end_type / assay_type
     reads_dir.mkdir(parents=True, exist_ok=True)
-    sources_dir.mkdir(parents=True, exist_ok=True)
 
     sample_key = f"{sample}_{accession}"
     file_key   = f"{sample_key}_{subset_key}"
@@ -100,25 +96,17 @@ def add_core_test_data(
     log: list[str] = []
 
     # ------------------------------------------------------------------
-    # Download + subset
+    # Stream-download directly to subset files
     # ------------------------------------------------------------------
     if end_type == "paired_end":
-        full_r1   = sources_dir / f"{accession}_1.fastq.gz"
-        full_r2   = sources_dir / f"{accession}_2.fastq.gz"
         subset_r1 = reads_dir / f"{file_key}_R1.fastq.gz"
         subset_r2 = reads_dir / f"{file_key}_R2.fastq.gz"
 
-        for full, url, label in [(full_r1, urls["r1"], "R1"), (full_r2, urls["r2"], "R2")]:
-            if not full.exists():
-                log.append(f"Downloading {label} from EBI SRA...")
-                if not _download(url, full):
-                    return {"success": False, "error": f"Failed to download {label} from {url}"}
-
-        for full, subset_file, label in [(full_r1, subset_r1, "R1"), (full_r2, subset_r2, "R2")]:
-            if not subset_file.exists():
-                log.append(f"Subsetting {label} to {subset_key}...")
-                if not _subset(full, subset_file, num_reads):
-                    return {"success": False, "error": f"Failed to subset {label}"}
+        for dst, url, label in [(subset_r1, urls["r1"], "R1"), (subset_r2, urls["r2"], "R2")]:
+            if not dst.exists():
+                log.append(f"Streaming {label} ({subset_key} reads) from EBI SRA...")
+                if not _stream_subset(url, dst, num_reads):
+                    return {"success": False, "error": f"Failed to download/subset {label} from {url}"}
 
         read_length = _measure_read_length(subset_r1)
         r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
@@ -126,30 +114,28 @@ def add_core_test_data(
         r1_out, r2_out = str(subset_r1), str(subset_r2)
 
     else:  # single_end
-        full_r1   = sources_dir / f"{accession}_1.fastq.gz"
         subset_r1 = reads_dir / f"{file_key}_R1.fastq.gz"
 
-        if not full_r1.exists():
-            log.append("Downloading reads from EBI SRA...")
-            ok = _download(urls["r1"], full_r1) or _download(urls["single"], full_r1)
-            if not ok:
-                return {"success": False, "error": f"Failed to download reads for {accession}"}
-
         if not subset_r1.exists():
-            log.append(f"Subsetting to {subset_key}...")
-            if not _subset(full_r1, subset_r1, num_reads):
-                return {"success": False, "error": "Failed to subset reads"}
+            log.append(f"Streaming reads ({subset_key}) from EBI SRA...")
+            ok = _stream_subset(urls["r1"], subset_r1, num_reads) or \
+                 _stream_subset(urls["single"], subset_r1, num_reads)
+            if not ok:
+                return {"success": False, "error": f"Failed to download/subset reads for {accession}"}
 
         read_length = _measure_read_length(subset_r1)
         r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
         r2_rel = None
         r1_out, r2_out = str(subset_r1), None
 
+    if read_length:
+        log.append(f"Measured read length: {read_length}bp")
+
     # ------------------------------------------------------------------
     # SampleMeta sidecar (create or merge)
     # ------------------------------------------------------------------
-    meta_path = reads_dir / f"{sample_key}_sample_meta.yaml"
     subset_info = SubsetInfo(r1=r1_rel, r2=r2_rel, num_reads=num_reads, available=True)
+    meta_path = reads_dir / f"{sample_key}_sample_meta.yaml"
 
     if meta_path.exists():
         existing = SampleMeta.from_yaml(meta_path)
@@ -185,7 +171,6 @@ def add_core_test_data(
     else:
         log.append("Manifest rebuilt.")
 
-    # Check if genome exists for this build (informational warning only)
     genome_dir = core_dir / "genome"
     genome_fasta = next(genome_dir.glob("*.fa"), None) if genome_dir.exists() else None
 
@@ -200,6 +185,7 @@ def add_core_test_data(
         "end_type": end_type,
         "subset": subset_key,
         "num_reads": num_reads,
+        "read_length": read_length,
         "r1": r1_out,
         "r2": r2_out,
         "sample_meta": str(meta_path),
@@ -209,7 +195,6 @@ def add_core_test_data(
     if not genome_fasta:
         result["genome_warning"] = (
             f"No genome FASTA found for {genome_build} at {genome_dir}. "
-            f"Run scripts/setup_core_test_data.sh --genome-build {genome_build} --no-reads "
-            f"to bootstrap the reference genome and indexes."
+            f"Run scripts/setup_core_test_data.sh --genome-build {genome_build} first."
         )
     return result

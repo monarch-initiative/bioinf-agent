@@ -8,22 +8,20 @@ Conversational agent that installs bioinformatics tools/pipelines into isolated 
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Bootstrap core test data (run once — also installs the shared bioinf_validators env)
+# Bootstrap: install conda envs (bioinf_validators, bioinf_bwa_samtools) + download reference genome
 ./scripts/setup_core_test_data.sh
 
-# Start conversational agent
+# Start the agent and add test data + pipelines
 python -m agent.main
-
-# Single-shot mode
-python -m agent.main --once "install latest bwa"
 ```
 
 ## Example conversations
 
 ```
+You: add test data: SRR1517830, exome, hg38
+You: install bwa_samtools and freebayes as my wgs_variant_pipeline
 You: install latest bwa
 You: install STAR version 2.7.11b and featureCounts as my rnaseq_pipeline
-You: install samtools, bwa-mem2, and GATK as wgs_variant_pipeline
 You: what test data is available?
 You: what pipelines have been installed?
 ```
