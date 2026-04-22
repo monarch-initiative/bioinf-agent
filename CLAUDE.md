@@ -8,8 +8,8 @@ Conversational agent that installs bioinformatics tools/pipelines into isolated 
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Bootstrap reference genomes and test data (run once)
-./scripts/bootstrap_references.sh
+# Bootstrap core test data (run once — downloads hg38/chr22, exome reads, runs bwa+freebayes)
+./scripts/setup_core_test_data.sh
 
 # Start conversational agent
 python -m agent.main
