@@ -17,6 +17,52 @@ import yaml
 
 OUTER_TOOLS = [
     {
+        "name": "add_core_test_data",
+        "description": (
+            "Download and register a new sequencing dataset from EBI SRA into core_test_data "
+            "so it is available as test data for pipeline installations. "
+            "Downloads the full run to a local cache, subsets to a manageable read count, "
+            "writes a validated SampleMeta sidecar, and rebuilds the manifest. "
+            "Use this when the user wants to add a new sample, assay type, or organism "
+            "to the test data pool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "accession": {
+                    "type": "string",
+                    "description": "SRA accession (SRR/ERR/DRR prefix), e.g. SRR1517830",
+                },
+                "assay_type": {
+                    "type": "string",
+                    "enum": ["exome", "wgs", "rnaseq", "chipseq", "atacseq", "hic", "amplicon"],
+                    "description": "Type of sequencing assay",
+                },
+                "end_type": {
+                    "type": "string",
+                    "enum": ["paired_end", "single_end"],
+                    "description": "Read layout (default: paired_end)",
+                },
+                "genome_build": {
+                    "type": "string",
+                    "description": "Reference genome build, e.g. hg38, mm39 (default: hg38)",
+                },
+                "sample": {
+                    "type": "string",
+                    "description": (
+                        "Sample ID, e.g. HG00096. Defaults to the accession if not provided. "
+                        "Used as a prefix in all output filenames."
+                    ),
+                },
+                "subset": {
+                    "type": "string",
+                    "description": "Read count to subset to: 10K, 50K, 100K (default), 500K, 1M",
+                },
+            },
+            "required": ["accession", "assay_type"],
+        },
+    },
+    {
         "name": "install_pipeline",
         "description": (
             "Install one or more bioinformatics tools as a named pipeline. "
@@ -102,6 +148,8 @@ OUTER_TOOLS = [
 # ---------------------------------------------------------------------------
 
 def dispatch_outer_tool(name: str, inputs: dict, config: dict) -> dict[str, Any]:
+    if name == "add_core_test_data":
+        return _tool_add_core_test_data(inputs, config)
     if name == "install_pipeline":
         return _tool_install_pipeline(inputs, config)
     if name == "list_available_resources":
@@ -114,6 +162,19 @@ def dispatch_outer_tool(name: str, inputs: dict, config: dict) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
+
+def _tool_add_core_test_data(inputs: dict, config: dict) -> dict:
+    from agent.skills.core_test_data import add_core_test_data
+    return add_core_test_data(
+        config=config,
+        accession=inputs["accession"],
+        assay_type=inputs["assay_type"],
+        end_type=inputs.get("end_type", "paired_end"),
+        genome_build=inputs.get("genome_build", "hg38"),
+        sample=inputs.get("sample", ""),
+        subset=inputs.get("subset", "100K"),
+    )
+
 
 def _tool_install_pipeline(inputs: dict, config: dict) -> dict:
     from agent.skills.install_pipeline import InstallPipelineSkill
@@ -233,29 +294,33 @@ def _tool_list_resources(inputs: dict, config: dict) -> dict:
 
 
 def _tool_list_pipelines(config: dict) -> dict:
+    from agent.models.core_data import PipelineSpec
+
     pipelines_dir = Path(config["paths"]["pipelines_dir"])
     pipelines = []
 
     for spec_file in sorted(pipelines_dir.glob("*.yaml")):
-        with open(spec_file) as f:
-            spec = yaml.safe_load(f)
-        pipelines.append(
-            {
-                "name": spec.get("name"),
-                "description": spec.get("description"),
-                "conda_env": spec.get("conda_env"),
-                "docker_image": spec.get("docker_image"),
-                "status": spec.get("status"),
-                "created": spec.get("created"),
-                "steps": [
-                    {
-                        "package": s.get("package"),
-                        "version": s.get("version"),
-                        "validated": s.get("test_run", {}).get("validation") == "passed",
-                    }
-                    for s in spec.get("steps", [])
+        try:
+            pspec = PipelineSpec.from_yaml(spec_file)
+            docker = pspec.docker
+            pipelines.append({
+                "name": pspec.pipeline_name,
+                "description": pspec.description,
+                "conda_env": pspec.conda_env,
+                "status": pspec.status,
+                "created_at": pspec.created_at,
+                "docker_image": docker.image_tag if docker else None,
+                "docker_built": docker.build_success if docker else False,
+                "packages": [
+                    {"name": p.name, "version": p.resolved_version or p.requested_version}
+                    for p in pspec.packages if p.name != "conda-pack"
                 ],
-            }
-        )
+                "steps_validated": sum(
+                    1 for s in pspec.pipeline_steps if s.status == "validated"
+                ),
+                "steps_total": len(pspec.pipeline_steps),
+            })
+        except Exception as e:
+            pipelines.append({"file": spec_file.name, "error": str(e)})
 
     return {"pipelines": pipelines, "count": len(pipelines)}
