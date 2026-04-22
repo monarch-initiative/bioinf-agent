@@ -191,11 +191,18 @@ class TestRunner:
         return None
 
     def _index_fasta(self, out_dir: Path, fasta_path: Path):
-        subprocess.run(f"samtools faidx {fasta_path}", shell=True, capture_output=True)
+        samtools = self._resolve_tool("samtools")
+        subprocess.run(f"{samtools} faidx {fasta_path}", shell=True, capture_output=True)
         subprocess.run(
-            f"samtools dict {fasta_path} > {out_dir / fasta_path.stem}.dict",
+            f"{samtools} dict {fasta_path} > {out_dir / fasta_path.stem}.dict",
             shell=True, capture_output=True,
         )
+
+    def _resolve_tool(self, tool: str) -> str:
+        envs_dir = self.project_root / self.config["paths"]["conda_envs_prefix"]
+        validators_env = self.config["conda"]["env_prefix"] + "validators"
+        bin_path = envs_dir / validators_env / "bin" / tool
+        return str(bin_path) if bin_path.exists() else tool
 
     def _download_file(self, url: str, dest: Path) -> bool:
         ret = subprocess.run(
