@@ -59,8 +59,8 @@ def _measure_read_length(fastq_gz: Path) -> int | None:
 def _subset(src: Path, dst: Path, num_reads: int) -> bool:
     lines = num_reads * 4
     subprocess.run(
-        f"{{ gunzip -c {src} || true; }} | head -{lines} | gzip > {dst}",
-        shell=True, capture_output=True,
+        f"(set +o pipefail; gunzip -c {src} | head -{lines}) | gzip > {dst}",
+        shell=True, capture_output=True, executable="/bin/bash",
     )
     return dst.exists() and dst.stat().st_size > 0
 
