@@ -28,6 +28,9 @@ data/core_test_data_*/pipeline_outputs/**/*.bai
 data/core_test_data_*/pipeline_outputs/**/*.sam
 data/core_test_data_*/pipeline_outputs/**/*.vcf
 
+# Raw source reads cache (large, re-downloadable)
+data/sources/
+
 # Legacy test_data dirs (kept temporarily during migration, not tracked)
 data/test_data/
 
