@@ -31,7 +31,7 @@ data/core_test_data_*/pipeline_outputs/**/*.vcf
 # Raw source reads cache (large, re-downloadable)
 data/sources/
 
-# Legacy test_data dirs (kept temporarily during migration, not tracked)
+# Old test_data dir — superseded by data/core_test_data_{build}/
 data/test_data/
 
 # Generated Docker artifacts (large)
