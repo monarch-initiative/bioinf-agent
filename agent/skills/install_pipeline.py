@@ -439,6 +439,8 @@ class InstallPipelineSkill:
               how it was tested, and the Docker image tag.
             - The spec MUST use these exact top-level field names (PipelineSpec model):
               - `pipeline_name` (not "name")
+              - `description` (REQUIRED — one-sentence summary of what this pipeline does)
+              - `conda_env` (REQUIRED — the conda env name, e.g. "bioinf_plink")
               - `created_at` (not "created"), ISO date string
               - `status`: "fully_validated" if all steps passed, else "failed"
               - `packages`: list of package dicts with `name`, `resolved_version`, `channel`,
