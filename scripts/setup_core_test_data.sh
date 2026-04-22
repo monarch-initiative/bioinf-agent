@@ -211,14 +211,14 @@ if [[ "$END_TYPE" == "paired_end" ]]; then
 
   if [[ ! -f "$SUBSET_R1" ]]; then
     log "Subsetting R1 to ${SUBSET} reads..."
-    { gunzip -c "$FULL_R1" || true; } | head -"$LINES" | gzip > "$SUBSET_R1"
+    (set +o pipefail; gunzip -c "$FULL_R1" | head -"$LINES") | gzip > "$SUBSET_R1"
   else
     skip "$SUBSET_R1"
   fi
 
   if [[ ! -f "$SUBSET_R2" ]]; then
     log "Subsetting R2 to ${SUBSET} reads..."
-    { gunzip -c "$FULL_R2" || true; } | head -"$LINES" | gzip > "$SUBSET_R2"
+    (set +o pipefail; gunzip -c "$FULL_R2" | head -"$LINES") | gzip > "$SUBSET_R2"
   else
     skip "$SUBSET_R2"
   fi
@@ -231,12 +231,13 @@ else  # single_end
   fi
   if [[ ! -f "$SUBSET_R1" ]]; then
     log "Subsetting to ${SUBSET} reads..."
-    { gunzip -c "$FULL_R1" || true; } | head -"$LINES" | gzip > "$SUBSET_R1"
+    (set +o pipefail; gunzip -c "$FULL_R1" | head -"$LINES") | gzip > "$SUBSET_R1"
   fi
 fi
 
 # Measure read length from the subset FASTQ (line 2 of record 1)
-READ_LENGTH=$(gunzip -c "$SUBSET_R1" 2>/dev/null | awk 'NR==2{print length; exit}')
+# set +o pipefail: awk exits after line 2 sending SIGPIPE to gunzip; suppress that
+READ_LENGTH=$(set +o pipefail; gunzip -c "$SUBSET_R1" 2>/dev/null | awk 'NR==2{print length; exit}') || true
 log "Measured read length: ${READ_LENGTH}bp"
 
 # Write sample metadata sidecar (model-validated via Python)
