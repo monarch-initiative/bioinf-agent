@@ -1,13 +1,19 @@
 """
 OutputValidator — verify bioinformatics output files are valid.
 
-Each check: file exists, non-empty, structurally parseable.
-Checks are intentionally lightweight (no full parse of multi-GB files).
+Tool resolution order: pipeline conda env → bioinf_validators env → system PATH.
+
+Preferred validators per type:
+  SAM/BAM        samtools quickcheck + flagstat
+  VCF/BCF        bcftools stats
+  FASTQ/FASTA    seqkit stats -T
+  BED/GTF/counts text parsing (no universal lightweight tool)
+  BigWig         magic bytes
 """
 
+from __future__ import annotations
+
 import gzip
-import os
-import struct
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +24,8 @@ class OutputValidator:
         self.config = config
         self._project_root = Path(__file__).parent.parent.parent.resolve()
         self._envs_dir = self._project_root / config["paths"]["conda_envs_prefix"]
+        self._validators_env = config["conda"]["env_prefix"] + "validators"
+        self._env_name: str | None = None
 
     def validate(self, file_path: str, expected_type: str, env_name: str | None = None) -> dict[str, Any]:
         path = Path(file_path)
@@ -29,19 +37,19 @@ class OutputValidator:
             return {"passed": False, "file": file_path, "error": "File is empty"}
 
         dispatch = {
-            "sam": self._check_sam,
-            "bam": self._check_bam,
-            "fastq": self._check_fastq,
-            "fasta": self._check_fasta,
-            "vcf": self._check_vcf,
-            "bcf": self._check_bcf,
-            "bed": self._check_bed,
-            "bigwig": self._check_bigwig,
+            "sam":           self._check_sam,
+            "bam":           self._check_sam,   # samtools handles both
+            "fastq":         self._check_fastq,
+            "fasta":         self._check_fasta,
+            "vcf":           self._check_vcf,
+            "bcf":           self._check_vcf,   # bcftools handles both
+            "bed":           self._check_bed,
+            "bigwig":        self._check_bigwig,
             "counts_matrix": self._check_counts_matrix,
-            "gtf": self._check_gtf,
-            "gff": self._check_gtf,
-            "log": self._check_log,
-            "any": self._check_any,
+            "gtf":           self._check_gtf,
+            "gff":           self._check_gtf,
+            "log":           self._check_log,
+            "any":           self._check_any,
         }
 
         checker = dispatch.get(expected_type.lower(), self._check_any)
@@ -56,34 +64,31 @@ class OutputValidator:
     # -----------------------------------------------------------------------
 
     def _check_sam(self, path: Path) -> dict:
-        lines = self._head_lines(path, 20)
-        has_header = any(line.startswith("@") for line in lines)
-        data_lines = [l for l in lines if l and not l.startswith("@")]
-        if not data_lines and not has_header:
-            return {"passed": False, "error": "No SAM header or alignment lines found"}
-        # A valid SAM data line has >= 11 tab-separated fields
-        if data_lines:
-            fields = data_lines[0].split("\t")
-            if len(fields) < 11:
-                return {"passed": False, "error": f"SAM line has only {len(fields)} fields"}
-        return {"passed": True, "has_header": has_header, "sample_lines": len(data_lines)}
-
-    def _check_bam(self, path: Path) -> dict:
+        """SAM and BAM — samtools quickcheck + flagstat."""
         ret = self._run_tool(["samtools", "quickcheck", str(path)], timeout=60)
         if ret.returncode != 0:
-            # samtools not available — fall back to BAM magic bytes check
-            with open(path, "rb") as f:
-                magic = f.read(4)
-            if magic[:3] == b"\x1f\x8b\x08":
-                return {"passed": True, "note": "BAM magic OK (samtools unavailable for full check)"}
-            return {"passed": False, "error": f"samtools quickcheck failed: {ret.stderr[:200]}"}
-
+            return self._sam_text_fallback(path)
         stat = self._run_tool(["samtools", "flagstat", str(path)], timeout=120)
         if stat.returncode == 0:
             return {"passed": True, "flagstat": stat.stdout[:500]}
-        return {"passed": True, "note": "BAM quickcheck passed"}
+        return {"passed": True, "note": "samtools quickcheck passed"}
+
+    def _sam_text_fallback(self, path: Path) -> dict:
+        lines = self._head_lines(path, 20)
+        has_header = any(l.startswith("@") for l in lines)
+        data_lines = [l for l in lines if l and not l.startswith("@")]
+        if not data_lines and not has_header:
+            return {"passed": False, "error": "No SAM header or alignment lines found"}
+        if data_lines and len(data_lines[0].split("\t")) < 11:
+            return {"passed": False, "error": f"SAM line has only {len(data_lines[0].split(chr(9)))} fields"}
+        return {"passed": True, "has_header": has_header, "note": "samtools unavailable — text check only"}
 
     def _check_fastq(self, path: Path) -> dict:
+        """FASTQ — seqkit stats for rich metadata, 4-line text fallback."""
+        ret = self._run_tool(["seqkit", "stats", "-T", str(path)], timeout=60)
+        if ret.returncode == 0:
+            return self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
+        # Fallback: manual 4-line check
         lines = self._head_lines(path, 8)
         if len(lines) < 4:
             return {"passed": False, "error": "Fewer than 4 lines in FASTQ"}
@@ -93,57 +98,49 @@ class OutputValidator:
             return {"passed": False, "error": "FASTQ line 3 should start with '+'"}
         if len(lines[1]) != len(lines[3]):
             return {"passed": False, "error": "Sequence and quality length mismatch"}
-        return {"passed": True, "sample_read_length": len(lines[1])}
+        return {"passed": True, "read_length": len(lines[1]), "note": "seqkit unavailable — text check only"}
 
     def _check_fasta(self, path: Path) -> dict:
+        """FASTA — seqkit stats, header text fallback."""
+        ret = self._run_tool(["seqkit", "stats", "-T", str(path)], timeout=60)
+        if ret.returncode == 0:
+            return self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
         lines = self._head_lines(path, 5)
         if not lines:
             return {"passed": False, "error": "Empty FASTA"}
         if not lines[0].startswith(">"):
             return {"passed": False, "error": "FASTA does not start with '>'"}
-        return {"passed": True, "first_header": lines[0][:80]}
+        return {"passed": True, "first_header": lines[0][:80], "note": "seqkit unavailable — text check only"}
 
     def _check_vcf(self, path: Path) -> dict:
-        lines = self._head_lines(path, 30)
-        has_meta = any(l.startswith("##") for l in lines)
-        has_header = any(l.startswith("#CHROM") for l in lines)
-        data_lines = [l for l in lines if l and not l.startswith("#")]
-        if not has_meta:
-            return {"passed": False, "error": "VCF missing ## meta lines"}
-        if data_lines:
-            fields = data_lines[0].split("\t")
-            if len(fields) < 8:
-                return {
-                    "passed": False,
-                    "error": f"VCF data line has only {len(fields)} fields (need ≥8)",
-                }
-        return {
-            "passed": True,
-            "has_column_header": has_header,
-            "data_lines_in_sample": len(data_lines),
-        }
-
-    def _check_bcf(self, path: Path) -> dict:
+        """VCF and BCF — bcftools stats, text fallback for plain VCF."""
         ret = self._run_tool(["bcftools", "stats", str(path)], timeout=60)
         if ret.returncode == 0:
-            return {"passed": True, "note": "bcftools stats OK"}
-        with open(path, "rb") as f:
-            magic = f.read(3)
-        if magic == b"BCF":
-            return {"passed": True, "note": "BCF magic OK (bcftools unavailable for full check)"}
-        return {"passed": False, "error": ret.stderr[:200]}
+            return {"passed": True, "bcftools_stats": self._parse_bcftools_sn(ret.stdout)}
+        # Fallback: text check (plain VCF, bcftools not available)
+        lines = self._head_lines(path, 30)
+        if not any(l.startswith("##") for l in lines):
+            return {"passed": False, "error": "VCF missing ## meta lines"}
+        data_lines = [l for l in lines if l and not l.startswith("#")]
+        if data_lines and len(data_lines[0].split("\t")) < 8:
+            return {"passed": False, "error": f"VCF data line has only {len(data_lines[0].split(chr(9)))} fields (need ≥8)"}
+        return {
+            "passed": True,
+            "has_column_header": any(l.startswith("#CHROM") for l in lines),
+            "data_lines_in_sample": len(data_lines),
+            "note": "bcftools unavailable — text check only",
+        }
 
     def _check_bed(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
-        data_lines = [l for l in lines if l and not l.startswith("#") and not l.startswith("track") and not l.startswith("browser")]
-        if not data_lines:
+        data = [l for l in lines if l and not l.startswith(("#", "track", "browser"))]
+        if not data:
             return {"passed": False, "error": "No BED data lines found"}
-        fields = data_lines[0].split("\t")
+        fields = data[0].split("\t")
         if len(fields) < 3:
             return {"passed": False, "error": f"BED line has only {len(fields)} fields (need ≥3)"}
         try:
-            int(fields[1])
-            int(fields[2])
+            int(fields[1]); int(fields[2])
         except ValueError:
             return {"passed": False, "error": "BED start/end are not integers"}
         return {"passed": True, "fields_per_line": len(fields)}
@@ -151,18 +148,12 @@ class OutputValidator:
     def _check_bigwig(self, path: Path) -> dict:
         with open(path, "rb") as f:
             magic = f.read(4)
-        # BigWig magic: 0x888FFC26 (little-endian) or 0x26FC8F88 (big-endian)
-        bw_magic_le = b"\x26\xfc\x8f\x88"
-        bw_magic_be = b"\x88\x8f\xfc\x26"
-        if magic in (bw_magic_le, bw_magic_be):
+        if magic in (b"\x26\xfc\x8f\x88", b"\x88\x8f\xfc\x26"):
             return {"passed": True}
         return {"passed": False, "error": "BigWig magic bytes not found"}
 
     def _check_counts_matrix(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
-        if not lines:
-            return {"passed": False, "error": "Empty counts file"}
-        # Skip comment lines (featureCounts starts with '#')
         data = [l for l in lines if l and not l.startswith("#")]
         if not data:
             return {"passed": False, "error": "No non-comment lines found"}
@@ -193,11 +184,14 @@ class OutputValidator:
     # -----------------------------------------------------------------------
 
     def _run_tool(self, cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-        """Run a tool, preferring the binary inside the active conda env if set."""
-        if self._env_name:
-            env_bin = self._envs_dir / self._env_name / "bin" / cmd[0]
-            if env_bin.exists():
-                cmd = [str(env_bin)] + cmd[1:]
+        """Resolve binary: pipeline env → validators env → system PATH."""
+        tool = cmd[0]
+        for env in [self._env_name, self._validators_env]:
+            if env:
+                bin_path = self._envs_dir / env / "bin" / tool
+                if bin_path.exists():
+                    cmd = [str(bin_path)] + cmd[1:]
+                    break
         try:
             return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
@@ -205,11 +199,42 @@ class OutputValidator:
 
     def _head_lines(self, path: Path, n: int) -> list[str]:
         try:
-            if path.suffix in (".gz", ".bgz"):
-                with gzip.open(path, "rt", errors="replace") as f:
-                    return [f.readline().rstrip() for _ in range(n)]
-            else:
-                with open(path, errors="replace") as f:
-                    return [f.readline().rstrip() for _ in range(n)]
+            opener = gzip.open if path.suffix in (".gz", ".bgz") else open
+            with opener(path, "rt", errors="replace") as f:
+                return [f.readline().rstrip() for _ in range(n)]
         except Exception:
             return []
+
+    @staticmethod
+    def _parse_seqkit_stats(stdout: str) -> dict | None:
+        """Parse `seqkit stats -T` TSV: file format type num_seqs sum_len min_len avg_len max_len"""
+        lines = stdout.strip().splitlines()
+        if len(lines) < 2:
+            return None
+        fields = lines[1].split("\t")
+        try:
+            return {
+                "passed": True,
+                "num_seqs": int(fields[3]),
+                "sum_len":  int(fields[4]),
+                "min_len":  int(fields[5]),
+                "avg_len":  float(fields[6]),
+                "max_len":  int(fields[7]),
+            }
+        except (IndexError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_bcftools_sn(stdout: str) -> dict:
+        """Extract SN (summary numbers) section from bcftools stats output."""
+        stats: dict[str, Any] = {}
+        for line in stdout.splitlines():
+            if line.startswith("SN"):
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    key = parts[2].rstrip(":").strip()
+                    try:
+                        stats[key] = int(parts[3])
+                    except ValueError:
+                        stats[key] = parts[3].strip()
+        return stats

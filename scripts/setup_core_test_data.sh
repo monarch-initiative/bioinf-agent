@@ -102,8 +102,20 @@ if [[ -z "$CONDA_EXE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 0. Auto-install conda envs if missing (only when pipeline steps will run)
+# 0. Auto-install conda envs if missing
 # ---------------------------------------------------------------------------
+VALIDATORS_ENV="$PROJECT_ROOT/envs/bioinf_validators"
+if [[ ! -d "$VALIDATORS_ENV" ]]; then
+  log "bioinf_validators env not found — installing (samtools + bcftools + seqkit)..."
+  conda create -y -p "$VALIDATORS_ENV" \
+    -c bioconda -c conda-forge \
+    samtools bcftools seqkit conda-pack 'python=3.11' \
+    2>&1 | grep -E "^(Preparing|Downloading|Executing|done|ERROR)" || true
+  log "bioinf_validators installed."
+else
+  skip "bioinf_validators env (already at $VALIDATORS_ENV)"
+fi
+
 if [[ "$RUN_PIPELINE" == "true" ]]; then
   if [[ ! -d "$BWA_ENV" ]]; then
     log "bioinf_bwa_samtools env not found — installing (bwa + samtools)..."
