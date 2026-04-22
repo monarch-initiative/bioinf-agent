@@ -244,6 +244,89 @@ SUB_TOOLS = [
             "required": ["spec"],
         },
     },
+    {
+        "name": "write_pipeline_provenance",
+        "description": (
+            "Write a validated provenance YAML for a completed pipeline run using the shared "
+            "core data model. Call this after validate_output succeeds. "
+            "The provenance file is written as {output_dir}/{sample_key}_provenance.yaml. "
+            "All input paths (reference, reads, bam) must be absolute — relative paths inside "
+            "the YAML are computed automatically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pipeline": {
+                    "type": "string",
+                    "description": "Pipeline name, e.g. 'bwa_samtools', 'freebayes', 'star'",
+                },
+                "conda_env_path": {
+                    "type": "string",
+                    "description": "Absolute path to the conda environment directory",
+                },
+                "pipeline_spec_path": {
+                    "type": "string",
+                    "description": "Absolute path to the pipeline spec YAML (config/pipelines/*.yaml)",
+                },
+                "genome_build": {"type": "string"},
+                "chromosome":   {"type": "string", "description": "e.g. 'chr22' or 'all'"},
+                "reference_path": {
+                    "type": "string",
+                    "description": "Absolute path to reference FASTA",
+                },
+                "reads": {
+                    "type": "object",
+                    "description": (
+                        "Read inputs for alignment pipelines. "
+                        "Fields: r1 (abs path), r2 (abs path, optional), sample, accession, "
+                        "subset (e.g. '100K'), num_reads (int), assay_type, end_type, database"
+                    ),
+                },
+                "bam_input": {
+                    "type": "object",
+                    "description": (
+                        "BAM inputs for variant-calling pipelines. "
+                        "Fields: bam (abs path), bai (abs path)"
+                    ),
+                },
+                "upstream_pipelines": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Names of upstream pipelines whose outputs were consumed",
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Key-value pairs of parameters passed to the tool",
+                },
+                "output_files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file":    {"type": "string", "description": "Filename (no directory)"},
+                            "type":    {"type": "string", "description": "fastq|bam|sam|bai|vcf|..."},
+                            "indexed": {"type": "boolean"},
+                        },
+                        "required": ["file", "type"],
+                    },
+                    "description": "Output files produced by this pipeline run",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Absolute path to the directory where outputs were written",
+                },
+                "sample_key": {
+                    "type": "string",
+                    "description": "'{sample}_{accession}' key, e.g. 'HG00096_SRR1517830'",
+                },
+            },
+            "required": [
+                "pipeline", "conda_env_path", "pipeline_spec_path",
+                "genome_build", "chromosome", "reference_path",
+                "output_files", "output_dir", "sample_key",
+            ],
+        },
+    },
 ]
 
 _TOOL_PHASES = {
@@ -255,8 +338,9 @@ _TOOL_PHASES = {
     "download_resource":       "Phase 3 · Test data",
     "run_command":             "Phase 4 · Execution",
     "validate_output":         "Phase 4 · Validation",
-    "build_docker_image":      "Phase 5 · Docker",
-    "save_pipeline_spec":      "Phase 6 · Save",
+    "build_docker_image":          "Phase 5 · Docker",
+    "save_pipeline_spec":          "Phase 6 · Save",
+    "write_pipeline_provenance":   "Phase 6 · Save",
 }
 
 # ---------------------------------------------------------------------------
@@ -505,6 +589,9 @@ class InstallPipelineSkill:
         if name == "save_pipeline_spec":
             return self._save_spec(inputs["spec"])
 
+        if name == "write_pipeline_provenance":
+            return self._write_provenance(inputs)
+
         return {"error": f"Unknown sub-tool: {name}"}
 
     # -----------------------------------------------------------------------
@@ -544,6 +631,86 @@ class InstallPipelineSkill:
 
         return {"saved_yaml": str(yaml_path), "saved_html": str(html_path)}
 
+    def _write_provenance(self, inputs: dict) -> dict:
+        from agent.models.core_data import (
+            BamInput, GenomeRef, OutputFile, Provenance, ReadInput,
+        )
+        from datetime import date
+
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        output_dir = Path(inputs["output_dir"])
+        sample_key = inputs["sample_key"]
+        prov_path = output_dir / f"{sample_key}_provenance.yaml"
+
+        def _rel(abs_path: str) -> str:
+            return str(Path(abs_path).resolve().relative_to(output_dir.resolve()))
+
+        genome = GenomeRef(
+            genome_build=inputs["genome_build"],
+            chromosome_subset=inputs["chromosome"],
+            reference=_rel(inputs["reference_path"]),
+            reference_fai=_rel(inputs["reference_path"] + ".fai"),
+        )
+
+        reads = None
+        if inputs.get("reads"):
+            r = inputs["reads"]
+            reads = [ReadInput(
+                read_type=r.get("read_type", "short_read"),
+                end_type=r.get("end_type", "paired_end"),
+                assay_type=r.get("assay_type", "exome"),
+                subset=r.get("subset", ""),
+                num_reads=int(r.get("num_reads", 0)),
+                r1=_rel(r["r1"]),
+                r2=_rel(r["r2"]) if r.get("r2") else None,
+                sample=r.get("sample", ""),
+                accession=r.get("accession", ""),
+                database=r.get("database", "EBI_SRA"),
+            )]
+
+        bam_input = None
+        if inputs.get("bam_input"):
+            b = inputs["bam_input"]
+            bam_input = BamInput(bam=_rel(b["bam"]), bai=_rel(b["bai"]))
+
+        pipeline_spec_path = Path(inputs["pipeline_spec_path"]).resolve()
+        try:
+            spec_rel = str(pipeline_spec_path.relative_to(output_dir.resolve()))
+        except ValueError:
+            spec_rel = str(pipeline_spec_path)
+
+        outputs = [
+            OutputFile(
+                file=f["file"],
+                type=f["type"],
+                indexed=f.get("indexed", False),
+            )
+            for f in inputs.get("output_files", [])
+        ]
+
+        # Discover tool versions from the conda env
+        conda_env_path = inputs["conda_env_path"]
+        from scripts.gen_provenance import _PIPELINE_TOOLS, _discover_version
+        tools = _PIPELINE_TOOLS.get(inputs["pipeline"], [])
+        tool_versions = {t: _discover_version(conda_env_path, t) for t in tools}
+
+        prov = Provenance(
+            pipeline=inputs["pipeline"],
+            pipeline_spec=spec_rel,
+            conda_env=Path(conda_env_path).name,
+            created_at=str(date.today()),
+            tool_versions=tool_versions,
+            genome=genome,
+            reads=reads,
+            bam_input=bam_input,
+            upstream_pipelines=inputs.get("upstream_pipelines", []),
+            parameters=inputs.get("parameters") or None,
+            outputs=outputs,
+        )
+
+        written = prov.write(prov_path)
+        return {"written": str(written), "sample_key": sample_key}
+
 
 _TOOL_LABELS = {
     "search_package":           lambda i: i.get("package_name", ""),
@@ -554,8 +721,9 @@ _TOOL_LABELS = {
     "download_resource":        lambda i: i.get("resource_id", ""),
     "run_command":              lambda i: (i.get("command", "")[:60] + "…") if len(i.get("command", "")) > 60 else i.get("command", ""),
     "validate_output":          lambda i: Path(i.get("file_path", "")).name + f" [{i.get('expected_type','')}]",
-    "build_docker_image":       lambda i: i.get("pipeline_name", ""),
-    "save_pipeline_spec":       lambda i: i.get("spec", {}).get("pipeline_name", ""),
+    "build_docker_image":           lambda i: i.get("pipeline_name", ""),
+    "save_pipeline_spec":           lambda i: i.get("spec", {}).get("pipeline_name", ""),
+    "write_pipeline_provenance":    lambda i: i.get("sample_key", ""),
 }
 
 

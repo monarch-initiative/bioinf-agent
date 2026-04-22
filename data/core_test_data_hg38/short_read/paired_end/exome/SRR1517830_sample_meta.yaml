@@ -1,0 +1,19 @@
+sample: HG00096
+accession: SRR1517830
+read_type: short_read
+end_type: paired_end
+assay_type: exome
+sex: male
+database: EBI_SRA
+protocol: PCR-free
+capture: whole_exome
+read_length: 150
+source_urls:
+  r1: ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_1.fastq.gz
+  r2: ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_2.fastq.gz
+subsets:
+  100K:
+    r1: short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz
+    r2: short_read/paired_end/exome/SRR1517830_R2_100K.fastq.gz
+    num_reads: 100000
+    available: true
