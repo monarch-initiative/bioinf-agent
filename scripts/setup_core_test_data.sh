@@ -187,9 +187,9 @@ fi
 # ---------------------------------------------------------------------------
 # 7. Write provenance files
 # ---------------------------------------------------------------------------
-BWA_VER=$("$BWA_ENV/bin/bwa" 2>&1 | grep "Version:" | awk '{print $2}' || echo "unknown")
+BWA_VER=$({ "$BWA_ENV/bin/bwa" 2>&1 || true; } | grep "Version:" | awk '{print $2}')
 SAMTOOLS_VER=$("$BWA_ENV/bin/samtools" --version | head -1 | awk '{print $2}')
-FB_VER=$("$FREEBAYES_ENV/bin/freebayes" --version 2>&1 | grep "version:" | awk '{print $2}' || echo "1.3.10")
+FB_VER=$("$FREEBAYES_ENV/bin/freebayes" --version 2>&1 | grep "version:" | awk '{print $2}')
 TODAY=$(date +%Y-%m-%d)
 
 cat > "$BWA_OUT_DIR/provenance.yaml" <<PROVEOF

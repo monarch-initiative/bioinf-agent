@@ -1,7 +1,7 @@
 pipeline: bwa_samtools
 pipeline_spec: ../../../../../config/pipelines/bwa_samtools.yaml
 conda_env: bioinf_bwa_samtools
-created_at: '2025-04-20'
+created_at: '2026-04-21'
 
 tool_versions:
   bwa: 0.7.19-r1273
@@ -29,18 +29,8 @@ upstream_pipelines: []
 outputs:
   - file: aligned.sam
     type: sam
-    size_bytes: 45425260
-    lines: 200028
   - file: aligned_sorted.bam
     type: bam
-    size_bytes: 10185369
     indexed: true
   - file: aligned_sorted.bam.bai
     type: bai
-
-validation:
-  passed: true
-  total_reads: 200024
-  mapped_reads: 4510
-  mapping_rate_pct: 2.25
-  note: Low mapping rate expected — reads from whole exome aligned to chr22 only
