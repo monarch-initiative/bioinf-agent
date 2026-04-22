@@ -223,17 +223,18 @@ else  # single_end
   fi
 fi
 
+# Measure read length from the subset FASTQ (line 2 of record 1)
+READ_LENGTH=$(gunzip -c "$SUBSET_R1" 2>/dev/null | awk 'NR==2{print length; exit}')
+log "Measured read length: ${READ_LENGTH}bp"
+
 # Write sample metadata sidecar (model-validated via Python)
 SAMPLE_META="$READS_DIR/${SAMPLE_KEY}_sample_meta.yaml"
 if [[ ! -f "$SAMPLE_META" ]]; then
   log "Writing sample metadata sidecar..."
-  R2_ARG=""
-  if [[ "$END_TYPE" == "paired_end" ]]; then
-    R2_ARG="r2=\"short_read/${END_TYPE}/${ASSAY_TYPE}/${FILE_KEY}_R2.fastq.gz\","
-  fi
   python3 - <<PYEOF
 import sys; sys.path.insert(0, "$PROJECT_ROOT")
 from agent.models.core_data import SampleMeta, SubsetInfo
+read_length = int("$READ_LENGTH") if "$READ_LENGTH".strip() else None
 meta = SampleMeta(
     sample="$SAMPLE",
     accession="$ACCESSION",
@@ -241,6 +242,7 @@ meta = SampleMeta(
     end_type="$END_TYPE",
     assay_type="$ASSAY_TYPE",
     database="EBI_SRA",
+    read_length=read_length,
     source_urls={
         "r1": "$EBI_BASE/${ACCESSION}_1.fastq.gz",
         "r2": "$EBI_BASE/${ACCESSION}_2.fastq.gz",
