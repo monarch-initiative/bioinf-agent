@@ -43,8 +43,8 @@ data/core_test_data_*/**/*_sample_meta.yaml
 # Generated Docker artifacts (large)
 docker_images/*/
 
-# Generated pipeline configs are artifacts — commit selectively
-# config/pipelines/  ← uncomment to exclude generated pipeline specs
+# Pipeline specs and HTML reports are generated artifacts — not tracked in git
+config/pipelines/
 
 # OS
 .DS_Store
