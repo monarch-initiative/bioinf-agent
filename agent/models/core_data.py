@@ -28,8 +28,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 ReadType  = Literal["short_read", "long_read"]
 EndType   = Literal["paired_end", "single_end", "mate_pair"]
 AssayType = Literal["exome", "wgs", "rnaseq", "chipseq", "atacseq", "hic", "amplicon"]
-FileType  = Literal["fastq", "bam", "sam", "bai", "vcf", "bed", "bigwig",
-                    "pod5", "fast5", "log", "yaml"]
+FileType  = Literal["fastq", "bam", "sam", "bai", "vcf", "bcf", "bed", "bigwig",
+                    "pod5", "fast5", "log", "yaml",
+                    # PLINK binary / LD output formats
+                    "bim", "fam", "ld", "frq", "prune",
+                    # Generic tabular / text
+                    "tsv", "csv", "txt", "gz"]
 Database  = Literal["EBI_SRA", "NCBI_SRA", "ENCODE", "GEO", "local"]
 
 KNOWN_PIPELINES: frozenset[str] = frozenset({
