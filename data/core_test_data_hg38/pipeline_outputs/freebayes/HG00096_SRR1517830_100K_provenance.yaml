@@ -10,8 +10,8 @@ genome:
   reference: ../../genome/chr22.fa
   reference_fai: ../../genome/chr22.fa.fai
 bam_input:
-  bam: ../bwa_samtools/HG00096_SRR1517830_aligned_sorted.bam
-  bai: ../bwa_samtools/HG00096_SRR1517830_aligned_sorted.bam.bai
+  bam: ../bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam
+  bai: ../bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam.bai
 upstream_pipelines:
 - bwa_samtools
 parameters:
@@ -20,6 +20,6 @@ parameters:
   --min-alternate-fraction: 0.2
   --min-alternate-count: 2
 outputs:
-- file: HG00096_SRR1517830_variants.vcf
+- file: HG00096_SRR1517830_100K_variants.vcf
   type: vcf
   indexed: false

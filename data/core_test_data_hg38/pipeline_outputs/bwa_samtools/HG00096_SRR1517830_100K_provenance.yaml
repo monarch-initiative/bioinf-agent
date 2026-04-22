@@ -16,19 +16,19 @@ reads:
   assay_type: exome
   subset: 100K
   num_reads: 100000
-  r1: ../../short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz
-  r2: ../../short_read/paired_end/exome/SRR1517830_R2_100K.fastq.gz
+  r1: ../../short_read/paired_end/exome/HG00096_SRR1517830_100K_R1.fastq.gz
+  r2: ../../short_read/paired_end/exome/HG00096_SRR1517830_100K_R2.fastq.gz
   sample: HG00096
   accession: SRR1517830
   database: EBI_SRA
 upstream_pipelines: []
 outputs:
-- file: HG00096_SRR1517830_aligned.sam
+- file: HG00096_SRR1517830_100K_aligned.sam
   type: sam
   indexed: false
-- file: HG00096_SRR1517830_aligned_sorted.bam
+- file: HG00096_SRR1517830_100K_aligned_sorted.bam
   type: bam
   indexed: true
-- file: HG00096_SRR1517830_aligned_sorted.bam.bai
+- file: HG00096_SRR1517830_100K_aligned_sorted.bam.bai
   type: bai
   indexed: false
