@@ -154,7 +154,10 @@ def _packages_table(spec: dict) -> str:
 
 
 def _test_data_section(spec: dict) -> str:
-    td = spec.get("test_data")
+    # Accept test_data (bwa_samtools style) or test (freebayes flat style)
+    td = spec.get("test_data") or (
+        spec.get("test") if isinstance(spec.get("test"), dict) else None
+    )
     if not td:
         return ""
 
@@ -162,16 +165,43 @@ def _test_data_section(spec: dict) -> str:
         for k in keys:
             v = td.get(k)
             if v:
-                return v
+                return str(v)
         return default
 
-    dataset_id = _val(["dataset_id", "reads_source"])
-    type_val = td.get("type") or td.get("reads_subset") or "—"
-    subtype = td.get("subtype", "")
-    type_display = f"{type_val} / {subtype}" if subtype else type_val
+    # Dataset ID: controlled vocab accession > legacy fields
+    dataset_id = _val(["dataset_id", "accession", "reads_source"])
+
+    # Type: compose from controlled vocab fields when present
+    assay = td.get("assay_type") or td.get("type") or ""
+    end = td.get("end_type") or td.get("subtype") or ""
+    read_t = td.get("read_type") or ""
+    subset = td.get("subset") or ""
+    if assay or end:
+        parts = [p for p in [read_t, end, assay] if p]
+        type_display = " / ".join(parts)
+        if subset:
+            num = td.get("num_reads")
+            type_display += f"  ({num:,} reads)" if isinstance(num, int) else f"  ({subset})"
+    else:
+        type_val = td.get("reads_subset") or "—"
+        type_display = type_val
+
     organism = _val(["organism"])
-    genome_build = _val(["genome_build", "reference"])
-    description = _val(["description"])
+    # Genome build: prefer explicit field, fall back to long reference path description
+    genome_build = td.get("genome_build") or _val(["reference"])
+    if genome_build and genome_build != "—" and "/" in genome_build:
+        genome_build = "—"  # path string — not useful here
+
+    sample = td.get("sample", "")
+    description_parts = [td.get("description", "")]
+    if sample:
+        description_parts.insert(0, f"Sample {sample}")
+    description = "  |  ".join(p for p in description_parts if p) or "—"
+
+    upstream = td.get("upstream_pipeline") or td.get("upstream_pipelines")
+    upstream_str = (
+        ", ".join(upstream) if isinstance(upstream, list) else str(upstream)
+    ) if upstream else ""
 
     fields = [
         ("Dataset ID", dataset_id),
@@ -180,6 +210,8 @@ def _test_data_section(spec: dict) -> str:
         ("Genome build", genome_build),
         ("Description", description),
     ]
+    if upstream_str:
+        fields.append(("Upstream pipeline", upstream_str))
     for fk in ("r1", "r2", "reads"):
         if td.get(fk):
             fields.append((fk.upper(), f"<code>{Path(td[fk]).name}</code>"))

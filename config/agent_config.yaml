@@ -1,9 +1,10 @@
 paths:
-  genomes_dir: ./data/genomes
-  test_data_dir: ./data/test_data
+  data_dir: ./data
   pipelines_dir: ./config/pipelines
   conda_envs_prefix: ./envs
   docker_output_dir: ./docker_images
+  # Core test data convention: {data_dir}/core_test_data_{genome_build}/
+  # Pipeline test data convention: {data_dir}/{pipeline_name}_test_data/
 
 conda:
   base_channels:

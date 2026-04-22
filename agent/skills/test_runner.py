@@ -18,8 +18,7 @@ class TestRunner:
     def __init__(self, config: dict):
         self.config = config
         self.project_root = Path(__file__).parent.parent.parent.resolve()
-        self.genomes_dir = self.project_root / config["paths"]["genomes_dir"]
-        self.test_data_dir = self.project_root / config["paths"]["test_data_dir"]
+        self.data_dir = self.project_root / config["paths"]["data_dir"]
 
     def download_resource(self, resource_type: str, resource_id: str) -> dict[str, Any]:
         if resource_type == "genome":
@@ -33,46 +32,38 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     def _download_genome(self, genome_id: str) -> dict[str, Any]:
-        manifest = self._load_manifest(self.genomes_dir / "manifest.yaml", "genomes")
-        genome = next((g for g in manifest if g["id"] == genome_id), None)
-        if not genome:
-            return {"success": False, "error": f"Genome '{genome_id}' not in manifest"}
-
-        out_dir = self.genomes_dir / genome["path"]
+        # genome_id format: "{build}" or "{build}_chr{chrom}" e.g. "hg38" or "hg38_chr22"
+        # Genome goes into data/core_test_data_{build}/genome/
+        build = genome_id.replace("_chr22", "").replace("_chr1", "")
+        chrom = self.config["testing"]["preferred_chromosome"]
+        core_dir = self.data_dir / f"core_test_data_{build}"
+        out_dir = core_dir / "genome"
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        fasta_path = out_dir / genome["files"]["fasta"]
+        fasta_path = out_dir / f"{chrom}.fa"
         if fasta_path.exists() and fasta_path.stat().st_size > 0:
-            self._mark_available(self.genomes_dir / "manifest.yaml", "genomes", genome_id)
             return {
                 "success": True,
                 "genome_id": genome_id,
                 "path": str(out_dir),
+                "fasta": str(fasta_path),
                 "note": "Already on disk",
             }
 
-        steps = []
-        build = genome["build"]
-        chromosomes = genome.get("chromosomes", [])
-
-        # Route to the right download function based on species / build
-        if "hg38" in build or "grch38" in build.lower():
-            result = self._download_ucsc_human_hg38(out_dir, chromosomes, genome)
-        elif "mm10" in build or "grcm38" in build.lower():
-            result = self._download_ucsc_mouse_mm10(out_dir, chromosomes, genome)
-        elif "ecoli" in genome_id or "k12" in build.lower():
-            result = self._download_ncbi_ecoli(out_dir, genome)
+        if "hg38" in build:
+            result = self._download_ucsc_human_hg38(out_dir, [chrom], {"files": {"fasta": f"{chrom}.fa", "gtf": "genes.gtf"}})
+        elif "mm10" in build or "mm39" in build:
+            result = self._download_ucsc_mouse_mm10(out_dir, [chrom], {"files": {"fasta": f"{chrom}.fa"}})
+        elif "ecoli" in build or "k12" in build:
+            result = self._download_ncbi_ecoli(out_dir, {"files": {"fasta": "genome.fa"}})
         else:
             return {
                 "success": False,
                 "error": (
                     f"No automatic download handler for build '{build}'. "
-                    "Please download manually and place in: " + str(out_dir)
+                    "Download manually and place FASTA at: " + str(fasta_path)
                 ),
             }
-
-        if result["success"]:
-            self._mark_available(self.genomes_dir / "manifest.yaml", "genomes", genome_id)
 
         return result
 
@@ -184,29 +175,48 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     def _download_test_data(self, dataset_id: str) -> dict[str, Any]:
-        manifest = self._load_manifest(self.test_data_dir / "manifest.yaml", "datasets")
-        dataset = next((d for d in manifest if d["id"] == dataset_id), None)
-        if not dataset:
-            return {"success": False, "error": f"Dataset '{dataset_id}' not in manifest"}
+        # dataset_id format: "{build}_{assay_type}_{accession}_{subset}"
+        # e.g. "hg38_exome_SRR1517830_100K"
+        # Output goes to data/core_test_data_{build}/short_read/{end_type}/{assay_type}/
+        parts = dataset_id.split("_")
+        build = parts[0] if parts else "hg38"
+        core_dir = self.data_dir / f"core_test_data_{build}"
 
-        out_dir = self.test_data_dir / dataset["path"]
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # Find metadata from core manifest
+        manifest_path = core_dir / "manifest.yaml"
+        if manifest_path.exists():
+            with open(manifest_path) as f:
+                m = yaml.safe_load(f) or {}
+            for read_type, end_types in m.get("sequencing_data", {}).items():
+                if not isinstance(end_types, dict):
+                    continue
+                for end_type, assay_types in end_types.items():
+                    if not isinstance(assay_types, dict):
+                        continue
+                    for assay_type, samples in assay_types.items():
+                        if not isinstance(samples, list):
+                            continue
+                        for smp in samples:
+                            for subset, sinfo in smp.get("subsets", {}).items():
+                                sid = f"{build}_{assay_type}_{smp.get('accession', '')}_{subset}"
+                                if sid == dataset_id:
+                                    out_dir = core_dir / read_type / end_type / assay_type
+                                    out_dir.mkdir(parents=True, exist_ok=True)
+                                    dataset = {
+                                        "type": assay_type, "metadata": {
+                                            "num_reads": sinfo.get("num_reads", 100000),
+                                            "read_length": smp.get("read_length", 150),
+                                            "layout": "paired" if end_type == "paired_end" else "single",
+                                        },
+                                        "files": {
+                                            "r1": f"{smp.get('accession', 'sample')}_R1_{subset}.fastq.gz",
+                                            "r2": f"{smp.get('accession', 'sample')}_R2_{subset}.fastq.gz",
+                                        },
+                                        "compatible_genomes": [build],
+                                    }
+                                    return self._generate_synthetic_reads(out_dir, dataset)
 
-        dtype = dataset["type"]
-        if dtype in ("rnaseq", "wgs", "chipseq", "atacseq"):
-            result = self._generate_synthetic_reads(out_dir, dataset)
-        elif dtype == "long_reads":
-            result = self._generate_synthetic_long_reads(out_dir, dataset)
-        else:
-            return {
-                "success": False,
-                "error": f"No generator for data type '{dtype}'",
-            }
-
-        if result["success"]:
-            self._mark_available(self.test_data_dir / "manifest.yaml", "datasets", dataset_id)
-
-        return result
+        return {"success": False, "error": f"Dataset '{dataset_id}' not found in any core manifest"}
 
     def _generate_synthetic_reads(self, out_dir: Path, dataset: dict) -> dict:
         """Generate synthetic short reads using wgsim (bundled with samtools)."""
@@ -215,21 +225,17 @@ class TestRunner:
         read_length = meta.get("read_length", 150)
         layout = meta.get("layout", "paired")
 
-        # Find a compatible genome that's available
-        genome_id = self._find_available_genome(dataset.get("compatible_genomes", []))
-        if not genome_id:
+        # Find a compatible genome FASTA in core_test_data dirs
+        fasta = self._find_available_genome_fasta(dataset.get("compatible_genomes", []))
+        if not fasta:
             return {
                 "success": False,
                 "error": (
-                    "No compatible genome available on disk to generate synthetic reads from. "
+                    "No compatible genome FASTA found in core_test_data dirs. "
                     f"Need one of: {dataset.get('compatible_genomes')}. "
-                    "Download a genome first."
+                    "Run setup_core_test_data.sh first."
                 ),
             }
-
-        genome_manifest = self._load_manifest(self.genomes_dir / "manifest.yaml", "genomes")
-        genome = next(g for g in genome_manifest if g["id"] == genome_id)
-        fasta = self.genomes_dir / genome["path"] / genome["files"]["fasta"]
 
         files = dataset.get("files", {})
         if layout == "paired":
@@ -285,13 +291,9 @@ class TestRunner:
         num_reads = meta.get("num_reads", 5000)
         mean_length = meta.get("read_length_mean", 8000)
 
-        genome_id = self._find_available_genome(dataset.get("compatible_genomes", []))
-        if not genome_id:
-            return {"success": False, "error": "No compatible genome available for long read generation."}
-
-        genome_manifest = self._load_manifest(self.genomes_dir / "manifest.yaml", "genomes")
-        genome = next(g for g in genome_manifest if g["id"] == genome_id)
-        fasta = self.genomes_dir / genome["path"] / genome["files"]["fasta"]
+        fasta = self._find_available_genome_fasta(dataset.get("compatible_genomes", []))
+        if not fasta:
+            return {"success": False, "error": "No compatible genome FASTA found in core_test_data dirs."}
 
         files = dataset.get("files", {})
         reads_out = out_dir / files.get("reads", "reads.fastq.gz")
@@ -327,14 +329,23 @@ class TestRunner:
     # Helpers
     # -----------------------------------------------------------------------
 
-    def _find_available_genome(self, compatible_ids: list[str]) -> str | None:
-        manifest = self._load_manifest(self.genomes_dir / "manifest.yaml", "genomes")
-        for gid in compatible_ids:
-            genome = next((g for g in manifest if g["id"] == gid), None)
-            if genome and genome.get("available"):
-                fasta = self.genomes_dir / genome["path"] / genome["files"]["fasta"]
-                if fasta.exists() and fasta.stat().st_size > 0:
-                    return gid
+    def _find_available_genome_fasta(self, compatible_builds: list[str]) -> Path | None:
+        """Find a FASTA in any core_test_data dir matching compatible builds."""
+        for core_dir in sorted(self.data_dir.glob("core_test_data_*")):
+            manifest_path = core_dir / "manifest.yaml"
+            if not manifest_path.exists():
+                continue
+            with open(manifest_path) as f:
+                m = yaml.safe_load(f) or {}
+            build = m.get("genome_build", "")
+            if compatible_builds and not any(b in build for b in compatible_builds):
+                continue
+            ginfo = m.get("genome", {})
+            if not ginfo:
+                continue
+            fasta = core_dir / ginfo.get("fasta", "")
+            if fasta.exists() and fasta.stat().st_size > 0:
+                return fasta
         return None
 
     def _index_fasta(self, out_dir: Path, fasta_path: Path):

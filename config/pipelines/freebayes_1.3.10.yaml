@@ -34,18 +34,24 @@ packages:
   conda_spec: conda-pack
   note: Required for Docker image packaging
 test:
-  strategy: Reused existing sorted BAM from bwa_samtools_test pipeline (chr22 exome,
-    sample HG00096/SRR1517830). Built .fai index for chr22.fa with samtools faidx.
-  reference: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa
-  reference_fai: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa.fai
-  input_bam: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/aligned_sorted.bam
-  output_dir: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/
-  output_vcf: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/variants.vcf
-  run_command: freebayes -f /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa
+  genome_build: hg38
+  chromosome_subset: chr22
+  read_type: short_read
+  end_type: paired_end
+  assay_type: exome
+  sample: HG00096
+  accession: SRR1517830
+  upstream_pipeline: bwa_samtools
+  reference: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/genome/chr22.fa
+  reference_fai: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/genome/chr22.fa.fai
+  input_bam: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830/aligned_sorted.bam
+  output_vcf: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/freebayes/variants.vcf
+  core_data_dir: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38
+  provenance: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/freebayes/HG00096_SRR1517830/provenance.yaml
+  run_command: freebayes -f /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/genome/chr22.fa
     --min-mapping-quality 20 --min-base-quality 20 --min-alternate-fraction 0.2 --min-alternate-count
-    2 /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/aligned_sorted.bam
-    > /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/variants.vcf
-    2> /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/freebayes_test/freebayes.log
+    2 /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830/aligned_sorted.bam
+    > /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/freebayes/variants.vcf
   parameters:
     --min-mapping-quality: 20
     --min-base-quality: 20

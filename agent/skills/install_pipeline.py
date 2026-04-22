@@ -275,7 +275,7 @@ class InstallPipelineSkill:
 
     def run(self, pipeline_name: str, packages: list[dict], description: str) -> dict:
         env_name = self.config["conda"]["env_prefix"] + pipeline_name
-        project_root = Path(self.config["paths"]["genomes_dir"]).parent.parent.resolve()
+        project_root = Path(__file__).parent.parent.parent.resolve()
 
         system = textwrap.dedent(f"""
             You are a bioinformatics software engineer executing a pipeline installation job.
@@ -285,8 +285,7 @@ class InstallPipelineSkill:
             Packages requested (in order): {json.dumps(packages)}
             Conda env name: {env_name}
             Project root: {project_root}
-            Genomes dir: {project_root / self.config['paths']['genomes_dir']}
-            Test data dir: {project_root / self.config['paths']['test_data_dir']}
+            Data dir: {project_root / self.config['paths']['data_dir']}
 
             ## Your job (execute ALL steps):
 
@@ -314,25 +313,29 @@ class InstallPipelineSkill:
               2. Reads: subset to {self.config['testing']['max_reads']:,} paired-end reads
                  (or single-end if the dataset is single-end). Use head/gzip to subset
                  without downloading extra data.
-              3. Write all test outputs (extracted reference, subset reads, index files,
-                 analysis outputs) to a dedicated subdirectory under the test_data dir
-                 named after the pipeline (e.g. {pipeline_name}_test/).
+              3. Write all test outputs to `{project_root / self.config['paths']['data_dir']}/{pipeline_name}_test_data/`.
               This keeps validation fast (<10 min) and reproducible.
             - If the genome needs an index for this tool and it doesn't exist yet,
               build it with run_command before the main test run.
-            - **Reusing prior pipeline outputs:** If this tool takes BAM/VCF as input
-              (e.g. variant callers, post-alignment QC tools), look for already-validated
-              BAM files in existing pipeline test directories (e.g. bwa_samtools_test/)
-              before generating new ones. Use `find {project_root / self.config['paths']['test_data_dir']} -name "*.bam" -not -name "*.bai"`
-              to locate them. Prefer the sorted, indexed BAM from the most recent aligner pipeline.
-              You still need a matching .fai index for the same reference FASTA — build it with
-              `samtools faidx` using samtools from the new conda env if needed.
+            - **Reusing core test data:** The canonical test data lives at
+              `{project_root / self.config['paths']['data_dir']}/core_test_data_{{genome_build}}/`
+              (e.g. `core_test_data_hg38/`). Always check here first before generating new data:
+                - Genome + indexes: `core_test_data_hg38/genome/chr22.fa` (+ .fai, .amb, .ann, .bwt, .pac, .sa)
+                - Reads: `core_test_data_hg38/short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz`
+                - Pre-built pipeline outputs (BAM, VCF, etc.): `core_test_data_hg38/pipeline_outputs/{{pipeline}}/`
+                  e.g. sorted BAM at `core_test_data_hg38/pipeline_outputs/bwa_samtools/aligned_sorted.bam`
+              Read `core_test_data_hg38/manifest.yaml` to discover exactly what is available.
+              If core data exists, use it directly — do not re-extract or re-subset reads.
+              Each `pipeline_outputs/{{name}}/` dir has a `provenance.yaml` recording the exact
+              commands, versions, and upstream inputs that produced those files.
+              Write your own outputs to `{project_root / self.config['paths']['data_dir']}/{pipeline_name}_test_data/`,
+              but reference core inputs by their full core path (do not copy them).
 
             ### Phase 4 — Validation loop (one step per package)
             For each package in pipeline order:
             - Construct a reasonable test command using the test data.
               Use sensible default parameters appropriate for small test data.
-              Write outputs to the {pipeline_name}_test/ subdirectory.
+              Write outputs to the {pipeline_name}_test_data/ subdirectory under data/.
             - Call run_command to execute it.
             - If the command succeeds, call validate_output on the primary output.
             - If validation passes, record the step as validated.
@@ -509,18 +512,8 @@ class InstallPipelineSkill:
     # -----------------------------------------------------------------------
 
     def _list_resources(self, resource_type: str) -> dict:
-        result = {}
-        base = Path(__file__).parent.parent.parent
-
-        if resource_type in ("genomes", "both"):
-            p = base / self.config["paths"]["genomes_dir"] / "manifest.yaml"
-            result["genomes"] = yaml.safe_load(p.read_text())["genomes"] if p.exists() else []
-
-        if resource_type in ("test_data", "both"):
-            p = base / self.config["paths"]["test_data_dir"] / "manifest.yaml"
-            result["test_data"] = yaml.safe_load(p.read_text())["datasets"] if p.exists() else []
-
-        return result
+        from agent.tools import _tool_list_resources
+        return _tool_list_resources({"resource_type": resource_type}, self.config)
 
     def _record_step_validation(self, pipeline_spec: dict, file_path: str, result: dict):
         pipeline_spec["steps"].append(

@@ -49,12 +49,20 @@ packages:
   channel: conda-forge
   purpose: HPC Docker image packaging
 test_data:
-  reads_source: exome_SRR1517830 (paired-end exome, human HG00096)
-  reads_subset: 100,000 paired-end reads (400,000 lines each from R1/R2)
-  reference: hg38 chr22 extracted from hg38_full/genome.fa (~49 MB)
-  r1: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/reads_R1.fastq.gz
-  r2: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/reads_R2.fastq.gz
-  reference_fasta: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/test_data/bwa_samtools_test/chr22.fa
+  genome_build: hg38
+  chromosome_subset: chr22
+  read_type: short_read
+  end_type: paired_end
+  assay_type: exome
+  sample: HG00096
+  accession: SRR1517830
+  subset: 100K
+  num_reads: 100000
+  r1: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz
+  r2: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/short_read/paired_end/exome/SRR1517830_R2_100K.fastq.gz
+  reference_fasta: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/genome/chr22.fa
+  core_data_dir: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38
+  provenance: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830/provenance.yaml
 pipeline_steps:
 - step: 1
   tool: bwa

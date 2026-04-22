@@ -1,0 +1,73 @@
+# Core test dataset — hg38, chr22 subset
+# Controlled vocabulary:
+#   read_type:  short_read | long_read
+#   end_type:   paired_end | single_end | mate_pair
+#   assay_type: exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon
+#   file_type:  fastq | bam | sam | bai | vcf | bed | bigwig | pod5 | fast5
+
+genome_build: hg38
+species: homo_sapiens
+chromosome_subset: chr22
+
+genome:
+  fasta: genome/chr22.fa
+  fai: genome/chr22.fa.fai
+  chromosome: chr22
+  source_genome: hg38_full
+  source_url: https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz
+  indexes:
+    bwa:
+      - genome/chr22.fa.amb
+      - genome/chr22.fa.ann
+      - genome/chr22.fa.bwt
+      - genome/chr22.fa.pac
+      - genome/chr22.fa.sa
+
+sequencing_data:
+  short_read:
+    paired_end:
+      exome:
+        - sample: HG00096
+          accession: SRR1517830
+          sex: male
+          database: EBI_SRA
+          protocol: PCR-free
+          capture: whole_exome
+          read_length: 150
+          source_urls:
+            r1: ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_1.fastq.gz
+            r2: ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR151/000/SRR1517830/SRR1517830_2.fastq.gz
+          subsets:
+            100K:
+              r1: short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz
+              r2: short_read/paired_end/exome/SRR1517830_R2_100K.fastq.gz
+              num_reads: 100000
+              available: true
+    single_end: {}
+    mate_pair: {}
+  long_read:
+    single_end: {}
+
+pipeline_outputs:
+  bwa_samtools:
+    available: true
+    samples:
+      HG00096_SRR1517830:
+        provenance: pipeline_outputs/bwa_samtools/HG00096_SRR1517830/provenance.yaml
+        files:
+          - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830/aligned.sam
+            type: sam
+          - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830/aligned_sorted.bam
+            type: bam
+          - path: pipeline_outputs/bwa_samtools/HG00096_SRR1517830/aligned_sorted.bam.bai
+            type: bai
+  freebayes:
+    available: true
+    upstream_pipelines:
+      - bwa_samtools
+    samples:
+      HG00096_SRR1517830:
+        provenance: pipeline_outputs/freebayes/HG00096_SRR1517830/provenance.yaml
+        files:
+          - path: pipeline_outputs/freebayes/HG00096_SRR1517830/variants.vcf
+            type: vcf
