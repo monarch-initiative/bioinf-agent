@@ -197,7 +197,8 @@ SUB_TOOLS = [
                     "type": "string",
                     "description": (
                         "Expected file type: 'sam', 'bam', 'fastq', 'fasta', 'vcf', 'bcf', "
-                        "'bed', 'bigwig', 'counts_matrix', 'gtf', 'gff', 'log', 'any'"
+                        "'bed', 'bigwig', 'counts_matrix', 'gtf', 'gff', 'log', "
+                        "'bim', 'fam', 'ld', 'frq', 'prune', 'tsv', 'csv', 'txt', 'any'"
                     ),
                 },
                 "env_name": {
@@ -304,7 +305,7 @@ SUB_TOOLS = [
                         "type": "object",
                         "properties": {
                             "file":    {"type": "string", "description": "Filename (no directory)"},
-                            "type":    {"type": "string", "description": "fastq|bam|sam|bai|vcf|..."},
+                            "type":    {"type": "string", "description": "fastq|bam|sam|bai|vcf|bcf|bed|bigwig|bim|fam|ld|frq|prune|tsv|csv|txt|log|yaml"},
                             "indexed": {"type": "boolean"},
                         },
                         "required": ["file", "type"],
@@ -686,7 +687,8 @@ class InstallPipelineSkill:
         prov_path = output_dir / f"{sample_key}_provenance.yaml"
 
         def _rel(abs_path: str) -> str:
-            return str(Path(abs_path).resolve().relative_to(output_dir.resolve()))
+            import os
+            return os.path.relpath(Path(abs_path).resolve(), output_dir.resolve())
 
         genome = GenomeRef(
             genome_build=inputs["genome_build"],
