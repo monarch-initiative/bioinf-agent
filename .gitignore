@@ -13,18 +13,23 @@ venv/
 # Conda environments (large, reproducible via bootstrap)
 envs/
 
-# Downloaded reference data (large, reproducible via bootstrap)
-data/genomes/hg38_full/
-data/genomes/hg38_chr22/
-data/genomes/ecoli_k12/
-data/genomes/mm10_chr19/
-data/test_data/exome_pcr_free_SRR1291026/
-data/test_data/rnaseq_small_paired_human/
-data/test_data/wgs_small_paired_human/
-data/test_data/chipseq_small_human/
-data/test_data/atac_small_human/
-data/test_data/nanopore_small_human/
-data/test_data/wgs_ecoli_small/
+# Legacy genome dir — superseded by data/core_test_data_{build}/genome/
+data/genomes/
+
+# Large binary files in core test data (tracked via manifest + provenance, not git LFS)
+data/core_test_data_*/genome/*.fa
+data/core_test_data_*/genome/*.fa.*
+data/core_test_data_*/short_read/**/*.fastq.gz
+data/core_test_data_*/long_read/**/*.fastq.gz
+data/core_test_data_*/long_read/**/*.pod5
+data/core_test_data_*/long_read/**/*.fast5
+data/core_test_data_*/pipeline_outputs/**/*.bam
+data/core_test_data_*/pipeline_outputs/**/*.bai
+data/core_test_data_*/pipeline_outputs/**/*.sam
+data/core_test_data_*/pipeline_outputs/**/*.vcf
+
+# Legacy test_data dirs (kept temporarily during migration, not tracked)
+data/test_data/
 
 # Generated Docker artifacts (large)
 docker_images/*/
