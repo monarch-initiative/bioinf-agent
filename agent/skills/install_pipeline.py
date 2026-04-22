@@ -140,20 +140,20 @@ SUB_TOOLS = [
     {
         "name": "download_resource",
         "description": (
-            "Download a genome or test dataset that is listed in the manifest but "
-            "not yet available on disk. Only call this when the resource is not "
-            "already available — check list_available_resources first."
+            "Download a reference genome that is not yet on disk. "
+            "Only call this when the genome FASTA is not already available — "
+            "check list_available_resources first."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "resource_type": {
                     "type": "string",
-                    "enum": ["genome", "test_data"],
+                    "enum": ["genome"],
                 },
                 "resource_id": {
                     "type": "string",
-                    "description": "The 'id' field from the manifest, e.g. 'hg38_chr22' or 'rnaseq_small_paired_human'",
+                    "description": "Genome build id from the manifest, e.g. 'hg38_chr22'",
                 },
             },
             "required": ["resource_type", "resource_id"],
@@ -330,17 +330,17 @@ SUB_TOOLS = [
 ]
 
 _TOOL_PHASES = {
-    "search_package":          "Phase 1 · Research",
-    "create_conda_env":        "Phase 2 · Install",
-    "install_packages":        "Phase 2 · Install",
-    "verify_installation":     "Phase 2 · Install",
-    "list_available_resources": "Phase 3 · Test data",
-    "download_resource":       "Phase 3 · Test data",
-    "run_command":             "Phase 4 · Execution",
-    "validate_output":         "Phase 4 · Validation",
-    "build_docker_image":          "Phase 5 · Docker",
-    "save_pipeline_spec":          "Phase 6 · Save",
-    "write_pipeline_provenance":   "Phase 6 · Save",
+    "search_package":            "Phase 1 · Research",
+    "create_conda_env":          "Phase 2 · Install",
+    "install_packages":          "Phase 2 · Install",
+    "verify_installation":       "Phase 2 · Install",
+    "list_available_resources":  "Phase 3 · Test data",
+    "download_resource":         "Phase 3 · Test data",
+    "run_command":               "Phase 4 · Execution",
+    "validate_output":           "Phase 4 · Validation",
+    "write_pipeline_provenance": "Phase 5 · Provenance",
+    "build_docker_image":        "Phase 6 · Docker",
+    "save_pipeline_spec":        "Phase 7 · Save",
 }
 
 # ---------------------------------------------------------------------------
@@ -405,12 +405,12 @@ class InstallPipelineSkill:
               `{project_root / self.config['paths']['data_dir']}/core_test_data_{{genome_build}}/`
               (e.g. `core_test_data_hg38/`). Always check here first before generating new data:
                 - Genome + indexes: `core_test_data_hg38/genome/chr22.fa` (+ .fai, .amb, .ann, .bwt, .pac, .sa)
-                - Reads: `core_test_data_hg38/short_read/paired_end/exome/SRR1517830_R1_100K.fastq.gz`
+                - Reads: `core_test_data_hg38/short_read/paired_end/exome/HG00096_SRR1517830_100K_R1.fastq.gz`
                 - Pre-built pipeline outputs (BAM, VCF, etc.): `core_test_data_hg38/pipeline_outputs/{{pipeline}}/`
-                  e.g. sorted BAM at `core_test_data_hg38/pipeline_outputs/bwa_samtools/aligned_sorted.bam`
+                  e.g. sorted BAM at `core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam`
               Read `core_test_data_hg38/manifest.yaml` to discover exactly what is available.
               If core data exists, use it directly — do not re-extract or re-subset reads.
-              Each `pipeline_outputs/{{name}}/` dir has a `provenance.yaml` recording the exact
+              Each `pipeline_outputs/{{name}}/` dir has `{{sample_key}}_provenance.yaml` recording the exact
               commands, versions, and upstream inputs that produced those files.
               Write your own outputs to `{project_root / self.config['paths']['data_dir']}/{pipeline_name}_test_data/`,
               but reference core inputs by their full core path (do not copy them).
@@ -425,16 +425,33 @@ class InstallPipelineSkill:
             - If validation passes, record the step as validated.
             - The output of this step becomes the input for the next step.
 
-            ### Phase 5 — Docker
+            ### Phase 5 — Provenance (REQUIRED after validation)
+            - Call write_pipeline_provenance with the exact output files you produced.
+              This is NOT optional. Every validated pipeline run must have a provenance record.
+              Pass all absolute paths; relative paths inside the YAML are computed automatically.
+              Use the test_data info from list_available_resources to fill genome_build,
+              chromosome, reference_path, reads or bam_input, and sample_key.
+
+            ### Phase 6 — Docker + Spec
             - Call build_docker_image.
             - Call save_pipeline_spec with the complete record of what was installed,
               how it was tested, and the Docker image tag.
-            - The spec MUST include:
+            - The spec MUST use these exact top-level field names (PipelineSpec model):
+              - `pipeline_name` (not "name")
+              - `created_at` (not "created"), ISO date string
               - `status`: "fully_validated" if all steps passed, else "failed"
-              - `pipeline_steps`: a list of dicts, one per tool invocation, each with:
+              - `packages`: list of package dicts with `name`, `resolved_version`, `channel`,
+                `description`, `homepage` (optional), `verify_command` (optional)
+              - `test_data`: dict with controlled vocab fields: `genome_build`,
+                `chromosome_subset`, `read_type`, `end_type`, `assay_type`, `sample`,
+                `accession`, `subset`, `num_reads`, `r1`, `r2`, `reference_fasta`,
+                `core_data_dir`, `upstream_pipelines` (list)
+              - `pipeline_steps`: list of step dicts, one per tool invocation, each with:
                 `step` (int), `tool`, `subcommand` (if any), `command` (full command string),
                 `status` ("validated" or "failed"), and optionally `returncode`,
-                `validation` (dict or string), `output_size_bytes`, `version`.
+                `validation` (dict or string), `output_size_bytes`, `runtime_seconds`
+              - `docker`: dict with `build_attempted`, `build_success`, `image_tag`, `reason`
+              - `notes`: list of strings for notable observations
               Do NOT use a flat `test` dict — always use the `pipeline_steps` list format
               so the HTML report renders correctly.
 
@@ -612,22 +629,48 @@ class InstallPipelineSkill:
         )
 
     def _save_spec(self, spec: dict) -> dict:
+        from agent.models.core_data import PipelineSpec
+
         pipelines_dir = Path(__file__).parent.parent.parent / self.config["paths"]["pipelines_dir"]
         pipelines_dir.mkdir(parents=True, exist_ok=True)
 
-        name = spec.get("pipeline_name") or spec.get("name", "pipeline")
+        # Normalise legacy field names before validation
+        if "name" in spec and "pipeline_name" not in spec:
+            spec["pipeline_name"] = spec.pop("name")
+        if "created" in spec and "created_at" not in spec:
+            spec["created_at"] = spec.pop("created")
+        # Wrap flat docker_image / docker_build_status into a docker dict
+        if "docker_image" in spec and "docker" not in spec:
+            tag = spec.pop("docker_image", None)
+            note = spec.pop("docker_build_status", "")
+            spec["docker"] = {
+                "build_attempted": True,
+                "build_success": bool(tag and str(tag) not in ("null", "None")),
+                "image_tag": tag if tag and str(tag) not in ("null", "None") else None,
+                "reason": note,
+            }
+
+        try:
+            pspec = PipelineSpec.model_validate(spec)
+            write_spec = pspec.model_dump(exclude_none=True)
+        except Exception as e:
+            import sys
+            print(f"[install_pipeline] WARN: PipelineSpec validation failed: {e}", file=sys.stderr)
+            write_spec = spec
+
+        name = write_spec.get("pipeline_name", "pipeline")
         primary = next(
-            (p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {}
+            (p for p in write_spec.get("packages", []) if p.get("name") != "conda-pack"), {}
         )
-        version = primary.get("version") or primary.get("resolved_version", "")
+        version = primary.get("resolved_version") or primary.get("version", "")
         stem = f"{name}_{version}" if version else name
 
         yaml_path = pipelines_dir / f"{stem}.yaml"
         with open(yaml_path, "w") as f:
-            yaml.dump(spec, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(write_spec, f, default_flow_style=False, sort_keys=False)
 
         html_path = pipelines_dir / f"{stem}.html"
-        html_path.write_text(generate_report(spec))
+        html_path.write_text(generate_report(write_spec))
 
         return {"saved_yaml": str(yaml_path), "saved_html": str(html_path)}
 

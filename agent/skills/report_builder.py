@@ -1,6 +1,7 @@
 """
 ReportBuilder — generates a self-contained HTML pipeline report from a saved spec dict.
 Called automatically by InstallPipelineSkill._save_spec after every successful install.
+Expects spec dicts conforming to the PipelineSpec model (agent/models/core_data.py).
 """
 
 from datetime import datetime
@@ -67,37 +68,22 @@ def _status_badge(spec: dict) -> str:
         return _badge("⏳ In Progress", "skip")
     if status and status != "unknown":
         return _badge("✗ " + status, "fail")
-    # Infer from pipeline_steps list
     steps = spec.get("pipeline_steps", [])
     if steps and all(s.get("status") == "validated" for s in steps):
         return _badge("✓ Validated", "pass")
     if steps:
         return _badge("⏳ Partial", "skip")
-    # Infer from flat test dict (alternate spec format)
-    test = spec.get("test", {})
-    if isinstance(test, dict) and test.get("validation", {}).get("passed"):
-        return _badge("✓ Validated", "pass")
     return _badge("Unknown", "skip")
 
 
 def _docker_section(spec: dict) -> str:
-    docker = spec.get("docker", {})
-    # Also handle flat docker_image / docker_note / docker_build_status fields
+    docker = spec.get("docker")
     if not docker:
-        tag = spec.get("docker_image") or spec.get("docker_build_status", "")
-        note = spec.get("docker_note") or spec.get("docker_build_status", "")
-        if not tag and not note:
-            return ""
-        docker = {
-            "build_attempted": bool(tag or note),
-            "build_success": bool(tag and tag not in ("null", "None")),
-            "image_tag": tag if tag and tag not in ("null", "None") else None,
-            "reason": note,
-        }
+        return ""
     attempted = docker.get("build_attempted", False)
     success = docker.get("build_success", False)
     tag = docker.get("image_tag") or "—"
-    registry = docker.get("registry") or "local"
+    registry = docker.get("registry", "local")
     reason = docker.get("reason", "")
 
     rows = [
@@ -120,22 +106,16 @@ def _docker_section(spec: dict) -> str:
 
 
 def _packages_table(spec: dict) -> str:
-    skip = {"conda-pack"}
-    packages = [p for p in spec.get("packages", []) if p.get("name") not in skip]
+    packages = [p for p in spec.get("packages", []) if p.get("name") != "conda-pack"]
     if not packages:
         return ""
     rows = []
     for p in packages:
         hp = p.get("homepage", "")
         link = f'<a href="{hp}" target="_blank">{hp}</a>' if hp else "—"
-        # Only use conda_spec as version fallback when it contains "=" (e.g. "bwa=0.7.19")
         conda_spec = p.get("conda_spec", "")
         conda_ver = conda_spec.split("=")[-1] if "=" in conda_spec else ""
-        version = p.get("version") or p.get("resolved_version") or conda_ver or "—"
-        # Skip co-dep entries that have no description and no real version
-        is_codep = not p.get("description") and version == "—" and p.get("note")
-        if is_codep:
-            continue
+        version = p.get("resolved_version") or p.get("version") or conda_ver or "—"
         rows.append(
             f"<tr><td><strong>{p.get('name','')}</strong></td>"
             f"<td>{version}</td>"
@@ -154,67 +134,38 @@ def _packages_table(spec: dict) -> str:
 
 
 def _test_data_section(spec: dict) -> str:
-    # Accept test_data (bwa_samtools style) or test (freebayes flat style)
-    td = spec.get("test_data") or (
-        spec.get("test") if isinstance(spec.get("test"), dict) else None
-    )
+    td = spec.get("test_data")
     if not td:
         return ""
 
-    def _val(keys, default="—"):
-        for k in keys:
-            v = td.get(k)
-            if v:
-                return str(v)
-        return default
-
-    # Dataset ID: controlled vocab accession > legacy fields
-    dataset_id = _val(["dataset_id", "accession", "reads_source"])
-
-    # Type: compose from controlled vocab fields when present
-    assay = td.get("assay_type") or td.get("type") or ""
-    end = td.get("end_type") or td.get("subtype") or ""
-    read_t = td.get("read_type") or ""
-    subset = td.get("subset") or ""
-    if assay or end:
-        parts = [p for p in [read_t, end, assay] if p]
-        type_display = " / ".join(parts)
-        if subset:
-            num = td.get("num_reads")
-            type_display += f"  ({num:,} reads)" if isinstance(num, int) else f"  ({subset})"
-    else:
-        type_val = td.get("reads_subset") or "—"
-        type_display = type_val
-
-    organism = _val(["organism"])
-    # Genome build: prefer explicit field, fall back to long reference path description
-    genome_build = td.get("genome_build") or _val(["reference"])
-    if genome_build and genome_build != "—" and "/" in genome_build:
-        genome_build = "—"  # path string — not useful here
+    assay = td.get("assay_type", "")
+    end = td.get("end_type", "")
+    read_t = td.get("read_type", "")
+    subset = td.get("subset", "")
+    parts = [p for p in [read_t, end, assay] if p]
+    type_display = " / ".join(parts) if parts else "—"
+    if subset:
+        num = td.get("num_reads")
+        type_display += f"  ({num:,} reads)" if isinstance(num, int) else f"  ({subset})"
 
     sample = td.get("sample", "")
-    description_parts = [td.get("description", "")]
-    if sample:
-        description_parts.insert(0, f"Sample {sample}")
-    description = "  |  ".join(p for p in description_parts if p) or "—"
-
-    upstream = td.get("upstream_pipeline") or td.get("upstream_pipelines")
-    upstream_str = (
-        ", ".join(upstream) if isinstance(upstream, list) else str(upstream)
-    ) if upstream else ""
+    accession = td.get("accession", "")
+    dataset = " / ".join(p for p in [sample, accession] if p) or "—"
 
     fields = [
-        ("Dataset ID", dataset_id),
+        ("Dataset", dataset),
         ("Type", type_display),
-        ("Organism", organism),
-        ("Genome build", genome_build),
-        ("Description", description),
+        ("Genome build", td.get("genome_build", "—")),
     ]
-    if upstream_str:
-        fields.append(("Upstream pipeline", upstream_str))
-    for fk in ("r1", "r2", "reads"):
+    if td.get("chromosome_subset"):
+        fields.append(("Chromosome", td["chromosome_subset"]))
+    upstream = td.get("upstream_pipelines", [])
+    if upstream:
+        fields.append(("Upstream pipelines", ", ".join(upstream)))
+    for fk in ("r1", "r2"):
         if td.get(fk):
             fields.append((fk.upper(), f"<code>{Path(td[fk]).name}</code>"))
+
     kv = "\n".join(
         f'<div class="key">{k}</div><div class="val">{v}</div>' for k, v in fields
     )
@@ -239,7 +190,6 @@ def _steps_section(spec: dict) -> str:
         rc = s.get("returncode")
         status = s.get("status", "")
 
-        # Exit code label: show numeric code when available, otherwise step status
         if rc is not None:
             exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{"#16a34a" if rc == 0 else "#dc2626"}">exit {rc}</span>'
         elif status == "validated":
@@ -294,62 +244,15 @@ def _steps_section(spec: dict) -> str:
 </div>"""
 
 
-def _test_section_compat(spec: dict) -> str:
-    """Render the flat `test` dict used by single-tool pipelines as a step block."""
-    if spec.get("pipeline_steps"):
-        return ""
-    test = spec.get("test")
-    if not isinstance(test, dict):
-        return ""
-    cmd = test.get("run_command", "")
-    validation = test.get("validation", {})
-    passed = validation.get("passed", False) if isinstance(validation, dict) else bool(validation)
-    vr_lines = ""
-    if isinstance(validation, dict):
-        for k, v in validation.items():
-            if k == "passed":
-                continue
-            vr_lines += f'<div class="val-row" style="font-size:0.85rem"><code>{k}</code>: {v}</div>'
-    val_html = (
-        f'<div class="val-row">{"✅" if passed else "❌"} {"validated" if passed else "failed"}</div>'
-        + vr_lines
-    )
-    strategy = test.get("strategy", "")
-    strat_html = f'<p style="font-size:0.85rem;color:#475569;margin-bottom:0.5rem">{strategy}</p>' if strategy else ""
-    tool_label = spec.get("pipeline_name") or spec.get("name", "pipeline")
-    return f"""
-<div class="section">
-  <h2>⚙️ Pipeline Steps &amp; Usage</h2>
-  <div class="step-block">
-    <div class="step-header">
-      <span class="step-num">1</span>
-      {tool_label}
-      <span style="margin-left:auto;font-size:0.8rem;color:{'#16a34a' if passed else '#dc2626'}">{'✓ validated' if passed else '✗ failed'}</span>
-    </div>
-    {strat_html}
-    <strong style="font-size:0.85rem;color:#475569">Command:</strong>
-    <pre>{cmd}</pre>
-    <div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong>{val_html}</div>
-  </div>
-</div>"""
-
-
 def _usage_guide(spec: dict) -> str:
     steps = spec.get("pipeline_steps", [])
-    env = spec.get("conda_env", "bioinf_<name>")
-    # Fall back to flat test.run_command when pipeline_steps absent
     if not steps:
-        test = spec.get("test", {})
-        cmd = test.get("run_command", "") if isinstance(test, dict) else ""
-        if not cmd:
-            return ""
-        name = spec.get("pipeline_name") or spec.get("name", "pipeline")
-        cmds = f"# {name}\n{cmd}"
-    else:
-        cmds = "\n\n".join(
-            f"# Step {s.get('step','?')}: {s.get('tool','')}\n{s.get('command','')}"
-            for s in steps
-        )
+        return ""
+    env = spec.get("conda_env", "bioinf_<name>")
+    cmds = "\n\n".join(
+        f"# Step {s.get('step','?')}: {s.get('tool','')}\n{s.get('command','')}"
+        for s in steps
+    )
     doc_links = []
     for p in spec.get("packages", []):
         hp = p.get("homepage", "")
@@ -371,18 +274,6 @@ def _usage_guide(spec: dict) -> str:
 
 def _notes_section(spec: dict) -> str:
     notes = list(spec.get("notes", []))
-    # Collect notes from flat fields when no explicit notes list
-    if not notes:
-        if spec.get("docker_note"):
-            notes.append(spec["docker_note"])
-        if spec.get("docker_build_status"):
-            notes.append(spec["docker_build_status"])
-        for p in spec.get("packages", []):
-            if p.get("note") and p.get("name") not in ("conda-pack",):
-                notes.append(f"<strong>{p['name']}</strong>: {p['note']}")
-        test = spec.get("test", {})
-        if isinstance(test, dict) and test.get("strategy"):
-            notes.append(f"Test strategy: {test['strategy']}")
     if not notes:
         return ""
     items = "".join(f"<li style='margin-bottom:0.3rem'>{n}</li>" for n in notes)
@@ -394,11 +285,11 @@ def _notes_section(spec: dict) -> str:
 
 
 def generate(spec: dict) -> str:
-    name = spec.get("pipeline_name") or spec.get("name", "pipeline")
+    name = spec.get("pipeline_name", "pipeline")
     primary = next((p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {})
-    version = primary.get("version") or primary.get("resolved_version", "")
+    version = primary.get("resolved_version") or primary.get("version", "")
     env = spec.get("conda_env", "")
-    created = spec.get("created_at") or spec.get("created", "")
+    created = spec.get("created_at", "")
     if created:
         try:
             created = datetime.fromisoformat(created).strftime("%Y-%m-%d %H:%M UTC")
@@ -416,7 +307,6 @@ def generate(spec: dict) -> str:
         _packages_table(spec),
         _test_data_section(spec),
         _steps_section(spec),
-        _test_section_compat(spec),
         _usage_guide(spec),
         _docker_section(spec),
         _notes_section(spec),

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 # ---------------------------------------------------------------------------
 # Controlled vocabulary
@@ -194,6 +194,113 @@ class SampleMeta(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "SampleMeta":
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        return cls(**data)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline spec — one installed + validated pipeline
+# ---------------------------------------------------------------------------
+
+PipelineStatus = Literal["fully_validated", "complete", "in_progress", "failed", "timeout"]
+
+
+class PackageRecord(BaseModel):
+    """One package installed as part of a pipeline."""
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    requested_version: str = "latest"
+    resolved_version: Optional[str] = None
+    conda_spec: Optional[str] = None
+    channel: Optional[str] = None
+    description: Optional[str] = None
+    homepage: Optional[str] = None
+    verify_command: Optional[str] = None
+    verify_output: Optional[str] = None
+    platform_note: Optional[str] = None
+    input_types: list[str] = []
+    output_types: list[str] = []
+
+
+class TestDataRef(BaseModel):
+    """Reference to the test dataset used during pipeline validation."""
+    model_config = ConfigDict(extra="allow")
+
+    genome_build: str
+    chromosome_subset: Optional[str] = None
+    read_type: Optional[ReadType] = None
+    end_type: Optional[EndType] = None
+    assay_type: Optional[AssayType] = None
+    sample: Optional[str] = None
+    accession: Optional[str] = None
+    subset: Optional[str] = None
+    num_reads: Optional[int] = None
+    r1: Optional[str] = None
+    r2: Optional[str] = None
+    reference_fasta: Optional[str] = None
+    core_data_dir: Optional[str] = None
+    upstream_pipelines: list[str] = []
+
+
+class PipelineStep(BaseModel):
+    """One execution step within a pipeline run."""
+    model_config = ConfigDict(extra="allow")
+
+    step: int
+    tool: str
+    subcommand: Optional[str] = None
+    purpose: Optional[str] = None
+    command: str
+    status: Literal["validated", "failed", "skipped"] = "validated"
+    returncode: Optional[int] = None
+    runtime_seconds: Optional[float] = None
+    output_size_bytes: Optional[int] = None
+    validation: Optional[Any] = None
+
+
+class DockerBuild(BaseModel):
+    """Docker image build result."""
+    build_attempted: bool = False
+    build_success: bool = False
+    image_tag: Optional[str] = None
+    registry: str = "local"
+    reason: Optional[str] = None
+
+
+class PipelineSpec(BaseModel):
+    """
+    Complete record of an installed, validated pipeline.
+    Written to config/pipelines/{name}_{version}.yaml after a successful install.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    pipeline_name: str
+    description: str
+    conda_env: str
+    python_version: Optional[str] = None
+    created_at: str
+    status: PipelineStatus
+    packages: list[PackageRecord]
+    test_data: Optional[TestDataRef] = None
+    pipeline_steps: list[PipelineStep] = []
+    docker: Optional[DockerBuild] = None
+    notes: list[str] = []
+    final_summary: Optional[str] = None
+
+    def to_yaml(self) -> str:
+        data = self.model_dump(exclude_none=True)
+        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+    def write(self, path: str | Path) -> Path:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(self.to_yaml())
+        return out
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "PipelineSpec":
         with open(path) as f:
             data = yaml.safe_load(f) or {}
         return cls(**data)
