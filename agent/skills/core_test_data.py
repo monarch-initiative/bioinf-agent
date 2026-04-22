@@ -10,6 +10,7 @@ No sub-agent loop needed: the flow is deterministic.
 
 from __future__ import annotations
 
+import gzip
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,16 @@ def _download(url: str, dest: Path) -> bool:
         capture_output=True, timeout=600,
     )
     return r.returncode == 0 and dest.exists() and dest.stat().st_size > 0
+
+
+def _measure_read_length(fastq_gz: Path) -> int | None:
+    try:
+        with gzip.open(fastq_gz, "rt") as f:
+            f.readline()  # @header
+            seq = f.readline().strip()
+            return len(seq) if seq else None
+    except Exception:
+        return None
 
 
 def _subset(src: Path, dst: Path, num_reads: int) -> bool:
@@ -109,6 +120,7 @@ def add_core_test_data(
                 if not _subset(full, subset_file, num_reads):
                     return {"success": False, "error": f"Failed to subset {label}"}
 
+        read_length = _measure_read_length(subset_r1)
         r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
         r2_rel = f"short_read/{end_type}/{assay_type}/{subset_r2.name}"
         r1_out, r2_out = str(subset_r1), str(subset_r2)
@@ -128,6 +140,7 @@ def add_core_test_data(
             if not _subset(full_r1, subset_r1, num_reads):
                 return {"success": False, "error": "Failed to subset reads"}
 
+        read_length = _measure_read_length(subset_r1)
         r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
         r2_rel = None
         r1_out, r2_out = str(subset_r1), None
@@ -141,6 +154,8 @@ def add_core_test_data(
     if meta_path.exists():
         existing = SampleMeta.from_yaml(meta_path)
         existing.subsets[subset_key] = subset_info
+        if read_length is not None:
+            existing.read_length = read_length
         existing.write(meta_path)
         log.append(f"SampleMeta updated: {meta_path.name}")
     else:
@@ -151,6 +166,7 @@ def add_core_test_data(
             end_type=end_type,
             assay_type=assay_type,
             database="EBI_SRA",
+            read_length=read_length,
             source_urls={"r1": urls["r1"], **({"r2": urls["r2"]} if end_type == "paired_end" else {})},
             subsets={subset_key: subset_info},
         ).write(meta_path)
