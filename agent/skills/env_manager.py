@@ -125,7 +125,7 @@ class EnvManager:
     def verify(self, env_name: str, package_name: str, check_command: str) -> dict[str, Any]:
         result = self.run_in_env(env_name, check_command, timeout=30)
         output = (result.get("stdout", "") + result.get("stderr", "")).strip()
-        success = result.get("returncode", 1) == 0 or bool(output)
+        success = result.get("returncode", 1) == 0
 
         return {
             "success": success,

@@ -259,6 +259,12 @@ class PipelineStep(BaseModel):
     command: str
     status: Literal["validated", "failed", "skipped"] = "validated"
     returncode: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _derive_status_from_returncode(self) -> "PipelineStep":
+        if self.returncode is not None:
+            self.status = "validated" if self.returncode == 0 else "failed"
+        return self
     runtime_seconds: Optional[float] = None
     output_size_bytes: Optional[int] = None
     validation: Optional[Any] = None

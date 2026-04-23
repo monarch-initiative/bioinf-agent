@@ -210,5 +210,9 @@ class TestRunner:
             capture_output=True,
             timeout=600,
         )
-        return ret.returncode == 0 and dest.exists() and dest.stat().st_size > 0
+        if ret.returncode != 0:
+            return False
+        if not dest.exists() or dest.stat().st_size == 0:
+            return False
+        return True
 
