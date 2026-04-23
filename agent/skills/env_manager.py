@@ -9,6 +9,7 @@ project root so envs are portable and easy to locate.
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,7 @@ class EnvManager:
         cmd = ["conda", "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", command]
 
+        t0 = time.monotonic()
         result = self._run(
             cmd,
             cwd=working_dir or str(self.project_root),
@@ -159,6 +161,7 @@ class EnvManager:
             "stderr": result["stderr"],
             "success": result["returncode"] == 0,
             "command": command,
+            "runtime_seconds": round(time.monotonic() - t0, 2),
         }
 
     def env_path(self, env_name: str) -> Path:

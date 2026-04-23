@@ -53,12 +53,18 @@ python -m agent.main
 When the user asks to install a tool or pipeline, execute ALL phases in order:
 
 ### Phase 1 — Research
-- Call `search_package` for each requested package to get the conda channel, exact version, and understand its input/output types.
+- Call `search_package` for each requested package.
+- **Capture from each result** → start building the `packages` list entry:
+  ```
+  { name, resolved_version: result.version, channel, conda_spec,
+    description, homepage, input_types, output_types, check_command }
+  ```
 
 ### Phase 2 — Install
 - Call `create_conda_env` with name `bioinf_{pipeline_name}`.
 - Call `install_packages` with all packages at once (better dependency resolution). Fall back to one-by-one if needed.
 - Call `verify_installation` for each package.
+- **Capture from each verify result** → add to that package's entry: `verify_command`, `verify_output`.
 
 ### Phase 3 — Test data
 - Call `list_available_resources(both)` to see what's on disk.
@@ -75,23 +81,39 @@ When the user asks to install a tool or pipeline, execute ALL phases in order:
 For each package in pipeline order:
 - Build a test command with sensible defaults for small data. Use absolute paths.
 - Call `run_in_env` to execute it.
+- **Capture from each result** → append to `pipeline_steps`:
+  ```
+  { step, tool, command: result.command, returncode: result.returncode,
+    runtime_seconds: result.runtime_seconds }
+  ```
 - Call `validate_output` on the primary output file.
 - The output of step N is the input to step N+1.
 - On failure, diagnose and retry up to 2 times.
 
-### Phase 5 — Provenance
-- Call `write_pipeline_provenance` with the exact output files produced.
-- Pass all absolute paths; relative paths inside the YAML are computed automatically.
-- Required fields: pipeline, conda_env_path, pipeline_spec_path, genome_build, chromosome, reference_path, output_files, output_dir, sample_key.
-
-### Phase 6 — Docker
+### Phase 5 — Docker
 - Call `build_docker_image`. Pass `version` = the resolved version of the primary package.
+- **Capture the entire return value** — use it directly as the `docker` field in the spec.
+  The return already includes `build_attempted`, `build_success`, `image_tag`, `registry`, `reason`.
 
-### Phase 7 — Report
-- Call `save_pipeline_report` with the complete spec dict.
-- Required top-level fields: `pipeline_name`, `description`, `conda_env`, `created_at`, `status`, `packages`, `pipeline_steps`, `docker`.
-- `pipeline_steps`: list of `{step, tool, command, status, returncode, runtime_seconds}`.
-- `status`: `"fully_validated"` if all steps passed, else `"failed"`.
+### Phase 6 — Report
+- Call `save_pipeline_report` with the spec assembled from phases 1–5:
+  ```
+  {
+    pipeline_name, description, conda_env,
+    created_at: <now ISO>,
+    status: "fully_validated" if all returncodes == 0 else "failed",
+    packages:        <list built in phases 1–2>,
+    pipeline_steps:  <list built in phase 4>,
+    docker:          <return value from phase 5>,
+  }
+  ```
+- **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 7.
+
+### Phase 7 — Provenance
+- Call `write_pipeline_provenance` with the exact output files produced.
+- Pass `pipeline_spec_path` = `saved_yaml` returned by Phase 6.
+- Pass all other absolute paths; relative paths inside the YAML are computed automatically.
+- Required fields: pipeline, conda_env_path, pipeline_spec_path, genome_build, chromosome, reference_path, output_files, output_dir, sample_key.
 
 ### Rules
 - Always use absolute paths in `run_in_env` commands.
