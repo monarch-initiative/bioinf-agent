@@ -3,3 +3,4 @@ pyyaml>=6.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 pydantic>=2.0
+fastmcp>=2.0  # tested with 3.2.4
