@@ -60,7 +60,8 @@ class DockerBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def build(
-        self, env_name: str, pipeline_name: str, pipeline_description: str
+        self, env_name: str, pipeline_name: str, pipeline_description: str,
+        version: str = "",
     ) -> dict[str, Any]:
         env_path = self.envs_dir / env_name
         if not env_path.exists():
@@ -91,7 +92,7 @@ class DockerBuilder:
         # Step 3: docker build
         registry = self.config["docker"].get("registry", "")
         tag_base = f"{registry}/{pipeline_name}" if registry else pipeline_name
-        image_tag = f"{tag_base}:latest"
+        image_tag = f"{tag_base}:{version}" if version else f"{tag_base}:latest"
 
         platform = self.config["docker"].get("platform", "linux/amd64")
         build_cmd = [

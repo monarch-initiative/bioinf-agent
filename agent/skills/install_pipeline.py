@@ -224,6 +224,10 @@ SUB_TOOLS = [
                 "env_name": {"type": "string"},
                 "pipeline_name": {"type": "string"},
                 "pipeline_description": {"type": "string"},
+                "version": {
+                    "type": "string",
+                    "description": "Resolved version string of the primary package, e.g. '1.90b7.7'. Used to tag the Docker image.",
+                },
             },
             "required": ["env_name", "pipeline_name", "pipeline_description"],
         },
@@ -601,6 +605,7 @@ class InstallPipelineSkill:
                 inputs["env_name"],
                 inputs["pipeline_name"],
                 inputs.get("pipeline_description", ""),
+                version=inputs.get("version", ""),
             )
             if result.get("success"):
                 pipeline_spec["docker_image"] = result["image_tag"]
@@ -699,9 +704,13 @@ class InstallPipelineSkill:
             reference_fai=_rel(inputs["reference_path"] + ".fai"),
         )
 
+        _DB_ALIASES = {"SRA": "EBI_SRA", "NCBI": "NCBI_SRA", "EBI": "EBI_SRA"}
+
         reads = None
         if inputs.get("reads"):
             r = inputs["reads"]
+            raw_db = r.get("database", "EBI_SRA")
+            db = _DB_ALIASES.get(raw_db, raw_db)
             reads = [ReadInput(
                 read_type=r.get("read_type", "short_read"),
                 end_type=r.get("end_type", "paired_end"),
@@ -712,7 +721,7 @@ class InstallPipelineSkill:
                 r2=_rel(r["r2"]) if r.get("r2") else None,
                 sample=r.get("sample", ""),
                 accession=r.get("accession", ""),
-                database=r.get("database", "EBI_SRA"),
+                database=db,
             )]
 
         bam_input = None
