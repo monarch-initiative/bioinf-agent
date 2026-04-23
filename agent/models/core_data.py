@@ -272,6 +272,8 @@ class PipelineStep(BaseModel):
 
 class DockerBuild(BaseModel):
     """Docker image build result."""
+    model_config = ConfigDict(extra="allow")
+
     build_attempted: bool = False
     build_success: bool = False
     image_tag: Optional[str] = None

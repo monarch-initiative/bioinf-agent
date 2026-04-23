@@ -116,8 +116,13 @@ class DockerBuilder:
         if build_result["returncode"] != 0:
             return {
                 "success": False,
-                "error": "docker build failed",
-                "stderr": build_result["stderr"][-2000:],
+                "build_attempted": True,
+                "build_success": False,
+                "image_tag": None,
+                "registry": registry or "local",
+                "reason": "docker build failed: " + build_result["stderr"][-500:],
+                "tarball": str(tarball),
+                "dockerfile": str(dockerfile_path),
             }
 
         # Step 4: optional push
@@ -128,7 +133,10 @@ class DockerBuilder:
 
         return {
             "success": True,
+            "build_attempted": True,
+            "build_success": True,
             "image_tag": image_tag,
+            "registry": registry or "local",
             "tarball": str(tarball),
             "dockerfile": str(dockerfile_path),
             "pushed_to_registry": pushed,
