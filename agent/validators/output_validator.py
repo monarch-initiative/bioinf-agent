@@ -70,62 +70,67 @@ class OutputValidator:
             return self._sam_text_fallback(path)
         stat = self._run_tool(["samtools", "flagstat", str(path)], timeout=120)
         if stat.returncode == 0:
-            return {"passed": True, "flagstat": stat.stdout[:500]}
-        return {"passed": True, "note": "samtools quickcheck passed"}
+            return {"passed": True, "validation_method": "tool", "flagstat": stat.stdout[:500]}
+        return {"passed": True, "validation_method": "tool", "note": "samtools quickcheck passed"}
 
     def _sam_text_fallback(self, path: Path) -> dict:
         lines = self._head_lines(path, 20)
         has_header = any(l.startswith("@") for l in lines)
         data_lines = [l for l in lines if l and not l.startswith("@")]
         if not data_lines and not has_header:
-            return {"passed": False, "error": "No SAM header or alignment lines found"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "No SAM header or alignment lines found"}
         if data_lines and len(data_lines[0].split("\t")) < 11:
-            return {"passed": False, "error": f"SAM line has only {len(data_lines[0].split(chr(9)))} fields"}
-        return {"passed": True, "has_header": has_header, "note": "samtools unavailable — text check only"}
+            return {"passed": False, "validation_method": "text_fallback", "error": f"SAM line has only {len(data_lines[0].split(chr(9)))} fields"}
+        return {"passed": True, "validation_method": "text_fallback", "has_header": has_header, "note": "samtools unavailable — text check only"}
 
     def _check_fastq(self, path: Path) -> dict:
         """FASTQ — seqkit stats for rich metadata, 4-line text fallback."""
         ret = self._run_tool(["seqkit", "stats", "-T", str(path)], timeout=60)
         if ret.returncode == 0:
-            return self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
+            result = self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
+            result["validation_method"] = "tool"
+            return result
         # Fallback: manual 4-line check
         lines = self._head_lines(path, 8)
         if len(lines) < 4:
-            return {"passed": False, "error": "Fewer than 4 lines in FASTQ"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "Fewer than 4 lines in FASTQ"}
         if not lines[0].startswith("@"):
-            return {"passed": False, "error": "FASTQ line 1 should start with '@'"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "FASTQ line 1 should start with '@'"}
         if not lines[2].startswith("+"):
-            return {"passed": False, "error": "FASTQ line 3 should start with '+'"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "FASTQ line 3 should start with '+'"}
         if len(lines[1]) != len(lines[3]):
-            return {"passed": False, "error": "Sequence and quality length mismatch"}
-        return {"passed": True, "read_length": len(lines[1]), "note": "seqkit unavailable — text check only"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "Sequence and quality length mismatch"}
+        return {"passed": True, "validation_method": "text_fallback", "read_length": len(lines[1]), "note": "seqkit unavailable — text check only"}
 
     def _check_fasta(self, path: Path) -> dict:
         """FASTA — seqkit stats, header text fallback."""
         ret = self._run_tool(["seqkit", "stats", "-T", str(path)], timeout=60)
         if ret.returncode == 0:
-            return self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
+            result = self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
+            result["validation_method"] = "tool"
+            return result
         lines = self._head_lines(path, 5)
         if not lines:
-            return {"passed": False, "error": "Empty FASTA"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "Empty FASTA"}
         if not lines[0].startswith(">"):
-            return {"passed": False, "error": "FASTA does not start with '>'"}
-        return {"passed": True, "first_header": lines[0][:80], "note": "seqkit unavailable — text check only"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "FASTA does not start with '>'"}
+        return {"passed": True, "validation_method": "text_fallback", "first_header": lines[0][:80], "note": "seqkit unavailable — text check only"}
 
     def _check_vcf(self, path: Path) -> dict:
         """VCF and BCF — bcftools stats, text fallback for plain VCF."""
         ret = self._run_tool(["bcftools", "stats", str(path)], timeout=60)
         if ret.returncode == 0:
-            return {"passed": True, "bcftools_stats": self._parse_bcftools_sn(ret.stdout)}
+            return {"passed": True, "validation_method": "tool", "bcftools_stats": self._parse_bcftools_sn(ret.stdout)}
         # Fallback: text check (plain VCF, bcftools not available)
         lines = self._head_lines(path, 30)
         if not any(l.startswith("##") for l in lines):
-            return {"passed": False, "error": "VCF missing ## meta lines"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "VCF missing ## meta lines"}
         data_lines = [l for l in lines if l and not l.startswith("#")]
         if data_lines and len(data_lines[0].split("\t")) < 8:
-            return {"passed": False, "error": f"VCF data line has only {len(data_lines[0].split(chr(9)))} fields (need ≥8)"}
+            return {"passed": False, "validation_method": "text_fallback", "error": f"VCF data line has only {len(data_lines[0].split(chr(9)))} fields (need ≥8)"}
         return {
             "passed": True,
+            "validation_method": "text_fallback",
             "has_column_header": any(l.startswith("#CHROM") for l in lines),
             "data_lines_in_sample": len(data_lines),
             "note": "bcftools unavailable — text check only",
@@ -135,49 +140,49 @@ class OutputValidator:
         lines = self._head_lines(path, 5)
         data = [l for l in lines if l and not l.startswith(("#", "track", "browser"))]
         if not data:
-            return {"passed": False, "error": "No BED data lines found"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "No BED data lines found"}
         fields = data[0].split("\t")
         if len(fields) < 3:
-            return {"passed": False, "error": f"BED line has only {len(fields)} fields (need ≥3)"}
+            return {"passed": False, "validation_method": "text_fallback", "error": f"BED line has only {len(fields)} fields (need ≥3)"}
         try:
             int(fields[1]); int(fields[2])
         except ValueError:
-            return {"passed": False, "error": "BED start/end are not integers"}
-        return {"passed": True, "fields_per_line": len(fields)}
+            return {"passed": False, "validation_method": "text_fallback", "error": "BED start/end are not integers"}
+        return {"passed": True, "validation_method": "text_fallback", "fields_per_line": len(fields)}
 
     def _check_bigwig(self, path: Path) -> dict:
         with open(path, "rb") as f:
             magic = f.read(4)
         if magic in (b"\x26\xfc\x8f\x88", b"\x88\x8f\xfc\x26"):
-            return {"passed": True}
-        return {"passed": False, "error": "BigWig magic bytes not found"}
+            return {"passed": True, "validation_method": "magic_bytes"}
+        return {"passed": False, "validation_method": "magic_bytes", "error": "BigWig magic bytes not found"}
 
     def _check_counts_matrix(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
         data = [l for l in lines if l and not l.startswith("#")]
         if not data:
-            return {"passed": False, "error": "No non-comment lines found"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "No non-comment lines found"}
         fields = data[0].split("\t")
         if len(fields) < 2:
-            return {"passed": False, "error": f"Counts file has only {len(fields)} columns"}
-        return {"passed": True, "columns": len(fields), "sample_header": data[0][:100]}
+            return {"passed": False, "validation_method": "text_fallback", "error": f"Counts file has only {len(fields)} columns"}
+        return {"passed": True, "validation_method": "text_fallback", "columns": len(fields), "sample_header": data[0][:100]}
 
     def _check_gtf(self, path: Path) -> dict:
         lines = self._head_lines(path, 10)
         data = [l for l in lines if l and not l.startswith("#")]
         if not data:
-            return {"passed": False, "error": "No non-comment lines in GTF/GFF"}
+            return {"passed": False, "validation_method": "text_fallback", "error": "No non-comment lines in GTF/GFF"}
         fields = data[0].split("\t")
         if len(fields) < 8:
-            return {"passed": False, "error": f"GTF/GFF line has {len(fields)} fields (need ≥8)"}
-        return {"passed": True, "sample_feature": fields[2] if len(fields) > 2 else ""}
+            return {"passed": False, "validation_method": "text_fallback", "error": f"GTF/GFF line has {len(fields)} fields (need ≥8)"}
+        return {"passed": True, "validation_method": "text_fallback", "sample_feature": fields[2] if len(fields) > 2 else ""}
 
     def _check_log(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
-        return {"passed": bool(lines), "lines": len(lines)}
+        return {"passed": bool(lines), "validation_method": "text_fallback", "lines": len(lines)}
 
     def _check_any(self, path: Path) -> dict:
-        return {"passed": True, "note": "Generic check — file exists and non-empty"}
+        return {"passed": True, "validation_method": "exists_nonzero", "note": "Generic check — file exists and non-empty"}
 
     # -----------------------------------------------------------------------
     # Helpers

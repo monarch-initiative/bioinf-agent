@@ -62,17 +62,18 @@ def _badge(text: str, kind: str = "pass") -> str:
 
 def _status_badge(spec: dict) -> str:
     status = spec.get("status", "")
-    if status in ("fully_validated", "complete"):
+    if status == "fully_validated":
         return _badge("✓ Validated", "pass")
+    if status == "complete":
+        return _badge("✓ Complete", "pass")
     if status == "in_progress":
         return _badge("⏳ In Progress", "skip")
-    if status and status != "unknown":
-        return _badge("✗ " + status, "fail")
-    steps = spec.get("pipeline_steps", [])
-    if steps and all(s.get("status") == "validated" for s in steps):
-        return _badge("✓ Validated", "pass")
-    if steps:
-        return _badge("⏳ Partial", "skip")
+    if status == "failed":
+        return _badge("✗ Failed", "fail")
+    if status == "timeout":
+        return _badge("✗ Timeout", "fail")
+    if status:
+        return _badge(status, "skip")
     return _badge("Unknown", "skip")
 
 
@@ -192,8 +193,6 @@ def _steps_section(spec: dict) -> str:
 
         if rc is not None:
             exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{"#16a34a" if rc == 0 else "#dc2626"}">exit {rc}</span>'
-        elif status == "validated":
-            exit_html = '<span style="margin-left:auto;font-size:0.8rem;color:#16a34a">✓ validated</span>'
         else:
             exit_html = ""
 
@@ -274,13 +273,15 @@ def _usage_guide(spec: dict) -> str:
 
 def _notes_section(spec: dict) -> str:
     notes = list(spec.get("notes", []))
-    if not notes:
-        return ""
-    items = "".join(f"<li style='margin-bottom:0.3rem'>{n}</li>" for n in notes)
+    if notes:
+        items = "".join(f"<li style='margin-bottom:0.3rem'>{n}</li>" for n in notes)
+        body = f"<ul style=\"padding-left:1.3rem;font-size:0.9rem\">{items}</ul>"
+    else:
+        body = "<p style='color:#888;font-size:0.9rem'>No notes.</p>"
     return f"""
 <div class="section">
   <h2>📝 Notes</h2>
-  <ul style="padding-left:1.3rem;font-size:0.9rem">{items}</ul>
+  {body}
 </div>"""
 
 

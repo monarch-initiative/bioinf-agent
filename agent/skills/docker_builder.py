@@ -157,8 +157,9 @@ class DockerBuilder:
 
         return {
             "success": result["returncode"] == 0,
+            "returncode": result["returncode"],
             "output": str(output_path),
-            "stderr": result["stderr"][-1000:] if result["returncode"] != 0 else "",
+            "stderr": result["stderr"][-1000:],
         }
 
     def _run(self, cmd: list[str], timeout: int = 300) -> dict:

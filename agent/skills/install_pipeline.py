@@ -515,7 +515,9 @@ class InstallPipelineSkill:
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == "end_turn":
-                pipeline_spec["status"] = "complete"
+                steps = pipeline_spec.get("pipeline_steps", [])
+                failed = sum(1 for s in steps if s.get("returncode") not in (None, 0))
+                pipeline_spec["status"] = "fully_validated" if steps and failed == 0 else "failed" if failed else "complete"
                 elapsed = time.time() - _job_start
                 print(f"\n  ✓ Pipeline complete ({elapsed:.0f}s total)")
                 for block in response.content:

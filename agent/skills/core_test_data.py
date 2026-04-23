@@ -46,8 +46,8 @@ def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
         f"(set +o pipefail; curl -fsSL --retry 3 '{url}' | gunzip | head -{lines}) "
         f"| gzip > {tmp}"
     )
-    subprocess.run(cmd, shell=True, capture_output=True, executable="/bin/bash")
-    if tmp.exists() and tmp.stat().st_size > 0:
+    result = subprocess.run(cmd, shell=True, capture_output=True, executable="/bin/bash")
+    if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
         tmp.rename(dst)
         return True
     tmp.unlink(missing_ok=True)
