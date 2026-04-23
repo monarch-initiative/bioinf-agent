@@ -1,6 +1,6 @@
 paths:
   data_dir: ./data
-  pipelines_dir: ./config/pipelines
+  pipelines_dir: ./env_reports
   conda_envs_prefix: ./envs
   docker_output_dir: ./docker_images
   # Core test data convention: {data_dir}/core_test_data_{genome_build}/

@@ -44,7 +44,7 @@ data/core_test_data_*/**/*_sample_meta.yaml
 docker_images/*/
 
 # Pipeline specs and HTML reports are generated artifacts — not tracked in git
-config/pipelines/
+env_reports/
 
 # OS
 .DS_Store
