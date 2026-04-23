@@ -355,7 +355,7 @@ _TOOL_PHASES = {
 class InstallPipelineSkill:
     def __init__(self, config: dict):
         self.config = config
-        self.client = anthropic.Anthropic()
+        self._client = None  # lazy — only needed for the sub-agent run() path
         self.env_manager = EnvManager(config)
         self.package_search = PackageSearch(config)
         self.test_runner = TestRunner(config)
@@ -499,9 +499,12 @@ class InstallPipelineSkill:
         _phase_start = time.time()
         _job_start = time.time()
 
+        if self._client is None:
+            self._client = anthropic.Anthropic()
+
         max_iterations = self.config["agent"]["max_iterations"]
         for iteration in range(max_iterations):
-            response = self.client.messages.create(
+            response = self._client.messages.create(
                 model=self.config["agent"]["model"],
                 max_tokens=8096,
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bioinf": {
+      "command": "python",
+      "args": ["-m", "agent.mcp_server"]
+    }
+  }
+}
