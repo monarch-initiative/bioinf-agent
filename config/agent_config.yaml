@@ -33,7 +33,7 @@ agent:
 
 testing:
   # Max reads to subset from test FASTQ files for validation runs
-  max_reads: 100000
+  max_reads: 10000
   # For human/mouse genomes, restrict the reference to this chromosome to keep
   # index builds and alignments fast. Falls back to chr1 if not found.
   preferred_chromosome: "chr22"

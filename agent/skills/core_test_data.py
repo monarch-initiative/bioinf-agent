@@ -15,10 +15,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent.models.core_data import SampleMeta, SubsetInfo
+from agent.models.core_data import PLATFORM_FAMILY, PLATFORM_READ_TYPE, SampleMeta, SubsetInfo
 
 
 _SUBSET_SIZES: dict[str, int] = {
+    "500":  500,
+    "1K":   1_000,
     "10K":  10_000,
     "50K":  50_000,
     "100K": 100_000,
@@ -29,13 +31,25 @@ _SUBSET_SIZES: dict[str, int] = {
 
 def _ebi_urls(accession: str) -> dict[str, str]:
     prefix = accession[:6]
-    sub = f"00{accession[-1]}"
-    base = f"https://ftp.sra.ebi.ac.uk/vol1/fastq/{prefix}/{sub}/{accession}"
+    # EBI FTP uses a 00X sub-folder only for accessions longer than 9 chars
+    # (e.g. SRR1039508 → .../SRR103/008/SRR1039508/; ERR188297 → .../ERR188/ERR188297/)
+    if len(accession) > 9:
+        sub = f"00{accession[-1]}"
+        base = f"https://ftp.sra.ebi.ac.uk/vol1/fastq/{prefix}/{sub}/{accession}"
+    else:
+        base = f"https://ftp.sra.ebi.ac.uk/vol1/fastq/{prefix}/{accession}"
     return {
         "r1":     f"{base}/{accession}_1.fastq.gz",
         "r2":     f"{base}/{accession}_2.fastq.gz",
         "single": f"{base}/{accession}.fastq.gz",
     }
+
+
+_MIN_GZ_BYTES = 100  # empty gzip header is 20 bytes; any real data is far larger
+
+
+def _is_valid_gz(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > _MIN_GZ_BYTES
 
 
 def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
@@ -47,7 +61,7 @@ def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
         f"| gzip > {tmp}"
     )
     result = subprocess.run(cmd, shell=True, capture_output=True, executable="/bin/bash")
-    if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+    if result.returncode == 0 and _is_valid_gz(tmp):
         tmp.rename(dst)
         return True
     tmp.unlink(missing_ok=True)
@@ -55,13 +69,21 @@ def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
 
 
 def _measure_read_length(fastq_gz: Path) -> int | None:
+    """Return the maximum sequence length across all reads in the file."""
+    max_len = 0
     try:
         with gzip.open(fastq_gz, "rt") as f:
-            f.readline()  # @header
-            seq = f.readline().strip()
-            return len(seq) if seq else None
+            while True:
+                if not f.readline():  # @header — EOF check
+                    break
+                seq = f.readline().rstrip()
+                f.readline()          # +
+                f.readline()          # quality
+                if seq:
+                    max_len = max(max_len, len(seq))
     except Exception:
-        return None
+        pass
+    return max_len if max_len else None
 
 
 def add_core_test_data(
@@ -71,28 +93,43 @@ def add_core_test_data(
     end_type: str = "paired_end",
     genome_build: str = "hg38",
     sample: str = "",
-    subset: str = "100K",
+    subset: str = "10K",
+    platform: str = "illumina",
+    source_url: str = "",
+    source_url_r2: str = "",
 ) -> dict[str, Any]:
     """
     Stream-download, subset, and register a new sequencing dataset.
     Idempotent: skips any step whose output already exists.
+    platform:    illumina | ont | pacbio_hifi | pacbio_isoseq | pacbio_fiberseq
+    source_url:  override the EBI URL builder (e.g. NCBI FTP, S3). For paired-end
+                 data also supply source_url_r2.
     """
     if not sample:
         sample = accession
 
     subset_key = subset.upper()
-    num_reads = _SUBSET_SIZES.get(subset_key, 100_000)
+    num_reads = _SUBSET_SIZES.get(subset_key, 10_000)
+
+    # Derive read_type and directory layout from platform
+    read_type = PLATFORM_READ_TYPE.get(platform, "short_read")
+    platform_family = PLATFORM_FAMILY.get(platform, "")  # "" for illumina
+    if read_type == "long_read":
+        end_type = "single_end"   # long reads are always single-ended
 
     project_root = Path(__file__).parent.parent.parent.resolve()
     data_dir = project_root / config["paths"]["data_dir"]
 
-    core_dir  = data_dir / f"core_test_data_{genome_build}"
-    reads_dir = core_dir / "short_read" / end_type / assay_type
+    core_dir = data_dir / f"core_test_data_{genome_build}"
+    if read_type == "long_read":
+        reads_dir = core_dir / "long_read" / platform_family / assay_type
+    else:
+        reads_dir = core_dir / "short_read" / end_type / assay_type
     reads_dir.mkdir(parents=True, exist_ok=True)
 
     sample_key = f"{sample}_{accession}"
     file_key   = f"{sample_key}_{subset_key}"
-    urls       = _ebi_urls(accession)
+    ebi_urls   = _ebi_urls(accession)
     log: list[str] = []
 
     # ------------------------------------------------------------------
@@ -102,29 +139,40 @@ def add_core_test_data(
         subset_r1 = reads_dir / f"{file_key}_R1.fastq.gz"
         subset_r2 = reads_dir / f"{file_key}_R2.fastq.gz"
 
-        for dst, url, label in [(subset_r1, urls["r1"], "R1"), (subset_r2, urls["r2"], "R2")]:
-            if not dst.exists():
-                log.append(f"Streaming {label} ({subset_key} reads) from EBI SRA...")
+        url_r1 = source_url  or ebi_urls["r1"]
+        url_r2 = source_url_r2 or ebi_urls["r2"]
+
+        for dst, url, label in [(subset_r1, url_r1, "R1"), (subset_r2, url_r2, "R2")]:
+            if not _is_valid_gz(dst):
+                dst.unlink(missing_ok=True)
+                log.append(f"Streaming {label} ({subset_key} reads)...")
                 if not _stream_subset(url, dst, num_reads):
                     return {"success": False, "error": f"Failed to download/subset {label} from {url}"}
 
         read_length = _measure_read_length(subset_r1)
-        r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
-        r2_rel = f"short_read/{end_type}/{assay_type}/{subset_r2.name}"
+        rel_prefix = (f"long_read/{platform_family}/{assay_type}" if read_type == "long_read"
+                      else f"short_read/{end_type}/{assay_type}")
+        r1_rel = f"{rel_prefix}/{subset_r1.name}"
+        r2_rel = f"{rel_prefix}/{subset_r2.name}"
         r1_out, r2_out = str(subset_r1), str(subset_r2)
 
-    else:  # single_end
+    else:  # single_end (also covers all long-read platforms)
         subset_r1 = reads_dir / f"{file_key}_R1.fastq.gz"
 
-        if not subset_r1.exists():
-            log.append(f"Streaming reads ({subset_key}) from EBI SRA...")
-            ok = _stream_subset(urls["r1"], subset_r1, num_reads) or \
-                 _stream_subset(urls["single"], subset_r1, num_reads)
+        if not _is_valid_gz(subset_r1):
+            subset_r1.unlink(missing_ok=True)
+            log.append(f"Streaming reads ({subset_key})...")
+            url_single = source_url or ebi_urls["r1"]
+            ok = _stream_subset(url_single, subset_r1, num_reads)
+            if not ok and not source_url:
+                ok = _stream_subset(ebi_urls["single"], subset_r1, num_reads)
             if not ok:
                 return {"success": False, "error": f"Failed to download/subset reads for {accession}"}
 
         read_length = _measure_read_length(subset_r1)
-        r1_rel = f"short_read/{end_type}/{assay_type}/{subset_r1.name}"
+        rel_prefix = (f"long_read/{platform_family}/{assay_type}" if read_type == "long_read"
+                      else f"short_read/{end_type}/{assay_type}")
+        r1_rel = f"{rel_prefix}/{subset_r1.name}"
         r2_rel = None
         r1_out, r2_out = str(subset_r1), None
 
@@ -142,18 +190,28 @@ def add_core_test_data(
         existing.subsets[subset_key] = subset_info
         if read_length is not None:
             existing.read_length = read_length
+        if source_url:
+            existing.source_urls["r1"] = source_url
+        if source_url_r2:
+            existing.source_urls["r2"] = source_url_r2
         existing.write(meta_path)
         log.append(f"SampleMeta updated: {meta_path.name}")
     else:
+        actual_r1_url = source_url or ebi_urls["r1"]
+        actual_r2_url = source_url_r2 or ebi_urls["r2"]
+        database = "local" if source_url and not source_url.startswith("https://ftp.sra.ebi") else "EBI_SRA"
+        if source_url and "ncbi" in source_url:
+            database = "NCBI_SRA"
         SampleMeta(
             sample=sample,
             accession=accession,
-            read_type="short_read",
+            read_type=read_type,
             end_type=end_type,
             assay_type=assay_type,
-            database="EBI_SRA",
+            platform=platform,
+            database=database,
             read_length=read_length,
-            source_urls={"r1": urls["r1"], **({"r2": urls["r2"]} if end_type == "paired_end" else {})},
+            source_urls={"r1": actual_r1_url, **({"r2": actual_r2_url} if end_type == "paired_end" else {})},
             subsets={subset_key: subset_info},
         ).write(meta_path)
         log.append(f"SampleMeta written: {meta_path.name}")

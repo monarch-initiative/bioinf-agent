@@ -35,13 +35,14 @@ OUTER_TOOLS = [
                 },
                 "assay_type": {
                     "type": "string",
-                    "enum": ["exome", "wgs", "rnaseq", "chipseq", "atacseq", "hic", "amplicon"],
+                    "enum": ["exome", "wgs", "rnaseq", "chipseq", "atacseq", "hic", "amplicon",
+                             "wgbs", "ont_wgs", "pacbio_hifi", "direct_rna", "isoseq", "fiberseq"],
                     "description": "Type of sequencing assay",
                 },
                 "end_type": {
                     "type": "string",
                     "enum": ["paired_end", "single_end"],
-                    "description": "Read layout (default: paired_end)",
+                    "description": "Read layout (default: paired_end; long-read platforms force single_end)",
                 },
                 "genome_build": {
                     "type": "string",
@@ -56,7 +57,23 @@ OUTER_TOOLS = [
                 },
                 "subset": {
                     "type": "string",
-                    "description": "Read count to subset to: 10K, 50K, 100K (default), 500K, 1M",
+                    "description": "Read count: 500 | 1K | 10K (default) | 50K | 100K | 500K | 1M. Use 500 for long-read platforms.",
+                },
+                "platform": {
+                    "type": "string",
+                    "enum": ["illumina", "ont", "pacbio_hifi", "pacbio_isoseq", "pacbio_fiberseq"],
+                    "description": "Sequencing platform (default: illumina). Long-read platforms store data under long_read/{ont|pacbio}/.",
+                },
+                "source_url": {
+                    "type": "string",
+                    "description": (
+                        "Override the EBI SRA URL builder. Use for data on NCBI FTP, S3, or any other "
+                        "public FASTQ URL. For paired-end data also supply source_url_r2."
+                    ),
+                },
+                "source_url_r2": {
+                    "type": "string",
+                    "description": "R2 URL when source_url is specified and data is paired-end.",
                 },
             },
             "required": ["accession", "assay_type"],
@@ -172,7 +189,10 @@ def _tool_add_core_test_data(inputs: dict, config: dict) -> dict:
         end_type=inputs.get("end_type", "paired_end"),
         genome_build=inputs.get("genome_build", "hg38"),
         sample=inputs.get("sample", ""),
-        subset=inputs.get("subset", "100K"),
+        subset=inputs.get("subset", "10K"),
+        platform=inputs.get("platform", "illumina"),
+        source_url=inputs.get("source_url", ""),
+        source_url_r2=inputs.get("source_url_r2", ""),
     )
 
 

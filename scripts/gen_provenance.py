@@ -152,11 +152,11 @@ def main() -> None:
     p.add_argument("--conda-env",     required=True, help="Absolute path to conda environment")
     p.add_argument("--pipeline-spec", required=True, help="Relative path to pipeline spec YAML from provenance file location")
 
-    # Reference genome
-    p.add_argument("--genome-build",   required=True)
-    p.add_argument("--chromosome",     required=True)
-    p.add_argument("--reference",      required=True, help="Relative path to reference FASTA")
-    p.add_argument("--reference-fai",  required=True, help="Relative path to .fai index")
+    # Reference genome (optional — omit for reference-free tools e.g. Exomiser, phenotype scorers)
+    p.add_argument("--genome-build",   default="")
+    p.add_argument("--chromosome",     default="")
+    p.add_argument("--reference",      default="", help="Relative path to reference FASTA")
+    p.add_argument("--reference-fai",  default="", help="Relative path to .fai index")
 
     # Read inputs (alignment pipelines)
     p.add_argument("--sample")
@@ -191,12 +191,14 @@ def main() -> None:
     tool_versions = {t: _discover_version(args.conda_env, t) for t in tools}
 
     # Build sub-models
-    genome = GenomeRef(
-        genome_build=args.genome_build,
-        chromosome_subset=args.chromosome,
-        reference=args.reference,
-        reference_fai=args.reference_fai,
-    )
+    genome = None
+    if args.genome_build and args.reference:
+        genome = GenomeRef(
+            genome_build=args.genome_build,
+            chromosome_subset=args.chromosome,
+            reference=args.reference,
+            reference_fai=args.reference_fai,
+        )
 
     reads = None
     if args.r1:
