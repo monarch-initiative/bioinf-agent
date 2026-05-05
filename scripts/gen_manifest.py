@@ -62,71 +62,85 @@ def _genome_section(core_dir: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _samples_from_dir(assay_dir: Path, rel_prefix: str) -> list[dict]:
+    """
+    Load samples from a leaf assay directory.
+    Prefers *_sample_meta.yaml sidecars; falls back to scanning FASTQ filenames.
+    rel_prefix: path prefix from core_dir, e.g. 'short_read/paired_end/exome'
+    """
+    samples_list: list[dict] = []
+
+    for meta_file in sorted(assay_dir.glob("*_sample_meta.yaml")):
+        try:
+            meta = SampleMeta.from_yaml(meta_file)
+            samples_list.append(meta.model_dump(exclude_none=True))
+        except Exception as e:
+            print(f"[gen_manifest] WARN: could not parse {meta_file}: {e}", file=sys.stderr)
+
+    if not samples_list:
+        seen: set[str] = set()
+        for r1 in sorted(assay_dir.glob("*_R1.fastq.gz")):
+            base = r1.name.replace("_R1.fastq.gz", "")
+            if base in seen:
+                continue
+            seen.add(base)
+            parts = base.rsplit("_", 1)
+            subset = parts[-1] if len(parts) == 2 else ""
+            r2 = assay_dir / f"{base}_R2.fastq.gz"
+            samples_list.append({
+                "file_key": base,
+                "subsets": {
+                    subset: {
+                        "r1": f"{rel_prefix}/{r1.name}",
+                        "r2": f"{rel_prefix}/{r2.name}" if r2.exists() else None,
+                        "num_reads": (
+                            int(subset.rstrip("KMG")) *
+                            (1_000_000 if subset.endswith("M") else 1_000)
+                        ) if subset else 0,
+                        "available": r1.exists(),
+                    }
+                },
+            })
+
+    return samples_list
+
+
 def _sequencing_data_section(core_dir: Path) -> dict:
     """
-    Walk short_read/*/*/  looking for *_sample_meta.yaml sidecars.
-    Falls back to scanning for FASTQ files without a sidecar.
+    Walk short_read/{end_type}/{assay_type}/ and long_read/{platform}/{assay_type}/
+    looking for *_sample_meta.yaml sidecars or FASTQ filenames.
     """
     sd: dict = {}
 
+    # --- short_read ---
     short_read_root = core_dir / "short_read"
-    if not short_read_root.exists():
-        return sd
-
-    for end_type_dir in sorted(short_read_root.iterdir()):
-        if not end_type_dir.is_dir():
-            continue
-        end_type = end_type_dir.name  # paired_end, single_end, mate_pair
-
-        for assay_dir in sorted(end_type_dir.iterdir()):
-            if not assay_dir.is_dir():
+    if short_read_root.exists():
+        for end_type_dir in sorted(short_read_root.iterdir()):
+            if not end_type_dir.is_dir():
                 continue
-            assay_type = assay_dir.name
+            end_type = end_type_dir.name
+            for assay_dir in sorted(end_type_dir.iterdir()):
+                if not assay_dir.is_dir():
+                    continue
+                rel = f"short_read/{end_type}/{assay_dir.name}"
+                samples = _samples_from_dir(assay_dir, rel)
+                if samples:
+                    sd.setdefault("short_read", {}).setdefault(end_type, {})[assay_dir.name] = samples
 
-            samples_list = []
-
-            # Prefer sidecar YAML
-            for meta_file in sorted(assay_dir.glob("*_sample_meta.yaml")):
-                try:
-                    meta = SampleMeta.from_yaml(meta_file)
-                    entry = meta.model_dump(exclude_none=True)
-                    # Replace SubsetInfo objects with plain dicts (already done by model_dump)
-                    samples_list.append(entry)
-                except Exception as e:
-                    print(f"[gen_manifest] WARN: could not parse {meta_file}: {e}", file=sys.stderr)
-
-            # If no sidecars, create a minimal entry from FASTQ filenames.
-            # Expected naming: {sample}_{accession}_{subset}_R1.fastq.gz
-            if not samples_list:
-                r1_files = sorted(assay_dir.glob("*_R1.fastq.gz"))
-                seen: set[str] = set()
-                for r1 in r1_files:
-                    base = r1.name.replace("_R1.fastq.gz", "")  # {sample}_{accession}_{subset}
-                    if base in seen:
-                        continue
-                    seen.add(base)
-                    # Infer subset from last underscore-delimited token (e.g. "100K")
-                    parts = base.rsplit("_", 1)
-                    subset = parts[-1] if len(parts) == 2 else ""
-                    r2 = assay_dir / f"{base}_R2.fastq.gz"
-                    samples_list.append({
-                        "file_key": base,
-                        "subsets": {
-                            subset: {
-                                "r1": f"short_read/{end_type}/{assay_type}/{r1.name}",
-                                "r2": (f"short_read/{end_type}/{assay_type}/{r2.name}"
-                                       if r2.exists() else None),
-                                "num_reads": (
-                                    int(subset.rstrip("KMG")) *
-                                    (1_000_000 if subset.endswith("M") else 1000)
-                                ) if subset else 0,
-                                "available": r1.exists(),
-                            }
-                        },
-                    })
-
-            if samples_list:
-                sd.setdefault("short_read", {}).setdefault(end_type, {})[assay_type] = samples_list
+    # --- long_read ---
+    long_read_root = core_dir / "long_read"
+    if long_read_root.exists():
+        for platform_dir in sorted(long_read_root.iterdir()):
+            if not platform_dir.is_dir():
+                continue
+            platform = platform_dir.name  # ont | pacbio
+            for assay_dir in sorted(platform_dir.iterdir()):
+                if not assay_dir.is_dir():
+                    continue
+                rel = f"long_read/{platform}/{assay_dir.name}"
+                samples = _samples_from_dir(assay_dir, rel)
+                if samples:
+                    sd.setdefault("long_read", {}).setdefault(platform, {})[assay_dir.name] = samples
 
     return sd
 
@@ -261,8 +275,10 @@ def main() -> None:
         f"# Controlled vocabulary:\n"
         f"#   read_type:  short_read | long_read\n"
         f"#   end_type:   paired_end | single_end | mate_pair\n"
-        f"#   assay_type: exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon\n"
-        f"#   file_type:  fastq | bam | sam | bai | vcf | bed | bigwig | pod5 | fast5\n"
+        f"#   platform:   illumina | ont | pacbio_hifi | pacbio_isoseq | pacbio_fiberseq\n"
+        f"#   assay_type: exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon | wgbs\n"
+        f"#               ont_wgs | pacbio_hifi | direct_rna | isoseq | fiberseq\n"
+        f"#   file_type:  fastq | bam | sam | bai | tbi | vcf | bed | bigwig | pod5 | fast5\n"
         f"\n"
     )
     out_path.write_text(header + yaml.dump(manifest, default_flow_style=False, sort_keys=False))

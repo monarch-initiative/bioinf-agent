@@ -41,6 +41,7 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.validators.output_validator import OutputValidator
 from agent.skills.install_pipeline import InstallPipelineSkill  # for _save_spec / _write_provenance only
+from agent.tools import _tool_list_resources, _tool_list_pipelines
 
 _pkg_search  = PackageSearch(config)
 _env_mgr     = EnvManager(config)
@@ -92,12 +93,23 @@ def run_in_env(
     command: str,
     working_dir: str = "",
     timeout_seconds: int = 1800,
+    inputs: list[str] = [],
+    watch_dir: str = "",
 ) -> dict:
-    """Run an arbitrary shell command inside a conda environment. Always use absolute paths."""
+    """Run an arbitrary shell command inside a conda environment. Always use absolute paths.
+
+    inputs:    filenames consumed by this step — echoed back in the return value.
+    watch_dir: directory to snapshot before/after execution. New and modified files
+               are returned as detected_outputs. Defaults to working_dir if omitted.
+
+    Return keys: returncode, stdout, stderr, success, command, runtime_seconds,
+                 inputs, detected_outputs."""
     return _env_mgr.run_in_env(
         env_name, command,
         working_dir=working_dir or None,
         timeout=timeout_seconds,
+        inputs=inputs,
+        watch_dir=watch_dir or working_dir or None,
     )
 
 # ---------------------------------------------------------------------------
@@ -108,7 +120,6 @@ def run_in_env(
 def list_available_resources(resource_type: str = "both") -> dict:
     """List genomes and/or test datasets on disk.
     resource_type: 'genomes' | 'test_data' | 'both'"""
-    from agent.tools import _tool_list_resources
     return _tool_list_resources({"resource_type": resource_type}, config)
 
 
@@ -126,14 +137,21 @@ def add_core_test_data(
     end_type: str = "paired_end",
     genome_build: str = "hg38",
     sample: str = "",
-    subset: str = "100K",
+    subset: str = "10K",
+    platform: str = "illumina",
+    source_url: str = "",
+    source_url_r2: str = "",
 ) -> dict:
-    """Stream-download and register a new sequencing dataset from EBI SRA.
-    assay_type: exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon"""
+    """Stream-download and register a new sequencing dataset.
+    assay_type:   exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon | wgbs | ont_wgs | pacbio_hifi | direct_rna | isoseq | fiberseq
+    platform:     illumina (default) | ont | pacbio_hifi | pacbio_isoseq | pacbio_fiberseq
+    subset:       500 | 1K | 10K (default) | 50K | 100K | 500K | 1M  — use 500 for long-read platforms
+    source_url:   override EBI URL builder (e.g. NCBI FTP, S3). For paired-end also supply source_url_r2."""
     return _add_core_test_data(
         config, accession, assay_type,
         end_type=end_type, genome_build=genome_build,
-        sample=sample, subset=subset,
+        sample=sample, subset=subset, platform=platform,
+        source_url=source_url, source_url_r2=source_url_r2,
     )
 
 # ---------------------------------------------------------------------------
@@ -179,34 +197,51 @@ def write_pipeline_provenance(
     pipeline: str,
     conda_env_path: str,
     pipeline_spec_path: str,
-    genome_build: str,
-    chromosome: str,
-    reference_path: str,
     output_files: list[dict],
     output_dir: str,
     sample_key: str,
+    # genome reference — optional for tools that don't use a reference FASTA
+    genome_build: str = "",
+    chromosome: str = "",
+    reference_path: str = "",
+    # input types — at least one must be provided
     reads: Optional[dict] = None,
     bam_input: Optional[dict] = None,
+    vcf_input: Optional[dict] = None,
+    phenotype: Optional[dict] = None,
+    pedigree: Optional[dict] = None,
     upstream_pipelines: Optional[list[str]] = None,
     parameters: Optional[dict] = None,
 ) -> dict:
     """Write a validated provenance YAML for a completed pipeline run.
+
     output_files: list of {file: str, type: str, indexed: bool}
-    reads: {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
-    bam_input: {bam: str, bai: str}"""
+
+    Input types (at least one required):
+      reads:      {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
+      bam_input:  {bam: str, bai: str}
+      vcf_input:  {vcf: str, tbi?: str, genome_build: str, upstream_pipeline?: str, sample_ids?: []}
+      phenotype:  {ontology?: str, terms: [str], source?: str}
+      pedigree:   {ped: str, proband?: str}
+
+    genome_build / chromosome / reference_path are optional for tools that do not
+    consume a reference FASTA (e.g. variant prioritizers, phenotype scorers)."""
     inputs: dict[str, Any] = {
-        "pipeline":          pipeline,
-        "conda_env_path":    conda_env_path,
+        "pipeline":           pipeline,
+        "conda_env_path":     conda_env_path,
         "pipeline_spec_path": pipeline_spec_path,
-        "genome_build":      genome_build,
-        "chromosome":        chromosome,
-        "reference_path":    reference_path,
-        "output_files":      output_files,
-        "output_dir":        output_dir,
-        "sample_key":        sample_key,
+        "genome_build":       genome_build,
+        "chromosome":         chromosome,
+        "reference_path":     reference_path,
+        "output_files":       output_files,
+        "output_dir":         output_dir,
+        "sample_key":         sample_key,
     }
     if reads:               inputs["reads"]               = reads
     if bam_input:           inputs["bam_input"]           = bam_input
+    if vcf_input:           inputs["vcf_input"]           = vcf_input
+    if phenotype:           inputs["phenotype"]           = phenotype
+    if pedigree:            inputs["pedigree"]            = pedigree
     if upstream_pipelines:  inputs["upstream_pipelines"]  = upstream_pipelines
     if parameters:          inputs["parameters"]          = parameters
     return _skill._write_provenance(inputs)
@@ -215,7 +250,6 @@ def write_pipeline_provenance(
 @mcp.tool()
 def list_installed_pipelines() -> dict:
     """List all pipelines installed and validated, with Docker tags and validation status."""
-    from agent.tools import _tool_list_pipelines
     return _tool_list_pipelines(config)
 
 

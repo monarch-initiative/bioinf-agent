@@ -52,6 +52,14 @@ a:hover { color: #1d4ed8; }
 .step-block:last-child { margin-bottom: 0; }
 .val-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem;
            padding: 0.25rem 0; }
+.io-group { display: flex; flex-direction: column; gap: 0.75rem; margin: 0.75rem 0 0.25rem; }
+.io-block { min-width: 180px; }
+.io-block .io-label { font-size: 0.78rem; font-weight: 600; text-transform: uppercase;
+                      letter-spacing: 0.06em; color: #64748b; margin-bottom: 0.35rem; }
+.io-file { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem;
+           padding: 0.18rem 0; color: #1e293b; }
+.io-file code { background: #f1f5f9; border-radius: 4px; padding: 1px 6px; }
+.io-size { font-size: 0.78rem; color: #94a3b8; }
 footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem; }
 """
 
@@ -77,6 +85,67 @@ def _status_badge(spec: dict) -> str:
     return _badge("Unknown", "skip")
 
 
+def _runtime_env_section(spec: dict) -> str:
+    re = spec.get("runtime_environment")
+    if not re:
+        return ""
+    env_type = re.get("type", "conda")
+    if env_type == "conda":
+        return ""
+    fields = [("Type", env_type)]
+    if re.get("java_flags"):
+        fields.append(("JVM flags", f"<code>{' '.join(re['java_flags'])}</code>"))
+    if re.get("jar_path"):
+        fields.append(("JAR path", f"<code>{re['jar_path']}</code>"))
+    if re.get("wrapper_script"):
+        fields.append(("Wrapper script", f"<code>{re['wrapper_script']}</code>"))
+    if re.get("docker_image"):
+        fields.append(("Docker image", f"<code>{re['docker_image']}</code>"))
+    if re.get("min_ram_gb"):
+        fields.append(("Min RAM", f"{re['min_ram_gb']} GB"))
+    if re.get("min_cpu"):
+        fields.append(("Min CPUs", str(re["min_cpu"])))
+    kv = "\n".join(
+        f'<div class="key">{k}</div><div class="val">{v}</div>' for k, v in fields
+    )
+    return f"""
+<div class="section">
+  <h2>☕ Runtime Environment</h2>
+  <div class="kv">{kv}</div>
+</div>"""
+
+
+def _reference_databases_section(spec: dict) -> str:
+    dbs = spec.get("reference_databases", [])
+    if not dbs:
+        return ""
+    rows = []
+    for db in dbs:
+        size = f"{db.get('size_gb', 0):.1f} GB" if db.get("size_gb") else "—"
+        coupled = db.get("coupled_to_version") or "—"
+        local = db.get("local_path") or "—"
+        avail = "✅" if db.get("available") else "❌"
+        rows.append(
+            f"<tr><td><strong>{db.get('name','')}</strong></td>"
+            f"<td>{db.get('version','')}</td>"
+            f"<td>{size}</td>"
+            f"<td>{avail}</td>"
+            f"<td>{coupled}</td>"
+            f"<td><code style='font-size:0.8rem'>{local}</code></td></tr>"
+        )
+    return f"""
+<div class="section">
+  <h2>🗄️ Reference Databases</h2>
+  <p style="font-size:0.9rem;color:#475569;margin-bottom:0.75rem">
+    Mounted at runtime — not baked into the Docker image.
+  </p>
+  <table>
+    <thead><tr><th>Database</th><th>Version</th><th>Size</th><th>Available</th><th>Coupled to version</th><th>Local path</th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table>
+</div>"""
+
+
 def _docker_section(spec: dict) -> str:
     docker = spec.get("docker")
     if not docker:
@@ -93,6 +162,11 @@ def _docker_section(spec: dict) -> str:
         ("Image tag", f"<code>{tag}</code>" if tag != "—" else "—"),
         ("Registry", registry),
     ]
+    if docker.get("volume_mounts"):
+        mounts_html = "<br>".join(f"<code>{m}</code>" for m in docker["volume_mounts"])
+        rows.append(("Volume mounts", mounts_html))
+    if docker.get("runtime_data_env"):
+        rows.append(("Data dir env var", f"<code>{docker['runtime_data_env']}</code>"))
     if reason:
         rows.append(("Notes", reason))
 
@@ -177,6 +251,42 @@ def _test_data_section(spec: dict) -> str:
 </div>"""
 
 
+def _io_group(step: dict) -> str:
+    inputs = step.get("inputs", [])
+    outputs = step.get("outputs", [])
+    validation = step.get("validation") or {}
+    if not inputs and not outputs:
+        return ""
+
+    def _file_rows(files: list, validate: bool) -> str:
+        html = ""
+        for f in files:
+            name = Path(f).name
+            if validate:
+                vr = validation.get(f) or validation.get(name) or {}
+                passed = vr.get("passed")
+                size = vr.get("size_bytes", 0)
+                size_str = f'<span class="io-size">{size / 1024:.1f} KB</span>' if size else ""
+                if passed is True:
+                    icon = "✅"
+                elif passed is False:
+                    icon = "❌"
+                else:
+                    icon = "🔲"
+                html += f'<div class="io-file">{icon} <code>{name}</code> {size_str}</div>'
+            else:
+                html += f'<div class="io-file">📄 <code>{name}</code></div>'
+        return html
+
+    in_html = out_html = ""
+    if inputs:
+        in_html = f'<div class="io-block"><div class="io-label">Inputs</div>{_file_rows(inputs, False)}</div>'
+    if outputs:
+        out_html = f'<div class="io-block"><div class="io-label">Outputs</div>{_file_rows(outputs, True)}</div>'
+
+    return f'<div class="io-group">{in_html}{out_html}</div>'
+
+
 def _steps_section(spec: dict) -> str:
     steps = spec.get("pipeline_steps", [])
     if not steps:
@@ -189,39 +299,13 @@ def _steps_section(spec: dict) -> str:
         version = s.get("version") or s.get("resolved_version", "")
         cmd = s.get("command", "")
         rc = s.get("returncode")
-        status = s.get("status", "")
 
+        exit_html = ""
         if rc is not None:
-            exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{"#16a34a" if rc == 0 else "#dc2626"}">exit {rc}</span>'
-        else:
-            exit_html = ""
+            color = "#16a34a" if rc == 0 else "#dc2626"
+            exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{color}">exit {rc}</span>'
 
-        validation = s.get("validation") or s.get("validation_details")
-
-        val_html = ""
-        if isinstance(validation, dict):
-            for fname, vr in validation.items():
-                if isinstance(vr, dict):
-                    ok = vr.get("passed", False)
-                    size = vr.get("size_bytes", 0)
-                    size_str = f"{size / 1024:.1f} KB" if size else ""
-                else:
-                    ok = bool(vr)
-                    size_str = ""
-                icon = "✅" if ok else "❌"
-                val_html += f'<div class="val-row">{icon} <code>{fname}</code> {size_str}</div>'
-        elif validation:
-            val_html = f'<div class="val-row">{"✅" if validation else "❌"} {validation}</div>'
-        elif status == "validated":
-            val_html = '<div class="val-row">✅ validated</div>'
-
-        outputs = s.get("outputs", {})
-        out_html = ""
-        if outputs:
-            out_html = "<br><strong>Outputs:</strong><ul style='margin:0.4rem 0 0 1.2rem;font-size:0.85rem'>"
-            for k, v in outputs.items():
-                out_html += f"<li><code>{Path(str(v)).name}</code></li>"
-            out_html += "</ul>"
+        io_html = _io_group(s)
 
         blocks.append(f"""
 <div class="step-block">
@@ -232,8 +316,7 @@ def _steps_section(spec: dict) -> str:
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>{cmd}</pre>
-  {out_html}
-  {('<div style="margin-top:0.6rem"><strong style="font-size:0.85rem;color:#475569">Validation:</strong>' + val_html + '</div>') if val_html else ''}
+  {io_html}
 </div>""")
 
     return f"""
@@ -306,6 +389,8 @@ def generate(spec: dict) -> str:
 
     body = "".join([
         _packages_table(spec),
+        _runtime_env_section(spec),
+        _reference_databases_section(spec),
         _test_data_section(spec),
         _steps_section(spec),
         _usage_guide(spec),

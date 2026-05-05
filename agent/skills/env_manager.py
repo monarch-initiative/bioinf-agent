@@ -142,10 +142,14 @@ class EnvManager:
         command: str,
         working_dir: str | None = None,
         timeout: int = 1800,
+        inputs: list[str] | None = None,
+        watch_dir: str | None = None,
     ) -> dict[str, Any]:
         env_path = self.envs_dir / env_name
 
-        # conda run executes inside the env without activating it in the shell
+        watch = Path(watch_dir) if watch_dir else (Path(working_dir) if working_dir else None)
+        before = self._snapshot(watch)
+
         cmd = ["conda", "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", command]
 
@@ -162,10 +166,40 @@ class EnvManager:
             "success": result["returncode"] == 0,
             "command": command,
             "runtime_seconds": round(time.monotonic() - t0, 2),
+            "inputs": inputs or [],
+            "detected_outputs": self._diff_snapshot(before, watch),
         }
 
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
+
+    # -----------------------------------------------------------------------
+    # Filesystem snapshot helpers
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _snapshot(directory: Path | None) -> dict[str, float]:
+        """Return {relative_path: mtime} for every file under directory."""
+        if not directory or not directory.exists():
+            return {}
+        return {
+            str(p.relative_to(directory)): p.stat().st_mtime
+            for p in directory.rglob("*") if p.is_file()
+        }
+
+    @staticmethod
+    def _diff_snapshot(before: dict[str, float], directory: Path | None) -> list[str]:
+        """Return filenames of files created or modified since the snapshot."""
+        if not directory or not directory.exists():
+            return []
+        result = []
+        for p in directory.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(directory))
+            if rel not in before or p.stat().st_mtime > before[rel]:
+                result.append(p.name)
+        return result
 
     # -----------------------------------------------------------------------
     # Internal

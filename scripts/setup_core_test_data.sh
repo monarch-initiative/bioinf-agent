@@ -117,10 +117,76 @@ else
   skip "BWA index"
 fi
 
+# ---------------------------------------------------------------------------
+# 4. Core sequencing test datasets (10K reads each, idempotent)
+# ---------------------------------------------------------------------------
+log "Adding core sequencing test datasets (10K reads each)..."
+cd "$PROJECT_ROOT"
+python3 - <<'PYEOF'
+import sys, yaml
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd()))
+from agent.skills.core_test_data import add_core_test_data
+
+config = yaml.safe_load(open("config/agent_config.yaml"))
+
+short_read_datasets = [
+    # Exome paired-end — 1000 Genomes HG00096
+    dict(accession="SRR1517830", assay_type="exome",  end_type="paired_end", sample="HG00096"),
+    # RNA-seq single-end — airway smooth muscle (Himes et al. 2014)
+    dict(accession="SRR1039508", assay_type="rnaseq", end_type="single_end", sample="airway"),
+    # RNA-seq paired-end — GEUVADIS NA20503
+    dict(accession="ERR188297",  assay_type="rnaseq", end_type="paired_end", sample="NA20503"),
+    # Hi-C paired-end — GM12878 in-situ Hi-C (Rao et al. 2014)
+    dict(accession="SRR1658581", assay_type="hic",    end_type="paired_end", sample="GM12878"),
+    # WGS paired-end — NA12878 (1000 Genomes)
+    dict(accession="ERR001268",  assay_type="wgs",    end_type="paired_end", sample="NA12878"),
+    # WGBS paired-end — ENCODE ENCSR890UQO (GSE86765)
+    dict(accession="SRR4235788", assay_type="wgbs",   end_type="paired_end", sample="ENCSR890UQO"),
+]
+
+ok = True
+for d in short_read_datasets:
+    label = f"{d['accession']} ({d['assay_type']} {d['end_type']})"
+    print(f"[setup] Adding {label}...")
+    result = add_core_test_data(config, subset="10K", **d)
+    if result.get("success"):
+        print(f"[setup] OK: {d['accession']}")
+    else:
+        print(f"[setup] WARN: {result.get('error', 'unknown error')}", file=sys.stderr)
+        ok = False
+
+# Long-read datasets — 500 reads each, best-effort (failures are logged but don't abort)
+# PacBio HiFi: EBI SRA only stores raw subreads; use GIAB NCBI FTP for CCS FASTQ directly.
+GIAB_HIFI_BASE = (
+    "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/"
+    "AshkenazimTrio/HG002_NA24385_son/PacBio_CCS_15kb_20kb_chemistry2/reads/"
+)
+long_read_datasets = [
+    # ONT WGS — NA12878 ultralong reads (Jain et al. 2018, PRJEB26791)
+    dict(accession="ERR3152364", assay_type="ont_wgs", sample="NA12878",
+         platform="ont", subset="500"),
+    # PacBio HiFi — GIAB HG002, 15–20 kb CCS reads (NCBI FTP direct)
+    dict(accession="HG002_CCS_15kb", assay_type="pacbio_hifi", sample="HG002",
+         platform="pacbio_hifi", subset="500",
+         source_url=f"{GIAB_HIFI_BASE}m64011_190830_220126.fastq.gz"),
+]
+
+for d in long_read_datasets:
+    label = f"{d['accession']} ({d['assay_type']})"
+    print(f"[setup] Adding {label} (best-effort)...")
+    result = add_core_test_data(config, **d)
+    if result.get("success"):
+        print(f"[setup] OK: {d['accession']}")
+    else:
+        print(f"[setup] SKIP (long-read): {result.get('error', 'unknown error')}", file=sys.stderr)
+
+sys.exit(0 if ok else 1)
+PYEOF
+
 log ""
-log "Done. Reference genome ready at: $CORE_DIR/genome/"
+log "Done. Core test data ready at: $CORE_DIR/"
 log ""
-log "Next — run the agent to add test data and install pipelines:"
-log "  python -m agent.main"
-log "  > add test data: SRR1517830, exome, hg38"
-log "  > install bwa_samtools and freebayes as my wgs_variant_pipeline"
+log "Next — install pipelines via Claude Code:"
+log "  install bwa_samtools and freebayes as my wgs_variant_pipeline"

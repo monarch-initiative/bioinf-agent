@@ -39,6 +39,7 @@ class OutputValidator:
         dispatch = {
             "sam":           self._check_sam,
             "bam":           self._check_sam,   # samtools handles both
+            "bai":           self._check_bai,
             "fastq":         self._check_fastq,
             "fasta":         self._check_fasta,
             "vcf":           self._check_vcf,
@@ -100,7 +101,7 @@ class OutputValidator:
             return {"passed": False, "validation_method": "text_fallback", "error": "FASTQ line 3 should start with '+'"}
         if len(lines[1]) != len(lines[3]):
             return {"passed": False, "validation_method": "text_fallback", "error": "Sequence and quality length mismatch"}
-        return {"passed": True, "validation_method": "text_fallback", "read_length": len(lines[1]), "note": "seqkit unavailable — text check only"}
+        return {"passed": True, "validation_method": "text_fallback", "read_length": self._max_fastq_read_length(path), "note": "seqkit unavailable — text check only"}
 
     def _check_fasta(self, path: Path) -> dict:
         """FASTA — seqkit stats, header text fallback."""
@@ -149,6 +150,14 @@ class OutputValidator:
         except ValueError:
             return {"passed": False, "validation_method": "text_fallback", "error": "BED start/end are not integers"}
         return {"passed": True, "validation_method": "text_fallback", "fields_per_line": len(fields)}
+
+    def _check_bai(self, path: Path) -> dict:
+        """BAM index — check magic bytes (BAI\1 = 0x42 0x41 0x49 0x01)."""
+        with open(path, "rb") as f:
+            magic = f.read(4)
+        if magic == b"\x42\x41\x49\x01":
+            return {"passed": True, "validation_method": "magic_bytes"}
+        return {"passed": False, "validation_method": "magic_bytes", "error": "BAI magic bytes not found"}
 
     def _check_bigwig(self, path: Path) -> dict:
         with open(path, "rb") as f:
@@ -202,6 +211,24 @@ class OutputValidator:
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(e))
 
+    def _max_fastq_read_length(self, path: Path, max_records: int = 1000) -> int:
+        """Scan up to max_records FASTQ records and return the maximum sequence length."""
+        max_len = 0
+        try:
+            opener = gzip.open if path.suffix in (".gz", ".bgz") else open
+            with opener(path, "rt", errors="replace") as f:
+                for _ in range(max_records):
+                    if not f.readline():  # @header — EOF
+                        break
+                    seq = f.readline().rstrip()
+                    f.readline()          # +
+                    f.readline()          # quality
+                    if seq:
+                        max_len = max(max_len, len(seq))
+        except Exception:
+            pass
+        return max_len
+
     def _head_lines(self, path: Path, n: int) -> list[str]:
         try:
             opener = gzip.open if path.suffix in (".gz", ".bgz") else open
@@ -209,6 +236,29 @@ class OutputValidator:
                 return [f.readline().rstrip() for _ in range(n)]
         except Exception:
             return []
+
+    @staticmethod
+    def infer_type(filename: str) -> str:
+        """Return the expected_type string for a filename based on its extension."""
+        name = filename.lower()
+        if name.endswith(".bam"):       return "bam"
+        if name.endswith(".bam.bai"):   return "bai"
+        if name.endswith(".bai"):       return "bai"
+        if name.endswith(".sam"):       return "sam"
+        if name.endswith(".vcf") or name.endswith(".vcf.gz"): return "vcf"
+        if name.endswith(".bcf"):       return "bcf"
+        if name.endswith(".fastq.gz") or name.endswith(".fastq") or name.endswith(".fq"): return "fastq"
+        if name.endswith(".fasta") or name.endswith(".fa") or name.endswith(".fna"): return "fasta"
+        if name.endswith(".bed"):       return "bed"
+        if name.endswith(".bw") or name.endswith(".bigwig"): return "bigwig"
+        if name.endswith(".gtf") or name.endswith(".gtf.gz"): return "gtf"
+        if name.endswith(".gff") or name.endswith(".gff3"):   return "gff"
+        if name.endswith(".bim"):       return "bim"
+        if name.endswith(".fam"):       return "fam"
+        if name.endswith(".log"):       return "log"
+        if name.endswith(".txt"):       return "log"
+        if name.endswith(".tsv"):       return "log"
+        return "any"
 
     @staticmethod
     def _parse_seqkit_stats(stdout: str) -> dict | None:

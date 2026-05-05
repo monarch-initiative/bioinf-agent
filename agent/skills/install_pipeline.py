@@ -13,22 +13,30 @@ Runs a sub-agent loop (its own Claude tool-use conversation) that:
 """
 
 import json
+import os
 import subprocess
+import sys
 import textwrap
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import anthropic
 import yaml
 
+from agent.models.core_data import (
+    BamInput, GenomeRef, OutputFile, PedigreeInput, PhenotypeInput,
+    PipelineSpec, Provenance, ReadInput, VcfInput,
+)
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.report_builder import generate as generate_report
 from agent.skills.test_runner import TestRunner
+from agent.tools import _tool_list_resources
 from agent.validators.output_validator import OutputValidator
+from scripts.gen_provenance import _PIPELINE_TOOLS, _discover_version
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +302,29 @@ SUB_TOOLS = [
                         "Fields: bam (abs path), bai (abs path)"
                     ),
                 },
+                "vcf_input": {
+                    "type": "object",
+                    "description": (
+                        "VCF inputs for annotation/prioritization pipelines. "
+                        "Fields: vcf (abs path), tbi (abs path, optional), genome_build, "
+                        "upstream_pipeline (optional), sample_ids (list, optional)"
+                    ),
+                },
+                "phenotype": {
+                    "type": "object",
+                    "description": (
+                        "Ontology-based phenotype terms for prioritization tools (Exomiser, etc.). "
+                        "Fields: ontology (HPO/GO/MP/DOID, default HPO), terms (list of term IDs "
+                        "e.g. ['HP:0001250']), source (optional)"
+                    ),
+                },
+                "pedigree": {
+                    "type": "object",
+                    "description": (
+                        "PED file for family/trio analysis. "
+                        "Fields: ped (abs path), proband (sample ID of affected individual, optional)"
+                    ),
+                },
                 "upstream_pipelines": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -327,7 +358,6 @@ SUB_TOOLS = [
             },
             "required": [
                 "pipeline", "conda_env_path", "pipeline_spec_path",
-                "genome_build", "chromosome", "reference_path",
                 "output_files", "output_dir", "sample_key",
             ],
         },
@@ -410,9 +440,9 @@ class InstallPipelineSkill:
               `{project_root / self.config['paths']['data_dir']}/core_test_data_{{genome_build}}/`
               (e.g. `core_test_data_hg38/`). Always check here first before generating new data:
                 - Genome + indexes: `core_test_data_hg38/genome/chr22.fa` (+ .fai, .amb, .ann, .bwt, .pac, .sa)
-                - Reads: `core_test_data_hg38/short_read/paired_end/exome/HG00096_SRR1517830_100K_R1.fastq.gz`
+                - Reads: `core_test_data_hg38/short_read/paired_end/exome/HG00096_SRR1517830_10K_R1.fastq.gz`
                 - Pre-built pipeline outputs (BAM, VCF, etc.): `core_test_data_hg38/pipeline_outputs/{{pipeline}}/`
-                  e.g. sorted BAM at `core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830_100K_aligned_sorted.bam`
+                  e.g. sorted BAM at `core_test_data_hg38/pipeline_outputs/bwa_samtools/HG00096_SRR1517830_10K_aligned_sorted.bam`
               Read `core_test_data_hg38/manifest.yaml` to discover exactly what is available.
               If core data exists, use it directly — do not re-extract or re-subset reads.
               Each `pipeline_outputs/{{name}}/` dir has `{{sample_key}}_provenance.yaml` recording the exact
@@ -629,11 +659,10 @@ class InstallPipelineSkill:
     # -----------------------------------------------------------------------
 
     def _list_resources(self, resource_type: str) -> dict:
-        from agent.tools import _tool_list_resources
         return _tool_list_resources({"resource_type": resource_type}, self.config)
 
     def _record_step_validation(self, pipeline_spec: dict, file_path: str, result: dict):
-        pipeline_spec["steps"].append(
+        pipeline_spec.setdefault("pipeline_steps", []).append(
             {
                 "output_file": file_path,
                 "validation": "passed",
@@ -642,8 +671,6 @@ class InstallPipelineSkill:
         )
 
     def _save_spec(self, spec: dict) -> dict:
-        from agent.models.core_data import PipelineSpec
-
         pipelines_dir = Path(__file__).parent.parent.parent / self.config["paths"]["pipelines_dir"]
         pipelines_dir.mkdir(parents=True, exist_ok=True)
 
@@ -667,7 +694,6 @@ class InstallPipelineSkill:
             pspec = PipelineSpec.model_validate(spec)
             write_spec = pspec.model_dump(exclude_none=True)
         except Exception as e:
-            import sys
             print(f"[install_pipeline] WARN: PipelineSpec validation failed: {e}", file=sys.stderr)
             write_spec = spec
 
@@ -688,26 +714,22 @@ class InstallPipelineSkill:
         return {"saved_yaml": str(yaml_path), "saved_html": str(html_path)}
 
     def _write_provenance(self, inputs: dict) -> dict:
-        from agent.models.core_data import (
-            BamInput, GenomeRef, OutputFile, Provenance, ReadInput,
-        )
-        from datetime import date
-
-        project_root = Path(__file__).parent.parent.parent.resolve()
         output_dir = Path(inputs["output_dir"])
         sample_key = inputs["sample_key"]
         prov_path = output_dir / f"{sample_key}_provenance.yaml"
 
         def _rel(abs_path: str) -> str:
-            import os
             return os.path.relpath(Path(abs_path).resolve(), output_dir.resolve())
 
-        genome = GenomeRef(
-            genome_build=inputs["genome_build"],
-            chromosome_subset=inputs["chromosome"],
-            reference=_rel(inputs["reference_path"]),
-            reference_fai=_rel(inputs["reference_path"] + ".fai"),
-        )
+        # Genome reference — optional for tools that don't consume a reference FASTA
+        genome = None
+        if inputs.get("reference_path"):
+            genome = GenomeRef(
+                genome_build=inputs["genome_build"],
+                chromosome_subset=inputs.get("chromosome", ""),
+                reference=_rel(inputs["reference_path"]),
+                reference_fai=_rel(inputs["reference_path"] + ".fai"),
+            )
 
         _DB_ALIASES = {"SRA": "EBI_SRA", "NCBI": "NCBI_SRA", "EBI": "EBI_SRA"}
 
@@ -734,6 +756,34 @@ class InstallPipelineSkill:
             b = inputs["bam_input"]
             bam_input = BamInput(bam=_rel(b["bam"]), bai=_rel(b["bai"]))
 
+        vcf_input = None
+        if inputs.get("vcf_input"):
+            v = inputs["vcf_input"]
+            vcf_input = VcfInput(
+                vcf=_rel(v["vcf"]),
+                tbi=_rel(v["tbi"]) if v.get("tbi") else None,
+                genome_build=v.get("genome_build", inputs.get("genome_build", "")),
+                upstream_pipeline=v.get("upstream_pipeline"),
+                sample_ids=v.get("sample_ids", []),
+            )
+
+        phenotype = None
+        if inputs.get("phenotype"):
+            p = inputs["phenotype"]
+            phenotype = PhenotypeInput(
+                ontology=p.get("ontology", "HPO"),
+                terms=p["terms"],
+                source=p.get("source"),
+            )
+
+        pedigree = None
+        if inputs.get("pedigree"):
+            g = inputs["pedigree"]
+            pedigree = PedigreeInput(
+                ped=_rel(g["ped"]),
+                proband=g.get("proband"),
+            )
+
         pipeline_spec_path = Path(inputs["pipeline_spec_path"]).resolve()
         try:
             spec_rel = str(pipeline_spec_path.relative_to(output_dir.resolve()))
@@ -741,17 +791,11 @@ class InstallPipelineSkill:
             spec_rel = str(pipeline_spec_path)
 
         outputs = [
-            OutputFile(
-                file=f["file"],
-                type=f["type"],
-                indexed=f.get("indexed", False),
-            )
+            OutputFile(file=f["file"], type=f["type"], indexed=f.get("indexed", False))
             for f in inputs.get("output_files", [])
         ]
 
-        # Discover tool versions from the conda env
         conda_env_path = inputs["conda_env_path"]
-        from scripts.gen_provenance import _PIPELINE_TOOLS, _discover_version
         tools = _PIPELINE_TOOLS.get(inputs["pipeline"], [])
         tool_versions = {t: _discover_version(conda_env_path, t) for t in tools}
 
@@ -764,6 +808,9 @@ class InstallPipelineSkill:
             genome=genome,
             reads=reads,
             bam_input=bam_input,
+            vcf_input=vcf_input,
+            phenotype=phenotype,
+            pedigree=pedigree,
             upstream_pipelines=inputs.get("upstream_pipelines", []),
             parameters=inputs.get("parameters") or None,
             outputs=outputs,
