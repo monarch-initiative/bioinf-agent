@@ -39,6 +39,7 @@ from agent.skills.env_manager import EnvManager
 from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
+from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.validators.output_validator import OutputValidator
 from agent.skills.install_pipeline import InstallPipelineSkill  # for _save_spec / _write_provenance only
 from agent.tools import _tool_list_resources, _tool_list_pipelines
@@ -157,6 +158,22 @@ def add_core_test_data(
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+def add_phenopacket(
+    source_url: str,
+    genome_build: str = "hg38",
+) -> dict:
+    """Download and register a GA4GH phenopacket JSON into core_test_data.
+
+    The phenopacket ID, subject, HPO terms, diseases, genes, and variants are
+    all extracted from the JSON itself via PhenopacketMeta.from_phenopacket() —
+    nothing is supplied manually.  Idempotent: re-running refreshes the sidecar.
+
+    source_url:   direct URL to a phenopacket JSON file (GitHub raw, HTTP, etc.)
+    genome_build: target core_test_data directory, e.g. hg38 (default)"""
+    return _add_phenopacket(config, source_url=source_url, genome_build=genome_build)
+
 
 @mcp.tool()
 def validate_output(file_path: str, expected_type: str, env_name: str = "") -> dict:

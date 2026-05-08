@@ -9,6 +9,7 @@ Single source of truth for:
   - RuntimeConfig      (config files the tool needs at runtime)
   - Provenance schema  (one pipeline run on one sample)
   - SampleMeta schema  (source metadata for a sequencing run)
+  - PhenopacketMeta    (GA4GH phenopacket clinical/genomic record)
 
 Used by:
   - scripts/gen_provenance.py   (setup script path)
@@ -407,6 +408,135 @@ class SampleMeta(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "SampleMeta":
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        return cls(**data)
+
+
+# ---------------------------------------------------------------------------
+# Phenopacket metadata — GA4GH phenopacket clinical/genomic record
+# ---------------------------------------------------------------------------
+
+
+class PhenopacketMeta(BaseModel):
+    """
+    Parsed metadata for a GA4GH Phenopacket v2.x JSON.
+
+    Populated exclusively from the phenopacket dict via from_phenopacket() —
+    nothing is filled in manually.  Written as a YAML sidecar alongside the
+    downloaded JSON so gen_manifest.py can rebuild the manifest without
+    re-parsing the JSON.
+    """
+    phenopacket_id:     str
+    subject_id:         str
+    sex:                Optional[str] = None
+    diseases:           list[dict[str, Any]] = []  # [{id, label, onset?}]
+    genes:              list[str] = []              # HGNC symbols, in order of appearance
+    hpo_terms:          list[str] = []              # present HP: IDs
+    hpo_terms_excluded: list[str] = []              # excluded HP: IDs
+    variants:           list[dict[str, Any]] = []   # one entry per genomicInterpretation
+    genome_assembly:    str = ""
+    schema_version:     str = ""
+    source_url:         str
+    file:               str                         # path relative to core_test_data dir
+
+    @classmethod
+    def from_phenopacket(
+        cls,
+        data: dict[str, Any],
+        source_url: str,
+        rel_file: str,
+    ) -> "PhenopacketMeta":
+        """Parse a raw GA4GH phenopacket dict — the only place field extraction lives."""
+        subject  = data.get("subject", {})
+        meta_raw = data.get("metaData", {})
+
+        # Phenotypic features → present / excluded HPO term lists
+        hpo_present: list[str] = []
+        hpo_excluded: list[str] = []
+        for pf in data.get("phenotypicFeatures", []):
+            term_id = pf.get("type", {}).get("id", "")
+            if not term_id:
+                continue
+            (hpo_excluded if pf.get("excluded", False) else hpo_present).append(term_id)
+
+        # Diseases
+        diseases: list[dict[str, Any]] = []
+        for d in data.get("diseases", []):
+            entry: dict[str, Any] = {
+                "id":    d.get("term", {}).get("id", ""),
+                "label": d.get("term", {}).get("label", ""),
+            }
+            onset = d.get("onset", {}).get("age", {}).get("iso8601duration")
+            if onset:
+                entry["onset"] = onset
+            diseases.append(entry)
+
+        # Genes + variants from interpretations
+        genes: list[str] = []
+        variants: list[dict[str, Any]] = []
+        genome_assembly = ""
+
+        for interp in data.get("interpretations", []):
+            for gi in interp.get("diagnosis", {}).get("genomicInterpretations", []):
+                vi = gi.get("variantInterpretation", {})
+                vd = vi.get("variationDescriptor", {})
+
+                gene = vd.get("geneContext", {}).get("symbol", "")
+                if gene and gene not in genes:
+                    genes.append(gene)
+
+                hgvs = {e["syntax"]: e["value"] for e in vd.get("expressions", [])}
+
+                vcf_rec = vd.get("vcfRecord", {})
+                if vcf_rec.get("genomeAssembly"):
+                    genome_assembly = vcf_rec["genomeAssembly"]
+
+                variant: dict[str, Any] = {"gene": gene} if gene else {}
+                for syntax_key, field in [("hgvs.c", "hgvs_c"), ("hgvs.g", "hgvs_g"), ("hgvs.p", "hgvs_p")]:
+                    if syntax_key in hgvs:
+                        variant[field] = hgvs[syntax_key]
+                if vcf_rec:
+                    variant["chrom"] = vcf_rec.get("chrom", "")
+                    variant["pos"]   = vcf_rec.get("pos")
+                    variant["ref"]   = vcf_rec.get("ref", "")
+                    variant["alt"]   = vcf_rec.get("alt", "")
+                allelic_state = vd.get("allelicState", {}).get("label")
+                if allelic_state:
+                    variant["allelic_state"] = allelic_state
+                acmg = vi.get("acmgPathogenicityClassification")
+                if acmg and acmg != "NOT_PROVIDED":
+                    variant["acmg_classification"] = acmg
+                if variant:
+                    variants.append(variant)
+
+        return cls(
+            phenopacket_id=data.get("id", ""),
+            subject_id=subject.get("id", ""),
+            sex=subject.get("sex"),
+            diseases=diseases,
+            genes=genes,
+            hpo_terms=hpo_present,
+            hpo_terms_excluded=hpo_excluded,
+            variants=variants,
+            genome_assembly=genome_assembly,
+            schema_version=meta_raw.get("phenopacketSchemaVersion", ""),
+            source_url=source_url,
+            file=rel_file,
+        )
+
+    def to_yaml(self) -> str:
+        data = self.model_dump(exclude_none=True)
+        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+    def write(self, path: str | Path) -> Path:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(self.to_yaml())
+        return out
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "PhenopacketMeta":
         with open(path) as f:
             data = yaml.safe_load(f) or {}
         return cls(**data)

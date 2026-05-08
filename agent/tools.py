@@ -11,6 +11,10 @@ from typing import Any
 
 import yaml
 
+from agent.models.core_data import PipelineSpec
+from agent.skills.core_test_data import add_core_test_data, add_phenopacket
+from agent.skills.install_pipeline import InstallPipelineSkill
+
 # ---------------------------------------------------------------------------
 # Tool schemas (passed to Claude messages.create)
 # ---------------------------------------------------------------------------
@@ -77,6 +81,28 @@ OUTER_TOOLS = [
                 },
             },
             "required": ["accession", "assay_type"],
+        },
+    },
+    {
+        "name": "add_phenopacket",
+        "description": (
+            "Download and register a GA4GH phenopacket JSON into core_test_data. "
+            "All metadata (HPO terms, diseases, genes, variants) is extracted from the "
+            "JSON itself — nothing is supplied manually. Idempotent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_url": {
+                    "type": "string",
+                    "description": "Direct URL to a phenopacket JSON file.",
+                },
+                "genome_build": {
+                    "type": "string",
+                    "description": "Target core_test_data directory, e.g. hg38 (default).",
+                },
+            },
+            "required": ["source_url"],
         },
     },
     {
@@ -167,6 +193,8 @@ OUTER_TOOLS = [
 def dispatch_outer_tool(name: str, inputs: dict, config: dict) -> dict[str, Any]:
     if name == "add_core_test_data":
         return _tool_add_core_test_data(inputs, config)
+    if name == "add_phenopacket":
+        return _tool_add_phenopacket(inputs, config)
     if name == "install_pipeline":
         return _tool_install_pipeline(inputs, config)
     if name == "list_available_resources":
@@ -180,8 +208,15 @@ def dispatch_outer_tool(name: str, inputs: dict, config: dict) -> dict[str, Any]
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+def _tool_add_phenopacket(inputs: dict, config: dict) -> dict:
+    return add_phenopacket(
+        config=config,
+        source_url=inputs["source_url"],
+        genome_build=inputs.get("genome_build", "hg38"),
+    )
+
+
 def _tool_add_core_test_data(inputs: dict, config: dict) -> dict:
-    from agent.skills.core_test_data import add_core_test_data
     return add_core_test_data(
         config=config,
         accession=inputs["accession"],
@@ -197,8 +232,6 @@ def _tool_add_core_test_data(inputs: dict, config: dict) -> dict:
 
 
 def _tool_install_pipeline(inputs: dict, config: dict) -> dict:
-    from agent.skills.install_pipeline import InstallPipelineSkill
-
     pkgs = ", ".join(
         p["name"] + (f"@{p['version']}" if p.get("version") and p["version"] != "latest" else "")
         for p in inputs["packages"]
@@ -277,6 +310,28 @@ def _tool_list_resources(inputs: dict, config: dict) -> dict:
                                     "core_dir": str(core_dir),
                                 })
 
+            # Phenopackets
+            for pk in m.get("phenopackets", []):
+                if not isinstance(pk, dict):
+                    continue
+                test_data.append({
+                    "id":              f"{build}_phenopacket_{pk.get('phenopacket_id', '')}",
+                    "genome_build":    build,
+                    "type":            "phenopacket",
+                    "phenopacket_id":  pk.get("phenopacket_id", ""),
+                    "subject_id":      pk.get("subject_id", ""),
+                    "sex":             pk.get("sex"),
+                    "genes":           pk.get("genes", []),
+                    "diseases":        pk.get("diseases", []),
+                    "hpo_terms":       pk.get("hpo_terms", []),
+                    "variants":        pk.get("variants", []),
+                    "genome_assembly": pk.get("genome_assembly", ""),
+                    "available":       pk.get("available", False),
+                    "file":            str(core_dir / pk["file"]) if pk.get("file") else None,
+                    "source_url":      pk.get("source_url", ""),
+                    "core_dir":        str(core_dir),
+                })
+
             # Pipeline outputs — each pipeline has a samples dict keyed by {sample}_{accession}
             for pipeline_name, pout in m.get("pipeline_outputs", {}).items():
                 if not isinstance(pout, dict):
@@ -314,8 +369,6 @@ def _tool_list_resources(inputs: dict, config: dict) -> dict:
 
 
 def _tool_list_pipelines(config: dict) -> dict:
-    from agent.models.core_data import PipelineSpec
-
     pipelines_dir = Path(config["paths"]["pipelines_dir"])
     pipelines = []
 

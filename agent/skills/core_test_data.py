@@ -6,16 +6,30 @@ No sub-agent loop needed: the flow is deterministic.
   2. Measure read length from the subset FASTQ
   3. Write SampleMeta YAML sidecar (or merge subset into existing)
   4. Rebuild manifest via gen_manifest.py
+
+add_phenopacket follows the same pattern for GA4GH phenopacket JSON files:
+  1. Download JSON from a URL
+  2. Parse via PhenopacketMeta.from_phenopacket() — no manual field extraction
+  3. Write JSON + sidecar YAML
+  4. Rebuild manifest
 """
 
 from __future__ import annotations
 
 import gzip
+import json
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Any
 
-from agent.models.core_data import PLATFORM_FAMILY, PLATFORM_READ_TYPE, SampleMeta, SubsetInfo
+from agent.models.core_data import (
+    PLATFORM_FAMILY,
+    PLATFORM_READ_TYPE,
+    PhenopacketMeta,
+    SampleMeta,
+    SubsetInfo,
+)
 
 
 _SUBSET_SIZES: dict[str, int] = {
@@ -256,3 +270,86 @@ def add_core_test_data(
             f"Run scripts/setup_core_test_data.sh --genome-build {genome_build} first."
         )
     return result
+
+
+def add_phenopacket(
+    config: dict,
+    source_url: str,
+    genome_build: str = "hg38",
+) -> dict[str, Any]:
+    """
+    Download and register a GA4GH phenopacket JSON into core_test_data.
+
+    The phenopacket ID is read directly from the JSON (data["id"]) — nothing
+    is inferred from the URL or passed manually.  All metadata is derived by
+    PhenopacketMeta.from_phenopacket() so no field extraction lives here.
+
+    Idempotent: re-running refreshes the sidecar without re-downloading.
+    """
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    data_dir     = project_root / config["paths"]["data_dir"]
+    core_dir     = data_dir / f"core_test_data_{genome_build}"
+    pk_dir       = core_dir / "phenopackets"
+    pk_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Download JSON (skip if already present)
+    # ------------------------------------------------------------------
+    try:
+        req = urllib.request.Request(source_url, headers={"User-Agent": "bioinf-agent/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode()
+        data: dict[str, Any] = json.loads(raw)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to download phenopacket: {e}"}
+
+    pk_id    = data.get("id") or ""
+    if not pk_id:
+        return {"success": False, "error": "Phenopacket JSON missing required 'id' field"}
+
+    json_file = pk_dir / f"{pk_id}.json"
+    log: list[str] = []
+
+    if not json_file.exists():
+        json_file.write_text(json.dumps(data, indent=2))
+        log.append(f"Downloaded: {json_file.name}")
+    else:
+        log.append(f"JSON already present: {json_file.name}")
+
+    # ------------------------------------------------------------------
+    # Build metadata entirely from the phenopacket — no manual extraction
+    # ------------------------------------------------------------------
+    rel_file = f"phenopackets/{json_file.name}"
+    meta     = PhenopacketMeta.from_phenopacket(data, source_url=source_url, rel_file=rel_file)
+
+    meta_path = pk_dir / f"{pk_id}_meta.yaml"
+    meta.write(meta_path)
+    log.append(f"PhenopacketMeta written: {meta_path.name}")
+
+    # ------------------------------------------------------------------
+    # Rebuild manifest
+    # ------------------------------------------------------------------
+    gen_manifest = project_root / "scripts" / "gen_manifest.py"
+    ret = subprocess.run(
+        ["python3", str(gen_manifest), "--core-dir", str(core_dir)],
+        capture_output=True, text=True,
+    )
+    if ret.returncode != 0:
+        log.append(f"WARNING: gen_manifest failed: {ret.stderr[:300]}")
+    else:
+        log.append("Manifest rebuilt.")
+
+    return {
+        "success":        True,
+        "phenopacket_id": pk_id,
+        "file":           str(json_file),
+        "meta":           str(meta_path),
+        "subject_id":     meta.subject_id,
+        "sex":            meta.sex,
+        "genes":          meta.genes,
+        "diseases":       meta.diseases,
+        "hpo_terms":      meta.hpo_terms,
+        "variants":       meta.variants,
+        "genome_assembly": meta.genome_assembly,
+        "log":            log,
+    }

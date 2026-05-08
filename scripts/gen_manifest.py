@@ -20,7 +20,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.models.core_data import Provenance, SampleMeta
+from agent.models.core_data import PhenopacketMeta, Provenance, SampleMeta
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +146,34 @@ def _sequencing_data_section(core_dir: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phenopackets section  (reads from PhenopacketMeta sidecars)
+# ---------------------------------------------------------------------------
+
+
+def _phenopackets_section(core_dir: Path) -> list[dict]:
+    """
+    Load PhenopacketMeta sidecars from phenopackets/.
+    Each sidecar was written by add_phenopacket() — nothing is inferred here.
+    """
+    pk_dir = core_dir / "phenopackets"
+    if not pk_dir.exists():
+        return []
+
+    result: list[dict] = []
+    for meta_file in sorted(pk_dir.glob("*_meta.yaml")):
+        try:
+            meta = PhenopacketMeta.from_yaml(meta_file)
+            entry = meta.model_dump(exclude_none=True)
+            # Annotate whether the JSON file is actually present on disk
+            json_path = core_dir / meta.file
+            entry["available"] = json_path.exists()
+            result.append(entry)
+        except Exception as e:
+            print(f"[gen_manifest] WARN: could not parse {meta_file}: {e}", file=sys.stderr)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Pipeline outputs section  (reads from Provenance sidecars)
 # ---------------------------------------------------------------------------
 
@@ -255,17 +283,20 @@ def main() -> None:
     genome = _genome_section(core_dir)
     chrom = genome.get("chromosome", "")
     sequencing_data = _sequencing_data_section(core_dir)
+    phenopackets    = _phenopackets_section(core_dir)
     pipeline_outputs = _pipeline_outputs_section(core_dir)
 
-    manifest = {
+    manifest: dict = {
         "genome_build":       build,
         "species":            "homo_sapiens" if "hg" in build else "unknown",
         "chromosome_subset":  chrom,
         "generated_at":       str(date.today()),
         "genome":             genome,
         "sequencing_data":    sequencing_data,
-        "pipeline_outputs":   pipeline_outputs,
     }
+    if phenopackets:
+        manifest["phenopackets"] = phenopackets
+    manifest["pipeline_outputs"] = pipeline_outputs
 
     out_path = core_dir / "manifest.yaml"
     header = (
