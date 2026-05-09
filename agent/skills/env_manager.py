@@ -173,6 +173,92 @@ class EnvManager:
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
 
+    def start_service(
+        self,
+        env_name: str,
+        service_name: str,
+        start_command: str,
+        health_check_command: str,
+        health_check_timeout_seconds: int = 30,
+        working_dir: str | None = None,
+        env_vars: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a background service inside the env and wait until healthy."""
+        env_path = self.envs_dir / env_name
+        pid_dir = Path("/tmp/bioinf_services")
+        pid_dir.mkdir(parents=True, exist_ok=True)
+        pid_file = pid_dir / f"{service_name}.pid"
+        log_file = pid_dir / f"{service_name}.log"
+
+        wrapped = (
+            f"nohup bash -c {repr(start_command)} > {log_file} 2>&1 & echo $! > {pid_file}"
+        )
+        cmd = ["conda", "run", "--prefix", str(env_path), "--no-capture-output",
+               "/bin/bash", "-c", wrapped]
+
+        extra_env = os.environ.copy()
+        if env_vars:
+            extra_env.update(env_vars)
+
+        launch = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30,
+            cwd=working_dir or str(self.project_root), env=extra_env,
+        )
+        if launch.returncode != 0:
+            return {"success": False, "service_name": service_name, "error": launch.stderr[-500:]}
+
+        pid = pid_file.read_text().strip() if pid_file.exists() else ""
+        deadline = time.monotonic() + health_check_timeout_seconds
+        while time.monotonic() < deadline:
+            health = self.check_service_health(env_name, health_check_command, working_dir)
+            if health["healthy"]:
+                return {"success": True, "service_name": service_name, "pid": pid, "log": str(log_file)}
+            time.sleep(2)
+
+        return {
+            "success": False, "service_name": service_name, "pid": pid,
+            "error": f"Service did not become healthy within {health_check_timeout_seconds}s",
+            "log": str(log_file),
+        }
+
+    def stop_service(
+        self,
+        env_name: str,
+        service_name: str,
+        stop_command: str = "",
+        working_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Stop a background service by running stop_command or killing by PID file."""
+        if stop_command:
+            result = self.run_in_env(env_name, stop_command, working_dir=working_dir, timeout=30)
+            return {"success": result["returncode"] == 0, "service_name": service_name, "method": "stop_command"}
+
+        pid_file = Path("/tmp/bioinf_services") / f"{service_name}.pid"
+        if not pid_file.exists():
+            return {"success": False, "service_name": service_name, "error": "No PID file and no stop_command"}
+        pid = pid_file.read_text().strip()
+        try:
+            subprocess.run(["kill", pid], check=True, timeout=10)
+            pid_file.unlink(missing_ok=True)
+            return {"success": True, "service_name": service_name, "pid": pid, "method": "kill"}
+        except Exception as e:
+            return {"success": False, "service_name": service_name, "pid": pid, "error": str(e)}
+
+    def check_service_health(
+        self,
+        env_name: str,
+        health_check_command: str,
+        working_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Run a health-check command to verify a background service is responding."""
+        result = self.run_in_env(env_name, health_check_command, working_dir=working_dir, timeout=15)
+        return {
+            "healthy": result["returncode"] == 0,
+            "returncode": result["returncode"],
+            "stdout": result.get("stdout", "")[:500],
+            "stderr": result.get("stderr", "")[:500],
+        }
+
     # -----------------------------------------------------------------------
     # Filesystem snapshot helpers
     # -----------------------------------------------------------------------

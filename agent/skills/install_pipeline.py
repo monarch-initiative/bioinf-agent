@@ -33,8 +33,8 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.report_builder import generate as generate_report
+from agent.skills.resources import list_resources
 from agent.skills.test_runner import TestRunner
-from agent.tools import _tool_list_resources
 from agent.validators.output_validator import OutputValidator
 from scripts.gen_provenance import _PIPELINE_TOOLS, _discover_version
 
@@ -659,7 +659,7 @@ class InstallPipelineSkill:
     # -----------------------------------------------------------------------
 
     def _list_resources(self, resource_type: str) -> dict:
-        return _tool_list_resources({"resource_type": resource_type}, self.config)
+        return list_resources({"resource_type": resource_type}, self.config)
 
     def _record_step_validation(self, pipeline_spec: dict, file_path: str, result: dict):
         pipeline_spec.setdefault("pipeline_steps", []).append(

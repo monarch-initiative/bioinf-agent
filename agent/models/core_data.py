@@ -5,9 +5,10 @@ Single source of truth for:
   - Controlled vocabulary (ReadType, EndType, AssayType, FileType, Database)
   - InstallMethod      (conda | jar | pip | docker_pull | source | manual)
   - ReferenceDatabase  (large external databases beyond the genome FASTA)
-  - RuntimeEnvironment (conda | jar-in-conda | docker | native)
+  - RuntimeEnvironment (conda | jar-in-conda | docker | native; GPU fields)
   - RuntimeConfig      (config files the tool needs at runtime)
-  - Provenance schema  (one pipeline run on one sample)
+  - ServiceDependency  (companion processes: web server, database, Spark)
+  - Provenance schema  (one pipeline run on one sample; AssemblyInput for scaffolding)
   - SampleMeta schema  (source metadata for a sequencing run)
   - PhenopacketMeta    (GA4GH phenopacket clinical/genomic record)
 
@@ -52,6 +53,8 @@ FileType  = Literal[
     "bed", "bigwig",
     # Feature annotations
     "gtf", "gff", "counts_matrix",
+    # Assembly graphs
+    "gfa", "gaf",
     # Long-read raw formats
     "pod5", "fast5",
     # Pedigree
@@ -173,6 +176,9 @@ class RuntimeEnvironment(BaseModel):
     wrapper_script: Optional[str] = None  # {env}/bin/{tool} wrapper created during install
     # docker: tool only available as a pulled image
     docker_image:   Optional[str] = None
+    # GPU — when True, DockerBuilder uses a CUDA base image
+    gpu_required:   bool = False
+    cuda_version:   Optional[str] = None  # e.g. "12.1" — selects CUDA base image
     # resource hints
     min_ram_gb:     Optional[float] = None
     min_cpu:        Optional[int] = None
@@ -200,6 +206,37 @@ class RuntimeConfig(BaseModel):
     format:  Literal["yaml", "properties", "ini", "json", "xml", "tsv", "txt"]
     path:    str   # absolute path to the written config file
     content: Optional[str] = None   # inline content snapshot (for small configs)
+
+
+# ---------------------------------------------------------------------------
+# Service dependencies — companion processes required during a pipeline run
+# ---------------------------------------------------------------------------
+
+class ServiceDependency(BaseModel):
+    """
+    A background process that must be running while the pipeline executes.
+
+    Examples:
+      - OpenCRAVAT web server (type="web_server")
+      - Cromwell + MySQL backend (type="database")
+      - Hail / Spark driver (type="spark")
+
+    start_command is run inside the conda env before the pipeline; stop_command
+    is run after.  health_check_command is polled until healthy or timeout.
+    The PID file lives at /tmp/bioinf_services/{name}.pid (managed by EnvManager).
+    """
+    model_config = ConfigDict(extra="allow")
+
+    type:                         Literal["web_server", "database", "spark", "custom"]
+    name:                         str             # e.g. "opencravat", "mongodb", "mysql"
+    version:                      Optional[str] = None
+    start_command:                str
+    stop_command:                 str
+    health_check_command:         str
+    health_check_timeout_seconds: int = 30
+    port:                         Optional[int] = None
+    env_vars:                     dict[str, str] = {}
+    data_dir:                     Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +297,21 @@ class PedigreeInput(BaseModel):
     proband: Optional[str] = None   # sample ID of the affected individual
 
 
+class AssemblyInput(BaseModel):
+    """
+    A draft or primary assembly FASTA consumed by scaffolding or polishing pipelines.
+
+    Distinct from GenomeRef: GenomeRef is the well-known reference genome (e.g. hg38 chr22).
+    AssemblyInput is a draft contig FASTA that was produced by a prior pipeline step (e.g.
+    hifiasm → contigs → 3D-DNA + Hi-C → scaffolded chromosomes).
+
+    Use this when the tool's 'reference' is a draft assembly, not the canonical genome.
+    Set PipelineSpec.reference_free=False and include assembly_input in Provenance.
+    """
+    assembly:          str             # path relative to the provenance file
+    upstream_pipeline: Optional[str] = None  # pipeline that produced this assembly
+
+
 class OutputFile(BaseModel):
     """One output file produced by the pipeline."""
     file:    str       # filename only — no directory component
@@ -281,20 +333,24 @@ class Provenance(BaseModel):
     file.  Use Provenance.resolve_paths(provenance_dir) to get absolute Path objects.
 
     At least one input type must be present:
-      reads, bam_input, vcf_input, phenotype, or pedigree.
+      reads, bam_input, vcf_input, phenotype, pedigree, or assembly_input.
 
-    genome is Optional because some tools (variant prioritizers, phenotype scorers)
-    do not consume a reference FASTA.
+    genome is Optional because:
+      - reference-free assemblers (hifiasm, Flye) need no reference at all
+      - phenotype scorers / prioritizers don't use a FASTA
+    assembly_input captures the case where the 'reference' is a draft assembly from a
+    prior pipeline step (Hi-C scaffolding, polishing) rather than the canonical genome.
     """
     pipeline:           str
     pipeline_spec:      str                  # relative path to config/pipelines/*.yaml
     conda_env:          str                  # env directory basename
     created_at:         str                  # ISO date YYYY-MM-DD
     tool_versions:      dict[str, str]
-    genome:             Optional[GenomeRef] = None   # None for reference-free tools
+    genome:             Optional[GenomeRef] = None    # None for reference-free tools
     reads:              Optional[list[ReadInput]] = None
     bam_input:          Optional[BamInput] = None
     vcf_input:          Optional[VcfInput] = None
+    assembly_input:     Optional[AssemblyInput] = None  # draft contig FASTA as primary input
     phenotype:          Optional[PhenotypeInput] = None
     pedigree:           Optional[PedigreeInput] = None
     upstream_pipelines: list[str] = []
@@ -305,12 +361,12 @@ class Provenance(BaseModel):
     def _require_input(self) -> "Provenance":
         has_input = any([
             self.reads, self.bam_input, self.vcf_input,
-            self.phenotype, self.pedigree,
+            self.assembly_input, self.phenotype, self.pedigree,
         ])
         if not has_input:
             raise ValueError(
                 "Provenance must specify at least one input: "
-                "reads, bam_input, vcf_input, phenotype, or pedigree"
+                "reads, bam_input, vcf_input, assembly_input, phenotype, or pedigree"
             )
         return self
 
@@ -359,6 +415,8 @@ class Provenance(BaseModel):
             paths["vcf"] = (base / self.vcf_input.vcf).resolve()
             if self.vcf_input.tbi:
                 paths["tbi"] = (base / self.vcf_input.tbi).resolve()
+        if self.assembly_input:
+            paths["assembly"] = (base / self.assembly_input.assembly).resolve()
         if self.pedigree:
             paths["ped"] = (base / self.pedigree.ped).resolve()
         return paths
@@ -633,13 +691,15 @@ class DockerBuild(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    build_attempted:  bool = False
-    build_success:    bool = False
-    image_tag:        Optional[str] = None
-    registry:         str = "local"
-    reason:           Optional[str] = None
-    volume_mounts:    list[str] = []         # e.g. ["/data/exomiser"]
-    runtime_data_env: Optional[str] = None   # e.g. "EXOMISER_DATA_DIR"
+    build_attempted:      bool = False
+    build_success:        bool = False
+    image_tag:            Optional[str] = None
+    registry:             str = "local"
+    pushed_to_registry:   bool = False
+    reason:               Optional[str] = None
+    nvidia_runtime:       bool = False        # True → image requires --gpus / nvidia runtime
+    volume_mounts:        list[str] = []      # e.g. ["/data/exomiser"]
+    runtime_data_env:     Optional[str] = None
 
 
 class PipelineSpec(BaseModel):
@@ -652,6 +712,11 @@ class PipelineSpec(BaseModel):
       - type="jar"    → Java tool; openjdk is in the conda env, JAR at jar_path.
                         conda-pack bundles the JVM → Docker image is self-contained.
 
+    reference_free: True for de novo assemblers (hifiasm, Flye, Canu) and tools
+      that produce output without any reference genome.  Phase 3 skips the genome
+      reference step when this is True.  Hi-C scaffolding tools set this False and
+      supply assembly_input in their Provenance records instead.
+
     reference_databases: large external databases beyond the genome FASTA.
       These are documented here but NOT baked into the Docker image.
       Mount them at the paths listed in docker.volume_mounts.
@@ -659,24 +724,30 @@ class PipelineSpec(BaseModel):
     runtime_configs: global config files written during installation
       (e.g. application.properties for Exomiser).
       Per-step configs live in PipelineStep.config_files.
+
+    service_dependencies: companion processes (web server, database, Spark) that
+      must be running before the pipeline executes.  Managed by
+      EnvManager.start_service / stop_service during Phase 4.
     """
     model_config = ConfigDict(extra="allow")
 
-    pipeline_name:       str
-    description:         str
-    conda_env:           str
-    python_version:      Optional[str] = None
-    created_at:          str
-    status:              PipelineStatus
-    packages:            list[PackageRecord]
-    runtime_environment: Optional[RuntimeEnvironment] = None   # None → conda (default)
-    reference_databases: list[ReferenceDatabase] = []
-    runtime_configs:     list[RuntimeConfig] = []
-    test_data:           Optional[TestDataRef] = None
-    pipeline_steps:      list[PipelineStep] = []
-    docker:              Optional[DockerBuild] = None
-    notes:               list[str] = []
-    final_summary:       Optional[str] = None
+    pipeline_name:        str
+    description:          str
+    conda_env:            str
+    python_version:       Optional[str] = None
+    created_at:           str
+    status:               PipelineStatus
+    packages:             list[PackageRecord]
+    reference_free:       bool = False
+    runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)
+    reference_databases:  list[ReferenceDatabase] = []
+    runtime_configs:      list[RuntimeConfig] = []
+    service_dependencies: list[ServiceDependency] = []
+    test_data:            Optional[TestDataRef] = None
+    pipeline_steps:       list[PipelineStep] = []
+    docker:               Optional[DockerBuild] = None
+    notes:                list[str] = []
+    final_summary:        Optional[str] = None
 
     def to_yaml(self) -> str:
         data = self.model_dump(exclude_none=True)

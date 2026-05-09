@@ -14,6 +14,7 @@ starts it automatically.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,7 +43,8 @@ from agent.skills.core_test_data import add_core_test_data as _add_core_test_dat
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.validators.output_validator import OutputValidator
 from agent.skills.install_pipeline import InstallPipelineSkill  # for _save_spec / _write_provenance only
-from agent.tools import _tool_list_resources, _tool_list_pipelines
+from agent.skills.resources import list_resources as _list_resources
+from agent.skills.resources import list_pipelines as _list_pipelines
 
 _pkg_search  = PackageSearch(config)
 _env_mgr     = EnvManager(config)
@@ -89,6 +91,82 @@ def verify_installation(env_name: str, package_name: str, check_command: str) ->
 
 
 @mcp.tool()
+def check_gpu() -> dict:
+    """Check if an NVIDIA GPU is available for GPU-accelerated tools.
+    Returns: available (bool), gpus (list of names), cuda_version, driver_version.
+    If available=False, use CPU fallback mode for validation runs."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return {"available": False, "reason": "nvidia-smi not found", "fallback": "Use CPU mode for testing"}
+    if r.returncode != 0:
+        return {"available": False, "reason": r.stderr.strip()[:200], "fallback": "Use CPU mode for testing"}
+
+    gpus = []
+    for line in r.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            gpus.append({"name": parts[0], "driver_version": parts[1], "memory_mb": parts[2]})
+
+    # Extract CUDA version from nvidia-smi header line
+    header = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=10)
+    cuda_ver = ""
+    for ln in header.stdout.splitlines():
+        if "CUDA Version:" in ln:
+            cuda_ver = ln.split("CUDA Version:")[-1].strip().split()[0]
+            break
+
+    return {"available": bool(gpus), "gpus": gpus, "cuda_version": cuda_ver}
+
+
+@mcp.tool()
+def start_service(
+    env_name: str,
+    service_name: str,
+    start_command: str,
+    health_check_command: str,
+    health_check_timeout_seconds: int = 30,
+    working_dir: str = "",
+    env_vars: dict[str, str] = {},
+) -> dict:
+    """Start a background service (web server, database, Spark) inside a conda env.
+    Polls health_check_command until healthy or timeout.
+    Returns: success, pid, log path."""
+    return _env_mgr.start_service(
+        env_name, service_name, start_command, health_check_command,
+        health_check_timeout_seconds=health_check_timeout_seconds,
+        working_dir=working_dir or None,
+        env_vars=env_vars or None,
+    )
+
+
+@mcp.tool()
+def stop_service(
+    env_name: str,
+    service_name: str,
+    stop_command: str = "",
+) -> dict:
+    """Stop a background service started with start_service.
+    Prefers stop_command if provided; falls back to killing by PID file."""
+    return _env_mgr.stop_service(env_name, service_name, stop_command=stop_command)
+
+
+@mcp.tool()
+def check_service_health(
+    env_name: str,
+    health_check_command: str,
+    working_dir: str = "",
+) -> dict:
+    """Run a health-check command to verify a background service is responding.
+    Returns: healthy (bool), returncode, stdout, stderr."""
+    return _env_mgr.check_service_health(env_name, health_check_command, working_dir=working_dir or None)
+
+
+@mcp.tool()
 def run_in_env(
     env_name: str,
     command: str,
@@ -121,7 +199,7 @@ def run_in_env(
 def list_available_resources(resource_type: str = "both") -> dict:
     """List genomes and/or test datasets on disk.
     resource_type: 'genomes' | 'test_data' | 'both'"""
-    return _tool_list_resources({"resource_type": resource_type}, config)
+    return _list_resources({"resource_type": resource_type}, config)
 
 
 @mcp.tool()
@@ -192,10 +270,17 @@ def build_docker_image(
     pipeline_name: str,
     pipeline_description: str,
     version: str = "",
+    gpu_required: bool = False,
+    cuda_version: str = "",
 ) -> dict:
     """Package a conda env into an HPC-compatible Docker image via conda-pack.
-    version: resolved version string for the image tag, e.g. '1.21'. Defaults to 'latest'."""
-    return _docker.build(env_name, pipeline_name, pipeline_description, version=version)
+    version:      resolved version string for the image tag, e.g. '1.21'. Defaults to 'latest'.
+    gpu_required: when True, uses a CUDA base image and sets NVIDIA runtime labels.
+    cuda_version: CUDA version string, e.g. '12.1'. Defaults to config gpu.default_cuda_version."""
+    return _docker.build(
+        env_name, pipeline_name, pipeline_description,
+        version=version, gpu_required=gpu_required, cuda_version=cuda_version,
+    )
 
 # ---------------------------------------------------------------------------
 # Artifacts
@@ -267,7 +352,7 @@ def write_pipeline_provenance(
 @mcp.tool()
 def list_installed_pipelines() -> dict:
     """List all pipelines installed and validated, with Docker tags and validation status."""
-    return _tool_list_pipelines(config)
+    return _list_pipelines(config)
 
 
 # ---------------------------------------------------------------------------

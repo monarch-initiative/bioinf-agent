@@ -36,11 +36,15 @@ python -m agent.main
 | `install_packages` | conda install one or more packages |
 | `verify_installation` | Run version/help command to confirm install |
 | `run_in_env` | Run any shell command inside the conda env |
-| `validate_output` | Check output file is valid (bam/vcf/fastq/bim/ld/…) |
+| `validate_output` | Check output file is valid (bam/vcf/fastq/gfa/bim/ld/…) |
 | `list_available_resources` | What genomes and test data are on disk |
 | `download_resource` | Download a reference genome |
 | `add_core_test_data` | Stream-download + subset reads from EBI SRA |
-| `build_docker_image` | conda-pack → HPC Docker image |
+| `build_docker_image` | conda-pack → HPC Docker image (GPU-aware) |
+| `check_gpu` | Detect NVIDIA GPU availability and CUDA version |
+| `start_service` | Start a background service (web server, DB, Spark) inside the env |
+| `stop_service` | Stop a background service by stop_command or PID file |
+| `check_service_health` | Probe a running service with a health-check command |
 | `save_pipeline_report` | Write YAML + HTML report to env_reports/ |
 | `write_pipeline_provenance` | Write provenance YAML for a pipeline run |
 | `list_installed_pipelines` | List installed pipelines from env_reports/ |
@@ -153,6 +157,7 @@ For each package in pipeline order:
   - `reads` → `{r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}`
   - `bam_input` → `{bam, bai}`
   - `vcf_input` → `{vcf, tbi?, genome_build, upstream_pipeline?, sample_ids?}`
+  - `assembly_input` → `{assembly: <path>, upstream_pipeline?}` — draft contig FASTA as input (scaffolders/polishers)
   - `phenotype` → `{ontology?, terms: [...HPO ids...], source?}`
   - `pedigree` → `{ped, proband?}`
 
@@ -165,6 +170,55 @@ For each package in pipeline order:
 - **Java tools**: always install `openjdk` (conda-forge) into the conda env — never rely on system Java. This ensures `conda-pack` bundles the JVM and the Docker image is self-contained.
 - **Large reference databases** (>1 GB, tool-specific): document in `reference_databases` and add to `docker.volume_mounts`. Do NOT embed them in the Docker image.
 - **Config-file-driven tools**: write config files with `run_in_env`, then record them in `runtime_configs` (global) or `PipelineStep.config_files` (per-step) so they are captured in the spec.
+
+---
+
+## Assembly tools (hifiasm, Flye, Canu, 3D-DNA, …)
+
+Assembly pipelines differ from alignment pipelines in two key ways:
+
+**De novo assemblers** (hifiasm, Flye, Canu, MetaFlye):
+- Set `reference_free: true` in the spec — Phase 3 skips the reference genome step.
+- Test with whatever long reads are available (PacBio HiFi 500-read or ONT 500-read subset from `core_test_data`). With only 500 reads the assembly will be highly fragmented — a valid GFA file with at least one S (segment) record is the acceptance criterion, not chromosome-length contigs.
+- Primary outputs are `.gfa` (assembly graph) and `.fa` (contig FASTA). Use `validate_output` with `expected_type: gfa` for GFA files.
+- Provenance uses `reads` as input. `genome` and `assembly_input` are both None.
+
+**Reference-guided scaffolders / polishers** (3D-DNA, SALSA2, YaHS, Medaka, Pilon):
+- Set `reference_free: false`.
+- The 'reference' input is a **draft assembly** from a prior pipeline step (e.g. hifiasm contigs), not the canonical genome (chr22.fa).
+- Use `assembly_input` in `write_pipeline_provenance` instead of a genome reference. Set `upstream_pipelines` to the assembler pipeline name.
+- Additional reads (Hi-C, short-read) go in `reads` as normal.
+- Output is a scaffolded/polished FASTA. Use `validate_output` with `expected_type: fasta`.
+
+---
+
+## GPU-accelerated tools (Clair3, DeepVariant, Parabricks, …)
+
+1. **Phase 1**: call `check_gpu` early to know whether a GPU is available.
+2. **Phase 2 — Install**: include `cudatoolkit` and `cudnn` in the `install_packages` call when the tool needs them (check the bioconda recipe). Always install the conda-packaged GPU tool directly — do not pull a Docker image.
+3. **Phase 4 — Test**: if `check_gpu` returned `available: false`, run the tool in CPU fallback mode (most tools expose `--device cpu` or equivalent). Document this in the step's `purpose` field: "CPU fallback — no GPU on this machine".
+4. **Phase 5 — Docker**: pass `gpu_required=true` and `cuda_version` (from `check_gpu` or the tool's bioconda page) to `build_docker_image`. The builder will use `nvidia/cuda:{version}-base-ubuntu22.04` automatically.
+5. **Spec fields**: set `RuntimeEnvironment.gpu_required=true` and `cuda_version`. The resulting `DockerBuild.nvidia_runtime=true` signals to HPC users that `--gpus all` (Docker) or `--nv` (Singularity) is required at runtime.
+
+---
+
+## Service-dependent tools (OpenCRAVAT, Cromwell+MySQL, Hail, …)
+
+Some tools require a companion process (web server, database, Spark driver) running during execution.
+
+Pattern:
+1. **Phase 2 — Install**: install the tool plus its service dependency (e.g. `mysql-server`, `spark`) via `install_packages` or `run_in_env`.
+2. **Phase 4 — Validation loop**:
+   a. Call `start_service` before the first step that needs it. Provide `start_command`, `health_check_command`, and a reasonable `health_check_timeout_seconds`.
+   b. Run the pipeline step(s) normally with `run_in_env`.
+   c. Call `stop_service` after the last step that uses it.
+3. **Spec**: add a `ServiceDependency` entry to `service_dependencies` in the spec dict passed to `save_pipeline_report`. Fields: `type`, `name`, `version`, `start_command`, `stop_command`, `health_check_command`, `port`, `env_vars`, `data_dir`.
+4. If `start_service` returns `success: false`, check the log path it returns, diagnose, and retry up to 2 times with adjusted commands before failing the install.
+
+Typical health checks:
+- Web server: `curl -sf http://localhost:{port}/`
+- MySQL: `mysqladmin ping -h 127.0.0.1`
+- Spark: `curl -sf http://localhost:4040/`
 
 ---
 

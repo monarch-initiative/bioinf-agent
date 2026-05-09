@@ -49,6 +49,8 @@ class OutputValidator:
             "counts_matrix": self._check_counts_matrix,
             "gtf":           self._check_gtf,
             "gff":           self._check_gtf,
+            "gfa":           self._check_gfa,
+            "gaf":           self._check_gfa,   # same record-type structure
             "log":           self._check_log,
             "any":           self._check_any,
         }
@@ -186,6 +188,26 @@ class OutputValidator:
             return {"passed": False, "validation_method": "text_fallback", "error": f"GTF/GFF line has {len(fields)} fields (need ≥8)"}
         return {"passed": True, "validation_method": "text_fallback", "sample_feature": fields[2] if len(fields) > 2 else ""}
 
+    def _check_gfa(self, path: Path) -> dict:
+        """GFA / GAF — Graphical Fragment Assembly format."""
+        lines = self._head_lines(path, 50)
+        if not lines:
+            return {"passed": False, "validation_method": "text_fallback", "error": "Empty GFA/GAF file"}
+        valid_tags = {"H", "S", "L", "P", "W", "A", "J", "#"}
+        data_lines = [l for l in lines if l.strip()]
+        bad = [l[:30] for l in data_lines if l and l[0] not in valid_tags]
+        if bad:
+            return {
+                "passed": False, "validation_method": "text_fallback",
+                "error": f"Unrecognised GFA record type(s): {bad[:3]}",
+            }
+        segment_count = sum(1 for l in data_lines if l.startswith("S"))
+        return {
+            "passed": True, "validation_method": "text_fallback",
+            "segment_count_in_sample": segment_count,
+            "has_header": any(l.startswith("H") for l in data_lines),
+        }
+
     def _check_log(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
         return {"passed": bool(lines), "validation_method": "text_fallback", "lines": len(lines)}
@@ -253,6 +275,8 @@ class OutputValidator:
         if name.endswith(".bw") or name.endswith(".bigwig"): return "bigwig"
         if name.endswith(".gtf") or name.endswith(".gtf.gz"): return "gtf"
         if name.endswith(".gff") or name.endswith(".gff3"):   return "gff"
+        if name.endswith(".gfa"):       return "gfa"
+        if name.endswith(".gaf"):       return "gaf"
         if name.endswith(".bim"):       return "bim"
         if name.endswith(".fam"):       return "fam"
         if name.endswith(".log"):       return "log"

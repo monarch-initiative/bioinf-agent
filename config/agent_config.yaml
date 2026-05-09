@@ -31,6 +31,14 @@ agent:
   install_timeout_seconds: 3600
   test_timeout_seconds: 1800
 
+gpu:
+  # CUDA base image used when RuntimeEnvironment.gpu_required=True
+  default_cuda_base: "nvidia/cuda:12.1.0-base-ubuntu22.04"
+  default_cuda_version: "12.1"
+  # Always validate GPU tools in CPU fallback mode so tests pass on machines
+  # without a GPU. Set to false only on dedicated GPU CI runners.
+  test_cpu_fallback: true
+
 testing:
   # Max reads to subset from test FASTQ files for validation runs
   max_reads: 10000
