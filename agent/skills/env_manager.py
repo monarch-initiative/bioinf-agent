@@ -20,6 +20,15 @@ class EnvManager:
         self.project_root = Path(__file__).parent.parent.parent.resolve()
         self.envs_dir = self.project_root / config["paths"]["conda_envs_prefix"]
         self.envs_dir.mkdir(parents=True, exist_ok=True)
+        self._conda_exe = self._detect_conda()
+
+    @staticmethod
+    def _detect_conda() -> str:
+        """Return the best available conda-compatible solver (mamba > conda)."""
+        for exe in ("mamba", "conda"):
+            if shutil.which(exe):
+                return exe
+        raise RuntimeError("No conda or mamba executable found in PATH")
 
     # -----------------------------------------------------------------------
     # Public API
@@ -38,7 +47,7 @@ class EnvManager:
             }
 
         cmd = [
-            "conda", "create",
+            self._conda_exe, "create",
             "--prefix", str(env_path),
             f"python={py_ver}",
             "--yes", "--quiet",
@@ -87,17 +96,11 @@ class EnvManager:
             specs.append("conda-pack")
 
         cmd = (
-            ["conda", "install", "--prefix", str(env_path), "--yes", "--quiet"]
+            [self._conda_exe, "install", "--prefix", str(env_path), "--yes", "--quiet"]
             + channel_args
             + specs
         )
         result = self._run(cmd, timeout=self.config["agent"]["install_timeout_seconds"])
-
-        if result["returncode"] != 0:
-            # Try mamba as fallback if available
-            if shutil.which("mamba"):
-                cmd[0] = "mamba"
-                result = self._run(cmd, timeout=self.config["agent"]["install_timeout_seconds"])
 
         return {
             "success": result["returncode"] == 0,
@@ -150,7 +153,7 @@ class EnvManager:
         watch = Path(watch_dir) if watch_dir else (Path(working_dir) if working_dir else None)
         before = self._snapshot(watch)
 
-        cmd = ["conda", "run", "--prefix", str(env_path), "--no-capture-output",
+        cmd = [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", command]
 
         t0 = time.monotonic()

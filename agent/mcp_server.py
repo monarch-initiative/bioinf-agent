@@ -14,7 +14,9 @@ starts it automatically.
 
 from __future__ import annotations
 
+import re
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -310,8 +312,11 @@ def write_pipeline_provenance(
     reads: Optional[dict] = None,
     bam_input: Optional[dict] = None,
     vcf_input: Optional[dict] = None,
+    assembly_input: Optional[dict] = None,
     phenotype: Optional[dict] = None,
     pedigree: Optional[dict] = None,
+    genotype_array: Optional[dict] = None,
+    quantitative_traits: Optional[dict] = None,
     upstream_pipelines: Optional[list[str]] = None,
     parameters: Optional[dict] = None,
 ) -> dict:
@@ -320,14 +325,20 @@ def write_pipeline_provenance(
     output_files: list of {file: str, type: str, indexed: bool}
 
     Input types (at least one required):
-      reads:      {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
-      bam_input:  {bam: str, bai: str}
-      vcf_input:  {vcf: str, tbi?: str, genome_build: str, upstream_pipeline?: str, sample_ids?: []}
-      phenotype:  {ontology?: str, terms: [str], source?: str}
-      pedigree:   {ped: str, proband?: str}
+      reads:               {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
+      bam_input:           {bam: str, bai: str}
+      vcf_input:           {vcf: str, tbi?: str, genome_build: str, upstream_pipeline?: str, sample_ids?: []}
+      assembly_input:      {assembly: str, upstream_pipeline?: str}
+      phenotype:           {ontology?: str, terms: [str], source?: str}
+      pedigree:            {ped: str, proband?: str}
+      genotype_array:      {file: str, format: hapmap|plink_bed|vcf|dosage|bgen,
+                            bim?: str, fam?: str, n_samples?: int, n_snps?: int,
+                            genome_build?: str, upstream_pipeline?: str}
+      quantitative_traits: {traits: [str], file: str, n_samples?: int,
+                            measurement_type?: continuous|binary|ordinal}
 
     genome_build / chromosome / reference_path are optional for tools that do not
-    consume a reference FASTA (e.g. variant prioritizers, phenotype scorers)."""
+    consume a reference FASTA (e.g. variant prioritizers, phenotype scorers, GWAS)."""
     inputs: dict[str, Any] = {
         "pipeline":           pipeline,
         "conda_env_path":     conda_env_path,
@@ -339,13 +350,16 @@ def write_pipeline_provenance(
         "output_dir":         output_dir,
         "sample_key":         sample_key,
     }
-    if reads:               inputs["reads"]               = reads
-    if bam_input:           inputs["bam_input"]           = bam_input
-    if vcf_input:           inputs["vcf_input"]           = vcf_input
-    if phenotype:           inputs["phenotype"]           = phenotype
-    if pedigree:            inputs["pedigree"]            = pedigree
-    if upstream_pipelines:  inputs["upstream_pipelines"]  = upstream_pipelines
-    if parameters:          inputs["parameters"]          = parameters
+    if reads:                inputs["reads"]                = reads
+    if bam_input:            inputs["bam_input"]            = bam_input
+    if vcf_input:            inputs["vcf_input"]            = vcf_input
+    if assembly_input:       inputs["assembly_input"]       = assembly_input
+    if phenotype:            inputs["phenotype"]            = phenotype
+    if pedigree:             inputs["pedigree"]             = pedigree
+    if genotype_array:       inputs["genotype_array"]       = genotype_array
+    if quantitative_traits:  inputs["quantitative_traits"]  = quantitative_traits
+    if upstream_pipelines:   inputs["upstream_pipelines"]   = upstream_pipelines
+    if parameters:           inputs["parameters"]           = parameters
     return _skill._write_provenance(inputs)
 
 
@@ -353,6 +367,104 @@ def write_pipeline_provenance(
 def list_installed_pipelines() -> dict:
     """List all pipelines installed and validated, with Docker tags and validation status."""
     return _list_pipelines(config)
+
+
+# ---------------------------------------------------------------------------
+# R package utilities
+# ---------------------------------------------------------------------------
+
+def _parse_dcf(text: str) -> dict[str, str]:
+    """Parse a Debian Control File (R DESCRIPTION format) into a flat dict."""
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    for line in text.splitlines():
+        if line.startswith((" ", "\t")):
+            if current_key:
+                fields[current_key] += " " + line.strip()
+        elif ":" in line:
+            key, _, val = line.partition(":")
+            current_key = key.strip()
+            fields[current_key] = val.strip()
+    return fields
+
+
+def _parse_pkg_list(raw: str) -> list[str]:
+    """Extract bare package names from a comma-separated dep field, stripping version specs."""
+    names = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name = re.split(r"[\s(]", item)[0].strip()
+        if name and name != "R":
+            names.append(name)
+    return names
+
+
+@mcp.tool()
+def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
+    """Fetch the DESCRIPTION file from a GitHub R package and parse all dependencies.
+
+    Use this BEFORE installing any R package from GitHub so you can pre-install
+    all dependencies, then call remotes::install_github(..., dependencies=FALSE).
+
+    github_repo: owner/repo, e.g. "jiabowang/GAPIT3"
+    ref:         branch, tag, or commit SHA (default HEAD → main/master)
+
+    Returns:
+      package_name, version, r_version_required
+      imports, depends, suggests, linking_to — raw dep name lists
+      all_required  — union of imports + depends + linking_to (what must be installed)
+      install_strategy — ordered steps: conda first, then BiocManager for everything
+                         else (BiocManager resolves both CRAN and Bioconductor),
+                         GitHub last with dependencies=FALSE."""
+    url = f"https://raw.githubusercontent.com/{github_repo}/{ref}/DESCRIPTION"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            content = resp.read().decode("utf-8")
+    except Exception as e:
+        return {"success": False, "error": str(e), "url": url}
+
+    fields = _parse_dcf(content)
+
+    imports    = _parse_pkg_list(fields.get("Imports", ""))
+    depends    = _parse_pkg_list(fields.get("Depends", ""))
+    suggests   = _parse_pkg_list(fields.get("Suggests", ""))
+    linking_to = _parse_pkg_list(fields.get("LinkingTo", ""))
+
+    r_ver_match = re.search(r"R\s*\(>=[^)]*\)", fields.get("Depends", ""))
+    r_version_required = r_ver_match.group(0) if r_ver_match else ""
+
+    all_required = sorted(set(imports + depends + linking_to))
+
+    return {
+        "success": True,
+        "github_repo": github_repo,
+        "ref": ref,
+        "url": url,
+        "package_name": fields.get("Package", ""),
+        "version": fields.get("Version", ""),
+        "r_version_required": r_version_required,
+        "imports": imports,
+        "depends": depends,
+        "suggests": suggests,
+        "linking_to": linking_to,
+        "all_required": all_required,
+        "install_strategy": [
+            "1. For each dep in all_required, call search_package to check conda-forge "
+            "(r-{lowercase}) and bioconda (bioconductor-{lowercase}) availability.",
+            "2. Install all conda-available deps in one install_packages call.",
+            "3. For deps not found on conda, install via BiocManager — it resolves both "
+            "CRAN and Bioconductor packages without needing to know which is which: "
+            "Rscript -e \"lib<-file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'); "
+            "if(!requireNamespace('BiocManager',quietly=TRUE)) "
+            "install.packages('BiocManager',lib=lib); "
+            "BiocManager::install(c('pkg1','pkg2'), lib=lib, ask=FALSE, update=FALSE)\"",
+            f"4. Finally: remotes::install_github('{github_repo}', "
+            "lib=file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'), "
+            "dependencies=FALSE)",
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

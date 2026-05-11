@@ -234,7 +234,7 @@ def _test_data_section(spec: dict) -> str:
     ]
     if td.get("chromosome_subset"):
         fields.append(("Chromosome", td["chromosome_subset"]))
-    upstream = td.get("upstream_pipelines", [])
+    upstream = td.get("upstream_pipelines") or []
     if upstream:
         fields.append(("Upstream pipelines", ", ".join(upstream)))
     for fk in ("r1", "r2"):

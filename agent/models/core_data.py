@@ -42,6 +42,8 @@ AssayType = Literal[
     "direct_rna", "isoseq",
     # Long-read epigenomics
     "fiberseq",
+    # Array / GWAS
+    "gwas_array", "gwas_wgs", "qtl_array", "expression_array", "snp_array",
 ]
 Platform  = Literal["illumina", "ont", "pacbio_hifi", "pacbio_isoseq", "pacbio_fiberseq"]
 FileType  = Literal[
@@ -61,6 +63,8 @@ FileType  = Literal[
     "ped",
     # PLINK binary / LD output
     "bim", "fam", "ld", "frq", "prune",
+    # Visualization / plots
+    "pdf", "png", "svg", "eps", "tiff", "jpeg",
     # Reports / structured data
     "html", "json", "yaml", "properties",
     # Generic tabular / text / logs
@@ -312,6 +316,37 @@ class AssemblyInput(BaseModel):
     upstream_pipeline: Optional[str] = None  # pipeline that produced this assembly
 
 
+class QuantitativeTraitInput(BaseModel):
+    """
+    Quantitative phenotype measurements for GWAS/QTL/regression tools.
+
+    Distinct from PhenotypeInput (ontology-coded disease terms): traits here are
+    continuous measurements stored in a tabular file, not HPO/GO term IDs.
+    Examples: ear height, BMI, grain yield, blood pressure.
+    """
+    traits:           list[str]          # trait column names in the phenotype file
+    file:             str                # path relative to the provenance file
+    n_samples:        Optional[int] = None
+    measurement_type: Literal["continuous", "binary", "ordinal"] = "continuous"
+
+
+class GenotypeArrayInput(BaseModel):
+    """
+    Population-level genotype matrix consumed by GWAS/QTL tools.
+
+    Distinct from VcfInput (per-sample variant calls): this is a population-wide
+    genotype table (HapMap, PLINK BED triplet, dosage matrix, BGEN).
+    """
+    file:              str               # primary genotype file (hapmap txt, .bed, .bgen, …)
+    format:            Literal["hapmap", "plink_bed", "vcf", "dosage", "bgen"]
+    bim:               Optional[str] = None   # PLINK .bim (relative path)
+    fam:               Optional[str] = None   # PLINK .fam (relative path)
+    n_samples:         Optional[int] = None
+    n_snps:            Optional[int] = None
+    genome_build:      Optional[str] = None
+    upstream_pipeline: Optional[str] = None   # pipeline that produced this genotype file
+
+
 class OutputFile(BaseModel):
     """One output file produced by the pipeline."""
     file:    str       # filename only — no directory component
@@ -346,27 +381,31 @@ class Provenance(BaseModel):
     conda_env:          str                  # env directory basename
     created_at:         str                  # ISO date YYYY-MM-DD
     tool_versions:      dict[str, str]
-    genome:             Optional[GenomeRef] = None    # None for reference-free tools
-    reads:              Optional[list[ReadInput]] = None
-    bam_input:          Optional[BamInput] = None
-    vcf_input:          Optional[VcfInput] = None
-    assembly_input:     Optional[AssemblyInput] = None  # draft contig FASTA as primary input
-    phenotype:          Optional[PhenotypeInput] = None
-    pedigree:           Optional[PedigreeInput] = None
-    upstream_pipelines: list[str] = []
-    parameters:         Optional[dict[str, Any]] = None
-    outputs:            list[OutputFile]
+    genome:              Optional[GenomeRef] = None    # None for reference-free tools
+    reads:               Optional[list[ReadInput]] = None
+    bam_input:           Optional[BamInput] = None
+    vcf_input:           Optional[VcfInput] = None
+    assembly_input:      Optional[AssemblyInput] = None   # draft contig FASTA as primary input
+    phenotype:           Optional[PhenotypeInput] = None
+    pedigree:            Optional[PedigreeInput] = None
+    genotype_array:      Optional[GenotypeArrayInput] = None   # HapMap/PLINK/BGEN for GWAS
+    quantitative_traits: Optional[QuantitativeTraitInput] = None  # continuous trait measurements
+    upstream_pipelines:  list[str] = []
+    parameters:          Optional[dict[str, Any]] = None
+    outputs:             list[OutputFile]
 
     @model_validator(mode="after")
     def _require_input(self) -> "Provenance":
         has_input = any([
             self.reads, self.bam_input, self.vcf_input,
             self.assembly_input, self.phenotype, self.pedigree,
+            self.genotype_array, self.quantitative_traits,
         ])
         if not has_input:
             raise ValueError(
                 "Provenance must specify at least one input: "
-                "reads, bam_input, vcf_input, assembly_input, phenotype, or pedigree"
+                "reads, bam_input, vcf_input, assembly_input, phenotype, pedigree, "
+                "genotype_array, or quantitative_traits"
             )
         return self
 
@@ -419,6 +458,14 @@ class Provenance(BaseModel):
             paths["assembly"] = (base / self.assembly_input.assembly).resolve()
         if self.pedigree:
             paths["ped"] = (base / self.pedigree.ped).resolve()
+        if self.genotype_array:
+            paths["genotype"] = (base / self.genotype_array.file).resolve()
+            if self.genotype_array.bim:
+                paths["genotype_bim"] = (base / self.genotype_array.bim).resolve()
+            if self.genotype_array.fam:
+                paths["genotype_fam"] = (base / self.genotype_array.fam).resolve()
+        if self.quantitative_traits:
+            paths["traits_file"] = (base / self.quantitative_traits.file).resolve()
         return paths
 
 

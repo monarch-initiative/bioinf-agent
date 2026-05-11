@@ -48,6 +48,7 @@ python -m agent.main
 | `save_pipeline_report` | Write YAML + HTML report to env_reports/ |
 | `write_pipeline_provenance` | Write provenance YAML for a pipeline run |
 | `list_installed_pipelines` | List installed pipelines from env_reports/ |
+| `fetch_r_package_deps` | Parse DESCRIPTION from a GitHub R repo; returns all deps pre-categorised |
 
 ---
 
@@ -158,8 +159,10 @@ For each package in pipeline order:
   - `bam_input` → `{bam, bai}`
   - `vcf_input` → `{vcf, tbi?, genome_build, upstream_pipeline?, sample_ids?}`
   - `assembly_input` → `{assembly: <path>, upstream_pipeline?}` — draft contig FASTA as input (scaffolders/polishers)
-  - `phenotype` → `{ontology?, terms: [...HPO ids...], source?}`
+  - `phenotype` → `{ontology?, terms: [...HPO ids...], source?}` — HPO/GO/DOID ontology-coded disease terms
   - `pedigree` → `{ped, proband?}`
+  - `genotype_array` → `{file, format: hapmap|plink_bed|vcf|dosage|bgen, bim?, fam?, n_samples?, n_snps?, genome_build?, upstream_pipeline?}` — population-level genotype matrix for GWAS/QTL tools
+  - `quantitative_traits` → `{traits: [...], file, n_samples?, measurement_type: continuous|binary|ordinal}` — continuous phenotype measurements (distinct from HPO-coded phenotype)
 
 ### Rules
 - Always use absolute paths in `run_in_env` commands.
@@ -170,6 +173,75 @@ For each package in pipeline order:
 - **Java tools**: always install `openjdk` (conda-forge) into the conda env — never rely on system Java. This ensures `conda-pack` bundles the JVM and the Docker image is self-contained.
 - **Large reference databases** (>1 GB, tool-specific): document in `reference_databases` and add to `docker.volume_mounts`. Do NOT embed them in the Docker image.
 - **Config-file-driven tools**: write config files with `run_in_env`, then record them in `runtime_configs` (global) or `PipelineStep.config_files` (per-step) so they are captured in the spec.
+
+---
+
+## R tools (GAPIT, DESeq2, limma, custom packages, …)
+
+R packages can come from four sources. Always prefer the conda-packaged version — it is pre-compiled, version-pinned, and fully bundled by conda-pack.
+
+### Install priority
+1. **conda-forge** — `r-{lowercase-pkg-name}` (e.g. `r-ggplot2`, `r-data.table`). Use `install_packages` as normal.
+2. **bioconda** — `bioconductor-{lowercase-pkg-name}` (e.g. `bioconductor-deseq2`). Use `install_packages` with `-c bioconda`.
+3. **CRAN** — for packages not on conda. Use `run_in_env` with Rscript (see template below).
+4. **Bioconductor via BiocManager** — for Bioc packages not on bioconda. Use `run_in_env`.
+5. **GitHub via remotes** — always last, always with `dependencies=FALSE` after all deps are pre-installed.
+
+### R library isolation (critical)
+`conda run` inherits the parent shell's `R_LIBS_USER`, which can silently redirect `install.packages()` to `~/R/…` outside the conda env. **Always** derive the library path from `CONDA_PREFIX` (set reliably by `conda run`):
+
+```bash
+# Template for all R install commands inside run_in_env:
+Rscript -e "
+  lib <- file.path(Sys.getenv('CONDA_PREFIX'), 'lib', 'R', 'library')
+  install.packages(c('pkg1', 'pkg2'), lib=lib, repos='https://cloud.r-project.org')
+"
+
+# Bioconductor:
+Rscript -e "
+  lib <- file.path(Sys.getenv('CONDA_PREFIX'), 'lib', 'R', 'library')
+  BiocManager::install(c('snpStats', 'DESeq2'), lib=lib, ask=FALSE)
+"
+
+# GitHub (always last, after all deps are installed):
+Rscript -e "
+  lib <- file.path(Sys.getenv('CONDA_PREFIX'), 'lib', 'R', 'library')
+  remotes::install_github('owner/repo', lib=lib, dependencies=FALSE)
+"
+```
+
+### Pre-discovering GitHub deps (friction-free installs)
+Before installing any R package from GitHub, call `fetch_r_package_deps(github_repo)`. It fetches and parses the DESCRIPTION file and returns:
+- `imports`, `depends`, `suggests`, `linking_to` — all dep name lists
+- `all_required` — union of imports + depends + linking_to (what must be present before the GitHub install)
+- `install_strategy` — concrete ordered steps
+
+Install order from the strategy:
+1. Call `search_package` for each dep to find what's on conda-forge (`r-{pkg}`) or bioconda (`bioconductor-{pkg}`). Install all confirmed conda packages in one `install_packages` call.
+2. For anything not on conda, use `BiocManager::install()` — it is the authoritative resolver for both CRAN and Bioconductor packages and needs no pre-categorisation on our side.
+3. GitHub install last, with `dependencies=FALSE`.
+
+This prevents the multi-cycle discover-fail-retry pattern without requiring a hardcoded list of known packages.
+
+### Compilation failures
+If an R package fails to compile from CRAN or GitHub, it needs a system library. Install the library via conda (not apt/brew — it must be inside the env for conda-pack):
+
+| R package | Missing system dep | conda spec |
+|-----------|-------------------|------------|
+| nloptr, lme4 | NLopt | `nlopt` (conda-forge) |
+| curl, httr | libcurl | `libcurl` (conda-forge) |
+| xml2, rvest | libxml2 | `libxml2` (conda-forge) |
+| openssl | OpenSSL | `openssl` (conda-forge) |
+| RPostgres | PostgreSQL client | `libpq` (conda-forge) |
+| rJava | JDK | `openjdk` (conda-forge) |
+| rgdal, sf | GDAL | `gdal` (conda-forge) |
+| Cairo | Cairo | `cairo` (conda-forge) |
+
+After conda-installing the system dep, retry the R package install via `run_in_env` using the template above.
+
+### Spec fields for R pipelines
+- `runtime_environment.type`: `"r"`, `r_version`: resolved version string
+- Packages installed via CRAN/Bioc/GitHub: record in `packages` with `channel: "cran"`, `"bioconductor"`, or `"github"` and `install_method: {type: "r_install", source: "..."}`.
 
 ---
 

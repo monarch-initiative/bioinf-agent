@@ -26,8 +26,9 @@ import anthropic
 import yaml
 
 from agent.models.core_data import (
-    BamInput, GenomeRef, OutputFile, PedigreeInput, PhenotypeInput,
-    PipelineSpec, Provenance, ReadInput, VcfInput,
+    AssemblyInput, BamInput, GenomeRef, GenotypeArrayInput, OutputFile,
+    PedigreeInput, PhenotypeInput, PipelineSpec, Provenance, QuantitativeTraitInput,
+    ReadInput, VcfInput,
 )
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills.env_manager import EnvManager
@@ -784,6 +785,30 @@ class InstallPipelineSkill:
                 proband=g.get("proband"),
             )
 
+        genotype_array = None
+        if inputs.get("genotype_array"):
+            ga = inputs["genotype_array"]
+            genotype_array = GenotypeArrayInput(
+                file=_rel(ga["file"]),
+                format=ga["format"],
+                bim=_rel(ga["bim"]) if ga.get("bim") else None,
+                fam=_rel(ga["fam"]) if ga.get("fam") else None,
+                n_samples=ga.get("n_samples"),
+                n_snps=ga.get("n_snps"),
+                genome_build=ga.get("genome_build"),
+                upstream_pipeline=ga.get("upstream_pipeline"),
+            )
+
+        quantitative_traits = None
+        if inputs.get("quantitative_traits"):
+            qt = inputs["quantitative_traits"]
+            quantitative_traits = QuantitativeTraitInput(
+                traits=qt["traits"],
+                file=_rel(qt["file"]),
+                n_samples=qt.get("n_samples"),
+                measurement_type=qt.get("measurement_type", "continuous"),
+            )
+
         pipeline_spec_path = Path(inputs["pipeline_spec_path"]).resolve()
         try:
             spec_rel = str(pipeline_spec_path.relative_to(output_dir.resolve()))
@@ -811,6 +836,8 @@ class InstallPipelineSkill:
             vcf_input=vcf_input,
             phenotype=phenotype,
             pedigree=pedigree,
+            genotype_array=genotype_array,
+            quantitative_traits=quantitative_traits,
             upstream_pipelines=inputs.get("upstream_pipelines", []),
             parameters=inputs.get("parameters") or None,
             outputs=outputs,
