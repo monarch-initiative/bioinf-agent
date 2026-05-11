@@ -1,10 +1,9 @@
 """
 Resource listing utilities — manifests and pipeline specs.
 
-Extracted here so both agent/tools.py (outer dispatcher) and
-agent/skills/install_pipeline.py (sub-agent) can import without a
-circular dependency (tools.py imports InstallPipelineSkill; if
-install_pipeline.py imported from tools.py that would be circular).
+Read the on-disk genome / test-data manifests and the env_reports/ pipeline
+specs into structured dicts for the MCP tools list_available_resources and
+list_installed_pipelines.
 """
 
 from pathlib import Path

@@ -44,7 +44,8 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.validators.output_validator import OutputValidator
-from agent.skills.install_pipeline import InstallPipelineSkill  # for _save_spec / _write_provenance only
+from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
+from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
 
@@ -53,7 +54,6 @@ _env_mgr     = EnvManager(config)
 _test_runner = TestRunner(config)
 _docker      = DockerBuilder(config)
 _validator   = OutputValidator(config)
-_skill       = InstallPipelineSkill(config)   # Anthropic client stays None until run() is called
 
 mcp = FastMCP("bioinf-agent")
 
@@ -291,9 +291,15 @@ def build_docker_image(
 @mcp.tool()
 def save_pipeline_report(spec: dict) -> dict:
     """Validate and write the pipeline spec as YAML + HTML report to env_reports/.
-    spec must include: pipeline_name, description, conda_env, created_at, status,
-    packages (list), pipeline_steps (list), docker (dict)."""
-    return _skill._save_spec(spec)
+
+    Required fields: pipeline_name, description, conda_env, created_at,
+    packages (list), pipeline_steps (list), docker (dict).
+
+    The pipeline-level `status` field is derived automatically from step states —
+    "fully_validated" requires every step to have validation_status="passed"
+    (set by validate_output). If you set `status` it will be overwritten by the
+    derived value, which also returned in the response."""
+    return _save_pipeline_spec(spec, config)
 
 
 @mcp.tool()
@@ -360,7 +366,7 @@ def write_pipeline_provenance(
     if quantitative_traits:  inputs["quantitative_traits"]  = quantitative_traits
     if upstream_pipelines:   inputs["upstream_pipelines"]   = upstream_pipelines
     if parameters:           inputs["parameters"]           = parameters
-    return _skill._write_provenance(inputs)
+    return _write_provenance(inputs, config)
 
 
 @mcp.tool()

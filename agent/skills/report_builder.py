@@ -1,6 +1,6 @@
 """
 ReportBuilder — generates a self-contained HTML pipeline report from a saved spec dict.
-Called automatically by InstallPipelineSkill._save_spec after every successful install.
+Called automatically by spec_writer.save_pipeline_spec after every install.
 Expects spec dicts conforming to the PipelineSpec model (agent/models/core_data.py).
 """
 
@@ -72,6 +72,8 @@ def _status_badge(spec: dict) -> str:
     status = spec.get("status", "")
     if status == "fully_validated":
         return _badge("✓ Validated", "pass")
+    if status == "partially_validated":
+        return _badge("◐ Partially Validated", "skip")
     if status == "complete":
         return _badge("✓ Complete", "pass")
     if status == "in_progress":
@@ -305,13 +307,22 @@ def _steps_section(spec: dict) -> str:
             color = "#16a34a" if rc == 0 else "#dc2626"
             exit_html = f'<span style="margin-left:auto;font-size:0.8rem;color:{color}">exit {rc}</span>'
 
+        val_status = s.get("validation_status")
+        val_html = ""
+        if val_status == "passed":
+            val_html = ' <span style="font-size:0.75rem;color:#16a34a;background:#22c55e1a;border-radius:10px;padding:1px 8px;margin-left:0.5rem">✓ outputs validated</span>'
+        elif val_status == "failed":
+            val_html = ' <span style="font-size:0.75rem;color:#dc2626;background:#ef44441a;border-radius:10px;padding:1px 8px;margin-left:0.5rem">✗ validation failed</span>'
+        elif rc == 0:
+            val_html = ' <span style="font-size:0.75rem;color:#d97706;background:#f59e0b1a;border-radius:10px;padding:1px 8px;margin-left:0.5rem">⚠ not validated</span>'
+
         io_html = _io_group(s)
 
         blocks.append(f"""
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">{s.get('step', '?')}</span>
-    {tool_label} {version}
+    {tool_label} {version}{val_html}
     {exit_html}
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>

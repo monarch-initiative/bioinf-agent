@@ -2,9 +2,9 @@
 
 Installs bioinformatics tools into isolated conda environments, validates them against test data, and packages them as HPC-compatible Docker images.
 
-## Primary mode — Claude Code + MCP (no API credits needed)
+## How it works
 
-Claude Code drives all orchestration directly using your subscription. The MCP server is registered in `.claude/settings.json` and starts automatically.
+Claude Code drives all orchestration directly using your subscription. The MCP server is registered in `.claude/settings.json` and starts automatically — no separate API credits required.
 
 ```bash
 pip install -r requirements.txt
@@ -19,11 +19,7 @@ what test data is available?
 what pipelines have been installed?
 ```
 
-## Fallback mode — standalone CLI (uses Anthropic API credits)
-
-```bash
-python -m agent.main
-```
+If you ever need an API-driven orchestration mode (e.g., headless batch installs), the underlying skills under `agent/skills/` are the substrate — wire them into a Claude SDK or Anthropic client loop. The earlier `agent/main.py` + `agent/tools.py` CLI was retired in favor of the MCP path; the git history has a reference implementation if needed.
 
 ---
 
@@ -122,8 +118,10 @@ For each package in pipeline order:
     validation: { filename: validate_output_result, ... } }
   ```
 - Call `validate_output` for each filename in `result.detected_outputs`; store results keyed by filename in `validation`.
+- **You do not need to set `validation_status` on the step manually** — `save_pipeline_report` derives it from the `validation` dict (all passed → "passed", any failed → "failed", empty → None).
 - Pass `result.detected_outputs` as `inputs` to the next `run_in_env` call (full lineage).
 - On failure, diagnose and retry up to 2 times.
+- **Why this matters**: the pipeline-level `status` (returned by `save_pipeline_report`) can only land on `fully_validated` if every step has `validation_status="passed"`. A step that exits 0 but never gets a `validate_output` call counts as unvalidated and the pipeline drops to `partially_validated` or `complete`. Validate every output.
 
 ### Phase 5 — Docker
 - Call `build_docker_image`. Pass `version` = the resolved version of the primary package.
@@ -136,7 +134,6 @@ For each package in pipeline order:
   {
     pipeline_name, description, conda_env,
     created_at: <now ISO>,
-    status: "fully_validated" if all returncodes == 0 else "failed",
     packages:             <list built in phases 1–2>,
     runtime_environment:  <only if non-conda; e.g. {type:"jar", java_flags:[...], jar_path:"..."}>,
     reference_databases:  <list of {name, version, size_gb, source_url, local_path} if any>,
@@ -146,6 +143,8 @@ For each package in pipeline order:
     docker:               <return value from phase 5>,
   }
   ```
+- **Do NOT set `status`** — it is derived from the steps. The return value includes the derived `status` so you can report it back to the user.
+- Use the exact field names above (e.g. `pipeline_name`, not `name`; `created_at`, not `created`; `docker` dict, not flat `docker_image`). There is no longer a backward-compatibility shim — wrong field names will fail validation.
 - **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 7.
 
 ### Phase 7 — Provenance
@@ -307,16 +306,15 @@ When the user asks to add test data:
 
 ```
 agent/
-├── main.py                     # Standalone CLI (fallback mode)
-├── mcp_server.py               # MCP server — primary mode
-├── tools.py                    # Outer tool dispatcher (used by main.py + mcp_server)
+├── mcp_server.py               # MCP server — sole orchestration entry point
 ├── skills/
-│   ├── install_pipeline.py     # Sub-agent loop (fallback mode only)
+│   ├── spec_writer.py          # save_pipeline_spec + write_provenance
 │   ├── package_search.py       # anaconda.org / PyPI lookup
 │   ├── env_manager.py          # conda create / install / run
 │   ├── test_runner.py          # Reference genome downloads
 │   ├── core_test_data.py       # EBI SRA stream-download + subset
 │   ├── docker_builder.py       # conda-pack → Docker image
+│   ├── resources.py            # Manifest + installed-pipeline listing
 │   └── report_builder.py       # HTML report generator
 ├── validators/
 │   └── output_validator.py     # SAM/BAM/VCF/FASTQ/BIM/LD/… validation

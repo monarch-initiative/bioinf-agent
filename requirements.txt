@@ -1,6 +1,10 @@
-anthropic>=0.40.0
+# MCP server + skill substrate
+fastmcp>=2.0  # tested with 3.2.4
 pyyaml>=6.0
 requests>=2.31.0
-python-dotenv>=1.0.0
 pydantic>=2.0
-fastmcp>=2.0  # tested with 3.2.4
+
+# Note: the project runs in MCP mode and does not need anthropic / python-dotenv.
+# If you want to add API-driven orchestration back, install:
+#   anthropic>=0.40.0
+#   python-dotenv>=1.0.0

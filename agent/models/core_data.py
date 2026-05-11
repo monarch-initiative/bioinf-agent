@@ -15,8 +15,8 @@ Single source of truth for:
 Used by:
   - scripts/gen_provenance.py   (setup script path)
   - scripts/gen_manifest.py     (manifest rebuilder)
-  - agent/skills/install_pipeline.py  (write_pipeline_provenance sub-tool)
-  - agent/tools.py              (list_available_resources reader)
+  - agent/skills/spec_writer.py (save_pipeline_spec + write_provenance)
+  - agent/skills/resources.py   (list_available_resources reader)
 """
 
 from __future__ import annotations
@@ -651,7 +651,14 @@ class PhenopacketMeta(BaseModel):
 # Pipeline spec — one installed + validated pipeline
 # ---------------------------------------------------------------------------
 
-PipelineStatus = Literal["fully_validated", "complete", "in_progress", "failed", "timeout"]
+PipelineStatus = Literal[
+    "fully_validated",       # every step's outputs passed validate_output
+    "partially_validated",   # some steps validated, others ran but were not validated
+    "complete",              # all steps ran cleanly but no validation was recorded
+    "in_progress",
+    "failed",                # any step exited non-zero, or validate_output failed
+    "timeout",
+]
 
 
 class PackageRecord(BaseModel):
@@ -701,16 +708,25 @@ class TestDataRef(BaseModel):
 
 
 class PipelineStep(BaseModel):
-    """One execution step within a pipeline run."""
+    """One execution step within a pipeline run.
+
+    Two orthogonal status fields:
+      - status: did the command exit cleanly? Derived from returncode.
+      - validation_status: did validate_output confirm the produced files?
+        None means validate_output was never called for this step's outputs.
+
+    A pipeline can only claim PipelineStatus.fully_validated if every step
+    has validation_status="passed" — exited 0 alone is not enough."""
     model_config = ConfigDict(extra="allow")
 
-    step:        int
-    tool:        str
-    subcommand:  Optional[str] = None
-    purpose:     Optional[str] = None
-    command:     str
-    status:      Literal["validated", "failed", "skipped"] = "validated"
-    returncode:  Optional[int] = None
+    step:              int
+    tool:              str
+    subcommand:        Optional[str] = None
+    purpose:           Optional[str] = None
+    command:           str
+    status:            Literal["validated", "failed", "skipped"] = "validated"
+    validation_status: Optional[Literal["passed", "failed"]] = None
+    returncode:        Optional[int] = None
 
     @model_validator(mode="after")
     def _derive_status_from_returncode(self) -> "PipelineStep":
@@ -718,12 +734,12 @@ class PipelineStep(BaseModel):
             self.status = "validated" if self.returncode == 0 else "failed"
         return self
 
-    inputs:           list[str] = []         # filenames consumed (full lineage)
-    outputs:          list[str] = []         # filenames produced
-    config_files:     list[RuntimeConfig] = []  # config files written for this step
-    runtime_seconds:  Optional[float] = None
+    inputs:            list[str] = []         # filenames consumed (full lineage)
+    outputs:           list[str] = []         # filenames produced
+    config_files:      list[RuntimeConfig] = []  # config files written for this step
+    runtime_seconds:   Optional[float] = None
     output_size_bytes: Optional[int] = None
-    validation:       Optional[Any] = None
+    validation:        Optional[Any] = None
 
 
 class DockerBuild(BaseModel):
