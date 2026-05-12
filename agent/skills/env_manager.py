@@ -153,7 +153,7 @@ class EnvManager:
         command: str,
         working_dir: str | None = None,
         timeout: int = 1800,
-        inputs: list[str] | None = None,
+        inputs: list | None = None,
         watch_dir: str | None = None,
     ) -> dict[str, Any]:
         env_path = self.envs_dir / env_name

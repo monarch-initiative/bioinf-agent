@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Controlled vocabulary
@@ -739,6 +739,23 @@ class InstallStep(BaseModel):
         return self
 
 
+class StepInput(BaseModel):
+    """One input file to a pipeline step.
+
+    `references` captures files the input *opens at runtime*. A bare R / Python /
+    bash script appears as a `path`, and the data files it reads (via system.file,
+    open(), source(), etc.) go in `references`. Same shape works for a tool config
+    that points at reference FASTAs, a workflow YAML that names other inputs, etc.
+
+    Tool calls may pass either a string (treated as path-only) or a dict; the
+    PipelineStep validator coerces strings to StepInput(path=s).
+    """
+    model_config = ConfigDict(extra="allow")
+
+    path:       str
+    references: list[str] = []
+
+
 class PipelineStep(BaseModel):
     """One algorithm / analysis step within a pipeline run.
 
@@ -769,12 +786,26 @@ class PipelineStep(BaseModel):
             self.status = "validated" if self.returncode == 0 else "failed"
         return self
 
-    inputs:            list[str] = []         # filenames consumed (full lineage)
+    inputs:            list[StepInput] = []   # files consumed (with optional script-references)
     outputs:           list[str] = []         # filenames produced
     config_files:      list[RuntimeConfig] = []  # config files written for this step
     runtime_seconds:   Optional[float] = None
     output_size_bytes: Optional[int] = None
     validation:        Optional[Any] = None
+
+    @field_validator("inputs", mode="before")
+    @classmethod
+    def _coerce_inputs(cls, v: Any) -> Any:
+        """Accept either ['foo.R', ...] or [{path, references}, ...] from the wire."""
+        if not isinstance(v, list):
+            return v
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append({"path": item, "references": []})
+            else:
+                out.append(item)
+        return out
 
 
 class DockerBuild(BaseModel):

@@ -68,6 +68,10 @@ a:hover { color: #1d4ed8; }
 .io-file { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem;
            padding: 0.18rem 0; color: #1e293b; }
 .io-file code { background: #f1f5f9; border-radius: 4px; padding: 1px 6px; }
+.io-ref  { display: flex; align-items: center; gap: 0.35rem; font-size: 0.8rem;
+           padding: 0.1rem 0 0.1rem 1.6rem; color: #64748b; }
+.io-ref code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; color: #475569; }
+.io-ref::before { content: "↳"; color: #94a3b8; margin-right: 0.15rem; }
 .io-size { font-size: 0.78rem; color: #94a3b8; }
 footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem; }
 /* Scrollable description cells for long package/tool blurbs */
@@ -314,31 +318,44 @@ def _io_group(step: dict) -> str:
     if not inputs and not outputs:
         return ""
 
-    def _file_rows(files: list, validate: bool) -> str:
+    def _input_rows(entries: list) -> str:
+        """Inputs may be plain strings or {path, references} dicts."""
+        html = ""
+        for e in entries:
+            if isinstance(e, dict):
+                path = e.get("path", "")
+                refs = e.get("references", []) or []
+            else:
+                path, refs = str(e), []
+            name = Path(path).name if path else ""
+            html += f'<div class="io-file">📄 <code>{name}</code></div>'
+            for r in refs:
+                rname = Path(r).name
+                html += f'<div class="io-ref"><code>{rname}</code></div>'
+        return html
+
+    def _output_rows(files: list) -> str:
         html = ""
         for f in files:
             name = Path(f).name
-            if validate:
-                vr = validation.get(f) or validation.get(name) or {}
-                passed = vr.get("passed")
-                size = vr.get("size_bytes", 0)
-                size_str = f'<span class="io-size">{size / 1024:.1f} KB</span>' if size else ""
-                if passed is True:
-                    icon = "✅"
-                elif passed is False:
-                    icon = "❌"
-                else:
-                    icon = "🔲"
-                html += f'<div class="io-file">{icon} <code>{name}</code> {size_str}</div>'
+            vr = validation.get(f) or validation.get(name) or {}
+            passed = vr.get("passed")
+            size = vr.get("size_bytes", 0)
+            size_str = f'<span class="io-size">{size / 1024:.1f} KB</span>' if size else ""
+            if passed is True:
+                icon = "✅"
+            elif passed is False:
+                icon = "❌"
             else:
-                html += f'<div class="io-file">📄 <code>{name}</code></div>'
+                icon = "🔲"
+            html += f'<div class="io-file">{icon} <code>{name}</code> {size_str}</div>'
         return html
 
     in_html = out_html = ""
     if inputs:
-        in_html = f'<div class="io-block"><div class="io-label">Inputs</div>{_file_rows(inputs, False)}</div>'
+        in_html = f'<div class="io-block"><div class="io-label">Inputs</div>{_input_rows(inputs)}</div>'
     if outputs:
-        out_html = f'<div class="io-block"><div class="io-label">Outputs</div>{_file_rows(outputs, True)}</div>'
+        out_html = f'<div class="io-block"><div class="io-label">Outputs</div>{_output_rows(outputs)}</div>'
 
     return f'<div class="io-group">{in_html}{out_html}</div>'
 
@@ -510,9 +527,13 @@ def _notes_section(spec: dict) -> str:
 
 
 def generate(spec: dict) -> str:
+    # Lazy import to avoid circular dep: spec_writer also imports generate from here.
+    from agent.skills.spec_writer import _pick_version_for_filename
+
     name = spec.get("pipeline_name", "pipeline")
-    primary = next((p for p in spec.get("packages", []) if p.get("name") != "conda-pack"), {})
-    version = primary.get("resolved_version") or primary.get("version", "")
+    # Pick the version that actually matches the pipeline_name — not whatever
+    # package happens to be first in spec.packages. Same logic the filename uses.
+    version = _pick_version_for_filename(spec, name) or ""
     env = spec.get("conda_env", "")
     created = spec.get("created_at", "")
     if created:

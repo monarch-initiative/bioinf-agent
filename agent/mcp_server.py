@@ -289,7 +289,7 @@ def run_in_env(
     command: str,
     working_dir: str = "",
     timeout_seconds: int = 1800,
-    inputs: list[str] = [],
+    inputs: list = [],
     watch_dir: str = "",
     pipeline_id: str = "",
     step: int = 0,
@@ -299,7 +299,14 @@ def run_in_env(
 ) -> dict:
     """Run an arbitrary shell command inside a conda environment. Always use absolute paths.
 
-    inputs:    filenames consumed by this step — echoed back in the return value.
+    inputs: list of files this step consumes. Each entry is either:
+            - a plain string path: "/abs/path/to/file"
+            - a structured dict:   {path: "/abs/path/to/run.R",
+                                    references: ["/abs/path/data1.tsv", ...]}
+              Use the dict form when an input is a script / config / wrapper that
+              opens other files at runtime — the references become an indented
+              sublist under that input in the HTML report and are kept in the
+              spec so the lineage is programmatic (not memory-bound).
     watch_dir: directory to snapshot before/after execution. New and modified files
                are returned as detected_outputs. Defaults to working_dir if omitted.
 
@@ -402,19 +409,66 @@ def add_phenopacket(
 
 @mcp.tool()
 def validate_output(
-    file_path: str,
-    expected_type: str,
+    file_path: str = "",
+    expected_type: str = "",
+    files: list[dict] = [],
     env_name: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
-    """Validate a bioinformatics output file is non-empty and parseable.
+    """Validate one or many bioinformatics output files are non-empty and parseable.
+
     expected_type: sam | bam | fastq | fasta | vcf | bcf | bed | bigwig |
                    bim | fam | ld | frq | prune | tsv | csv | txt | log | any
 
-    If pipeline_id+step are supplied, the result is merged into
-    draft.pipeline_steps[step].validation[basename(file_path)] — and
-    save_pipeline_spec will derive the step's validation_status from this."""
+    Two call shapes:
+      Single:  validate_output(file_path=..., expected_type=...)
+      Batch:   validate_output(files=[{path, expected_type}, ...])
+
+    In batch mode each file is validated independently — one failure never
+    aborts the others. Returns per-file results in `validations` keyed by
+    basename, plus aggregate `all_passed` / `passed_count` / `failed_count`.
+
+    If pipeline_id+step are supplied, every result is merged into
+    draft.pipeline_steps[step].validation[basename] — save_pipeline_spec
+    then derives the step's validation_status from the aggregate."""
+    # Batch path
+    if files:
+        validations: dict = {}
+        passed_count = failed_count = 0
+        merge_status = "merged" if pipeline_id and step > 0 else None
+        for entry in files:
+            path = entry.get("path", "")
+            etype = entry.get("expected_type", "any")
+            vr = _validator.validate(path, etype, env_name=env_name or None)
+            filename = Path(path).name
+            validations[filename] = vr
+            if vr.get("passed") is True:
+                passed_count += 1
+            elif vr.get("passed") is False:
+                failed_count += 1
+            if merge_status == "merged":
+                ok = _pipeline_state.add_validation(pipeline_id, step, filename, vr)
+                if not ok:
+                    merge_status = "step_not_found"
+        out: dict = {
+            "validations":   validations,
+            "all_passed":    failed_count == 0 and passed_count == len(files),
+            "passed_count":  passed_count,
+            "failed_count":  failed_count,
+            "total":         len(files),
+        }
+        if pipeline_id:
+            if step <= 0:
+                out["pipeline_merge"] = {"status": "step_required", "pipeline_id": pipeline_id}
+            else:
+                out["pipeline_merge"] = {
+                    "status": merge_status, "pipeline_id": pipeline_id, "step": step,
+                    "merged_files": passed_count + failed_count,
+                }
+        return out
+
+    # Single-file path (unchanged behavior)
     result = _validator.validate(file_path, expected_type, env_name=env_name or None)
     if pipeline_id:
         if step <= 0:
@@ -784,8 +838,11 @@ def run_install_command(
     algorithm/analysis runs.
 
     installed_packages should list what this command installed:
-        [{name: 'GAPIT', version: '4.1.0'}, ...]
-    These power the side-by-side "command → packages" rendering in the report.
+        [{name: 'GAPIT', version: '4.1.0', channel: 'github', source: '...'}, ...]
+    These power the side-by-side "command → packages" rendering in the report,
+    AND each entry is appended to draft.packages as a PackageRecord (with an
+    install_method derived from `channel`) — closing the loop with verify_installation,
+    which can then patch verify_command / verify_output onto that record.
 
     Pass `step=N` to replace install_step N (for retries). Default is append.
 
@@ -810,12 +867,51 @@ def run_install_command(
         }
         step_data = {k: v for k, v in step_data.items() if v is not None}
         idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        # Auto-append each installed package to draft.packages so verify_installation
+        # has a record to patch. Only do this on a successful install.
+        added_packages: list[str] = []
+        if idx is not None and result.get("returncode") == 0:
+            for pkg in installed_packages or []:
+                name = pkg.get("name")
+                if not name:
+                    continue
+                channel = pkg.get("channel", "")
+                im_type = _DERIVE_INSTALL_METHOD_TYPE.get(channel.lower(), "source")
+                install_method: dict = {"type": im_type}
+                if pkg.get("source"):
+                    install_method["source"] = pkg["source"]
+                pkg_record = {
+                    "name":              name,
+                    "requested_version": pkg.get("requested_version") or pkg.get("version") or "latest",
+                    "resolved_version":  pkg.get("version"),
+                    "channel":           channel or None,
+                    "install_method":    install_method,
+                }
+                pkg_record = {k: v for k, v in pkg_record.items() if v is not None}
+                _pipeline_state.add_package(pipeline_id, pkg_record)
+                added_packages.append(name)
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            {"status": "merged", "pipeline_id": pipeline_id,
+             "install_step_index": idx, "added_packages": added_packages}
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
+
+
+# Channel → InstallMethod.type heuristic for run_install_command auto-packaging.
+# Anything not listed falls through to "source".
+_DERIVE_INSTALL_METHOD_TYPE: dict[str, str] = {
+    "github":        "r_install",
+    "cran":          "r_install",
+    "bioconductor":  "r_install",
+    "pip":           "pip",
+    "pypi":          "pip",
+    "conda-forge":   "conda",
+    "bioconda":      "conda",
+    "noarch":        "conda",
+    "docker":        "docker_pull",
+}
 
 
 @mcp.tool()
