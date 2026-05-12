@@ -32,7 +32,7 @@ If you ever need an API-driven orchestration mode (e.g., headless batch installs
 | `install_packages` | conda install one or more packages |
 | `verify_installation` | Run version/help command to confirm install |
 | `run_in_env` | Run any shell command inside the conda env |
-| `validate_output` | Check output file is valid (bam/vcf/fastq/gfa/bim/ld/…) |
+| `validate_output` | Check output files are valid (bam/vcf/fastq/gfa/bim/ld/…). Single (`file_path`) or batch (`files=[{path, expected_type}, ...]`) shape — batch validates each file independently. |
 | `list_available_resources` | What genomes and test data are on disk |
 | `download_resource` | Download a reference genome |
 | `add_core_test_data` | Stream-download + subset reads from EBI SRA |
@@ -82,7 +82,7 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
   - Add a `ReferenceDatabase` entry to the spec with `name`, `version`, `size_gb`, `source_url`, `local_path`.
   - Add the data directory to `docker.volume_mounts` — it is NOT baked into the Docker image.
 - Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically. This is what powers `env_status: fully_validated` at finalize.
-- **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, downloading reference databases via curl/wget, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps` and accepts a structured `installed_packages` list (e.g. `[{"name": "GAPIT", "version": "4.1.0"}]`). Pass `step=N` to replace a failed install step for retries.
+- **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, downloading reference databases via curl/wget, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps`. Each entry in `installed_packages` (e.g. `{"name": "GAPIT", "version": "4.1.0", "channel": "github", "source": "remotes::install_github('jiabowang/GAPIT')"}`) is **also auto-appended to `draft.packages`** with an `install_method.type` derived from `channel` (github/cran/bioconductor → `r_install`, pip/pypi → `pip`, conda channels → `conda`). `verify_installation` then patches `verify_output` onto that record — no `patch_pipeline` needed for BiocManager / install_github / CRAN installs. Pass `step=N` to replace a failed install step for retries.
 
 ### Phase 3 — Test data
 - Call `list_available_resources(both)` to see what's on disk.
@@ -110,7 +110,16 @@ This is where the actual analysis runs (alignment, variant calling, GWAS, etc.).
 For each algorithmic step in pipeline order:
 - Build a test command with sensible defaults for small data. Use absolute paths.
 - Call `run_in_env(env_name, command, inputs=[...], watch_dir=<abs>, pipeline_id=<id>, tool="...", subcommand="...", purpose="...")`. **A PipelineStep is appended to `draft.pipeline_steps`** with the command, returncode, runtime_seconds, inputs, and detected outputs. The return value's `pipeline_merge.step_index` is the 1-based step number — capture it for the validate_output calls.
-- Call `validate_output(file_path, expected_type, env_name=<env>, pipeline_id=<id>, step=<step_index>)` for each file in `result.detected_outputs`. **The result is merged into `draft.pipeline_steps[step].validation[basename]` automatically.** `save_pipeline_spec` later derives each step's `validation_status` from this dict.
+- **Structured inputs**: every file the step *reads* belongs in `inputs`, including files a wrapper script then opens. Bare path strings still work, but when an input is a script / config / wrapper, use the dict form so the secondary files become first-class spec citizens (and downstream Nextflow channel declarations):
+  ```python
+  inputs=[
+      {"path": "/abs/run_gapit.R",
+       "references": ["/abs/genotype.hmp.txt.gz", "/abs/traits.txt.gz"]},
+      "/abs/some_other_input.tsv",   # plain string for direct args
+  ]
+  ```
+  The HTML report renders references as an indented sublist under their parent input. Skipping this is the difference between "the script is the input" (opaque) and "the script + its data are the inputs" (programmatic lineage).
+- Call `validate_output(files=[{path, expected_type}, ...], env_name=<env>, pipeline_id=<id>, step=<step_index>)` once with **every file in `result.detected_outputs`** — batched, per-file errors are independent. Each result merges into `draft.pipeline_steps[step].validation[basename]` automatically. The single-file `file_path=..., expected_type=...` shape is preserved for ad-hoc one-off validations. Don't cherry-pick: a detected output that isn't validated drops `pipeline_status` below `fully_validated`.
 - **If you know a step's outputs are good but `validate_output` doesn't apply** (e.g., a step's success is confirmed by the next step running cleanly): call `mark_step_validated(pipeline_id, step, validation_status="passed")`. This is the explicit alternative to `validate_output` for cases without checkable output files.
 - Pass `result.detected_outputs` as `inputs` to the next `run_in_env` call (full lineage).
 - On failure, diagnose and retry. To **replace** a failed step instead of appending a new one, pass `step=<failed_step_index>` to `run_in_env`. Default behavior is append (preserves history).
