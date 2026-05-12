@@ -140,6 +140,7 @@ def install_packages(
     env_name: str,
     packages: list[dict],
     pipeline_id: str = "",
+    step: int = 0,
 ) -> dict:
     """Install packages into a conda env.
     packages: list of {spec: str, channel: str}, e.g. [{spec: 'samtools=1.21', channel: 'bioconda'}]
@@ -148,7 +149,10 @@ def install_packages(
     If pipeline_id is supplied, an entry is appended to draft.install_steps with
     installed_packages parsed from each spec (spec='samtools=1.21' → name=samtools
     version=1.21). conda-pack is filtered out of installed_packages since it is
-    infrastructure, not a user-facing package."""
+    infrastructure, not a user-facing package.
+
+    Pass `step=N` to replace install_step N (for retries after a solver
+    conflict, etc). Default is append — same semantics as run_install_command."""
     result = _env_mgr.install(env_name, packages)
     if pipeline_id:
         installed: list[dict] = []
@@ -169,7 +173,7 @@ def install_packages(
             "command":            "conda install " + " ".join(p.get("spec", "") for p in packages),
             "returncode":         result.get("returncode"),
             "installed_packages": installed,
-        })
+        }, replace_step=step)
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else

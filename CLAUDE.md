@@ -68,7 +68,7 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
 
 ### Phase 2 — Install
 - Call `create_conda_env(env_name="bioinf_{pipeline_name}", pipeline_id=<id>)`. Sets `draft.conda_env` AND appends an entry to `draft.install_steps` for the env creation.
-- **For conda tools** (the default): call `install_packages(env_name, packages, pipeline_id=<id>)`. Installs all packages in one solve AND appends a single entry to `draft.install_steps` with `installed_packages` parsed from each spec (e.g. `samtools=1.21` → `{name: samtools, version: 1.21}`).
+- **For conda tools** (the default): call `install_packages(env_name, packages, pipeline_id=<id>)`. Installs all packages in one solve AND appends a single entry to `draft.install_steps` with `installed_packages` parsed from each spec (e.g. `samtools=1.21` → `{name: samtools, version: 1.21}`). Pass `step=N` to replace install_step N after a solver conflict (same retry semantics as `run_install_command`) — otherwise failed attempts accumulate and drop `env_status` to `failed`.
 - **For Java tools** (Exomiser, Picard, GATK, …):
   1. Include `openjdk` (conda-forge) in the `install_packages` call — the JVM lives in the conda env.
   2. Use `run_in_env` to download the JAR from GitHub releases into `{env}/share/{tool}/`.
