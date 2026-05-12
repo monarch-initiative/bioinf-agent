@@ -3,9 +3,9 @@ Core data models for the bioinformatics agent.
 
 Single source of truth for:
   - Controlled vocabulary (ReadType, EndType, AssayType, FileType, Database)
-  - InstallMethod      (conda | jar | pip | docker_pull | source | manual)
+  - InstallMethod      (conda | jar | pip | r_install | docker_pull | source | manual)
   - ReferenceDatabase  (large external databases beyond the genome FASTA)
-  - RuntimeEnvironment (conda | jar-in-conda | docker | native; GPU fields)
+  - RuntimeEnvironment (conda | jar-in-conda | r | docker | native; GPU fields)
   - RuntimeConfig      (config files the tool needs at runtime)
   - ServiceDependency  (companion processes: web server, database, Spark)
   - Provenance schema  (one pipeline run on one sample; AssemblyInput for scaffolding)
@@ -112,7 +112,7 @@ class InstallMethod(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["conda", "jar", "pip", "docker_pull", "source", "manual"] = "conda"
+    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source", "manual"] = "conda"
     # conda
     conda_spec: Optional[str] = None   # e.g. "samtools=1.21"
     channel:    Optional[str] = None   # e.g. "bioconda"
@@ -173,7 +173,7 @@ class RuntimeEnvironment(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["conda", "jar", "docker", "native"] = "conda"
+    type: Literal["conda", "jar", "r", "docker", "native"] = "conda"
     # jar: JVM lives in the conda env; these fields describe invocation
     java_flags:     list[str] = []        # e.g. ["-Xmx12g", "-Djava.awt.headless=true"]
     jar_path:       Optional[str] = None  # absolute path to the JAR (in {env}/share/{tool}/)
