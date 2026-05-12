@@ -41,28 +41,32 @@ If you ever need an API-driven orchestration mode (e.g., headless batch installs
 | `start_service` | Start a background service (web server, DB, Spark) inside the env |
 | `stop_service` | Stop a background service by stop_command or PID file |
 | `check_service_health` | Probe a running service with a health-check command |
-| `save_pipeline_report` | Write YAML + HTML report to env_reports/ |
+| `save_pipeline_report` | Write YAML + HTML report to env_reports/ (use `finalize_pipeline` instead when using the accumulator) |
 | `write_pipeline_provenance` | Write provenance YAML for a pipeline run |
-| `list_installed_pipelines` | List installed pipelines from env_reports/ |
+| `list_installed_pipelines` | List installed pipelines from env_reports/ (drafts are skipped) |
 | `fetch_r_package_deps` | Parse DESCRIPTION from a GitHub R repo; returns all deps pre-categorised |
+| `start_pipeline` | Initialize (or resume) a server-side draft; returns `pipeline_id` |
+| `finalize_pipeline` | Validate the draft against PipelineSpec, write final YAML + HTML, delete draft |
+| `discard_pipeline_draft` | Delete a draft without finalizing (fresh start) |
+| `show_pipeline_draft` | Inspect the current draft without finalizing |
+| `patch_pipeline` | Deep-merge arbitrary patches into the draft (escape hatch for non-derivable fields) |
+| `select_test_data` | Find a matching test dataset; returns a TestDataRef shape ready for the spec |
 
 ---
 
 ## How to install a pipeline (phases Claude Code follows)
 
-When the user asks to install a tool or pipeline, execute ALL phases in order:
+When the user asks to install a tool or pipeline, execute ALL phases in order using the **pipeline state accumulator**. This eliminates the spec-assembly burden: each tool's output that has an obvious destination is merged into a server-side draft automatically. You pass `pipeline_id` to participating tools and they handle the rest.
+
+### Phase 0 — Start
+- Call `start_pipeline(pipeline_name, description)` once at the very beginning. It returns `{pipeline_id, draft_path, resumed}`. **Use the returned `pipeline_id` (= the pipeline_name) on every subsequent participating tool.** If `resumed: true`, a draft already existed — call `show_pipeline_draft` first to see what was already done before deciding whether to continue or `discard_pipeline_draft` for a fresh start.
 
 ### Phase 1 — Research
-- Call `search_package` for each requested package.
-- **Capture from each result** → start building the `packages` list entry:
-  ```
-  { name, resolved_version: result.version, channel, conda_spec,
-    description, homepage, input_types, output_types, check_command }
-  ```
+- Call `search_package(name, version, pipeline_id=<id>)` for each requested package. **A PackageRecord-shaped entry is appended to `draft.packages` automatically** — you do not need to re-state the result anywhere. The return value still contains the data so you can reason about channel/version choices.
 
 ### Phase 2 — Install
-- Call `create_conda_env` with name `bioinf_{pipeline_name}`.
-- **For conda tools** (the default): call `install_packages` with all packages at once. Fall back to one-by-one if needed.
+- Call `create_conda_env(env_name="bioinf_{pipeline_name}", pipeline_id=<id>)`. Sets `draft.conda_env`.
+- **For conda tools** (the default): call `install_packages` with all packages at once. Fall back to one-by-one if needed. (No `pipeline_id` needed — installation success/failure is captured downstream by `verify_installation`.)
 - **For Java tools** (Exomiser, Picard, GATK, …):
   1. Include `openjdk` (conda-forge) in the `install_packages` call — the JVM lives in the conda env.
   2. Use `run_in_env` to download the JAR from GitHub releases into `{env}/share/{tool}/`.
@@ -75,8 +79,7 @@ When the user asks to install a tool or pipeline, execute ALL phases in order:
   - Download the data with `run_in_env` (curl / wget).
   - Add a `ReferenceDatabase` entry to the spec with `name`, `version`, `size_gb`, `source_url`, `local_path`.
   - Add the data directory to `docker.volume_mounts` — it is NOT baked into the Docker image.
-- Call `verify_installation` for each package.
-- **Capture from each verify result** → add to that package's entry: `verify_command`, `verify_output`.
+- Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically.
 
 ### Phase 3 — Test data
 - Call `list_available_resources(both)` to see what's on disk.
@@ -96,60 +99,39 @@ When the user asks to install a tool or pipeline, execute ALL phases in order:
 - Default strategy: use chr22 reference, 10K reads, write outputs to `data/{pipeline_name}_test_data/`.
 - If genome index is missing for this tool, build it with `run_in_env` before the main test run.
 - Only call `download_resource` if the needed genome is not already on disk.
-- **Capture from the manifest/resources** → build the `test_data` dict to carry into Phase 6:
-  ```
-  { genome_build, chromosome_subset, read_type, end_type, assay_type,
-    sample, accession, subset, num_reads, upstream_pipelines }
-  ```
+- Call `select_test_data(genome_build, assay_type, end_type, pipeline_id=<id>, ...)` to find a matching dataset. **A TestDataRef-shaped dict is set on `draft.test_data` automatically.** Inspect the returned `test_data` and `match_score`; if the match is wrong, call again with different criteria or use `patch_pipeline` to override.
 
 ### Phase 4 — Validation loop
 For each package in pipeline order:
 - Build a test command with sensible defaults for small data. Use absolute paths.
-- Call `run_in_env` to execute it.
-- Call `run_in_env` with:
-  - `inputs`: filenames going into this step (raw inputs for step 1; previous step's `detected_outputs` plus any additional files for step N>1)
-  - `watch_dir`: the directory where outputs will land (absolute path)
-- **Capture from the return** → append to `pipeline_steps`:
-  ```
-  { step, tool, command: result.command, returncode: result.returncode,
-    runtime_seconds: result.runtime_seconds,
-    inputs:  result.inputs,
-    outputs: result.detected_outputs,
-    validation: { filename: validate_output_result, ... } }
-  ```
-- Call `validate_output` for each filename in `result.detected_outputs`; store results keyed by filename in `validation`.
-- **You do not need to set `validation_status` on the step manually** — `save_pipeline_report` derives it from the `validation` dict (all passed → "passed", any failed → "failed", empty → None).
+- Call `run_in_env(env_name, command, inputs=[...], watch_dir=<abs>, pipeline_id=<id>, tool="...", subcommand="...", purpose="...")`. **A PipelineStep is appended to `draft.pipeline_steps`** with the command, returncode, runtime_seconds, inputs, and detected outputs. The return value's `pipeline_merge.step_index` is the 1-based step number — capture it for the validate_output calls.
+- Call `validate_output(file_path, expected_type, env_name=<env>, pipeline_id=<id>, step=<step_index>)` for each file in `result.detected_outputs`. **The result is merged into `draft.pipeline_steps[step].validation[basename]` automatically.** `save_pipeline_spec` later derives each step's `validation_status` from this dict.
 - Pass `result.detected_outputs` as `inputs` to the next `run_in_env` call (full lineage).
-- On failure, diagnose and retry up to 2 times.
-- **Why this matters**: the pipeline-level `status` (returned by `save_pipeline_report`) can only land on `fully_validated` if every step has `validation_status="passed"`. A step that exits 0 but never gets a `validate_output` call counts as unvalidated and the pipeline drops to `partially_validated` or `complete`. Validate every output.
+- On failure, diagnose and retry. To **replace** a failed step instead of appending a new one, pass `step=<failed_step_index>` to `run_in_env`. Default behavior is append (preserves history).
+- **Why this matters**: the pipeline-level `status` returned by `finalize_pipeline` can only land on `fully_validated` if every step has `validation_status="passed"`. A step that exits 0 but never gets a `validate_output` call counts as unvalidated and the pipeline drops to `partially_validated` or `complete`. Validate every output.
 
 ### Phase 5 — Docker
-- Call `build_docker_image`. Pass `version` = the resolved version of the primary package.
-- **Capture the entire return value** — use it directly as the `docker` field in the spec.
-  The return already includes `build_attempted`, `build_success`, `image_tag`, `registry`, `reason`.
+- Call `build_docker_image(env_name, pipeline_name, pipeline_description, version=<primary_version>, pipeline_id=<id>)`. **`draft.docker` is set to the DockerBuild-shaped subset of the return automatically.**
 
-### Phase 6 — Report
-- Call `save_pipeline_report` with the spec assembled from phases 1–5:
-  ```
-  {
-    pipeline_name, description, conda_env,
-    created_at: <now ISO>,
-    packages:             <list built in phases 1–2>,
-    runtime_environment:  <only if non-conda; e.g. {type:"jar", java_flags:[...], jar_path:"..."}>,
-    reference_databases:  <list of {name, version, size_gb, source_url, local_path} if any>,
-    runtime_configs:      <list of {name, format, path, content?} for global config files>,
-    test_data:            <dict built in phase 3>,
-    pipeline_steps:       <list built in phase 4>,
-    docker:               <return value from phase 5>,
-  }
-  ```
-- **Do NOT set `status`** — it is derived from the steps. The return value includes the derived `status` so you can report it back to the user.
-- Use the exact field names above (e.g. `pipeline_name`, not `name`; `created_at`, not `created`; `docker` dict, not flat `docker_image`). There is no longer a backward-compatibility shim — wrong field names will fail validation.
-- **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 7.
+### Phase 6 — Fields the accumulator doesn't fill (escape hatch)
+Some fields don't come from any tool — fill them with `patch_pipeline(pipeline_id, patches)` before finalize:
+- `runtime_environment` — only if non-conda (e.g. `{type:"jar", java_flags:[...], jar_path:"..."}`)
+- `reference_databases` — `[{name, version, size_gb, source_url, local_path}, ...]` for large external DBs
+- `runtime_configs` — `[{name, format, path, content?}, ...]` for global config files
+- `service_dependencies` — for tools that need a companion process (web server, DB, Spark)
+- `notes` — any observations worth recording in the final spec
+- `reference_free: true` — for de novo assemblers
 
-### Phase 7 — Provenance
+### Phase 7 — Finalize
+- Call `finalize_pipeline(pipeline_id)`. This:
+  1. Validates the accumulated draft against `PipelineSpec`
+  2. If valid: writes `env_reports/{name}_{version}.yaml` + `.html`, deletes the draft, returns `{saved_yaml, saved_html, status}` with the derived status
+  3. If invalid: preserves the draft, returns `{error, validation_errors, draft_path}` — use `show_pipeline_draft` to inspect, `patch_pipeline` to fix, then retry `finalize_pipeline`
+- **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 8.
+
+### Phase 8 — Provenance
 - Call `write_pipeline_provenance` with the exact output files produced.
-- Pass `pipeline_spec_path` = `saved_yaml` returned by Phase 6.
+- Pass `pipeline_spec_path` = `saved_yaml` returned by Phase 7.
 - Pass all other absolute paths; relative paths inside the YAML are computed automatically.
 - Always required: `pipeline`, `conda_env_path`, `pipeline_spec_path`, `output_files`, `output_dir`, `sample_key`.
 - `genome_build` / `chromosome` / `reference_path` are optional — omit for tools that don't use a reference FASTA.
@@ -162,6 +144,9 @@ For each package in pipeline order:
   - `pedigree` → `{ped, proband?}`
   - `genotype_array` → `{file, format: hapmap|plink_bed|vcf|dosage|bgen, bim?, fam?, n_samples?, n_snps?, genome_build?, upstream_pipeline?}` — population-level genotype matrix for GWAS/QTL tools
   - `quantitative_traits` → `{traits: [...], file, n_samples?, measurement_type: continuous|binary|ordinal}` — continuous phenotype measurements (distinct from HPO-coded phenotype)
+
+### Accumulator is opt-in
+All `pipeline_id` parameters are optional. When omitted, tools behave exactly as before — no merge, no draft side effects. This is correct for ad-hoc operations: running a one-off command, debugging a tool, validating a single file, or anything outside an install flow. For installs, always start with `start_pipeline` and thread the `pipeline_id` through.
 
 ### Rules
 - Always use absolute paths in `run_in_env` commands.
@@ -308,6 +293,7 @@ When the user asks to add test data:
 agent/
 ├── mcp_server.py               # MCP server — sole orchestration entry point
 ├── skills/
+│   ├── pipeline_state.py       # In-progress draft accumulator (disk-backed)
 │   ├── spec_writer.py          # save_pipeline_spec + write_provenance
 │   ├── package_search.py       # anaconda.org / PyPI lookup
 │   ├── env_manager.py          # conda create / install / run

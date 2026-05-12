@@ -17,11 +17,15 @@ from __future__ import annotations
 import re
 import subprocess
 import urllib.request
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 from fastmcp import FastMCP
+from pydantic import ValidationError
+
+from agent.models.core_data import PipelineSpec
 
 # ---------------------------------------------------------------------------
 # Config + skill singletons (initialised once at server startup)
@@ -48,12 +52,14 @@ from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
 from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
+from agent.skills.pipeline_state import PipelineState
 
-_pkg_search  = PackageSearch(config)
-_env_mgr     = EnvManager(config)
-_test_runner = TestRunner(config)
-_docker      = DockerBuilder(config)
-_validator   = OutputValidator(config)
+_pkg_search     = PackageSearch(config)
+_env_mgr        = EnvManager(config)
+_test_runner    = TestRunner(config)
+_docker         = DockerBuilder(config)
+_validator      = OutputValidator(config)
+_pipeline_state = PipelineState(config)
 
 mcp = FastMCP("bioinf-agent")
 
@@ -62,20 +68,60 @@ mcp = FastMCP("bioinf-agent")
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def search_package(package_name: str, requested_version: str = "latest") -> dict:
+def search_package(
+    package_name: str,
+    requested_version: str = "latest",
+    pipeline_id: str = "",
+) -> dict:
     """Search anaconda.org / bioconda / conda-forge / PyPI for a bioinformatics package.
-    Returns channel, exact version, conda spec, install command, and brief description."""
-    return _pkg_search.search(package_name, requested_version)
+    Returns channel, exact version, conda spec, install command, and brief description.
+
+    If pipeline_id is supplied, a PackageRecord-shaped entry is also appended to
+    draft.packages — you don't need to re-state the result in the final spec."""
+    result = _pkg_search.search(package_name, requested_version)
+    if pipeline_id and result.get("found"):
+        package_record = {
+            "name":              result.get("package_name", package_name),
+            "requested_version": requested_version,
+            "resolved_version":  result.get("version"),
+            "channel":           result.get("channel"),
+            "conda_spec":        result.get("conda_spec"),
+            "description":       result.get("description"),
+            "homepage":          result.get("home"),
+            "input_types":       result.get("input_types", []),
+            "output_types":      result.get("output_types", []),
+            "check_command":     result.get("check_command"),
+        }
+        idx = _pipeline_state.add_package(pipeline_id, package_record)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "package_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 # ---------------------------------------------------------------------------
 # Environment management
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def create_conda_env(env_name: str, python_version: str = "") -> dict:
-    """Create a new isolated conda environment."""
+def create_conda_env(
+    env_name: str,
+    python_version: str = "",
+    pipeline_id: str = "",
+) -> dict:
+    """Create a new isolated conda environment.
+
+    If pipeline_id is supplied, draft.conda_env and draft.python_version are set."""
     pv = python_version or config["conda"]["python_version"]
-    return _env_mgr.create(env_name, python_version=pv)
+    result = _env_mgr.create(env_name, python_version=pv)
+    if pipeline_id:
+        ok = _pipeline_state.set_conda_env(pipeline_id, env_name, python_version=pv)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id} if ok
+            else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 
 @mcp.tool()
@@ -87,9 +133,28 @@ def install_packages(env_name: str, packages: list[dict]) -> dict:
 
 
 @mcp.tool()
-def verify_installation(env_name: str, package_name: str, check_command: str) -> dict:
-    """Run a version/help command inside the env to confirm a package installed correctly."""
-    return _env_mgr.verify(env_name, package_name, check_command)
+def verify_installation(
+    env_name: str,
+    package_name: str,
+    check_command: str,
+    pipeline_id: str = "",
+) -> dict:
+    """Run a version/help command inside the env to confirm a package installed correctly.
+
+    If pipeline_id is supplied, the named package's record in the draft is patched
+    with verify_command + verify_output."""
+    result = _env_mgr.verify(env_name, package_name, check_command)
+    if pipeline_id:
+        patched = _pipeline_state.patch_package(pipeline_id, package_name, {
+            "verify_command": check_command,
+            "verify_output":  result.get("output", ""),
+        })
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id} if patched
+            else {"status": "package_not_in_draft",
+                  "pipeline_id": pipeline_id, "package_name": package_name}
+        )
+    return result
 
 
 @mcp.tool()
@@ -176,6 +241,11 @@ def run_in_env(
     timeout_seconds: int = 1800,
     inputs: list[str] = [],
     watch_dir: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+    tool: str = "",
+    subcommand: str = "",
+    purpose: str = "",
 ) -> dict:
     """Run an arbitrary shell command inside a conda environment. Always use absolute paths.
 
@@ -183,15 +253,40 @@ def run_in_env(
     watch_dir: directory to snapshot before/after execution. New and modified files
                are returned as detected_outputs. Defaults to working_dir if omitted.
 
+    If pipeline_id is supplied, a PipelineStep entry is appended to
+    draft.pipeline_steps with the command, returncode, runtime, inputs, and
+    detected outputs. Pass `step=N` to replace step N (for retries); default
+    is append. The returned `pipeline_merge.step_index` is what you pass to
+    validate_output(step=...) to attach validations to this step.
+
     Return keys: returncode, stdout, stderr, success, command, runtime_seconds,
-                 inputs, detected_outputs."""
-    return _env_mgr.run_in_env(
+                 inputs, detected_outputs, [pipeline_merge]."""
+    result = _env_mgr.run_in_env(
         env_name, command,
         working_dir=working_dir or None,
         timeout=timeout_seconds,
         inputs=inputs,
         watch_dir=watch_dir or working_dir or None,
     )
+    if pipeline_id:
+        step_data = {
+            "tool":            tool or (command.split() or [""])[0],
+            "subcommand":      subcommand or None,
+            "purpose":         purpose or None,
+            "command":         command,
+            "returncode":      result.get("returncode"),
+            "runtime_seconds": result.get("runtime_seconds"),
+            "inputs":          result.get("inputs", []),
+            "outputs":         result.get("detected_outputs", []),
+        }
+        step_data = {k: v for k, v in step_data.items() if v is not None}
+        idx = _pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 # ---------------------------------------------------------------------------
 # Resources
@@ -256,11 +351,34 @@ def add_phenopacket(
 
 
 @mcp.tool()
-def validate_output(file_path: str, expected_type: str, env_name: str = "") -> dict:
+def validate_output(
+    file_path: str,
+    expected_type: str,
+    env_name: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
     """Validate a bioinformatics output file is non-empty and parseable.
     expected_type: sam | bam | fastq | fasta | vcf | bcf | bed | bigwig |
-                   bim | fam | ld | frq | prune | tsv | csv | txt | log | any"""
-    return _validator.validate(file_path, expected_type, env_name=env_name or None)
+                   bim | fam | ld | frq | prune | tsv | csv | txt | log | any
+
+    If pipeline_id+step are supplied, the result is merged into
+    draft.pipeline_steps[step].validation[basename(file_path)] — and
+    save_pipeline_spec will derive the step's validation_status from this."""
+    result = _validator.validate(file_path, expected_type, env_name=env_name or None)
+    if pipeline_id:
+        if step <= 0:
+            result["pipeline_merge"] = {"status": "step_required", "pipeline_id": pipeline_id}
+        else:
+            filename = Path(file_path).name
+            ok = _pipeline_state.add_validation(pipeline_id, step, filename, result)
+            result["pipeline_merge"] = (
+                {"status": "merged", "pipeline_id": pipeline_id,
+                 "step": step, "filename": filename}
+                if ok else
+                {"status": "step_not_found", "pipeline_id": pipeline_id, "step": step}
+            )
+    return result
 
 # ---------------------------------------------------------------------------
 # Docker
@@ -274,15 +392,26 @@ def build_docker_image(
     version: str = "",
     gpu_required: bool = False,
     cuda_version: str = "",
+    pipeline_id: str = "",
 ) -> dict:
     """Package a conda env into an HPC-compatible Docker image via conda-pack.
     version:      resolved version string for the image tag, e.g. '1.21'. Defaults to 'latest'.
     gpu_required: when True, uses a CUDA base image and sets NVIDIA runtime labels.
-    cuda_version: CUDA version string, e.g. '12.1'. Defaults to config gpu.default_cuda_version."""
-    return _docker.build(
+    cuda_version: CUDA version string, e.g. '12.1'. Defaults to config gpu.default_cuda_version.
+
+    If pipeline_id is supplied, draft.docker is set to the DockerBuild-shaped subset
+    of this return."""
+    result = _docker.build(
         env_name, pipeline_name, pipeline_description,
         version=version, gpu_required=gpu_required, cuda_version=cuda_version,
     )
+    if pipeline_id:
+        ok = _pipeline_state.set_docker(pipeline_id, result)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id} if ok
+            else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 # ---------------------------------------------------------------------------
 # Artifacts
@@ -471,6 +600,154 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
             "dependencies=FALSE)",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline state accumulator
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def start_pipeline(pipeline_name: str, description: str) -> dict:
+    """Start a new pipeline draft (or silently resume an existing one).
+
+    Returns pipeline_id (= pipeline_name). Pass pipeline_id to subsequent
+    tools (search_package, create_conda_env, verify_installation, run_in_env,
+    validate_output, build_docker_image, select_test_data) so their results
+    are auto-merged into a server-side draft. You don't have to hand-assemble
+    the final spec at the end — call finalize_pipeline(pipeline_id) instead.
+
+    Resume semantics: if a draft for this pipeline_name already exists (e.g.
+    after an MCP restart mid-install), it is loaded and resumed silently;
+    `resumed: true` is set in the return so you know."""
+    return _pipeline_state.start(pipeline_name, description)
+
+
+@mcp.tool()
+def finalize_pipeline(pipeline_id: str) -> dict:
+    """Validate the accumulated draft against PipelineSpec, write the final
+    YAML + HTML report to env_reports/{name}_{version}.yaml, and delete the
+    draft. Returns the saved paths and the derived status.
+
+    If validation fails, the draft is preserved and validation_errors are
+    returned — call patch_pipeline to fix and retry, or discard_pipeline_draft
+    to start over."""
+    draft = _pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+
+    if not draft.get("created_at"):
+        draft["created_at"] = str(date.today())
+
+    try:
+        PipelineSpec.model_validate(draft)
+    except ValidationError as e:
+        return {
+            "error":             "PipelineSpec validation failed",
+            "validation_errors": e.errors(),
+            "draft_path":        str(_pipeline_state._draft_path(pipeline_id)),
+        }
+
+    result = _save_pipeline_spec(draft, config)
+    _pipeline_state.pop_for_finalize(pipeline_id)
+    _pipeline_state.delete_draft_file(pipeline_id)
+    return result
+
+
+@mcp.tool()
+def discard_pipeline_draft(pipeline_id: str) -> dict:
+    """Delete a pipeline draft without finalizing. Use when you want to start
+    fresh with the same pipeline_name and don't want resume semantics."""
+    return _pipeline_state.discard(pipeline_id)
+
+
+@mcp.tool()
+def show_pipeline_draft(pipeline_id: str) -> dict:
+    """Return the current accumulated draft for inspection. Does not modify
+    or finalize anything."""
+    draft = _pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+    return {"pipeline_id": pipeline_id, "draft": draft}
+
+
+@mcp.tool()
+def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
+    """Deep-merge arbitrary patches into the draft. Escape hatch for fields
+    no tool produces directly — runtime_environment, runtime_configs,
+    reference_databases, service_dependencies, notes, final_summary — or
+    for overriding server-derived values."""
+    return _pipeline_state.patch(pipeline_id, patches)
+
+
+@mcp.tool()
+def select_test_data(
+    genome_build: str = "hg38",
+    assay_type: str = "",
+    end_type: str = "",
+    sample: str = "",
+    accession: str = "",
+    subset: str = "",
+    pipeline_id: str = "",
+) -> dict:
+    """Find a matching test dataset on disk and return a TestDataRef-shaped
+    dict ready to drop into the spec. If pipeline_id is supplied, also sets
+    draft.test_data.
+
+    Match is best-effort: each criterion scores points; the highest-scoring
+    AVAILABLE dataset wins. Returns {test_data, available, match_score}, or
+    {error} if nothing on disk matches at all. Inspect the result and call
+    again with different criteria if the match is wrong."""
+    all_data = _list_resources({"resource_type": "test_data"}, config).get("test_data", [])
+    sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
+
+    def _score(d: dict) -> int:
+        s = 0
+        if genome_build and d.get("genome_build") == genome_build: s += 32
+        if assay_type   and d.get("assay_type")   == assay_type:   s += 16
+        if end_type     and d.get("end_type")     == end_type:     s += 8
+        if sample       and d.get("sample")       == sample:       s += 4
+        if accession    and d.get("accession")    == accession:    s += 2
+        if subset       and d.get("subset")       == subset:       s += 1
+        return s
+
+    scored = [(d, _score(d), bool(d.get("available"))) for d in sequencing]
+    if not scored:
+        return {"error": "no sequencing test data on disk"}
+    scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
+    best, score, available = scored[0]
+    if score == 0:
+        return {
+            "error": "no test data matches the requested criteria",
+            "criteria": {
+                "genome_build": genome_build, "assay_type": assay_type,
+                "end_type": end_type, "sample": sample,
+                "accession": accession, "subset": subset,
+            },
+        }
+
+    test_data_ref = {
+        "genome_build":  best.get("genome_build", ""),
+        "read_type":     best.get("read_type"),
+        "end_type":      best.get("end_type"),
+        "assay_type":    best.get("assay_type"),
+        "sample":        best.get("sample"),
+        "accession":     best.get("accession"),
+        "subset":        best.get("subset"),
+        "num_reads":     best.get("num_reads"),
+        "r1":            best.get("r1"),
+        "r2":            best.get("r2"),
+        "core_data_dir": best.get("core_dir"),
+    }
+    test_data_ref = {k: v for k, v in test_data_ref.items() if v is not None}
+
+    result = {"test_data": test_data_ref, "available": available, "match_score": score}
+    if pipeline_id:
+        ok = _pipeline_state.set_test_data(pipeline_id, test_data_ref)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id} if ok
+            else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------

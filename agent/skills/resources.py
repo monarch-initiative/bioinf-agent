@@ -142,11 +142,15 @@ def list_resources(inputs: dict, config: dict) -> dict:
 
 
 def list_pipelines(config: dict) -> dict:
-    """Read all pipeline spec YAMLs from env_reports/ and return summary dicts."""
+    """Read all finalized pipeline spec YAMLs from env_reports/ and return
+    summary dicts. *.draft.yaml files (in-progress drafts from the pipeline
+    state accumulator) are skipped."""
     pipelines_dir = Path(config["paths"]["pipelines_dir"])
     pipelines = []
 
     for spec_file in sorted(pipelines_dir.glob("*.yaml")):
+        if spec_file.name.endswith(".draft.yaml"):
+            continue
         try:
             pspec = PipelineSpec.from_yaml(spec_file)
             docker = pspec.docker
@@ -163,7 +167,10 @@ def list_pipelines(config: dict) -> dict:
                     for p in pspec.packages if p.name != "conda-pack"
                 ],
                 "steps_validated": sum(
-                    1 for s in pspec.pipeline_steps if s.status == "validated"
+                    1 for s in pspec.pipeline_steps if s.validation_status == "passed"
+                ),
+                "steps_ran_clean": sum(
+                    1 for s in pspec.pipeline_steps if s.returncode == 0
                 ),
                 "steps_total": len(pspec.pipeline_steps),
             })
