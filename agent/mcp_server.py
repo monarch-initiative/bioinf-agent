@@ -112,24 +112,70 @@ def create_conda_env(
 ) -> dict:
     """Create a new isolated conda environment.
 
-    If pipeline_id is supplied, draft.conda_env and draft.python_version are set."""
+    If pipeline_id is supplied, draft.conda_env and draft.python_version are
+    set, and an entry is appended to draft.install_steps recording the env
+    creation so the install journey is captured chronologically."""
     pv = python_version or config["conda"]["python_version"]
     result = _env_mgr.create(env_name, python_version=pv)
     if pipeline_id:
-        ok = _pipeline_state.set_conda_env(pipeline_id, env_name, python_version=pv)
+        _pipeline_state.set_conda_env(pipeline_id, env_name, python_version=pv)
+        idx = _pipeline_state.add_install_step(pipeline_id, {
+            "tool":               "conda",
+            "subcommand":         "create",
+            "purpose":            f"Create the {env_name} conda environment",
+            "command":            f"conda create --prefix envs/{env_name} python={pv}",
+            "returncode":         0 if result.get("success") else 1,
+            "installed_packages": [{"name": "python", "version": pv, "channel": "conda-forge"}],
+        })
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id} if ok
-            else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
 
 
 @mcp.tool()
-def install_packages(env_name: str, packages: list[dict]) -> dict:
+def install_packages(
+    env_name: str,
+    packages: list[dict],
+    pipeline_id: str = "",
+) -> dict:
     """Install packages into a conda env.
     packages: list of {spec: str, channel: str}, e.g. [{spec: 'samtools=1.21', channel: 'bioconda'}]
-    conda-pack is added automatically."""
-    return _env_mgr.install(env_name, packages)
+    conda-pack is added automatically.
+
+    If pipeline_id is supplied, an entry is appended to draft.install_steps with
+    installed_packages parsed from each spec (spec='samtools=1.21' → name=samtools
+    version=1.21). conda-pack is filtered out of installed_packages since it is
+    infrastructure, not a user-facing package."""
+    result = _env_mgr.install(env_name, packages)
+    if pipeline_id:
+        installed: list[dict] = []
+        for pkg in packages:
+            spec = pkg.get("spec", "")
+            name, _, version = spec.partition("=")
+            name = name.strip()
+            if not name or name == "conda-pack":
+                continue
+            entry = {"name": name, "channel": pkg.get("channel", "")}
+            if version:
+                entry["version"] = version.strip()
+            installed.append(entry)
+        idx = _pipeline_state.add_install_step(pipeline_id, {
+            "tool":               "conda",
+            "subcommand":         "install",
+            "purpose":            f"Install {len(installed)} package(s) into {env_name}",
+            "command":            "conda install " + " ".join(p.get("spec", "") for p in packages),
+            "returncode":         result.get("returncode"),
+            "installed_packages": installed,
+        })
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 
 @mcp.tool()
@@ -675,8 +721,97 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     """Deep-merge arbitrary patches into the draft. Escape hatch for fields
     no tool produces directly — runtime_environment, runtime_configs,
     reference_databases, service_dependencies, notes, final_summary — or
-    for overriding server-derived values."""
+    for overriding server-derived values.
+
+    Lists `pipeline_steps` and `install_steps` are merged element-by-element
+    on the `step` field, so a partial patch like
+    {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
+    updates just that step's validation_status without clobbering the rest.
+    All other lists are replaced wholesale."""
     return _pipeline_state.patch(pipeline_id, patches)
+
+
+@mcp.tool()
+def mark_step_validated(
+    pipeline_id: str,
+    step: int,
+    validation_status: str = "passed",
+) -> dict:
+    """Set the validation_status of a pipeline_step. The pipeline-level
+    pipeline_status derives from these at finalize time.
+
+    Use this when a step's outputs are known good but validate_output wasn't
+    called for them (e.g. the step's outputs were checked by the next step's
+    success, or the LLM verified them by other means). Operates only on
+    pipeline_steps — install_steps don't carry a validation_status field;
+    their success is captured by status (returncode==0)."""
+    if validation_status not in {"passed", "failed"}:
+        return {"error": "validation_status must be 'passed' or 'failed'",
+                "got": validation_status}
+    ok = _pipeline_state.mark_pipeline_step_validated(pipeline_id, step, validation_status)
+    return (
+        {"status": "set", "pipeline_id": pipeline_id, "step": step,
+         "validation_status": validation_status}
+        if ok else
+        {"error": "unknown pipeline_id or step out of range",
+         "pipeline_id": pipeline_id, "step": step}
+    )
+
+
+@mcp.tool()
+def run_install_command(
+    env_name: str,
+    command: str,
+    installed_packages: list[dict] = [],
+    working_dir: str = "",
+    timeout_seconds: int = 1800,
+    pipeline_id: str = "",
+    step: int = 0,
+    tool: str = "",
+    subcommand: str = "",
+    purpose: str = "",
+) -> dict:
+    """Run an install command inside a conda environment (BiocManager::install,
+    remotes::install_github, pip install, downloading reference DBs, etc.).
+
+    This is the install-side mirror of run_in_env: same shape, same semantics,
+    but the resulting step lands in draft.install_steps (not pipeline_steps)
+    so the environment-build journey is recorded separately from the actual
+    algorithm/analysis runs.
+
+    installed_packages should list what this command installed:
+        [{name: 'GAPIT', version: '4.1.0'}, ...]
+    These power the side-by-side "command → packages" rendering in the report.
+
+    Pass `step=N` to replace install_step N (for retries). Default is append.
+
+    Return keys: returncode, stdout, stderr, success, command, runtime_seconds,
+                 inputs, detected_outputs, [pipeline_merge]."""
+    result = _env_mgr.run_in_env(
+        env_name, command,
+        working_dir=working_dir or None,
+        timeout=timeout_seconds,
+        inputs=[],
+        watch_dir=None,
+    )
+    if pipeline_id:
+        step_data = {
+            "tool":               tool or (command.split() or [""])[0],
+            "subcommand":         subcommand or None,
+            "purpose":            purpose or None,
+            "command":            command,
+            "returncode":         result.get("returncode"),
+            "runtime_seconds":    result.get("runtime_seconds"),
+            "installed_packages": installed_packages or [],
+        }
+        step_data = {k: v for k, v in step_data.items() if v is not None}
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
 
 
 @mcp.tool()

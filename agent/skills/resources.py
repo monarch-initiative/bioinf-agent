@@ -158,7 +158,8 @@ def list_pipelines(config: dict) -> dict:
                 "name": pspec.pipeline_name,
                 "description": pspec.description,
                 "conda_env": pspec.conda_env,
-                "status": pspec.status,
+                "env_status": pspec.env_status,
+                "pipeline_status": pspec.pipeline_status,
                 "created_at": pspec.created_at,
                 "docker_image": docker.image_tag if docker else None,
                 "docker_built": docker.build_success if docker else False,
@@ -166,13 +167,17 @@ def list_pipelines(config: dict) -> dict:
                     {"name": p.name, "version": p.resolved_version or p.requested_version}
                     for p in pspec.packages if p.name != "conda-pack"
                 ],
-                "steps_validated": sum(
+                "install_steps_total": len(pspec.install_steps),
+                "install_steps_failed": sum(
+                    1 for s in pspec.install_steps if s.returncode not in (None, 0)
+                ),
+                "pipeline_steps_validated": sum(
                     1 for s in pspec.pipeline_steps if s.validation_status == "passed"
                 ),
-                "steps_ran_clean": sum(
+                "pipeline_steps_ran_clean": sum(
                     1 for s in pspec.pipeline_steps if s.returncode == 0
                 ),
-                "steps_total": len(pspec.pipeline_steps),
+                "pipeline_steps_total": len(pspec.pipeline_steps),
             })
         except Exception as e:
             pipelines.append({"file": spec_file.name, "error": str(e)})

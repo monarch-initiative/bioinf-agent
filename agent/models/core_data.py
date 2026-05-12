@@ -707,8 +707,43 @@ class TestDataRef(BaseModel):
     upstream_pipelines: list[str] = []
 
 
+class InstallStep(BaseModel):
+    """One environment-install command in the pipeline build journey.
+
+    Distinct from PipelineStep: install_steps record HOW the environment was
+    built (conda create, conda install, BiocManager::install, remotes::install_github,
+    apt-get install, downloading reference databases, etc.). They do not have a
+    validation_status because installs don't produce data outputs to validate —
+    install success is captured by returncode==0 in `status`, and the functional
+    check that the installed package actually works is captured separately in
+    each PackageRecord's verify_command / verify_output.
+
+    installed_packages records which package(s) this command installed, so the
+    HTML report can show "command → packages installed" side-by-side."""
+    model_config = ConfigDict(extra="allow")
+
+    step:               int                   # 1-based; sequential within install_steps
+    tool:               str                   # e.g. "conda", "R", "pip", "apt"
+    subcommand:         Optional[str] = None  # e.g. "create", "install", "BiocManager::install"
+    purpose:            Optional[str] = None
+    command:            str
+    installed_packages: list[dict[str, Any]] = []  # [{name, version, channel?}, ...]
+    status:             Literal["installed", "failed", "skipped"] = "installed"
+    returncode:         Optional[int] = None
+    runtime_seconds:    Optional[float] = None
+
+    @model_validator(mode="after")
+    def _derive_status_from_returncode(self) -> "InstallStep":
+        if self.returncode is not None:
+            self.status = "installed" if self.returncode == 0 else "failed"
+        return self
+
+
 class PipelineStep(BaseModel):
-    """One execution step within a pipeline run.
+    """One algorithm / analysis step within a pipeline run.
+
+    Distinct from InstallStep: pipeline_steps are the data-producing steps
+    of the pipeline itself (bwa mem, GATK HaplotypeCaller, GAPIT::GAPIT, etc.).
 
     Two orthogonal status fields:
       - status: did the command exit cleanly? Derived from returncode.
@@ -799,7 +834,11 @@ class PipelineSpec(BaseModel):
     conda_env:            str
     python_version:       Optional[str] = None
     created_at:           str
-    status:               PipelineStatus
+    # Two orthogonal status fields. env_status reflects whether the conda env
+    # was built and verified successfully; pipeline_status reflects whether the
+    # algorithm/analysis runs succeeded AND had their outputs validated.
+    env_status:           PipelineStatus = "in_progress"
+    pipeline_status:      PipelineStatus = "in_progress"
     packages:             list[PackageRecord]
     reference_free:       bool = False
     runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)
@@ -807,7 +846,8 @@ class PipelineSpec(BaseModel):
     runtime_configs:      list[RuntimeConfig] = []
     service_dependencies: list[ServiceDependency] = []
     test_data:            Optional[TestDataRef] = None
-    pipeline_steps:       list[PipelineStep] = []
+    install_steps:        list[InstallStep] = []   # env-build journey (chronological by `step`)
+    pipeline_steps:       list[PipelineStep] = []  # algorithm/analysis runs
     docker:               Optional[DockerBuild] = None
     notes:                list[str] = []
     final_summary:        Optional[str] = None

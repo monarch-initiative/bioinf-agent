@@ -48,11 +48,13 @@ class PipelineState:
                 "resumed": True,
             }
         self._drafts[pipeline_name] = {
-            "pipeline_name":  pipeline_name,
-            "description":    description,
-            "status":         "in_progress",
-            "packages":       [],
-            "pipeline_steps": [],
+            "pipeline_name":   pipeline_name,
+            "description":     description,
+            "env_status":      "in_progress",
+            "pipeline_status": "in_progress",
+            "packages":        [],
+            "install_steps":   [],
+            "pipeline_steps":  [],
         }
         self._persist(pipeline_name)
         return {
@@ -131,11 +133,31 @@ class PipelineState:
         step_data: dict,
         replace_step: int = 0,
     ) -> Optional[int]:
-        """Append (default) or replace step N (1-based). Returns the step number."""
+        """Append (default) or replace step N (1-based) in pipeline_steps.
+        Returns the step number."""
+        return self._add_to_step_list(pipeline_id, "pipeline_steps", step_data, replace_step)
+
+    def add_install_step(
+        self,
+        pipeline_id: str,
+        step_data: dict,
+        replace_step: int = 0,
+    ) -> Optional[int]:
+        """Append (default) or replace step N (1-based) in install_steps.
+        Returns the step number."""
+        return self._add_to_step_list(pipeline_id, "install_steps", step_data, replace_step)
+
+    def _add_to_step_list(
+        self,
+        pipeline_id: str,
+        list_name: str,
+        step_data: dict,
+        replace_step: int,
+    ) -> Optional[int]:
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return None
-        steps = draft.setdefault("pipeline_steps", [])
+        steps = draft.setdefault(list_name, [])
         if replace_step > 0 and replace_step <= len(steps):
             existing = steps[replace_step - 1]
             merged = {**existing, **step_data, "step": replace_step}
@@ -147,6 +169,24 @@ class PipelineState:
         steps.append(step_data)
         self._persist(pipeline_id)
         return new_index
+
+    def mark_pipeline_step_validated(
+        self,
+        pipeline_id: str,
+        step: int,
+        validation_status: str,
+    ) -> bool:
+        """Set validation_status on pipeline_steps[step-1]. Returns False if
+        the pipeline or step is unknown."""
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return False
+        steps = draft.get("pipeline_steps", [])
+        if step < 1 or step > len(steps):
+            return False
+        steps[step - 1]["validation_status"] = validation_status
+        self._persist(pipeline_id)
+        return True
 
     def add_validation(
         self,
@@ -230,10 +270,41 @@ class PipelineState:
                 continue
 
 
+# Lists whose elements are merged by their `step` field rather than replaced
+# wholesale. A partial patch like {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
+# updates the existing step 2 in place, preserving the rest of its data and any
+# other entries in the list.
+_STEP_KEYED_LISTS = frozenset({"pipeline_steps", "install_steps"})
+
+
 def _deep_merge(target: dict, source: dict) -> None:
-    """Recursively merge source into target (mutates target in place)."""
+    """Recursively merge source into target (mutates target in place).
+
+    Dicts merge recursively. For lists named in _STEP_KEYED_LISTS, elements
+    are merged by their `step` field (existing step N updated; new step N
+    appended) — so a partial patch can update validation_status without
+    clobbering the rest of the step's data. Other lists are replaced wholesale.
+    """
     for key, val in source.items():
-        if key in target and isinstance(target[key], dict) and isinstance(val, dict):
+        if key in _STEP_KEYED_LISTS and isinstance(val, list) and isinstance(target.get(key), list):
+            _merge_step_keyed_list(target[key], val)
+        elif key in target and isinstance(target[key], dict) and isinstance(val, dict):
             _deep_merge(target[key], val)
         else:
             target[key] = val
+
+
+def _merge_step_keyed_list(target: list, source: list) -> None:
+    """Merge `source` entries into `target` by matching on the `step` field."""
+    by_step = {s.get("step"): i for i, s in enumerate(target) if isinstance(s, dict)}
+    for entry in source:
+        if not isinstance(entry, dict):
+            target.append(entry)
+            continue
+        step = entry.get("step")
+        if step is not None and step in by_step:
+            target[by_step[step]] = {**target[by_step[step]], **entry}
+        else:
+            target.append(entry)
+            if step is not None:
+                by_step[step] = len(target) - 1

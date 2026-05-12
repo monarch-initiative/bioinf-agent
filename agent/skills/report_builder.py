@@ -17,12 +17,21 @@ header { background: linear-gradient(135deg, #16213e 0%, #0f3460 100%);
          color: #fff; border-radius: 12px; padding: 2rem 2.5rem; margin-bottom: 2rem; }
 header h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; }
 header .meta { margin-top: 0.5rem; opacity: 0.8; font-size: 0.9rem; }
+header .status-row { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+header .status-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.7; margin-right: 0.4rem; }
 header .badge { display: inline-block; background: rgba(255,255,255,0.15);
-                border-radius: 20px; padding: 2px 12px; font-size: 0.8rem;
-                margin-right: 0.5rem; margin-top: 0.5rem; }
+                border-radius: 20px; padding: 2px 12px; font-size: 0.8rem; }
 .badge.pass  { background: #22c55e33; color: #16a34a; border: 1px solid #16a34a55; }
 .badge.fail  { background: #ef444433; color: #dc2626; border: 1px solid #dc262655; }
 .badge.skip  { background: #f59e0b33; color: #d97706; border: 1px solid #d9770655; }
+.badge.partial { background: #3b82f633; color: #2563eb; border: 1px solid #2563eb55; }
+.legend { background: #fff; border-radius: 10px; padding: 1rem 1.5rem; margin-bottom: 1.5rem;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.07); font-size: 0.85rem; }
+.legend h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em;
+             color: #475569; margin-bottom: 0.6rem; font-weight: 600; }
+.legend dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 0.9rem; }
+.legend dt { font-weight: 600; color: #1e293b; }
+.legend dd { color: #475569; }
 .section { background: #fff; border-radius: 10px; padding: 1.5rem 2rem;
            margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
 .section h2 { font-size: 1.15rem; font-weight: 600; color: #0f3460;
@@ -61,6 +70,29 @@ a:hover { color: #1d4ed8; }
 .io-file code { background: #f1f5f9; border-radius: 4px; padding: 1px 6px; }
 .io-size { font-size: 0.78rem; color: #94a3b8; }
 footer { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 2rem; }
+/* Scrollable description cells for long package/tool blurbs */
+.desc-scroll { max-height: 4.5rem; overflow-y: auto; padding-right: 0.4rem;
+               font-size: 0.85rem; line-height: 1.45;
+               scrollbar-width: thin; }
+.desc-scroll::-webkit-scrollbar { width: 6px; }
+.desc-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.desc-scroll::-webkit-scrollbar-track { background: transparent; }
+/* Install step layout: command on left, packages on right */
+.install-row { display: grid; grid-template-columns: 1fr 280px; gap: 1rem;
+               padding: 0.9rem 0; border-bottom: 1px solid #f1f5f9; align-items: start; }
+.install-row:last-child { border-bottom: none; }
+.install-row .cmd { font-size: 0.85rem; }
+.install-row .cmd-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+.install-row .cmd pre { font-size: 0.78rem; margin-top: 0.3rem; max-height: 7rem; overflow-y: auto; }
+.install-row .pkgs { background: #f8fafc; border-radius: 6px; padding: 0.5rem 0.7rem;
+                     font-size: 0.8rem; max-height: 9rem; overflow-y: auto; }
+.install-row .pkgs .label { font-weight: 600; color: #475569; font-size: 0.72rem;
+                            text-transform: uppercase; letter-spacing: 0.06em;
+                            margin-bottom: 0.3rem; display: block; }
+.install-row .pkgs ul { list-style: none; padding: 0; margin: 0; }
+.install-row .pkgs li { padding: 0.15rem 0; color: #1e293b; }
+.install-row .pkgs li code { background: #fff; border-radius: 3px; padding: 0 4px; }
+.install-row .pkgs .none { color: #94a3b8; font-style: italic; }
 """
 
 
@@ -68,23 +100,43 @@ def _badge(text: str, kind: str = "pass") -> str:
     return f'<span class="badge {kind}">{text}</span>'
 
 
-def _status_badge(spec: dict) -> str:
-    status = spec.get("status", "")
-    if status == "fully_validated":
-        return _badge("✓ Validated", "pass")
-    if status == "partially_validated":
-        return _badge("◐ Partially Validated", "skip")
-    if status == "complete":
-        return _badge("✓ Complete", "pass")
-    if status == "in_progress":
-        return _badge("⏳ In Progress", "skip")
-    if status == "failed":
-        return _badge("✗ Failed", "fail")
-    if status == "timeout":
-        return _badge("✗ Timeout", "fail")
+_STATUS_BADGE_MAP = {
+    "fully_validated":     ("✓ Fully Validated",     "pass"),
+    "partially_validated": ("◐ Partially Validated", "partial"),
+    "complete":            ("✓ Complete",            "pass"),
+    "in_progress":         ("⏳ In Progress",         "skip"),
+    "failed":              ("✗ Failed",              "fail"),
+    "timeout":             ("✗ Timeout",             "fail"),
+}
+
+
+def _status_badge(status: str) -> str:
+    if status in _STATUS_BADGE_MAP:
+        text, kind = _STATUS_BADGE_MAP[status]
+        return _badge(text, kind)
     if status:
         return _badge(status, "skip")
     return _badge("Unknown", "skip")
+
+
+def _status_legend() -> str:
+    """Top-of-page legend explaining what each status code means."""
+    items = [
+        ("✓ Fully Validated",
+         "Env: every package was verify_command-checked. Pipeline: every step's outputs passed validate_output."),
+        ("◐ Partially Validated",
+         "Env: some packages verified, others not. Pipeline: some steps validated, others ran clean but were not validated."),
+        ("✓ Complete",
+         "All commands ran cleanly (returncode 0), but no validation/verification was recorded."),
+        ("✗ Failed",
+         "At least one command had a non-zero exit, or an output validation explicitly failed."),
+    ]
+    rows = "".join(f"<dt>{name}</dt><dd>{desc}</dd>" for name, desc in items)
+    return f"""
+<div class="legend">
+  <h3>Status codes</h3>
+  <dl>{rows}</dl>
+</div>"""
 
 
 def _runtime_env_section(spec: dict) -> str:
@@ -193,11 +245,13 @@ def _packages_table(spec: dict) -> str:
         conda_spec = p.get("conda_spec", "")
         conda_ver = conda_spec.split("=")[-1] if "=" in conda_spec else ""
         version = p.get("resolved_version") or p.get("version") or conda_ver or "—"
+        desc = (p.get("description") or "").strip()
+        desc_html = f'<div class="desc-scroll">{desc}</div>' if desc else "—"
         rows.append(
             f"<tr><td><strong>{p.get('name','')}</strong></td>"
             f"<td>{version}</td>"
             f"<td>{p.get('channel','')}</td>"
-            f"<td>{p.get('description','')}</td>"
+            f"<td>{desc_html}</td>"
             f"<td>{link}</td></tr>"
         )
     return f"""
@@ -289,6 +343,78 @@ def _io_group(step: dict) -> str:
     return f'<div class="io-group">{in_html}{out_html}</div>'
 
 
+def _install_steps_section(spec: dict) -> str:
+    """Render install_steps in chronological order (sorted by step ascending)."""
+    raw = spec.get("install_steps", [])
+    if not raw:
+        return ""
+    steps = sorted(raw, key=lambda s: s.get("step", 0))
+
+    rows = []
+    for s in steps:
+        tool = s.get("tool", "")
+        sub = s.get("subcommand") or ""
+        label = f"{tool} {sub}".strip() if sub else tool
+        purpose = (s.get("purpose") or "").strip()
+        cmd = s.get("command", "")
+        rc = s.get("returncode")
+        exit_html = ""
+        if rc is not None:
+            color = "#16a34a" if rc == 0 else "#dc2626"
+            exit_html = (
+                f'<span style="margin-left:auto;font-size:0.75rem;color:{color}">'
+                f'exit {rc}</span>'
+            )
+
+        pkgs = s.get("installed_packages", []) or []
+        if pkgs:
+            items = "".join(
+                f'<li><code>{p.get("name","")}'
+                + (f"={p['version']}" if p.get('version') else "")
+                + "</code>"
+                + (f' <span style="color:#94a3b8">({p["channel"]})</span>'
+                   if p.get("channel") else "")
+                + "</li>"
+                for p in pkgs if isinstance(p, dict)
+            )
+            pkgs_html = (
+                f'<div class="pkgs"><span class="label">Installed '
+                f'({len(pkgs)})</span><ul>{items}</ul></div>'
+            )
+        else:
+            pkgs_html = '<div class="pkgs"><span class="label">Installed</span>' \
+                        '<div class="none">—</div></div>'
+
+        purpose_html = (
+            f'<div style="color:#64748b;font-size:0.78rem;margin-bottom:0.2rem">'
+            f'{purpose}</div>' if purpose else ""
+        )
+
+        rows.append(f"""
+<div class="install-row">
+  <div class="cmd">
+    <div class="cmd-header">
+      <span class="step-num">{s.get('step', '?')}</span>
+      <strong>{label}</strong>
+      {exit_html}
+    </div>
+    {purpose_html}
+    <pre>{cmd}</pre>
+  </div>
+  {pkgs_html}
+</div>""")
+
+    return f"""
+<div class="section">
+  <h2>🛠️ Environment Install Steps</h2>
+  <p style="font-size:0.85rem;color:#475569;margin-bottom:0.75rem">
+    Commands run to build the conda environment, in chronological order.
+    Right column shows what each command installed.
+  </p>
+  {"".join(rows)}
+</div>"""
+
+
 def _steps_section(spec: dict) -> str:
     steps = spec.get("pipeline_steps", [])
     if not steps:
@@ -332,7 +458,11 @@ def _steps_section(spec: dict) -> str:
 
     return f"""
 <div class="section">
-  <h2>⚙️ Pipeline Steps &amp; Usage</h2>
+  <h2>⚙️ Algorithm / Pipeline Steps</h2>
+  <p style="font-size:0.85rem;color:#475569;margin-bottom:0.75rem">
+    The actual analysis runs that produce pipeline outputs. Validation badges
+    show whether each step's outputs were checked with <code>validate_output</code>.
+  </p>
   {"".join(blocks)}
 </div>"""
 
@@ -392,17 +522,27 @@ def generate(spec: dict) -> str:
             pass
 
     title = f"{name} {version}".strip()
-    header_meta = " ".join(filter(None, [
-        f'<span class="badge">{env}</span>' if env else "",
-        _status_badge(spec),
-        f'<span class="badge">{created}</span>' if created else "",
-    ]))
+    env_status      = spec.get("env_status", "")
+    pipeline_status = spec.get("pipeline_status", "")
+
+    status_row = (
+        '<div class="status-row">'
+        + (f'<span class="badge">{env}</span>' if env else "")
+        + (f'<span class="badge">{created}</span>' if created else "")
+        + (f'<span class="status-label">Env:</span>{_status_badge(env_status)}'
+           if env_status else "")
+        + (f'<span class="status-label" style="margin-left:0.6rem">Pipeline:</span>'
+           f'{_status_badge(pipeline_status)}' if pipeline_status else "")
+        + "</div>"
+    )
 
     body = "".join([
+        _status_legend(),
         _packages_table(spec),
         _runtime_env_section(spec),
         _reference_databases_section(spec),
         _test_data_section(spec),
+        _install_steps_section(spec),
         _steps_section(spec),
         _usage_guide(spec),
         _docker_section(spec),
@@ -422,7 +562,7 @@ def generate(spec: dict) -> str:
   <header>
     <h1>{title}</h1>
     <div class="meta">{spec.get('description','')}</div>
-    <div style="margin-top:0.75rem">{header_meta}</div>
+    {status_row}
   </header>
   {body}
   <footer>Generated by bioinf-agent · <a href="https://github.com/monarch-initiative/bioinf-agent" style="color:#94a3b8">monarch-initiative/bioinf-agent</a></footer>

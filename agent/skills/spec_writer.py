@@ -37,15 +37,24 @@ from agent.skills.report_builder import generate as generate_report
 def save_pipeline_spec(spec: dict, config: dict) -> dict:
     """Validate and write a PipelineSpec dict as YAML + HTML report.
 
-    Derives each step's validation_status from its validation dict, then
-    derives pipeline-level status from the step states. The status passed
-    in by the caller is overwritten by the derived value."""
+    Derives each pipeline_step's validation_status from its validation dict,
+    then derives env_status (from install_steps + package verifications) and
+    pipeline_status (from pipeline_steps) separately. Anything the caller
+    passed for these is overwritten by the derived values.
+
+    Filename stem is `{pipeline_name}_{version}` where version is the
+    resolved_version of the package whose name best matches pipeline_name
+    (exact > substring), searching both spec.packages and
+    install_steps[].installed_packages. Falls back to the first non-conda-pack
+    package's version, then to "latest".
+    """
     project_root = Path(__file__).parent.parent.parent.resolve()
     pipelines_dir = project_root / config["paths"]["pipelines_dir"]
     pipelines_dir.mkdir(parents=True, exist_ok=True)
 
     _derive_step_validation_status(spec)
-    spec["status"] = _derive_pipeline_status(spec)
+    spec["env_status"]      = _derive_env_status(spec)
+    spec["pipeline_status"] = _derive_pipeline_status(spec)
 
     try:
         pspec = PipelineSpec.model_validate(spec)
@@ -54,12 +63,9 @@ def save_pipeline_spec(spec: dict, config: dict) -> dict:
         print(f"[spec_writer] WARN: PipelineSpec validation failed: {e}", file=sys.stderr)
         write_spec = spec
 
-    name = write_spec.get("pipeline_name", "pipeline")
-    primary = next(
-        (p for p in write_spec.get("packages", []) if p.get("name") != "conda-pack"), {}
-    )
-    version = primary.get("resolved_version") or primary.get("version", "")
-    stem = f"{name}_{version}" if version else name
+    name    = write_spec.get("pipeline_name", "pipeline")
+    version = _pick_version_for_filename(write_spec, name)
+    stem    = f"{name}_{version}" if version else name
 
     yaml_path = pipelines_dir / f"{stem}.yaml"
     with open(yaml_path, "w") as f:
@@ -69,10 +75,68 @@ def save_pipeline_spec(spec: dict, config: dict) -> dict:
     html_path.write_text(generate_report(write_spec))
 
     return {
-        "saved_yaml": str(yaml_path),
-        "saved_html": str(html_path),
-        "status": write_spec.get("status"),
+        "saved_yaml":      str(yaml_path),
+        "saved_html":      str(html_path),
+        "env_status":      write_spec.get("env_status"),
+        "pipeline_status": write_spec.get("pipeline_status"),
     }
+
+
+def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
+    """Find the version that should appear in the filename stem.
+
+    Search order:
+      1. spec.packages where name == pipeline_name (case-insensitive)
+      2. spec.packages where pipeline_name is a substring of name or vice versa
+      3. install_steps[].installed_packages — same exact then substring search;
+         this is where R packages installed via install_github / BiocManager
+         actually have their version recorded
+      4. First non-conda-pack package's resolved_version
+    """
+    name_l = pipeline_name.lower()
+    packages = spec.get("packages", [])
+
+    # Pass 1: exact match in spec.packages
+    for p in packages:
+        if p.get("name", "").lower() == name_l:
+            v = p.get("resolved_version") or p.get("version")
+            if v:
+                return v
+
+    # Pass 2: substring match in spec.packages
+    for p in packages:
+        pn = p.get("name", "").lower()
+        if pn == "conda-pack" or not pn:
+            continue
+        if name_l in pn or pn in name_l:
+            v = p.get("resolved_version") or p.get("version")
+            if v:
+                return v
+
+    # Pass 3: search install_steps' installed_packages (exact then substring)
+    install_pkgs = [
+        ip for s in spec.get("install_steps", [])
+        for ip in s.get("installed_packages", []) if isinstance(ip, dict)
+    ]
+    for ip in install_pkgs:
+        if ip.get("name", "").lower() == name_l and ip.get("version"):
+            return ip["version"]
+    for ip in install_pkgs:
+        pn = ip.get("name", "").lower()
+        if not pn:
+            continue
+        if (name_l in pn or pn in name_l) and ip.get("version"):
+            return ip["version"]
+
+    # Pass 4: first non-conda-pack package version
+    for p in packages:
+        if p.get("name") == "conda-pack":
+            continue
+        v = p.get("resolved_version") or p.get("version")
+        if v:
+            return v
+
+    return ""
 
 
 def _derive_step_validation_status(spec: dict) -> None:
@@ -99,14 +163,37 @@ def _derive_step_validation_status(spec: dict) -> None:
             step["validation_status"] = "passed"
 
 
+def _derive_env_status(spec: dict) -> str:
+    """Compute env_status from install_steps' returncodes + per-package verifications.
+
+      failed             — any install_step.returncode != 0
+      fully_validated    — every non-conda-pack package has a verify_output
+      partially_validated — some packages verified, others not
+      complete           — all installs ran clean but nothing verified yet
+    """
+    install_steps = spec.get("install_steps", [])
+    if any(s.get("returncode") not in (None, 0) for s in install_steps):
+        return "failed"
+
+    packages = [p for p in spec.get("packages", []) if p.get("name") != "conda-pack"]
+    if not packages:
+        return "complete"
+
+    verified = sum(1 for p in packages if (p.get("verify_output") or "").strip())
+    if verified == len(packages):
+        return "fully_validated"
+    if verified > 0:
+        return "partially_validated"
+    return "complete"
+
+
 def _derive_pipeline_status(spec: dict) -> str:
-    """Compute the pipeline-level status from step execution + validation."""
+    """Compute pipeline_status from pipeline_steps' execution + validation."""
     steps = spec.get("pipeline_steps", [])
     if not steps:
-        # No pipeline_steps means there's nothing to validate — but we've reached
-        # save_pipeline_spec, which means the caller is finalizing. "in_progress"
-        # would be wrong; "complete" is correct for an empty-but-finalized spec
-        # (e.g. an infrastructure env that has no runnable pipeline).
+        # No algorithm runs means there's nothing to validate — but save_pipeline_spec
+        # was called, so we're past in_progress. "complete" is correct for a spec
+        # with only env setup (e.g. bioinf_core_tools).
         return "complete"
 
     if any(s.get("returncode") not in (None, 0) for s in steps):

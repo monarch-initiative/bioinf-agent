@@ -49,8 +49,10 @@ If you ever need an API-driven orchestration mode (e.g., headless batch installs
 | `finalize_pipeline` | Validate the draft against PipelineSpec, write final YAML + HTML, delete draft |
 | `discard_pipeline_draft` | Delete a draft without finalizing (fresh start) |
 | `show_pipeline_draft` | Inspect the current draft without finalizing |
-| `patch_pipeline` | Deep-merge arbitrary patches into the draft (escape hatch for non-derivable fields) |
+| `patch_pipeline` | Deep-merge arbitrary patches into the draft (escape hatch). `pipeline_steps` / `install_steps` are merged by `step` field, not replaced. |
 | `select_test_data` | Find a matching test dataset; returns a TestDataRef shape ready for the spec |
+| `run_install_command` | Mirror of `run_in_env` for install commands (BiocManager, install_github, pip install, …). Routes to `install_steps`. |
+| `mark_step_validated` | Set `validation_status` on a `pipeline_step` (when outputs are known good but `validate_output` wasn't called). |
 
 ---
 
@@ -65,8 +67,8 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
 - Call `search_package(name, version, pipeline_id=<id>)` for each requested package. **A PackageRecord-shaped entry is appended to `draft.packages` automatically** — you do not need to re-state the result anywhere. The return value still contains the data so you can reason about channel/version choices.
 
 ### Phase 2 — Install
-- Call `create_conda_env(env_name="bioinf_{pipeline_name}", pipeline_id=<id>)`. Sets `draft.conda_env`.
-- **For conda tools** (the default): call `install_packages` with all packages at once. Fall back to one-by-one if needed. (No `pipeline_id` needed — installation success/failure is captured downstream by `verify_installation`.)
+- Call `create_conda_env(env_name="bioinf_{pipeline_name}", pipeline_id=<id>)`. Sets `draft.conda_env` AND appends an entry to `draft.install_steps` for the env creation.
+- **For conda tools** (the default): call `install_packages(env_name, packages, pipeline_id=<id>)`. Installs all packages in one solve AND appends a single entry to `draft.install_steps` with `installed_packages` parsed from each spec (e.g. `samtools=1.21` → `{name: samtools, version: 1.21}`).
 - **For Java tools** (Exomiser, Picard, GATK, …):
   1. Include `openjdk` (conda-forge) in the `install_packages` call — the JVM lives in the conda env.
   2. Use `run_in_env` to download the JAR from GitHub releases into `{env}/share/{tool}/`.
@@ -79,7 +81,8 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
   - Download the data with `run_in_env` (curl / wget).
   - Add a `ReferenceDatabase` entry to the spec with `name`, `version`, `size_gb`, `source_url`, `local_path`.
   - Add the data directory to `docker.volume_mounts` — it is NOT baked into the Docker image.
-- Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically.
+- Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically. This is what powers `env_status: fully_validated` at finalize.
+- **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, downloading reference databases via curl/wget, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps` and accepts a structured `installed_packages` list (e.g. `[{"name": "GAPIT", "version": "4.1.0"}]`). Pass `step=N` to replace a failed install step for retries.
 
 ### Phase 3 — Test data
 - Call `list_available_resources(both)` to see what's on disk.
@@ -101,14 +104,17 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
 - Only call `download_resource` if the needed genome is not already on disk.
 - Call `select_test_data(genome_build, assay_type, end_type, pipeline_id=<id>, ...)` to find a matching dataset. **A TestDataRef-shaped dict is set on `draft.test_data` automatically.** Inspect the returned `test_data` and `match_score`; if the match is wrong, call again with different criteria or use `patch_pipeline` to override.
 
-### Phase 4 — Validation loop
-For each package in pipeline order:
+### Phase 4 — Algorithm / Pipeline runs
+This is where the actual analysis runs (alignment, variant calling, GWAS, etc.). Each step here lands in `draft.pipeline_steps` — distinct from `install_steps` from Phase 2.
+
+For each algorithmic step in pipeline order:
 - Build a test command with sensible defaults for small data. Use absolute paths.
 - Call `run_in_env(env_name, command, inputs=[...], watch_dir=<abs>, pipeline_id=<id>, tool="...", subcommand="...", purpose="...")`. **A PipelineStep is appended to `draft.pipeline_steps`** with the command, returncode, runtime_seconds, inputs, and detected outputs. The return value's `pipeline_merge.step_index` is the 1-based step number — capture it for the validate_output calls.
 - Call `validate_output(file_path, expected_type, env_name=<env>, pipeline_id=<id>, step=<step_index>)` for each file in `result.detected_outputs`. **The result is merged into `draft.pipeline_steps[step].validation[basename]` automatically.** `save_pipeline_spec` later derives each step's `validation_status` from this dict.
+- **If you know a step's outputs are good but `validate_output` doesn't apply** (e.g., a step's success is confirmed by the next step running cleanly): call `mark_step_validated(pipeline_id, step, validation_status="passed")`. This is the explicit alternative to `validate_output` for cases without checkable output files.
 - Pass `result.detected_outputs` as `inputs` to the next `run_in_env` call (full lineage).
 - On failure, diagnose and retry. To **replace** a failed step instead of appending a new one, pass `step=<failed_step_index>` to `run_in_env`. Default behavior is append (preserves history).
-- **Why this matters**: the pipeline-level `status` returned by `finalize_pipeline` can only land on `fully_validated` if every step has `validation_status="passed"`. A step that exits 0 but never gets a `validate_output` call counts as unvalidated and the pipeline drops to `partially_validated` or `complete`. Validate every output.
+- **Why this matters**: `pipeline_status` only lands on `fully_validated` if every pipeline_step has `validation_status="passed"`. A step that exits 0 but never gets a `validate_output` (or `mark_step_validated`) call counts as unvalidated and drops the pipeline to `partially_validated` or `complete`. Same logic applies to `env_status`: it's `fully_validated` only when every non-conda-pack package in `draft.packages` has a `verify_output` recorded.
 
 ### Phase 5 — Docker
 - Call `build_docker_image(env_name, pipeline_name, pipeline_description, version=<primary_version>, pipeline_id=<id>)`. **`draft.docker` is set to the DockerBuild-shaped subset of the return automatically.**
@@ -125,7 +131,7 @@ Some fields don't come from any tool — fill them with `patch_pipeline(pipeline
 ### Phase 7 — Finalize
 - Call `finalize_pipeline(pipeline_id)`. This:
   1. Validates the accumulated draft against `PipelineSpec`
-  2. If valid: writes `env_reports/{name}_{version}.yaml` + `.html`, deletes the draft, returns `{saved_yaml, saved_html, status}` with the derived status
+  2. If valid: writes `env_reports/{name}_{version}.yaml` + `.html`, deletes the draft, returns `{saved_yaml, saved_html, env_status, pipeline_status}` with both derived statuses. The version stem comes from the package whose name best matches `pipeline_name` (exact > substring), searching both `spec.packages` and `install_steps[].installed_packages` (so e.g. `gapit` resolves to `gapit_4.1.0.yaml`, not the r-base version).
   3. If invalid: preserves the draft, returns `{error, validation_errors, draft_path}` — use `show_pipeline_draft` to inspect, `patch_pipeline` to fix, then retry `finalize_pipeline`
 - **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 8.
 
