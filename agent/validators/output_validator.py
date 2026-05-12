@@ -1,7 +1,9 @@
 """
 OutputValidator — verify bioinformatics output files are valid.
 
-Tool resolution order: pipeline conda env → bioinf_validators env → system PATH.
+Tool resolution order: pipeline conda env → core_tools env → system PATH.
+The core_tools env name is read from config["core_tools"]["env_name"]
+(default: bioinf_core_tools); created by scripts/setup_core_test_data.sh.
 
 Preferred validators per type:
   SAM/BAM        samtools quickcheck + flagstat
@@ -24,7 +26,13 @@ class OutputValidator:
         self.config = config
         self._project_root = Path(__file__).parent.parent.parent.resolve()
         self._envs_dir = self._project_root / config["paths"]["conda_envs_prefix"]
-        self._validators_env = config["conda"]["env_prefix"] + "validators"
+        # Core tools env (samtools / bcftools / seqkit / bwa) is created by
+        # the bootstrap and is the canonical source of validator binaries.
+        # Falls back to the legacy "{prefix}validators" name for older installs.
+        self._core_tools_env = (
+            config.get("core_tools", {}).get("env_name")
+            or config["conda"]["env_prefix"] + "validators"
+        )
         self._env_name: str | None = None
 
     def validate(self, file_path: str, expected_type: str, env_name: str | None = None) -> dict[str, Any]:
@@ -220,9 +228,9 @@ class OutputValidator:
     # -----------------------------------------------------------------------
 
     def _run_tool(self, cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-        """Resolve binary: pipeline env → validators env → system PATH."""
+        """Resolve binary: pipeline env → core_tools env → system PATH."""
         tool = cmd[0]
-        for env in [self._env_name, self._validators_env]:
+        for env in [self._env_name, self._core_tools_env]:
             if env:
                 bin_path = self._envs_dir / env / "bin" / tool
                 if bin_path.exists():

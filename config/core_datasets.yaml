@@ -1,0 +1,64 @@
+# Canonical core test datasets — used by scripts/setup_core_test_data.sh.
+#
+# Adding a new entry here makes it part of the bootstrap; removing one removes
+# it. The bootstrap script reads this file (not the script source) so changes
+# to the canonical list don't touch any code.
+#
+# Fields per entry are passed directly to add_core_test_data():
+#   accession   — SRA accession (or any identifier when source_url is set)
+#   assay_type  — exome | wgs | rnaseq | chipseq | atacseq | hic | amplicon |
+#                 wgbs | ont_wgs | pacbio_hifi | direct_rna | isoseq | fiberseq
+#   end_type    — paired_end | single_end          (short-read only)
+#   sample      — display sample id (used in output filenames)
+#   platform    — illumina (default) | ont | pacbio_hifi | pacbio_isoseq | pacbio_fiberseq
+#   subset      — 500 | 1K | 10K (default) | 50K | 100K | 500K | 1M
+#   source_url  — override EBI SRA URL builder (NCBI FTP, S3, etc.)
+#   source_url_r2 — R2 override for paired-end with source_url
+
+short_read:
+  - accession: SRR1517830
+    assay_type: exome
+    end_type: paired_end
+    sample: HG00096
+    description: 1000 Genomes HG00096 exome
+  - accession: SRR1039508
+    assay_type: rnaseq
+    end_type: single_end
+    sample: airway
+    description: Airway smooth muscle RNA-seq (Himes et al. 2014)
+  - accession: ERR188297
+    assay_type: rnaseq
+    end_type: paired_end
+    sample: NA20503
+    description: GEUVADIS NA20503 paired-end RNA-seq
+  - accession: SRR1658581
+    assay_type: hic
+    end_type: paired_end
+    sample: GM12878
+    description: GM12878 in-situ Hi-C (Rao et al. 2014)
+  - accession: ERR001268
+    assay_type: wgs
+    end_type: paired_end
+    sample: NA12878
+    description: 1000 Genomes NA12878 WGS
+  - accession: SRR4235788
+    assay_type: wgbs
+    end_type: paired_end
+    sample: ENCSR890UQO
+    description: ENCODE ENCSR890UQO WGBS (GSE86765)
+
+long_read:
+  # 500 reads each — best-effort. Failures are surfaced, not silenced.
+  - accession: ERR3152364
+    assay_type: ont_wgs
+    sample: NA12878
+    platform: ont
+    subset: "500"
+    description: NA12878 ONT ultralong reads (Jain et al. 2018, PRJEB26791)
+  - accession: HG002_CCS_15kb
+    assay_type: pacbio_hifi
+    sample: HG002
+    platform: pacbio_hifi
+    subset: "500"
+    source_url: https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/PacBio_CCS_15kb_20kb_chemistry2/reads/m64011_190830_220126.fastq.gz
+    description: GIAB HG002 PacBio HiFi 15-20 kb CCS reads

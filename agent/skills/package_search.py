@@ -273,10 +273,22 @@ class PackageSearch:
 
     @staticmethod
     def _version_sort_key(version_str: str):
-        parts = []
-        for part in version_str.replace("-", ".").split("."):
+        """PEP 440-aware version key. Uses packaging.version.Version when
+        available so '0.7.17' sorts above '0.7.3a' (the naive tuple-and-string
+        approach gets this backwards because (1, '3a') > (0, 17))."""
+        try:
+            from packaging.version import InvalidVersion, Version
             try:
-                parts.append((0, int(part)))
-            except ValueError:
-                parts.append((1, part))
-        return parts
+                return (1, Version(version_str))
+            except InvalidVersion:
+                return (0, Version("0"))   # unparseable → sorted to the bottom
+        except ImportError:
+            # Fallback: simple tuple comparison. Imperfect for versions with
+            # letter suffixes but better than nothing.
+            parts: list = []
+            for part in version_str.replace("-", ".").split("."):
+                try:
+                    parts.append((0, int(part)))
+                except ValueError:
+                    parts.append((1, part))
+            return (0, parts)

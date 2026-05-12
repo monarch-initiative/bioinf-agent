@@ -14,6 +14,12 @@ conda:
   python_version: "3.11"
   env_prefix: "bioinf_"
 
+# Internal tooling the agent uses for its own operations: validating outputs
+# (samtools / bcftools / seqkit) and building genome indexes during bootstrap
+# (bwa). Created once by scripts/setup_core_test_data.sh.
+core_tools:
+  env_name: bioinf_core_tools
+
 docker:
   base_image: "ubuntu:22.04"
   platform: "linux/amd64"

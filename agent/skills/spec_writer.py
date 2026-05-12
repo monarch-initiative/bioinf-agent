@@ -103,7 +103,11 @@ def _derive_pipeline_status(spec: dict) -> str:
     """Compute the pipeline-level status from step execution + validation."""
     steps = spec.get("pipeline_steps", [])
     if not steps:
-        return spec.get("status") or "complete"
+        # No pipeline_steps means there's nothing to validate — but we've reached
+        # save_pipeline_spec, which means the caller is finalizing. "in_progress"
+        # would be wrong; "complete" is correct for an empty-but-finalized spec
+        # (e.g. an infrastructure env that has no runnable pipeline).
+        return "complete"
 
     if any(s.get("returncode") not in (None, 0) for s in steps):
         return "failed"

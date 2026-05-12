@@ -6,6 +6,8 @@ All conda commands are run via subprocess so they use the system conda
 project root so envs are portable and easy to locate.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
@@ -24,8 +26,14 @@ class EnvManager:
 
     @staticmethod
     def _detect_conda() -> str:
-        """Return the best available conda-compatible solver (mamba > conda)."""
-        for exe in ("mamba", "conda"):
+        """Return the best available conda-compatible solver.
+
+        Prefers `conda` over standalone `mamba` because modern conda (24.x+)
+        ships libmamba as its default solver — already as fast as mamba — and
+        sidesteps brittle Python entry points in some miniforge installs where
+        the standalone `mamba` binary fails on import with ImportError on
+        conda.cli.main."""
+        for exe in ("conda", "mamba"):
             if shutil.which(exe):
                 return exe
         raise RuntimeError("No conda or mamba executable found in PATH")
