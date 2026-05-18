@@ -15,10 +15,11 @@ validate_output, not just exited zero.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -34,13 +35,19 @@ from agent.skills.report_builder import generate as generate_report
 # Pipeline spec persistence
 # ---------------------------------------------------------------------------
 
-def save_pipeline_spec(spec: dict, config: dict) -> dict:
+def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = None) -> dict:
     """Validate and write a PipelineSpec dict as YAML + HTML report.
 
     Derives each pipeline_step's validation_status from its validation dict,
     then derives env_status (from install_steps + package verifications) and
     pipeline_status (from pipeline_steps) separately. Anything the caller
     passed for these is overwritten by the derived values.
+
+    If env_manager is provided, runs a single reconciliation pass against the
+    live conda env: re-queries actual installed versions, fills missing
+    install_method types, and derives homepages from (channel, name, source).
+    This is the source-of-truth pass — eliminates drift between what was
+    requested at search-time and what the solver actually installed.
 
     Filename stem is `{pipeline_name}_{version}` where version is the
     resolved_version of the package whose name best matches pipeline_name
@@ -51,6 +58,9 @@ def save_pipeline_spec(spec: dict, config: dict) -> dict:
     project_root = Path(__file__).parent.parent.parent.resolve()
     pipelines_dir = project_root / config["paths"]["pipelines_dir"]
     pipelines_dir.mkdir(parents=True, exist_ok=True)
+
+    if env_manager is not None and spec.get("conda_env"):
+        reconcile_packages_with_env(spec, env_manager, spec["conda_env"])
 
     _derive_step_validation_status(spec)
     spec["env_status"]      = _derive_env_status(spec)
@@ -209,6 +219,114 @@ def _derive_pipeline_status(spec: dict) -> str:
     if passed_count > 0:
         return "partially_validated"
     return "complete"
+
+
+# ---------------------------------------------------------------------------
+# Environment reconciliation
+#
+# The draft accumulates what we *requested* during install — search_package
+# returns the channel's "latest", but the solver may pin a different version
+# based on co-installed packages' constraints (a downgrade for r-base 4.4,
+# a newer build pulled in transitively, etc). At finalize-time we probe the
+# live env and patch each PackageRecord so the saved spec reflects truth.
+#
+# Single probe per env (one conda list + one Rscript per r_install package).
+# Pure templating for homepage and install_method defaults.
+# ---------------------------------------------------------------------------
+
+_R_INSTALL_GITHUB_REGEX = re.compile(r"""['"]([^'"\s]+/[^'"\s]+)['"]""")
+
+
+def reconcile_packages_with_env(spec: dict, env_manager: Any, env_name: str) -> dict:
+    """Patch spec.packages in place against the live conda env.
+
+    Returns a summary dict for diagnostics:
+        {patched_versions:    [{name, from, to}, ...],
+         filled_homepages:    [name, ...],
+         filled_install_methods: N}
+    """
+    packages = spec.get("packages", []) or []
+    if not packages or not env_name:
+        return {"patched_versions": [], "filled_homepages": [], "filled_install_methods": 0}
+
+    conda_versions = env_manager.list_conda_packages(env_name)
+    patched_versions: list[dict] = []
+    filled_homepages: list[str] = []
+    filled_install_methods = 0
+
+    for p in packages:
+        name = p.get("name", "")
+        if not name:
+            continue
+
+        # 1. Default install_method to conda when unset (most common case)
+        im = p.get("install_method")
+        if not isinstance(im, dict) or not im.get("type"):
+            p["install_method"] = {"type": "conda"}
+            im = p["install_method"]
+            filled_install_methods += 1
+
+        im_type = im.get("type", "")
+
+        # 2. Reconcile resolved_version against the source of truth for this
+        #    install path. conda list for conda packages; packageVersion() for
+        #    r_install packages — that's the number users see at library() time.
+        before = p.get("resolved_version")
+        actual = ""
+        if im_type == "conda":
+            actual = conda_versions.get(name, "")
+        elif im_type == "r_install":
+            actual = env_manager.r_package_version(env_name, name)
+
+        if actual and actual != before:
+            p["resolved_version"] = actual
+            patched_versions.append({"name": name, "from": before, "to": actual})
+
+        # 3. Fill missing homepage from (channel, name, source) — deterministic
+        if not p.get("homepage"):
+            hp = _derive_homepage(name, p.get("channel", ""), im)
+            if hp:
+                p["homepage"] = hp
+                filled_homepages.append(name)
+
+    return {
+        "patched_versions":       patched_versions,
+        "filled_homepages":       filled_homepages,
+        "filled_install_methods": filled_install_methods,
+    }
+
+
+def _derive_homepage(name: str, channel: str, install_method: dict) -> str:
+    """Return a canonical upstream URL given (name, channel, install_method).
+
+    Order of preference:
+      1. install_method.source contains owner/repo (github install_github)
+      2. channel-direct mappings (cran / bioconductor / pypi)
+      3. Name-prefix conventions for conda packages (r-* → CRAN,
+         bioconductor-* → Bioconductor)
+    """
+    ch = (channel or "").lower()
+    im_type = (install_method or {}).get("type", "")
+    source  = (install_method or {}).get("source", "") or ""
+
+    if im_type == "r_install" and ch == "github":
+        m = _R_INSTALL_GITHUB_REGEX.search(source)
+        if m:
+            return f"https://github.com/{m.group(1)}"
+
+    if ch == "cran":
+        return f"https://CRAN.R-project.org/package={name}"
+    if ch == "bioconductor":
+        return f"https://bioconductor.org/packages/{name}/"
+    if ch in ("pypi", "pip"):
+        return f"https://pypi.org/project/{name}/"
+
+    if name.startswith("r-"):
+        return f"https://CRAN.R-project.org/package={name[2:]}"
+    if name.startswith("bioconductor-"):
+        return f"https://bioconductor.org/packages/{name[len('bioconductor-'):]}/"
+
+    return ""
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,10 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.validators.output_validator import OutputValidator
-from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
+from agent.skills.spec_writer import (
+    save_pipeline_spec as _save_pipeline_spec,
+    _derive_homepage,
+)
 from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
@@ -532,7 +535,7 @@ def save_pipeline_report(spec: dict) -> dict:
     "fully_validated" requires every step to have validation_status="passed"
     (set by validate_output). If you set `status` it will be overwritten by the
     derived value, which also returned in the response."""
-    return _save_pipeline_spec(spec, config)
+    return _save_pipeline_spec(spec, config, env_manager=_env_mgr)
 
 
 @mcp.tool()
@@ -751,7 +754,7 @@ def finalize_pipeline(pipeline_id: str) -> dict:
             "draft_path":        str(_pipeline_state._draft_path(pipeline_id)),
         }
 
-    result = _save_pipeline_spec(draft, config)
+    result = _save_pipeline_spec(draft, config, env_manager=_env_mgr)
     _pipeline_state.pop_for_finalize(pipeline_id)
     _pipeline_state.delete_draft_file(pipeline_id)
     return result
@@ -886,8 +889,12 @@ def run_install_command(
                     "resolved_version":  pkg.get("version"),
                     "channel":           channel or None,
                     "install_method":    install_method,
+                    # Homepage is templated here so the field is non-empty even
+                    # before finalize-time reconciliation runs. Reconciliation
+                    # is idempotent — it only fills missing homepages.
+                    "homepage":          _derive_homepage(name, channel, install_method),
                 }
-                pkg_record = {k: v for k, v in pkg_record.items() if v is not None}
+                pkg_record = {k: v for k, v in pkg_record.items() if v is not None and v != ""}
                 _pipeline_state.add_package(pipeline_id, pkg_record)
                 added_packages.append(name)
         result["pipeline_merge"] = (

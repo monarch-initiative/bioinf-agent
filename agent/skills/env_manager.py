@@ -184,6 +184,64 @@ class EnvManager:
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
 
+    # -----------------------------------------------------------------------
+    # Authoritative version probes — used at finalize-time to reconcile
+    # what's actually installed against what the draft thinks is installed.
+    # -----------------------------------------------------------------------
+
+    def list_conda_packages(self, env_name: str) -> dict[str, str]:
+        """Return {package_name: version} for everything conda knows about in the env.
+
+        Source of truth for resolved_version of conda packages — search_package
+        records the channel's 'latest' but the solver may pin differently based
+        on co-installed packages' constraints (e.g. multtest downgraded for r-base 4.4).
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return {}
+        result = self._run(
+            [self._conda_exe, "list", "--prefix", str(env_path), "--json"],
+            cwd=str(self.project_root),
+            timeout=120,
+        )
+        if result["returncode"] != 0:
+            return {}
+        import json
+        try:
+            entries = json.loads(result["stdout"])
+        except Exception:
+            return {}
+        return {e.get("name", ""): e.get("version", "") for e in entries if e.get("name")}
+
+    def r_package_version(self, env_name: str, package_name: str) -> str:
+        """Return the version `packageVersion('X')` reports for an R package,
+        or '' if not installed / not loadable.
+
+        Used to reconcile resolved_version for run_install_command packages
+        (BiocManager / install_github / CRAN install.packages) where the conda
+        list doesn't know them, and where the R-package intrinsic version is
+        what users actually want to see.
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return ""
+        # Escape single quotes in package name (defensive — R package names
+        # don't normally contain them, but the input crosses a tool boundary).
+        safe_name = package_name.replace("'", "\\'")
+        rscript = (
+            f"v <- tryCatch(as.character(packageVersion('{safe_name}')),"
+            f" error=function(e) ''); cat(v)"
+        )
+        result = self._run(
+            [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
+             "Rscript", "-e", rscript],
+            cwd=str(self.project_root),
+            timeout=60,
+        )
+        if result["returncode"] != 0:
+            return ""
+        return result["stdout"].strip()
+
     def start_service(
         self,
         env_name: str,
