@@ -37,7 +37,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent.models.core_data import PipelineSpec
-from agent.skills.core_test_data import add_core_test_data
+from agent.skills.core_test_data import add_core_test_data, add_phenopacket
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.pipeline_state import PipelineState
@@ -268,10 +268,10 @@ def download_and_index_genome(config: dict, genome_build: str) -> dict[str, Any]
 # Step 3 — test datasets
 # ---------------------------------------------------------------------------
 
-def download_datasets(config: dict, datasets_cfg: dict) -> dict[str, Any]:
+def download_datasets(config: dict, datasets_cfg: dict, genome_build: str) -> dict[str, Any]:
     """Download every entry in core_datasets.yaml. Each result is recorded
     explicitly — no silent skips for long-read failures."""
-    results: dict[str, list] = {"short_read": [], "long_read": []}
+    results: dict[str, list] = {"short_read": [], "long_read": [], "phenopackets": []}
 
     for group_name, group in (("short_read", "Short-read"), ("long_read", "Long-read (best-effort)")):
         entries = datasets_cfg.get(group_name, [])
@@ -296,6 +296,27 @@ def download_datasets(config: dict, datasets_cfg: dict) -> dict[str, Any]:
                 "success":   ok,
                 "error":     res.get("error"),
             })
+
+    pk_entries = datasets_cfg.get("phenopackets", [])
+    if pk_entries:
+        log(f"=== Phenopackets: {len(pk_entries)} dataset(s) ===")
+        for d in pk_entries:
+            url = d["source_url"]
+            log(f"Adding {url.split('/')[-1]}...")
+            try:
+                res = add_phenopacket(config, source_url=url, genome_build=genome_build)
+            except Exception as e:
+                res = {"success": False, "error": f"exception: {e}"}
+            ok = res.get("success", False)
+            log(f"  {'OK' if ok else 'FAIL'}: "
+                f"{res.get('error') or res.get('phenopacket_id')}")
+            results["phenopackets"].append({
+                "source_url":     url,
+                "phenopacket_id": res.get("phenopacket_id"),
+                "success":        ok,
+                "error":          res.get("error"),
+            })
+
     return results
 
 
@@ -397,7 +418,7 @@ def main() -> None:
         sys.exit(1)
 
     log("=== Step 3: test datasets ===")
-    datasets = download_datasets(config, load_datasets())
+    datasets = download_datasets(config, load_datasets(), args.genome_build)
 
     if args.skip_smoke:
         log("=== Step 4: smoke test SKIPPED ===")
@@ -417,6 +438,8 @@ def main() -> None:
     sr_tot = len(datasets["short_read"])
     lr_ok = sum(1 for r in datasets["long_read"] if r["success"])
     lr_tot = len(datasets["long_read"])
+    pk_ok = sum(1 for r in datasets["phenopackets"] if r["success"])
+    pk_tot = len(datasets["phenopackets"])
 
     log("")
     log("=== Bootstrap complete ===")
@@ -425,6 +448,7 @@ def main() -> None:
     log(f"  Reference:      {genome['fasta']}")
     log(f"  Short-read:     {sr_ok}/{sr_tot} OK")
     log(f"  Long-read:      {lr_ok}/{lr_tot} OK (best-effort)")
+    log(f"  Phenopackets:   {pk_ok}/{pk_tot} OK")
     log(f"  Smoke test:     {'PASSED' if smoke.get('passed') else 'SKIPPED' if smoke.get('skipped') else 'FAILED'}")
     log("")
     log("Next — install pipelines via Claude Code:")

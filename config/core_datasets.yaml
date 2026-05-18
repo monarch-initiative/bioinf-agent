@@ -47,6 +47,14 @@ short_read:
     sample: ENCSR890UQO
     description: ENCODE ENCSR890UQO WGBS (GSE86765)
 
+phenopackets:
+  # GA4GH Phenopacket v2 JSON files. Each entry is downloaded via
+  # add_phenopacket(); ID, subject, HPO terms, diseases, genes, and variants
+  # are extracted from the JSON itself (no manual fields here).
+  # GitHub blob URLs are auto-normalized to their raw form.
+  - source_url: https://github.com/monarch-initiative/phenopacket-store/blob/main/notebooks/ACTB/phenopackets/PMID_30315159_Patient_N.json
+    description: Thrombocytopenia 8 (OMIM:620475), ACTB variant — Patient N from PMID 30315159 (phenopacket-store)
+
 long_read:
   # 500 reads each — best-effort. Failures are surfaced, not silenced.
   - accession: ERR3152364

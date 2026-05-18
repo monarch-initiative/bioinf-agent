@@ -32,6 +32,16 @@ from agent.models.core_data import (
 )
 
 
+def _normalize_github_url(url: str) -> str:
+    """Convert https://github.com/<o>/<r>/blob/<ref>/<path> to its raw form.
+    Other URLs pass through unchanged."""
+    prefix = "https://github.com/"
+    if url.startswith(prefix) and "/blob/" in url:
+        rest = url[len(prefix):].replace("/blob/", "/", 1)
+        return f"https://raw.githubusercontent.com/{rest}"
+    return url
+
+
 _SUBSET_SIZES: dict[str, int] = {
     "500":  500,
     "1K":   1_000,
@@ -292,11 +302,14 @@ def add_phenopacket(
     pk_dir       = core_dir / "phenopackets"
     pk_dir.mkdir(parents=True, exist_ok=True)
 
+    # Accept either a github.com/.../blob/... URL or a raw.githubusercontent.com URL
+    fetch_url = _normalize_github_url(source_url)
+
     # ------------------------------------------------------------------
     # Download JSON (skip if already present)
     # ------------------------------------------------------------------
     try:
-        req = urllib.request.Request(source_url, headers={"User-Agent": "bioinf-agent/1.0"})
+        req = urllib.request.Request(fetch_url, headers={"User-Agent": "bioinf-agent/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode()
         data: dict[str, Any] = json.loads(raw)

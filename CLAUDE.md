@@ -97,6 +97,8 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
     - WGBS PE 10K:    `short_read/paired_end/wgbs/ENCSR890UQO_SRR4235788_10K_R{1,2}.fastq.gz`
     - ONT WGS 500:      `long_read/ont/ont_wgs/NA12878_ERR3152364_500_R1.fastq.gz` (best-effort)
     - PacBio HiFi 500:  `long_read/pacbio/pacbio_hifi/HG002_HG002_CCS_15kb_500_R1.fastq.gz` (best-effort, NCBI FTP)
+  - Phenopackets (GA4GH v2 JSON; `add_phenopacket` extracts HPO/disease/variants):
+    - `phenopackets/PMID_30315159_Patient_N.json` — ACTB / Thrombocytopenia 8 (OMIM:620475)
   - Pre-built pipeline outputs: `core_test_data_hg38/pipeline_outputs/{pipeline}/`
   - Read `core_test_data_hg38/manifest.yaml` to discover exactly what is available.
 - Default strategy: use chr22 reference, 10K reads, write outputs to `data/{pipeline_name}_test_data/`.
