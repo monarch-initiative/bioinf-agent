@@ -48,10 +48,7 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.validators.output_validator import OutputValidator
-from agent.skills.spec_writer import (
-    save_pipeline_spec as _save_pipeline_spec,
-    _derive_homepage,
-)
+from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
 from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
@@ -79,26 +76,30 @@ def search_package(
     """Search anaconda.org / bioconda / conda-forge / PyPI for a bioinformatics package.
     Returns channel, exact version, conda spec, install command, and brief description.
 
-    If pipeline_id is supplied, a PackageRecord-shaped entry is also appended to
-    draft.packages — you don't need to re-state the result in the final spec."""
+    `packages` in the final spec is rebuilt at finalize-time from the live
+    conda env + install_steps' installed_packages (the source of truth),
+    NOT from search_package. So this tool is query-only: use the returned
+    versions/channels to choose what to actually install via
+    `install_packages` / `run_install_command`.
+
+    If pipeline_id is supplied, description/homepage/input_types/output_types
+    are cached on `draft.search_cache[package_name]` so the finalize pass can
+    annotate the derived package record without re-querying."""
     result = _pkg_search.search(package_name, requested_version)
     if pipeline_id and result.get("found"):
-        package_record = {
-            "name":              result.get("package_name", package_name),
-            "requested_version": requested_version,
-            "resolved_version":  result.get("version"),
-            "channel":           result.get("channel"),
-            "conda_spec":        result.get("conda_spec"),
-            "description":       result.get("description"),
-            "homepage":          result.get("home"),
-            "input_types":       result.get("input_types", []),
-            "output_types":      result.get("output_types", []),
-            "check_command":     result.get("check_command"),
+        name = result.get("package_name", package_name)
+        cache_entry = {
+            "description":   result.get("description"),
+            "homepage":      result.get("home"),
+            "input_types":   result.get("input_types", []),
+            "output_types":  result.get("output_types", []),
+            "check_command": result.get("check_command"),
         }
-        idx = _pipeline_state.add_package(pipeline_id, package_record)
+        cache_entry = {k: v for k, v in cache_entry.items() if v}
+        ok = _pipeline_state.cache_search_result(pipeline_id, name, cache_entry)
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id, "package_index": idx}
-            if idx is not None else
+            {"status": "cached", "pipeline_id": pipeline_id, "name": name}
+            if ok else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
@@ -192,20 +193,28 @@ def verify_installation(
     check_command: str,
     pipeline_id: str = "",
 ) -> dict:
-    """Run a version/help command inside the env to confirm a package installed correctly.
+    """Run a custom version/help command inside the env to confirm a package
+    installed correctly.
 
-    If pipeline_id is supplied, the named package's record in the draft is patched
-    with verify_command + verify_output."""
+    Advisory: env_status no longer requires every package to have a verify
+    record — `conda list --json` plus successful install_steps are the
+    structural truth. Use this when you want to capture a custom check
+    (e.g. `samtools --version` for a CLI tool) so it appears in the report
+    next to that package.
+
+    If pipeline_id is supplied, the result is cached in
+    draft.verifications[package_name] and stitched onto the derived package
+    record at finalize-time."""
     result = _env_mgr.verify(env_name, package_name, check_command)
     if pipeline_id:
-        patched = _pipeline_state.patch_package(pipeline_id, package_name, {
+        ok = _pipeline_state.cache_verification(pipeline_id, package_name, {
             "verify_command": check_command,
             "verify_output":  result.get("output", ""),
         })
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id} if patched
-            else {"status": "package_not_in_draft",
-                  "pipeline_id": pipeline_id, "package_name": package_name}
+            {"status": "cached", "pipeline_id": pipeline_id, "name": package_name}
+            if ok else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
 
@@ -870,55 +879,15 @@ def run_install_command(
         }
         step_data = {k: v for k, v in step_data.items() if v is not None}
         idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
-        # Auto-append each installed package to draft.packages so verify_installation
-        # has a record to patch. Only do this on a successful install.
-        added_packages: list[str] = []
-        if idx is not None and result.get("returncode") == 0:
-            for pkg in installed_packages or []:
-                name = pkg.get("name")
-                if not name:
-                    continue
-                channel = pkg.get("channel", "")
-                im_type = _DERIVE_INSTALL_METHOD_TYPE.get(channel.lower(), "source")
-                install_method: dict = {"type": im_type}
-                if pkg.get("source"):
-                    install_method["source"] = pkg["source"]
-                pkg_record = {
-                    "name":              name,
-                    "requested_version": pkg.get("requested_version") or pkg.get("version") or "latest",
-                    "resolved_version":  pkg.get("version"),
-                    "channel":           channel or None,
-                    "install_method":    install_method,
-                    # Homepage is templated here so the field is non-empty even
-                    # before finalize-time reconciliation runs. Reconciliation
-                    # is idempotent — it only fills missing homepages.
-                    "homepage":          _derive_homepage(name, channel, install_method),
-                }
-                pkg_record = {k: v for k, v in pkg_record.items() if v is not None and v != ""}
-                _pipeline_state.add_package(pipeline_id, pkg_record)
-                added_packages.append(name)
+        # No more dual-write to draft.packages. The finalize-time package
+        # builder picks up every `installed_packages` entry from successful
+        # install_steps automatically — single source of truth.
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id,
-             "install_step_index": idx, "added_packages": added_packages}
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
-
-
-# Channel → InstallMethod.type heuristic for run_install_command auto-packaging.
-# Anything not listed falls through to "source".
-_DERIVE_INSTALL_METHOD_TYPE: dict[str, str] = {
-    "github":        "r_install",
-    "cran":          "r_install",
-    "bioconductor":  "r_install",
-    "pip":           "pip",
-    "pypi":          "pip",
-    "conda-forge":   "conda",
-    "bioconda":      "conda",
-    "noarch":        "conda",
-    "docker":        "docker_pull",
-}
 
 
 @mcp.tool()

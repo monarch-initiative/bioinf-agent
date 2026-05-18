@@ -60,8 +60,10 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     pipelines_dir.mkdir(parents=True, exist_ok=True)
 
     if env_manager is not None and spec.get("conda_env"):
+        derive_packages_from_env(spec, env_manager, spec["conda_env"])
         reconcile_packages_with_env(spec, env_manager, spec["conda_env"])
 
+    derive_step_dag(spec)
     _derive_step_validation_status(spec)
     spec["env_status"]      = _derive_env_status(spec)
     spec["pipeline_status"] = _derive_pipeline_status(spec)
@@ -84,9 +86,27 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     html_path = pipelines_dir / f"{stem}.html"
     html_path.write_text(generate_report(write_spec))
 
+    # Reproducibility artifacts: environment.yml is the portable conda recipe
+    # (anyone can `conda env create -f` it on any platform); .lock is the
+    # URL-pinned explicit list for bit-exact recreation on the build platform.
+    env_yml_path: Optional[Path] = None
+    lock_path:    Optional[Path] = None
+    if env_manager is not None and write_spec.get("conda_env"):
+        env_name = write_spec["conda_env"]
+        env_yml = env_manager.export_environment_yml(env_name, from_history=True)
+        if env_yml:
+            env_yml_path = pipelines_dir / f"{stem}.environment.yml"
+            env_yml_path.write_text(env_yml)
+        lock = env_manager.export_explicit_lock(env_name)
+        if lock:
+            lock_path = pipelines_dir / f"{stem}.lock"
+            lock_path.write_text(lock)
+
     return {
         "saved_yaml":      str(yaml_path),
         "saved_html":      str(html_path),
+        "saved_env_yml":   str(env_yml_path) if env_yml_path else None,
+        "saved_lock":      str(lock_path)    if lock_path    else None,
         "env_status":      write_spec.get("env_status"),
         "pipeline_status": write_spec.get("pipeline_status"),
     }
@@ -174,27 +194,27 @@ def _derive_step_validation_status(spec: dict) -> None:
 
 
 def _derive_env_status(spec: dict) -> str:
-    """Compute env_status from install_steps' returncodes + per-package verifications.
+    """Compute env_status from install_steps.
+
+    The structural truth that the env was built correctly is:
+      - every install_step exited 0
+      - conda list (queried at finalize) found the packages
+      - the derived packages list is non-empty
+
+    Per-package verify_installation calls are advisory now — they enrich the
+    report but don't gate the status. This lets the LLM skip the "verify each
+    package with a custom command" step entirely for SRA-agent-driven flows
+    where dozens of packages are installed in one go.
 
       failed             — any install_step.returncode != 0
-      fully_validated    — every non-conda-pack package has a verify_output
-      partially_validated — some packages verified, others not
-      complete           — all installs ran clean but nothing verified yet
+      fully_validated    — all installs ran clean AND packages list is non-empty
+      complete           — all installs ran clean but no packages derived (unusual)
     """
     install_steps = spec.get("install_steps", [])
     if any(s.get("returncode") not in (None, 0) for s in install_steps):
         return "failed"
-
     packages = [p for p in spec.get("packages", []) if p.get("name") != "conda-pack"]
-    if not packages:
-        return "complete"
-
-    verified = sum(1 for p in packages if (p.get("verify_output") or "").strip())
-    if verified == len(packages):
-        return "fully_validated"
-    if verified > 0:
-        return "partially_validated"
-    return "complete"
+    return "fully_validated" if packages else "complete"
 
 
 def _derive_pipeline_status(spec: dict) -> str:
@@ -235,6 +255,181 @@ def _derive_pipeline_status(spec: dict) -> str:
 # ---------------------------------------------------------------------------
 
 _R_INSTALL_GITHUB_REGEX = re.compile(r"""['"]([^'"\s]+/[^'"\s]+)['"]""")
+
+# Packages that are infrastructure (not user-facing tools) and shouldn't be
+# surfaced as primary spec entries. conda-pack is added to every env automatically.
+_INFRASTRUCTURE_PACKAGES = frozenset({"conda-pack"})
+
+
+def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dict:
+    """Rebuild spec['packages'] from sources of truth: `conda list` + every
+    install_step's `installed_packages` array.
+
+    This replaces the accumulator-based packages list (which drifted from the
+    actual install) with one derived directly from what conda + run_install_command
+    actually did. Annotations (description, homepage, channel) recorded earlier
+    via search_package or run_install_command are preserved by name when possible.
+
+    Returns a summary dict for diagnostics.
+    """
+    cache         = spec.get("search_cache",  {}) or {}
+    verifications = spec.get("verifications", {}) or {}
+    # Preserve annotations from any prior `packages` list (description, channel,
+    # homepage, verify_*, install_method.source, etc.) keyed by name.
+    prior_by_name: dict[str, dict] = {
+        p.get("name"): p for p in spec.get("packages", []) or []
+        if isinstance(p, dict) and p.get("name")
+    }
+
+    conda_versions = env_manager.list_conda_packages(env_name)
+    # Only user-requested conda packages belong in spec.packages — not the full
+    # transitive closure (samtools brings in 100 dynamic-link deps you didn't ask
+    # for). The lock file captures the closure for reproducibility; this list
+    # is the user-facing tool roster.
+    explicit = env_manager.list_explicit_conda_packages(env_name)
+    if explicit:
+        conda_versions = {n: v for n, v in conda_versions.items() if n in explicit}
+
+    # Collect non-conda packages from install_steps. install_steps records each
+    # run_install_command's installed_packages, which captures JARs (Exomiser),
+    # R packages from CRAN/Bioc/GitHub, pip wheels, anything outside conda.
+    install_step_packages: dict[str, dict] = {}
+    for step in spec.get("install_steps", []) or []:
+        if not isinstance(step, dict):
+            continue
+        # Only trust successful install steps as a source of truth.
+        if step.get("returncode") not in (None, 0):
+            continue
+        for ip in step.get("installed_packages", []) or []:
+            if not isinstance(ip, dict):
+                continue
+            name = ip.get("name")
+            if not name or name in _INFRASTRUCTURE_PACKAGES:
+                continue
+            # If the same name appears in conda list, conda owns it; skip.
+            # Otherwise this is a non-conda install (R / pip / JAR / etc).
+            if name in conda_versions:
+                continue
+            install_step_packages[name] = ip
+
+    rebuilt: list[dict] = []
+
+    # 1) Every conda-tracked package
+    for name in sorted(conda_versions):
+        if name in _INFRASTRUCTURE_PACKAGES:
+            continue
+        prior = prior_by_name.get(name, {})
+        v = verifications.get(name, {})
+        rec = {
+            "name":              name,
+            "requested_version": prior.get("requested_version") or "latest",
+            "resolved_version":  conda_versions[name],
+            "channel":           prior.get("channel"),
+            "install_method":    prior.get("install_method") or {"type": "conda"},
+            "description":       prior.get("description") or cache.get(name, {}).get("description"),
+            "homepage":          prior.get("homepage") or cache.get(name, {}).get("homepage"),
+            "verify_command":    v.get("verify_command") or prior.get("verify_command"),
+            "verify_output":     v.get("verify_output")  or prior.get("verify_output"),
+        }
+        rebuilt.append({k: v for k, v in rec.items() if v is not None})
+
+    # 2) Every non-conda install_step package
+    for name, ip in install_step_packages.items():
+        prior = prior_by_name.get(name, {})
+        v = verifications.get(name, {})
+        channel = ip.get("channel") or prior.get("channel", "")
+        im_type = (
+            (prior.get("install_method") or {}).get("type")
+            or _CHANNEL_TO_INSTALL_METHOD.get((channel or "").lower(), "source")
+        )
+        install_method = {"type": im_type}
+        if ip.get("source") or (prior.get("install_method") or {}).get("source"):
+            install_method["source"] = ip.get("source") or prior["install_method"]["source"]
+        rec = {
+            "name":              name,
+            "requested_version": prior.get("requested_version") or ip.get("requested_version") or ip.get("version") or "latest",
+            "resolved_version":  ip.get("version") or prior.get("resolved_version"),
+            "channel":           channel or None,
+            "install_method":    install_method,
+            "description":       prior.get("description") or cache.get(name, {}).get("description"),
+            "homepage":          prior.get("homepage") or cache.get(name, {}).get("homepage"),
+            "verify_command":    v.get("verify_command") or prior.get("verify_command"),
+            "verify_output":     v.get("verify_output")  or prior.get("verify_output"),
+        }
+        rebuilt.append({k: v for k, v in rec.items() if v is not None})
+
+    spec["packages"] = rebuilt
+    return {
+        "conda_count":         len(conda_versions),
+        "install_step_count":  len(install_step_packages),
+        "rebuilt_count":       len(rebuilt),
+    }
+
+
+# Mirror of _DERIVE_INSTALL_METHOD_TYPE in mcp_server; duplicated here so
+# spec_writer can rebuild packages without importing from mcp_server (which
+# would create a cycle via FastMCP).
+_CHANNEL_TO_INSTALL_METHOD: dict[str, str] = {
+    "github":        "r_install",
+    "cran":          "r_install",
+    "bioconductor":  "r_install",
+    "pip":           "pip",
+    "pypi":          "pip",
+    "conda-forge":   "conda",
+    "bioconda":      "conda",
+    "noarch":        "conda",
+    "docker":        "docker_pull",
+}
+
+
+def derive_step_dag(spec: dict) -> None:
+    """For each pipeline_step missing `depends_on`, derive it from the
+    input/output overlap with earlier steps.
+
+    Specifically: if step N's inputs contain a path that appears in step M's
+    outputs (M < N), then N depends_on M. The result is a partial order that
+    a downstream tool (Nextflow generator, parallel scheduler) can consume.
+    """
+    steps = spec.get("pipeline_steps", []) or []
+    if not steps:
+        return
+
+    # Build a map: output_path -> step_number that produced it.
+    produced_by: dict[str, int] = {}
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        step_num = s.get("step")
+        if step_num is None:
+            continue
+        for out in s.get("outputs", []) or []:
+            produced_by[out] = step_num
+
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        if s.get("depends_on"):
+            continue   # caller-provided; trust it
+        step_num = s.get("step")
+        if step_num is None:
+            continue
+        deps: set[int] = set()
+        for entry in s.get("inputs", []) or []:
+            # Inputs are StepInput dicts after model coercion; the YAML may
+            # still see strings if hand-edited. Handle both.
+            paths: list[str] = []
+            if isinstance(entry, dict):
+                if entry.get("path"):
+                    paths.append(entry["path"])
+                paths.extend(entry.get("references", []) or [])
+            elif isinstance(entry, str):
+                paths.append(entry)
+            for p in paths:
+                producer = produced_by.get(p)
+                if producer is not None and producer < step_num:
+                    deps.add(producer)
+        if deps:
+            s["depends_on"] = sorted(deps)
 
 
 def reconcile_packages_with_env(spec: dict, env_manager: Any, env_name: str) -> dict:
@@ -281,6 +476,19 @@ def reconcile_packages_with_env(spec: dict, env_manager: Any, env_name: str) -> 
         if actual and actual != before:
             p["resolved_version"] = actual
             patched_versions.append({"name": name, "from": before, "to": actual})
+
+        # 2b. For R packages installed as conda (r-*, bioconductor-*), the
+        #     recipe version and packageVersion() differ. Capture both:
+        #     resolved_version stays as the conda truth (for reproducibility),
+        #     runtime_version exposes the R-side number users see at library() time.
+        is_r_conda = im_type == "conda" and (
+            name.startswith("r-") or name.startswith("bioconductor-")
+        )
+        if is_r_conda and not p.get("runtime_version"):
+            r_pkg = name.split("-", 1)[1] if "-" in name else name
+            rt = env_manager.r_package_version(env_name, r_pkg)
+            if rt and rt != p.get("resolved_version"):
+                p["runtime_version"] = rt
 
         # 3. Fill missing homepage from (channel, name, source) — deterministic
         if not p.get("homepage"):

@@ -104,6 +104,30 @@ class PipelineState:
         self._persist(pipeline_id)
         return len(pkgs) - 1
 
+    def cache_search_result(self, pipeline_id: str, name: str, entry: dict) -> bool:
+        """Store search_package metadata (description, homepage, input/output types)
+        keyed by package name. Used by spec_writer's finalize-time package
+        derivation to annotate records without re-querying."""
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return False
+        cache = draft.setdefault("search_cache", {})
+        cache[name] = {**cache.get(name, {}), **entry}
+        self._persist(pipeline_id)
+        return True
+
+    def cache_verification(self, pipeline_id: str, name: str, entry: dict) -> bool:
+        """Store verify_installation result (verify_command, verify_output)
+        keyed by package name. Used by spec_writer's finalize-time package
+        derivation to attach verification info to the rebuilt records."""
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return False
+        verifications = draft.setdefault("verifications", {})
+        verifications[name] = {**verifications.get(name, {}), **entry}
+        self._persist(pipeline_id)
+        return True
+
     def patch_package(self, pipeline_id: str, package_name: str, patch: dict) -> bool:
         draft = self._drafts.get(pipeline_id)
         if draft is None:

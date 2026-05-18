@@ -672,7 +672,8 @@ class PackageRecord(BaseModel):
 
     name:              str
     requested_version: str = "latest"
-    resolved_version:  Optional[str] = None
+    resolved_version:  Optional[str] = None   # conda recipe / install version
+    runtime_version:   Optional[str] = None   # what packageVersion('X') / pip show returns at library() time — only set when it differs from resolved_version
     install_method:    Optional[InstallMethod] = None   # None → conda (default)
     # kept for backward compatibility; also populated from install_method for conda packages
     conda_spec:        Optional[str] = None
@@ -788,6 +789,7 @@ class PipelineStep(BaseModel):
 
     inputs:            list[StepInput] = []   # files consumed (with optional script-references)
     outputs:           list[str] = []         # filenames produced
+    depends_on:        list[int] = []         # step numbers this step depends on (1-based); derived at finalize from input/output overlap if absent
     config_files:      list[RuntimeConfig] = []  # config files written for this step
     runtime_seconds:   Optional[float] = None
     output_size_bytes: Optional[int] = None
@@ -806,6 +808,45 @@ class PipelineStep(BaseModel):
             else:
                 out.append(item)
         return out
+
+
+class UsageInput(BaseModel):
+    """One named slot in a usage command template."""
+    model_config = ConfigDict(extra="allow")
+
+    name:        str                          # placeholder name, e.g. "INPUT_GENOTYPE"
+    format:      Optional[str] = None         # e.g. "hapmap", "vcf", "fastq"
+    description: Optional[str] = None
+    required:    bool = True
+
+
+class UsageOutput(BaseModel):
+    """One named output slot in a usage command template."""
+    model_config = ConfigDict(extra="allow")
+
+    name:        str                          # placeholder, e.g. "OUTPUT_DIR"
+    files:       list[str] = []               # expected output filename patterns
+    description: Optional[str] = None
+
+
+class UsageTemplate(BaseModel):
+    """How to invoke the pipeline on new data.
+
+    Distinct from pipeline_steps: pipeline_steps records what we ran to
+    build/test the pipeline; usage records the canonical command a downstream
+    user (or Nextflow generator) should run on *their* data.
+
+    LLM authors this via patch_pipeline after Phase 4. The command_template
+    uses {PLACEHOLDER} substitutions whose names line up with `inputs` and
+    `outputs` entries.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    description:      str
+    command_template: str
+    inputs:           list[UsageInput] = []
+    outputs:          list[UsageOutput] = []
+    example:          Optional[str] = None    # concrete invocation example
 
 
 class DockerBuild(BaseModel):
@@ -880,6 +921,7 @@ class PipelineSpec(BaseModel):
     install_steps:        list[InstallStep] = []   # env-build journey (chronological by `step`)
     pipeline_steps:       list[PipelineStep] = []  # algorithm/analysis runs
     docker:               Optional[DockerBuild] = None
+    usage:                Optional[UsageTemplate] = None  # canonical "run on new data" contract
     notes:                list[str] = []
     final_summary:        Optional[str] = None
 

@@ -213,6 +213,73 @@ class EnvManager:
             return {}
         return {e.get("name", ""): e.get("version", "") for e in entries if e.get("name")}
 
+    def list_explicit_conda_packages(self, env_name: str) -> set[str]:
+        """Return the *explicitly-requested* package names from conda's history db.
+
+        Distinct from list_conda_packages, which returns every installed package
+        (including transitive deps). This is the set conda export --from-history
+        would dump — what the user actually asked for. The right filter for the
+        spec's `packages` field, which should be the tool list, not the closure.
+
+        Returns an empty set on failure.
+        """
+        env_yml = self.export_environment_yml(env_name, from_history=True)
+        if not env_yml:
+            return set()
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(env_yml) or {}
+        except Exception:
+            return set()
+        names: set[str] = set()
+        for entry in data.get("dependencies", []) or []:
+            if isinstance(entry, str):
+                # conda spec like "r-base=4.4" or "samtools" — keep the bare name
+                names.add(entry.split("=", 1)[0].split(" ", 1)[0])
+            elif isinstance(entry, dict) and "pip" in entry:
+                # nested pip block: list of pip spec strings
+                for pip_spec in entry["pip"] or []:
+                    if isinstance(pip_spec, str):
+                        names.add(pip_spec.split("=", 1)[0].split("<", 1)[0].split(">", 1)[0].strip())
+        return names
+
+    def export_environment_yml(self, env_name: str, from_history: bool = True) -> str:
+        """Return the conda environment definition as YAML text.
+
+        `from_history=True` exports only the packages explicitly requested
+        (clean, portable, matches what someone reading the file expects).
+        `from_history=False` exports the full solved env including transitive
+        deps (lossless, but bulky and OS/arch-coupled).
+
+        Returns "" on failure. Caller writes the text to a `.environment.yml`
+        file alongside the spec.
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return ""
+        cmd = [self._conda_exe, "env", "export", "--prefix", str(env_path)]
+        if from_history:
+            cmd.append("--from-history")
+        result = self._run(cmd, cwd=str(self.project_root), timeout=120)
+        return result["stdout"] if result["returncode"] == 0 else ""
+
+    def export_explicit_lock(self, env_name: str) -> str:
+        """Return a `conda list --explicit` lock file content (URL-pinned).
+
+        Recreating the env from this lock guarantees the *exact* same package
+        builds. Architecture-coupled (osx-arm64 vs linux-64 etc.) but
+        bombproof for the platform it was generated on.
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return ""
+        result = self._run(
+            [self._conda_exe, "list", "--prefix", str(env_path), "--explicit"],
+            cwd=str(self.project_root),
+            timeout=120,
+        )
+        return result["stdout"] if result["returncode"] == 0 else ""
+
     def r_package_version(self, env_name: str, package_name: str) -> str:
         """Return the version `packageVersion('X')` reports for an R package,
         or '' if not installed / not loadable.

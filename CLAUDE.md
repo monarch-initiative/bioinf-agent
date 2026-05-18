@@ -27,10 +27,10 @@ If you ever need an API-driven orchestration mode (e.g., headless batch installs
 
 | Tool | What it does |
 |------|-------------|
-| `search_package` | Find package on bioconda/conda-forge/PyPI |
+| `search_package` | Find package on bioconda/conda-forge/PyPI. **Query-only** — populates `draft.search_cache` for description/homepage annotation, not `draft.packages` (which is derived at finalize from the live env). |
 | `create_conda_env` | Create isolated conda env |
 | `install_packages` | conda install one or more packages |
-| `verify_installation` | Run version/help command to confirm install |
+| `verify_installation` | Run a custom version/help command for a package. **Advisory** — result is cached in `draft.verifications` and stitched onto the derived package record at finalize. Skipping this no longer drops `env_status`. |
 | `run_in_env` | Run any shell command inside the conda env |
 | `validate_output` | Check output files are valid (bam/vcf/fastq/gfa/bim/ld/…). Single (`file_path`) or batch (`files=[{path, expected_type}, ...]`) shape — batch validates each file independently. |
 | `list_available_resources` | What genomes and test data are on disk |
@@ -82,7 +82,7 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
   - Add a `ReferenceDatabase` entry to the spec with `name`, `version`, `size_gb`, `source_url`, `local_path`.
   - Add the data directory to `docker.volume_mounts` — it is NOT baked into the Docker image.
 - Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically. This is what powers `env_status: fully_validated` at finalize.
-- **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, downloading reference databases via curl/wget, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps`. Each entry in `installed_packages` (e.g. `{"name": "GAPIT", "channel": "github", "source": "remotes::install_github('jiabowang/GAPIT')"}`) is **also auto-appended to `draft.packages`** with an `install_method.type` derived from `channel` (github/cran/bioconductor → `r_install`, pip/pypi → `pip`, conda channels → `conda`) and a `homepage` derived from the templates above. `verify_installation` then patches `verify_output` onto that record — no `patch_pipeline` needed for BiocManager / install_github / CRAN installs. **`version` is optional** in `installed_packages` — finalize-time reconciliation runs `Rscript packageVersion('X')` against the live env and fills `resolved_version` from there, so don't worry about recording it manually. Pass `step=N` to replace a failed install step for retries.
+- **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, JAR downloads via curl/wget for Java tools like Exomiser/Picard/GATK, reference DB downloads, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps`. Each entry in `installed_packages` (e.g. `{"name": "GAPIT", "channel": "github", "source": "remotes::install_github('jiabowang/GAPIT')"}`) becomes a package record in the final spec — derived at finalize from the union of successful `install_steps`. `name` and `channel` are what matter; `version` is optional (finalize probes the env). Pass `step=N` to replace a failed install step for retries.
 
 ### Phase 3 — Test data
 - Call `list_available_resources(both)` to see what's on disk.
@@ -136,15 +136,32 @@ Some fields don't come from any tool — fill them with `patch_pipeline(pipeline
 - `service_dependencies` — for tools that need a companion process (web server, DB, Spark)
 - `notes` — any observations worth recording in the final spec
 - `reference_free: true` — for de novo assemblers
+- **`usage`** — the canonical "run on new data" contract. Required for the spec to be useful to downstream callers (Nextflow generator, the SRA agent driving mass pipeline generation). Take `pipeline_steps[-1].command`, parameterise its inputs/outputs with `{PLACEHOLDER}` slots, and patch as:
+  ```python
+  patch_pipeline(pipeline_id, {"usage": {
+    "description": "Run GAPIT GLM on a HapMap genotype matrix and quantitative traits",
+    "command_template": "Rscript run.R {INPUT_GENOTYPE} {INPUT_TRAITS} {OUTPUT_DIR}",
+    "inputs":  [{"name": "INPUT_GENOTYPE", "format": "hapmap",  "description": "..."},
+                {"name": "INPUT_TRAITS",   "format": "tsv",     "description": "..."}],
+    "outputs": [{"name": "OUTPUT_DIR", "description": "...",   "files": ["GAPIT.Association.GWAS_Results.*.csv"]}],
+    "example": "..."   # optional concrete invocation
+  }})
+  ```
 
 ### Phase 7 — Finalize
 - Call `finalize_pipeline(pipeline_id)`. This:
-  1. **Reconciles the draft against the live env** — `conda list --json -p {env}` is the source of truth for every conda package's `resolved_version`, and `Rscript packageVersion('X')` is the source for every `r_install` package. Any drift between what `search_package` recorded ("latest") and what the solver actually installed is corrected here. Missing `install_method` types default to `conda`; missing homepages are derived from `(channel, name, source)` via `https://CRAN.R-project.org/package={x}` / `https://bioconductor.org/packages/{x}/` / `https://github.com/{owner/repo}` templates.
-  2. Validates the accumulated draft against `PipelineSpec`
-  3. If valid: writes `env_reports/{name}_{version}.yaml` + `.html`, deletes the draft, returns `{saved_yaml, saved_html, env_status, pipeline_status}` with both derived statuses. The version stem comes from the package whose name best matches `pipeline_name` (exact > substring), searching both `spec.packages` and `install_steps[].installed_packages` (so e.g. `gapit` resolves to `gapit_4.1.0.yaml`, not the r-base version).
-  4. If invalid: preserves the draft, returns `{error, validation_errors, draft_path}` — use `show_pipeline_draft` to inspect, `patch_pipeline` to fix, then retry `finalize_pipeline`
+  1. **Rebuilds `spec.packages` from the live env** — the env itself is the single source of truth. `conda env export --from-history` provides the explicitly-requested conda packages (transitive deps are kept in the lock file, not the spec). Every `installed_packages` entry from successful `install_steps` becomes a non-conda package record (R via BiocManager/install_github, JARs, pip wheels, custom downloads). Versions come from `conda list --json` and `Rscript packageVersion('X')`. Homepages are templated from `(channel, name, source)`. **Result**: you don't have to remember to pass `version` in `installed_packages` or manually patch homepages — both are derived. `r-*` conda packages get a `runtime_version` field showing the R-side number alongside the conda recipe version.
+  2. **Derives `pipeline_steps[*].depends_on`** from input/output overlap when not set explicitly. This is the DAG a Nextflow generator (or parallel scheduler) consumes downstream.
+  3. Validates the populated draft against `PipelineSpec`.
+  4. If valid: writes four artifacts to `env_reports/`:
+     - `{name}_{version}.yaml` — the structured spec
+     - `{name}_{version}.html` — human report
+     - `{name}_{version}.environment.yml` — portable conda recipe (`--from-history`); recreate the env on any platform
+     - `{name}_{version}.lock` — `conda list --explicit` for bit-exact recreation on the same arch
+     Returns `{saved_yaml, saved_html, saved_env_yml, saved_lock, env_status, pipeline_status}`.
+  5. If invalid: preserves the draft, returns `{error, validation_errors, draft_path}` — use `show_pipeline_draft` to inspect, `patch_pipeline` to fix, then retry `finalize_pipeline`.
 - **Capture `saved_yaml` from the return** — this is `pipeline_spec_path` needed in Phase 8.
-- **What this means for you**: don't bother re-stating `resolved_version` in `installed_packages` for `run_install_command` calls if you don't have it handy — reconciliation will fill it from the env. Same for homepages on R packages — templates cover bioconductor / cran / github. Just keep `name` and `channel` accurate; the rest is derived.
+- **`env_status` model**: `fully_validated` requires all `install_steps` exited 0 AND the derived packages list is non-empty. Per-package `verify_installation` calls are no longer gating — they're advisory enrichment for the report. `pipeline_status` still requires every `pipeline_step` to have `validation_status: passed` (or `mark_step_validated`).
 
 ### Phase 8 — Provenance
 - Call `write_pipeline_provenance` with the exact output files produced.
@@ -330,8 +347,10 @@ agent/
 | Location | What it is |
 |----------|-----------|
 | `envs/bioinf_{name}/` | Conda environment |
-| `env_reports/{name}_{version}.yaml` | Pipeline spec: packages, versions, test steps, validation |
-| `env_reports/{name}_{version}.html` | Human-readable install report |
+| `env_reports/{name}_{version}.yaml` | Pipeline spec: packages (derived from env), install steps, pipeline steps with DAG, validation, usage template |
+| `env_reports/{name}_{version}.html` | Human-readable install + usage report |
+| `env_reports/{name}_{version}.environment.yml` | Portable conda recipe (`conda env export --from-history`) — recreate the env on any platform with `conda env create -f` |
+| `env_reports/{name}_{version}.lock` | URL-pinned explicit lock (`conda list --explicit`) — bit-exact env recreation on the same architecture |
 | `docker_images/{name}/` | Dockerfile + conda-pack tarball |
 | `data/core_test_data_{build}/` | Reference genome, reads, pipeline outputs |
 

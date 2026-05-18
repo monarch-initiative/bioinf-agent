@@ -249,11 +249,16 @@ def _packages_table(spec: dict) -> str:
         conda_spec = p.get("conda_spec", "")
         conda_ver = conda_spec.split("=")[-1] if "=" in conda_spec else ""
         version = p.get("resolved_version") or p.get("version") or conda_ver or "—"
+        runtime_ver = (p.get("runtime_version") or "").strip()
+        version_cell = (
+            f'{version}<br><span style="font-size:0.75rem;color:#64748b">runtime: {runtime_ver}</span>'
+            if runtime_ver else version
+        )
         desc = (p.get("description") or "").strip()
         desc_html = f'<div class="desc-scroll">{desc}</div>' if desc else "—"
         rows.append(
             f"<tr><td><strong>{p.get('name','')}</strong></td>"
-            f"<td>{version}</td>"
+            f"<td>{version_cell}</td>"
             f"<td>{p.get('channel','')}</td>"
             f"<td>{desc_html}</td>"
             f"<td>{link}</td></tr>"
@@ -261,6 +266,11 @@ def _packages_table(spec: dict) -> str:
     return f"""
 <div class="section">
   <h2>📦 Packages</h2>
+  <p style="font-size:0.85rem;color:#475569;margin-bottom:0.5rem">
+    Derived from <code>conda list</code> + non-conda install steps at finalize-time.
+    For R packages where the conda recipe version differs from <code>packageVersion()</code>,
+    both are shown.
+  </p>
   <table>
     <thead><tr><th>Package</th><th>Version</th><th>Channel</th><th>Description</th><th>Documentation</th></tr></thead>
     <tbody>{"".join(rows)}</tbody>
@@ -459,13 +469,19 @@ def _steps_section(spec: dict) -> str:
         elif rc == 0:
             val_html = ' <span style="font-size:0.75rem;color:#d97706;background:#f59e0b1a;border-radius:10px;padding:1px 8px;margin-left:0.5rem">⚠ not validated</span>'
 
+        deps = s.get("depends_on") or []
+        deps_html = (
+            f' <span style="font-size:0.75rem;color:#64748b;background:#e2e8f0;border-radius:10px;padding:1px 8px;margin-left:0.5rem">depends on step {", ".join(str(d) for d in deps)}</span>'
+            if deps else ""
+        )
+
         io_html = _io_group(s)
 
         blocks.append(f"""
 <div class="step-block">
   <div class="step-header">
     <span class="step-num">{s.get('step', '?')}</span>
-    {tool_label} {version}{val_html}
+    {tool_label} {version}{val_html}{deps_html}
     {exit_html}
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
@@ -509,6 +525,49 @@ def _usage_guide(spec: dict) -> str:
   </p>
   <pre>conda activate {env}\n\n{cmds}</pre>
   {doc_html}
+</div>"""
+
+
+def _usage_template_section(spec: dict) -> str:
+    """Render the LLM-authored usage block — the canonical contract for running
+    this pipeline on new data. Distinct from _usage_guide which is a transcript
+    of the test commands."""
+    u = spec.get("usage")
+    if not u:
+        return ""
+    desc = (u.get("description") or "").strip()
+    cmd = (u.get("command_template") or "").strip()
+    example = (u.get("example") or "").strip()
+
+    def _slot_table(rows, label):
+        if not rows:
+            return ""
+        body = "".join(
+            f"<tr><td><code>{{{r.get('name','')}}}</code></td>"
+            f"<td>{r.get('format','—') or '—'}</td>"
+            f"<td>{(r.get('description') or '—')}</td></tr>"
+            for r in rows
+        )
+        return f"""
+  <h4 style="margin:0.8rem 0 0.3rem;font-size:0.95rem">{label}</h4>
+  <table>
+    <thead><tr><th>Slot</th><th>Format</th><th>Description</th></tr></thead>
+    <tbody>{body}</tbody>
+  </table>"""
+
+    inputs_html  = _slot_table(u.get("inputs", []),  "Inputs")
+    outputs_html = _slot_table(u.get("outputs", []), "Outputs")
+    example_html = f'<h4 style="margin:0.8rem 0 0.3rem;font-size:0.95rem">Example</h4><pre>{example}</pre>' if example else ""
+
+    return f"""
+<div class="section">
+  <h2>🚀 Usage</h2>
+  <p style="font-size:0.9rem;color:#475569;margin-bottom:0.5rem">{desc}</p>
+  <h4 style="margin:0.4rem 0 0.3rem;font-size:0.95rem">Command Template</h4>
+  <pre>{cmd}</pre>
+  {inputs_html}
+  {outputs_html}
+  {example_html}
 </div>"""
 
 
@@ -559,6 +618,7 @@ def generate(spec: dict) -> str:
 
     body = "".join([
         _status_legend(),
+        _usage_template_section(spec),     # canonical "run on new data" contract
         _packages_table(spec),
         _runtime_env_section(spec),
         _reference_databases_section(spec),
