@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -30,6 +31,104 @@ from agent.models.core_data import (
     SampleMeta,
     SubsetInfo,
 )
+
+
+def phenopacket_to_vcf(
+    config: dict,
+    phenopacket_id: str,
+    output_vcf: str,
+    genome_build: str = "hg38",
+) -> dict[str, Any]:
+    """Materialise a single-sample VCF from a phenopacket's variant block.
+
+    The phenopacket schema's `vcfRecord` carries chrom/pos/ref/alt verbatim;
+    `allelicState` (heterozygous / homozygous) maps to the GT field. Everything
+    in the resulting VCF is derived from the phenopacket — no defaults, no
+    invented fields.
+
+    A VCF with N variants is written if the phenopacket has N variant entries
+    (single-variant phenopackets produce single-line VCF bodies). The contig
+    list in the header is the set of chromosomes used by the variants.
+
+    Returns the path of the written VCF + the sample name (the phenopacket's
+    subject_id, or "sample" if absent).
+    """
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    data_dir     = project_root / config["paths"]["data_dir"]
+    core_dir     = data_dir / f"core_test_data_{genome_build}"
+    pk_meta_path = core_dir / "phenopackets" / f"{phenopacket_id}_meta.yaml"
+    if not pk_meta_path.exists():
+        return {"success": False, "error": f"phenopacket meta not found: {pk_meta_path}"}
+
+    try:
+        meta = PhenopacketMeta.from_yaml(pk_meta_path)
+    except Exception as e:
+        return {"success": False, "error": f"failed to parse {pk_meta_path.name}: {e}"}
+
+    variants = [v for v in (meta.variants or []) if v.get("chrom") and v.get("pos") and v.get("ref") and v.get("alt")]
+    if not variants:
+        return {
+            "success": False,
+            "error": ("phenopacket has no variants with chrom/pos/ref/alt — "
+                      "phenotype-only phenopackets cannot be materialised as a VCF."),
+            "phenopacket_id": phenopacket_id,
+        }
+
+    sample = meta.subject_id or "sample"
+    # Sanitize sample for VCF (no whitespace).
+    sample_id = re.sub(r"\s+", "_", sample) if sample else "sample"
+
+    # GT from allelic_state — phenopacket uses Ensembl-style labels.
+    _GT = {
+        "heterozygous":           "0/1",
+        "homozygous":             "1/1",
+        "hemizygous":             "1",
+        "compound heterozygous":  "0/1",   # caller usually splits these into two records
+    }
+
+    contigs = sorted({str(v["chrom"]) for v in variants})
+
+    header_lines = [
+        "##fileformat=VCFv4.2",
+        f"##source=bioinf_agent.phenopacket_to_vcf",
+        f"##phenopacket_id={meta.phenopacket_id}",
+        f"##reference={meta.genome_assembly or genome_build}",
+    ]
+    for c in contigs:
+        header_lines.append(f"##contig=<ID={c}>")
+    header_lines += [
+        '##INFO=<ID=GENE,Number=1,Type=String,Description="Affected gene from phenopacket">',
+        '##INFO=<ID=HGVSC,Number=1,Type=String,Description="HGVS coding from phenopacket">',
+        '##INFO=<ID=ACMG,Number=1,Type=String,Description="ACMG classification from phenopacket">',
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+        f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample_id}",
+    ]
+
+    body_lines = []
+    for v in variants:
+        info_pieces = []
+        if v.get("gene"):                 info_pieces.append(f"GENE={v['gene']}")
+        if v.get("hgvs_c"):               info_pieces.append(f"HGVSC={v['hgvs_c']}")
+        if v.get("acmg_classification"): info_pieces.append(f"ACMG={v['acmg_classification']}")
+        info = ";".join(info_pieces) or "."
+        gt = _GT.get((v.get("allelic_state") or "").lower(), "0/1")
+        body_lines.append(
+            f"{v['chrom']}\t{v['pos']}\t.\t{v['ref']}\t{v['alt']}\t.\tPASS\t{info}\tGT\t{gt}"
+        )
+
+    out_path = Path(output_vcf).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(header_lines + body_lines) + "\n")
+
+    return {
+        "success":        True,
+        "phenopacket_id": meta.phenopacket_id,
+        "sample_id":      sample_id,
+        "output_vcf":     str(out_path),
+        "num_variants":   len(variants),
+        "contigs":        contigs,
+        "genome_assembly": meta.genome_assembly or genome_build,
+    }
 
 
 def _normalize_github_url(url: str) -> str:

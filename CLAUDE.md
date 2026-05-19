@@ -51,8 +51,16 @@ If you ever need an API-driven orchestration mode (e.g., headless batch installs
 | `show_pipeline_draft` | Inspect the current draft without finalizing |
 | `patch_pipeline` | Deep-merge arbitrary patches into the draft (escape hatch). `pipeline_steps` / `install_steps` are merged by `step` field, not replaced. |
 | `select_test_data` | Find a matching test dataset; returns a TestDataRef shape ready for the spec |
-| `run_install_command` | Mirror of `run_in_env` for install commands (BiocManager, install_github, pip install, …). Routes to `install_steps`. |
-| `mark_step_validated` | Set `validation_status` on a `pipeline_step` (when outputs are known good but `validate_output` wasn't called). |
+| `run_install_command` | Mirror of `run_in_env` for install commands (BiocManager, install_github, pip install, …). Routes to `install_steps`. Optional `verify_command` runs after the install in the same env — if it fails the step is recorded as failed (catches silent-failure cases like R install printing "ERROR: lazy loading failed" with rc=0). |
+| `mark_step_validated` | Set `validation_status` on a `pipeline_step` (when outputs are known good but `validate_output` wasn't called). **Refuses `passed` on a step with no detected outputs and no validation** — the silent-empty-success guard. |
+| `install_jar_tool` | One-shot Java tool install (Exomiser, Picard, GATK, snpEff). Downloads JAR (or distribution .zip), writes wrapper at `{env}/bin/{tool}`. Sets `install_method: {type: jar, jar_path, wrapper_script, java_flags}` automatically. |
+| `phenopacket_to_vcf` | Materialise a single-sample VCF from a registered phenopacket's variant block — eliminates hand-writing a VCF for Exomiser-style installs. |
+| `validate_pipeline_draft` | Dry-run finalize: validate the draft against PipelineSpec without writing artifacts. Use before `finalize_pipeline` to catch schema problems early. |
+| `run_in_background` | Spawn a long-running shell command in the background (watchdog-proof — see Async patterns below). Returns `{job_id, status_path, log_path}` immediately. |
+| `check_job` | Poll status of a background job. ~50 ms; returns `{state, returncode, bytes_logged, elapsed_seconds, log_tail}`. |
+| `cancel_job` | Terminate a background job (SIGTERM, then SIGKILL after 5 s; `force=True` skips straight to SIGKILL). Signals the whole process group. |
+| `list_jobs` | List every job ever started; `include_terminated=False` filters to only running. |
+| `add_phenopacket` | Download and register a GA4GH phenopacket JSON. GitHub blob URLs auto-normalize to raw. |
 
 ---
 
@@ -69,18 +77,27 @@ When the user asks to install a tool or pipeline, execute ALL phases in order us
 ### Phase 2 — Install
 - Call `create_conda_env(env_name="bioinf_{pipeline_name}", pipeline_id=<id>)`. Sets `draft.conda_env` AND appends an entry to `draft.install_steps` for the env creation.
 - **For conda tools** (the default): call `install_packages(env_name, packages, pipeline_id=<id>)`. Installs all packages in one solve AND appends a single entry to `draft.install_steps` with `installed_packages` parsed from each spec (e.g. `samtools=1.21` → `{name: samtools, version: 1.21}`). Pass `step=N` to replace install_step N after a solver conflict (same retry semantics as `run_install_command`) — otherwise failed attempts accumulate and drop `env_status` to `failed`.
-- **For Java tools** (Exomiser, Picard, GATK, …):
-  1. Include `openjdk` (conda-forge) in the `install_packages` call — the JVM lives in the conda env.
-  2. Use `run_in_env` to download the JAR from GitHub releases into `{env}/share/{tool}/`.
-  3. Use `run_in_env` to write a thin wrapper script at `{env}/bin/{tool}` that calls
-     `java <flags> -jar /path/to/tool.jar "$@"` — this makes the tool usable like any conda binary.
-  4. `conda-pack` will bundle the JVM + JAR + wrapper → Docker image is self-contained, no `module load` needed.
-  - Set `install_method: {type: "jar", jar_url: "...", jar_path: "..."}` on the tool's `PackageRecord`.
-  - Set `runtime_environment: {type: "jar", java_flags: ["-Xmx12g"], jar_path: "...", wrapper_script: "..."}` on the spec.
+- **For Java tools** (Exomiser, Picard, GATK, snpEff, …): use `install_jar_tool` —
+  it does the openjdk-assumed download + unzip + wrapper-script in one call and
+  sets `install_method: {type: jar, jar_path, wrapper_script, java_flags}`
+  automatically. The conda env must already have `openjdk` (and `unzip` if the
+  URL is a .zip): include them in your prior `install_packages` call.
+  ```python
+  install_jar_tool(
+    env_name="bioinf_exomiser",
+    tool_name="exomiser",
+    jar_url="https://github.com/exomiser/Exomiser/releases/download/15.0.0/exomiser-cli-15.0.0-distribution.zip",
+    java_flags=["-Xmx6g", "-Xms2g"],
+    pipeline_id=pid,
+  )
+  ```
+  Still patch the spec's `runtime_environment` separately:
+  `patch_pipeline(pid, {"runtime_environment": {"type": "jar", "java_flags": [...], "jar_path": "...", "wrapper_script": "..."}})`.
+  Conda-pack will bundle the JVM + JAR + wrapper — the Docker image is self-contained, no `module load`.
 - **For database-heavy tools** (tools needing >1 GB reference data beyond the genome FASTA):
-  - Download the data with `run_in_env` (curl / wget).
+  - Download via `run_in_background` to avoid the 600 s watchdog (see Async patterns below).
   - Add a `ReferenceDatabase` entry to the spec with `name`, `version`, `size_gb`, `source_url`, `local_path`.
-  - Add the data directory to `docker.volume_mounts` — it is NOT baked into the Docker image.
+  - The data directory is **not** baked into the Docker image. Users mount it at runtime.
 - Call `verify_installation(env_name, package_name, check_command, pipeline_id=<id>)` for each package. The package's record in `draft.packages` is patched with `verify_command` + `verify_output` automatically. This is what powers `env_status: fully_validated` at finalize.
 - **For non-conda install commands** (BiocManager::install, remotes::install_github, pip install, JAR downloads via curl/wget for Java tools like Exomiser/Picard/GATK, reference DB downloads, etc.): call `run_install_command(env_name, command, installed_packages=[...], pipeline_id=<id>, ...)`. Same shape as `run_in_env` but routes to `install_steps`. Each entry in `installed_packages` (e.g. `{"name": "GAPIT", "channel": "github", "source": "remotes::install_github('jiabowang/GAPIT')"}`) becomes a package record in the final spec — derived at finalize from the union of successful `install_steps`. `name` and `channel` are what matter; `version` is optional (finalize probes the env). Pass `step=N` to replace a failed install step for retries.
 
@@ -149,6 +166,16 @@ Some fields don't come from any tool — fill them with `patch_pipeline(pipeline
     "example": "..."   # optional concrete invocation
   }})
   ```
+
+### Patch-pipeline schema cheatsheet (avoid finalize rejection)
+- `notes`: `list[str]` (a bare string is auto-wrapped to `[string]` for safety)
+- `docker.volume_mounts`: `list[str]`, each a `host:container[:mode]` triple — purely informational, runtime users mount whatever they want with `docker run -v`
+- `runtime_configs[*].format`: one of `yaml | properties | java_properties | ini | json | xml | tsv | txt`
+- `OutputFile.type`: see the FileType union in `agent/models/core_data.py`. Notable additions: `jsonl`, `ndjson` (for Exomiser-style streaming JSON)
+- `install_method.type`: `conda | jar | pip | r_install | docker_pull | source | manual`
+- `runtime_environment.type`: `conda | jar | r | docker | native`
+
+Call `validate_pipeline_draft(pipeline_id)` BEFORE `finalize_pipeline` to dry-run the schema check — it returns `{valid: bool, validation_errors?: [...]}` without writing artifacts or deleting the draft. Saves the repair-finalize-repeat loop.
 
 ### Phase 7 — Finalize
 - Call `finalize_pipeline(pipeline_id)`. This:
@@ -234,12 +261,27 @@ Rscript -e "
 Before installing any R package from GitHub, call `fetch_r_package_deps(github_repo)`. It fetches and parses the DESCRIPTION file and returns:
 - `imports`, `depends`, `suggests`, `linking_to` — all dep name lists
 - `all_required` — union of imports + depends + linking_to (what must be present before the GitHub install)
+- `undeclared_runtime_installs` — packages that appear in `BiocManager::install("...")` / `install.packages("...")` / `requireNamespace("...")` / `library("...")` calls in the package's R/ source but are NOT in DESCRIPTION. These are common sources of install failure (the package tries to bootstrap them at load time). Best-effort scan — custom helper functions (e.g. GAPIT's `.gapit_require_or_install`) won't be caught.
 - `install_strategy` — concrete ordered steps
 
 Install order from the strategy:
 1. Call `search_package` for each dep to find what's on conda-forge (`r-{pkg}`) or bioconda (`bioconductor-{pkg}`). Install all confirmed conda packages in one `install_packages` call.
 2. For anything not on conda, use `BiocManager::install()` — it is the authoritative resolver for both CRAN and Bioconductor packages and needs no pre-categorisation on our side.
 3. GitHub install last, with `dependencies=FALSE`.
+
+**Always pass `verify_command` to `run_install_command` for R installs** — R's
+`install.packages` and `remotes::install_github` swallow load errors into
+warnings, so an `Rscript -e "remotes::install_github('...')"` can print
+`ERROR: lazy loading failed for package 'X'` and still exit 0. The
+`verify_command` runs after the install in the same env; non-zero exit
+flips the step to failed:
+```python
+run_install_command(
+  env_name=env, command=install_cmd, installed_packages=[...],
+  verify_command="Rscript -e 'if(!requireNamespace(\"X\")) quit(status=1)'",
+  pipeline_id=pid,
+)
+```
 
 This prevents the multi-cycle discover-fail-retry pattern without requiring a hardcoded list of known packages.
 
@@ -272,7 +314,8 @@ Assembly pipelines differ from alignment pipelines in two key ways:
 **De novo assemblers** (hifiasm, Flye, Canu, MetaFlye):
 - Set `reference_free: true` in the spec — Phase 3 skips the reference genome step.
 - Test with whatever long reads are available (PacBio HiFi 500-read or ONT 500-read subset from `core_test_data`). With only 500 reads the assembly will be highly fragmented — a valid GFA file with at least one S (segment) record is the acceptance criterion, not chromosome-length contigs.
-- Primary outputs are `.gfa` (assembly graph) and `.fa` (contig FASTA). Use `validate_output` with `expected_type: gfa` for GFA files.
+- **Small-data parameter override**: hifiasm's defaults reject low-coverage data and emit zero-byte primary-contig GFAs. For the 500-read smoke test, relax to `-k 31 -w 31 -r 1 --min-hist-cnt 1 -n 1 -f 0` and validate the `*.bp.p_utg.gfa` unitig graph instead of the empty `p_ctg.gfa`. Record the defaults in `usage.command_template` (real-data users want defaults); record the relaxed flags in `notes` + the provenance `parameters` field. Other assemblers (Flye, Canu) have analogous quirks — start with defaults, fall through to permissive settings on empty output.
+- Primary outputs are `.gfa` (assembly graph) and `.fa` (contig FASTA). Use `validate_output` with `expected_type: gfa` for GFA files. Convert GFA→FASTA with `gfatools gfa2fa input.gfa > output.fa`.
 - Provenance uses `reads` as input. `genome` and `assembly_input` are both None.
 
 **Reference-guided scaffolders / polishers** (3D-DNA, SALSA2, YaHS, Medaka, Pilon):
@@ -311,6 +354,44 @@ Typical health checks:
 - Web server: `curl -sf http://localhost:{port}/`
 - MySQL: `mysqladmin ping -h 127.0.0.1`
 - Spark: `curl -sf http://localhost:4040/`
+
+---
+
+## Async patterns — for any operation that may run silently >5 minutes
+
+The agent stream-watchdog kills a tool call that produces no stdout for ~600 s.
+That makes `run_in_env` with a synchronous long-running command (multi-GB
+download, hour-long conda solve, multi-hour assembly on real data) a hard
+failure mode — the agent dies mid-step, the draft freezes, and any subprocess
+the agent kicked off gets orphaned. **Use the background-job tools instead.**
+
+```python
+job = run_in_background(
+    command="curl -L --progress-bar -o big.zip '{URL}' && unzip big.zip && rm big.zip",
+    env_name="bioinf_x",
+)
+# job_id returned immediately. Poll periodically — each check_job is ~50ms.
+while True:
+    s = check_job(job["job_id"])
+    if s["state"] != "running":
+        break
+    # Do unrelated work, or just continue the loop — agent stays alive because
+    # check_job is constantly producing output.
+final_state = s   # state="exited", returncode, elapsed_seconds, log_tail, bytes_logged
+```
+
+When to use:
+- Reference-DB downloads over 100 MB (Exomiser bundles, Parabricks data, BLAST nt, full hg38)
+- Long conda solves on dependency-heavy envs
+- Real-data assemblies (hifiasm on full HiFi sets, Flye on full ONT)
+- Anything else where you'd be tempted to use `curl --silent` or `unzip -q` (the original watchdog trap)
+
+Quick rules of thumb for sync `run_in_env` (no async needed):
+- Conda installs of < 10 packages on a fresh env
+- Test runs on the 10K-read / 500-read subsets (under 30 s on most tools)
+- Output validation
+
+If you're not sure, prefer async — the cost is one extra `check_job` poll loop, the upside is you don't lose 20 min of work to a watchdog kill.
 
 ---
 

@@ -47,12 +47,14 @@ from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
+from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
 from agent.validators.output_validator import OutputValidator
 from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
 from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
 from agent.skills.pipeline_state import PipelineState
+from agent.skills.job_manager import JobManager
 
 _pkg_search     = PackageSearch(config)
 _env_mgr        = EnvManager(config)
@@ -60,6 +62,7 @@ _test_runner    = TestRunner(config)
 _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
+_job_manager    = JobManager(config)
 
 mcp = FastMCP("bioinf-agent")
 
@@ -180,6 +183,70 @@ def install_packages(
             "returncode":         result.get("returncode"),
             "installed_packages": installed,
         }, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
+
+
+@mcp.tool()
+def install_jar_tool(
+    env_name: str,
+    tool_name: str,
+    jar_url: str,
+    java_flags: list[str] = [],
+    wrapper_name: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a Java JAR-based tool end-to-end (Exomiser, Picard, GATK, snpEff, …).
+
+    The env must already have `openjdk` (and `unzip` if `jar_url` is a .zip).
+    Downloads the JAR (curl with a progress bar — watchdog-friendly), unpacks if
+    it's a distribution zip, picks the primary jar (heuristic: name contains
+    `tool_name`, shortest matches first), and writes a wrapper script at
+    {env}/bin/{wrapper_name or tool_name} that runs `java {java_flags} -jar JAR "$@"`.
+
+    java_flags default: ["-Xmx4g"]. Override for memory-hungry tools (Exomiser
+    typically wants -Xmx6g or higher).
+
+    If pipeline_id is supplied, records an install_step (tool=jar, subcommand=install)
+    with installed_packages=[{name=tool_name, channel=github (if URL host is github.com),
+    else external, source=jar_url}], so the finalize-time package derivation picks it
+    up automatically and the spec ends up with install_method.type=jar.
+    """
+    flags = list(java_flags) if java_flags else ["-Xmx4g"]
+    result = _env_mgr.install_jar_tool(
+        env_name      = env_name,
+        tool_name     = tool_name,
+        jar_url       = jar_url,
+        java_flags    = flags,
+        wrapper_name  = wrapper_name,
+    )
+    if pipeline_id:
+        from urllib.parse import urlparse
+        host = urlparse(jar_url).netloc or ""
+        channel = "github" if "github.com" in host else "external"
+        step_data = {
+            "tool":        "jar",
+            "subcommand":  "install",
+            "purpose":     f"Install {tool_name} JAR from {host}",
+            "command":     f"install_jar_tool --jar-url {jar_url}",
+            "returncode":  0 if result.get("success") else 1,
+            "installed_packages": [{
+                "name":    tool_name,
+                "channel": channel,
+                "source":  jar_url,
+                "install_method": {"type": "jar", "source": jar_url},
+            }],
+        }
+        if result.get("success"):
+            step_data["installed_packages"][0]["install_method"]["jar_path"]        = result.get("jar_path")
+            step_data["installed_packages"][0]["install_method"]["wrapper_script"]  = result.get("wrapper_path")
+            step_data["installed_packages"][0]["install_method"]["java_flags"]      = flags
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
@@ -422,6 +489,35 @@ def add_phenopacket(
 
 
 @mcp.tool()
+def phenopacket_to_vcf(
+    phenopacket_id: str,
+    output_vcf: str,
+    genome_build: str = "hg38",
+) -> dict:
+    """Materialise a single-sample VCF from a registered phenopacket's variant block.
+
+    Use this in Exomiser / variant-annotator pipelines where the test VCF should
+    contain the exact variant(s) recorded in the phenopacket — no hand-written
+    VCF synthesis required. Reads {data_dir}/core_test_data_{genome_build}/
+    phenopackets/{phenopacket_id}_meta.yaml; writes a VCFv4.2 file to output_vcf.
+
+    Inputs:
+      phenopacket_id: as registered by add_phenopacket (PMID_30315159_Patient_N, …)
+      output_vcf:     absolute path to write the VCF
+      genome_build:   defaults to hg38
+
+    Output keys: success, phenopacket_id, sample_id, output_vcf, num_variants,
+                 contigs, genome_assembly. On failure: {success: false, error}.
+    Phenotype-only phenopackets (no variant block) cannot be materialised — this
+    is surfaced as a clear error rather than silently producing an empty VCF.
+    """
+    return _phenopacket_to_vcf(
+        config, phenopacket_id=phenopacket_id,
+        output_vcf=output_vcf, genome_build=genome_build,
+    )
+
+
+@mcp.tool()
 def validate_output(
     file_path: str = "",
     expected_type: str = "",
@@ -641,6 +737,80 @@ def _parse_dcf(text: str) -> dict[str, str]:
     return fields
 
 
+_R_RUNTIME_INSTALL_RE = re.compile(
+    r"""(?:BiocManager::install
+        |install\.packages
+        |requireNamespace            # if(!requireNamespace("X")) is the canonical lazy-install signal
+        |library
+        |require)
+        \s*\(
+    """,
+    re.VERBOSE,
+)
+
+_R_RUNTIME_QUOTED_RE = re.compile(r"""(['"])([A-Za-z0-9._]+)\1""")
+
+
+def _scan_r_runtime_installs(github_repo: str, ref: str) -> list[str]:
+    """Look for `BiocManager::install("X")` / `install.packages("X")` calls in the
+    R/ source directory of a GitHub R package. Returns a deduplicated list of
+    package names. Best-effort — failures are silent (we still want the
+    DESCRIPTION info to be returned)."""
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/R?ref={ref}"
+    try:
+        with urllib.request.urlopen(api_url, timeout=15) as resp:
+            listing = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    found: set[str] = set()
+    for entry in listing:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "")
+        if not name.endswith(".R") and not name.endswith(".r"):
+            continue
+        raw_url = entry.get("download_url")
+        if not raw_url:
+            continue
+        try:
+            with urllib.request.urlopen(raw_url, timeout=15) as f:
+                source = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        # Strip comment lines so we don't grab examples from comments.
+        cleaned = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        # Find each call site, then pluck every quoted name from the argument list.
+        for m in _R_RUNTIME_INSTALL_RE.finditer(cleaned):
+            # The regex captures only the first name; scan the substring containing
+            # the call's arg list for all quoted strings (handles c('a','b','c')).
+            start = m.start()
+            depth = 0
+            i = start
+            while i < len(cleaned) and cleaned[i] != "(":
+                i += 1
+            arglist_start = i + 1
+            depth = 1
+            i = arglist_start
+            while i < len(cleaned) and depth > 0:
+                if cleaned[i] == "(":
+                    depth += 1
+                elif cleaned[i] == ")":
+                    depth -= 1
+                i += 1
+            arglist = cleaned[arglist_start:i-1]
+            for q in _R_RUNTIME_QUOTED_RE.finditer(arglist):
+                pkg = q.group(2)
+                # Filter out obvious non-package strings (version numbers, paths, options)
+                if pkg and not pkg.startswith(("/", "./", "http", "https")) and "." not in pkg[:1]:
+                    if re.match(r"^[A-Za-z][A-Za-z0-9._]*$", pkg):
+                        found.add(pkg)
+    return sorted(found)
+
+
 def _parse_pkg_list(raw: str) -> list[str]:
     """Extract bare package names from a comma-separated dep field, stripping version specs."""
     names = []
@@ -690,6 +860,16 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
 
     all_required = sorted(set(imports + depends + linking_to))
 
+    # Hunt for *undeclared* transitive deps — R packages whose .onLoad hooks or
+    # zzz.R do `BiocManager::install("X")` / `install.packages("X")` for things
+    # not listed in DESCRIPTION. GAPIT does this with snpStats; without this
+    # discovery the agent learns about it only by the install failing.
+    undeclared_runtime_installs = _scan_r_runtime_installs(github_repo, ref)
+    undeclared_set = sorted({
+        pkg for pkg in undeclared_runtime_installs
+        if pkg not in set(all_required + suggests) and pkg != fields.get("Package", "")
+    })
+
     return {
         "success": True,
         "github_repo": github_repo,
@@ -703,6 +883,7 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
         "suggests": suggests,
         "linking_to": linking_to,
         "all_required": all_required,
+        "undeclared_runtime_installs": undeclared_set,
         "install_strategy": [
             "1. For each dep in all_required, call search_package to check conda-forge "
             "(r-{lowercase}) and bioconda (bioconductor-{lowercase}) availability.",
@@ -736,8 +917,72 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
 
     Resume semantics: if a draft for this pipeline_name already exists (e.g.
     after an MCP restart mid-install), it is loaded and resumed silently;
-    `resumed: true` is set in the return so you know."""
-    return _pipeline_state.start(pipeline_name, description)
+    `resumed: true` is set in the return so you know. On resume, a `summary`
+    block is included describing what's already in the draft so the agent can
+    decide whether to continue from where the prior run left off or call
+    discard_pipeline_draft and start fresh."""
+    r = _pipeline_state.start(pipeline_name, description)
+    if r.get("resumed"):
+        draft = _pipeline_state.get_draft(pipeline_name) or {}
+        install_steps = draft.get("install_steps", []) or []
+        pipeline_steps = draft.get("pipeline_steps", []) or []
+        last_install = install_steps[-1] if install_steps else None
+        last_pipeline = pipeline_steps[-1] if pipeline_steps else None
+        # Surface any pipeline step with no detected outputs and no validation —
+        # the silent-empty-success pattern that bit the prior Exomiser run.
+        suspect_steps = [
+            s.get("step")
+            for s in pipeline_steps
+            if not (s.get("detected_outputs") or s.get("outputs") or s.get("validation"))
+        ]
+        r["summary"] = {
+            "conda_env":              draft.get("conda_env"),
+            "env_status":             draft.get("env_status"),
+            "pipeline_status":        draft.get("pipeline_status"),
+            "install_steps_count":    len(install_steps),
+            "install_steps_failed":   sum(1 for s in install_steps if s.get("returncode") not in (None, 0)),
+            "pipeline_steps_count":   len(pipeline_steps),
+            "pipeline_steps_failed":  sum(1 for s in pipeline_steps if s.get("returncode") not in (None, 0)),
+            "packages_recorded":      len(draft.get("packages", []) or []),
+            "test_data":              draft.get("test_data") is not None,
+            "docker":                 draft.get("docker") is not None,
+            "usage":                  draft.get("usage") is not None,
+            "last_install_tool":      last_install.get("tool") if last_install else None,
+            "last_pipeline_tool":     last_pipeline.get("tool") if last_pipeline else None,
+            "suspect_unvalidated_steps": suspect_steps,
+        }
+    return r
+
+
+@mcp.tool()
+def validate_pipeline_draft(pipeline_id: str) -> dict:
+    """Dry-run finalize: validate the current draft against PipelineSpec without
+    writing artifacts or deleting the draft. Returns:
+      {valid: bool, validation_errors?: [...], env_status, pipeline_status}.
+
+    Use before finalize_pipeline to catch schema problems early (notes shape,
+    docker.volume_mounts type, runtime_configs.format, OutputFile.type, ...)
+    without having to repair-finalize-repeat through the live save path."""
+    draft = _pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+    if not draft.get("created_at"):
+        draft = {**draft, "created_at": str(date.today())}
+    try:
+        PipelineSpec.model_validate(draft)
+        return {
+            "valid":           True,
+            "env_status":      draft.get("env_status"),
+            "pipeline_status": draft.get("pipeline_status"),
+            "package_count":   len(draft.get("packages", []) or []),
+            "install_steps":   len(draft.get("install_steps", []) or []),
+            "pipeline_steps":  len(draft.get("pipeline_steps", []) or []),
+        }
+    except ValidationError as e:
+        return {
+            "valid":             False,
+            "validation_errors": e.errors(),
+        }
 
 
 @mcp.tool()
@@ -1010,6 +1255,92 @@ def select_test_data(
             else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Async background job tools — watchdog-proof execution
+#
+# Use these for any operation that may run silently for >5 minutes:
+#   - large downloads (Exomiser data bundles, BLAST nt, full genome FASTAs)
+#   - long conda solves on big dependency graphs
+#   - multi-hour assembler / aligner runs on real data
+#   - any tool whose normal output stream is sparse
+#
+# Pattern:
+#   r = run_in_background("curl -L --progress-bar -o big.zip 'URL' && unzip big.zip", env_name="bioinf_x")
+#   # job_id returned immediately; agent does other work
+#   while check_job(r['job_id'])['state'] == 'running':
+#       sleep(30)   # or do unrelated tool calls
+#   final = check_job(r['job_id'])
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def run_in_background(
+    command: str,
+    env_name: str = "",
+    job_id: str = "",
+    working_dir: str = "",
+) -> dict:
+    """Spawn `command` as a background process. Returns immediately.
+
+    Use this for any operation that may run silently for more than 5 minutes —
+    the agent stream-watchdog kills tool calls that go silent that long. Big
+    downloads, conda solves, assembler runs, etc.
+
+    Arguments:
+      command:     full shell command (bash -c executes it; pipes / redirects OK)
+      env_name:    if set, runs inside that conda env via `conda run --prefix`
+      job_id:      caller-supplied (must be unique among running jobs).
+                   If empty, a 12-char hex ID is auto-generated.
+      working_dir: subprocess cwd (default: project root)
+
+    Returns:
+      {job_id, status_path, log_path, pid, state="running"}
+
+    Use `check_job(job_id)` to poll. The status file is durable — survives
+    server restarts and is queryable indefinitely after the job ends.
+    """
+    return _job_manager.start(
+        command, env_name=env_name, job_id=job_id, working_dir=working_dir,
+    )
+
+
+@mcp.tool()
+def check_job(job_id: str, log_tail_lines: int = 30) -> dict:
+    """Return the current state of a background job. Non-blocking; ~50 ms.
+
+    States: running | exited | cancelled
+    Always includes a `log_tail` (last N lines of combined stdout+stderr) so you
+    can monitor progress (e.g. curl's progress bar) without reading the full log
+    file. `bytes_logged` is the size of the log so far — a download's progress
+    can be inferred from this.
+
+    For a job that has just exited, this is also where you learn it terminated —
+    the state flips from "running" to "exited" on the first check after the
+    subprocess died.
+    """
+    return _job_manager.check(job_id, log_tail_lines=log_tail_lines)
+
+
+@mcp.tool()
+def cancel_job(job_id: str, force: bool = False) -> dict:
+    """Terminate a running job. SIGTERM by default; force=True sends SIGKILL.
+
+    Always signals the whole process group so children (e.g. unzip launched
+    after curl in a chained command) also die. A SIGTERM is followed by a 5 s
+    grace window before promoting to SIGKILL.
+    """
+    return _job_manager.cancel(job_id, force=force)
+
+
+@mcp.tool()
+def list_jobs(include_terminated: bool = True) -> dict:
+    """List all jobs ever started on this machine, newest first.
+
+    include_terminated: when False, only currently-running jobs are returned.
+    """
+    return {"jobs": _job_manager.list_jobs(include_terminated=include_terminated)}
 
 
 # ---------------------------------------------------------------------------
