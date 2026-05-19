@@ -27,6 +27,33 @@ _CONDA_SPEC_RE = re.compile(
 )
 
 
+_VERSION_FROM_URL_PATTERNS = (
+    # GitHub release URL: .../releases/download/{tag}/{file}
+    re.compile(r"/releases/download/v?([0-9][0-9A-Za-z.\-_+]*)/", re.IGNORECASE),
+    # GitHub tag page: .../releases/tag/{tag}
+    re.compile(r"/releases/tag/v?([0-9][0-9A-Za-z.\-_+]*)/?$", re.IGNORECASE),
+    # Generic: trailing version-looking segment in the filename
+    re.compile(r"[-_]v?(\d+(?:\.\d+){1,3})(?=[._-]|$)"),
+)
+
+
+def parse_version_from_url(url: str) -> str:
+    """Extract a version string from a download URL.
+
+    Recognises GitHub `releases/download/{tag}/...` and tag-page URLs, plus
+    a generic trailing version pattern in the filename. Returns "" if no
+    plausible version is found — caller can fall back to "latest" or probe
+    the binary.
+    """
+    if not url:
+        return ""
+    for pat in _VERSION_FROM_URL_PATTERNS:
+        m = pat.search(url)
+        if m:
+            return m.group(1)
+    return ""
+
+
 def parse_conda_spec(spec: str) -> dict:
     """Parse a conda package spec into {name, version, constraint}.
 
@@ -192,8 +219,13 @@ class EnvManager:
         watch = Path(watch_dir) if watch_dir else (Path(working_dir) if working_dir else None)
         before = self._snapshot(watch)
 
+        # `set -o pipefail` makes `cmd | tail` propagate cmd's non-zero exit
+        # status instead of swallowing it. Without this a step like
+        # `flye --nano-raw X 2>&1 | tail -50` reports rc=0 even when flye crashed
+        # because tail itself succeeded — masking real failures.
+        wrapped_command = f"set -o pipefail; {command}"
         cmd = [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
-               "/bin/bash", "-c", command]
+               "/bin/bash", "-c", wrapped_command]
 
         t0 = time.monotonic()
         result = self._run(
@@ -338,6 +370,16 @@ class EnvManager:
         records the channel's 'latest' but the solver may pin differently based
         on co-installed packages' constraints (e.g. multtest downgraded for r-base 4.4).
         """
+        return {n: rec["version"] for n, rec in self.list_conda_package_records(env_name).items()}
+
+    def list_conda_package_records(self, env_name: str) -> dict[str, dict]:
+        """Return {name: {version, channel, build_string}} from `conda list --json`.
+
+        The channel field on each record is conda's authoritative answer to "where
+        did this package come from" — the spec's PackageRecord.channel should be
+        derived from here, not from whatever the agent passed to install_packages
+        (which is the channel hint, not the resolved channel).
+        """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
             return {}
@@ -353,7 +395,17 @@ class EnvManager:
             entries = json.loads(result["stdout"])
         except Exception:
             return {}
-        return {e.get("name", ""): e.get("version", "") for e in entries if e.get("name")}
+        records = {}
+        for e in entries:
+            name = e.get("name", "")
+            if not name:
+                continue
+            records[name] = {
+                "version":       e.get("version", ""),
+                "channel":       e.get("channel", ""),
+                "build_string":  e.get("build_string", ""),
+            }
+        return records
 
     def list_explicit_conda_packages(self, env_name: str) -> set[str]:
         """Return the *explicitly-requested* package names from conda's history db.
@@ -553,7 +605,14 @@ class EnvManager:
 
     @staticmethod
     def _diff_snapshot(before: dict[str, float], directory: Path | None) -> list[str]:
-        """Return filenames of files created or modified since the snapshot."""
+        """Return absolute paths of files created or modified since the snapshot.
+
+        Returns absolute paths so downstream tools (validate_output, the next
+        run_in_env step's `inputs`) can use them directly without manual joins.
+        Files in subdirectories of `directory` (e.g. Flye's `00-assembly/`,
+        `20-repeat/`) are preserved with their full path — the prior basename-
+        only output dropped subdir info and broke pipeline lineage.
+        """
         if not directory or not directory.exists():
             return []
         result = []
@@ -562,7 +621,7 @@ class EnvManager:
                 continue
             rel = str(p.relative_to(directory))
             if rel not in before or p.stat().st_mtime > before[rel]:
-                result.append(p.name)
+                result.append(str(p.resolve()))
         return result
 
     # -----------------------------------------------------------------------

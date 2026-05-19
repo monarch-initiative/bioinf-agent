@@ -227,20 +227,25 @@ def install_jar_tool(
     )
     if pipeline_id:
         from urllib.parse import urlparse
+        from agent.skills.env_manager import parse_version_from_url
         host = urlparse(jar_url).netloc or ""
         channel = "github" if "github.com" in host else "external"
+        version = parse_version_from_url(jar_url)
+        ip_record = {
+            "name":    tool_name,
+            "channel": channel,
+            "source":  jar_url,
+            "install_method": {"type": "jar", "source": jar_url},
+        }
+        if version:
+            ip_record["version"] = version
         step_data = {
             "tool":        "jar",
             "subcommand":  "install",
             "purpose":     f"Install {tool_name} JAR from {host}",
             "command":     f"install_jar_tool --jar-url {jar_url}",
             "returncode":  0 if result.get("success") else 1,
-            "installed_packages": [{
-                "name":    tool_name,
-                "channel": channel,
-                "source":  jar_url,
-                "install_method": {"type": "jar", "source": jar_url},
-            }],
+            "installed_packages": [ip_record],
         }
         if result.get("success"):
             step_data["installed_packages"][0]["install_method"]["jar_path"]        = result.get("jar_path")

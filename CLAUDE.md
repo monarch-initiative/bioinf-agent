@@ -139,6 +139,7 @@ For each algorithmic step in pipeline order:
   ```
   The HTML report renders references as an indented sublist under their parent input. Skipping this is the difference between "the script is the input" (opaque) and "the script + its data are the inputs" (programmatic lineage).
 - Call `validate_output(files=[{path, expected_type}, ...], env_name=<env>, pipeline_id=<id>, step=<step_index>)` once with **every file in `result.detected_outputs`** — batched, per-file errors are independent. Each result merges into `draft.pipeline_steps[step].validation[basename]` automatically. The single-file `file_path=..., expected_type=...` shape is preserved for ad-hoc one-off validations. Don't cherry-pick: a detected output that isn't validated drops `pipeline_status` below `fully_validated`.
+- `result.detected_outputs` is a list of **absolute paths** — use them directly. Subdirectory structure is preserved (Flye writes to `00-assembly/`, `20-repeat/`, etc.; those subdir paths are kept). Pass the same paths to `validate_output` without manual joining.
 - **If you know a step's outputs are good but `validate_output` doesn't apply** (e.g., a step's success is confirmed by the next step running cleanly): call `mark_step_validated(pipeline_id, step, validation_status="passed")`. This is the explicit alternative to `validate_output` for cases without checkable output files.
 - Pass `result.detected_outputs` as `inputs` to the next `run_in_env` call (full lineage).
 - On failure, diagnose and retry. To **replace** a failed step instead of appending a new one, pass `step=<failed_step_index>` to `run_in_env`. Default behavior is append (preserves history).
@@ -146,6 +147,7 @@ For each algorithmic step in pipeline order:
 
 ### Phase 5 — Docker
 - Call `build_docker_image(env_name, pipeline_name, pipeline_description, version=<primary_version>, pipeline_id=<id>)`. **`draft.docker` is set to the DockerBuild-shaped subset of the return automatically.**
+- **Call this BEFORE `finalize_pipeline`.** `finalize_pipeline` deletes the draft, so a post-finalize `build_docker_image` call with `pipeline_id` returns `unknown_pipeline_id` and the `docker:` block never lands in the spec. The Dockerfile + tarball still get written to `docker_images/`, but the spec won't know about them. If you forgot and already finalized: re-run `build_docker_image` without `pipeline_id` to just rebuild the image (no spec mutation).
 
 ### Phase 6 — Fields the accumulator doesn't fill (escape hatch)
 Some fields don't come from any tool — fill them with `patch_pipeline(pipeline_id, patches)` before finalize:

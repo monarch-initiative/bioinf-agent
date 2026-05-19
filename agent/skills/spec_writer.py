@@ -64,6 +64,7 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
         reconcile_packages_with_env(spec, env_manager, spec["conda_env"])
 
     derive_step_dag(spec)
+    _derive_reference_database_availability(spec)
     _derive_step_validation_status(spec)
     spec["env_status"]      = _derive_env_status(spec)
     spec["pipeline_status"] = _derive_pipeline_status(spec)
@@ -167,6 +168,21 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
             return v
 
     return ""
+
+
+def _derive_reference_database_availability(spec: dict) -> None:
+    """Set reference_databases[*].available based on whether local_path exists.
+
+    The schema default is `available: False` which is misleading once data has
+    actually been downloaded — Exomiser's 36 GB bundle was on disk and the spec
+    still said available=false. Filesystem state at finalize-time is the truth.
+    """
+    for rdb in spec.get("reference_databases", []) or []:
+        if not isinstance(rdb, dict):
+            continue
+        lp = rdb.get("local_path")
+        if lp:
+            rdb["available"] = Path(lp).exists()
 
 
 def _derive_step_validation_status(spec: dict) -> None:
@@ -281,7 +297,12 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
         if isinstance(p, dict) and p.get("name")
     }
 
-    conda_versions = env_manager.list_conda_packages(env_name)
+    # Pull the full conda record (version + channel + build_string) so the
+    # PackageRecord.channel can be set from conda's authoritative answer,
+    # not from whatever the agent passed to install_packages (which is the
+    # hint, not the resolved channel).
+    conda_records = env_manager.list_conda_package_records(env_name)
+    conda_versions = {n: rec["version"] for n, rec in conda_records.items()}
     # Only user-requested conda packages belong in spec.packages — not the full
     # transitive closure (samtools brings in 100 dynamic-link deps you didn't ask
     # for). The lock file captures the closure for reproducibility; this list
@@ -289,6 +310,7 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
     explicit = env_manager.list_explicit_conda_packages(env_name)
     if explicit:
         conda_versions = {n: v for n, v in conda_versions.items() if n in explicit}
+        conda_records  = {n: r for n, r in conda_records.items() if n in explicit}
 
     # Collect non-conda packages from install_steps. install_steps records each
     # run_install_command's installed_packages, which captures JARs (Exomiser),
@@ -320,11 +342,15 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
             continue
         prior = prior_by_name.get(name, {})
         v = verifications.get(name, {})
+        # Channel from conda list --json wins — it's the resolved channel. The
+        # prior.channel was the agent's hint (e.g. "bioconda") which conda may
+        # have honored or not; here we want the truth.
+        conda_rec = conda_records.get(name, {})
         rec = {
             "name":              name,
             "requested_version": prior.get("requested_version") or "latest",
             "resolved_version":  conda_versions[name],
-            "channel":           prior.get("channel"),
+            "channel":           conda_rec.get("channel") or prior.get("channel"),
             "install_method":    prior.get("install_method") or {"type": "conda"},
             "description":       prior.get("description") or cache.get(name, {}).get("description"),
             "homepage":          prior.get("homepage") or cache.get(name, {}).get("homepage"),
@@ -334,17 +360,43 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
         rebuilt.append({k: v for k, v in rec.items() if v is not None})
 
     # 2) Every non-conda install_step package
+    # Late import to avoid touching env_manager at module load.
+    from agent.skills.env_manager import parse_version_from_url
     for name, ip in install_step_packages.items():
         prior = prior_by_name.get(name, {})
         v = verifications.get(name, {})
         channel = ip.get("channel") or prior.get("channel", "")
+        # Version fallback: if the install_step didn't set it, try to extract
+        # from the install_method.source URL (works for GitHub release URLs,
+        # tagged builds, version-suffixed filenames). Last resort only.
+        if not ip.get("version"):
+            source_url = (ip.get("install_method") or {}).get("source") or ip.get("source") or ""
+            if source_url:
+                parsed = parse_version_from_url(source_url)
+                if parsed:
+                    ip["version"] = parsed
+        # Trust the install_step's install_method first — install_jar_tool sets
+        # type=jar, run_install_command-emitted JAR steps do too. The
+        # channel-based heuristic is only a last-resort fallback when no caller
+        # has stated a concrete type. Same precedence for `source`.
+        ip_im     = ip.get("install_method") or {}
+        prior_im  = prior.get("install_method") or {}
         im_type = (
-            (prior.get("install_method") or {}).get("type")
+            ip_im.get("type")
+            or prior_im.get("type")
             or _CHANNEL_TO_INSTALL_METHOD.get((channel or "").lower(), "source")
         )
         install_method = {"type": im_type}
-        if ip.get("source") or (prior.get("install_method") or {}).get("source"):
-            install_method["source"] = ip.get("source") or prior["install_method"]["source"]
+        # Carry through every supplementary install_method field the caller set
+        # (jar_path, wrapper_script, java_flags, source, ...). ip wins over prior.
+        for k_ in set(ip_im) | set(prior_im):
+            if k_ == "type":
+                continue
+            val = ip_im.get(k_) if k_ in ip_im else prior_im.get(k_)
+            if val is not None:
+                install_method[k_] = val
+        if ip.get("source") and "source" not in install_method:
+            install_method["source"] = ip["source"]
         rec = {
             "name":              name,
             "requested_version": prior.get("requested_version") or ip.get("requested_version") or ip.get("version") or "latest",
