@@ -4,8 +4,68 @@ Called automatically by spec_writer.save_pipeline_spec after every install.
 Expects spec dicts conforming to the PipelineSpec model (agent/models/core_data.py).
 """
 
+import re
 from datetime import datetime
 from pathlib import Path
+
+
+def _primary_packages(spec: dict) -> list[dict]:
+    """Identify the primary tool(s) for this pipeline, fully derived from the spec.
+
+    A package is "primary" if its name (case-insensitive, with r-/bioconductor- prefix
+    stripped) appears as a whole-word token in any of:
+      - usage.command_template
+      - usage.example
+      - pipeline_steps[*].tool
+      - pipeline_steps[*].subcommand
+      - pipeline_steps[*].command
+
+    This is fully programmatic — no curated "infrastructure" list, no hardcoded tool
+    names. A pipeline that legitimately uses curl as a primary tool (e.g. a download
+    pipeline) gets curl as primary; one that uses it only to fetch a JAR during
+    install does not (because curl isn't mentioned in pipeline_steps or usage).
+
+    Multiple primaries are returned in spec-order — a wgs_pipeline with bwa+samtools+
+    freebayes invoked in pipeline_steps surfaces all three. The caller (the report)
+    decides how to render them.
+    """
+    haystack_parts: list[str] = []
+    usage = spec.get("usage") or {}
+    if isinstance(usage, dict):
+        haystack_parts.append(usage.get("command_template") or "")
+        haystack_parts.append(usage.get("example") or "")
+    for s in spec.get("pipeline_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        haystack_parts.append(s.get("tool") or "")
+        haystack_parts.append(s.get("subcommand") or "")
+        haystack_parts.append(s.get("command") or "")
+    haystack = "\n".join(haystack_parts).lower()
+    if not haystack.strip():
+        return []
+
+    primaries: list[dict] = []
+    seen: set[str] = set()
+    for p in spec.get("packages", []) or []:
+        if not isinstance(p, dict):
+            continue
+        raw_name = (p.get("name") or "").strip()
+        if not raw_name or raw_name in seen:
+            continue
+        nm = raw_name.lower()
+        # Generate match candidates: the bare name + the un-prefixed form for r-* / bioconductor-*.
+        candidates = {nm}
+        for prefix in ("r-", "bioconductor-"):
+            if nm.startswith(prefix):
+                candidates.add(nm[len(prefix):])
+        # Whole-word match — avoid r-curl matching "curl" or "ape" matching "shape".
+        if any(
+            c and len(c) >= 2 and re.search(rf"(?<![A-Za-z0-9_]){re.escape(c)}(?![A-Za-z0-9_])", haystack)
+            for c in candidates
+        ):
+            primaries.append(p)
+            seen.add(raw_name)
+    return primaries
 
 
 _CSS = """
@@ -36,6 +96,18 @@ header .badge { display: inline-block; background: rgba(255,255,255,0.15);
            margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
 .section h2 { font-size: 1.15rem; font-weight: 600; color: #0f3460;
               border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-bottom: 1rem; }
+.primary-docs { background: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 6px;
+                padding: 0.75rem 1rem; margin-bottom: 1rem; }
+.primary-docs strong { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+                       color: #0369a1; margin-right: 0.75rem; }
+.primary-docs .primary-doc { display: inline-block; background: #fff; border: 1px solid #0ea5e933;
+                             border-radius: 16px; padding: 4px 12px; margin: 2px 4px;
+                             font-size: 0.9rem; color: #0369a1; text-decoration: none; font-weight: 500; }
+.primary-docs .primary-doc:hover { background: #0ea5e9; color: #fff; }
+.primary-docs .primary-doc-nolink { color: #64748b; background: #f8fafc; }
+.component-docs { margin-top: 1rem; font-size: 0.85rem; color: #475569; }
+.component-docs summary { cursor: pointer; font-weight: 500; padding: 0.4rem 0; }
+.component-docs ul { margin: 0.4rem 0 0 1.4rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th { background: #f1f5f9; text-align: left; padding: 0.55rem 0.8rem;
      font-weight: 600; color: #475569; border-bottom: 2px solid #e2e8f0; }
@@ -491,53 +563,82 @@ def _steps_section(spec: dict) -> str:
 
     return f"""
 <div class="section">
-  <h2>⚙️ Algorithm / Pipeline Steps</h2>
+  <h2>🧪 Test Run</h2>
   <p style="font-size:0.85rem;color:#475569;margin-bottom:0.75rem">
-    The actual analysis runs that produce pipeline outputs. Validation badges
-    show whether each step's outputs were checked with <code>validate_output</code>.
+    Concrete commands the pipeline was exercised with during install — what was
+    actually run, what it produced, and whether the outputs were validated.
+    For the parameterized "run on new data" contract, see the <strong>Usage</strong> section above.
   </p>
   {"".join(blocks)}
 </div>"""
 
 
-def _usage_guide(spec: dict) -> str:
-    steps = spec.get("pipeline_steps", [])
-    if not steps:
-        return ""
-    env = spec.get("conda_env", "bioinf_<name>")
-    cmds = "\n\n".join(
-        f"# Step {s.get('step','?')}: {s.get('tool','')}\n{s.get('command','')}"
-        for s in steps
-    )
-    doc_links = []
-    for p in spec.get("packages", []):
-        hp = p.get("homepage", "")
-        if hp and p.get("name") != "conda-pack":
-            doc_links.append(f'<li><a href="{hp}" target="_blank">{p["name"]} documentation</a></li>')
-    doc_html = (
-        f"<ul style='margin:0.8rem 0 0 1.2rem'>{''.join(doc_links)}</ul>" if doc_links else ""
-    )
-    return f"""
-<div class="section">
-  <h2>📖 Usage Guide</h2>
-  <p style="font-size:0.9rem;color:#475569;margin-bottom:0.5rem">
-    Activate the conda environment, then run:
-  </p>
-  <pre>conda activate {env}\n\n{cmds}</pre>
-  {doc_html}
-</div>"""
+def _usage_section(spec: dict) -> str:
+    """Single canonical "how to run this pipeline" section.
 
+    Replaces the prior two-section split (🚀 Usage + 📖 Usage Guide) which were
+    confusing and partially redundant (Usage Guide re-dumped the exact test command
+    from Pipeline Steps with hardcoded host paths — non-portable and misleading).
 
-def _usage_template_section(spec: dict) -> str:
-    """Render the LLM-authored usage block — the canonical contract for running
-    this pipeline on new data. Distinct from _usage_guide which is a transcript
-    of the test commands."""
-    u = spec.get("usage")
-    if not u:
+    Contents:
+      1. Primary-tool documentation links — surfaced prominently via _primary_packages.
+      2. Description (from usage.description, LLM-authored).
+      3. `conda activate {env}` + the command_template — runnable starting point.
+      4. Inputs / Outputs slot tables.
+      5. Example (if provided).
+      6. Component documentation (collapsed) — non-primary package links.
+    """
+    u = spec.get("usage") or {}
+    env = spec.get("conda_env", "")
+    cmd_template = (u.get("command_template") or "").strip() if isinstance(u, dict) else ""
+    if not cmd_template:
         return ""
+
     desc = (u.get("description") or "").strip()
-    cmd = (u.get("command_template") or "").strip()
     example = (u.get("example") or "").strip()
+
+    # Primary-tool docs — fully derived from spec content
+    primaries = _primary_packages(spec)
+    primary_names = {p.get("name") for p in primaries}
+    primary_links_html = ""
+    if primaries:
+        chips = []
+        for p in primaries:
+            name = p.get("name", "")
+            hp = p.get("homepage", "")
+            ver = p.get("resolved_version") or p.get("version") or ""
+            label = f"{name} {ver}".strip()
+            if hp:
+                chips.append(
+                    f'<a class="primary-doc" href="{hp}" target="_blank">📘 {label}</a>'
+                )
+            else:
+                chips.append(f'<span class="primary-doc primary-doc-nolink">{label}</span>')
+        primary_links_html = (
+            '<div class="primary-docs"><strong>Documentation</strong>'
+            + "".join(chips)
+            + "</div>"
+        )
+
+    # Component docs — non-primary packages with a homepage
+    component_links = []
+    for p in spec.get("packages", []) or []:
+        name = p.get("name", "")
+        if not name or name == "conda-pack" or name in primary_names:
+            continue
+        hp = p.get("homepage", "")
+        if hp:
+            component_links.append(
+                f'<li><a href="{hp}" target="_blank">{name}</a></li>'
+            )
+    component_html = ""
+    if component_links:
+        component_html = (
+            '<details class="component-docs">'
+            f'<summary>Component documentation ({len(component_links)} packages)</summary>'
+            f'<ul>{"".join(component_links)}</ul>'
+            '</details>'
+        )
 
     def _slot_table(rows, label):
         if not rows:
@@ -555,19 +656,29 @@ def _usage_template_section(spec: dict) -> str:
     <tbody>{body}</tbody>
   </table>"""
 
-    inputs_html  = _slot_table(u.get("inputs", []),  "Inputs")
-    outputs_html = _slot_table(u.get("outputs", []), "Outputs")
-    example_html = f'<h4 style="margin:0.8rem 0 0.3rem;font-size:0.95rem">Example</h4><pre>{example}</pre>' if example else ""
+    inputs_html  = _slot_table(u.get("inputs", []) if isinstance(u, dict) else [],  "Inputs")
+    outputs_html = _slot_table(u.get("outputs", []) if isinstance(u, dict) else [], "Outputs")
+    example_html = (
+        f'<h4 style="margin:0.8rem 0 0.3rem;font-size:0.95rem">Example</h4><pre>{example}</pre>'
+        if example else ""
+    )
+    desc_html = (
+        f'<p style="font-size:0.95rem;color:#334155;margin-bottom:0.75rem">{desc}</p>'
+        if desc else ""
+    )
+    activate_line = f"conda activate {env}\n\n" if env else ""
 
     return f"""
 <div class="section">
   <h2>🚀 Usage</h2>
-  <p style="font-size:0.9rem;color:#475569;margin-bottom:0.5rem">{desc}</p>
-  <h4 style="margin:0.4rem 0 0.3rem;font-size:0.95rem">Command Template</h4>
-  <pre>{cmd}</pre>
+  {primary_links_html}
+  {desc_html}
+  <h4 style="margin:0.4rem 0 0.3rem;font-size:0.95rem">Command</h4>
+  <pre>{activate_line}{cmd_template}</pre>
   {inputs_html}
   {outputs_html}
   {example_html}
+  {component_html}
 </div>"""
 
 
@@ -618,14 +729,13 @@ def generate(spec: dict) -> str:
 
     body = "".join([
         _status_legend(),
-        _usage_template_section(spec),     # canonical "run on new data" contract
+        _usage_section(spec),                 # canonical "run on new data" contract — primary-tool docs + command template + IO
         _packages_table(spec),
         _runtime_env_section(spec),
         _reference_databases_section(spec),
         _test_data_section(spec),
         _install_steps_section(spec),
         _steps_section(spec),
-        _usage_guide(spec),
         _docker_section(spec),
         _notes_section(spec),
     ])

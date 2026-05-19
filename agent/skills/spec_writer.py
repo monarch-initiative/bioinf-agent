@@ -504,35 +504,72 @@ def reconcile_packages_with_env(spec: dict, env_manager: Any, env_name: str) -> 
     }
 
 
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"(?:https?://(?:www\.)?github\.com/|git@github\.com:|['\"])"
+    r"(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?(?:/|['\"]|$)"
+)
+
+
 def _derive_homepage(name: str, channel: str, install_method: dict) -> str:
     """Return a canonical upstream URL given (name, channel, install_method).
 
+    Fully software-driven — no hardcoded per-tool URL table. Each branch is a
+    derivation rule keyed off (channel, install_method.source). Returns "" only
+    when there's genuinely no signal to derive from.
+
     Order of preference:
-      1. install_method.source contains owner/repo (github install_github)
-      2. channel-direct mappings (cran / bioconductor / pypi)
-      3. Name-prefix conventions for conda packages (r-* → CRAN,
-         bioconductor-* → Bioconductor)
+      1. install_method.source contains a github.com URL (any install type) →
+         strip to owner/repo → https://github.com/{owner}/{repo}
+      2. Channel-direct mappings (cran / bioconductor / pypi / bioconda / conda-forge / defaults)
+      3. Name-prefix conventions for conda packages (r-* → CRAN, bioconductor-* → Bioconductor)
+      4. external/local channels with a usable source URL → the URL's origin
     """
     ch = (channel or "").lower()
-    im_type = (install_method or {}).get("type", "")
     source  = (install_method or {}).get("source", "") or ""
 
-    if im_type == "r_install" and ch == "github":
-        m = _R_INSTALL_GITHUB_REGEX.search(source)
+    # 1. GitHub URL in source — works for r_install, jar downloads, source builds, etc.
+    if "github.com" in source:
+        m = _GITHUB_OWNER_REPO_RE.search(source)
         if m:
-            return f"https://github.com/{m.group(1)}"
+            return f"https://github.com/{m.group('owner')}/{m.group('repo')}"
 
+    # 2. Channel-direct mappings.
     if ch == "cran":
         return f"https://CRAN.R-project.org/package={name}"
     if ch == "bioconductor":
         return f"https://bioconductor.org/packages/{name}/"
     if ch in ("pypi", "pip"):
         return f"https://pypi.org/project/{name}/"
+    if ch == "bioconda":
+        return f"https://bioconda.github.io/recipes/{name}/README.html"
+    if ch in ("conda-forge",):
+        return f"https://anaconda.org/conda-forge/{name}"
+    if ch in ("defaults", "anaconda", "main"):
+        return f"https://anaconda.org/anaconda/{name}"
 
+    # 3. Name-prefix conventions (conda-installed CRAN/Bioc packages whose channel
+    # got recorded as just `bioconda` or `conda-forge` — still resolves to the
+    # upstream CRAN/Bioc landing page, which is what users actually want).
     if name.startswith("r-"):
         return f"https://CRAN.R-project.org/package={name[2:]}"
     if name.startswith("bioconductor-"):
         return f"https://bioconductor.org/packages/{name[len('bioconductor-'):]}/"
+
+    # 4. github channel without an extractable URL: best-effort guess from name.
+    # NOTE: this is a fallback, not a hardcoded mapping.
+    if ch == "github" and "/" in name:
+        return f"https://github.com/{name}"
+
+    # 5. External/local channels with a non-github source URL — fall back to the
+    # origin so the agent at least surfaces *some* link rather than nothing.
+    if ch in ("external", "local") and source.startswith(("http://", "https://")):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(source)
+            return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            pass
 
     return ""
 

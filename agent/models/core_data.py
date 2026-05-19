@@ -66,7 +66,7 @@ FileType  = Literal[
     # Visualization / plots
     "pdf", "png", "svg", "eps", "tiff", "jpeg",
     # Reports / structured data
-    "html", "json", "yaml", "properties",
+    "html", "json", "jsonl", "ndjson", "yaml", "properties",
     # Generic tabular / text / logs
     "tsv", "csv", "txt", "log", "gz",
 ]
@@ -207,7 +207,7 @@ class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name:    str   # logical name, e.g. "analysis_yaml", "application_properties"
-    format:  Literal["yaml", "properties", "ini", "json", "xml", "tsv", "txt"]
+    format:  Literal["yaml", "properties", "java_properties", "ini", "json", "xml", "tsv", "txt"]
     path:    str   # absolute path to the written config file
     content: Optional[str] = None   # inline content snapshot (for small configs)
 
@@ -924,6 +924,13 @@ class PipelineSpec(BaseModel):
     usage:                Optional[UsageTemplate] = None  # canonical "run on new data" contract
     notes:                list[str] = []
     final_summary:        Optional[str] = None
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _wrap_str_notes(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
 
     def to_yaml(self) -> str:
         data = self.model_dump(exclude_none=True)

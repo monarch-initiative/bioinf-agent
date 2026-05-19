@@ -9,6 +9,7 @@ Strategy (in order):
 """
 
 import json
+import platform
 import subprocess
 from typing import Any
 
@@ -18,6 +19,21 @@ import requests
 CHANNEL_PRIORITY = ["bioconda", "conda-forge", "defaults"]
 ANACONDA_API = "https://api.anaconda.org/package/{channel}/{package}"
 PYPI_API = "https://pypi.org/pypi/{package}/json"
+
+
+def _current_conda_subdir() -> str:
+    """Return the conda subdir for this machine (osx-arm64, osx-64, linux-64, linux-aarch64)."""
+    sysname = platform.system().lower()
+    arch    = platform.machine().lower()
+    if sysname == "darwin":
+        return "osx-arm64" if arch in ("arm64", "aarch64") else "osx-64"
+    if sysname == "linux":
+        if arch in ("aarch64", "arm64"):
+            return "linux-aarch64"
+        return "linux-64"
+    if sysname == "windows":
+        return "win-64"
+    return f"{sysname}-{arch}"
 
 
 class PackageSearch:
@@ -94,16 +110,32 @@ class PackageSearch:
                 versions[0],
             )
 
+        # Platform filter — bioconda recipes are commonly osx-64 / linux-64 only;
+        # surfacing this protects against the "found: true but conda install fails
+        # with PackagesNotFoundError" trap on osx-arm64.
+        available_subdirs = sorted({
+            f.get("attrs", {}).get("subdir", "")
+            for f in data.get("files", [])
+            if f.get("version") == version and f.get("attrs", {}).get("subdir")
+        })
+        current_subdir = _current_conda_subdir()
+        installable_here = (
+            current_subdir in available_subdirs or "noarch" in available_subdirs
+        )
+
         conda_spec = f"{package_name}={version}"
         install_cmd = f"conda install -c {channel} {conda_spec}"
 
-        return {
+        result = {
             "found": True,
             "package_name": package_name,
             "resolved_name": data.get("name", package_name),
             "channel": channel,
             "version": version,
             "all_versions": versions[:10],
+            "available_subdirs": available_subdirs,
+            "current_subdir": current_subdir,
+            "installable_on_current_platform": installable_here,
             "conda_spec": conda_spec,
             "install_command": install_cmd,
             "description": data.get("summary", ""),
@@ -115,6 +147,12 @@ class PackageSearch:
             "install_via": "conda",
             "notes": "",
         }
+        if not installable_here and available_subdirs:
+            result["warning"] = (
+                f"Recipe exists in {channel} but has no build for {current_subdir} — "
+                f"only {available_subdirs}. `conda install` will fail with PackagesNotFoundError."
+            )
+        return result
 
     # -----------------------------------------------------------------------
     # conda search subprocess fallback

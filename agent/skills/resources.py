@@ -52,14 +52,18 @@ def list_resources(inputs: dict, config: dict) -> dict:
                 })
 
         if resource_type in ("test_data", "both"):
-            # Sequencing data
-            for read_type, end_types in m.get("sequencing_data", {}).items():
-                if not isinstance(end_types, dict):
+            # Sequencing data. The directory tree (short_read/{end_or_platform}/{assay_type}/)
+            # is just for organization — the authoritative read_type/end_type/assay_type/
+            # platform values live on each per-sample record.  Long-read entries use the
+            # platform name (pacbio/ont) in the directory slot where short-read uses
+            # end_type, so reading from the per-sample record is the only correct path.
+            for _read_type_key, level2 in m.get("sequencing_data", {}).items():
+                if not isinstance(level2, dict):
                     continue
-                for end_type, assay_types in end_types.items():
-                    if not isinstance(assay_types, dict):
+                for _level2_key, level3 in level2.items():
+                    if not isinstance(level3, dict):
                         continue
-                    for assay_type, samples in assay_types.items():
+                    for _level3_key, samples in level3.items():
                         if not isinstance(samples, list):
                             continue
                         for smp in samples:
@@ -68,11 +72,12 @@ def list_resources(inputs: dict, config: dict) -> dict:
                                     continue
                                 r1 = core_dir / sinfo["r1"] if sinfo.get("r1") else None
                                 test_data.append({
-                                    "id": f"{build}_{assay_type}_{smp.get('accession', '')}_{subset}",
+                                    "id": f"{build}_{smp.get('assay_type','')}_{smp.get('accession', '')}_{subset}",
                                     "genome_build": build,
-                                    "read_type": read_type,
-                                    "end_type": end_type,
-                                    "assay_type": assay_type,
+                                    "read_type": smp.get("read_type", ""),
+                                    "end_type":  smp.get("end_type", ""),
+                                    "assay_type": smp.get("assay_type", ""),
+                                    "platform":  smp.get("platform", ""),
                                     "sample": smp.get("sample", ""),
                                     "accession": smp.get("accession", ""),
                                     "subset": subset,

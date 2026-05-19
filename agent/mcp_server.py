@@ -159,16 +159,18 @@ def install_packages(
     conflict, etc). Default is append — same semantics as run_install_command."""
     result = _env_mgr.install(env_name, packages)
     if pipeline_id:
+        from agent.skills.env_manager import parse_conda_spec
         installed: list[dict] = []
         for pkg in packages:
-            spec = pkg.get("spec", "")
-            name, _, version = spec.partition("=")
-            name = name.strip()
+            parsed = parse_conda_spec(pkg.get("spec", ""))
+            name = parsed["name"]
             if not name or name == "conda-pack":
                 continue
             entry = {"name": name, "channel": pkg.get("channel", "")}
-            if version:
-                entry["version"] = version.strip()
+            if parsed["version"]:
+                entry["version"] = parsed["version"]
+            if parsed["constraint"] and parsed["constraint"] not in ("=", "=="):
+                entry["version_constraint"] = parsed["constraint"]
             installed.append(entry)
         idx = _pipeline_state.add_install_step(pipeline_id, {
             "tool":               "conda",
@@ -818,6 +820,23 @@ def mark_step_validated(
     if validation_status not in {"passed", "failed"}:
         return {"error": "validation_status must be 'passed' or 'failed'",
                 "got": validation_status}
+    # Guard against the silent-empty-success trap: a step that exited 0 but
+    # produced no detected outputs and was never validated cannot be honestly
+    # called "passed". The agent should use "failed" or retry the step.
+    if validation_status == "passed":
+        draft = _pipeline_state.get_draft(pipeline_id) or {}
+        steps = draft.get("pipeline_steps", [])
+        if 1 <= step <= len(steps):
+            s = steps[step - 1]
+            outs  = s.get("detected_outputs") or s.get("outputs") or []
+            vlds  = s.get("validation") or {}
+            if not outs and not vlds:
+                return {
+                    "error": "cannot mark step 'passed' with no detected outputs and no validation entries — "
+                             "this is the 'ran without error but produced nothing' pattern. Investigate the step "
+                             "or use validation_status='failed' if the run was actually broken.",
+                    "pipeline_id": pipeline_id, "step": step,
+                }
     ok = _pipeline_state.mark_pipeline_step_validated(pipeline_id, step, validation_status)
     return (
         {"status": "set", "pipeline_id": pipeline_id, "step": step,
@@ -840,6 +859,7 @@ def run_install_command(
     tool: str = "",
     subcommand: str = "",
     purpose: str = "",
+    verify_command: str = "",
 ) -> dict:
     """Run an install command inside a conda environment (BiocManager::install,
     remotes::install_github, pip install, downloading reference DBs, etc.).
@@ -858,8 +878,19 @@ def run_install_command(
 
     Pass `step=N` to replace install_step N (for retries). Default is append.
 
+    verify_command: an optional shell command run AFTER the install command in the
+    same env. If supplied AND the install command returns 0, but the verify command
+    returns non-zero, the step is recorded as failed (returncode=verify exit code,
+    stderr includes the verify output). This catches silent-success cases like
+    `R install.packages` printing 'ERROR: lazy loading failed' while the Rscript
+    process still exits 0. Recommended for R installs:
+        verify_command="Rscript -e 'if(!requireNamespace(\"GAPIT\")) quit(status=1)'"
+    and for pip-source installs:
+        verify_command="python -c 'import mypkg'"
+
     Return keys: returncode, stdout, stderr, success, command, runtime_seconds,
-                 inputs, detected_outputs, [pipeline_merge]."""
+                 inputs, detected_outputs, [verify_returncode, verify_output],
+                 [pipeline_merge]."""
     result = _env_mgr.run_in_env(
         env_name, command,
         working_dir=working_dir or None,
@@ -867,6 +898,23 @@ def run_install_command(
         inputs=[],
         watch_dir=None,
     )
+    if verify_command and result.get("returncode") == 0:
+        vresult = _env_mgr.run_in_env(
+            env_name, verify_command,
+            working_dir=working_dir or None,
+            timeout=120,
+        )
+        verify_rc  = vresult.get("returncode", 1)
+        verify_out = ((vresult.get("stdout") or "") + (vresult.get("stderr") or ""))[:500]
+        result["verify_command"]   = verify_command
+        result["verify_returncode"] = verify_rc
+        result["verify_output"]    = verify_out
+        if verify_rc != 0:
+            result["returncode"] = verify_rc
+            result["success"]    = False
+            result["stderr"]     = (result.get("stderr") or "") + (
+                f"\n\n[verify_command failed: {verify_command}]\n{verify_out}"
+            )
     if pipeline_id:
         step_data = {
             "tool":               tool or (command.split() or [""])[0],
@@ -877,6 +925,9 @@ def run_install_command(
             "runtime_seconds":    result.get("runtime_seconds"),
             "installed_packages": installed_packages or [],
         }
+        if verify_command:
+            step_data["verify_command"]   = verify_command
+            step_data["verify_returncode"] = result.get("verify_returncode")
         step_data = {k: v for k, v in step_data.items() if v is not None}
         idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
         # No more dual-write to draft.packages. The finalize-time package

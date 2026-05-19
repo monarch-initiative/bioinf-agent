@@ -9,11 +9,42 @@ project root so envs are portable and easy to locate.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+
+# conda spec grammar: "{name}{op?}{version?}{=build?}".
+# Operators: =, ==, >=, <=, >, <, != (the last one is rare but legal).
+# Name token is [A-Za-z0-9_.-]+ — anything else terminates the name.
+_CONDA_SPEC_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9_.-]+)"
+    r"(?P<op>[<>=!]+)?"
+    r"(?P<version>[^<>=!]*)$"
+)
+
+
+def parse_conda_spec(spec: str) -> dict:
+    """Parse a conda package spec into {name, version, constraint}.
+
+    Returns {name: ..., version: <without operator>, constraint: <operator | ''>}.
+    Used by install_packages to record clean PackageRecord fields rather than
+    splitting on '=' (which puts the '>' from '>=' onto the name).
+    """
+    s = (spec or "").strip()
+    if not s:
+        return {"name": "", "version": "", "constraint": ""}
+    m = _CONDA_SPEC_RE.match(s)
+    if not m:
+        return {"name": s, "version": "", "constraint": ""}
+    return {
+        "name":       m.group("name"),
+        "constraint": m.group("op") or "",
+        "version":    (m.group("version") or "").strip(),
+    }
 
 
 class EnvManager:
