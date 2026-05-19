@@ -916,6 +916,8 @@ class PipelineSpec(BaseModel):
     env_status:           PipelineStatus = "in_progress"
     pipeline_status:      PipelineStatus = "in_progress"
     docker_status:        Literal["not_attempted", "built", "failed"] = "not_attempted"
+    lock_sha256:          Optional[str] = None    # sha256 of the .lock file — verify bit-exact env reproduction
+    usage_verified:       bool = False             # True after self-test runs usage.command_template successfully
     packages:             list[PackageRecord]
     reference_free:       bool = False
     runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)

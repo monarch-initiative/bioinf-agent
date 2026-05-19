@@ -2,7 +2,10 @@
   "mcpServers": {
     "bioinf": {
       "command": "python",
-      "args": ["-m", "agent.mcp_server"]
+      "args": ["-m", "agent.mcp_server"],
+      "env": {
+        "BIOINF_MCP_AUTO_RELOAD": "1"
+      }
     }
   }
 }

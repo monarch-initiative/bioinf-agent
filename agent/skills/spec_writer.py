@@ -70,6 +70,26 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     spec["pipeline_status"] = _derive_pipeline_status(spec)
     spec["docker_status"]   = _derive_docker_status(spec)
 
+    # Machine-verify usage.command_template by executing it on real test data.
+    # Only meaningful when env_manager is available + we have a usage block.
+    # Sets usage_verified=True if the command runs and outputs match the
+    # patterns the agent declared. Result also recorded in usage._self_test
+    # for transparency in the report (visible audit trail).
+    if env_manager is not None and spec.get("usage"):
+        st = self_test_usage(spec, env_manager)
+        spec["usage_verified"] = bool(st.get("ok"))
+        spec["usage"]["_self_test"] = st
+
+    # Invariant gate. Every spec must satisfy these honesty rules or finalize
+    # refuses to write — keeps the report-can't-be-faked guarantee.
+    violations = check_invariants(spec)
+    if violations:
+        return {
+            "error":      "invariant violations — finalize refused to write",
+            "violations": violations,
+            "violation_count": len(violations),
+        }
+
     try:
         pspec = PipelineSpec.model_validate(spec)
         write_spec = pspec.model_dump(exclude_none=True)
@@ -91,6 +111,8 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     # Reproducibility artifacts: environment.yml is the portable conda recipe
     # (anyone can `conda env create -f` it on any platform); .lock is the
     # URL-pinned explicit list for bit-exact recreation on the build platform.
+    # We also record the sha256 of the .lock file in the spec so a future user
+    # can verify a recreated env matches bit-for-bit.
     env_yml_path: Optional[Path] = None
     lock_path:    Optional[Path] = None
     if env_manager is not None and write_spec.get("conda_env"):
@@ -103,6 +125,14 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
         if lock:
             lock_path = pipelines_dir / f"{stem}.lock"
             lock_path.write_text(lock)
+            import hashlib
+            lock_sha = hashlib.sha256(lock.encode()).hexdigest()
+            write_spec["lock_sha256"] = lock_sha
+            # Rewrite the YAML with the lock_sha256 included.
+            with open(yaml_path, "w") as f:
+                yaml.dump(write_spec, f, default_flow_style=False, sort_keys=False)
+            # Regenerate HTML so the sha shows in the report header.
+            html_path.write_text(generate_report(write_spec))
 
     return {
         "saved_yaml":      str(yaml_path),
@@ -195,6 +225,328 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Invariants — the honesty rules that any spec must satisfy at finalize.
+#
+# Every invariant cross-references an agent-claimed field against an
+# authoritative source (filesystem, conda list, validate_output result).
+# An honest spec passes all checks; a spec missing any invariant cannot
+# achieve env_status / pipeline_status of "fully_validated".
+#
+# The rules are simple but cascading: from them, "trustworthy report"
+# falls out automatically.
+# ---------------------------------------------------------------------------
+
+
+def self_test_usage(spec: dict, env_manager: Any) -> dict:
+    """Execute usage.command_template with real test inputs and verify outputs.
+
+    This is the keystone honesty check: the agent claims "here's how to run
+    this pipeline on new data" via usage.command_template + usage.inputs +
+    usage.outputs. The runtime substitutes test-data values for the inputs,
+    runs the resulting command in a fresh scratch dir, and confirms the files
+    declared in usage.outputs are actually produced. If yes, the spec is
+    machine-verified-honest and usage_verified is set to True. If no, the
+    spec is partially-validated and the diff is recorded.
+
+    Substitution policy:
+      - For each UsageInput slot, find an inputs[*].path on a pipeline_step
+        whose file format/extension plausibly matches. Falls back to the
+        last pipeline_step's inputs in order.
+      - The OUTPUT_DIR slot (if present in command_template) is substituted
+        with the fresh scratch dir.
+      - Refuses to run if substitution can't fill every required slot —
+        unverified is safer than wrongly-verified.
+
+    Returns:
+      {ok: bool, reason: str, substitutions: dict, missing_outputs: list,
+       scratch_dir: str, command_run: str}
+    """
+    import re, shutil, tempfile
+    usage = spec.get("usage")
+    if not usage or not isinstance(usage, dict):
+        return {"ok": False, "reason": "no usage block to self-test"}
+    template = (usage.get("command_template") or "").strip()
+    if not template:
+        return {"ok": False, "reason": "usage.command_template is empty"}
+    inputs_spec  = usage.get("inputs", []) or []
+    outputs_spec = usage.get("outputs", []) or []
+    env_name = spec.get("conda_env")
+    if not env_name:
+        return {"ok": False, "reason": "no conda_env on spec — cannot run self-test"}
+
+    # Find all {PLACEHOLDER} slots in the template.
+    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    if not placeholders:
+        return {"ok": False, "reason": "command_template has no {PLACEHOLDER} slots — nothing to substitute"}
+
+    # Build a substitution map.
+    # Source: pipeline_steps[*].inputs (the actual test files) + each step's
+    # detected_outputs (so downstream steps can reuse upstream files).
+    candidate_paths: list[str] = []
+    for s in spec.get("pipeline_steps", []) or []:
+        for inp in (s.get("inputs") or []):
+            p = inp.get("path") if isinstance(inp, dict) else inp
+            if isinstance(p, str) and p and Path(p).exists():
+                candidate_paths.append(p)
+            if isinstance(inp, dict):
+                for ref in inp.get("references", []) or []:
+                    if isinstance(ref, str) and Path(ref).exists():
+                        candidate_paths.append(ref)
+        for o in (s.get("detected_outputs") or []):
+            if isinstance(o, str) and Path(o).exists():
+                candidate_paths.append(o)
+    # Deduplicate, preserve order.
+    seen = set(); cps = []
+    for p in candidate_paths:
+        if p not in seen:
+            cps.append(p); seen.add(p)
+    candidate_paths = cps
+
+    # Scratch dir for outputs.
+    scratch = Path(tempfile.mkdtemp(prefix=f"selftest_{spec.get('pipeline_name','x')}_"))
+
+    substitutions: dict = {}
+    for slot in placeholders:
+        slot_lower = slot.lower()
+        if "output" in slot_lower or "out_dir" in slot_lower:
+            substitutions[slot] = str(scratch)
+            continue
+        # Match the slot to a UsageInput.
+        slot_spec = next((i for i in inputs_spec if i.get("name") == slot), None)
+        fmt = (slot_spec.get("format") or "").lower() if slot_spec else ""
+
+        # Pick the first candidate path whose extension matches the format hint,
+        # falling back to position-in-list (first slot → first candidate, etc).
+        chosen = None
+        if fmt:
+            for cp in candidate_paths:
+                low = cp.lower()
+                if fmt in low or low.endswith(f".{fmt}") or low.endswith(f".{fmt}.gz"):
+                    chosen = cp
+                    break
+        if not chosen and candidate_paths:
+            # Positional fallback — use the Nth candidate for the Nth required slot.
+            required_slots = [s for s in inputs_spec if s.get("required") is not False]
+            try:
+                idx = next(i for i, s in enumerate(required_slots) if s.get("name") == slot)
+                if idx < len(candidate_paths):
+                    chosen = candidate_paths[idx]
+            except StopIteration:
+                pass
+        if chosen:
+            substitutions[slot] = chosen
+
+    # Refuse to run if we can't fill every slot — better to leave usage_verified
+    # false than wrongly mark a partial run as verified.
+    missing = [s for s in placeholders if s not in substitutions]
+    if missing:
+        shutil.rmtree(scratch, ignore_errors=True)
+        return {
+            "ok": False, "reason": f"could not resolve placeholders: {missing}",
+            "candidate_paths_count": len(candidate_paths),
+            "expected_inputs": [i.get("name") for i in inputs_spec],
+        }
+
+    # Substitute and run.
+    command = template
+    for slot, val in substitutions.items():
+        command = command.replace("{" + slot + "}", val)
+
+    result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
+    rc = result.get("returncode")
+    if rc != 0:
+        return {
+            "ok": False, "reason": f"command_template execution failed (rc={rc})",
+            "command_run": command, "scratch_dir": str(scratch),
+            "stderr_tail": (result.get("stderr") or "")[-500:],
+            "substitutions": substitutions,
+        }
+
+    # Compare produced files against usage.outputs[*].files (glob patterns).
+    import fnmatch
+    produced = []
+    for p in scratch.rglob("*"):
+        if p.is_file():
+            produced.append(str(p.relative_to(scratch)))
+
+    missing_outputs = []
+    for o in outputs_spec:
+        patterns = o.get("files") or []
+        if not patterns:
+            continue
+        for pat in patterns:
+            if not any(fnmatch.fnmatch(f, pat) or fnmatch.fnmatch(Path(f).name, pat) for f in produced):
+                missing_outputs.append({"slot": o.get("name"), "pattern": pat})
+
+    if missing_outputs:
+        return {
+            "ok": False, "reason": "command ran but expected outputs missing",
+            "missing_outputs": missing_outputs,
+            "produced_files": produced[:20],
+            "command_run": command, "scratch_dir": str(scratch),
+            "substitutions": substitutions,
+        }
+
+    return {
+        "ok": True, "command_run": command, "substitutions": substitutions,
+        "produced_files": produced[:20], "scratch_dir": str(scratch),
+    }
+
+
+def check_invariants(spec: dict) -> list[dict]:
+    """Return a list of invariant violations. Empty list = the spec is
+    machine-verifiable as honest — every claim has a corresponding artifact
+    on disk or a recorded execution.
+
+    Each violation: {invariant: <id>, message: <str>, where: <optional path>}.
+
+    This runs at finalize. A spec with any violation cannot be written to
+    {name}_{version}.yaml; the draft is preserved and the violations are
+    returned so the agent can fix the gap.
+    """
+    violations: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # I1: every install_step's command actually ran and returned a code.
+    # The runtime sets returncode from the subprocess; an agent cannot fake
+    # this without bypassing the install_step machinery entirely.
+    # ------------------------------------------------------------------
+    for s in spec.get("install_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("returncode") is None:
+            violations.append({
+                "invariant": "I1.install_step_executed",
+                "message":  f"install_step {s.get('step')} has no returncode — "
+                            f"the command was never actually run",
+            })
+        elif s.get("returncode") != 0 and s.get("status") != "failed":
+            violations.append({
+                "invariant": "I1.install_step_failure_acknowledged",
+                "message":  f"install_step {s.get('step')} returncode "
+                            f"{s.get('returncode')} but status not marked failed",
+            })
+
+    # ------------------------------------------------------------------
+    # I2: every non-infrastructure package has a verify_output proving it
+    # was actually checked. The verify_output is captured stdout/stderr
+    # from the check_command running in the env — without this, the
+    # PackageRecord is an unverified claim.
+    # ------------------------------------------------------------------
+    for p in spec.get("packages", []) or []:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name", "")
+        if not name or name in _INFRASTRUCTURE_PACKAGES:
+            continue
+        if not (p.get("verify_output") or "").strip():
+            violations.append({
+                "invariant": "I2.package_verified",
+                "message":  f"package '{name}' has no verify_output — "
+                            f"call verify_installation(env, '{name}', '<check_command>') "
+                            f"so the env is provably real.",
+                "where":    f"packages[name={name}]",
+            })
+
+    # ------------------------------------------------------------------
+    # I3: every pipeline_step has detected_outputs (observed by the runtime
+    # via filesystem snapshot — agent cannot fake) AND each output has a
+    # validate_output record OR the step has been explicitly marked passed
+    # because its outputs were checked elsewhere (mark_step_validated, which
+    # itself refuses to mark a no-output step as passed).
+    # ------------------------------------------------------------------
+    for s in spec.get("pipeline_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        step_n = s.get("step")
+        outs = s.get("detected_outputs") or s.get("outputs") or []
+        if s.get("returncode") not in (None, 0):
+            continue   # failed steps are honestly marked elsewhere
+        if not outs:
+            if s.get("validation_status") != "passed":
+                violations.append({
+                    "invariant": "I3.pipeline_step_has_outputs",
+                    "message":   f"pipeline_step {step_n} produced no detected_outputs "
+                                 f"and is not explicitly mark_step_validated — "
+                                 f"there is no evidence the step did anything.",
+                    "where":     f"pipeline_steps[step={step_n}]",
+                })
+            continue
+        validation = s.get("validation") or {}
+        validated_basenames = set(validation.keys())
+        unvalidated = [
+            o for o in outs
+            if Path(o).name not in validated_basenames
+        ]
+        # An explicit mark_step_validated=passed substitutes for per-file
+        # validate_output records (use case: outputs aren't validate_output-able
+        # but the agent verified them by other means — mark_step_validated
+        # already refuses to pass for outputs-empty steps).
+        if unvalidated and s.get("validation_status") != "passed":
+            violations.append({
+                "invariant": "I3.outputs_validated",
+                "message":   f"pipeline_step {step_n} has {len(unvalidated)} detected_outputs "
+                             f"with no validate_output result and no mark_step_validated — "
+                             f"the spec claims outputs were produced but no validation was run",
+                "where":     f"pipeline_steps[step={step_n}].detected_outputs",
+                "unvalidated_files": [Path(o).name for o in unvalidated[:5]],
+            })
+
+    # ------------------------------------------------------------------
+    # I5: every declared local_path on disk actually exists. Reference DBs
+    # without their data don't run. The schema's `available` field already
+    # encodes this; here we promote it to an invariant violation when False.
+    # ------------------------------------------------------------------
+    for rdb in spec.get("reference_databases", []) or []:
+        if not isinstance(rdb, dict):
+            continue
+        lp = rdb.get("local_path")
+        if lp and not Path(lp).exists():
+            violations.append({
+                "invariant": "I5.reference_database_available",
+                "message":  f"reference_database '{rdb.get('name')}' has "
+                            f"local_path that doesn't exist on disk: {lp}",
+                "where":    f"reference_databases[name={rdb.get('name')}]",
+            })
+
+    # ------------------------------------------------------------------
+    # I6: paths in known-path fields are absolute. Relative paths in a
+    # spec are reproducibility landmines (depend on the agent's CWD at
+    # finalize time). Skip slot placeholders like {INPUT_VCF}.
+    # ------------------------------------------------------------------
+    def _is_path_like(s: str) -> bool:
+        if not isinstance(s, str) or not s:
+            return False
+        if s.startswith(("{", "$", "<")):
+            return False   # placeholder
+        if "/" not in s:
+            return False   # bare token, not a path
+        return True
+
+    for s in spec.get("pipeline_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        step_n = s.get("step")
+        for inp in s.get("inputs", []) or []:
+            p = inp.get("path") if isinstance(inp, dict) else inp
+            if _is_path_like(p) and not Path(p).is_absolute():
+                violations.append({
+                    "invariant": "I6.absolute_paths",
+                    "message":   f"pipeline_step {step_n} has a relative input path: {p}",
+                    "where":     f"pipeline_steps[step={step_n}].inputs",
+                })
+        for o in s.get("detected_outputs", []) or []:
+            if _is_path_like(o) and not Path(o).is_absolute():
+                violations.append({
+                    "invariant": "I6.absolute_paths",
+                    "message":   f"pipeline_step {step_n} has a relative output path: {o}",
+                    "where":     f"pipeline_steps[step={step_n}].detected_outputs",
+                })
+
+    return violations
+
+
 def _derive_docker_status(spec: dict) -> str:
     """A separate status for the Docker artifact, distinct from env / pipeline.
 
@@ -254,27 +606,24 @@ def _derive_step_validation_status(spec: dict) -> None:
 
 
 def _derive_env_status(spec: dict) -> str:
-    """Compute env_status from install_steps.
-
-    The structural truth that the env was built correctly is:
-      - every install_step exited 0
-      - conda list (queried at finalize) found the packages
-      - the derived packages list is non-empty
-
-    Per-package verify_installation calls are advisory now — they enrich the
-    report but don't gate the status. This lets the LLM skip the "verify each
-    package with a custom command" step entirely for SRA-agent-driven flows
-    where dozens of packages are installed in one go.
+    """Compute env_status from install_steps + per-package verifications.
 
       failed             — any install_step.returncode != 0
-      fully_validated    — all installs ran clean AND packages list is non-empty
-      complete           — all installs ran clean but no packages derived (unusual)
+      fully_validated    — every install_step clean AND every non-infrastructure
+                           package has a verify_output (the env is provably real)
+      partially_validated — installs clean but some packages lack verify_output
+      complete           — installs clean but no packages derived (unusual)
     """
     install_steps = spec.get("install_steps", [])
     if any(s.get("returncode") not in (None, 0) for s in install_steps):
         return "failed"
-    packages = [p for p in spec.get("packages", []) if p.get("name") != "conda-pack"]
-    return "fully_validated" if packages else "complete"
+    packages = [p for p in spec.get("packages", []) if p.get("name") not in _INFRASTRUCTURE_PACKAGES]
+    if not packages:
+        return "complete"
+    unverified = [p for p in packages if not (p.get("verify_output") or "").strip()]
+    if unverified:
+        return "partially_validated"
+    return "fully_validated"
 
 
 def _derive_pipeline_status(spec: dict) -> str:
@@ -318,7 +667,7 @@ _R_INSTALL_GITHUB_REGEX = re.compile(r"""['"]([^'"\s]+/[^'"\s]+)['"]""")
 
 # Packages that are infrastructure (not user-facing tools) and shouldn't be
 # surfaced as primary spec entries. conda-pack is added to every env automatically.
-_INFRASTRUCTURE_PACKAGES = frozenset({"conda-pack"})
+_INFRASTRUCTURE_PACKAGES = frozenset({"conda-pack", "pip"})
 
 
 def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dict:

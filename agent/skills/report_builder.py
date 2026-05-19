@@ -96,6 +96,10 @@ header .badge { display: inline-block; background: rgba(255,255,255,0.15);
            margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
 .section h2 { font-size: 1.15rem; font-weight: 600; color: #0f3460;
               border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-bottom: 1rem; }
+.self-test { border-radius: 6px; padding: 0.65rem 0.9rem; margin: 0.75rem 0;
+             font-size: 0.85rem; }
+.self-test.passed { background: #f0fdf4; border-left: 4px solid #16a34a; }
+.self-test.failed { background: #fffbeb; border-left: 4px solid #d97706; }
 .primary-docs { background: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 6px;
                 padding: 0.75rem 1rem; margin-bottom: 1rem; }
 .primary-docs strong { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
@@ -623,6 +627,50 @@ def _steps_section(spec: dict) -> str:
 </div>"""
 
 
+def _self_test_block(spec: dict) -> str:
+    """Render the usage.command_template self-test outcome — the keystone
+    honesty check. Either the runtime confirmed the template works (passed),
+    or it didn't (failed/skipped, with the reason)."""
+    usage = spec.get("usage") or {}
+    if not isinstance(usage, dict):
+        return ""
+    st = usage.get("_self_test")
+    if not st:
+        return ""
+    ok = bool(st.get("ok"))
+    if ok:
+        cmd = st.get("command_run", "")
+        produced = st.get("produced_files", [])
+        files_list = "".join(f"<li><code>{f}</code></li>" for f in produced[:8])
+        return f"""
+  <div class="self-test passed">
+    <strong>✅ Usage self-test passed</strong>
+    <div style="font-size:0.78rem;color:#475569;margin-top:0.3rem">
+      The runtime substituted real test inputs into <code>command_template</code>
+      and ran it; the declared outputs were produced.
+    </div>
+    <details style="margin-top:0.5rem">
+      <summary style="cursor:pointer;font-size:0.85rem">Audit trail</summary>
+      <div style="margin-top:0.4rem">
+        <strong style="font-size:0.78rem">Command run:</strong>
+        <pre style="font-size:0.78rem">{cmd}</pre>
+        <strong style="font-size:0.78rem">Files produced (first 8):</strong>
+        <ul style="font-size:0.78rem;margin-left:1.2rem">{files_list}</ul>
+      </div>
+    </details>
+  </div>"""
+    reason = st.get("reason", "unknown")
+    return f"""
+  <div class="self-test failed">
+    <strong>⚠️ Usage self-test did not pass</strong>
+    <div style="font-size:0.78rem;color:#475569;margin-top:0.3rem">
+      <code>command_template</code> was not confirmed against real test inputs.
+      Reason: {reason}. The spec is partially-validated — downstream users should
+      run the template manually before trusting it.
+    </div>
+  </div>"""
+
+
 def _usage_section(spec: dict) -> str:
     """Single canonical "how to run this pipeline" section.
 
@@ -718,10 +766,12 @@ def _usage_section(spec: dict) -> str:
     )
     activate_line = f"conda activate {env}\n\n" if env else ""
 
+    self_test_html = _self_test_block(spec)
     return f"""
 <div class="section">
   <h2>🚀 Usage</h2>
   {primary_links_html}
+  {self_test_html}
   {desc_html}
   <h4 style="margin:0.4rem 0 0.3rem;font-size:0.95rem">Command</h4>
   <pre>{activate_line}{cmd_template}</pre>
@@ -766,6 +816,8 @@ def generate(spec: dict) -> str:
     env_status      = spec.get("env_status", "")
     pipeline_status = spec.get("pipeline_status", "")
     docker_status   = spec.get("docker_status", "")
+    usage_verified  = bool(spec.get("usage_verified"))
+    lock_sha        = spec.get("lock_sha256") or ""
 
     docker_badge = ""
     if docker_status and docker_status != "not_attempted":
@@ -777,15 +829,28 @@ def generate(spec: dict) -> str:
                 f'{_status_badge(kind)}'
             )
 
+    usage_verified_html = (
+        '<span class="status-label" style="margin-left:0.6rem">Usage:</span>'
+        + (_status_badge("passed") if usage_verified else _status_badge("partial"))
+    ) if spec.get("usage") else ""
+
+    lock_sha_html = (
+        f'<span class="badge" title="sha256 of the env lock file — verify bit-exact env reproduction" '
+        f'style="font-family:monospace;font-size:0.7rem">lock {lock_sha[:12]}…</span>'
+        if lock_sha else ""
+    )
+
     status_row = (
         '<div class="status-row">'
         + (f'<span class="badge">{env}</span>' if env else "")
         + (f'<span class="badge">{created}</span>' if created else "")
+        + lock_sha_html
         + (f'<span class="status-label">Env:</span>{_status_badge(env_status)}'
            if env_status else "")
         + (f'<span class="status-label" style="margin-left:0.6rem">Pipeline:</span>'
            f'{_status_badge(pipeline_status)}' if pipeline_status else "")
         + docker_badge
+        + usage_verified_html
         + "</div>"
     )
 

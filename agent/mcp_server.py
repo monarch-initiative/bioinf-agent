@@ -14,8 +14,10 @@ starts it automatically.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -258,6 +260,388 @@ def install_jar_tool(
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
+
+
+@mcp.tool()
+def install_r_package(
+    env_name: str,
+    name: str,
+    source: str,
+    pipeline_id: str = "",
+    step: int = 0,
+    deps_first: list[str] = [],
+) -> dict:
+    """Install an R package end-to-end with category-correct discovery built in.
+
+    `source` is one of:
+      cran          — install.packages("name") from CRAN
+      bioconductor  — BiocManager::install("name")
+      github:owner/repo  — remotes::install_github("owner/repo", dependencies=FALSE)
+                          (use deps_first to pre-install undeclared transitive deps)
+
+    Encapsulates everything the CLAUDE.md "R tools" section used to require
+    the agent to remember:
+      - Library isolation via $CONDA_PREFIX/lib/R/library (R_LIBS_USER hazard)
+      - Auto-installed BiocManager bootstrap if missing
+      - Post-install requireNamespace() load-or-die check baked into the
+        Rscript itself (catches the "install printed ERROR but rc=0" failure)
+      - Auto-records install_method.type='r_install' with the source URL
+    `pipeline_id`: lands an install_step automatically. Use `step=N` to replace
+    a failed prior attempt (retry semantics).
+
+    Returns the run_install_command shape; failure cases include both R
+    install errors and load-failures with a clean signal.
+    """
+    if source.startswith("github:"):
+        owner_repo = source[len("github:"):].strip()
+        # Pre-install undeclared transitive deps if requested.
+        pre_lines = []
+        if deps_first:
+            pre = ",".join(f'"{d}"' for d in deps_first)
+            pre_lines.append(
+                f'BiocManager::install(c({pre}), lib=lib, ask=FALSE, update=FALSE)'
+            )
+        install_expr = (
+            f'remotes::install_github("{owner_repo}", lib=lib, dependencies=FALSE)'
+        )
+        check_name = name
+        install_block = "; ".join(pre_lines + [install_expr])
+        channel = "github"
+        source_url = f"https://github.com/{owner_repo}"
+        im_source = f'remotes::install_github("{owner_repo}")'
+    elif source == "cran":
+        install_block = (
+            f'install.packages("{name}", lib=lib, repos="https://cloud.r-project.org")'
+        )
+        channel = "cran"
+        source_url = f"https://CRAN.R-project.org/package={name}"
+        im_source = f'install.packages("{name}")'
+        check_name = name
+    elif source == "bioconductor":
+        install_block = (
+            f'BiocManager::install("{name}", lib=lib, ask=FALSE, update=FALSE)'
+        )
+        channel = "bioconductor"
+        source_url = f"https://bioconductor.org/packages/{name}/"
+        im_source = f'BiocManager::install("{name}")'
+        check_name = name
+    else:
+        return {"success": False, "error": f"unknown R source: {source!r} (use cran|bioconductor|github:owner/repo)"}
+
+    # Wrap with library isolation + BiocManager bootstrap + load-or-die check.
+    # The load-or-die is what makes this honest: rc != 0 if the install
+    # silently failed but Rscript would otherwise exit 0.
+    rscript = (
+        "lib <- file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'); "
+        "if(!requireNamespace('BiocManager',quietly=TRUE)) "
+        "install.packages('BiocManager',lib=lib,repos='https://cloud.r-project.org'); "
+        f"{install_block}; "
+        f"if(!requireNamespace('{check_name}',quietly=TRUE,lib.loc=lib)) "
+        f"stop('install reported success but {check_name} is not loadable');"
+    )
+    command = f"Rscript -e \"{rscript}\""
+    verify_command = (
+        f"Rscript -e \"if(!requireNamespace('{check_name}',quietly=TRUE)) quit(status=1); "
+        f"cat(as.character(packageVersion('{check_name}')))\""
+    )
+
+    # Delegate to run_install_command for the actual install_step plumbing.
+    result = _env_mgr.run_in_env(env_name, command, timeout=1800)
+    if result.get("returncode") == 0:
+        vresult = _env_mgr.run_in_env(env_name, verify_command, timeout=60)
+        if vresult.get("returncode") != 0:
+            result["returncode"] = vresult.get("returncode") or 1
+            result["success"]    = False
+            result["stderr"]     = (result.get("stderr") or "") + (
+                f"\n[verify failed: {vresult.get('stderr','')[-200:]}]"
+            )
+        else:
+            r_version = (vresult.get("stdout") or "").strip()
+            result["verify_command"]  = verify_command
+            result["verify_output"]   = (vresult.get("stdout") or "")[:500]
+            result["resolved_version"] = r_version
+
+    if pipeline_id:
+        ip_record = {
+            "name":    check_name,
+            "channel": channel,
+            "source":  im_source,
+            "install_method": {"type": "r_install", "source": im_source},
+        }
+        if result.get("resolved_version"):
+            ip_record["version"] = result["resolved_version"]
+        step_data = {
+            "tool":        "Rscript",
+            "subcommand":  source,
+            "purpose":     f"Install R package {check_name} from {source}",
+            "command":     command,
+            "returncode":  result.get("returncode"),
+            "runtime_seconds": result.get("runtime_seconds"),
+            "installed_packages": [ip_record],
+        }
+        if result.get("verify_command"):
+            step_data["verify_command"] = result["verify_command"]
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
+
+
+@mcp.tool()
+def install_pip_package(
+    env_name: str,
+    name: str,
+    version: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a pip package end-to-end with an auto-verify_command.
+
+    Equivalent to running pip install + python -c "import name" inside the env.
+    The import-check is the load-or-die: if pip says it installed but the
+    package isn't importable, the step is recorded as failed.
+
+    Notes:
+      - pip's canonical name is preserved (e.g. open-cravat stays hyphenated)
+      - resolved_version is filled from `pip list --format=json` at finalize
+        when no explicit version is passed
+    """
+    spec = f"{name}=={version}" if version else name
+    # Module name for the import check: pip's canonical hyphenated names use
+    # underscores at import time (open-cravat → import cravat or open_cravat).
+    # We default to the lowercased name; agents can override with verify_command
+    # post-hoc if the import path differs.
+    import_check_name = name.replace("-", "_").lower()
+    command = f"pip install {spec}"
+    verify_command = f"python -c 'import {import_check_name}' || pip show {name} > /dev/null"
+
+    result = _env_mgr.run_in_env(env_name, command, timeout=600)
+    if result.get("returncode") == 0:
+        vresult = _env_mgr.run_in_env(env_name, verify_command, timeout=30)
+        if vresult.get("returncode") != 0:
+            result["returncode"] = vresult.get("returncode") or 1
+            result["success"]    = False
+            result["stderr"]     = (result.get("stderr") or "") + (
+                f"\n[verify failed: cannot import {import_check_name} and pip show {name} did not find it]"
+            )
+        else:
+            result["verify_command"] = verify_command
+            result["verify_output"]  = (vresult.get("stdout") or "")[:200] or "(import succeeded)"
+
+    if pipeline_id:
+        ip_record = {
+            "name":    name,
+            "channel": "pip",
+            "source":  f"pip install {spec}",
+            "install_method": {"type": "pip", "source": f"pip install {spec}"},
+        }
+        if version:
+            ip_record["version"] = version
+        step_data = {
+            "tool":               "pip",
+            "subcommand":         "install",
+            "purpose":            f"Install pip package {name}",
+            "command":            command,
+            "returncode":         result.get("returncode"),
+            "runtime_seconds":    result.get("runtime_seconds"),
+            "installed_packages": [ip_record],
+        }
+        if result.get("verify_command"):
+            step_data["verify_command"] = result["verify_command"]
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
+
+
+@mcp.tool()
+def download_reference_database(
+    name: str,
+    url: str,
+    local_path: str,
+    version: str = "",
+    description: str = "",
+    pipeline_id: str = "",
+    extract: bool = True,
+) -> dict:
+    """Download a reference database large enough to need watchdog-safe execution.
+
+    Uses run_in_background internally — agent doesn't have to remember to wrap
+    the curl in async, doesn't have to worry about --silent / -q traps that
+    killed the original Exomiser install. Auto-records a ReferenceDatabase
+    entry in the draft when pipeline_id is supplied.
+
+    extract=True: if `url` ends in .zip / .tar.gz / .tar, unpack into local_path
+                  and remove the archive. .zip uses unzip; .tar.gz uses tar.
+    extract=False: just download to local_path.
+
+    Returns immediately with a job_id — caller polls check_job(job_id) until
+    state != "running", then sees success/failure via returncode. The
+    ReferenceDatabase entry's `available` is auto-derived at finalize from
+    whether local_path exists on disk.
+    """
+    from pathlib import Path as _Path
+    target = _Path(local_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if extract and url.endswith(".zip"):
+        # Download to a sibling .zip, unpack into local_path, remove the zip.
+        zip_path = target.parent / _Path(url).name
+        cmd = (
+            f"curl -L --progress-bar -C - -o {zip_path} '{url}' "
+            f"&& mkdir -p {target} "
+            f"&& unzip -o {zip_path} -d {target.parent} "
+            f"&& rm {zip_path}"
+        )
+    elif extract and (url.endswith(".tar.gz") or url.endswith(".tgz")):
+        tar_path = target.parent / _Path(url).name
+        cmd = (
+            f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"&& mkdir -p {target} "
+            f"&& tar -xzf {tar_path} -C {target} "
+            f"&& rm {tar_path}"
+        )
+    elif extract and url.endswith(".tar"):
+        tar_path = target.parent / _Path(url).name
+        cmd = (
+            f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"&& mkdir -p {target} "
+            f"&& tar -xf {tar_path} -C {target} "
+            f"&& rm {tar_path}"
+        )
+    else:
+        cmd = f"curl -L --progress-bar -C - -o {target} '{url}'"
+
+    job = _job_manager.start(cmd, job_id=f"refdb_{name}_{int(__import__('time').time())}")
+    if pipeline_id:
+        # Append the ReferenceDatabase entry now; `available` is re-derived at
+        # finalize from filesystem state (so an in-progress download correctly
+        # shows available=false until it completes).
+        rdb = {
+            "name":          name,
+            "version":       version or "unknown",
+            "source_url":    url,
+            "local_path":    str(target),
+            "available":     False,
+            "description":   description or None,
+        }
+        draft = _pipeline_state.get_draft(pipeline_id) or {}
+        existing = draft.get("reference_databases") or []
+        # Update-by-name if it exists.
+        replaced = False
+        for i, e in enumerate(existing):
+            if isinstance(e, dict) and e.get("name") == name:
+                existing[i] = {**e, **{k: v for k, v in rdb.items() if v is not None}}
+                replaced = True
+                break
+        if not replaced:
+            existing.append({k: v for k, v in rdb.items() if v is not None})
+        _pipeline_state.patch(pipeline_id, {"reference_databases": existing})
+    return {
+        "job_id":     job.get("job_id"),
+        "status_path": job.get("status_path"),
+        "log_path":   job.get("log_path"),
+        "local_path": str(target),
+        "name":       name,
+        "url":        url,
+        "command":    cmd,
+        "note":       "Use check_job(job_id) to monitor; ReferenceDatabase entry recorded in draft.reference_databases (available=false until download finishes).",
+    }
+
+
+@mcp.tool()
+def run_pipeline_step(
+    env_name: str,
+    command: str,
+    pipeline_id: str,
+    inputs: list = [],
+    output_types: dict = {},
+    watch_dir: str = "",
+    tool: str = "",
+    subcommand: str = "",
+    purpose: str = "",
+    step: int = 0,
+    timeout_seconds: int = 1800,
+) -> dict:
+    """Run a pipeline step and auto-validate every produced output in one call.
+
+    Replaces the three-call dance (run_in_env → inspect detected_outputs →
+    validate_output(files=[...])) with one. Internally:
+      1. Runs the command via run_in_env (with pipeline_id-merge into pipeline_steps)
+      2. Validates every detected_output against an inferred or supplied type
+      3. Validations are merged into the same pipeline_step automatically
+
+    output_types: optional dict mapping basename or extension to expected_type
+                  (e.g. {".vcf.gz": "vcf", ".bam": "bam", "report.html": "html"}).
+                  Anything not matched falls back to extension inference.
+
+    pipeline_id is required (this primitive's purpose is the merged flow).
+    """
+    if not pipeline_id:
+        return {"error": "pipeline_id is required for run_pipeline_step"}
+
+    result = _env_mgr.run_in_env(
+        env_name, command, timeout=timeout_seconds, inputs=inputs,
+        watch_dir=watch_dir or None,
+    )
+    step_data = {
+        "tool":            tool or (command.split() or [""])[0],
+        "subcommand":      subcommand or None,
+        "purpose":         purpose or None,
+        "command":         command,
+        "returncode":      result.get("returncode"),
+        "runtime_seconds": result.get("runtime_seconds"),
+        "inputs":          result.get("inputs", []),
+        "detected_outputs": result.get("detected_outputs", []),
+    }
+    step_data = {k: v for k, v in step_data.items() if v is not None}
+    idx = _pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
+
+    # Auto-validate every detected output if the run succeeded.
+    validations: dict = {}
+    if result.get("returncode") == 0 and idx is not None:
+        for path in result.get("detected_outputs", []):
+            basename = Path(path).name
+            ext = "".join(Path(path).suffixes).lower()
+            # Resolve expected type: explicit basename match > extension match > "any".
+            etype = (output_types.get(basename)
+                     or output_types.get(ext)
+                     or output_types.get(ext.lstrip("."))
+                     or _infer_validator_type(basename, ext))
+            v = _validator.validate(path, etype, env_name=env_name)
+            validations[basename] = v
+            _pipeline_state.add_validation(pipeline_id, idx, basename, v)
+
+    return {
+        **result,
+        "pipeline_merge":  {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx},
+        "validations":     validations,
+        "validation_count": len(validations),
+    }
+
+
+def _infer_validator_type(basename: str, ext: str) -> str:
+    """Pure-function extension → validator type. No memorization beyond
+    obvious filetype names that the OutputValidator already handles."""
+    ext = ext.lstrip(".").lower()
+    # Strip .gz: validators handle compressed forms natively.
+    if ext.endswith(".gz"):
+        ext = ext[:-3]
+    # Final extension is usually authoritative.
+    last = ext.split(".")[-1] if ext else ""
+    # Validator's internal dispatch already keys off these names; mirror it.
+    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
+                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
+                  "html", "json", "jsonl"):
+        if last == known:
+            return known
+    return "any"
 
 
 @mcp.tool()
@@ -1406,8 +1790,120 @@ def list_jobs(include_terminated: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Autonomous install entry point
 # ---------------------------------------------------------------------------
 
+
+@mcp.tool()
+def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> dict:
+    """Return the install brief for `name` — the structured prompt a downstream
+    autonomous agent should follow to install this tool end-to-end.
+
+    This is the substrate for fully-autonomous installs. You (the interactive
+    Claude) call this to get the canonical instructions; a subagent or batch
+    runner can also pull this brief and execute it without human supervision.
+    The brief enumerates the invariants the resulting spec must satisfy and
+    the primitives the agent should compose to satisfy them. No per-tool prose
+    — the brief is short and the same shape for every tool.
+
+    Returns: {pipeline_name, version, hints, invariants, primitives, protocol}.
+    """
+    invariants = [
+        "I1: every install_step.returncode is 0 (or marked status=failed)",
+        "I2: every non-infrastructure package has a verify_output from a real run",
+        "I3: every pipeline_step has detected_outputs AND each is validated",
+        "I4: usage.command_template executes against test inputs and produces declared outputs",
+        "I5: every reference_database.local_path exists on disk",
+        "I6: every input/output path is absolute",
+    ]
+    primitives = [
+        "install_conda_packages: bioconda / conda-forge / defaults",
+        "install_r_package(source=cran|bioconductor|github:owner/repo): handles library isolation + load-or-die",
+        "install_pip_package: handles import verification",
+        "install_jar_tool: Java tools — openjdk dep + JAR download + wrapper",
+        "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
+        "run_pipeline_step: run + auto-validate every detected output in one call",
+        "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
+    ]
+    protocol = [
+        "1. start_pipeline(name) — get pipeline_id; thread it through everything",
+        "2. install_*_* primitives — compose for this tool; primitives handle category details",
+        "3. select_test_data + run_pipeline_step (auto-validates outputs)",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs)",
+        "5. build_docker_image (BEFORE finalize — finalize deletes the draft)",
+        "6. validate_pipeline_draft (dry-run; fix anything reported)",
+        "7. finalize_pipeline — runs invariant check + self-test of usage.command_template",
+        "8. write_pipeline_provenance with the right input shape",
+    ]
+    return {
+        "pipeline_name": name,
+        "version":       version or "latest",
+        "hints":         hints,
+        "invariants":    invariants,
+        "primitives":    primitives,
+        "protocol":      protocol,
+        "note": (
+            "This brief is the entire 'how to install a pipeline' protocol — no per-tool prose. "
+            "Compose primitives until the invariants hold; finalize_pipeline machine-verifies "
+            "everything and refuses to write a fake-able report."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Entry point — supports BIOINF_MCP_AUTO_RELOAD=1 for dev hot-reload.
+# When set, a background thread watches agent/ for .py changes and exits
+# the process on any mtime change. The MCP client reconnects on next call
+# and gets the fresh code, eliminating the "I committed but the server is
+# stale" foot-gun. Off by default; opt in via env var.
+# ---------------------------------------------------------------------------
+
+
+def _watch_and_exit_on_change():
+    """Poll agent/ + config/ for .py / .yaml mtime changes. exit() on any."""
+    import threading, time as _time
+    project_root = Path(__file__).parent.parent.resolve()
+    watch_dirs = [project_root / "agent", project_root / "config"]
+
+    def snapshot() -> dict:
+        out = {}
+        for d in watch_dirs:
+            if not d.exists():
+                continue
+            for p in d.rglob("*"):
+                if p.suffix in (".py", ".yaml", ".yml") and p.is_file():
+                    try:
+                        out[str(p)] = p.stat().st_mtime
+                    except FileNotFoundError:
+                        continue
+        return out
+
+    def watcher():
+        baseline = snapshot()
+        while True:
+            _time.sleep(2)
+            current = snapshot()
+            # New file, missing file, or mtime change → restart.
+            if set(current) != set(baseline) or any(
+                current.get(k) != baseline.get(k) for k in current
+            ):
+                changed = [
+                    k for k in set(current) | set(baseline)
+                    if current.get(k) != baseline.get(k)
+                ]
+                sys.stderr.write(
+                    f"[bioinf-mcp] file change detected ({len(changed)} files), "
+                    f"exiting for reload\n"
+                )
+                sys.stderr.flush()
+                # Hard exit — the MCP client will reconnect and respawn us.
+                os._exit(0)
+
+    t = threading.Thread(target=watcher, daemon=True)
+    t.start()
+
+
 if __name__ == "__main__":
+    if os.environ.get("BIOINF_MCP_AUTO_RELOAD") == "1":
+        _watch_and_exit_on_change()
     mcp.run()
