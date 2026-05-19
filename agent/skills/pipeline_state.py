@@ -112,7 +112,7 @@ class PipelineState:
         if draft is None:
             return False
         cache = draft.setdefault("search_cache", {})
-        cache[name] = {**cache.get(name, {}), **entry}
+        cache[name] = {**(cache.get(name) or {}), **entry}
         self._persist(pipeline_id)
         return True
 
@@ -124,7 +124,7 @@ class PipelineState:
         if draft is None:
             return False
         verifications = draft.setdefault("verifications", {})
-        verifications[name] = {**verifications.get(name, {}), **entry}
+        verifications[name] = {**(verifications.get(name) or {}), **entry}
         self._persist(pipeline_id)
         return True
 
@@ -308,8 +308,16 @@ def _deep_merge(target: dict, source: dict) -> None:
     are merged by their `step` field (existing step N updated; new step N
     appended) — so a partial patch can update validation_status without
     clobbering the rest of the step's data. Other lists are replaced wholesale.
+
+    Deletion: set a value to the literal sentinel "__DELETE__" to remove that
+    key from target. Lets patch_pipeline express removals (e.g., dropping a
+    `verifications.foo` entry) without resorting to writing null and inviting
+    downstream None-handling bugs.
     """
     for key, val in source.items():
+        if val == "__DELETE__":
+            target.pop(key, None)
+            continue
         if key in _STEP_KEYED_LISTS and isinstance(val, list) and isinstance(target.get(key), list):
             _merge_step_keyed_list(target[key], val)
         elif key in target and isinstance(target[key], dict) and isinstance(val, dict):

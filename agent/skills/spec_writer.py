@@ -667,7 +667,7 @@ _R_INSTALL_GITHUB_REGEX = re.compile(r"""['"]([^'"\s]+/[^'"\s]+)['"]""")
 
 # Packages that are infrastructure (not user-facing tools) and shouldn't be
 # surfaced as primary spec entries. conda-pack is added to every env automatically.
-_INFRASTRUCTURE_PACKAGES = frozenset({"conda-pack", "pip"})
+_INFRASTRUCTURE_PACKAGES = frozenset({"conda-pack", "pip", "python"})
 
 
 def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dict:
@@ -734,7 +734,7 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
         if name in _INFRASTRUCTURE_PACKAGES:
             continue
         prior = prior_by_name.get(name, {})
-        v = verifications.get(name, {})
+        v = verifications.get(name) or {}
         # Channel from conda list --json wins — it's the resolved channel. The
         # prior.channel was the agent's hint (e.g. "bioconda") which conda may
         # have honored or not; here we want the truth.
@@ -745,8 +745,8 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
             "resolved_version":  conda_versions[name],
             "channel":           conda_rec.get("channel") or prior.get("channel"),
             "install_method":    prior.get("install_method") or {"type": "conda"},
-            "description":       prior.get("description") or cache.get(name, {}).get("description"),
-            "homepage":          prior.get("homepage") or cache.get(name, {}).get("homepage"),
+            "description":       prior.get("description") or (cache.get(name) or {}).get("description"),
+            "homepage":          prior.get("homepage") or (cache.get(name) or {}).get("homepage"),
             "verify_command":    v.get("verify_command") or prior.get("verify_command"),
             "verify_output":     v.get("verify_output")  or prior.get("verify_output"),
         }
@@ -762,7 +762,7 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
         pass
     for name, ip in install_step_packages.items():
         prior = prior_by_name.get(name, {})
-        v = verifications.get(name, {})
+        v = verifications.get(name) or {}
         channel = ip.get("channel") or prior.get("channel", "")
         # Version fallback ladder (last-resort only — caller's ip.version wins):
         #   a) pip list (when channel=pip and pip's catalog has this name)
@@ -804,8 +804,8 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
             "resolved_version":  ip.get("version") or prior.get("resolved_version"),
             "channel":           channel or None,
             "install_method":    install_method,
-            "description":       prior.get("description") or cache.get(name, {}).get("description"),
-            "homepage":          prior.get("homepage") or cache.get(name, {}).get("homepage"),
+            "description":       prior.get("description") or (cache.get(name) or {}).get("description"),
+            "homepage":          prior.get("homepage") or (cache.get(name) or {}).get("homepage"),
             "verify_command":    v.get("verify_command") or prior.get("verify_command"),
             "verify_output":     v.get("verify_output")  or prior.get("verify_output"),
         }

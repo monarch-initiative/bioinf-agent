@@ -137,8 +137,22 @@ class EnvManager:
 
         Groups packages by channel to minimise solver calls, but always
         runs a single solve across all channels for best dependency resolution.
+
+        Auto-creates the env if it doesn't exist — install_packages used to fail
+        with EnvironmentLocationNotFound when an agent forgot to call create()
+        first. Now: missing env → create with default python version → install.
         """
         env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            create_result = self.create(env_name)
+            if not create_result.get("success"):
+                return {
+                    "success":  False,
+                    "env_name": env_name,
+                    "error":    f"env auto-create failed: {create_result.get('error','')}",
+                    "stderr":   create_result.get("error", "")[:500],
+                    "returncode": 1,
+                }
         channels = []
         specs = []
 

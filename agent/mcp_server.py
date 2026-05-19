@@ -1390,6 +1390,9 @@ def validate_pipeline_draft(pipeline_id: str) -> dict:
         _derive_step_validation_status,
         _derive_env_status,
         _derive_pipeline_status,
+        _derive_docker_status,
+        check_invariants,
+        self_test_usage,
     )
     sim = copy.deepcopy(draft)
     if not sim.get("created_at"):
@@ -1410,25 +1413,55 @@ def validate_pipeline_draft(pipeline_id: str) -> dict:
     _derive_step_validation_status(sim)
     sim["env_status"]      = _derive_env_status(sim)
     sim["pipeline_status"] = _derive_pipeline_status(sim)
+    sim["docker_status"]   = _derive_docker_status(sim)
+
+    # Run the usage self-test so dry-run matches finalize behavior fully.
+    # An agent injecting a bogus command_template (or unresolvable slot) gets
+    # caught here, not just at finalize-time.
+    self_test_result = None
+    if env_name and sim.get("usage"):
+        try:
+            self_test_result = self_test_usage(sim, _env_mgr)
+            sim["usage_verified"] = bool(self_test_result.get("ok"))
+        except Exception as e:
+            self_test_result = {"ok": False, "reason": f"self_test_usage errored: {e}"}
+            sim["usage_verified"] = False
+
+    # Apply invariant checks — same rules finalize uses.
+    violations = check_invariants(sim)
 
     try:
         PipelineSpec.model_validate(sim)
-        return {
-            "valid":           True,
-            "env_status":      sim.get("env_status"),
-            "pipeline_status": sim.get("pipeline_status"),
-            "package_count":   len(sim.get("packages", []) or []),
-            "install_steps":   len(sim.get("install_steps", []) or []),
-            "pipeline_steps":  len(sim.get("pipeline_steps", []) or []),
-            "derive_warning":  sim.get("__derive_warning__"),
-        }
+        schema_ok = True
+        schema_errors = None
     except ValidationError as e:
-        return {
-            "valid":             False,
-            "validation_errors": e.errors(),
-            "env_status":        sim.get("env_status"),
-            "pipeline_status":   sim.get("pipeline_status"),
+        schema_ok = False
+        schema_errors = e.errors()
+
+    valid = schema_ok and not violations
+    out = {
+        "valid":             valid,
+        "env_status":        sim.get("env_status"),
+        "pipeline_status":   sim.get("pipeline_status"),
+        "docker_status":     sim.get("docker_status"),
+        "usage_verified":    sim.get("usage_verified"),
+        "package_count":     len(sim.get("packages", []) or []),
+        "install_steps":     len(sim.get("install_steps", []) or []),
+        "pipeline_steps":    len(sim.get("pipeline_steps", []) or []),
+        "invariant_violations": violations,
+        "derive_warning":    sim.get("__derive_warning__"),
+    }
+    if not schema_ok:
+        out["validation_errors"] = schema_errors
+    if self_test_result:
+        # Trim the bulky fields so the dry-run response stays compact.
+        out["self_test"] = {
+            "ok":             self_test_result.get("ok"),
+            "reason":         self_test_result.get("reason"),
+            "command_run":    self_test_result.get("command_run", "")[:300],
+            "substitutions":  self_test_result.get("substitutions"),
         }
+    return out
 
 
 @mcp.tool()
@@ -1490,7 +1523,12 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     on the `step` field, so a partial patch like
     {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
     updates just that step's validation_status without clobbering the rest.
-    All other lists are replaced wholesale."""
+    All other lists are replaced wholesale.
+
+    Deletion: pass the literal string "__DELETE__" as a value to remove that
+    key. e.g. {"verifications": {"samtools": "__DELETE__"}} drops the samtools
+    entry from verifications. Use this rather than setting to None — None
+    can trigger downstream attribute errors."""
     return _pipeline_state.patch(pipeline_id, patches)
 
 
