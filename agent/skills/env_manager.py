@@ -223,7 +223,17 @@ class EnvManager:
         # status instead of swallowing it. Without this a step like
         # `flye --nano-raw X 2>&1 | tail -50` reports rc=0 even when flye crashed
         # because tail itself succeeded — masking real failures.
-        wrapped_command = f"set -o pipefail; {command}"
+        #
+        # PATH prefix: macOS Command Line Tools install Python at
+        # /Library/Developer/CommandLineTools/.../Python3.framework/Versions/3.9/bin
+        # and that path ends up ahead of $CONDA_PREFIX/bin in subshell PATH on
+        # some setups — `subprocess.run(["python", "--version"])` inside the
+        # conda env binary then picks up Python 3.9 instead of the env's 3.10+.
+        # Forcing $CONDA_PREFIX/bin to the front eliminates this whole class.
+        wrapped_command = (
+            'export PATH="$CONDA_PREFIX/bin:$PATH"; '
+            f'set -o pipefail; {command}'
+        )
         cmd = [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", wrapped_command]
 
@@ -407,6 +417,35 @@ class EnvManager:
             }
         return records
 
+    def list_pip_packages(self, env_name: str) -> dict[str, str]:
+        """Return {package_name: version} for pip-installed packages in the env.
+
+        Source of truth for resolved_version when an install_step did `pip install X`
+        without pinning a version — pip's catalog is authoritative. Names are
+        returned in their canonical pip form (open-cravat, not opencravat).
+        Falls back to empty dict on any failure.
+        """
+        env_path = self.envs_dir / env_name
+        pip_bin = env_path / "bin" / "pip"
+        if not pip_bin.exists():
+            return {}
+        try:
+            result = self._run(
+                [str(pip_bin), "list", "--format=json"],
+                cwd=str(self.project_root),
+                timeout=60,
+            )
+        except Exception:
+            return {}
+        if result.get("returncode") != 0:
+            return {}
+        import json
+        try:
+            entries = json.loads(result["stdout"])
+        except Exception:
+            return {}
+        return {e.get("name", ""): e.get("version", "") for e in entries if e.get("name")}
+
     def list_explicit_conda_packages(self, env_name: str) -> set[str]:
         """Return the *explicitly-requested* package names from conda's history db.
 
@@ -445,6 +484,14 @@ class EnvManager:
         `from_history=False` exports the full solved env including transitive
         deps (lossless, but bulky and OS/arch-coupled).
 
+        Post-processes the channels list so the agent's standard base channels
+        (bioconda, conda-forge, defaults) are always present — `conda env export`
+        only lists channels that appeared explicitly in `conda install -c`
+        invocations, which excludes bioconda when packages came in transitively
+        or were specified without -c. Result is portable: anyone can
+        `conda env create -f` it on any platform without needing to know to
+        add bioconda manually.
+
         Returns "" on failure. Caller writes the text to a `.environment.yml`
         file alongside the spec.
         """
@@ -455,7 +502,25 @@ class EnvManager:
         if from_history:
             cmd.append("--from-history")
         result = self._run(cmd, cwd=str(self.project_root), timeout=120)
-        return result["stdout"] if result["returncode"] == 0 else ""
+        if result["returncode"] != 0:
+            return ""
+
+        # Merge in the agent's standard base channels so any importer of this
+        # YAML has the same channel priority as we did at install time.
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(result["stdout"]) or {}
+            base_channels = self.config.get("conda", {}).get("base_channels") or []
+            channels = list(data.get("channels") or [])
+            for ch in base_channels:
+                if ch not in channels:
+                    channels.append(ch)
+            if channels:
+                data["channels"] = channels
+            return _yaml.dump(data, default_flow_style=False, sort_keys=False)
+        except Exception:
+            # If post-processing fails for any reason, fall back to the raw conda output.
+            return result["stdout"]
 
     def export_explicit_lock(self, env_name: str) -> str:
         """Return a `conda list --explicit` lock file content (URL-pinned).
@@ -545,10 +610,46 @@ class EnvManager:
                 return {"success": True, "service_name": service_name, "pid": pid, "log": str(log_file)}
             time.sleep(2)
 
+        # Health check timed out. The service is probably still alive in the
+        # background — clean it up so the caller doesn't get a silent leak. We
+        # call stop_service with the recorded PID rather than relying on a
+        # user-supplied stop_command; SIGTERM the process group first, then
+        # SIGKILL after a short grace window. PID file is removed.
+        cleanup_log: list[str] = []
+        if pid:
+            try:
+                import signal as _signal
+                pid_int = int(pid)
+                try:
+                    pgid = os.getpgid(pid_int)
+                    os.killpg(pgid, _signal.SIGTERM)
+                    cleanup_log.append(f"SIGTERM sent to pgid {pgid}")
+                except ProcessLookupError:
+                    cleanup_log.append("process already gone before SIGTERM")
+                # Grace window
+                for _ in range(25):
+                    try:
+                        os.kill(pid_int, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.2)
+                # Force kill anything still alive
+                try:
+                    os.kill(pid_int, 0)
+                    os.killpg(os.getpgid(pid_int), _signal.SIGKILL)
+                    cleanup_log.append("SIGKILL escalation needed")
+                except ProcessLookupError:
+                    pass
+            except Exception as e:
+                cleanup_log.append(f"cleanup attempt errored: {e}")
+        if pid_file.exists():
+            pid_file.unlink()
+
         return {
             "success": False, "service_name": service_name, "pid": pid,
             "error": f"Service did not become healthy within {health_check_timeout_seconds}s",
             "log": str(log_file),
+            "cleanup": cleanup_log,
         }
 
     def stop_service(

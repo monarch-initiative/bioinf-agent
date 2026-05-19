@@ -52,7 +52,9 @@ FileType  = Literal[
     # Variants
     "vcf", "bcf",
     # Genomic intervals / coverage
-    "bed", "bigwig",
+    "bed", "bedgraph", "bigwig",
+    # Methylation / epigenetic
+    "methylation_report", "cpg_report", "cov", "bismark_cov",
     # Feature annotations
     "gtf", "gff", "counts_matrix",
     # Assembly graphs
@@ -69,6 +71,8 @@ FileType  = Literal[
     "html", "json", "jsonl", "ndjson", "yaml", "properties",
     # Generic tabular / text / logs
     "tsv", "csv", "txt", "log", "gz",
+    # Databases / structured persistence
+    "sqlite", "h5", "hdf5", "parquet",
 ]
 Database  = Literal["EBI_SRA", "NCBI_SRA", "ENCODE", "GEO", "local"]
 
@@ -911,6 +915,7 @@ class PipelineSpec(BaseModel):
     # algorithm/analysis runs succeeded AND had their outputs validated.
     env_status:           PipelineStatus = "in_progress"
     pipeline_status:      PipelineStatus = "in_progress"
+    docker_status:        Literal["not_attempted", "built", "failed"] = "not_attempted"
     packages:             list[PackageRecord]
     reference_free:       bool = False
     runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)

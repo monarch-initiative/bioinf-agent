@@ -220,9 +220,24 @@ def _runtime_env_section(spec: dict) -> str:
     if not re:
         return ""
     env_type = re.get("type", "conda")
-    if env_type == "conda":
+    gpu_required = bool(re.get("gpu_required"))
+    cuda_version = re.get("cuda_version")
+    # Render whenever there's content worth showing: non-conda type, GPU
+    # requirement, CUDA pin, or any of the resource / wrapper fields.
+    has_content = (
+        env_type != "conda"
+        or gpu_required
+        or cuda_version
+        or re.get("java_flags") or re.get("jar_path") or re.get("wrapper_script")
+        or re.get("docker_image") or re.get("min_ram_gb") or re.get("min_cpu")
+    )
+    if not has_content:
         return ""
     fields = [("Type", env_type)]
+    if gpu_required:
+        fields.append(("GPU required", "Yes"))
+    if cuda_version:
+        fields.append(("CUDA version", f"<code>{cuda_version}</code>"))
     if re.get("java_flags"):
         fields.append(("JVM flags", f"<code>{' '.join(re['java_flags'])}</code>"))
     if re.get("jar_path"):
@@ -238,10 +253,43 @@ def _runtime_env_section(spec: dict) -> str:
     kv = "\n".join(
         f'<div class="key">{k}</div><div class="val">{v}</div>' for k, v in fields
     )
+    icon = "🎮" if gpu_required else "☕"
     return f"""
 <div class="section">
-  <h2>☕ Runtime Environment</h2>
+  <h2>{icon} Runtime Environment</h2>
   <div class="kv">{kv}</div>
+</div>"""
+
+
+def _service_dependencies_section(spec: dict) -> str:
+    deps = spec.get("service_dependencies") or []
+    if not deps:
+        return ""
+    rows = []
+    for d in deps:
+        if not isinstance(d, dict):
+            continue
+        rows.append(
+            f"<tr><td><strong>{d.get('name','')}</strong></td>"
+            f"<td>{d.get('type','')}</td>"
+            f"<td>{d.get('version') or '—'}</td>"
+            f"<td>{d.get('port') or '—'}</td>"
+            f"<td><code style='font-size:0.78rem'>{d.get('start_command') or '—'}</code></td>"
+            f"<td><code style='font-size:0.78rem'>{d.get('health_check_command') or '—'}</code></td></tr>"
+        )
+    return f"""
+<div class="section">
+  <h2>🔌 Service Dependencies</h2>
+  <p style="font-size:0.85rem;color:#475569;margin-bottom:0.75rem">
+    Companion processes that must be running before the pipeline executes
+    (web servers, databases, Spark drivers, …). Managed via the
+    <code>start_service</code> / <code>stop_service</code> /
+    <code>check_service_health</code> tools.
+  </p>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>Port</th><th>Start</th><th>Health check</th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table>
 </div>"""
 
 
@@ -292,6 +340,8 @@ def _docker_section(spec: dict) -> str:
         ("Image tag", f"<code>{tag}</code>" if tag != "—" else "—"),
         ("Registry", registry),
     ]
+    if docker.get("nvidia_runtime"):
+        rows.append(("NVIDIA runtime", "Yes — run with <code>--gpus all</code> (Docker) or <code>--nv</code> (Singularity)"))
     if docker.get("volume_mounts"):
         mounts_html = "<br>".join(f"<code>{m}</code>" for m in docker["volume_mounts"])
         rows.append(("Volume mounts", mounts_html))
@@ -715,6 +765,17 @@ def generate(spec: dict) -> str:
     title = f"{name} {version}".strip()
     env_status      = spec.get("env_status", "")
     pipeline_status = spec.get("pipeline_status", "")
+    docker_status   = spec.get("docker_status", "")
+
+    docker_badge = ""
+    if docker_status and docker_status != "not_attempted":
+        # built → green; failed → red. Same status badge styling as env/pipeline.
+        kind = {"built": "passed", "failed": "failed"}.get(docker_status, "")
+        if kind:
+            docker_badge = (
+                f'<span class="status-label" style="margin-left:0.6rem">Docker:</span>'
+                f'{_status_badge(kind)}'
+            )
 
     status_row = (
         '<div class="status-row">'
@@ -724,6 +785,7 @@ def generate(spec: dict) -> str:
            if env_status else "")
         + (f'<span class="status-label" style="margin-left:0.6rem">Pipeline:</span>'
            f'{_status_badge(pipeline_status)}' if pipeline_status else "")
+        + docker_badge
         + "</div>"
     )
 
@@ -732,6 +794,7 @@ def generate(spec: dict) -> str:
         _usage_section(spec),                 # canonical "run on new data" contract — primary-tool docs + command template + IO
         _packages_table(spec),
         _runtime_env_section(spec),
+        _service_dependencies_section(spec),
         _reference_databases_section(spec),
         _test_data_section(spec),
         _install_steps_section(spec),

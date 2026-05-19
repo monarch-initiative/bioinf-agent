@@ -68,6 +68,7 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     _derive_step_validation_status(spec)
     spec["env_status"]      = _derive_env_status(spec)
     spec["pipeline_status"] = _derive_pipeline_status(spec)
+    spec["docker_status"]   = _derive_docker_status(spec)
 
     try:
         pspec = PipelineSpec.model_validate(spec)
@@ -113,33 +114,56 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     }
 
 
+def _normalize_pkg_name(name: str) -> str:
+    """Canonical key for comparing package / pipeline names across naming variants.
+
+    Lowercase + drop hyphens / underscores / dots so:
+      open-cravat == opencravat == open_cravat == OpenCravat
+      bioconductor-deseq2 == bioconductordeseq2 == DESeq2 (substring after prefix strip)
+    Software-driven; replaces eyeballed substring matching with a deterministic rule.
+    """
+    return (name or "").lower().replace("-", "").replace("_", "").replace(".", "")
+
+
 def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
     """Find the version that should appear in the filename stem.
 
-    Search order:
-      1. spec.packages where name == pipeline_name (case-insensitive)
-      2. spec.packages where pipeline_name is a substring of name or vice versa
+    Search order (using normalized names so open-cravat ↔ opencravat ↔ open_cravat match):
+      1. spec.packages where normalized(name) == normalized(pipeline_name)
+      2. spec.packages where pipeline_name substring-matches the package name
+         (after stripping common conda recipe prefixes like bioconductor-)
       3. install_steps[].installed_packages — same exact then substring search;
          this is where R packages installed via install_github / BiocManager
-         actually have their version recorded
-      4. First non-conda-pack package's resolved_version
+         and JAR-installed tools have their version recorded
+      4. First non-conda-pack, non-infrastructure package's resolved_version
     """
-    name_l = pipeline_name.lower()
+    name_n = _normalize_pkg_name(pipeline_name)
     packages = spec.get("packages", [])
+
+    def _candidates(name: str) -> set:
+        n = _normalize_pkg_name(name)
+        cs = {n}
+        # Strip common conda recipe prefixes so bioconductor-deseq2 matches deseq2
+        for prefix in ("bioconductor", "r", "python"):
+            if n.startswith(prefix) and len(n) > len(prefix):
+                cs.add(n[len(prefix):])
+        return cs
 
     # Pass 1: exact match in spec.packages
     for p in packages:
-        if p.get("name", "").lower() == name_l:
+        if name_n in _candidates(p.get("name", "")):
             v = p.get("resolved_version") or p.get("version")
             if v:
                 return v
 
     # Pass 2: substring match in spec.packages
     for p in packages:
-        pn = p.get("name", "").lower()
+        pn = p.get("name", "")
         if pn == "conda-pack" or not pn:
             continue
-        if name_l in pn or pn in name_l:
+        pn_n = _normalize_pkg_name(pn)
+        cands = _candidates(pn)
+        if any(name_n in c or c in name_n for c in cands):
             v = p.get("resolved_version") or p.get("version")
             if v:
                 return v
@@ -150,13 +174,14 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
         for ip in s.get("installed_packages", []) if isinstance(ip, dict)
     ]
     for ip in install_pkgs:
-        if ip.get("name", "").lower() == name_l and ip.get("version"):
+        if name_n in _candidates(ip.get("name", "")) and ip.get("version"):
             return ip["version"]
     for ip in install_pkgs:
-        pn = ip.get("name", "").lower()
+        pn = ip.get("name", "")
         if not pn:
             continue
-        if (name_l in pn or pn in name_l) and ip.get("version"):
+        cands = _candidates(pn)
+        if any(name_n in c or c in name_n for c in cands) and ip.get("version"):
             return ip["version"]
 
     # Pass 4: first non-conda-pack package version
@@ -168,6 +193,25 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
             return v
 
     return ""
+
+
+def _derive_docker_status(spec: dict) -> str:
+    """A separate status for the Docker artifact, distinct from env / pipeline.
+
+    Returns:
+      not_attempted  — no docker block present, or build_attempted=False
+      built          — build_attempted=True AND build_success=True
+      failed         — build_attempted=True AND build_success=False
+                       (the spec is otherwise fine but the image won't deploy)
+
+    Kept orthogonal to env_status / pipeline_status so a Docker-daemon-down
+    machine doesn't false-fail an otherwise valid install — but the failure is
+    still visible at the top of the report rather than buried in the docker block.
+    """
+    docker = spec.get("docker")
+    if not docker or not docker.get("build_attempted"):
+        return "not_attempted"
+    return "built" if docker.get("build_success") else "failed"
 
 
 def _derive_reference_database_availability(spec: dict) -> None:
@@ -362,19 +406,27 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
     # 2) Every non-conda install_step package
     # Late import to avoid touching env_manager at module load.
     from agent.skills.env_manager import parse_version_from_url
+    pip_versions = {}
+    try:
+        pip_versions = env_manager.list_pip_packages(env_name) or {}
+    except Exception:
+        pass
     for name, ip in install_step_packages.items():
         prior = prior_by_name.get(name, {})
         v = verifications.get(name, {})
         channel = ip.get("channel") or prior.get("channel", "")
-        # Version fallback: if the install_step didn't set it, try to extract
-        # from the install_method.source URL (works for GitHub release URLs,
-        # tagged builds, version-suffixed filenames). Last resort only.
+        # Version fallback ladder (last-resort only — caller's ip.version wins):
+        #   a) pip list (when channel=pip and pip's catalog has this name)
+        #   b) parse from install_method.source URL (GitHub release URLs, etc.)
         if not ip.get("version"):
-            source_url = (ip.get("install_method") or {}).get("source") or ip.get("source") or ""
-            if source_url:
-                parsed = parse_version_from_url(source_url)
-                if parsed:
-                    ip["version"] = parsed
+            if (channel or "").lower() in ("pip", "pypi") and pip_versions.get(name):
+                ip["version"] = pip_versions[name]
+            else:
+                source_url = (ip.get("install_method") or {}).get("source") or ip.get("source") or ""
+                if source_url:
+                    parsed = parse_version_from_url(source_url)
+                    if parsed:
+                        ip["version"] = parsed
         # Trust the install_step's install_method first — install_jar_tool sets
         # type=jar, run_install_command-emitted JAR steps do too. The
         # channel-based heuristic is only a last-resort fallback when no caller

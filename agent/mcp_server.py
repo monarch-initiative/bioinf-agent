@@ -296,8 +296,14 @@ def verify_installation(
 @mcp.tool()
 def check_gpu() -> dict:
     """Check if an NVIDIA GPU is available for GPU-accelerated tools.
-    Returns: available (bool), gpus (list of names), cuda_version, driver_version.
-    If available=False, use CPU fallback mode for validation runs."""
+
+    Returns differ by outcome:
+      Available:    {available: True, gpus: [{name, driver_version, memory_mb}, ...], cuda_version}
+      Unavailable:  {available: False, reason: "<why>", fallback: "Use CPU mode for testing"}
+
+    Use the `available` field to decide whether to install GPU deps and to set
+    `runtime_environment.gpu_required` on the spec. If False, fall back to CPU
+    mode (most tools expose `--device cpu`)."""
     try:
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
@@ -530,6 +536,7 @@ def validate_output(
     env_name: str = "",
     pipeline_id: str = "",
     step: int = 0,
+    allow_empty: bool = False,
 ) -> dict:
     """Validate one or many bioinformatics output files are non-empty and parseable.
 
@@ -538,11 +545,16 @@ def validate_output(
 
     Two call shapes:
       Single:  validate_output(file_path=..., expected_type=...)
-      Batch:   validate_output(files=[{path, expected_type}, ...])
+      Batch:   validate_output(files=[{path, expected_type, allow_empty?}, ...])
 
     In batch mode each file is validated independently — one failure never
     aborts the others. Returns per-file results in `validations` keyed by
     basename, plus aggregate `all_passed` / `passed_count` / `failed_count`.
+
+    `allow_empty` (single-call) or `allow_empty: true` per-entry (batch):
+    treat an empty file as passing instead of failing. Use for tools whose
+    success signal is an empty `.err` / `.log` (OpenCRAVAT's stderr file is
+    the canonical case).
 
     If pipeline_id+step are supplied, every result is merged into
     draft.pipeline_steps[step].validation[basename] — save_pipeline_spec
@@ -555,7 +567,11 @@ def validate_output(
         for entry in files:
             path = entry.get("path", "")
             etype = entry.get("expected_type", "any")
-            vr = _validator.validate(path, etype, env_name=env_name or None)
+            entry_allow_empty = bool(entry.get("allow_empty", False))
+            vr = _validator.validate(
+                path, etype, env_name=env_name or None,
+                allow_empty=entry_allow_empty,
+            )
             filename = Path(path).name
             validations[filename] = vr
             if vr.get("passed") is True:
@@ -584,7 +600,10 @@ def validate_output(
         return out
 
     # Single-file path (unchanged behavior)
-    result = _validator.validate(file_path, expected_type, env_name=env_name or None)
+    result = _validator.validate(
+        file_path, expected_type, env_name=env_name or None,
+        allow_empty=allow_empty,
+    )
     if pipeline_id:
         if step <= 0:
             result["pipeline_merge"] = {"status": "step_required", "pipeline_id": pipeline_id}
@@ -961,32 +980,70 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
 
 @mcp.tool()
 def validate_pipeline_draft(pipeline_id: str) -> dict:
-    """Dry-run finalize: validate the current draft against PipelineSpec without
-    writing artifacts or deleting the draft. Returns:
-      {valid: bool, validation_errors?: [...], env_status, pipeline_status}.
+    """Dry-run finalize: validate against PipelineSpec without writing artifacts
+    or deleting the draft. Runs the same env-derivation pass finalize_pipeline
+    does, so the env_status / pipeline_status reported here reflect what the
+    real finalize will produce.
+
+    Returns {valid: bool, validation_errors?: [...], env_status, pipeline_status,
+             package_count, install_steps, pipeline_steps}.
 
     Use before finalize_pipeline to catch schema problems early (notes shape,
     docker.volume_mounts type, runtime_configs.format, OutputFile.type, ...)
-    without having to repair-finalize-repeat through the live save path."""
+    without having to repair-finalize-repeat through the live save path.
+    """
     draft = _pipeline_state.get_draft(pipeline_id)
     if draft is None:
         return {"error": f"unknown pipeline_id: {pipeline_id}"}
-    if not draft.get("created_at"):
-        draft = {**draft, "created_at": str(date.today())}
+
+    # Operate on a deep copy so we don't mutate the live draft.
+    import copy
+    from agent.skills.spec_writer import (
+        derive_packages_from_env,
+        reconcile_packages_with_env,
+        derive_step_dag,
+        _derive_reference_database_availability,
+        _derive_step_validation_status,
+        _derive_env_status,
+        _derive_pipeline_status,
+    )
+    sim = copy.deepcopy(draft)
+    if not sim.get("created_at"):
+        sim["created_at"] = str(date.today())
+
+    # Run the same derivation pass finalize_pipeline does so the reported
+    # env_status / pipeline_status match what finalize would emit.
+    env_name = sim.get("conda_env")
+    if env_name:
+        try:
+            derive_packages_from_env(sim, _env_mgr, env_name)
+            reconcile_packages_with_env(sim, _env_mgr, env_name)
+        except Exception as e:
+            # Non-fatal — surface the issue rather than crashing.
+            sim["__derive_warning__"] = f"derive_packages_from_env failed: {e}"
+    derive_step_dag(sim)
+    _derive_reference_database_availability(sim)
+    _derive_step_validation_status(sim)
+    sim["env_status"]      = _derive_env_status(sim)
+    sim["pipeline_status"] = _derive_pipeline_status(sim)
+
     try:
-        PipelineSpec.model_validate(draft)
+        PipelineSpec.model_validate(sim)
         return {
             "valid":           True,
-            "env_status":      draft.get("env_status"),
-            "pipeline_status": draft.get("pipeline_status"),
-            "package_count":   len(draft.get("packages", []) or []),
-            "install_steps":   len(draft.get("install_steps", []) or []),
-            "pipeline_steps":  len(draft.get("pipeline_steps", []) or []),
+            "env_status":      sim.get("env_status"),
+            "pipeline_status": sim.get("pipeline_status"),
+            "package_count":   len(sim.get("packages", []) or []),
+            "install_steps":   len(sim.get("install_steps", []) or []),
+            "pipeline_steps":  len(sim.get("pipeline_steps", []) or []),
+            "derive_warning":  sim.get("__derive_warning__"),
         }
     except ValidationError as e:
         return {
             "valid":             False,
             "validation_errors": e.errors(),
+            "env_status":        sim.get("env_status"),
+            "pipeline_status":   sim.get("pipeline_status"),
         }
 
 

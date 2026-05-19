@@ -35,13 +35,36 @@ class OutputValidator:
         )
         self._env_name: str | None = None
 
-    def validate(self, file_path: str, expected_type: str, env_name: str | None = None) -> dict[str, Any]:
+    def validate(
+        self,
+        file_path: str,
+        expected_type: str,
+        env_name: str | None = None,
+        allow_empty: bool = False,
+    ) -> dict[str, Any]:
+        """Validate that `file_path` is a real file of `expected_type`.
+
+        allow_empty: when True, an empty file passes validation instead of failing.
+        Real-world need: some tools emit a `.err` / `.log` and write nothing to
+        it on success (the empty file IS the success signal). The caller should
+        set this when "empty is OK" for that file's role; default is the safer
+        "empty is suspicious".
+        """
         path = Path(file_path)
         self._env_name = env_name
 
         if not path.exists():
             return {"passed": False, "file": file_path, "error": "File does not exist"}
         if path.stat().st_size == 0:
+            if allow_empty:
+                return {
+                    "passed":       True,
+                    "file":         file_path,
+                    "expected_type": expected_type,
+                    "size_bytes":   0,
+                    "method":       "empty_allowed",
+                    "note":         "empty file accepted because allow_empty=True",
+                }
             return {"passed": False, "file": file_path, "error": "File is empty"}
 
         dispatch = {
