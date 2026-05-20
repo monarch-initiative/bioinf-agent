@@ -35,7 +35,7 @@ from agent.skills.report_builder import generate as generate_report
 # Pipeline spec persistence
 # ---------------------------------------------------------------------------
 
-def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = None) -> dict:
+def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = None, validator: Optional[Any] = None) -> dict:
     """Validate and write a PipelineSpec dict as YAML + HTML report.
 
     Derives each pipeline_step's validation_status from its validation dict,
@@ -76,7 +76,7 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     # patterns the agent declared. Result also recorded in usage._self_test
     # for transparency in the report (visible audit trail).
     if env_manager is not None and spec.get("usage"):
-        st = self_test_usage(spec, env_manager)
+        st = self_test_usage(spec, env_manager, validator=validator)
         spec["usage_verified"] = bool(st.get("ok"))
         spec["usage"]["_self_test"] = st
 
@@ -238,7 +238,7 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def self_test_usage(spec: dict, env_manager: Any) -> dict:
+def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None) -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
 
     Keystone honesty check (I4): for each declared input shape, substitute the
@@ -297,7 +297,7 @@ def self_test_usage(spec: dict, env_manager: Any) -> dict:
         }]
 
     trial_results = [
-        _run_one_trial(plan, template, placeholders, outputs_spec, env_manager, env_name, spec)
+        _run_one_trial(plan, template, placeholders, outputs_spec, env_manager, env_name, spec, validator)
         for plan in trial_plans
     ]
 
@@ -367,9 +367,16 @@ def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> di
 
 def _run_one_trial(
     plan: dict, template: str, placeholders: set, outputs_spec: list,
-    env_manager: Any, env_name: str, spec: dict,
+    env_manager: Any, env_name: str, spec: dict, validator: Optional[Any],
 ) -> dict:
-    """Execute one trial: substitute, run in fresh scratch, verify outputs."""
+    """Execute one trial: substitute, run in fresh scratch, verify outputs.
+
+    The trial passes only when EVERY pattern in usage.outputs[*].files matched
+    a produced file AND every matched file passes type-aware validate_output.
+    Filename-match alone (the original I4) was satisfiable by `touch foo.bam`;
+    requiring the validator to confirm the bytes are a real BAM, VCF, JSON,
+    etc. kills the cheap-fake path.
+    """
     import fnmatch, shutil, tempfile
 
     trial_name = plan["name"]
@@ -410,14 +417,21 @@ def _run_one_trial(
         if p.is_file():
             produced.append(str(p.relative_to(scratch)))
 
+    # Step 1: every declared pattern must match at least one produced file.
     missing_outputs = []
+    matched_files: dict[str, list[tuple[str, str]]] = {}   # pattern → [(produced_rel, declared_type)]
     for o in outputs_spec:
         patterns = o.get("files") or []
-        if not patterns:
-            continue
+        declared_type = (o.get("type") or "").lower()
         for pat in patterns:
-            if not any(fnmatch.fnmatch(f, pat) or fnmatch.fnmatch(Path(f).name, pat) for f in produced):
+            matches = [
+                f for f in produced
+                if fnmatch.fnmatch(f, pat) or fnmatch.fnmatch(Path(f).name, pat)
+            ]
+            if not matches:
                 missing_outputs.append({"slot": o.get("name"), "pattern": pat})
+            else:
+                matched_files.setdefault(pat, []).extend((m, declared_type) for m in matches)
 
     if missing_outputs:
         return {
@@ -429,12 +443,62 @@ def _run_one_trial(
             "substitutions": subs,
         }
 
+    # Step 2: type-aware validation on each matched file. Skips when the
+    # validator wasn't passed in (legacy path / unit tests), but with the
+    # MCP server wired up, validator is always supplied so this is the
+    # mainline.
+    validation_results: list[dict] = []
+    if validator is not None:
+        for pat, matches in matched_files.items():
+            for produced_rel, declared_type in matches:
+                abs_path = str(scratch / produced_rel)
+                # Resolve expected type: declared > extension inference > "any".
+                etype = declared_type or _infer_type_from_basename(Path(produced_rel).name)
+                v = validator.validate(abs_path, etype, env_name=env_name)
+                validation_results.append({
+                    "pattern":       pat,
+                    "file":          produced_rel,
+                    "expected_type": etype,
+                    "passed":        bool(v.get("passed")),
+                    "method":        v.get("validation_method") or v.get("method"),
+                    "error":         v.get("error"),
+                })
+
+        failed = [v for v in validation_results if not v["passed"]]
+        if failed:
+            return {
+                "name": trial_name, "ok": False,
+                "reason": "command ran and produced files but type-validation failed",
+                "failed_validations": failed[:10],
+                "validation_results": validation_results[:20],
+                "produced_files": produced[:20],
+                "command_run": command, "scratch_dir": str(scratch),
+                "substitutions": subs,
+            }
+
     return {
         "name": trial_name, "ok": True,
         "command_run": command, "substitutions": subs,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
+        "validation_results": validation_results[:20],
         "description": plan.get("description"),
     }
+
+
+def _infer_type_from_basename(basename: str) -> str:
+    """Map a basename to a validator type. Mirrors _infer_validator_type in
+    mcp_server.py; kept here to avoid the import cycle."""
+    name = basename.lower()
+    if name.endswith(".gz"):
+        name = name[:-3]
+    last = name.rsplit(".", 1)[-1]
+    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
+                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
+                  "html", "json", "jsonl", "fq"):
+        if last == known:
+            # validator dispatches on "fasta" not "fa", "fastq" not "fq"
+            return "fastq" if known == "fq" else known
+    return "any"
 
 
 def check_invariants(spec: dict) -> list[dict]:
@@ -536,6 +600,29 @@ def check_invariants(spec: dict) -> list[dict]:
                 "unvalidated_files": [Path(o).name for o in unvalidated[:5]],
             })
 
+        # I3 amendment: expected_type="any" is the lazy fallback that only
+        # checks file-exists-and-nonzero. For biomedical-grade specs, every
+        # validation must declare a real type so OutputValidator dispatches
+        # to a type-aware checker (samtools view for BAM, bcftools for VCF,
+        # json.loads for JSON, etc.). Forces agents to pass output_types in
+        # run_pipeline_step rather than leaning on extension-inference
+        # falling through to "any".
+        any_typed = [
+            (fn, v) for fn, v in validation.items()
+            if isinstance(v, dict) and (v.get("expected_type") or "").lower() == "any"
+        ]
+        if any_typed:
+            violations.append({
+                "invariant": "I3.declared_output_type",
+                "message":   f"pipeline_step {step_n} has {len(any_typed)} output(s) "
+                             f"validated as expected_type='any' (exists-nonzero only). "
+                             f"Declare a real type via run_pipeline_step's output_types "
+                             f"so the validator does type-aware checks. Lazy 'any' fails "
+                             f"the honesty contract — `touch foo.bar` would pass.",
+                "where":     f"pipeline_steps[step={step_n}].validation",
+                "any_typed_files": [fn for fn, _ in any_typed[:5]],
+            })
+
     # ------------------------------------------------------------------
     # I5: every declared local_path on disk actually exists. Reference DBs
     # without their data don't run. The schema's `available` field already
@@ -634,27 +721,44 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
       - paths under any conda env directory (envs/{...}/) — bundled tool data
       - URLs (http:// https:// ftp://)
     """
+    # Project root for resolving relative test_data paths into absolute
+    # form — select_test_data records paths relative to project root, but
+    # pipeline_steps store absolute paths. Both shapes must compare equal.
+    project_root = Path(__file__).parent.parent.parent.resolve()
+
+    def _add_external(s: str) -> None:
+        if not isinstance(s, str) or not s:
+            return
+        external_paths.add(s)
+        p = Path(s)
+        if not p.is_absolute():
+            joined = project_root / p
+            external_paths.add(str(joined))            # absolute, unresolved
+            try:
+                external_paths.add(str(joined.resolve()))   # symlink-resolved
+            except Exception:
+                pass
+        else:
+            try:
+                external_paths.add(str(p.resolve()))
+            except Exception:
+                pass
+
     external_paths: set[str] = set()
 
     td = spec.get("test_data") or {}
     if isinstance(td, dict):
         for k in ("r1", "r2", "vcf", "tbi", "bam", "bai", "ped",
                   "reference_fasta", "core_data_dir", "file"):
-            v = td.get(k)
-            if isinstance(v, str) and v:
-                external_paths.add(v)
+            _add_external(td.get(k))
 
     for rdb in spec.get("reference_databases", []) or []:
         if isinstance(rdb, dict):
-            lp = rdb.get("local_path")
-            if isinstance(lp, str) and lp:
-                external_paths.add(lp)
+            _add_external(rdb.get("local_path"))
 
     for rc in spec.get("runtime_configs", []) or []:
         if isinstance(rc, dict):
-            p = rc.get("path")
-            if isinstance(p, str) and p:
-                external_paths.add(p)
+            _add_external(rc.get("path"))
 
     def _is_orphan_exempt(p: str) -> bool:
         if not p or not isinstance(p, str):
@@ -722,22 +826,47 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
 
 
 def _derive_docker_status(spec: dict) -> str:
-    """A separate status for the Docker artifact, distinct from env / pipeline.
+    """Docker status anchored to live `docker image inspect`, not the
+    spec's docker.build_success claim.
 
     Returns:
-      not_attempted  — no docker block present, or build_attempted=False
-      built          — build_attempted=True AND build_success=True
-      failed         — build_attempted=True AND build_success=False
-                       (the spec is otherwise fine but the image won't deploy)
+      not_attempted  — no docker block, or build_attempted=False
+      built          — build_attempted=True AND `docker image inspect <tag>`
+                       confirms the image exists in the daemon
+      failed         — build_attempted=True AND (build_success=False OR
+                       docker inspect cannot find the image)
 
-    Kept orthogonal to env_status / pipeline_status so a Docker-daemon-down
-    machine doesn't false-fail an otherwise valid install — but the failure is
-    still visible at the top of the report rather than buried in the docker block.
+    The live inspect kills the patch-pipeline-injection path: even if an
+    agent fabricated docker.build_success=True (which the patch whitelist
+    already blocks, but defense-in-depth), the image still has to be
+    findable by the local Docker daemon to claim status=built.
+
+    If docker isn't available on the host at all, falls back to the spec
+    claim — production HPC machines without Docker shouldn't false-fail.
     """
+    import shutil, subprocess
     docker = spec.get("docker")
     if not docker or not docker.get("build_attempted"):
         return "not_attempted"
-    return "built" if docker.get("build_success") else "failed"
+
+    claimed_success = bool(docker.get("build_success"))
+    image_tag = docker.get("image_tag")
+
+    if not image_tag or not shutil.which("docker"):
+        return "built" if claimed_success else "failed"
+
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", image_tag],
+            capture_output=True, text=True, timeout=10,
+        )
+        live_exists = r.returncode == 0
+    except Exception:
+        return "built" if claimed_success else "failed"
+
+    if claimed_success and live_exists:
+        return "built"
+    return "failed"
 
 
 def _derive_reference_database_availability(spec: dict) -> None:

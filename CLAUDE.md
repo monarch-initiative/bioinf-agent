@@ -18,15 +18,17 @@ A spec written by `finalize_pipeline` is machine-verifiable. The runtime enforce
 | ID | Invariant | Source of truth |
 |----|-----------|-----------------|
 | I1 | every `install_step.returncode == 0` (or marked `status: failed`) | runtime subprocess exit code |
-| I2 | every non-infrastructure package has a `verify_output` from a real check_command run | `verify_installation` captures actual stdout |
-| I3 | every `pipeline_step` with rc=0 has `detected_outputs` AND each is validated | filesystem snapshot + `validate_output` results |
-| I4 | `usage.command_template` actually executes against **every declared trial** and produces declared outputs | self-test runs the template in a fresh dir per trial |
+| I2 | every non-infrastructure package has `verify_output` AND its check_command invokes the package as a word-boundary token | `verify_installation` rejects echo-cheats; records `which {name}` as a second anchor |
+| I3 | every `pipeline_step` with rc=0 has validated `detected_outputs` AND no validation uses `expected_type="any"` | filesystem snapshot + type-aware `validate_output` (samtools / bcftools / json.loads / …) |
+| I4 | `usage.command_template` executes against **every declared trial** AND each produced file passes type-aware validation | per-trial fresh scratch dir + `OutputValidator` on each produced file |
 | I5 | every `reference_database.local_path` exists on disk | filesystem check |
 | I6 | every path in inputs / outputs is absolute | string check |
 | I7 | every `pipeline_step` with rc=0 has `resource_usage` (wall, peak RSS, peak CPU) | psutil monitor polled the process tree during execution |
 | I8 | every `pipeline_step` input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs) | universe-of-prior-outputs walk at finalize |
 
-Plus: `env_status`, `pipeline_status`, `docker_status` are *derived* from the above, never agent-asserted. `lock_sha256` is recorded so a recreated env can be byte-verified.
+**patch_pipeline** is restricted to agent-authored keys: `description`, `notes`, `final_summary`, `conda_env`, `created_at`, `python_version`, `reference_free`, `runtime_environment`, `runtime_configs`, `reference_databases`, `service_dependencies`, `usage`. Patches to `pipeline_steps`, `install_steps`, `packages`, `verifications`, `test_data`, `docker`, or any derived status (`env_status` / `pipeline_status` / `docker_status` / `usage_verified` / `lock_sha256`) are **rejected** — those must flow through their dedicated primitive so the runtime is the sole producer.
+
+`env_status` / `pipeline_status` / `docker_status` are derived, never agent-asserted. `docker_status` is anchored to `docker image inspect <tag>` at finalize, not the spec's claim — even if `docker.build_success` is truthy, status flips to `failed` if the image isn't present in the local daemon. `lock_sha256` is computed from a fresh `conda list --explicit` probe of the env at finalize.
 
 Nothing in a finalized spec is taken on faith from the agent. The few free-form fields (`description`, `notes`) are clearly LLM-authored and explicitly *not* part of the verified surface.
 

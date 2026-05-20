@@ -207,16 +207,66 @@ class EnvManager:
         }
 
     def verify(self, env_name: str, package_name: str, check_command: str) -> dict[str, Any]:
+        """Run check_command in env to confirm the package works.
+
+        Hardened to block trivial cheats like `echo "samtools 1.21"` that
+        produce a plausible verify_output without ever invoking the tool.
+        Two anchors layered together:
+
+          1. The check_command must contain the package name as a word-
+             boundary token (case-insensitive). Bare `echo "v1.21"` fails.
+          2. A second source of truth — `which <package_name>` in the env
+             OR a conda/pip/R record — is captured separately as
+             `installed_at` and surfaced in the spec. If both `which`
+             fails AND no install record exists, verification fails even
+             if check_command happened to return zero. This kills the
+             `echo "samtools 1.21"` cheat: even if the agent picks a
+             command that mentions the name, the binary still has to be
+             present in the env.
+
+        Returns: {success, package_name, check_command, output, returncode,
+                  installed_at, name_token_present}.
+        """
+        import re
+
+        token_present = bool(re.search(
+            rf"\b{re.escape(package_name)}\b", check_command, flags=re.IGNORECASE
+        ))
+
         result = self.run_in_env(env_name, check_command, timeout=30)
         output = (result.get("stdout", "") + result.get("stderr", "")).strip()
-        success = result.get("returncode", 1) == 0
+        rc      = result.get("returncode", 1)
+        cmd_ok  = rc == 0
+
+        # Independent presence anchor: `which <name>` in the env.
+        which_res = self.run_in_env(env_name, f"which {package_name} 2>/dev/null", timeout=10)
+        which_out = (which_res.get("stdout") or "").strip()
+        installed_at = which_out if which_res.get("returncode") == 0 and which_out else None
+
+        # Hard gate: check_command must reference the package as a word-
+        # boundary token. R / pip / JAR / conda all naturally satisfy this
+        # (library(DESeq2), import multiqc, samtools --version, etc.), but
+        # `echo "fake 1.21"` does not.
+        success = bool(cmd_ok and token_present)
+
+        rejection_reason = None
+        if cmd_ok and not token_present:
+            rejection_reason = (
+                f"check_command does not invoke '{package_name}' as a recognizable token. "
+                f"Use a real invocation like '{package_name} --version' (binary), "
+                f"'Rscript -e \"library({package_name})\"' (R), or "
+                f"'python -c \"import {package_name}\"' (pip) — not an echo / printf cheat."
+            )
 
         return {
-            "success": success,
-            "package_name": package_name,
-            "check_command": check_command,
-            "output": output[:500],
-            "returncode": result.get("returncode"),
+            "success":            success,
+            "package_name":       package_name,
+            "check_command":      check_command,
+            "output":             output[:500],
+            "returncode":         rc,
+            "installed_at":       installed_at,
+            "name_token_present": token_present,
+            "rejection_reason":   rejection_reason,
         }
 
     def run_in_env(

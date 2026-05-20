@@ -153,6 +153,91 @@ def test_invariant_checker_catches_orphan_step_input():
         "orphan input path with no producing source should violate I8"
 
 
+def test_invariant_checker_catches_any_typed_validation():
+    """I3 strengthening: a step whose validations all use expected_type='any'
+    (the lazy `_check_any` exists-nonzero fallback) is a violation. Forces
+    declared types so OutputValidator does real type-aware checks.
+    """
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "test_data": {"bam": "/abs/x.bam"},
+        "pipeline_steps": [{
+            "step": 1, "tool": "samtools", "command": "samtools view /abs/x.bam",
+            "returncode": 0,
+            "inputs":  [{"path": "/abs/x.bam"}],
+            "detected_outputs": ["/abs/out.weird"],
+            "validation": {"out.weird": {"passed": True, "expected_type": "any"}},
+            "validation_status": "passed",
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0},
+        }],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I3.declared_output_type" for v in violations), \
+        "expected_type='any' should violate I3"
+
+
+def test_invariant_checker_accepts_typed_validation():
+    """I3 sanity: a step with declared types (bam/json/etc) passes."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "test_data": {"bam": "/abs/x.bam"},
+        "pipeline_steps": [{
+            "step": 1, "tool": "samtools", "command": "samtools view /abs/x.bam",
+            "returncode": 0,
+            "inputs":  [{"path": "/abs/x.bam"}],
+            "detected_outputs": ["/abs/out.bam"],
+            "validation": {"out.bam": {"passed": True, "expected_type": "bam"}},
+            "validation_status": "passed",
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0},
+        }],
+    }
+    violations = [v for v in check_invariants(spec)
+                  if v["invariant"] == "I3.declared_output_type"]
+    assert not violations, f"typed validation should pass I3: {violations}"
+
+
+def test_patch_pipeline_blocks_runtime_captured_keys():
+    """patch_pipeline must reject patches to runtime-captured / derived fields.
+    Tests the whitelist directly via PipelineState.patch.
+    """
+    from agent.skills.pipeline_state import PipelineState
+
+    config = {"paths": {"pipelines_dir": "/tmp/bioinf_test_drafts"}}
+    ps = PipelineState(config)
+    ps.start("blocked_test", "test")
+
+    # All of these should be rejected.
+    for key in ["pipeline_steps", "install_steps", "packages", "verifications",
+                "docker", "env_status", "pipeline_status", "docker_status",
+                "usage_verified", "lock_sha256"]:
+        r = ps.patch("blocked_test", {key: ["whatever"]})
+        assert "error" in r, f"patch to {key} should have been rejected; got {r}"
+        assert key in (r.get("rejected_keys") or []), \
+            f"{key} should be in rejected_keys; got {r}"
+    ps.discard("blocked_test")
+
+
+def test_patch_pipeline_allows_agent_authored_keys():
+    """patch_pipeline must accept patches to agent-authored fields."""
+    from agent.skills.pipeline_state import PipelineState
+
+    config = {"paths": {"pipelines_dir": "/tmp/bioinf_test_drafts"}}
+    ps = PipelineState(config)
+    ps.start("allowed_test", "test")
+    r = ps.patch("allowed_test", {
+        "notes": ["hello"],
+        "runtime_environment": {"type": "conda"},
+        "usage": {"description": "x", "command_template": "echo {X}"},
+    })
+    assert "error" not in r, f"agent-authored patch should pass; got {r}"
+    assert set(r["patched_keys"]) == {"notes", "runtime_environment", "usage"}
+    ps.discard("allowed_test")
+
+
 def test_invariant_checker_accepts_chained_step_inputs():
     """I8 sanity: step 2's input is step 1's output → no violation. Proves
     the universe-of-prior-outputs accumulator works."""

@@ -252,11 +252,70 @@ class PipelineState:
         self._persist(pipeline_id)
         return True
 
+    # Top-level keys patch_pipeline is allowed to write. Anything else is
+    # runtime-captured (pipeline_steps / install_steps / packages / validation
+    # / verifications / resource_usage) or finalize-derived (env_status,
+    # pipeline_status, docker_status, usage_verified, lock_sha256) and cannot
+    # be hand-supplied via patch — otherwise the honesty contract is bypassable.
+    #
+    # The agent's role via patch is limited to fields no primitive captures:
+    # author-supplied prose (description, notes, final_summary), the runtime-
+    # environment hint, runtime / reference configs, service dependencies,
+    # and the canonical usage block (whose self-test is re-run live anyway).
+    PATCHABLE_KEYS: frozenset[str] = frozenset({
+        "description", "notes", "final_summary",
+        "conda_env", "created_at", "python_version", "reference_free",
+        "runtime_environment", "runtime_configs", "reference_databases",
+        "service_dependencies",
+        "usage",
+    })
+
+    # Keys that are runtime-captured or finalize-derived. Blocked from patch
+    # entirely. If the agent needs to modify one of these, it must go through
+    # the dedicated primitive (run_pipeline_step, verify_installation, etc.).
+    BLOCKED_PATCH_KEYS: frozenset[str] = frozenset({
+        "pipeline_steps", "install_steps", "packages",
+        "verifications", "search_cache", "test_data", "docker",
+        "env_status", "pipeline_status", "docker_status",
+        "usage_verified", "lock_sha256",
+    })
+
     def patch(self, pipeline_id: str, patches: dict) -> dict:
-        """Deep-merge arbitrary patches into the draft. Escape hatch."""
+        """Deep-merge agent-authored patches into the draft.
+
+        Only keys in PATCHABLE_KEYS are accepted. Patches to runtime-captured
+        or finalize-derived fields are rejected with a clear violation —
+        those have to flow through their dedicated primitive so the spec's
+        claims stay anchored to observed reality.
+        """
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return {"error": f"unknown pipeline_id: {pipeline_id}"}
+
+        rejected = [k for k in patches if k in self.BLOCKED_PATCH_KEYS]
+        unknown  = [k for k in patches if k not in self.PATCHABLE_KEYS and k not in self.BLOCKED_PATCH_KEYS]
+        if rejected:
+            return {
+                "error": (
+                    f"patch refused — these keys are runtime-captured or "
+                    f"finalize-derived and cannot be hand-supplied: {rejected}. "
+                    f"Use the dedicated primitive (run_pipeline_step, "
+                    f"verify_installation, install_packages, build_docker_image) "
+                    f"so the spec stays anchored to observed reality."
+                ),
+                "rejected_keys":  rejected,
+                "patchable_keys": sorted(self.PATCHABLE_KEYS),
+            }
+        if unknown:
+            return {
+                "error": (
+                    f"patch refused — unknown keys: {unknown}. "
+                    f"Did you mean one of {sorted(self.PATCHABLE_KEYS)}?"
+                ),
+                "unknown_keys":   unknown,
+                "patchable_keys": sorted(self.PATCHABLE_KEYS),
+            }
+
         _deep_merge(draft, patches)
         self._persist(pipeline_id)
         return {

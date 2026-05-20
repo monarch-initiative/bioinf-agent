@@ -83,6 +83,12 @@ class OutputValidator:
             "gfa":           self._check_gfa,
             "gaf":           self._check_gfa,   # same record-type structure
             "log":           self._check_log,
+            "json":          self._check_json,
+            "jsonl":         self._check_jsonl,
+            "html":          self._check_html,
+            "tsv":           self._check_tsv,
+            "csv":           self._check_csv,
+            "txt":           self._check_txt,
             "any":           self._check_any,
         }
 
@@ -242,6 +248,97 @@ class OutputValidator:
     def _check_log(self, path: Path) -> dict:
         lines = self._head_lines(path, 5)
         return {"passed": bool(lines), "validation_method": "text_fallback", "lines": len(lines)}
+
+    def _check_json(self, path: Path) -> dict:
+        """Parse the file as JSON. Fails loudly if it isn't valid JSON."""
+        import json
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            return {"passed": False, "validation_method": "json_parse", "error": str(e)}
+        except Exception as e:
+            return {"passed": False, "validation_method": "json_parse", "error": str(e)}
+        top_type = type(data).__name__
+        return {
+            "passed": True, "validation_method": "json_parse",
+            "top_type": top_type,
+            "top_keys": list(data.keys())[:10] if isinstance(data, dict) else None,
+        }
+
+    def _check_jsonl(self, path: Path) -> dict:
+        """Parse the first N lines as JSON; each must be a valid JSON object."""
+        import json
+        n_ok = 0
+        n_bad = 0
+        first_error = None
+        with open(path) as f:
+            for i, line in enumerate(f):
+                if i >= 20:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    json.loads(line)
+                    n_ok += 1
+                except json.JSONDecodeError as e:
+                    n_bad += 1
+                    if first_error is None:
+                        first_error = f"line {i+1}: {e}"
+        if n_bad > 0:
+            return {"passed": False, "validation_method": "jsonl_parse",
+                    "lines_ok": n_ok, "lines_bad": n_bad, "first_error": first_error}
+        return {"passed": n_ok > 0, "validation_method": "jsonl_parse", "lines_ok": n_ok}
+
+    def _check_html(self, path: Path) -> dict:
+        """Header probe — file must begin with <!DOCTYPE html or <html (case-insensitive)
+        within the first 200 bytes. Catches `touch foo.html` (passes exists_nonzero
+        but isn't HTML)."""
+        try:
+            head = path.open("rb").read(200).lstrip().lower()
+        except Exception as e:
+            return {"passed": False, "validation_method": "html_header", "error": str(e)}
+        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+            return {"passed": True, "validation_method": "html_header"}
+        return {"passed": False, "validation_method": "html_header",
+                "error": f"no <!DOCTYPE html / <html prefix; first bytes: {head[:40]!r}"}
+
+    def _check_tabular(self, path: Path, sep: str, label: str) -> dict:
+        """Generic tabular sanity: at least one row, consistent column count
+        across the first 20 sampled rows."""
+        rows = self._head_lines(path, 20)
+        if not rows:
+            return {"passed": False, "validation_method": f"{label}_parse", "error": "empty"}
+        cols = [len(r.split(sep)) for r in rows if r and not r.startswith("#")]
+        if not cols:
+            return {"passed": False, "validation_method": f"{label}_parse",
+                    "error": "no data rows"}
+        if len(set(cols)) > 1:
+            return {"passed": False, "validation_method": f"{label}_parse",
+                    "error": f"inconsistent column counts across rows: {sorted(set(cols))[:5]}"}
+        return {"passed": True, "validation_method": f"{label}_parse",
+                "rows_sampled": len(rows), "columns": cols[0]}
+
+    def _check_tsv(self, path: Path) -> dict:
+        return self._check_tabular(path, "\t", "tsv")
+
+    def _check_csv(self, path: Path) -> dict:
+        return self._check_tabular(path, ",", "csv")
+
+    def _check_txt(self, path: Path) -> dict:
+        """Sanity: non-empty, mostly-printable text (catches a binary blob
+        renamed to .txt)."""
+        try:
+            sample = path.open("rb").read(4096)
+        except Exception as e:
+            return {"passed": False, "validation_method": "txt_probe", "error": str(e)}
+        if not sample:
+            return {"passed": False, "validation_method": "txt_probe", "error": "empty"}
+        if b"\x00" in sample:
+            return {"passed": False, "validation_method": "txt_probe",
+                    "error": "contains NUL bytes — looks binary, not text"}
+        return {"passed": True, "validation_method": "txt_probe", "bytes_sampled": len(sample)}
 
     def _check_any(self, path: Path) -> dict:
         return {"passed": True, "validation_method": "exists_nonzero", "note": "Generic check — file exists and non-empty"}

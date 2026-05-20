@@ -636,6 +636,10 @@ def _infer_validator_type(basename: str, ext: str) -> str:
         ext = ext[:-3]
     # Final extension is usually authoritative.
     last = ext.split(".")[-1] if ext else ""
+    # Aliases — map common shorthands to canonical validator types.
+    aliases = {"fq": "fastq", "fa": "fasta", "fna": "fasta", "faa": "fasta", "ndjson": "jsonl"}
+    if last in aliases:
+        return aliases[last]
     # Validator's internal dispatch already keys off these names; mirror it.
     for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
                   "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
@@ -1052,7 +1056,7 @@ def save_pipeline_report(spec: dict) -> dict:
     "fully_validated" requires every step to have validation_status="passed"
     (set by validate_output). If you set `status` it will be overwritten by the
     derived value, which also returned in the response."""
-    return _save_pipeline_spec(spec, config, env_manager=_env_mgr)
+    return _save_pipeline_spec(spec, config, env_manager=_env_mgr, validator=_validator)
 
 
 @mcp.tool()
@@ -1491,9 +1495,13 @@ def finalize_pipeline(pipeline_id: str) -> dict:
             "draft_path":        str(_pipeline_state._draft_path(pipeline_id)),
         }
 
-    result = _save_pipeline_spec(draft, config, env_manager=_env_mgr)
-    _pipeline_state.pop_for_finalize(pipeline_id)
-    _pipeline_state.delete_draft_file(pipeline_id)
+    result = _save_pipeline_spec(draft, config, env_manager=_env_mgr, validator=_validator)
+    # Only consume the draft if the save actually succeeded. Invariant
+    # violations / validation errors must leave the draft on disk so the
+    # agent can patch + retry without re-running the whole install.
+    if not result.get("error") and result.get("saved_yaml"):
+        _pipeline_state.pop_for_finalize(pipeline_id)
+        _pipeline_state.delete_draft_file(pipeline_id)
     return result
 
 
@@ -1850,9 +1858,9 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     """
     invariants = [
         "I1: every install_step.returncode is 0 (or marked status=failed)",
-        "I2: every non-infrastructure package has a verify_output from a real run",
-        "I3: every pipeline_step has detected_outputs AND each is validated",
-        "I4: usage.command_template executes against every declared trial — multi-shape coverage",
+        "I2: every non-infrastructure package has verify_output AND its check_command invokes the package as a word-boundary token (echo-cheats rejected)",
+        "I3: every pipeline_step has validated detected_outputs AND no validation uses expected_type='any' — declare types via run_pipeline_step's output_types",
+        "I4: usage.command_template executes against every declared trial AND each produced file passes type-aware validate_output (samtools/bcftools/json.loads/etc — touch-and-hope cheats fail)",
         "I5: every reference_database.local_path exists on disk",
         "I6: every input/output path is absolute",
         "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step",
@@ -1867,14 +1875,17 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "run_pipeline_step: run + auto-validate every detected output in one call",
         "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
     ]
+    build_docker = bool(hints.get("build_docker", False))
     protocol = [
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose for this tool; primitives handle category details",
-        "3. select_test_data + run_pipeline_step (auto-validates outputs)",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial)",
-        "5. build_docker_image (BEFORE finalize — finalize deletes the draft)",
+        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types)",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, service_dependencies, description, final_summary). Pipeline_steps / install_steps / packages / validation / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
+        ("5. build_docker_image (BEFORE finalize) — Docker daemon must be available."
+         if build_docker else
+         "5. SKIPPED: build_docker_image — pass hints={build_docker: true} to install_pipeline_brief to include it. When skipped, docker_status stays not_attempted; the spec is still finalize-able."),
         "6. validate_pipeline_draft (dry-run; fix anything reported)",
-        "7. finalize_pipeline — runs invariant check + self-test of usage.command_template",
+        "7. finalize_pipeline — runs invariant check + self-test of usage.command_template against every declared trial. Type-aware validation (samtools/bcftools/json.loads/etc) is run on produced files; touch-and-hope cheats fail.",
         "8. write_pipeline_provenance with the right input shape",
     ]
     return {
