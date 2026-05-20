@@ -1528,21 +1528,26 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
 
 @mcp.tool()
 def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
-    """Deep-merge arbitrary patches into the draft. Escape hatch for fields
-    no tool produces directly — runtime_environment, runtime_configs,
-    reference_databases, service_dependencies, notes, final_summary — or
-    for overriding server-derived values.
+    """Deep-merge agent-authored patches into the draft. Accepts only the
+    keys no primitive produces directly: description, notes, final_summary,
+    conda_env, created_at, python_version, reference_free, runtime_environment,
+    runtime_configs, reference_databases, service_dependencies, usage.
 
-    Lists `pipeline_steps` and `install_steps` are merged element-by-element
-    on the `step` field, so a partial patch like
-    {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
-    updates just that step's validation_status without clobbering the rest.
-    All other lists are replaced wholesale.
+    Patches to runtime-captured or finalize-derived fields (pipeline_steps,
+    install_steps, packages, verifications, test_data, authored_artifacts,
+    docker, env_status, pipeline_status, docker_status, usage_verified,
+    lock_sha256) are rejected — use the dedicated primitive instead so the
+    spec stays anchored to observed reality.
 
-    Deletion: pass the literal string "__DELETE__" as a value to remove that
-    key. e.g. {"verifications": {"samtools": "__DELETE__"}} drops the samtools
-    entry from verifications. Use this rather than setting to None — None
-    can trigger downstream attribute errors."""
+    Lists are replaced wholesale (pipeline_steps and install_steps are blocked
+    here anyway; they merge by step number through their own primitives).
+
+    Deletion: pass the literal string "__DELETE__" as a value inside a
+    patchable key's subtree to remove that nested key. e.g.
+    {"runtime_environment": {"min_ram_gb": "__DELETE__"}} drops the
+    min_ram_gb hint while leaving the rest of runtime_environment intact.
+    Use this rather than setting to None — None can trigger downstream
+    attribute errors."""
     return _pipeline_state.patch(pipeline_id, patches)
 
 

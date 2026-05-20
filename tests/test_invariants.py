@@ -411,3 +411,279 @@ def test_invariant_checker_accepts_chained_step_inputs():
     violations = [v for v in check_invariants(spec)
                   if v["invariant"] == "I8.composition_coherence"]
     assert not violations, f"chained step inputs should not violate I8: {violations}"
+
+
+# ---------------------------------------------------------------------------
+# I0 — shape sanity. A malformed entry in a top-level list used to silently
+# skip subsequent invariant checks; now it surfaces as a violation.
+# ---------------------------------------------------------------------------
+
+def test_invariant_checker_catches_non_dict_in_packages():
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}, "oops_a_string"],
+        "install_steps": [],
+        "pipeline_steps": [],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I0.shape_sanity" and "packages[1]" in v.get("where", "")
+               for v in violations), f"non-dict entry should violate I0: {violations}"
+
+
+def test_invariant_checker_catches_non_list_top_level():
+    spec = {
+        "pipeline_name": "test",
+        "packages": "not_a_list",  # malformed
+        "install_steps": [],
+        "pipeline_steps": [],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I0.shape_sanity" and v["where"] == "packages"
+               for v in violations), f"non-list top-level field should violate I0: {violations}"
+
+
+# ---------------------------------------------------------------------------
+# I6 (extended) — usage.command_template placeholders must be declared in
+# usage.inputs[*].name (or be OUTPUT_DIR / OUT_DIR scratch slots).
+# ---------------------------------------------------------------------------
+
+def test_invariant_checker_catches_undeclared_template_placeholder():
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+        "usage": {
+            "description": "x",
+            "command_template": "samtools view {INPUT_BAM} -o {OUPUT_DIR}/out.bam",  # typo
+            "inputs": [{"name": "INPUT_BAM", "format": "bam"}],
+            "outputs": [{"name": "OUTPUT_DIR", "files": ["out.bam"]}],
+        },
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I6.template_placeholders_declared"
+               and "OUPUT_DIR" in v.get("undeclared_placeholders", [])
+               for v in violations), f"typo placeholder should violate I6: {violations}"
+
+
+def test_invariant_checker_accepts_declared_and_scratch_placeholders():
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+        "usage": {
+            "description": "x",
+            "command_template": "samtools view {INPUT_BAM} -o {OUTPUT_DIR}/out.bam",
+            "inputs": [{"name": "INPUT_BAM", "format": "bam"}],
+            "outputs": [{"name": "OUTPUT_DIR", "files": ["out.bam"]}],
+        },
+    }
+    violations = [v for v in check_invariants(spec)
+                  if v["invariant"] == "I6.template_placeholders_declared"]
+    assert not violations, f"declared placeholders should pass: {violations}"
+
+
+# ---------------------------------------------------------------------------
+# stage_authored_artifact MCP boundary — exercises the primitive directly,
+# not the underlying PipelineState mutator. Covers argument validation
+# (exactly one of content/generated_by), overwrite semantics, sha256
+# computation, and the pipeline_id handshake.
+# ---------------------------------------------------------------------------
+
+def test_stage_authored_artifact_content_mode(tmp_path, monkeypatch):
+    """content mode writes the file, sha256s the bytes, and records in spec."""
+    import hashlib
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    pipelines_dir = tmp_path / "drafts"
+    ps = PipelineState({"paths": {"pipelines_dir": str(pipelines_dir)}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("staging_test", "test")
+
+    target = tmp_path / "driver.R"
+    content = "library(DESeq2); cat('hi')\n"
+    result = srv.stage_authored_artifact(
+        pipeline_id="staging_test", path=str(target),
+        role="driver_script", description="test driver",
+        content=content, language="r",
+    )
+    assert result.get("success") is True, result
+    assert result["mode"] == "content"
+    assert target.exists() and target.read_text() == content
+    assert result["sha256"] == hashlib.sha256(content.encode()).hexdigest()
+    draft = ps.get_draft("staging_test")
+    assert len(draft["authored_artifacts"]) == 1
+    assert draft["authored_artifacts"][0]["content_full_in_spec"] is True
+
+
+def test_stage_authored_artifact_generated_by_mode(tmp_path, monkeypatch):
+    """generated_by mode requires the file to already exist; records the
+    genesis command + sha256 but no inline content."""
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("genby_test", "test")
+
+    target = tmp_path / "out.bam"
+    target.write_bytes(b"\x1f\x8b\x08\x00fake_bam_bytes")
+    result = srv.stage_authored_artifact(
+        pipeline_id="genby_test", path=str(target),
+        role="staged_test_input", description="staged bam",
+        generated_by="samtools view -bS in.sam > out.bam",
+    )
+    assert result.get("success") is True, result
+    assert result["mode"] == "generated_by"
+    draft = ps.get_draft("genby_test")
+    a = draft["authored_artifacts"][0]
+    assert a["generated_by"] == "samtools view -bS in.sam > out.bam"
+    assert a["content_full_in_spec"] is False
+
+
+def test_stage_authored_artifact_rejects_both_modes(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("both_test", "test")
+    result = srv.stage_authored_artifact(
+        pipeline_id="both_test", path=str(tmp_path / "x.R"),
+        role="r", description="r", content="x", generated_by="cp a b",
+    )
+    assert "error" in result, "supplying both content and generated_by must error"
+
+
+def test_stage_authored_artifact_rejects_neither_mode(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("neither_test", "test")
+    result = srv.stage_authored_artifact(
+        pipeline_id="neither_test", path=str(tmp_path / "x.R"),
+        role="r", description="r",
+    )
+    assert "error" in result, "supplying neither content nor generated_by must error"
+
+
+def test_stage_authored_artifact_rejects_relative_path(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("relpath_test", "test")
+    result = srv.stage_authored_artifact(
+        pipeline_id="relpath_test", path="relative/path/foo.R",
+        role="r", description="r", content="x",
+    )
+    assert "error" in result and "absolute" in result["error"]
+
+
+def test_stage_authored_artifact_overwrite_false_blocks_existing(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("ovw_test", "test")
+    target = tmp_path / "exists.R"
+    target.write_text("# already here\n")
+    result = srv.stage_authored_artifact(
+        pipeline_id="ovw_test", path=str(target),
+        role="r", description="r", content="new", overwrite=False,
+    )
+    assert "error" in result and "already exists" in result["error"]
+
+
+def test_stage_authored_artifact_generated_by_requires_existing_file(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("genby_missing", "test")
+    result = srv.stage_authored_artifact(
+        pipeline_id="genby_missing", path=str(tmp_path / "ghost.bam"),
+        role="staged", description="x",
+        generated_by="echo no",
+    )
+    assert "error" in result and "already exist" in result["error"]
+
+
+def test_stage_authored_artifact_unknown_pipeline_id(tmp_path, monkeypatch):
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    target = tmp_path / "x.R"
+    result = srv.stage_authored_artifact(
+        pipeline_id="never_started", path=str(target),
+        role="r", description="r", content="x",
+    )
+    assert "error" in result and "unknown pipeline_id" in result["error"]
+
+
+def test_stage_authored_artifact_re_stages_by_path(tmp_path, monkeypatch):
+    """Re-staging at the same path should replace the prior entry, not append."""
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("restage_test", "test")
+    target = tmp_path / "iter.R"
+    r1 = srv.stage_authored_artifact(
+        pipeline_id="restage_test", path=str(target),
+        role="r", description="v1", content="# v1\n",
+    )
+    r2 = srv.stage_authored_artifact(
+        pipeline_id="restage_test", path=str(target),
+        role="r", description="v2", content="# v2 — refined\n",
+    )
+    assert r1["sha256"] != r2["sha256"]
+    draft = ps.get_draft("restage_test")
+    assert len(draft["authored_artifacts"]) == 1, "second stage should replace, not append"
+    assert draft["authored_artifacts"][0]["description"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# patch_pipeline merge semantics — element-by-step for pipeline_steps,
+# __DELETE__ for nested key removal.
+# ---------------------------------------------------------------------------
+
+def test_patch_pipeline_supports_delete_sentinel():
+    """`__DELETE__` removes a nested key inside an allowed patch target.
+    Operates only on PATCHABLE_KEYS subtrees — blocked top-level keys can't
+    be deleted this way (the whitelist gate intercepts first)."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_delete"}})
+    ps.start("del_test", "test")
+    # Seed runtime_environment (a PATCHABLE_KEY) with two sub-keys.
+    ps.patch("del_test", {"runtime_environment": {"type": "conda", "min_ram_gb": 8.0}})
+
+    r = ps.patch("del_test", {"runtime_environment": {"min_ram_gb": "__DELETE__"}})
+    assert "error" not in r, f"delete-sentinel patch should be accepted; got {r}"
+
+    draft = ps.get_draft("del_test")
+    assert "min_ram_gb" not in draft["runtime_environment"]
+    assert draft["runtime_environment"]["type"] == "conda", "siblings must survive"
+    ps.discard("del_test")
+
+
+def test_patch_pipeline_unknown_key_rejected():
+    """Patches to keys outside PATCHABLE_KEYS ∪ BLOCKED_PATCH_KEYS error out
+    with a helpful 'did you mean' hint."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_unknown"}})
+    ps.start("unk_test", "test")
+    r = ps.patch("unk_test", {"runtime_envronment": {"type": "conda"}})  # typo
+    assert "error" in r, "unknown key should error"
+    assert "runtime_envronment" in (r.get("unknown_keys") or [])
+    ps.discard("unk_test")

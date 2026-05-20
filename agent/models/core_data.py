@@ -859,7 +859,6 @@ class PipelineStep(BaseModel):
     inputs:            list[StepInput] = []   # files consumed (with optional script-references)
     outputs:           list[str] = []         # filenames produced
     depends_on:        list[int] = []         # step numbers this step depends on (1-based); derived at finalize from input/output overlap if absent
-    config_files:      list[RuntimeConfig] = []  # config files written for this step
     runtime_seconds:   Optional[float] = None
     output_size_bytes: Optional[int] = None
     validation:        Optional[Any] = None
@@ -989,8 +988,10 @@ class PipelineSpec(BaseModel):
       Mount them at the paths listed in docker.volume_mounts.
 
     runtime_configs: global config files written during installation
-      (e.g. application.properties for Exomiser).
-      Per-step configs live in PipelineStep.config_files.
+      (e.g. application.properties for Exomiser). For agent-authored files
+      (driver scripts, generated test data, hand-staged transformations),
+      use stage_authored_artifact → authored_artifacts[*] instead — those
+      carry a sha256 anchor (I9) that runtime_configs lacks.
 
     service_dependencies: companion processes (web server, database, Spark) that
       must be running before the pipeline executes.  Managed by

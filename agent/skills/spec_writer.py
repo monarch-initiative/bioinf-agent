@@ -515,6 +515,37 @@ def check_invariants(spec: dict) -> list[dict]:
     violations: list[dict] = []
 
     # ------------------------------------------------------------------
+    # I0: shape sanity. Every top-level list-of-records must contain only
+    # dict entries — anything else means an upstream primitive misbehaved
+    # (or someone bypassed the writer-API). The downstream invariant clauses
+    # defensively skip non-dicts to avoid AttributeError; this gate makes
+    # sure such skips are LOUD, not silent.
+    # ------------------------------------------------------------------
+    for list_key in (
+        "install_steps", "packages", "pipeline_steps",
+        "reference_databases", "runtime_configs",
+        "service_dependencies", "authored_artifacts",
+    ):
+        items = spec.get(list_key)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            violations.append({
+                "invariant": "I0.shape_sanity",
+                "message":   f"top-level field '{list_key}' is {type(items).__name__}, expected list",
+                "where":     list_key,
+            })
+            continue
+        for i, entry in enumerate(items):
+            if not isinstance(entry, dict):
+                violations.append({
+                    "invariant": "I0.shape_sanity",
+                    "message":   f"{list_key}[{i}] is {type(entry).__name__}, expected dict — "
+                                 f"a malformed record skipped subsequent invariant checks",
+                    "where":     f"{list_key}[{i}]",
+                })
+
+    # ------------------------------------------------------------------
     # I1: every install_step's command actually ran and returned a code.
     # The runtime sets returncode from the subprocess; an agent cannot fake
     # this without bypassing the install_step machinery entirely.
@@ -675,6 +706,39 @@ def check_invariants(spec: dict) -> list[dict]:
                 })
 
     # ------------------------------------------------------------------
+    # I6 (extended): every {PLACEHOLDER} in usage.command_template must
+    # resolve to a declared usage.inputs[*].name OR be one of the auto-
+    # allocated scratch slots (OUTPUT_DIR / OUT_DIR). A typo like
+    # {OUPUT_DIR} silently passes _is_path_like (it starts with `{`) and
+    # the dynamic self-test only catches it when a trial actually runs —
+    # this static check surfaces it sooner.
+    # ------------------------------------------------------------------
+    usage = spec.get("usage") if isinstance(spec.get("usage"), dict) else None
+    if usage:
+        template = (usage.get("command_template") or "").strip()
+        if template:
+            template_placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+            declared_input_names = {
+                (inp.get("name") or "").strip()
+                for inp in (usage.get("inputs") or [])
+                if isinstance(inp, dict) and inp.get("name")
+            }
+            scratch_slots = {"OUTPUT_DIR", "OUT_DIR"}
+            legal = declared_input_names | scratch_slots
+            undeclared = sorted(template_placeholders - legal)
+            if undeclared:
+                violations.append({
+                    "invariant": "I6.template_placeholders_declared",
+                    "message":   f"usage.command_template references placeholders "
+                                 f"{undeclared} that are not declared in usage.inputs[*].name "
+                                 f"(and aren't OUTPUT_DIR/OUT_DIR). Either add them to "
+                                 f"usage.inputs or fix the typo. Declared inputs: "
+                                 f"{sorted(declared_input_names) or '(none)'}.",
+                    "where":     "usage.command_template",
+                    "undeclared_placeholders": undeclared,
+                })
+
+    # ------------------------------------------------------------------
     # I7: every rc=0 pipeline_step has resource_usage populated by the
     # runtime psutil monitor. wall_seconds, peak_rss_mb, max_cpu_percent
     # are observations of a real execution — an agent can't synthesize
@@ -700,10 +764,9 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     # I8: composition coherence. Every step's inputs must trace to either
     # an external source (test_data, reference_databases, runtime_configs,
-    # authored_artifacts, config_files on this or a prior step) or a prior
-    # step's outputs. An orphan input — a path no upstream source produces —
-    # means the pipeline doesn't actually compose: step N consumed something
-    # step N-1 didn't make.
+    # authored_artifacts) or a prior step's outputs. An orphan input — a path
+    # no upstream source produces — means the pipeline doesn't actually
+    # compose: step N consumed something step N-1 didn't make.
     # ------------------------------------------------------------------
     violations.extend(_check_composition_coherence(spec))
 
@@ -865,13 +928,6 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
     )
 
     for s in steps:
-        # config_files declared on this step are written before the step runs.
-        for cf in s.get("config_files", []) or []:
-            if isinstance(cf, dict):
-                p = cf.get("path")
-                if isinstance(p, str) and p:
-                    universe.add(p)
-
         step_n = s.get("step")
         for inp in s.get("inputs", []) or []:
             p = inp.get("path") if isinstance(inp, dict) else inp
