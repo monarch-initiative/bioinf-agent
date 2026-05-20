@@ -597,6 +597,7 @@ def run_pipeline_step(
         "command":         command,
         "returncode":      result.get("returncode"),
         "runtime_seconds": result.get("runtime_seconds"),
+        "resource_usage":  result.get("resource_usage"),
         "inputs":          result.get("inputs", []),
         "detected_outputs": result.get("detected_outputs", []),
     }
@@ -809,6 +810,7 @@ def run_in_env(
             "command":         command,
             "returncode":      result.get("returncode"),
             "runtime_seconds": result.get("runtime_seconds"),
+            "resource_usage":  result.get("resource_usage"),
             "inputs":          result.get("inputs", []),
             "outputs":         result.get("detected_outputs", []),
         }
@@ -1850,9 +1852,11 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "I1: every install_step.returncode is 0 (or marked status=failed)",
         "I2: every non-infrastructure package has a verify_output from a real run",
         "I3: every pipeline_step has detected_outputs AND each is validated",
-        "I4: usage.command_template executes against test inputs and produces declared outputs",
+        "I4: usage.command_template executes against every declared trial — multi-shape coverage",
         "I5: every reference_database.local_path exists on disk",
         "I6: every input/output path is absolute",
+        "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step",
+        "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs)",
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
@@ -1867,7 +1871,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose for this tool; primitives handle category details",
         "3. select_test_data + run_pipeline_step (auto-validates outputs)",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs)",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial)",
         "5. build_docker_image (BEFORE finalize — finalize deletes the draft)",
         "6. validate_pipeline_draft (dry-run; fix anything reported)",
         "7. finalize_pipeline — runs invariant check + self-test of usage.command_template",

@@ -601,6 +601,28 @@ def _steps_section(spec: dict) -> str:
             if deps else ""
         )
 
+        # I7 — observed resource cost (psutil-monitored). Surfaces here so
+        # downstream HPC scheduling has truthful min-spec data per step.
+        ru = s.get("resource_usage") or {}
+        ru_html = ""
+        if isinstance(ru, dict) and ("wall_seconds" in ru or "peak_rss_mb" in ru):
+            wall = ru.get("wall_seconds")
+            rss  = ru.get("peak_rss_mb")
+            cpu  = ru.get("max_cpu_percent")
+            chips = []
+            if wall is not None:
+                chips.append(f"⏱ {wall}s wall")
+            if rss is not None:
+                chips.append(f"🧠 {rss} MB peak RSS")
+            if cpu:
+                chips.append(f"⚙ {cpu}% peak CPU")
+            ru_html = (
+                '<div style="font-size:0.78rem;color:#475569;margin-top:0.4rem">'
+                '<strong>Observed cost:</strong> '
+                + " · ".join(chips)
+                + '</div>'
+            )
+
         io_html = _io_group(s)
 
         blocks.append(f"""
@@ -612,6 +634,7 @@ def _steps_section(spec: dict) -> str:
   </div>
   <strong style="font-size:0.85rem;color:#475569">Command:</strong>
   <pre>{cmd}</pre>
+  {ru_html}
   {io_html}
 </div>""")
 
@@ -629,8 +652,9 @@ def _steps_section(spec: dict) -> str:
 
 def _self_test_block(spec: dict) -> str:
     """Render the usage.command_template self-test outcome — the keystone
-    honesty check. Either the runtime confirmed the template works (passed),
-    or it didn't (failed/skipped, with the reason)."""
+    honesty check (I4). Multi-trial: each declared input shape was run; the
+    block renders pass/fail per trial. usage_verified=True only when every
+    trial passed."""
     usage = spec.get("usage") or {}
     if not isinstance(usage, dict):
         return ""
@@ -638,36 +662,70 @@ def _self_test_block(spec: dict) -> str:
     if not st:
         return ""
     ok = bool(st.get("ok"))
-    if ok:
-        cmd = st.get("command_run", "")
-        produced = st.get("produced_files", [])
-        files_list = "".join(f"<li><code>{f}</code></li>" for f in produced[:8])
-        return f"""
-  <div class="self-test passed">
-    <strong>✅ Usage self-test passed</strong>
-    <div style="font-size:0.78rem;color:#475569;margin-top:0.3rem">
-      The runtime substituted real test inputs into <code>command_template</code>
-      and ran it; the declared outputs were produced.
-    </div>
-    <details style="margin-top:0.5rem">
-      <summary style="cursor:pointer;font-size:0.85rem">Audit trail</summary>
-      <div style="margin-top:0.4rem">
-        <strong style="font-size:0.78rem">Command run:</strong>
-        <pre style="font-size:0.78rem">{cmd}</pre>
-        <strong style="font-size:0.78rem">Files produced (first 8):</strong>
-        <ul style="font-size:0.78rem;margin-left:1.2rem">{files_list}</ul>
-      </div>
-    </details>
-  </div>"""
-    reason = st.get("reason", "unknown")
+    trials = st.get("trials") or []
+    # Legacy single-trial shape (no `trials` key): synthesize one entry so
+    # the renderer can use the same code path.
+    if not trials and "command_run" in st:
+        trials = [{
+            "name":          "auto",
+            "ok":            ok,
+            "command_run":   st.get("command_run"),
+            "produced_files": st.get("produced_files", []),
+            "reason":        st.get("reason"),
+        }]
+
+    passed = sum(1 for t in trials if t.get("ok"))
+    total  = len(trials)
+    source = st.get("source", "")
+
+    trial_blocks = []
+    for t in trials:
+        t_ok = bool(t.get("ok"))
+        badge = "✅" if t_ok else "⚠️"
+        name  = t.get("name", "trial")
+        desc  = t.get("description") or ""
+        desc_html = f"<div style=\"font-size:0.75rem;color:#64748b;margin-top:0.15rem\">{desc}</div>" if desc else ""
+        cmd   = t.get("command_run", "") or ""
+        prod  = t.get("produced_files", []) or []
+        files_list = "".join(f"<li><code>{f}</code></li>" for f in prod[:8])
+        details_inner = ""
+        if cmd:
+            details_inner += f"<strong style=\"font-size:0.78rem\">Command run:</strong><pre style=\"font-size:0.78rem\">{cmd}</pre>"
+        if prod:
+            details_inner += f"<strong style=\"font-size:0.78rem\">Files produced (first 8):</strong><ul style=\"font-size:0.78rem;margin-left:1.2rem\">{files_list}</ul>"
+        if not t_ok and t.get("reason"):
+            details_inner = f"<div style=\"font-size:0.78rem;color:#b91c1c\">Reason: {t['reason']}</div>" + details_inner
+        details_html = (
+            f"<details style=\"margin-top:0.4rem\">"
+            f"<summary style=\"cursor:pointer;font-size:0.82rem\">Audit trail</summary>"
+            f"<div style=\"margin-top:0.4rem\">{details_inner}</div></details>"
+        ) if details_inner else ""
+        trial_blocks.append(
+            f"<div class=\"self-test-trial {'passed' if t_ok else 'failed'}\" "
+            f"style=\"margin-top:0.5rem;padding:0.4rem 0.6rem;border-left:3px solid "
+            f"{'#16a34a' if t_ok else '#dc2626'};background:#f8fafc\">"
+            f"<strong>{badge} Trial: {name}</strong>{desc_html}{details_html}"
+            f"</div>"
+        )
+
+    header_cls = "passed" if ok else "failed"
+    header_badge = "✅" if ok else "⚠️"
+    header_text = (
+        f"Usage self-test: {passed}/{total} trial(s) passed"
+        if total else "Usage self-test: no trials"
+    )
+    source_note = ""
+    if source == "trials":
+        source_note = "Trials were declared in <code>usage.trials</code> (explicit multi-shape contract)."
+    elif source == "inferred":
+        source_note = ("No <code>usage.trials</code> declared — single trial inferred from "
+                       "pipeline_steps[*].inputs. Declare <code>trials</code> for multi-shape coverage.")
+
     return f"""
-  <div class="self-test failed">
-    <strong>⚠️ Usage self-test did not pass</strong>
-    <div style="font-size:0.78rem;color:#475569;margin-top:0.3rem">
-      <code>command_template</code> was not confirmed against real test inputs.
-      Reason: {reason}. The spec is partially-validated — downstream users should
-      run the template manually before trusting it.
-    </div>
+  <div class="self-test {header_cls}">
+    <strong>{header_badge} {header_text}</strong>
+    <div style="font-size:0.78rem;color:#475569;margin-top:0.3rem">{source_note}</div>
+    {''.join(trial_blocks)}
   </div>"""
 
 

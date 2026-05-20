@@ -251,8 +251,7 @@ class EnvManager:
         cmd = [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", wrapped_command]
 
-        t0 = time.monotonic()
-        result = self._run(
+        result = self._run_monitored(
             cmd,
             cwd=working_dir or str(self.project_root),
             timeout=timeout,
@@ -263,7 +262,8 @@ class EnvManager:
             "stderr": result["stderr"],
             "success": result["returncode"] == 0,
             "command": command,
-            "runtime_seconds": round(time.monotonic() - t0, 2),
+            "runtime_seconds":  result["resource_usage"]["wall_seconds"],
+            "resource_usage":   result["resource_usage"],
             "inputs": inputs or [],
             "detected_outputs": self._diff_snapshot(before, watch),
         }
@@ -772,3 +772,124 @@ class EnvManager:
             }
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
+
+    def _run_monitored(
+        self,
+        cmd: list[str],
+        cwd: str | None = None,
+        timeout: int = 300,
+    ) -> dict:
+        """Run a subprocess while polling its full process tree with psutil.
+
+        Returns the standard {returncode, stdout, stderr} plus a resource_usage
+        dict: {wall_seconds, peak_rss_mb, max_cpu_percent, sample_count}. The
+        peak is the max-over-time of (sum across the Popen + all descendants),
+        so a tool that spawns child workers gets its full footprint recorded
+        rather than just the wrapper's. Polls every 0.3s.
+
+        Honesty contract: this is the SOLE path by which pipeline_step
+        resource_usage gets populated. Invariant I7 refuses to finalize if a
+        rc=0 step has no resource_usage, so an agent cannot synthesize one
+        without going through this monitor.
+        """
+        import threading
+        try:
+            import psutil
+        except ImportError:
+            psutil = None   # graceful: monitoring just records wall time
+
+        env = os.environ.copy()
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd or str(self.project_root),
+                env=env,
+            )
+        except Exception as e:
+            return {
+                "returncode": -1, "stdout": "", "stderr": str(e),
+                "resource_usage": {
+                    "wall_seconds": 0.0, "peak_rss_mb": 0.0,
+                    "max_cpu_percent": 0.0, "sample_count": 0,
+                },
+            }
+
+        peak_rss_bytes = 0
+        max_cpu = 0.0
+        sample_count = 0
+        stop_event = threading.Event()
+
+        def monitor():
+            nonlocal peak_rss_bytes, max_cpu, sample_count
+            if psutil is None:
+                return
+            try:
+                root = psutil.Process(proc.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return
+            # Prime cpu_percent — first call always returns 0; subsequent calls
+            # measure delta since the prior call. Prime once per process we see.
+            primed: set[int] = set()
+            while not stop_event.is_set():
+                try:
+                    procs = [root] + root.children(recursive=True)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    break
+                rss_total = 0
+                cpu_total = 0.0
+                for p in procs:
+                    try:
+                        if p.pid not in primed:
+                            p.cpu_percent(interval=None)
+                            primed.add(p.pid)
+                        rss_total += p.memory_info().rss
+                        cpu_total += p.cpu_percent(interval=None)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                if rss_total > peak_rss_bytes:
+                    peak_rss_bytes = rss_total
+                if cpu_total > max_cpu:
+                    max_cpu = cpu_total
+                sample_count += 1
+                if stop_event.wait(0.3):
+                    break
+
+        t = threading.Thread(target=monitor, daemon=True)
+        t.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            stderr = (stderr or "") + f"\nCommand timed out after {timeout}s: {' '.join(cmd)}"
+            rc = -1
+        except Exception as e:
+            stop_event.set()
+            return {
+                "returncode": -1, "stdout": "", "stderr": str(e),
+                "resource_usage": {
+                    "wall_seconds": round(time.monotonic() - t0, 2),
+                    "peak_rss_mb": 0.0, "max_cpu_percent": 0.0, "sample_count": 0,
+                },
+            }
+        finally:
+            stop_event.set()
+            t.join(timeout=2)
+
+        wall = round(time.monotonic() - t0, 2)
+        return {
+            "returncode": rc,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "resource_usage": {
+                "wall_seconds":    wall,
+                "peak_rss_mb":     round(peak_rss_bytes / (1024 * 1024), 1),
+                "max_cpu_percent": round(max_cpu, 1),
+                "sample_count":    sample_count,
+            },
+        }

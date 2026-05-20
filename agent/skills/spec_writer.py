@@ -241,48 +241,83 @@ def _pick_version_for_filename(spec: dict, pipeline_name: str) -> str:
 def self_test_usage(spec: dict, env_manager: Any) -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
 
-    This is the keystone honesty check: the agent claims "here's how to run
-    this pipeline on new data" via usage.command_template + usage.inputs +
-    usage.outputs. The runtime substitutes test-data values for the inputs,
-    runs the resulting command in a fresh scratch dir, and confirms the files
-    declared in usage.outputs are actually produced. If yes, the spec is
-    machine-verified-honest and usage_verified is set to True. If no, the
-    spec is partially-validated and the diff is recorded.
+    Keystone honesty check (I4): for each declared input shape, substitute the
+    {PLACEHOLDER} slots, run the resulting command in a fresh scratch dir, and
+    confirm files declared in usage.outputs are produced. usage_verified=True
+    requires every declared trial to pass.
 
-    Substitution policy:
-      - For each UsageInput slot, find an inputs[*].path on a pipeline_step
-        whose file format/extension plausibly matches. Falls back to the
-        last pipeline_step's inputs in order.
-      - The OUTPUT_DIR slot (if present in command_template) is substituted
-        with the fresh scratch dir.
-      - Refuses to run if substitution can't fill every required slot —
-        unverified is safer than wrongly-verified.
+    Trial selection:
+      - If usage.trials is non-empty: run one trial per entry. Each trial's
+        `substitutions` dict directly fills the placeholders. {OUTPUT_DIR}
+        (and any *output* slot) is auto-overridden to a fresh per-trial
+        scratch dir. This is the multi-shape contract — multiple input
+        shapes prove the machinery isn't a one-trick.
+      - If usage.trials is empty: fall back to a single auto-inferred trial
+        sourced from pipeline_steps[*].inputs (backward-compatible).
 
     Returns:
-      {ok: bool, reason: str, substitutions: dict, missing_outputs: list,
-       scratch_dir: str, command_run: str}
+      {ok: bool, trials: [<per-trial result>...], reason?: str}
+      Each per-trial result has: name, ok, command_run, substitutions,
+      produced_files, scratch_dir, [reason, missing_outputs, stderr_tail].
     """
-    import re, shutil, tempfile
     usage = spec.get("usage")
     if not usage or not isinstance(usage, dict):
-        return {"ok": False, "reason": "no usage block to self-test"}
+        return {"ok": False, "reason": "no usage block to self-test", "trials": []}
     template = (usage.get("command_template") or "").strip()
     if not template:
-        return {"ok": False, "reason": "usage.command_template is empty"}
-    inputs_spec  = usage.get("inputs", []) or []
-    outputs_spec = usage.get("outputs", []) or []
+        return {"ok": False, "reason": "usage.command_template is empty", "trials": []}
     env_name = spec.get("conda_env")
     if not env_name:
-        return {"ok": False, "reason": "no conda_env on spec — cannot run self-test"}
+        return {"ok": False, "reason": "no conda_env on spec — cannot run self-test", "trials": []}
 
-    # Find all {PLACEHOLDER} slots in the template.
     placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
     if not placeholders:
-        return {"ok": False, "reason": "command_template has no {PLACEHOLDER} slots — nothing to substitute"}
+        return {"ok": False, "reason": "command_template has no {PLACEHOLDER} slots", "trials": []}
 
-    # Build a substitution map.
-    # Source: pipeline_steps[*].inputs (the actual test files) + each step's
-    # detected_outputs (so downstream steps can reuse upstream files).
+    declared_trials = usage.get("trials") or []
+    inputs_spec     = usage.get("inputs", [])  or []
+    outputs_spec    = usage.get("outputs", []) or []
+
+    if declared_trials:
+        trial_plans = [
+            {
+                "name":          (t.get("name") or f"trial_{i+1}"),
+                "substitutions": dict(t.get("substitutions") or {}),
+                "description":   t.get("description"),
+            }
+            for i, t in enumerate(declared_trials) if isinstance(t, dict)
+        ]
+    else:
+        # Backward-compatible single inferred trial.
+        inferred = _infer_substitutions(spec, placeholders, inputs_spec)
+        trial_plans = [{
+            "name":          "auto",
+            "substitutions": inferred,
+            "description":   "inferred from pipeline_steps[*].inputs (no usage.trials declared)",
+        }]
+
+    trial_results = [
+        _run_one_trial(plan, template, placeholders, outputs_spec, env_manager, env_name, spec)
+        for plan in trial_plans
+    ]
+
+    overall_ok = bool(trial_results) and all(t.get("ok") for t in trial_results)
+    return {
+        "ok":     overall_ok,
+        "trials": trial_results,
+        "trial_count": len(trial_results),
+        "passed":      sum(1 for t in trial_results if t.get("ok")),
+        "source":      "trials" if declared_trials else "inferred",
+    }
+
+
+def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> dict:
+    """Fallback single-trial inference from pipeline_steps[*].inputs.
+
+    Same policy as before the multi-shape extension: extension-match by
+    declared format, then positional fallback. {OUTPUT_*} slots are left
+    unfilled — _run_one_trial substitutes the per-trial scratch dir.
+    """
     candidate_paths: list[str] = []
     for s in spec.get("pipeline_steps", []) or []:
         for inp in (s.get("inputs") or []):
@@ -296,28 +331,20 @@ def self_test_usage(spec: dict, env_manager: Any) -> dict:
         for o in (s.get("detected_outputs") or []):
             if isinstance(o, str) and Path(o).exists():
                 candidate_paths.append(o)
-    # Deduplicate, preserve order.
     seen = set(); cps = []
     for p in candidate_paths:
         if p not in seen:
             cps.append(p); seen.add(p)
     candidate_paths = cps
 
-    # Scratch dir for outputs.
-    scratch = Path(tempfile.mkdtemp(prefix=f"selftest_{spec.get('pipeline_name','x')}_"))
-
     substitutions: dict = {}
     for slot in placeholders:
         slot_lower = slot.lower()
         if "output" in slot_lower or "out_dir" in slot_lower:
-            substitutions[slot] = str(scratch)
-            continue
-        # Match the slot to a UsageInput.
+            continue   # _run_one_trial fills these with scratch
         slot_spec = next((i for i in inputs_spec if i.get("name") == slot), None)
         fmt = (slot_spec.get("format") or "").lower() if slot_spec else ""
 
-        # Pick the first candidate path whose extension matches the format hint,
-        # falling back to position-in-list (first slot → first candidate, etc).
         chosen = None
         if fmt:
             for cp in candidate_paths:
@@ -326,7 +353,6 @@ def self_test_usage(spec: dict, env_manager: Any) -> dict:
                     chosen = cp
                     break
         if not chosen and candidate_paths:
-            # Positional fallback — use the Nth candidate for the Nth required slot.
             required_slots = [s for s in inputs_spec if s.get("required") is not False]
             try:
                 idx = next(i for i, s in enumerate(required_slots) if s.get("name") == slot)
@@ -336,35 +362,49 @@ def self_test_usage(spec: dict, env_manager: Any) -> dict:
                 pass
         if chosen:
             substitutions[slot] = chosen
+    return substitutions
 
-    # Refuse to run if we can't fill every slot — better to leave usage_verified
-    # false than wrongly mark a partial run as verified.
-    missing = [s for s in placeholders if s not in substitutions]
+
+def _run_one_trial(
+    plan: dict, template: str, placeholders: set, outputs_spec: list,
+    env_manager: Any, env_name: str, spec: dict,
+) -> dict:
+    """Execute one trial: substitute, run in fresh scratch, verify outputs."""
+    import fnmatch, shutil, tempfile
+
+    trial_name = plan["name"]
+    subs       = dict(plan.get("substitutions") or {})
+    scratch    = Path(tempfile.mkdtemp(prefix=f"selftest_{spec.get('pipeline_name','x')}_{trial_name}_"))
+
+    # Always override output slots with this trial's scratch dir.
+    for slot in placeholders:
+        if "output" in slot.lower() or "out_dir" in slot.lower():
+            subs[slot] = str(scratch)
+
+    missing = [s for s in placeholders if s not in subs or not subs[s]]
     if missing:
         shutil.rmtree(scratch, ignore_errors=True)
         return {
-            "ok": False, "reason": f"could not resolve placeholders: {missing}",
-            "candidate_paths_count": len(candidate_paths),
-            "expected_inputs": [i.get("name") for i in inputs_spec],
+            "name": trial_name, "ok": False,
+            "reason": f"could not resolve placeholders: {missing}",
+            "substitutions": subs,
         }
 
-    # Substitute and run.
     command = template
-    for slot, val in substitutions.items():
-        command = command.replace("{" + slot + "}", val)
+    for slot, val in subs.items():
+        command = command.replace("{" + slot + "}", str(val))
 
     result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
     rc = result.get("returncode")
     if rc != 0:
         return {
-            "ok": False, "reason": f"command_template execution failed (rc={rc})",
+            "name": trial_name, "ok": False,
+            "reason": f"command_template execution failed (rc={rc})",
             "command_run": command, "scratch_dir": str(scratch),
             "stderr_tail": (result.get("stderr") or "")[-500:],
-            "substitutions": substitutions,
+            "substitutions": subs,
         }
 
-    # Compare produced files against usage.outputs[*].files (glob patterns).
-    import fnmatch
     produced = []
     for p in scratch.rglob("*"):
         if p.is_file():
@@ -381,16 +421,19 @@ def self_test_usage(spec: dict, env_manager: Any) -> dict:
 
     if missing_outputs:
         return {
-            "ok": False, "reason": "command ran but expected outputs missing",
+            "name": trial_name, "ok": False,
+            "reason": "command ran but expected outputs missing",
             "missing_outputs": missing_outputs,
             "produced_files": produced[:20],
             "command_run": command, "scratch_dir": str(scratch),
-            "substitutions": substitutions,
+            "substitutions": subs,
         }
 
     return {
-        "ok": True, "command_run": command, "substitutions": substitutions,
+        "name": trial_name, "ok": True,
+        "command_run": command, "substitutions": subs,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
+        "description": plan.get("description"),
     }
 
 
@@ -543,6 +586,137 @@ def check_invariants(spec: dict) -> list[dict]:
                     "message":   f"pipeline_step {step_n} has a relative output path: {o}",
                     "where":     f"pipeline_steps[step={step_n}].detected_outputs",
                 })
+
+    # ------------------------------------------------------------------
+    # I7: every rc=0 pipeline_step has resource_usage populated by the
+    # runtime psutil monitor. wall_seconds, peak_rss_mb, max_cpu_percent
+    # are observations of a real execution — an agent can't synthesize
+    # them without bypassing run_pipeline_step / run_in_env entirely.
+    # Downstream HPC users need honest cost data to size jobs.
+    # ------------------------------------------------------------------
+    for s in spec.get("pipeline_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        step_n = s.get("step")
+        if s.get("returncode") not in (None, 0):
+            continue   # failed / not-run steps don't need resource data
+        ru = s.get("resource_usage")
+        if not isinstance(ru, dict) or "wall_seconds" not in ru or "peak_rss_mb" not in ru:
+            violations.append({
+                "invariant": "I7.resource_usage_recorded",
+                "message":   f"pipeline_step {step_n} has no resource_usage — "
+                             f"the runtime monitor never observed it run. "
+                             f"Use run_pipeline_step or run_in_env (which populate this).",
+                "where":     f"pipeline_steps[step={step_n}]",
+            })
+
+    # ------------------------------------------------------------------
+    # I8: composition coherence. Every step's inputs must trace to either
+    # an external source (test_data, reference_databases, runtime_configs,
+    # config_files on this or a prior step) or a prior step's outputs.
+    # An orphan input — a path no upstream source produces — means the
+    # pipeline doesn't actually compose: step N consumed something step N-1
+    # didn't make.
+    # ------------------------------------------------------------------
+    violations.extend(_check_composition_coherence(spec))
+
+    return violations
+
+
+def _check_composition_coherence(spec: dict) -> list[dict]:
+    """Walk pipeline_steps in step-order; verify each input is producible by
+    something upstream. See I8 description.
+
+    Skips these (legitimate orphans):
+      - placeholders ({X}, $X, <X>)
+      - bare tokens with no '/' (not paths)
+      - script files (.sh/.py/.R/.pl/.nf/.smk/.bash) — agent-managed, not data
+      - paths under any conda env directory (envs/{...}/) — bundled tool data
+      - URLs (http:// https:// ftp://)
+    """
+    external_paths: set[str] = set()
+
+    td = spec.get("test_data") or {}
+    if isinstance(td, dict):
+        for k in ("r1", "r2", "vcf", "tbi", "bam", "bai", "ped",
+                  "reference_fasta", "core_data_dir", "file"):
+            v = td.get(k)
+            if isinstance(v, str) and v:
+                external_paths.add(v)
+
+    for rdb in spec.get("reference_databases", []) or []:
+        if isinstance(rdb, dict):
+            lp = rdb.get("local_path")
+            if isinstance(lp, str) and lp:
+                external_paths.add(lp)
+
+    for rc in spec.get("runtime_configs", []) or []:
+        if isinstance(rc, dict):
+            p = rc.get("path")
+            if isinstance(p, str) and p:
+                external_paths.add(p)
+
+    def _is_orphan_exempt(p: str) -> bool:
+        if not p or not isinstance(p, str):
+            return True
+        if p.startswith(("{", "$", "<")):
+            return True
+        if p.startswith(("http://", "https://", "ftp://")):
+            return True
+        if "/" not in p:
+            return True
+        low = p.lower()
+        for ext in (".sh", ".py", ".r", ".pl", ".nf", ".smk", ".bash", ".rscript"):
+            if low.endswith(ext):
+                return True
+        if "/envs/" in p:
+            return True
+        return False
+
+    violations: list[dict] = []
+    universe: set[str] = set(external_paths)
+
+    steps = sorted(
+        [s for s in spec.get("pipeline_steps", []) or [] if isinstance(s, dict)],
+        key=lambda s: s.get("step") or 0,
+    )
+
+    for s in steps:
+        # config_files declared on this step are written before the step runs.
+        for cf in s.get("config_files", []) or []:
+            if isinstance(cf, dict):
+                p = cf.get("path")
+                if isinstance(p, str) and p:
+                    universe.add(p)
+
+        step_n = s.get("step")
+        for inp in s.get("inputs", []) or []:
+            p = inp.get("path") if isinstance(inp, dict) else inp
+            if _is_orphan_exempt(p):
+                continue
+            if p in universe:
+                continue
+            # Allow a basename-match fallback: agents sometimes record an
+            # output path with an extra suffix (e.g. {p}.gz, {p}.bai) where
+            # the prior step produced the unsuffixed parent.
+            base = Path(p).name
+            if any(Path(u).name == base for u in universe):
+                continue
+            violations.append({
+                "invariant": "I8.composition_coherence",
+                "message":   f"pipeline_step {step_n} input '{p}' has no producing source — "
+                             f"not in test_data, reference_databases, runtime_configs, "
+                             f"or any prior step's outputs",
+                "where":     f"pipeline_steps[step={step_n}].inputs",
+                "orphan_path": p,
+            })
+
+        for o in s.get("outputs", []) or []:
+            if isinstance(o, str) and o:
+                universe.add(o)
+        for o in s.get("detected_outputs", []) or []:
+            if isinstance(o, str) and o:
+                universe.add(o)
 
     return violations
 

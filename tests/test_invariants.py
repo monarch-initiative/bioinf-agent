@@ -95,8 +95,95 @@ def test_invariant_checker_catches_relative_paths():
             "detected_outputs": ["/abs/output.vcf"],
             "validation": {"output.vcf": {"passed": True}},
             "validation_status": "passed",
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 12.3},
         }],
     }
     violations = check_invariants(spec)
     assert any(v["invariant"] == "I6.absolute_paths" for v in violations), \
         "relative input path should violate I6"
+
+
+def test_invariant_checker_catches_missing_resource_usage():
+    """I7: a pipeline_step that exited 0 but has no resource_usage means the
+    runtime monitor never observed it — agent could be synthesizing the step.
+    """
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [{
+            "step": 1, "tool": "samtools", "command": "samtools view x.bam",
+            "returncode": 0,
+            "inputs":  [{"path": "/abs/x.bam"}],
+            "detected_outputs": ["/abs/x.sam"],
+            "validation": {"x.sam": {"passed": True}},
+            "validation_status": "passed",
+            # NO resource_usage key — should trigger I7.
+        }],
+        "test_data": {"bam": "/abs/x.bam"},
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I7.resource_usage_recorded" for v in violations), \
+        "rc=0 pipeline_step missing resource_usage should violate I7"
+
+
+def test_invariant_checker_catches_orphan_step_input():
+    """I8: a step input that wasn't produced by any prior step and isn't a
+    declared external source should be flagged as an orphan — pipeline isn't
+    actually composed.
+    """
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "test_data": {"bam": "/abs/declared.bam"},
+        "pipeline_steps": [{
+            "step": 1, "tool": "samtools",
+            "command": "samtools view /abs/orphan_nobody_produced.bam",
+            "returncode": 0,
+            "inputs":  [{"path": "/abs/orphan_nobody_produced.bam"}],
+            "detected_outputs": ["/abs/x.sam"],
+            "validation": {"x.sam": {"passed": True}},
+            "validation_status": "passed",
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 12.3},
+        }],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I8.composition_coherence" for v in violations), \
+        "orphan input path with no producing source should violate I8"
+
+
+def test_invariant_checker_accepts_chained_step_inputs():
+    """I8 sanity: step 2's input is step 1's output → no violation. Proves
+    the universe-of-prior-outputs accumulator works."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "test_data": {"bam": "/abs/sample.bam"},
+        "pipeline_steps": [
+            {
+                "step": 1, "tool": "samtools",
+                "command": "samtools sort /abs/sample.bam -o /abs/sorted.bam",
+                "returncode": 0,
+                "inputs":  [{"path": "/abs/sample.bam"}],
+                "detected_outputs": ["/abs/sorted.bam"],
+                "validation": {"sorted.bam": {"passed": True}},
+                "validation_status": "passed",
+                "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 12.3},
+            },
+            {
+                "step": 2, "tool": "samtools",
+                "command": "samtools index /abs/sorted.bam",
+                "returncode": 0,
+                "inputs":  [{"path": "/abs/sorted.bam"}],
+                "detected_outputs": ["/abs/sorted.bam.bai"],
+                "validation": {"sorted.bam.bai": {"passed": True}},
+                "validation_status": "passed",
+                "resource_usage": {"wall_seconds": 0.5, "peak_rss_mb": 4.0},
+            },
+        ],
+    }
+    violations = [v for v in check_invariants(spec)
+                  if v["invariant"] == "I8.composition_coherence"]
+    assert not violations, f"chained step inputs should not violate I8: {violations}"

@@ -20,9 +20,11 @@ A spec written by `finalize_pipeline` is machine-verifiable. The runtime enforce
 | I1 | every `install_step.returncode == 0` (or marked `status: failed`) | runtime subprocess exit code |
 | I2 | every non-infrastructure package has a `verify_output` from a real check_command run | `verify_installation` captures actual stdout |
 | I3 | every `pipeline_step` with rc=0 has `detected_outputs` AND each is validated | filesystem snapshot + `validate_output` results |
-| I4 | `usage.command_template` actually executes with test inputs and produces declared outputs | self-test runs the template in a fresh dir |
+| I4 | `usage.command_template` actually executes against **every declared trial** and produces declared outputs | self-test runs the template in a fresh dir per trial |
 | I5 | every `reference_database.local_path` exists on disk | filesystem check |
 | I6 | every path in inputs / outputs is absolute | string check |
+| I7 | every `pipeline_step` with rc=0 has `resource_usage` (wall, peak RSS, peak CPU) | psutil monitor polled the process tree during execution |
+| I8 | every `pipeline_step` input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs) | universe-of-prior-outputs walk at finalize |
 
 Plus: `env_status`, `pipeline_status`, `docker_status` are *derived* from the above, never agent-asserted. `lock_sha256` is recorded so a recreated env can be byte-verified.
 
@@ -99,6 +101,7 @@ Generated artifacts:
 - `OutputFile.type`: see the FileType union in `agent/models/core_data.py` (includes `jsonl`, `bedgraph`, `methylation_report`, `sqlite`, etc.)
 - `install_method.type`: `conda | jar | pip | r_install | docker_pull | source | manual`
 - `runtime_environment.type`: `conda | jar | r | docker | native`
+- `usage.trials[*]`: `{name, substitutions: {PLACEHOLDER: abs_path}, description?}` — declare one trial per input shape (paired-gz, single-uncompressed, …) so I4 proves multi-shape coverage. Empty list ⇒ single inferred trial (backward-compatible).
 
 If a patch lands shape that doesn't fit, `validate_pipeline_draft` surfaces the exact field + reason — fix and retry.
 

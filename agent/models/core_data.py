@@ -744,6 +744,26 @@ class InstallStep(BaseModel):
         return self
 
 
+class ResourceUsage(BaseModel):
+    """Observed resource consumption of one pipeline_step subprocess.
+
+    Populated by env_manager._run_monitored() — wall time from monotonic clock,
+    peak_rss_mb from psutil polling the process tree (Popen + all descendants),
+    max_cpu_percent likewise. These are observations of a real execution; the
+    agent cannot synthesize them without bypassing the run primitive.
+
+    Invariant I7 refuses to finalize a spec if any rc=0 pipeline_step lacks
+    resource_usage — HPC schedulers downstream of us need honest cost data.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    wall_seconds:    float
+    peak_rss_mb:     float
+    max_cpu_percent: float = 0.0
+    sample_count:    int   = 0    # how many polls fed the peaks; 0 means monitoring failed
+    peak_gpu_mb:     Optional[float] = None   # set only when nvidia-smi is available
+
+
 class StepInput(BaseModel):
     """One input file to a pipeline step.
 
@@ -798,6 +818,7 @@ class PipelineStep(BaseModel):
     runtime_seconds:   Optional[float] = None
     output_size_bytes: Optional[int] = None
     validation:        Optional[Any] = None
+    resource_usage:    Optional[ResourceUsage] = None   # I7 — observed wall/RSS/CPU from psutil monitor
 
     @field_validator("inputs", mode="before")
     @classmethod
@@ -833,6 +854,27 @@ class UsageOutput(BaseModel):
     description: Optional[str] = None
 
 
+class UsageTrial(BaseModel):
+    """One explicit input shape the usage.command_template must handle.
+
+    Declaring multiple trials lets the finalize-time self-test prove the
+    assembled machinery isn't a one-trick — it works across the input
+    variations a downstream user will throw at it (paired-gz vs uncompressed,
+    short vs long reads, etc.). Each trial's `substitutions` map fills the
+    {PLACEHOLDER} slots in `command_template`; the runtime executes each
+    trial in a fresh scratch dir and confirms declared outputs are produced.
+
+    Invariant I4 only sets usage_verified=True if every declared trial passes.
+    If `usage.trials` is empty, the runtime falls back to a single inferred
+    trial (backward-compatible — same as before the multi-shape extension).
+    """
+    model_config = ConfigDict(extra="allow")
+
+    name:          str                       # human label, e.g. "paired_gz", "single_uncompressed"
+    substitutions: dict[str, str]            # {PLACEHOLDER: absolute_path_or_value}
+    description:   Optional[str] = None
+
+
 class UsageTemplate(BaseModel):
     """How to invoke the pipeline on new data.
 
@@ -843,6 +885,11 @@ class UsageTemplate(BaseModel):
     LLM authors this via patch_pipeline after Phase 4. The command_template
     uses {PLACEHOLDER} substitutions whose names line up with `inputs` and
     `outputs` entries.
+
+    trials: optional list of explicit input-shape test cases. When non-empty
+    the finalize self-test runs every trial and only marks usage_verified=True
+    if all pass. When empty the runtime infers a single trial from
+    pipeline_steps' inputs (backward-compatible).
     """
     model_config = ConfigDict(extra="allow")
 
@@ -850,6 +897,7 @@ class UsageTemplate(BaseModel):
     command_template: str
     inputs:           list[UsageInput] = []
     outputs:          list[UsageOutput] = []
+    trials:           list[UsageTrial] = []   # I4 — multi-shape self-test cases
     example:          Optional[str] = None    # concrete invocation example
 
 
