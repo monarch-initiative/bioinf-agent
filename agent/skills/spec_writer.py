@@ -789,6 +789,53 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_service_dependencies(spec))
 
+    # ------------------------------------------------------------------
+    # I11: source (git-repo) installs are present + commit-anchored. Every
+    # package with install_method.type="source" must have a recorded
+    # commit_sha AND its local_path (the clone) must exist on disk. git's
+    # commit SHA is the immutable content anchor (analogous to I9's sha256
+    # for authored_artifacts, I5's path check for reference databases).
+    # ------------------------------------------------------------------
+    violations.extend(_check_source_installs(spec))
+
+    return violations
+
+
+def _check_source_installs(spec: dict) -> list[dict]:
+    """I11 — git-repo / source installs must be present on disk and pinned to a
+    recorded commit SHA. Without this anchor, a 'source' package is just a URL
+    the spec claims was cloned."""
+    violations: list[dict] = []
+    for p in spec.get("packages", []) or []:
+        if not isinstance(p, dict):
+            continue
+        im = p.get("install_method") or {}
+        if not isinstance(im, dict) or im.get("type") != "source":
+            continue
+        name = p.get("name") or "<unnamed>"
+        commit_sha = im.get("commit_sha")
+        local_path = im.get("local_path")
+        if not commit_sha:
+            violations.append({
+                "invariant": "I11.source_install_commit_pinned",
+                "message":   f"source package '{name}' has install_method.type=source but no "
+                             f"commit_sha — use install_git_repo so the exact commit is recorded.",
+                "where":     f"packages[name={name}].install_method",
+            })
+        if not local_path:
+            violations.append({
+                "invariant": "I11.source_install_present",
+                "message":   f"source package '{name}' has no install_method.local_path — "
+                             f"the clone location wasn't recorded.",
+                "where":     f"packages[name={name}].install_method",
+            })
+        elif not Path(local_path).exists():
+            violations.append({
+                "invariant": "I11.source_install_present",
+                "message":   f"source package '{name}' clone is missing on disk: {local_path}. "
+                             f"The repo was recorded but isn't there.",
+                "where":     f"packages[name={name}].install_method",
+            })
     return violations
 
 

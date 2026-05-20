@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -206,6 +207,38 @@ class EnvManager:
             "stderr": result["stderr"][-2000:],
         }
 
+    def _package_in_registry(self, env_name: str, package_name: str) -> bool:
+        """Runtime-controlled presence anchor: is `package_name` actually
+        recorded in the env's conda or pip registry? Used by verify() to block
+        the library-only echo cheat. The agent's check_command cannot influence
+        this — it queries conda/pip directly with the package name.
+        """
+        import json as _json
+        import shlex as _shlex
+
+        q = _shlex.quote(package_name)
+        # conda: exact name match against `conda list --json` (its name arg is a
+        # regex, so a substring like "numpy" would also surface "numpy-base" —
+        # require an exact, case-insensitive name equality).
+        conda = self.run_in_env(
+            env_name, f'conda list -p "$CONDA_PREFIX" --json {q}', timeout=30
+        )
+        if conda.get("returncode") == 0:
+            try:
+                data = _json.loads(conda.get("stdout") or "[]")
+                if isinstance(data, list) and any(
+                    isinstance(e, dict) and (e.get("name", "").lower() == package_name.lower())
+                    for e in data
+                ):
+                    return True
+            except Exception:
+                pass
+        # pip: `pip show` exits 0 only if the dist is installed.
+        pip = self.run_in_env(env_name, f"pip show {q}", timeout=30)
+        if pip.get("returncode") == 0 and (pip.get("stdout") or "").strip():
+            return True
+        return False
+
     def verify(self, env_name: str, package_name: str, check_command: str) -> dict[str, Any]:
         """Run check_command in env to confirm the package works.
 
@@ -253,16 +286,30 @@ class EnvManager:
         rc      = result.get("returncode", 1)
         cmd_ok  = rc == 0
 
-        # Independent presence anchor: `which <name>` in the env.
+        # Independent presence anchor #1: `which <name>` in the env. Catches CLI
+        # tools (samtools, picard wrapper, …).
         which_res = self.run_in_env(env_name, f"which {package_name} 2>/dev/null", timeout=10)
         which_out = (which_res.get("stdout") or "").strip()
         installed_at = which_out if which_res.get("returncode") == 0 and which_out else None
 
-        # Hard gate: check_command must reference the package (or its natural
-        # library name) as a word-boundary token. R / pip / JAR / conda all
-        # naturally satisfy this (library(DESeq2), import multiqc, samtools
-        # --version, etc.), but `echo "fake 1.21"` does not.
-        success = bool(cmd_ok and token_present)
+        # Independent presence anchor #2: the env's package REGISTRY (conda
+        # list / pip show). This is runtime-controlled — the agent's
+        # check_command cannot influence it — so it closes the library-only
+        # cheat where a check like `python -c "print('numpy 2.4')"` satisfies
+        # the token gate without anything being installed. Library packages
+        # (numpy, scipy, python-louvain→community) have no CLI binary, so the
+        # `which` anchor is null for them; the registry probe is their anchor.
+        registry_present = False
+        if not installed_at:
+            registry_present = self._package_in_registry(env_name, package_name)
+        present_anchor = bool(installed_at) or registry_present
+
+        # Hard gate: check_command must (a) exit 0, (b) reference the package
+        # (or its natural library name) as a word-boundary token, AND (c) the
+        # package must actually be present in the env per an anchor the agent
+        # can't fake. R / pip / JAR / conda all naturally satisfy (b); (c)
+        # blocks `echo "fake 1.21"` even when the name appears in the string.
+        success = bool(cmd_ok and token_present and present_anchor)
 
         rejection_reason = None
         if cmd_ok and not token_present:
@@ -275,6 +322,15 @@ class EnvManager:
                 f"package whose binary/import name doesn't match the conda name (e.g. r-base). "
                 f"Echo / printf cheats are rejected."
             )
+        elif cmd_ok and token_present and not present_anchor:
+            rejection_reason = (
+                f"check_command exited 0 and names '{package_name}', but the package is "
+                f"not present in the env: `which {package_name}` found nothing AND it is "
+                f"not in the conda/pip registry. This is the library-only echo cheat — a "
+                f"command that prints a plausible version string without anything installed. "
+                f"Install the package, or for a source/git tool use install_git_repo "
+                f"(which records its own provenance) instead of verify_installation."
+            )
 
         return {
             "success":            success,
@@ -283,6 +339,7 @@ class EnvManager:
             "output":             output[:500],
             "returncode":         rc,
             "installed_at":       installed_at,
+            "registry_present":   registry_present,
             "name_token_present": token_present,
             "rejection_reason":   rejection_reason,
         }
@@ -435,6 +492,115 @@ class EnvManager:
             "share_dir":    str(share_dir),
             "java_flags":   java_flags,
             "log":          log,
+        }
+
+    def install_git_repo(
+        self,
+        env_name: str,
+        repo_url: str,
+        tool_name: str,
+        ref: str = "",
+        build_command: str = "",
+        verify_command: str = "",
+    ) -> dict[str, Any]:
+        """Vendor a git repository as a source-installed tool, end-to-end.
+
+        For the very common academic pattern that doesn't ship as a
+        conda/pip/jar package — a repo of scripts you clone and run
+        (`python run_thing.py …`). Mirrors install_jar_tool's shape:
+
+            {env}/share/{tool_name}/   ← the clone
+
+        Steps:
+          1. clone repo_url into {env}/share/{tool_name} (re-clone if present)
+          2. checkout `ref` (branch / tag / commit) if given
+          3. resolve the commit SHA via `git rev-parse HEAD` — the immutable
+             content anchor recorded in the spec (git's own integrity)
+          4. optionally run `build_command` inside the env at the clone dir
+             (e.g. `pip install -e .`, `make`)
+          5. optionally run `verify_command` (inside the env, cwd=clone dir) as
+             a smoke test; otherwise the rev-parse output is the verify anchor
+
+        Returns: {success, tool_name, clone_path, commit_sha, repo_url, ref,
+                  verify_command, verify_output, log}.
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return {"success": False, "error": f"env not found: {env_path}"}
+
+        share_dir = env_path / "share" / tool_name
+        log: list[str] = []
+
+        # Fresh clone — remove any prior copy so re-runs are deterministic.
+        if share_dir.exists():
+            shutil.rmtree(share_dir, ignore_errors=True)
+            log.append(f"removed existing {share_dir}")
+        share_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        clone = self.run_in_env(
+            env_name, f"git clone {shlex.quote(repo_url)} {shlex.quote(str(share_dir))}",
+            timeout=1800,
+        )
+        log.append(f"git clone rc={clone['returncode']}")
+        if clone["returncode"] != 0:
+            return {"success": False, "error": "git clone failed",
+                    "stderr": (clone.get("stderr") or "")[-500:], "log": log}
+
+        if ref:
+            co = self.run_in_env(
+                env_name,
+                f"git -C {shlex.quote(str(share_dir))} checkout {shlex.quote(ref)}",
+                timeout=120,
+            )
+            log.append(f"git checkout {ref} rc={co['returncode']}")
+            if co["returncode"] != 0:
+                return {"success": False, "error": f"git checkout {ref} failed",
+                        "stderr": (co.get("stderr") or "")[-500:], "log": log}
+
+        rev = self.run_in_env(
+            env_name, f"git -C {shlex.quote(str(share_dir))} rev-parse HEAD", timeout=30
+        )
+        commit_sha = (rev.get("stdout") or "").strip()
+        if rev["returncode"] != 0 or not commit_sha:
+            return {"success": False, "error": "could not resolve commit SHA after clone",
+                    "stderr": (rev.get("stderr") or "")[-500:], "log": log}
+        log.append(f"commit_sha={commit_sha}")
+
+        if build_command:
+            build = self.run_in_env(
+                env_name, build_command, working_dir=str(share_dir), timeout=1800
+            )
+            log.append(f"build_command rc={build['returncode']}")
+            if build["returncode"] != 0:
+                return {"success": False, "error": "build_command failed",
+                        "stderr": (build.get("stderr") or "")[-500:],
+                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+
+        # Verify anchor. Default: the rev-parse we already ran proves the exact
+        # pinned commit is on disk. A caller-supplied verify_command (e.g. a
+        # python import smoke or `--help`) runs in the env at the clone dir.
+        if verify_command:
+            vr = self.run_in_env(
+                env_name, verify_command, working_dir=str(share_dir), timeout=120
+            )
+            verify_output = ((vr.get("stdout") or "") + (vr.get("stderr") or "")).strip()[:500]
+            verify_ok = vr["returncode"] == 0
+            log.append(f"verify_command rc={vr['returncode']}")
+        else:
+            verify_command = f"git -C {share_dir} rev-parse HEAD"
+            verify_output  = commit_sha
+            verify_ok      = True
+
+        return {
+            "success":        verify_ok,
+            "tool_name":      tool_name,
+            "clone_path":     str(share_dir),
+            "commit_sha":     commit_sha,
+            "repo_url":       repo_url,
+            "ref":            ref or "HEAD",
+            "verify_command": verify_command,
+            "verify_output":  verify_output,
+            "log":            log,
         }
 
     @staticmethod

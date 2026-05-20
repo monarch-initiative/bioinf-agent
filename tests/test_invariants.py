@@ -816,6 +816,85 @@ def test_upsert_service_dependency_appends_probe_to_existing_log():
     ps.discard("svc_upsert_test")
 
 
+def test_invariant_checker_catches_source_install_without_commit():
+    """I11: a source (git) install with no commit_sha is rejected."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{
+            "name": "mytool", "verify_output": "abc123",
+            "install_method": {"type": "source", "source": "https://github.com/x/y",
+                               "local_path": "/tmp"},  # no commit_sha
+        }],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I11.source_install_commit_pinned" for v in violations), \
+        f"source install without commit_sha should violate I11; got {violations}"
+
+
+def test_invariant_checker_catches_source_install_missing_on_disk():
+    """I11: a source install whose clone path doesn't exist is rejected."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{
+            "name": "mytool", "verify_output": "abc123",
+            "install_method": {"type": "source", "source": "https://github.com/x/y",
+                               "commit_sha": "deadbeef" * 5,
+                               "local_path": "/nonexistent/bioinf/clone/path"},
+        }],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I11.source_install_present" for v in violations), \
+        f"missing clone path should violate I11; got {violations}"
+
+
+def test_invariant_checker_accepts_present_source_install(tmp_path):
+    """I11 sanity: a source install with commit_sha + an on-disk clone passes."""
+    clone = tmp_path / "share" / "mytool"
+    clone.mkdir(parents=True)
+    (clone / "run.py").write_text("print('hi')\n")
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{
+            "name": "mytool", "verify_output": "abc123def456",
+            "install_method": {"type": "source", "source": "https://github.com/x/y",
+                               "commit_sha": "abc123def456", "ref": "v1.0",
+                               "local_path": str(clone)},
+        }],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+    }
+    i11 = [v for v in check_invariants(spec) if v["invariant"].startswith("I11.")]
+    assert not i11, f"present source install should pass I11: {i11}"
+
+
+def test_package_in_registry_finds_installed_and_misses_absent():
+    """The runtime registry anchor must find a really-installed package and
+    miss a fabricated one. Uses the base conda env (python is always present;
+    a random name never is). Skips if no conda env named 'base' is resolvable."""
+    import shutil, pytest as _pytest
+    from agent.skills.env_manager import EnvManager
+    # Use the live config so EnvManager points at the real envs dir.
+    import yaml as _yaml
+    from pathlib import Path as _Path
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    if not cfg_path.exists() or not shutil.which("conda"):
+        _pytest.skip("conda or agent_config.yaml not available")
+    cfg = _yaml.safe_load(cfg_path.read_text())
+    em = EnvManager(cfg)
+    # Find any existing bioinf_* env to probe against.
+    envs_dir = em.envs_dir
+    candidates = [p.name for p in envs_dir.glob("bioinf_*") if p.is_dir()] if envs_dir.exists() else []
+    if not candidates:
+        _pytest.skip("no bioinf_* env to probe")
+    env = candidates[0]
+    # A package that definitely isn't installed under this fabricated name.
+    assert em._package_in_registry(env, "totally-not-a-real-package-xyz123") is False
+
+
 def test_kill_service_pid_terminates_detached_process():
     """_kill_service_pid must actually kill a detached service process —
     and (critically) NOT take down this test process. Regression guard for

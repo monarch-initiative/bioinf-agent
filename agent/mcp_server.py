@@ -201,6 +201,89 @@ def install_packages(
 
 
 @mcp.tool()
+def install_git_repo(
+    env_name: str,
+    repo_url: str,
+    tool_name: str,
+    ref: str = "",
+    build_command: str = "",
+    verify_command: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Vendor a git repository as a source-installed tool (the clone-and-run
+    pattern that conda/pip/jar primitives don't cover — e.g. an academic repo
+    you run as `python run_thing.py …`).
+
+    Clones repo_url into {env}/share/{tool_name}, checks out `ref` (branch /
+    tag / commit; default HEAD), resolves the commit SHA (the immutable content
+    anchor), optionally runs `build_command` (e.g. `pip install -e .`, `make`)
+    and a `verify_command` smoke test inside the env at the clone dir.
+
+    If pipeline_id is supplied, records an install_step (tool=git,
+    subcommand=clone) whose installed_packages entry carries
+    install_method.type="source" with repo_url + commit_sha + local_path, and
+    caches a verification (verify_command/verify_output) so the derived
+    PackageRecord satisfies I2. The clone path + commit_sha are re-checked at
+    finalize by I11 (source_install_present).
+
+    Pin `ref` to a tag or commit for reproducibility — a bare default branch
+    drifts. Returns: {success, clone_path, commit_sha, repo_url, ref,
+    verify_command, verify_output, log}.
+    """
+    result = _env_mgr.install_git_repo(
+        env_name       = env_name,
+        repo_url       = repo_url,
+        tool_name      = tool_name,
+        ref            = ref,
+        build_command  = build_command,
+        verify_command = verify_command,
+    )
+    if pipeline_id:
+        from urllib.parse import urlparse
+        host = urlparse(repo_url).netloc or ""
+        channel = "github" if "github.com" in host else "git"
+        install_method = {
+            "type":       "source",
+            "source":     repo_url,
+            "commit_sha": result.get("commit_sha"),
+            "ref":        result.get("ref") or (ref or "HEAD"),
+            "local_path": result.get("clone_path"),
+        }
+        ip_record = {
+            "name":           tool_name,
+            "channel":        channel,
+            "source":         repo_url,
+            "install_method": install_method,
+        }
+        if result.get("commit_sha"):
+            ip_record["version"] = result["commit_sha"][:12]
+        step_data = {
+            "tool":        "git",
+            "subcommand":  "clone",
+            "purpose":     f"Vendor {tool_name} from {host or repo_url} (source install)",
+            "command":     f"git clone {repo_url}" + (f" @ {ref}" if ref else ""),
+            "returncode":  0 if result.get("success") else 1,
+            "installed_packages": [ip_record],
+        }
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        # Cache the verify so the finalize-time package derivation attaches it
+        # (mirrors verify_installation). Source tools don't go through the
+        # registry-anchored verify() — their anchor is commit_sha + on-disk path.
+        if result.get("success") and result.get("verify_output"):
+            _pipeline_state.cache_verification(pipeline_id, tool_name, {
+                "verify_command": result.get("verify_command"),
+                "verify_output":  result.get("verify_output"),
+            })
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
+
+
+@mcp.tool()
 def install_jar_tool(
     env_name: str,
     tool_name: str,
@@ -2178,12 +2261,14 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs, authored_artifacts)",
         "I9: every authored_artifact is on disk AND its bytes hash to the recorded sha256 — post-stage drift is rejected",
         "I10: every service_dependency has ≥1 entry in health_check_log with healthy=true — claim-only declarations are rejected",
+        "I11: every source (git-repo) install has a recorded commit_sha AND its clone exists on disk — use install_git_repo",
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
         "install_r_package(source=cran|bioconductor|github:owner/repo): handles library isolation + load-or-die",
         "install_pip_package: handles import verification",
         "install_jar_tool: Java tools — openjdk dep + JAR download + wrapper",
+        "install_git_repo(repo_url, tool_name, ref=…): clone-and-run repos that aren't packages (academic script collections) — clones into {env}/share/{tool}, pins commit SHA, optional build + smoke verify; sets install_method.type=source. Pin ref to a tag/commit.",
         "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
         "run_pipeline_step: run + auto-validate every detected output in one call",
         "stage_authored_artifact: record an agent-written file (driver script, synthetic test data, staged BAM/VCF/FASTA) with verbatim content or genesis command + sha256 anchor — required if any step input is something the agent generated outside MCP",

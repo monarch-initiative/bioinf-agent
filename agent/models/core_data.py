@@ -125,6 +125,11 @@ class InstallMethod(BaseModel):
     jar_path:   Optional[str] = None   # resolved absolute path after download
     # pip
     pip_spec:   Optional[str] = None   # e.g. "multiqc==1.21"
+    # source — git repo vendored as the tool (install_git_repo)
+    source:     Optional[str] = None   # repo URL (also reused as a generic source field)
+    commit_sha: Optional[str] = None   # resolved HEAD at clone time — immutable content anchor (I11)
+    ref:        Optional[str] = None   # branch / tag / commit requested
+    local_path: Optional[str] = None   # absolute path to the clone, {env}/share/{tool}
     # docker_pull — tool only available as a pulled image (no conda/JAR path)
     docker_image: Optional[str] = None
 
