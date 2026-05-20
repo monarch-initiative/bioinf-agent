@@ -66,6 +66,13 @@ _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
 _job_manager    = JobManager(config)
 
+# Reap stale PID files from prior agent sessions whose owning process has
+# already exited. Living services owned by other processes are left alone.
+_orphan_reap = EnvManager.cleanup_orphan_service_pids()
+if _orphan_reap.get("removed"):
+    print(f"[bioinf] reaped {len(_orphan_reap['removed'])} orphan service PID file(s): "
+          f"{_orphan_reap['removed']}", file=sys.stderr)
+
 mcp = FastMCP("bioinf-agent")
 
 # ---------------------------------------------------------------------------
@@ -734,16 +741,84 @@ def start_service(
     health_check_timeout_seconds: int = 30,
     working_dir: str = "",
     env_vars: dict[str, str] = {},
+    pipeline_id: str = "",
+    service_type: str = "custom",
+    stop_command: str = "",
+    port: int = 0,
+    version: str = "",
 ) -> dict:
-    """Start a background service (web server, database, Spark) inside a conda env.
-    Polls health_check_command until healthy or timeout.
-    Returns: success, pid, log path."""
-    return _env_mgr.start_service(
+    """Start a background service (web server, database, Spark, cache, …) inside
+    a conda env. Polls health_check_command until healthy or timeout.
+
+    If pipeline_id is supplied, the service is registered into the draft as a
+    ServiceDependency: the declaration (start_command, stop_command,
+    health_check_command, port, version, type) is recorded, the initial
+    readiness probe is appended to health_check_log, and status is set to
+    `running` (or `failed` if the probe never succeeds).
+
+    `service_dependencies` is BLOCKED from patch_pipeline; the only path to
+    declare a service in the spec is through this primitive (or
+    verify_service_dependency for follow-up probes). I10 requires every
+    declared dependency to have ≥1 healthy probe in its log.
+
+    Returns: {success, pid, log, health_probe?}.
+    """
+    from datetime import datetime, timezone
+
+    result = _env_mgr.start_service(
         env_name, service_name, start_command, health_check_command,
         health_check_timeout_seconds=health_check_timeout_seconds,
         working_dir=working_dir or None,
         env_vars=env_vars or None,
     )
+
+    if pipeline_id:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Always run one explicit probe + record it (success OR failure). When
+        # start_service times out, the inner loop's last probe wasn't returned,
+        # so we re-probe here to make the failure case provable too.
+        probe_raw = _env_mgr.check_service_health(env_name, health_check_command, working_dir=working_dir or None)
+        probe = {
+            "timestamp":      now,
+            "command":        health_check_command,
+            "returncode":     int(probe_raw["returncode"]) if probe_raw.get("returncode") is not None else 1,
+            "healthy":        bool(probe_raw.get("healthy")),
+            "output_excerpt": ((probe_raw.get("stdout") or "") + (probe_raw.get("stderr") or ""))[-500:],
+        }
+        pid_int: Optional[int] = None
+        if result.get("pid"):
+            try:
+                pid_int = int(result["pid"])
+            except (TypeError, ValueError):
+                pid_int = None
+        fields = {
+            "type":                 service_type or "custom",
+            "version":              version or None,
+            "start_command":        start_command,
+            "stop_command":         stop_command or "",
+            "health_check_command": health_check_command,
+            "health_check_timeout_seconds": health_check_timeout_seconds,
+            "port":                 port or None,
+            "env_vars":             env_vars or {},
+            "pid":                  pid_int,
+            "started_at":           now,
+            # Restarting a previously stopped service clears the prior
+            # stopped_at — without this, the spec shows status=running with a
+            # stale stopped_at timestamp, which is contradictory.
+            "stopped_at":           None,
+            "status":               "running" if (result.get("success") and probe["healthy"]) else "failed",
+            "health_check_log":     [probe],
+        }
+        _pipeline_state.upsert_service_dependency(pipeline_id, service_name, fields)
+        result["pipeline_merge"] = {
+            "status":         "merged",
+            "pipeline_id":    pipeline_id,
+            "service_name":   service_name,
+            "probe_healthy":  probe["healthy"],
+        }
+        result["health_probe"] = probe
+
+    return result
 
 
 @mcp.tool()
@@ -751,10 +826,30 @@ def stop_service(
     env_name: str,
     service_name: str,
     stop_command: str = "",
+    pipeline_id: str = "",
 ) -> dict:
     """Stop a background service started with start_service.
-    Prefers stop_command if provided; falls back to killing by PID file."""
-    return _env_mgr.stop_service(env_name, service_name, stop_command=stop_command)
+    Prefers stop_command if provided; falls back to killing by PID file.
+
+    If pipeline_id is supplied, the spec's service_dependency entry is updated
+    with status=stopped and stopped_at timestamp."""
+    from datetime import datetime, timezone
+
+    result = _env_mgr.stop_service(env_name, service_name, stop_command=stop_command)
+    if pipeline_id:
+        _pipeline_state.upsert_service_dependency(
+            pipeline_id, service_name,
+            {
+                "status":     "stopped" if result.get("success") else "failed",
+                "stopped_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
+        result["pipeline_merge"] = {
+            "status":       "merged",
+            "pipeline_id":  pipeline_id,
+            "service_name": service_name,
+        }
+    return result
 
 
 @mcp.tool()
@@ -764,8 +859,81 @@ def check_service_health(
     working_dir: str = "",
 ) -> dict:
     """Run a health-check command to verify a background service is responding.
-    Returns: healthy (bool), returncode, stdout, stderr."""
+    Returns: healthy (bool), returncode, stdout, stderr.
+
+    For recording the probe into a pipeline spec (so I10 is satisfied), use
+    verify_service_dependency instead — this primitive is unrecorded by design
+    (debug / one-off probe)."""
     return _env_mgr.check_service_health(env_name, health_check_command, working_dir=working_dir or None)
+
+
+@mcp.tool()
+def verify_service_dependency(
+    pipeline_id: str,
+    service_name: str,
+    env_name: str,
+    health_check_command: str = "",
+    working_dir: str = "",
+) -> dict:
+    """Probe a declared service and append the observation to its
+    health_check_log. The honest companion to start_service.
+
+    If `health_check_command` is empty, the command recorded on the existing
+    service_dependency entry is reused — so repeat probes are easy.
+
+    I10 — at finalize, every service_dependency must have ≥1 entry in its
+    health_check_log with healthy=true. start_service records one such probe
+    on successful start; use this primitive to record additional probes
+    (mid-pipeline checkpoint, post-step verification, recovery after a flap).
+
+    Returns: {success, healthy, returncode, output, probe_recorded}.
+    """
+    from datetime import datetime, timezone
+
+    draft = _pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+
+    existing_cmd = ""
+    for d in draft.get("service_dependencies", []) or []:
+        if isinstance(d, dict) and d.get("name") == service_name:
+            existing_cmd = d.get("health_check_command") or ""
+            break
+
+    cmd = health_check_command or existing_cmd
+    if not cmd:
+        return {
+            "error": (
+                f"service '{service_name}' has no recorded health_check_command "
+                f"and none was supplied. Call start_service first, or pass "
+                f"health_check_command explicitly."
+            ),
+        }
+
+    probe_raw = _env_mgr.check_service_health(env_name, cmd, working_dir=working_dir or None)
+    probe = {
+        "timestamp":      datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "command":        cmd,
+        "returncode":     int(probe_raw["returncode"]) if probe_raw.get("returncode") is not None else 1,
+        "healthy":        bool(probe_raw.get("healthy")),
+        "output_excerpt": ((probe_raw.get("stdout") or "") + (probe_raw.get("stderr") or ""))[-500:],
+    }
+    idx = _pipeline_state.upsert_service_dependency(
+        pipeline_id, service_name,
+        {"health_check_log": [probe]},
+    )
+    return {
+        "success":         True,
+        "healthy":         probe["healthy"],
+        "returncode":      probe["returncode"],
+        "output":          probe["output_excerpt"],
+        "probe_recorded":  True,
+        "pipeline_merge":  {
+            "status":       "merged" if idx is not None else "no_op",
+            "pipeline_id":  pipeline_id,
+            "service_name": service_name,
+        },
+    }
 
 
 @mcp.tool()
@@ -2009,6 +2177,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step",
         "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs, authored_artifacts)",
         "I9: every authored_artifact is on disk AND its bytes hash to the recorded sha256 — post-stage drift is rejected",
+        "I10: every service_dependency has ≥1 entry in health_check_log with healthy=true — claim-only declarations are rejected",
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
@@ -2018,6 +2187,8 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
         "run_pipeline_step: run + auto-validate every detected output in one call",
         "stage_authored_artifact: record an agent-written file (driver script, synthetic test data, staged BAM/VCF/FASTA) with verbatim content or genesis command + sha256 anchor — required if any step input is something the agent generated outside MCP",
+        "start_service(pipeline_id=…): launch a companion service (Redis, Postgres, web server, Spark) and record the readiness probe — required for service-dependent tools; satisfies I10 on a healthy start",
+        "verify_service_dependency: append an additional health probe to a declared service's log; satisfies I10 if start_service's initial probe wasn't recorded against this pipeline",
         "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
     ]
     build_docker = bool(hints.get("build_docker", False))
@@ -2025,7 +2196,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose for this tool; primitives handle category details",
         "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input and finalize refuses to write.",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, service_dependencies, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
         ("5. build_docker_image (BEFORE finalize) — Docker daemon must be available."
          if build_docker else
          "5. SKIPPED: build_docker_image — pass hints={build_docker: true} to install_pipeline_brief to include it. When skipped, docker_status stays not_attempted; the spec is still finalize-able."),

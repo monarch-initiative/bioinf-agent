@@ -677,9 +677,16 @@ class EnvManager:
         if env_vars:
             extra_env.update(env_vars)
 
+        # start_new_session=True puts `conda run` (and the backgrounded service
+        # it spawns) into a NEW session/process group, distinct from this
+        # server's. Without it, the service shares the server's process group —
+        # and the timeout-cleanup killpg below would then signal the server
+        # itself (observed: a service that never becomes healthy took the whole
+        # MCP server down). Detaching is also just correct for a daemon.
         launch = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30,
             cwd=working_dir or str(self.project_root), env=extra_env,
+            start_new_session=True,
         )
         if launch.returncode != 0:
             return {"success": False, "service_name": service_name, "error": launch.stderr[-500:]}
@@ -693,37 +700,10 @@ class EnvManager:
             time.sleep(2)
 
         # Health check timed out. The service is probably still alive in the
-        # background — clean it up so the caller doesn't get a silent leak. We
-        # call stop_service with the recorded PID rather than relying on a
-        # user-supplied stop_command; SIGTERM the process group first, then
-        # SIGKILL after a short grace window. PID file is removed.
-        cleanup_log: list[str] = []
-        if pid:
-            try:
-                import signal as _signal
-                pid_int = int(pid)
-                try:
-                    pgid = os.getpgid(pid_int)
-                    os.killpg(pgid, _signal.SIGTERM)
-                    cleanup_log.append(f"SIGTERM sent to pgid {pgid}")
-                except ProcessLookupError:
-                    cleanup_log.append("process already gone before SIGTERM")
-                # Grace window
-                for _ in range(25):
-                    try:
-                        os.kill(pid_int, 0)
-                    except ProcessLookupError:
-                        break
-                    time.sleep(0.2)
-                # Force kill anything still alive
-                try:
-                    os.kill(pid_int, 0)
-                    os.killpg(os.getpgid(pid_int), _signal.SIGKILL)
-                    cleanup_log.append("SIGKILL escalation needed")
-                except ProcessLookupError:
-                    pass
-            except Exception as e:
-                cleanup_log.append(f"cleanup attempt errored: {e}")
+        # background — clean it up so the caller doesn't get a silent leak.
+        # SIGTERM the process group first, then SIGKILL after a short grace
+        # window. PID file is removed.
+        cleanup_log = self._kill_service_pid(pid)
         if pid_file.exists():
             pid_file.unlink()
 
@@ -733,6 +713,68 @@ class EnvManager:
             "log": str(log_file),
             "cleanup": cleanup_log,
         }
+
+    @staticmethod
+    def _kill_service_pid(pid: str) -> list[str]:
+        """Terminate a service process (SIGTERM → grace → SIGKILL).
+
+        Prefers signalling the whole process group so child processes die too,
+        but NEVER signals this server's own process group — if the service was
+        somehow launched into our group (detachment failed), fall back to
+        signalling the single PID. A regression here previously killed the
+        server itself; this guard makes that impossible.
+        """
+        import signal as _signal
+
+        cleanup_log: list[str] = []
+        if not pid:
+            return cleanup_log
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            return [f"unparseable pid {pid!r}"]
+
+        own_pgrp = os.getpgrp()
+
+        def _signal_target(sig: int, label: str) -> bool:
+            """Return True if the process is now gone."""
+            try:
+                pgid = os.getpgid(pid_int)
+            except ProcessLookupError:
+                return True
+            if pgid == own_pgrp:
+                # SAFETY: never signal our own group. Single-pid only.
+                try:
+                    os.kill(pid_int, sig)
+                    cleanup_log.append(f"{label} sent to pid {pid_int} (own-group guard: not killpg)")
+                except ProcessLookupError:
+                    return True
+            else:
+                try:
+                    os.killpg(pgid, sig)
+                    cleanup_log.append(f"{label} sent to pgid {pgid}")
+                except ProcessLookupError:
+                    return True
+            return False
+
+        if _signal_target(_signal.SIGTERM, "SIGTERM"):
+            cleanup_log.append("process already gone before SIGTERM")
+            return cleanup_log
+
+        # Grace window
+        gone = False
+        for _ in range(25):
+            try:
+                os.kill(pid_int, 0)
+            except ProcessLookupError:
+                gone = True
+                break
+            time.sleep(0.2)
+
+        if not gone:
+            if not _signal_target(_signal.SIGKILL, "SIGKILL"):
+                cleanup_log.append("SIGKILL escalation needed")
+        return cleanup_log
 
     def stop_service(
         self,
@@ -756,6 +798,43 @@ class EnvManager:
             return {"success": True, "service_name": service_name, "pid": pid, "method": "kill"}
         except Exception as e:
             return {"success": False, "service_name": service_name, "pid": pid, "error": str(e)}
+
+    @staticmethod
+    def cleanup_orphan_service_pids() -> dict[str, Any]:
+        """Scan /tmp/bioinf_services/ for stale PID files (the process no
+        longer exists) and remove them. Called at MCP server startup to keep
+        the service registry clean across agent restarts.
+
+        Does NOT kill living processes — only reaps the file-system droppings
+        of services whose owning process has already exited (crash, kill,
+        previous agent session).
+        """
+        pid_dir = Path("/tmp/bioinf_services")
+        if not pid_dir.exists():
+            return {"checked": 0, "removed": []}
+        removed: list[str] = []
+        checked = 0
+        for pid_file in pid_dir.glob("*.pid"):
+            checked += 1
+            try:
+                pid = int(pid_file.read_text().strip())
+            except (ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
+                removed.append(pid_file.name)
+                continue
+            try:
+                os.kill(pid, 0)  # signal 0 = existence probe; doesn't actually signal
+            except ProcessLookupError:
+                pid_file.unlink(missing_ok=True)
+                # Also drop the .log sibling if present (informational only)
+                log_file = pid_file.with_suffix(".log")
+                if log_file.exists():
+                    log_file.unlink(missing_ok=True)
+                removed.append(pid_file.name)
+            except PermissionError:
+                # Process exists but not ours — leave it alone
+                pass
+        return {"checked": checked, "removed": removed}
 
     def check_service_health(
         self,

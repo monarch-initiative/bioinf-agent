@@ -779,6 +779,48 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_authored_artifacts(spec))
 
+    # ------------------------------------------------------------------
+    # I10: service-dependency probes. Every declared service_dependency must
+    # have ≥1 entry in its health_check_log with healthy=true. start_service
+    # populates this on successful start; verify_service_dependency appends
+    # additional probes. A declared service without a successful probe is an
+    # unverified claim — the spec says "needs Redis" but never showed Redis
+    # actually responding.
+    # ------------------------------------------------------------------
+    violations.extend(_check_service_dependencies(spec))
+
+    return violations
+
+
+def _check_service_dependencies(spec: dict) -> list[dict]:
+    """I10 — every declared service_dependency must have observed evidence of
+    a successful health probe. Without this anchor, the field is a claim-only
+    advertisement that downstream consumers cannot trust.
+    """
+    violations: list[dict] = []
+    for d in spec.get("service_dependencies", []) or []:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("name") or "<unnamed>"
+        log = d.get("health_check_log") or []
+        if not isinstance(log, list) or not log:
+            violations.append({
+                "invariant": "I10.service_dependency_probed",
+                "message":   f"service_dependency '{name}' has no health_check_log entries — "
+                             f"declared but never probed. Call start_service(pipeline_id=...) "
+                             f"so the readiness probe is recorded, or verify_service_dependency "
+                             f"for an explicit check.",
+                "where":     f"service_dependencies[name={name}]",
+            })
+            continue
+        if not any(isinstance(p, dict) and p.get("healthy") for p in log):
+            violations.append({
+                "invariant": "I10.service_dependency_healthy_probe",
+                "message":   f"service_dependency '{name}' has {len(log)} probe(s) recorded "
+                             f"but none healthy=true. The service was declared and "
+                             f"polled, but never observed responding.",
+                "where":     f"service_dependencies[name={name}]",
+            })
     return violations
 
 

@@ -265,6 +265,24 @@ class AuthoredArtifact(BaseModel):
 # Service dependencies — companion processes required during a pipeline run
 # ---------------------------------------------------------------------------
 
+class HealthCheckProbe(BaseModel):
+    """
+    A single observed health-check probe for a ServiceDependency.
+
+    Runtime-captured by `start_service` (initial readiness probe) and
+    `verify_service_dependency` (manual re-probes). The honesty contract (I10)
+    requires every declared service to have ≥1 entry here with healthy=true —
+    a declaration without a successful probe is an unverified claim.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    timestamp:      str
+    command:        str           # the exact health-check command run
+    returncode:     int
+    healthy:        bool
+    output_excerpt: Optional[str] = None   # last ~500 chars of stdout+stderr
+
+
 class ServiceDependency(BaseModel):
     """
     A background process that must be running while the pipeline executes.
@@ -273,14 +291,20 @@ class ServiceDependency(BaseModel):
       - OpenCRAVAT web server (type="web_server")
       - Cromwell + MySQL backend (type="database")
       - Hail / Spark driver (type="spark")
+      - Redis cache (type="cache")
 
     start_command is run inside the conda env before the pipeline; stop_command
     is run after.  health_check_command is polled until healthy or timeout.
     The PID file lives at /tmp/bioinf_services/{name}.pid (managed by EnvManager).
+
+    Honesty-related fields are populated by the runtime, NOT the agent:
+      - health_check_log: every observed probe; I10 requires ≥1 healthy
+      - pid / started_at / stopped_at: lifecycle observation
+      - status: derived from the lifecycle (declared → running → stopped/failed)
     """
     model_config = ConfigDict(extra="allow")
 
-    type:                         Literal["web_server", "database", "spark", "custom"]
+    type:                         Literal["web_server", "database", "spark", "cache", "custom"]
     name:                         str             # e.g. "opencravat", "mongodb", "mysql"
     version:                      Optional[str] = None
     start_command:                str
@@ -290,6 +314,12 @@ class ServiceDependency(BaseModel):
     port:                         Optional[int] = None
     env_vars:                     dict[str, str] = {}
     data_dir:                     Optional[str] = None
+    # Runtime-captured (do NOT hand-supply via patch_pipeline)
+    pid:                          Optional[int] = None
+    started_at:                   Optional[str] = None
+    stopped_at:                   Optional[str] = None
+    status:                       Literal["declared", "running", "stopped", "failed"] = "declared"
+    health_check_log:             list[HealthCheckProbe] = []
 
 
 # ---------------------------------------------------------------------------

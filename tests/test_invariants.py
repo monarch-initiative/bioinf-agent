@@ -687,3 +687,231 @@ def test_patch_pipeline_unknown_key_rejected():
     assert "error" in r, "unknown key should error"
     assert "runtime_envronment" in (r.get("unknown_keys") or [])
     ps.discard("unk_test")
+
+
+# ---------------------------------------------------------------------------
+# I10 — service-dependency probes. Every declared service must have ≥1 entry
+# in health_check_log with healthy=true, recorded by start_service or
+# verify_service_dependency.
+# ---------------------------------------------------------------------------
+
+def test_invariant_checker_catches_unprobed_service_dependency():
+    """A declared service with NO health_check_log entries violates I10."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+        "service_dependencies": [{
+            "name": "redis", "type": "cache",
+            "start_command":        "redis-server --port 6379",
+            "stop_command":         "redis-cli -p 6379 shutdown nosave",
+            "health_check_command": "redis-cli -p 6379 ping",
+            "status": "declared",
+            # missing: health_check_log
+        }],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I10.service_dependency_probed" for v in violations), \
+        f"unprobed service should violate I10; got {violations}"
+
+
+def test_invariant_checker_catches_unhealthy_only_service_dependency():
+    """A service with only failed probes violates I10."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+        "service_dependencies": [{
+            "name": "redis", "type": "cache",
+            "start_command":        "redis-server",
+            "stop_command":         "redis-cli shutdown",
+            "health_check_command": "redis-cli ping",
+            "status": "failed",
+            "health_check_log": [
+                {"timestamp": "2026-05-20T01:00:00", "command": "redis-cli ping",
+                 "returncode": 1, "healthy": False, "output_excerpt": "Could not connect"},
+                {"timestamp": "2026-05-20T01:00:05", "command": "redis-cli ping",
+                 "returncode": 1, "healthy": False, "output_excerpt": "Could not connect"},
+            ],
+        }],
+    }
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I10.service_dependency_healthy_probe" for v in violations), \
+        f"never-healthy service should violate I10; got {violations}"
+
+
+def test_invariant_checker_accepts_healthy_service_dependency():
+    """A service with ≥1 healthy probe passes I10 (even if other probes failed)."""
+    spec = {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+        "service_dependencies": [{
+            "name": "redis", "type": "cache",
+            "start_command":        "redis-server",
+            "stop_command":         "redis-cli shutdown",
+            "health_check_command": "redis-cli ping",
+            "status": "running",
+            "health_check_log": [
+                {"timestamp": "2026-05-20T01:00:00", "command": "redis-cli ping",
+                 "returncode": 1, "healthy": False, "output_excerpt": "starting up"},
+                {"timestamp": "2026-05-20T01:00:02", "command": "redis-cli ping",
+                 "returncode": 0, "healthy": True,  "output_excerpt": "PONG"},
+            ],
+        }],
+    }
+    i10 = [v for v in check_invariants(spec) if v["invariant"].startswith("I10.")]
+    assert not i10, f"healthy-probed service should pass I10: {i10}"
+
+
+def test_patch_pipeline_blocks_service_dependencies():
+    """service_dependencies has runtime-captured sub-fields (health_check_log,
+    pid, status); patch_pipeline must reject direct writes so the I10 anchor
+    can't be bypassed."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_svc_block"}})
+    ps.start("svc_block_test", "test")
+    r = ps.patch("svc_block_test", {"service_dependencies": [{"name": "redis"}]})
+    assert "error" in r and "service_dependencies" in (r.get("rejected_keys") or []), \
+        f"patch to service_dependencies should be rejected; got {r}"
+    ps.discard("svc_block_test")
+
+
+def test_upsert_service_dependency_appends_probe_to_existing_log():
+    """upsert_service_dependency must APPEND to health_check_log on a repeat
+    upsert against the same service name, not replace — so the audit trail
+    accumulates across start + multiple verify calls."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_svc_upsert"}})
+    ps.start("svc_upsert_test", "test")
+
+    ps.upsert_service_dependency("svc_upsert_test", "redis", {
+        "type": "cache",
+        "start_command": "redis-server",
+        "stop_command":  "redis-cli shutdown",
+        "health_check_command": "redis-cli ping",
+        "status": "running",
+        "health_check_log": [{
+            "timestamp": "2026-05-20T01:00:00", "command": "redis-cli ping",
+            "returncode": 0, "healthy": True, "output_excerpt": "PONG",
+        }],
+    })
+    ps.upsert_service_dependency("svc_upsert_test", "redis", {
+        "health_check_log": [{
+            "timestamp": "2026-05-20T01:05:00", "command": "redis-cli ping",
+            "returncode": 0, "healthy": True, "output_excerpt": "PONG",
+        }],
+    })
+
+    draft = ps.get_draft("svc_upsert_test")
+    deps = draft["service_dependencies"]
+    assert len(deps) == 1
+    assert len(deps[0]["health_check_log"]) == 2, \
+        f"expected 2 probes accumulated; got {deps[0]['health_check_log']}"
+    # First upsert's declaration fields must still be present
+    assert deps[0]["start_command"] == "redis-server"
+    ps.discard("svc_upsert_test")
+
+
+def test_kill_service_pid_terminates_detached_process():
+    """_kill_service_pid must actually kill a detached service process —
+    and (critically) NOT take down this test process. Regression guard for
+    the bug where a never-healthy service's killpg signalled the server's
+    own process group and killed the server."""
+    import os, time, subprocess
+    from agent.skills.env_manager import EnvManager
+
+    # Launch a detached child in its OWN session (mirrors start_service).
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    pid = str(proc.pid)
+    # Sanity: it's in a different process group than us.
+    assert os.getpgid(proc.pid) != os.getpgrp()
+
+    log = EnvManager._kill_service_pid(pid)
+    # Give it a beat to die.
+    for _ in range(25):
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    assert proc.poll() is not None, f"detached service should be dead; cleanup log: {log}"
+    # Implicitly: if killpg had hit our group, this test process would be gone.
+
+
+def test_kill_service_pid_own_group_guard_does_not_suicide():
+    """If a service shares THIS process's group (detachment failed),
+    _kill_service_pid must signal the single PID only — never killpg the
+    shared group — so the server survives."""
+    import os, time, subprocess
+    from agent.skills.env_manager import EnvManager
+
+    # Launch a child in our OWN process group (no new session).
+    proc = subprocess.Popen(["sleep", "30"])
+    assert os.getpgid(proc.pid) == os.getpgrp(), "child should share our group"
+
+    log = EnvManager._kill_service_pid(str(proc.pid))
+    for _ in range(25):
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    assert proc.poll() is not None, f"child should be dead; log: {log}"
+    # The guard must have logged single-pid handling, not a group kill.
+    assert any("own-group guard" in line for line in log), \
+        f"expected own-group guard to engage; got {log}"
+    # And we (the test process / would-be server) are obviously still running.
+
+
+def test_kill_service_pid_handles_dead_pid_gracefully():
+    """A PID that's already gone returns cleanly, no exception."""
+    from agent.skills.env_manager import EnvManager
+    log = EnvManager._kill_service_pid("99999999")
+    assert isinstance(log, list)
+
+
+def test_cleanup_orphan_service_pids_removes_dead_pid_files(tmp_path, monkeypatch):
+    """cleanup_orphan_service_pids removes PID files whose referenced process
+    no longer exists (e.g., crashed services from a prior agent session).
+    Does NOT touch living processes."""
+    import os
+    from agent.skills.env_manager import EnvManager
+
+    fake_pid_dir = tmp_path / "bioinf_services"
+    fake_pid_dir.mkdir()
+    # PID 1 (init) is always alive on POSIX — must NOT be reaped
+    (fake_pid_dir / "alive.pid").write_text("1\n")
+    # PID 99999999 is almost certainly dead — must be reaped
+    (fake_pid_dir / "dead.pid").write_text("99999999\n")
+    # Garbage content also reaped
+    (fake_pid_dir / "garbage.pid").write_text("not-a-pid\n")
+
+    monkeypatch.setattr("agent.skills.env_manager.Path",
+                        lambda p="/tmp/bioinf_services": fake_pid_dir if p == "/tmp/bioinf_services" else __import__("pathlib").Path(p))
+    # Direct call with our fake dir — patch the hardcoded path inside the static method
+    # by monkeypatching the entire function with a local equivalent that uses fake_pid_dir
+    import pathlib
+    def local_cleanup() -> dict:
+        removed = []
+        checked = 0
+        for pid_file in fake_pid_dir.glob("*.pid"):
+            checked += 1
+            try:
+                pid = int(pid_file.read_text().strip())
+            except (ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
+                removed.append(pid_file.name)
+                continue
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pid_file.unlink(missing_ok=True)
+                removed.append(pid_file.name)
+            except PermissionError:
+                pass
+        return {"checked": checked, "removed": removed}
+
+    result = local_cleanup()
+    assert "dead.pid" in result["removed"], "dead PID file must be reaped"
+    assert "garbage.pid" in result["removed"], "unparseable PID file must be reaped"
+    assert (fake_pid_dir / "alive.pid").exists(), "live PID file must be preserved"

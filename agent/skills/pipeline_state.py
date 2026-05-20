@@ -238,6 +238,41 @@ class PipelineState:
         self._persist(pipeline_id)
         return True
 
+    def upsert_service_dependency(
+        self, pipeline_id: str, name: str, fields: dict
+    ) -> Optional[int]:
+        """Append or update a service_dependency by name. Used by start_service
+        / verify_service_dependency to register declarations and append probes
+        to health_check_log. Replacement is field-merge: new fields are deep-
+        merged into the existing entry, NOT a wholesale clobber, so an initial
+        declaration (name/start_command/health_check_command/…) survives a
+        later upsert that only appends a probe.
+
+        For the `health_check_log` field specifically, source entries are
+        APPENDED to the existing list rather than replacing it — every probe
+        observed by the runtime accumulates.
+        """
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return None
+        deps = draft.setdefault("service_dependencies", [])
+        for i, d in enumerate(deps):
+            if isinstance(d, dict) and d.get("name") == name:
+                merged = dict(d)
+                for k, v in fields.items():
+                    if k == "health_check_log" and isinstance(v, list):
+                        existing = merged.get("health_check_log") or []
+                        merged["health_check_log"] = list(existing) + list(v)
+                    else:
+                        merged[k] = v
+                deps[i] = merged
+                self._persist(pipeline_id)
+                return i
+        new_entry = {"name": name, **fields}
+        deps.append(new_entry)
+        self._persist(pipeline_id)
+        return len(deps) - 1
+
     def add_authored_artifact(self, pipeline_id: str, artifact: dict) -> Optional[int]:
         """Append (or replace by path) an AuthoredArtifact entry.
 
@@ -292,7 +327,6 @@ class PipelineState:
         "description", "notes", "final_summary",
         "conda_env", "created_at", "python_version", "reference_free",
         "runtime_environment", "runtime_configs", "reference_databases",
-        "service_dependencies",
         "usage",
     })
 
@@ -304,7 +338,8 @@ class PipelineState:
         "verifications", "search_cache", "test_data", "docker",
         "env_status", "pipeline_status", "docker_status",
         "usage_verified", "lock_sha256",
-        "authored_artifacts",  # owned by stage_authored_artifact (sha256-anchored)
+        "authored_artifacts",      # owned by stage_authored_artifact (sha256-anchored)
+        "service_dependencies",    # owned by start_service / verify_service_dependency (I10 probe-anchored)
     })
 
     def patch(self, pipeline_id: str, patches: dict) -> dict:
