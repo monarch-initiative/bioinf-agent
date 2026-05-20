@@ -229,9 +229,24 @@ class EnvManager:
         """
         import re
 
-        token_present = bool(re.search(
-            rf"\b{re.escape(package_name)}\b", check_command, flags=re.IGNORECASE
-        ))
+        # Conda packages frequently use a language prefix (r-locfit,
+        # bioconductor-deseq2, python-foo, perl-bar) where the natural verify
+        # invokes the unprefixed library name: `library(locfit)`,
+        # `library(DESeq2)`, `import foo`. Accept either the full conda name OR
+        # the unprefixed suffix as the cheat-block token, so the agent doesn't
+        # have to use awkward `conda list` probes for natively-loadable libs.
+        # The token still has to appear — `echo "fake"` is still rejected.
+        candidate_tokens: list[str] = [package_name]
+        for prefix in ("r-", "bioconductor-", "python-", "perl-"):
+            if package_name.lower().startswith(prefix):
+                suffix = package_name[len(prefix):]
+                if suffix:
+                    candidate_tokens.append(suffix)
+
+        token_present = any(
+            re.search(rf"\b{re.escape(t)}\b", check_command, flags=re.IGNORECASE)
+            for t in candidate_tokens
+        )
 
         result = self.run_in_env(env_name, check_command, timeout=30)
         output = (result.get("stdout", "") + result.get("stderr", "")).strip()
@@ -243,19 +258,22 @@ class EnvManager:
         which_out = (which_res.get("stdout") or "").strip()
         installed_at = which_out if which_res.get("returncode") == 0 and which_out else None
 
-        # Hard gate: check_command must reference the package as a word-
-        # boundary token. R / pip / JAR / conda all naturally satisfy this
-        # (library(DESeq2), import multiqc, samtools --version, etc.), but
-        # `echo "fake 1.21"` does not.
+        # Hard gate: check_command must reference the package (or its natural
+        # library name) as a word-boundary token. R / pip / JAR / conda all
+        # naturally satisfy this (library(DESeq2), import multiqc, samtools
+        # --version, etc.), but `echo "fake 1.21"` does not.
         success = bool(cmd_ok and token_present)
 
         rejection_reason = None
         if cmd_ok and not token_present:
             rejection_reason = (
-                f"check_command does not invoke '{package_name}' as a recognizable token. "
-                f"Use a real invocation like '{package_name} --version' (binary), "
-                f"'Rscript -e \"library({package_name})\"' (R), or "
-                f"'python -c \"import {package_name}\"' (pip) — not an echo / printf cheat."
+                f"check_command does not invoke '{package_name}' (or its natural library "
+                f"name without conda prefix) as a recognizable token. Tried: "
+                f"{candidate_tokens}. Use a real probe: '{package_name} --version' for CLIs, "
+                f"'Rscript -e \"library(X)\"' for R packages, 'python -c \"import X\"' for "
+                f"pip, or 'conda list -p \"$CONDA_PREFIX\" {package_name}' for any conda "
+                f"package whose binary/import name doesn't match the conda name (e.g. r-base). "
+                f"Echo / printf cheats are rejected."
             )
 
         return {

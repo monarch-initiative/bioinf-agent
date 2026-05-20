@@ -292,38 +292,42 @@ def install_r_package(
     Returns the run_install_command shape; failure cases include both R
     install errors and load-failures with a clean signal.
     """
+    # NOTE: the executed Rscript is wrapped in `Rscript -e "..."` (outer double
+    # quotes), so every R string literal inside MUST use single quotes — nested
+    # double quotes terminate the outer bash string and Rscript receives the
+    # package name as an unquoted symbol ("object 'X' not found").
     if source.startswith("github:"):
         owner_repo = source[len("github:"):].strip()
         # Pre-install undeclared transitive deps if requested.
         pre_lines = []
         if deps_first:
-            pre = ",".join(f'"{d}"' for d in deps_first)
+            pre = ",".join(f"'{d}'" for d in deps_first)
             pre_lines.append(
                 f'BiocManager::install(c({pre}), lib=lib, ask=FALSE, update=FALSE)'
             )
         install_expr = (
-            f'remotes::install_github("{owner_repo}", lib=lib, dependencies=FALSE)'
+            f"remotes::install_github('{owner_repo}', lib=lib, dependencies=FALSE)"
         )
         check_name = name
         install_block = "; ".join(pre_lines + [install_expr])
         channel = "github"
         source_url = f"https://github.com/{owner_repo}"
-        im_source = f'remotes::install_github("{owner_repo}")'
+        im_source = f"remotes::install_github('{owner_repo}')"
     elif source == "cran":
         install_block = (
-            f'install.packages("{name}", lib=lib, repos="https://cloud.r-project.org")'
+            f"install.packages('{name}', lib=lib, repos='https://cloud.r-project.org')"
         )
         channel = "cran"
         source_url = f"https://CRAN.R-project.org/package={name}"
-        im_source = f'install.packages("{name}")'
+        im_source = f"install.packages('{name}')"
         check_name = name
     elif source == "bioconductor":
         install_block = (
-            f'BiocManager::install("{name}", lib=lib, ask=FALSE, update=FALSE)'
+            f"BiocManager::install('{name}', lib=lib, ask=FALSE, update=FALSE)"
         )
         channel = "bioconductor"
         source_url = f"https://bioconductor.org/packages/{name}/"
-        im_source = f'BiocManager::install("{name}")'
+        im_source = f"BiocManager::install('{name}')"
         check_name = name
     else:
         return {"success": False, "error": f"unknown R source: {source!r} (use cran|bioconductor|github:owner/repo)"}
@@ -1543,6 +1547,140 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
 
 
 @mcp.tool()
+def stage_authored_artifact(
+    pipeline_id: str,
+    path: str,
+    role: str,
+    description: str,
+    content: str = "",
+    generated_by: str = "",
+    language: str = "",
+    overwrite: bool = True,
+) -> dict:
+    """Stage an agent-authored artifact and record its provenance in the spec.
+
+    Use this whenever you write a file or perform a transformation OUTSIDE the
+    pipeline_step / install_step primitives — driver scripts, synthetic test
+    inputs, hand-staged BAM/VCF/FASTA, sed-massaged configs, generated CSV/TSV
+    fixtures. These artifacts are otherwise invisible to the spec; a step that
+    consumes them looks like an orphan to the I8 composition-coherence walk
+    and finalize fails.
+
+    Two modes:
+
+      content mode      — supply `content` (text). The runtime writes the file
+                          at `path`, computes sha256, and stores the contents
+                          (full if small, excerpt + full sha256 if large)
+                          inside the spec. Reviewers can audit exactly what
+                          the agent generated.
+
+      generated_by mode — supply `generated_by` (the shell command you ran),
+                          with the file already on disk at `path`. The runtime
+                          records the command as the genesis and sha256s the
+                          bytes. Use for binary outputs (BAM, FASTA, indexed
+                          DB, pickled models).
+
+    Honesty effect:
+      - Path is added to the I8 universe of external sources, so downstream
+        pipeline_steps can legally name it as an input.
+      - sha256 is re-verified at finalize (I9). If the on-disk content drifts
+        from the recorded sha256, the spec is refused — silent tampering is
+        impossible.
+      - `authored_artifacts` is blocked from patch_pipeline, so the only path
+        to record an artifact is this primitive (the sha256 anchor is
+        compulsory).
+
+    Returns: {success, path, sha256, size_bytes, role, mode}.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    if bool(content) == bool(generated_by):
+        return {
+            "error": "exactly one of `content` (text content to write) "
+                     "or `generated_by` (genesis command for an existing file) must be supplied",
+        }
+    if not Path(path).is_absolute():
+        return {"error": f"path must be absolute, got: {path!r}"}
+
+    p = Path(path)
+    mode: str
+
+    if content:
+        if p.exists() and not overwrite:
+            return {"error": f"path already exists and overwrite=False: {path}"}
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        except Exception as e:
+            return {"error": f"could not write artifact: {e!r}", "path": path}
+        mode = "content"
+    else:
+        if not p.exists():
+            return {
+                "error": f"generated_by mode requires the file to already exist on disk: {path}",
+            }
+        mode = "generated_by"
+
+    try:
+        raw = p.read_bytes()
+    except Exception as e:
+        return {"error": f"could not read back artifact for sha256: {e!r}", "path": path}
+
+    sha256 = hashlib.sha256(raw).hexdigest()
+    size_bytes = len(raw)
+
+    # For content mode, embed the full text up to ~64 KiB; otherwise an excerpt.
+    # Binary-mode artifacts get a short hex preview so a reviewer can sanity-check.
+    SPEC_FULL_LIMIT = 65536
+    excerpt: Optional[str] = None
+    content_full_in_spec = False
+    if mode == "content":
+        if size_bytes <= SPEC_FULL_LIMIT:
+            excerpt = content
+            content_full_in_spec = True
+        else:
+            excerpt = content[:4096] + f"\n... [truncated, total {size_bytes} bytes]"
+    else:
+        # Show a short hex preview for binary artifacts so the spec isn't blind.
+        excerpt = f"<binary; first 64 bytes hex: {raw[:64].hex()}>"
+
+    artifact = {
+        "path":        str(p),
+        "role":        role,
+        "description": description,
+        "sha256":      sha256,
+        "size_bytes":  size_bytes,
+        "created_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if language:
+        artifact["language"] = language
+    if excerpt is not None:
+        artifact["content_excerpt"] = excerpt
+    artifact["content_full_in_spec"] = content_full_in_spec
+    if generated_by:
+        artifact["generated_by"] = generated_by
+
+    idx = _pipeline_state.add_authored_artifact(pipeline_id, artifact)
+    if idx is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}", "path": path}
+
+    return {
+        "success":   True,
+        "path":      str(p),
+        "sha256":    sha256,
+        "size_bytes": size_bytes,
+        "role":      role,
+        "mode":      mode,
+        "pipeline_merge": {
+            "status":        "merged",
+            "pipeline_id":   pipeline_id,
+            "artifact_index": idx,
+        },
+    }
+
+
+@mcp.tool()
 def mark_step_validated(
     pipeline_id: str,
     step: int,
@@ -1858,13 +1996,14 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     """
     invariants = [
         "I1: every install_step.returncode is 0 (or marked status=failed)",
-        "I2: every non-infrastructure package has verify_output AND its check_command invokes the package as a word-boundary token (echo-cheats rejected)",
+        "I2: every non-infrastructure package has verify_output AND its check_command invokes the package (or its unprefixed library name for conda r-/bioconductor-/python-/perl- packages) as a word-boundary token (echo-cheats rejected)",
         "I3: every pipeline_step has validated detected_outputs AND no validation uses expected_type='any' — declare types via run_pipeline_step's output_types",
         "I4: usage.command_template executes against every declared trial AND each produced file passes type-aware validate_output (samtools/bcftools/json.loads/etc — touch-and-hope cheats fail)",
         "I5: every reference_database.local_path exists on disk",
         "I6: every input/output path is absolute",
         "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step",
-        "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs)",
+        "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs, authored_artifacts)",
+        "I9: every authored_artifact is on disk AND its bytes hash to the recorded sha256 — post-stage drift is rejected",
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
@@ -1873,14 +2012,15 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "install_jar_tool: Java tools — openjdk dep + JAR download + wrapper",
         "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
         "run_pipeline_step: run + auto-validate every detected output in one call",
+        "stage_authored_artifact: record an agent-written file (driver script, synthetic test data, staged BAM/VCF/FASTA) with verbatim content or genesis command + sha256 anchor — required if any step input is something the agent generated outside MCP",
         "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
     ]
     build_docker = bool(hints.get("build_docker", False))
     protocol = [
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose for this tool; primitives handle category details",
-        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types)",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, service_dependencies, description, final_summary). Pipeline_steps / install_steps / packages / validation / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
+        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input and finalize refuses to write.",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, service_dependencies, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
         ("5. build_docker_image (BEFORE finalize) — Docker daemon must be available."
          if build_docker else
          "5. SKIPPED: build_docker_image — pass hints={build_docker: true} to install_pipeline_brief to include it. When skipped, docker_status stays not_attempted; the spec is still finalize-able."),

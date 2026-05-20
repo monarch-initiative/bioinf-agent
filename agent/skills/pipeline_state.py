@@ -238,6 +238,32 @@ class PipelineState:
         self._persist(pipeline_id)
         return True
 
+    def add_authored_artifact(self, pipeline_id: str, artifact: dict) -> Optional[int]:
+        """Append (or replace by path) an AuthoredArtifact entry.
+
+        Records of agent-authored files — driver scripts, synthetic test
+        inputs, staged transformations — so the pipeline composes honestly:
+        every step input traces to either a prior step's output OR a recorded
+        external source. The path is added to the I8 universe at finalize,
+        and I9 re-verifies sha256(file_on_disk) matches the recorded value.
+
+        Replace-by-path semantics means the agent can iterate on a script
+        without leaving stale entries.
+        """
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return None
+        artifacts = draft.setdefault("authored_artifacts", [])
+        target_path = artifact.get("path")
+        for i, a in enumerate(artifacts):
+            if a.get("path") == target_path:
+                artifacts[i] = artifact
+                self._persist(pipeline_id)
+                return i
+        artifacts.append(artifact)
+        self._persist(pipeline_id)
+        return len(artifacts) - 1
+
     def set_docker(self, pipeline_id: str, docker_result: dict) -> bool:
         """Pluck just the DockerBuild-shaped fields from a build_docker_image return."""
         draft = self._drafts.get(pipeline_id)
@@ -278,6 +304,7 @@ class PipelineState:
         "verifications", "search_cache", "test_data", "docker",
         "env_status", "pipeline_status", "docker_status",
         "usage_verified", "lock_sha256",
+        "authored_artifacts",  # owned by stage_authored_artifact (sha256-anchored)
     })
 
     def patch(self, pipeline_id: str, patches: dict) -> dict:

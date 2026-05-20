@@ -700,13 +700,84 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     # I8: composition coherence. Every step's inputs must trace to either
     # an external source (test_data, reference_databases, runtime_configs,
-    # config_files on this or a prior step) or a prior step's outputs.
-    # An orphan input — a path no upstream source produces — means the
-    # pipeline doesn't actually compose: step N consumed something step N-1
-    # didn't make.
+    # authored_artifacts, config_files on this or a prior step) or a prior
+    # step's outputs. An orphan input — a path no upstream source produces —
+    # means the pipeline doesn't actually compose: step N consumed something
+    # step N-1 didn't make.
     # ------------------------------------------------------------------
     violations.extend(_check_composition_coherence(spec))
 
+    # ------------------------------------------------------------------
+    # I9: authored artifacts present + sha256-anchored. Every entry in
+    # `authored_artifacts` (created by stage_authored_artifact) must still
+    # exist on disk AND its bytes must hash to the recorded sha256. Catches
+    # post-stage mutation — including the case where the agent staged a
+    # placeholder, then edited it after the fact to fake content.
+    # ------------------------------------------------------------------
+    violations.extend(_check_authored_artifacts(spec))
+
+    return violations
+
+
+def _check_authored_artifacts(spec: dict) -> list[dict]:
+    """I9 — verify every stage_authored_artifact record still matches disk.
+
+    The runtime computes sha256 at stage-time; if the on-disk file has drifted
+    (truncated, edited, swapped) the recorded provenance no longer reflects
+    what's actually being used. Refuse to finalize.
+    """
+    import hashlib
+
+    violations: list[dict] = []
+    for a in spec.get("authored_artifacts", []) or []:
+        if not isinstance(a, dict):
+            continue
+        p = a.get("path")
+        recorded_sha = a.get("sha256")
+        if not p or not isinstance(p, str):
+            violations.append({
+                "invariant": "I9.authored_artifact_path_required",
+                "message":   "authored_artifact entry has no path",
+                "where":     "authored_artifacts",
+            })
+            continue
+        path = Path(p)
+        if not path.exists():
+            violations.append({
+                "invariant": "I9.authored_artifact_present",
+                "message":   f"authored_artifact at '{p}' is not on disk — "
+                             f"it was recorded but no longer exists. The pipeline "
+                             f"references a file that's been removed.",
+                "where":     f"authored_artifacts[path={p}]",
+            })
+            continue
+        if not recorded_sha:
+            violations.append({
+                "invariant": "I9.authored_artifact_sha256_required",
+                "message":   f"authored_artifact '{p}' has no recorded sha256 — "
+                             f"use stage_authored_artifact (do not hand-patch).",
+                "where":     f"authored_artifacts[path={p}]",
+            })
+            continue
+        try:
+            actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        except Exception as e:
+            violations.append({
+                "invariant": "I9.authored_artifact_readable",
+                "message":   f"authored_artifact '{p}' could not be read for sha256: {e!r}",
+                "where":     f"authored_artifacts[path={p}]",
+            })
+            continue
+        if actual_sha != recorded_sha:
+            violations.append({
+                "invariant": "I9.authored_artifact_unmodified",
+                "message":   f"authored_artifact '{p}' content has drifted from the "
+                             f"recorded sha256 (recorded={recorded_sha[:12]}..., "
+                             f"actual={actual_sha[:12]}...) — file was modified after "
+                             f"stage_authored_artifact captured it. Re-stage the artifact "
+                             f"so the spec matches reality.",
+                "where":     f"authored_artifacts[path={p}]",
+            })
     return violations
 
 
@@ -759,6 +830,14 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
     for rc in spec.get("runtime_configs", []) or []:
         if isinstance(rc, dict):
             _add_external(rc.get("path"))
+
+    # Authored artifacts — agent-written scripts, synthetic test inputs,
+    # staged transformations. Their provenance (content or genesis command +
+    # sha256) is captured by stage_authored_artifact; downstream pipeline
+    # steps may legitimately reference them as inputs.
+    for a in spec.get("authored_artifacts", []) or []:
+        if isinstance(a, dict):
+            _add_external(a.get("path"))
 
     def _is_orphan_exempt(p: str) -> bool:
         if not p or not isinstance(p, str):

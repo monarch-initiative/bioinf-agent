@@ -217,6 +217,51 @@ class RuntimeConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Authored artifacts — captures the "agent went outside MCP to write a file"
+# blind spot. Driver scripts, synthetic test inputs, hand-staged transformations,
+# generated data, sed/awk-massaged configs all live here. Recording them in the
+# spec makes the entire pipeline reproducible: every artifact consumed by a
+# step traces to a real source.
+#
+# Honesty invariants (I8 + I9):
+#   - I8 universe includes `authored_artifacts[*].path` — orphan inputs that
+#     reference these files now compose correctly.
+#   - I9 re-computes sha256 at finalize and refuses to write a spec whose
+#     on-disk artifact has drifted from the recorded content.
+# ---------------------------------------------------------------------------
+
+class AuthoredArtifact(BaseModel):
+    """
+    A file the agent wrote into existence during the install — the spec's
+    record of "I generated this." Two modes:
+
+      content mode    — agent supplies the full text content; the runtime
+                        writes the file AND records the verbatim content in
+                        the spec so a reviewer can audit what the agent
+                        authored.
+      generated_by    — file is binary or large (BAM, FASTA, indexed db) and
+                        was produced by a shell command the agent ran. The
+                        primitive records the genesis command instead of the
+                        bytes.
+
+    In both cases the runtime computes sha256(file_on_disk) at stage-time;
+    finalize re-computes and refuses to write the spec if it has drifted.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    path:                  str         # absolute path to the on-disk artifact
+    role:                  str         # free-form: "driver_script", "synthetic_test_input", "config", "staged_input", ...
+    description:           str         # WHY this file exists (audit trail)
+    sha256:                str         # hex digest of the bytes on disk at stage-time
+    size_bytes:            int
+    created_at:            str
+    language:              Optional[str] = None   # hint: "r", "python", "bash", "tsv", "json", ...
+    content_excerpt:       Optional[str] = None   # first N bytes for human review (text mode)
+    content_full_in_spec:  bool = False           # True if content fit fully in spec
+    generated_by:          Optional[str] = None   # shell command that produced the file (binary mode)
+
+
+# ---------------------------------------------------------------------------
 # Service dependencies — companion processes required during a pipeline run
 # ---------------------------------------------------------------------------
 
@@ -972,6 +1017,7 @@ class PipelineSpec(BaseModel):
     reference_databases:  list[ReferenceDatabase] = []
     runtime_configs:      list[RuntimeConfig] = []
     service_dependencies: list[ServiceDependency] = []
+    authored_artifacts:   list[AuthoredArtifact] = []
     test_data:            Optional[TestDataRef] = None
     install_steps:        list[InstallStep] = []   # env-build journey (chronological by `step`)
     pipeline_steps:       list[PipelineStep] = []  # algorithm/analysis runs
