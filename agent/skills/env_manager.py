@@ -273,6 +273,24 @@ class EnvManager:
         pip = self.run_in_env(env_name, f"pip show {q}", timeout=30)
         if pip.get("returncode") == 0 and (pip.get("stdout") or "").strip():
             return True
+        # R library: packages installed via install_r_package (CRAN /
+        # Bioconductor / GitHub) live in $CONDA_PREFIX/lib/R/library and are
+        # NOT tracked by conda or pip — without this probe the registry anchor
+        # would reject genuinely-installed R packages (EMMREML, snpStats,
+        # GAPIT, …). Probe the R library name(s): the package name plus the
+        # conda-prefix-stripped form (r-ape→ape, bioconductor-multtest→multtest).
+        r_names = {package_name}
+        for prefix in ("r-", "bioconductor-"):
+            if package_name.lower().startswith(prefix):
+                r_names.add(package_name[len(prefix):])
+        checks = " || ".join(
+            f"requireNamespace('{n}',quietly=TRUE)" for n in sorted(r_names)
+        )
+        rprobe = self.run_in_env(
+            env_name, f'Rscript -e "quit(status=if({checks}) 0 else 1)"', timeout=60
+        )
+        if rprobe.get("returncode") == 0:
+            return True
         return False
 
     def verify(self, env_name: str, package_name: str, check_command: str) -> dict[str, Any]:

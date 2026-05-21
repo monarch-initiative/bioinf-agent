@@ -489,6 +489,15 @@ def install_r_package(
         if result.get("verify_command"):
             step_data["verify_command"] = result["verify_command"]
         idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        # Cache the load-or-die verify so the finalize package derivation
+        # attaches it (mirrors verify_installation / install_git_repo). Without
+        # this the derived PackageRecord has no verify_output and fails I2,
+        # forcing a redundant verify_installation call for every R package.
+        if result.get("success") and result.get("verify_output"):
+            _pipeline_state.cache_verification(pipeline_id, check_name, {
+                "verify_command": result.get("verify_command"),
+                "verify_output":  result.get("verify_output"),
+            })
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
@@ -559,6 +568,14 @@ def install_pip_package(
         if result.get("verify_command"):
             step_data["verify_command"] = result["verify_command"]
         idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        # Cache the import-check verify so the finalize package derivation
+        # attaches it — without this the derived PackageRecord has no
+        # verify_output and fails I2 (same gap fixed for R packages).
+        if result.get("success") and result.get("verify_output"):
+            _pipeline_state.cache_verification(pipeline_id, name, {
+                "verify_command": result.get("verify_command"),
+                "verify_output":  result.get("verify_output"),
+            })
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
