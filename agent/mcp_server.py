@@ -125,21 +125,34 @@ def create_conda_env(
     env_name: str,
     python_version: str = "",
     pipeline_id: str = "",
+    subdir: str = "",
 ) -> dict:
     """Create a new isolated conda environment.
+
+    `subdir` pins the env's platform when a tool has no native build on the
+    host arch — most commonly `subdir="osx-64"` on Apple Silicon for
+    osx-64-only bioconda packages (plink, plink2, older C/C++ tools), which
+    then run under Rosetta 2. The subdir is persisted to the env's .condarc so
+    every subsequent install_packages into this env honors it. Check
+    search_package's `installable_on_current_platform` / `available_subdirs`
+    first; if the host arch is missing but osx-64/linux-64 exists, create with
+    that subdir.
 
     If pipeline_id is supplied, draft.conda_env and draft.python_version are
     set, and an entry is appended to draft.install_steps recording the env
     creation so the install journey is captured chronologically."""
     pv = python_version or config["conda"]["python_version"]
-    result = _env_mgr.create(env_name, python_version=pv)
+    result = _env_mgr.create(env_name, python_version=pv, subdir=subdir or None)
     if pipeline_id:
         _pipeline_state.set_conda_env(pipeline_id, env_name, python_version=pv)
+        cmd = f"conda create --prefix envs/{env_name} python={pv}"
+        if subdir:
+            cmd = f"CONDA_SUBDIR={subdir} {cmd}  # + conda config --env --set subdir {subdir}"
         idx = _pipeline_state.add_install_step(pipeline_id, {
             "tool":               "conda",
             "subcommand":         "create",
-            "purpose":            f"Create the {env_name} conda environment",
-            "command":            f"conda create --prefix envs/{env_name} python={pv}",
+            "purpose":            f"Create the {env_name} conda environment" + (f" (subdir={subdir})" if subdir else ""),
+            "command":            cmd,
             "returncode":         0 if result.get("success") else 1,
             "installed_packages": [{"name": "python", "version": pv, "channel": "conda-forge"}],
         })

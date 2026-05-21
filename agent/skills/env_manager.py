@@ -101,7 +101,23 @@ class EnvManager:
     # Public API
     # -----------------------------------------------------------------------
 
-    def create(self, env_name: str, python_version: str | None = None) -> dict[str, Any]:
+    def create(
+        self,
+        env_name: str,
+        python_version: str | None = None,
+        subdir: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a conda env.
+
+        `subdir` pins the env's platform (e.g. "osx-64") for tools with no
+        native build on the host arch — the common case being osx-64-only
+        bioconda packages (plink, plink2, many older C/C++ tools) on Apple
+        Silicon, which then run under Rosetta 2. The subdir is set for the
+        create solve AND persisted to the env's .condarc via
+        `conda config --env --set subdir`, so every later install into this
+        env honors it. Without persistence, a follow-up `conda install` would
+        solve for the host arch again and fail.
+        """
         env_path = self.envs_dir / env_name
         py_ver = python_version or self.config["conda"]["python_version"]
 
@@ -110,8 +126,14 @@ class EnvManager:
                 "success": True,
                 "env_name": env_name,
                 "env_path": str(env_path),
+                "subdir": subdir or None,
                 "note": "Environment already exists — reusing it.",
             }
+
+        # CONDA_SUBDIR on the create solve selects the platform's packages.
+        create_env = os.environ.copy()
+        if subdir:
+            create_env["CONDA_SUBDIR"] = subdir
 
         cmd = [
             self._conda_exe, "create",
@@ -119,15 +141,29 @@ class EnvManager:
             f"python={py_ver}",
             "--yes", "--quiet",
         ]
-        result = self._run(cmd)
+        result = self._run(cmd, env=create_env)
         if result["returncode"] != 0:
             return {"success": False, "env_name": env_name, "error": result["stderr"]}
+
+        if subdir:
+            # Persist so subsequent `conda install` into this env keep the subdir.
+            persist = self._run([
+                self._conda_exe, "config", "--env", "--set", "subdir", subdir,
+            ], env={**os.environ, "CONDA_PREFIX": str(env_path)})
+            # `conda config --env` needs the env active to target its .condarc;
+            # fall back to writing the .condarc directly if the call didn't.
+            condarc = env_path / ".condarc"
+            if persist["returncode"] != 0 or not condarc.exists():
+                existing = condarc.read_text() if condarc.exists() else ""
+                if "subdir:" not in existing:
+                    condarc.write_text(existing + f"subdir: {subdir}\n")
 
         return {
             "success": True,
             "env_name": env_name,
             "env_path": str(env_path),
             "python_version": py_ver,
+            "subdir": subdir or None,
         }
 
     def install(self, env_name: str, packages: list[dict]) -> dict[str, Any]:
@@ -1061,8 +1097,9 @@ class EnvManager:
         cmd: list[str],
         cwd: str | None = None,
         timeout: int = 300,
+        env: dict | None = None,
     ) -> dict:
-        env = os.environ.copy()
+        run_env = env if env is not None else os.environ.copy()
         try:
             proc = subprocess.run(
                 cmd,
@@ -1070,7 +1107,7 @@ class EnvManager:
                 text=True,
                 timeout=timeout,
                 cwd=cwd or str(self.project_root),
-                env=env,
+                env=run_env,
             )
             return {
                 "returncode": proc.returncode,
