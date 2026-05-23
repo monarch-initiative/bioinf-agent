@@ -994,3 +994,80 @@ def test_cleanup_orphan_service_pids_removes_dead_pid_files(tmp_path, monkeypatc
     assert "dead.pid" in result["removed"], "dead PID file must be reaped"
     assert "garbage.pid" in result["removed"], "unparseable PID file must be reaped"
     assert (fake_pid_dir / "alive.pid").exists(), "live PID file must be preserved"
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Phase 0: evidence-strategy registry + universal apply() primitive
+# ---------------------------------------------------------------------------
+
+def test_evidence_registry_exposes_named_strategies():
+    """The evidence registry is the single source of truth for presence proofs;
+    every composing install tier looks anchors up by name here. A dropped or
+    renamed strategy must fail loudly rather than silently weaken a tier."""
+    from agent.skills import evidence
+    expected = {
+        "cli_which", "conda_registry", "pip_show", "r_namespace",
+        "registry_anchor", "presence_anchor",
+    }
+    assert expected <= set(evidence.STRATEGIES), \
+        f"missing strategies: {expected - set(evidence.STRATEGIES)}"
+    assert all(callable(fn) for fn in evidence.STRATEGIES.values())
+
+
+def test_evidence_strategy_returns_uniform_shape():
+    """Every strategy returns the {strategy, anchored, detail} Evidence shape.
+    Drive cli_which against a fake EnvManager whose run_in_env reports a miss —
+    no conda needed, so this runs everywhere."""
+    from agent.skills import evidence
+
+    class _FakeEM:
+        def run_in_env(self, env, cmd, timeout=0):
+            return {"returncode": 1, "stdout": "", "stderr": ""}
+
+    ev = evidence.cli_which(_FakeEM(), "anyenv", "nope")
+    assert set(ev) == {"strategy", "anchored", "detail"}
+    assert ev["strategy"] == "cli_which"
+    assert ev["anchored"] is False
+    assert ev["detail"] is None
+
+    # presence_anchor falls through which → registry; with everything missing it
+    # must report not-anchored (the gate that blocks the echo cheat).
+    ev2 = evidence.presence_anchor(_FakeEM(), "anyenv", "nope")
+    assert ev2["anchored"] is False
+
+
+def test_apply_raw_command_captures_mutation():
+    """apply(in_env=False) is the universal mutation primitive for base-context
+    commands; it must return a well-formed Mutation. Uses /bin/echo so it needs
+    no conda env to RUN — only an EnvManager to construct (guarded on conda)."""
+    import shutil, pytest as _pytest, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    if not cfg_path.exists() or not shutil.which("conda"):
+        _pytest.skip("conda or agent_config.yaml not available")
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+
+    m = em.apply("anyenv", ["echo", "phase0"], in_env=False, timeout=30)
+    assert m["success"] is True
+    assert m["returncode"] == 0
+    assert "phase0" in m["stdout"]
+    assert m["command"] == ["echo", "phase0"]
+
+
+def test_apply_rejects_mismatched_command_type():
+    """The in_env flag and the command type must agree — a string for a raw
+    base command (or a list for an in-env shell command) is a programming
+    error, caught early rather than mis-executed."""
+    import shutil, pytest as _pytest, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    if not cfg_path.exists() or not shutil.which("conda"):
+        _pytest.skip("conda or agent_config.yaml not available")
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+
+    with _pytest.raises(TypeError):
+        em.apply("anyenv", "echo hi", in_env=False)      # raw mode wants a list
+    with _pytest.raises(TypeError):
+        em.apply("anyenv", ["echo", "hi"], in_env=True)   # in-env mode wants a string

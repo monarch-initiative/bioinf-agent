@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from agent.skills import evidence
+
 
 # conda spec grammar: "{name}{op?}{version?}{=build?}".
 # Operators: =, ==, >=, <=, >, <, != (the last one is rare but legal).
@@ -217,15 +219,18 @@ class EnvManager:
             + channel_args
             + specs
         )
-        result = self._run(cmd, timeout=self.config["agent"]["install_timeout_seconds"])
+        m = self.apply(
+            env_name, cmd, in_env=False,
+            timeout=self.config["agent"]["install_timeout_seconds"],
+        )
 
         return {
-            "success": result["returncode"] == 0,
+            "success": m["success"],
             "env_name": env_name,
             "packages_requested": [p["spec"] for p in packages],
-            "stdout": result["stdout"][-3000:],
-            "stderr": result["stderr"][-3000:],
-            "returncode": result["returncode"],
+            "stdout": m["stdout"][-3000:],
+            "stderr": m["stderr"][-3000:],
+            "returncode": m["returncode"],
         }
 
     def install_pip(self, env_name: str, pip_specs: list[str]) -> dict[str, Any]:
@@ -233,65 +238,85 @@ class EnvManager:
         pip_bin = env_path / "bin" / "pip"
 
         cmd = [str(pip_bin), "install"] + pip_specs
-        result = self._run(cmd, timeout=self.config["agent"]["install_timeout_seconds"])
+        m = self.apply(
+            env_name, cmd, in_env=False,
+            timeout=self.config["agent"]["install_timeout_seconds"],
+        )
 
         return {
-            "success": result["returncode"] == 0,
+            "success": m["success"],
             "env_name": env_name,
             "packages_requested": pip_specs,
-            "stdout": result["stdout"][-2000:],
-            "stderr": result["stderr"][-2000:],
+            "stdout": m["stdout"][-2000:],
+            "stderr": m["stderr"][-2000:],
+        }
+
+    def apply(
+        self,
+        env_name: str,
+        command,
+        *,
+        in_env: bool = True,
+        timeout: int | None = None,
+        watch_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Universal mutation primitive — run a command that changes the env and
+        capture it as a Mutation.
+
+        This is the single chokepoint the install re-spine routes through:
+        install()/install_pip() (and, as the re-spine proceeds, every other
+        install tier) delegate execution here so the capture shape — command,
+        returncode, success, stdout/stderr, and (in-env) resource usage +
+        detected outputs — is produced in exactly ONE place rather than
+        re-derived per method. Pairing a Mutation with an evidence strategy
+        (see agent.skills.evidence) is what `verify()` and, later, `seal()` do.
+
+        in_env=True  → run inside the env via `conda run` (run_in_env);
+                       `command` is a shell string. Captures resource_usage
+                       and detected_outputs.
+        in_env=False → run a raw command list from the base context (e.g.
+                       `conda install --prefix …`, the env's `pip install …`)
+                       via _run; `command` is a list[str].
+        """
+        if in_env:
+            if not isinstance(command, str):
+                raise TypeError("apply(in_env=True) expects a shell-string command")
+            res = self.run_in_env(
+                env_name, command,
+                timeout=timeout if timeout is not None else 1800,
+                watch_dir=watch_dir,
+            )
+            return {
+                "command":          command,
+                "returncode":       res["returncode"],
+                "success":          res["returncode"] == 0,
+                "stdout":           res["stdout"],
+                "stderr":           res["stderr"],
+                "runtime_seconds":  res.get("runtime_seconds"),
+                "resource_usage":   res.get("resource_usage"),
+                "detected_outputs": res.get("detected_outputs", []),
+            }
+
+        if isinstance(command, str):
+            raise TypeError("apply(in_env=False) expects a command list[str]")
+        res = self._run(command, timeout=timeout if timeout is not None else 300)
+        return {
+            "command":    command,
+            "returncode": res["returncode"],
+            "success":    res["returncode"] == 0,
+            "stdout":     res["stdout"],
+            "stderr":     res["stderr"],
         }
 
     def _package_in_registry(self, env_name: str, package_name: str) -> bool:
         """Runtime-controlled presence anchor: is `package_name` actually
-        recorded in the env's conda or pip registry? Used by verify() to block
-        the library-only echo cheat. The agent's check_command cannot influence
-        this — it queries conda/pip directly with the package name.
+        recorded in the env's conda / pip / R registry? Used by verify() to
+        block the library-only echo cheat. The agent's check_command cannot
+        influence this — it queries the registries directly with the package
+        name. Delegates to the named conda/pip/R strategies in
+        agent.skills.evidence (single source of truth for presence probes).
         """
-        import json as _json
-        import shlex as _shlex
-
-        q = _shlex.quote(package_name)
-        # conda: exact name match against `conda list --json` (its name arg is a
-        # regex, so a substring like "numpy" would also surface "numpy-base" —
-        # require an exact, case-insensitive name equality).
-        conda = self.run_in_env(
-            env_name, f'conda list -p "$CONDA_PREFIX" --json {q}', timeout=30
-        )
-        if conda.get("returncode") == 0:
-            try:
-                data = _json.loads(conda.get("stdout") or "[]")
-                if isinstance(data, list) and any(
-                    isinstance(e, dict) and (e.get("name", "").lower() == package_name.lower())
-                    for e in data
-                ):
-                    return True
-            except Exception:
-                pass
-        # pip: `pip show` exits 0 only if the dist is installed.
-        pip = self.run_in_env(env_name, f"pip show {q}", timeout=30)
-        if pip.get("returncode") == 0 and (pip.get("stdout") or "").strip():
-            return True
-        # R library: packages installed via install_r_package (CRAN /
-        # Bioconductor / GitHub) live in $CONDA_PREFIX/lib/R/library and are
-        # NOT tracked by conda or pip — without this probe the registry anchor
-        # would reject genuinely-installed R packages (EMMREML, snpStats,
-        # GAPIT, …). Probe the R library name(s): the package name plus the
-        # conda-prefix-stripped form (r-ape→ape, bioconductor-multtest→multtest).
-        r_names = {package_name}
-        for prefix in ("r-", "bioconductor-"):
-            if package_name.lower().startswith(prefix):
-                r_names.add(package_name[len(prefix):])
-        checks = " || ".join(
-            f"requireNamespace('{n}',quietly=TRUE)" for n in sorted(r_names)
-        )
-        rprobe = self.run_in_env(
-            env_name, f'Rscript -e "quit(status=if({checks}) 0 else 1)"', timeout=60
-        )
-        if rprobe.get("returncode") == 0:
-            return True
-        return False
+        return evidence.registry_anchor(self, env_name, package_name)["anchored"]
 
     def verify(self, env_name: str, package_name: str, check_command: str) -> dict[str, Any]:
         """Run check_command in env to confirm the package works.
@@ -342,17 +367,16 @@ class EnvManager:
 
         # Independent presence anchor #1: `which <name>` in the env. Catches CLI
         # tools (samtools, picard wrapper, …).
-        which_res = self.run_in_env(env_name, f"which {package_name} 2>/dev/null", timeout=10)
-        which_out = (which_res.get("stdout") or "").strip()
-        installed_at = which_out if which_res.get("returncode") == 0 and which_out else None
+        which_ev = evidence.cli_which(self, env_name, package_name)
+        installed_at = which_ev["detail"] if which_ev["anchored"] else None
 
         # Independent presence anchor #2: the env's package REGISTRY (conda
-        # list / pip show). This is runtime-controlled — the agent's
-        # check_command cannot influence it — so it closes the library-only
-        # cheat where a check like `python -c "print('numpy 2.4')"` satisfies
-        # the token gate without anything being installed. Library packages
-        # (numpy, scipy, python-louvain→community) have no CLI binary, so the
-        # `which` anchor is null for them; the registry probe is their anchor.
+        # list / pip show / R library). This is runtime-controlled — the
+        # agent's check_command cannot influence it — so it closes the
+        # library-only cheat where a check like `python -c "print('numpy 2.4')"`
+        # satisfies the token gate without anything being installed. Library
+        # packages (numpy, scipy, python-louvain→community) have no CLI binary,
+        # so the `which` anchor is null for them; the registry probe is theirs.
         registry_present = False
         if not installed_at:
             registry_present = self._package_in_registry(env_name, package_name)
