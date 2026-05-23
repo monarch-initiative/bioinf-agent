@@ -297,6 +297,104 @@ def install_git_repo(
 
 
 @mcp.tool()
+def install_release_binary(
+    env_name: str,
+    tool_name: str,
+    url: str,
+    sha256: str = "",
+    binary_in_archive: str = "",
+    wrapper_name: str = "",
+    verify_command: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a precompiled release binary (Tier-3): the static-binary pattern
+    conda/pip/jar/source don't cover — mosdepth, somalier, slivar, sylph,
+    dorado, cellranger. Downloads the asset, anchors it by sha256 (a mismatch is
+    a HARD FAIL), extracts if it's a tar/zip, chmods the executable, and writes a
+    PATH launcher at {env}/bin/{wrapper_name or tool_name}.
+
+    sha256: pass the published checksum to guarantee you got the exact asset; if
+    omitted, the computed sha256 is recorded. Either way the spec carries the
+    immutable content anchor I14 re-checks at finalize (it re-hashes the on-disk
+    binary).
+
+    binary_in_archive: for archive assets, the executable's path inside it
+    (basename accepted); omit for single-binary downloads.
+
+    A smoke verify runs after install ({tool} --version/--help by default, or
+    your verify_command) — this is what catches a wrong-ARCHITECTURE binary that
+    is present on disk (and so passes I14) but cannot execute. With pipeline_id,
+    records an install_step (install_method.type="binary" + binary_url + sha256 +
+    local_path) and caches the verify so the derived PackageRecord satisfies I2.
+
+    Returns: {success, binary_path, wrapper_path, url, sha256, verify_command,
+    verify_output, install_method, log}.
+    """
+    result = _env_mgr.install_release_binary(
+        env_name          = env_name,
+        tool_name         = tool_name,
+        url               = url,
+        sha256            = sha256,
+        binary_in_archive = binary_in_archive,
+        wrapper_name      = wrapper_name,
+    )
+    if not result.get("success"):
+        return result
+
+    launcher = wrapper_name or tool_name
+    vcmd = verify_command or (
+        f"{launcher} --version 2>&1 || {launcher} --help 2>&1 || {launcher} -h 2>&1"
+    )
+    vres = _env_mgr.run_in_env(env_name, vcmd, timeout=120)
+    verify_ok = vres.get("returncode") == 0
+    verify_output = ((vres.get("stdout") or "") + (vres.get("stderr") or "")).strip()[:200]
+    result["verify_command"] = vcmd
+    result["verify_output"]  = verify_output
+    if not verify_ok:
+        result["success"] = False
+        result["verify_failed"] = True
+        result["stderr"] = (result.get("stderr") or "") + (
+            f"\n[verify failed: `{vcmd}` rc={vres.get('returncode')} — the binary is on disk "
+            f"but did not execute; likely the wrong architecture/libc for this platform]"
+        )
+
+    if pipeline_id:
+        install_method = result.get("install_method") or {
+            "type": "binary", "binary_url": url,
+            "sha256": result.get("sha256"), "local_path": result.get("binary_path"),
+        }
+        ip_record = {
+            "name":           tool_name,
+            "channel":        "binary",
+            "source":         url,
+            "install_method": install_method,
+        }
+        step_data = {
+            "tool":        "curl",
+            "subcommand":  "download",
+            "purpose":     f"Install release binary {tool_name} from {url}",
+            "command":     f"curl -L -o {tool_name} {url}",
+            "returncode":  0 if result.get("success") else 1,
+            "installed_packages": [ip_record],
+        }
+        if verify_ok:
+            step_data["verify_command"] = vcmd
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        if verify_ok and verify_output:
+            _pipeline_state.cache_verification(pipeline_id, tool_name, {
+                "verify_command": vcmd,
+                "verify_output":  verify_output,
+            })
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+        )
+    return result
+
+
+@mcp.tool()
 def install_jar_tool(
     env_name: str,
     tool_name: str,

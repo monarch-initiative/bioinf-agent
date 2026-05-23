@@ -116,7 +116,7 @@ class InstallMethod(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source", "manual"] = "conda"
+    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source", "binary", "manual"] = "conda"
     # conda
     conda_spec: Optional[str] = None   # e.g. "samtools=1.21"
     channel:    Optional[str] = None   # e.g. "bioconda"
@@ -129,7 +129,10 @@ class InstallMethod(BaseModel):
     source:     Optional[str] = None   # repo URL (also reused as a generic source field)
     commit_sha: Optional[str] = None   # resolved HEAD at clone time — immutable content anchor (I11)
     ref:        Optional[str] = None   # branch / tag / commit requested
-    local_path: Optional[str] = None   # absolute path to the clone, {env}/share/{tool}
+    local_path: Optional[str] = None   # absolute path to the clone / binary on disk
+    # binary — precompiled release binary (mosdepth/dorado/sylph/cellranger pattern)
+    binary_url: Optional[str] = None   # download URL of the release asset
+    sha256:     Optional[str] = None   # sha256 of the downloaded asset — immutable content anchor (I14)
     # docker_pull — tool only available as a pulled image (no conda/JAR path)
     docker_image: Optional[str] = None
 

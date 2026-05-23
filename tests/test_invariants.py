@@ -1071,3 +1071,131 @@ def test_apply_rejects_mismatched_command_type():
         em.apply("anyenv", "echo hi", in_env=False)      # raw mode wants a list
     with _pytest.raises(TypeError):
         em.apply("anyenv", ["echo", "hi"], in_env=True)   # in-env mode wants a string
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 1: release-binary tier (I14) + file_present evidence + staging
+# ---------------------------------------------------------------------------
+
+def _binary_spec(name, install_method):
+    """Minimal finalize-able spec carrying one binary package, so the I14
+    checker can be exercised in isolation."""
+    return {
+        "pipeline_name": "test",
+        "packages": [{"name": name, "verify_output": "ran ok",
+                      "install_method": install_method}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [],
+    }
+
+
+def test_i14_binary_install_passes_when_present_and_hash_matches(tmp_path):
+    """A binary package with a recorded URL + sha256 whose on-disk bytes hash to
+    that sha256 must NOT violate I14 — the happy path."""
+    import hashlib
+    b = tmp_path / "mosdepth"
+    b.write_bytes(b"\x7fELF fake static binary\n")
+    sha = hashlib.sha256(b.read_bytes()).hexdigest()
+    spec = _binary_spec("mosdepth", {
+        "type": "binary",
+        "binary_url": "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth",
+        "sha256": sha,
+        "local_path": str(b),
+    })
+    violations = [v for v in check_invariants(spec) if v["invariant"].startswith("I14.")]
+    assert not violations, f"matching binary should not violate I14: {violations}"
+
+
+def test_i14_binary_install_fails_on_hash_drift(tmp_path):
+    """A binary whose bytes changed since install (sha256 no longer matches) is
+    the tamper case — must violate I14.binary_install_unmodified."""
+    b = tmp_path / "tool"
+    b.write_bytes(b"current bytes")
+    spec = _binary_spec("tool", {
+        "type": "binary",
+        "binary_url": "https://example.org/tool",
+        "sha256": "deadbeef" * 8,        # not the on-disk hash
+        "local_path": str(b),
+    })
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I14.binary_install_unmodified" for v in violations), \
+        f"drifted binary should violate I14; got {violations}"
+
+
+def test_i14_binary_install_fails_when_missing_on_disk(tmp_path):
+    """A recorded binary that isn't on disk must violate I14.binary_install_present."""
+    spec = _binary_spec("ghost", {
+        "type": "binary",
+        "binary_url": "https://example.org/ghost",
+        "sha256": "ab" * 32,
+        "local_path": str(tmp_path / "does_not_exist"),
+    })
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I14.binary_install_present" for v in violations), \
+        f"missing binary should violate I14; got {violations}"
+
+
+def test_i14_binary_install_requires_url_and_sha256(tmp_path):
+    """type=binary without binary_url / sha256 is an unanchored claim — both are
+    required even when the file is present."""
+    b = tmp_path / "tool"
+    b.write_bytes(b"x")
+    spec = _binary_spec("tool", {"type": "binary", "local_path": str(b)})
+    inv = {v["invariant"] for v in check_invariants(spec)}
+    assert "I14.binary_install_source_required" in inv
+    assert "I14.binary_install_sha256_required" in inv
+
+
+def test_file_present_evidence_hash_gate(tmp_path):
+    """file_present anchors only when the file exists AND (if given) its sha256
+    matches — the on-disk proof behind the release-binary tier."""
+    import hashlib
+    from agent.skills import evidence
+    f = tmp_path / "bin"
+    f.write_bytes(b"abc123")
+    sha = hashlib.sha256(f.read_bytes()).hexdigest()
+
+    ok = evidence.file_present(None, "anyenv", str(f), sha256=sha)
+    assert ok["anchored"] is True and ok["strategy"] == "file_present"
+    bad = evidence.file_present(None, "anyenv", str(f), sha256="00" * 32)
+    assert bad["anchored"] is False
+    missing = evidence.file_present(None, "anyenv", str(tmp_path / "nope"))
+    assert missing["anchored"] is False
+    # present, no hash given → anchored on existence alone
+    assert evidence.file_present(None, "anyenv", str(f))["anchored"] is True
+
+
+def test_stage_release_binary_extracts_locates_and_wraps(tmp_path):
+    """The post-download staging (extract archive → locate executable → write
+    PATH launcher) works without a network download. Builds a real .tar.gz with
+    the binary under a bin/ subdir, the common release layout."""
+    import tarfile, shutil, pytest as _pytest, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    if not cfg_path.exists() or not shutil.which("conda"):
+        _pytest.skip("conda or agent_config.yaml not available")
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+
+    # Build sometool-1.0/bin/sometool inside a tarball.
+    pkgroot = tmp_path / "pkg"
+    (pkgroot / "sometool-1.0" / "bin").mkdir(parents=True)
+    exe = pkgroot / "sometool-1.0" / "bin" / "sometool"
+    exe.write_text("#!/bin/sh\necho hi\n")
+    archive = tmp_path / "sometool-1.0-linux.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(pkgroot / "sometool-1.0", arcname="sometool-1.0")
+
+    share_dir = tmp_path / "share" / "sometool"
+    bin_dir   = tmp_path / "bin"
+    share_dir.mkdir(parents=True)
+    log: list = []
+    res = em._stage_release_binary(
+        share_dir, bin_dir, archive, "sometool",
+        binary_in_archive="", wrapper_name="", log=log,
+    )
+    assert res["success"], f"staging should succeed: {res}"
+    assert _Path(res["binary_path"]).name == "sometool"
+    launcher = _Path(res["wrapper_path"])
+    assert launcher.exists() and launcher.name == "sometool"
+    assert res["binary_path"] in launcher.read_text()

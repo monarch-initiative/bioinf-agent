@@ -798,6 +798,90 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_source_installs(spec))
 
+    # ------------------------------------------------------------------
+    # I14: precompiled-binary installs are present + sha256-anchored. Every
+    # package with install_method.type="binary" must record its source URL and
+    # a sha256, the binary must exist on disk, AND its bytes must re-hash to the
+    # recorded sha256 (the static-binary analog of I9's authored-artifact hash
+    # and I11's source commit_sha). A release binary is otherwise just a URL the
+    # spec claims it downloaded.
+    # ------------------------------------------------------------------
+    violations.extend(_check_binary_installs(spec))
+
+    return violations
+
+
+def _check_binary_installs(spec: dict) -> list[dict]:
+    """I14 — precompiled release-binary installs must be present on disk and
+    anchored to a recorded sha256 that still matches the bytes."""
+    import hashlib
+
+    violations: list[dict] = []
+    for p in spec.get("packages", []) or []:
+        if not isinstance(p, dict):
+            continue
+        im = p.get("install_method") or {}
+        if not isinstance(im, dict) or im.get("type") != "binary":
+            continue
+        name = p.get("name") or "<unnamed>"
+        url        = im.get("binary_url") or im.get("source")
+        sha256     = im.get("sha256")
+        local_path = im.get("local_path")
+        where      = f"packages[name={name}].install_method"
+
+        if not url:
+            violations.append({
+                "invariant": "I14.binary_install_source_required",
+                "message":   f"binary package '{name}' has install_method.type=binary but no "
+                             f"binary_url — use install_release_binary so the asset's origin is recorded.",
+                "where":     where,
+            })
+        if not sha256:
+            violations.append({
+                "invariant": "I14.binary_install_sha256_required",
+                "message":   f"binary package '{name}' has no sha256 anchor — "
+                             f"install_release_binary records the asset's hash at download time.",
+                "where":     where,
+            })
+        if not local_path:
+            violations.append({
+                "invariant": "I14.binary_install_present",
+                "message":   f"binary package '{name}' has no install_method.local_path — "
+                             f"the binary location wasn't recorded.",
+                "where":     where,
+            })
+            continue
+        if not Path(local_path).exists():
+            violations.append({
+                "invariant": "I14.binary_install_present",
+                "message":   f"binary package '{name}' is missing on disk: {local_path}. "
+                             f"The asset was recorded but isn't there.",
+                "where":     where,
+            })
+            continue
+        # Re-hash and compare — the anchor the agent cannot fake.
+        if sha256:
+            try:
+                h = hashlib.sha256()
+                with open(local_path, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+                digest = h.hexdigest()
+            except OSError as e:
+                violations.append({
+                    "invariant": "I14.binary_install_readable",
+                    "message":   f"binary package '{name}' could not be read to verify its "
+                                 f"sha256: {e}",
+                    "where":     where,
+                })
+                continue
+            if digest.lower() != str(sha256).lower():
+                violations.append({
+                    "invariant": "I14.binary_install_unmodified",
+                    "message":   f"binary package '{name}' bytes changed since install: recorded "
+                                 f"sha256 {str(sha256)[:12]}…, on-disk {digest[:12]}….",
+                    "where":     where,
+                })
     return violations
 
 

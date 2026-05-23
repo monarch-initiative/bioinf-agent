@@ -81,6 +81,35 @@ def r_namespace(em, env_name: str, name: str) -> dict[str, Any]:
             "detail": sorted(r_names) if anchored else None}
 
 
+def file_present(em, env_name: str, path: str, sha256: str | None = None) -> dict[str, Any]:
+    """Filesystem presence: `path` exists as a file, and (if `sha256` is given)
+    its bytes hash to it. The anchor for the release-binary tier (I14) and any
+    on-disk artifact — a recorded URL is a claim; a present file whose bytes
+    match the recorded hash is proof the agent cannot fabricate.
+
+    `em` is unused (kept for a uniform call signature); the check is pure
+    filesystem so it needs no env.
+    """
+    import hashlib
+    from pathlib import Path as _Path
+
+    p = _Path(path)
+    if not p.is_file():
+        return {"strategy": "file_present", "anchored": False,
+                "detail": f"missing: {path}"}
+    if sha256:
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        digest = h.hexdigest()
+        if digest.lower() != sha256.lower():
+            return {"strategy": "file_present", "anchored": False,
+                    "detail": f"sha256 mismatch: recorded {sha256[:12]}…, on-disk {digest[:12]}…"}
+        return {"strategy": "file_present", "anchored": True, "detail": f"{path} (sha256 ok)"}
+    return {"strategy": "file_present", "anchored": True, "detail": path}
+
+
 def registry_anchor(em, env_name: str, name: str) -> dict[str, Any]:
     """conda OR pip OR R-library presence — the composite backing
     EnvManager._package_in_registry. Short-circuits on the first hit, in the
@@ -109,6 +138,7 @@ STRATEGIES: dict[str, Callable[..., dict[str, Any]]] = {
     "conda_registry":   conda_registry,
     "pip_show":         pip_show,
     "r_namespace":      r_namespace,
+    "file_present":     file_present,
     "registry_anchor":  registry_anchor,
     "presence_anchor":  presence_anchor,
 }
