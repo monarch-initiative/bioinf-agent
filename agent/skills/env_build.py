@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from agent.skills import env_honesty as _honesty
 from agent.skills import freeze as _freeze
+from agent.skills import locus as _locus
 from agent.skills.container_build import ContainerBuild, EnvEngine
 
 
@@ -169,6 +170,7 @@ class EnvBuild:
             "image_digest":    result["image_digest"],
             "platform":        result["platform"],
             "engine":          result.get("engine", "none"),
+            "validation_locus": result.get("validation_locus", "unknown"),
             "gated":           self.license_gated,
             "redistributable": self.redistributable,
         }
@@ -205,6 +207,12 @@ class EnvBuild:
                 return {"success": False, "stage": "freeze", **fr}
             digest = self.cb.image_digest(fr["image"])
             v = self.verify_in_image(fr["image"])
+            # WHERE this build + its in-image validation ran. The VALIDATED_IN_IMAGE
+            # pass/fail above is sound regardless (emulators are faithful), but I7
+            # timings are authoritative only when native — so we stamp it, never
+            # overclaiming. Cheap (one `docker version`); the emulator probe (a
+            # container run) is left to a diagnostic/face, not the build hot path.
+            locus = _locus.detect_locus(self.platform)
             result = {
                 "name": self.name, "version": self.version, "platform": self.platform,
                 "engine": self.cb.engine.name if (self.conda_specs or self.pip_specs) else "none",
@@ -215,6 +223,9 @@ class EnvBuild:
                                    for s in self.cb.longtail],
                 "verifications": v["verifications"],
                 "validated_in_shipped_image": v["success"],
+                "validation_locus": locus["locus"],
+                "i7_authoritative": locus["i7_authoritative"],
+                "locus_advisory": locus["advisory"],
                 # POLICY_CLEAN inputs
                 "accelerator": self.accelerator,
                 "license_gated": self.license_gated,

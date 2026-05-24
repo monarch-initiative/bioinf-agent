@@ -1775,6 +1775,8 @@ def freeze(
     conda_lock_path = None
     shipped_binaries: list[dict] = []
     build_method = None
+    validation_locus = "unknown"   # native | emulated | adopted — where we validated
+    locus_advisory = ""
 
     draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     non_conda = _freeze.non_conda_installs(draft) if draft else []
@@ -1801,6 +1803,7 @@ def freeze(
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
         hpc = _freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
+        validation_locus = "adopted"   # we trust the published digest, not an in-locus run
 
     else:
         # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
@@ -1831,6 +1834,8 @@ def freeze(
                     "adopt_attempt": adopt, "build": br}
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
+        validation_locus = br.get("validation_locus", "unknown")
+        locus_advisory = br.get("locus_advisory", "")
         _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
         # record what shipped: each baked long-tail step (the command IS the provenance).
         shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
@@ -1849,8 +1854,12 @@ def freeze(
         record["build_method"] = build_method
     if shipped_binaries:
         record["shipped_binaries"] = shipped_binaries
+    record["validation_locus"] = validation_locus
     _env_cache.register(rkey, record)
-    return {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    if locus_advisory:
+        out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
+    return out
 
 
 # ---------------------------------------------------------------------------

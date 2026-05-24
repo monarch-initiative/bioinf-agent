@@ -1976,6 +1976,83 @@ def test_envbuild_run_uses_check_build_as_the_gate(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Build locus — native vs emulated, and the honesty stamp it produces.
+# The VALIDATED_IN_IMAGE pass/fail is sound under emulation (faithful CPU
+# emulators); only I7 timings need native silicon to be authoritative.
+# ---------------------------------------------------------------------------
+
+def test_locus_target_arch_parsing():
+    from agent.skills import locus
+    assert locus.target_arch("linux/amd64") == "amd64"
+    assert locus.target_arch("linux/arm64") == "arm64"
+    assert locus.target_arch("") == "amd64"  # sane default
+
+
+def test_locus_native_when_daemon_matches_target(monkeypatch):
+    """daemon arch == target arch → native: I7 timings ARE authoritative, no advisory."""
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "amd64")
+    d = locus.detect_locus("linux/amd64")
+    assert d["locus"] == "native"
+    assert d["i7_authoritative"] is True
+    assert d["emulator"] == "none"
+    assert d["advisory"] == ""
+
+
+def test_locus_emulated_when_daemon_differs(monkeypatch):
+    """arm64 daemon building linux/amd64 → emulated: I7 NOT authoritative, advisory set."""
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "arm64")
+    d = locus.detect_locus("linux/amd64")  # probe_emulator defaults False → no container run
+    assert d["locus"] == "emulated"
+    assert d["i7_authoritative"] is False
+    assert d["advisory"]  # actionable, non-empty
+    assert "I7" in d["advisory"]
+
+
+def test_locus_unknown_when_daemon_unqueryable(monkeypatch):
+    """No daemon (docker absent) → unknown, never crashes, never claims authority."""
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "")
+    d = locus.detect_locus("linux/amd64")
+    assert d["locus"] == "unknown"
+    assert d["i7_authoritative"] is False
+
+
+def test_locus_advisory_distinguishes_rosetta_and_qemu():
+    from agent.skills import locus
+    assert "Rosetta" in locus._emulation_advisory("rosetta")
+    qemu = locus._emulation_advisory("qemu")
+    # qemu wording only nudges toward Rosetta when on Apple Silicon; either way it
+    # must flag the I7 caveat.
+    assert "I7" in qemu
+
+
+def test_envbuild_run_stamps_validation_locus(monkeypatch):
+    """run() records WHERE it validated — native stamps i7_authoritative=True so the
+    Layer-2 path can trust I7; the cache record carries the locus too."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills import install_commands as ic
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "amd64")  # pretend native
+    eb = EnvBuild("demo", "1.0")
+    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                                  binary_in_archive="seqkit"))
+    monkeypatch.setattr(eb, "build", lambda: {"success": True})
+    monkeypatch.setattr(eb, "freeze", lambda: {"success": True, "image": "demo:1.0"})
+    monkeypatch.setattr(eb.cb, "image_digest", lambda img: "sha256:abc")
+    monkeypatch.setattr(eb.cb, "close", lambda: None)
+    monkeypatch.setattr(eb, "verify_in_image", lambda img: {"success": True, "verifications": [
+        {"label": "seqkit", "tool": "seqkit", "check": "command -v seqkit", "passed": True}]})
+    res = eb.run()
+    assert res["success"] is True
+    assert res["validation_locus"] == "native"
+    assert res["i7_authoritative"] is True
+    rec = eb.to_cache_record(res)
+    assert rec["validation_locus"] == "native"
+
+
+# ---------------------------------------------------------------------------
 # pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
 # ---------------------------------------------------------------------------
 
