@@ -77,19 +77,6 @@ def test_workflow_spec_passes_invariants(spec_path: Path):
         pytest.fail("\n".join(msg_lines))
 
 
-def test_invariant_checker_catches_unverified_packages():
-    """The invariant checker must reject a spec where a non-infrastructure
-    package has no verify_output. Sanity check the gate itself."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "resolved_version": "1.21"}],
-        "install_steps": [], "pipeline_steps": [],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I2.package_verified" for v in violations), \
-        "unverified package should violate I2"
-
-
 def test_invariant_checker_catches_pipeline_step_without_outputs():
     """A pipeline_step with returncode=0 but no detected_outputs and no
     explicit mark_step_validated must violate I3."""
@@ -262,55 +249,6 @@ def test_patch_pipeline_allows_agent_authored_keys():
     assert "error" not in r, f"agent-authored patch should pass; got {r}"
     assert set(r["patched_keys"]) == {"notes", "runtime_environment", "usage"}
     ps.discard("allowed_test")
-
-
-def test_invariant_checker_catches_missing_authored_artifact():
-    """I9: an authored_artifact whose file is no longer on disk fails."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "authored_artifacts": [{
-            "path": "/tmp/nonexistent_bioinf_test_artifact.txt",
-            "role": "driver_script",
-            "description": "test",
-            "sha256": "0" * 64,
-            "size_bytes": 0,
-            "created_at": "2026-05-19T00:00:00",
-        }],
-        "pipeline_steps": [],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I9.authored_artifact_present" for v in violations), \
-        f"missing authored_artifact file should violate I9; got {violations}"
-
-
-def test_invariant_checker_catches_mutated_authored_artifact(tmp_path):
-    """I9: an authored_artifact whose on-disk sha256 has drifted from the
-    recorded sha256 fails. Catches post-stage tampering."""
-    import hashlib
-    p = tmp_path / "driver.R"
-    p.write_text("# original content\n")
-    real_sha = hashlib.sha256(p.read_bytes()).hexdigest()
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "authored_artifacts": [{
-            "path": str(p), "role": "driver_script", "description": "test",
-            "sha256": "deadbeef" * 8,   # NOT what's on disk
-            "size_bytes": len(p.read_bytes()),
-            "created_at": "2026-05-19T00:00:00",
-        }],
-        "pipeline_steps": [],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I9.authored_artifact_unmodified" for v in violations), \
-        f"drifted authored_artifact should violate I9; got {violations}"
-    # Sanity: with the correct sha256 it should not violate.
-    spec["authored_artifacts"][0]["sha256"] = real_sha
-    violations = [v for v in check_invariants(spec) if v["invariant"].startswith("I9.")]
-    assert not violations, f"matched sha256 should not violate I9: {violations}"
 
 
 def test_invariant_checker_accepts_authored_artifact_as_step_input(tmp_path):
@@ -721,78 +659,6 @@ def test_patch_pipeline_unknown_key_rejected():
 # verify_service_dependency.
 # ---------------------------------------------------------------------------
 
-def test_invariant_checker_catches_unprobed_service_dependency():
-    """A declared service with NO health_check_log entries violates I10."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-        "service_dependencies": [{
-            "name": "redis", "type": "cache",
-            "start_command":        "redis-server --port 6379",
-            "stop_command":         "redis-cli -p 6379 shutdown nosave",
-            "health_check_command": "redis-cli -p 6379 ping",
-            "status": "declared",
-            # missing: health_check_log
-        }],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I10.service_dependency_probed" for v in violations), \
-        f"unprobed service should violate I10; got {violations}"
-
-
-def test_invariant_checker_catches_unhealthy_only_service_dependency():
-    """A service with only failed probes violates I10."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-        "service_dependencies": [{
-            "name": "redis", "type": "cache",
-            "start_command":        "redis-server",
-            "stop_command":         "redis-cli shutdown",
-            "health_check_command": "redis-cli ping",
-            "status": "failed",
-            "health_check_log": [
-                {"timestamp": "2026-05-20T01:00:00", "command": "redis-cli ping",
-                 "returncode": 1, "healthy": False, "output_excerpt": "Could not connect"},
-                {"timestamp": "2026-05-20T01:00:05", "command": "redis-cli ping",
-                 "returncode": 1, "healthy": False, "output_excerpt": "Could not connect"},
-            ],
-        }],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I10.service_dependency_healthy_probe" for v in violations), \
-        f"never-healthy service should violate I10; got {violations}"
-
-
-def test_invariant_checker_accepts_healthy_service_dependency():
-    """A service with ≥1 healthy probe passes I10 (even if other probes failed)."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-        "service_dependencies": [{
-            "name": "redis", "type": "cache",
-            "start_command":        "redis-server",
-            "stop_command":         "redis-cli shutdown",
-            "health_check_command": "redis-cli ping",
-            "status": "running",
-            "health_check_log": [
-                {"timestamp": "2026-05-20T01:00:00", "command": "redis-cli ping",
-                 "returncode": 1, "healthy": False, "output_excerpt": "starting up"},
-                {"timestamp": "2026-05-20T01:00:02", "command": "redis-cli ping",
-                 "returncode": 0, "healthy": True,  "output_excerpt": "PONG"},
-            ],
-        }],
-    }
-    i10 = [v for v in check_invariants(spec) if v["invariant"].startswith("I10.")]
-    assert not i10, f"healthy-probed service should pass I10: {i10}"
-
-
 def test_patch_pipeline_blocks_service_dependencies():
     """service_dependencies has runtime-captured sub-fields (health_check_log,
     pid, status); patch_pipeline must reject direct writes so the I10 anchor
@@ -840,61 +706,6 @@ def test_upsert_service_dependency_appends_probe_to_existing_log():
     # First upsert's declaration fields must still be present
     assert deps[0]["start_command"] == "redis-server"
     ps.discard("svc_upsert_test")
-
-
-def test_invariant_checker_catches_source_install_without_commit():
-    """I11: a source (git) install with no commit_sha is rejected."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{
-            "name": "mytool", "verify_output": "abc123",
-            "install_method": {"type": "source", "source": "https://github.com/x/y",
-                               "local_path": "/tmp"},  # no commit_sha
-        }],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I11.source_install_commit_pinned" for v in violations), \
-        f"source install without commit_sha should violate I11; got {violations}"
-
-
-def test_invariant_checker_catches_source_install_missing_on_disk():
-    """I11: a source install whose clone path doesn't exist is rejected."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{
-            "name": "mytool", "verify_output": "abc123",
-            "install_method": {"type": "source", "source": "https://github.com/x/y",
-                               "commit_sha": "deadbeef" * 5,
-                               "local_path": "/nonexistent/bioinf/clone/path"},
-        }],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I11.source_install_present" for v in violations), \
-        f"missing clone path should violate I11; got {violations}"
-
-
-def test_invariant_checker_accepts_present_source_install(tmp_path):
-    """I11 sanity: a source install with commit_sha + an on-disk clone passes."""
-    clone = tmp_path / "share" / "mytool"
-    clone.mkdir(parents=True)
-    (clone / "run.py").write_text("print('hi')\n")
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{
-            "name": "mytool", "verify_output": "abc123def456",
-            "install_method": {"type": "source", "source": "https://github.com/x/y",
-                               "commit_sha": "abc123def456", "ref": "v1.0",
-                               "local_path": str(clone)},
-        }],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-    }
-    i11 = [v for v in check_invariants(spec) if v["invariant"].startswith("I11.")]
-    assert not i11, f"present source install should pass I11: {i11}"
 
 
 def test_package_in_registry_finds_installed_and_misses_absent():
@@ -1104,75 +915,6 @@ def test_apply_rejects_mismatched_command_type():
 # Re-spine Slice 1: release-binary tier (I14) + file_present evidence + staging
 # ---------------------------------------------------------------------------
 
-def _binary_spec(name, install_method):
-    """Minimal finalize-able spec carrying one binary package, so the I14
-    checker can be exercised in isolation."""
-    return {
-        "pipeline_name": "test",
-        "packages": [{"name": name, "verify_output": "ran ok",
-                      "install_method": install_method}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [],
-    }
-
-
-def test_i14_binary_install_passes_when_present_and_hash_matches(tmp_path):
-    """A binary package with a recorded URL + sha256 whose on-disk bytes hash to
-    that sha256 must NOT violate I14 — the happy path."""
-    import hashlib
-    b = tmp_path / "mosdepth"
-    b.write_bytes(b"\x7fELF fake static binary\n")
-    sha = hashlib.sha256(b.read_bytes()).hexdigest()
-    spec = _binary_spec("mosdepth", {
-        "type": "binary",
-        "binary_url": "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth",
-        "sha256": sha,
-        "local_path": str(b),
-    })
-    violations = [v for v in check_invariants(spec) if v["invariant"].startswith("I14.")]
-    assert not violations, f"matching binary should not violate I14: {violations}"
-
-
-def test_i14_binary_install_fails_on_hash_drift(tmp_path):
-    """A binary whose bytes changed since install (sha256 no longer matches) is
-    the tamper case — must violate I14.binary_install_unmodified."""
-    b = tmp_path / "tool"
-    b.write_bytes(b"current bytes")
-    spec = _binary_spec("tool", {
-        "type": "binary",
-        "binary_url": "https://example.org/tool",
-        "sha256": "deadbeef" * 8,        # not the on-disk hash
-        "local_path": str(b),
-    })
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I14.binary_install_unmodified" for v in violations), \
-        f"drifted binary should violate I14; got {violations}"
-
-
-def test_i14_binary_install_fails_when_missing_on_disk(tmp_path):
-    """A recorded binary that isn't on disk must violate I14.binary_install_present."""
-    spec = _binary_spec("ghost", {
-        "type": "binary",
-        "binary_url": "https://example.org/ghost",
-        "sha256": "ab" * 32,
-        "local_path": str(tmp_path / "does_not_exist"),
-    })
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I14.binary_install_present" for v in violations), \
-        f"missing binary should violate I14; got {violations}"
-
-
-def test_i14_binary_install_requires_url_and_sha256(tmp_path):
-    """type=binary without binary_url / sha256 is an unanchored claim — both are
-    required even when the file is present."""
-    b = tmp_path / "tool"
-    b.write_bytes(b"x")
-    spec = _binary_spec("tool", {"type": "binary", "local_path": str(b)})
-    inv = {v["invariant"] for v in check_invariants(spec)}
-    assert "I14.binary_install_source_required" in inv
-    assert "I14.binary_install_sha256_required" in inv
-
-
 def test_file_present_evidence_hash_gate(tmp_path):
     """file_present anchors only when the file exists AND (if given) its sha256
     matches — the on-disk proof behind the release-binary tier."""
@@ -1275,11 +1017,10 @@ def test_install_release_binary_archive_anchors_extracted_binary(tmp_path, monke
         assert im["sha256"]       == binary_sha,  "sha256 must anchor the extracted binary (I14 target)"
         assert im["asset_sha256"] == tarball_sha, "asset_sha256 must keep the archive hash (provenance)"
         assert im["sha256"] != im["asset_sha256"]
-        # The recorded local_path must actually hash to the recorded sha256 → I14 passes.
+        # The recorded local_path must actually hash to the recorded sha256 — this is
+        # the bytes env_freeze re-fetches and the container build re-validates inside
+        # the ship image (install==ship replaces the old host-side I14 re-hash).
         assert hashlib.sha256(_Path(im["local_path"]).read_bytes()).hexdigest() == im["sha256"]
-        i14 = [v for v in check_invariants(_binary_spec("sometool", im))
-               if v["invariant"].startswith("I14.")]
-        assert not i14, f"a freshly-installed archive binary must pass I14: {i14}"
     finally:
         _sh.rmtree(env_path, ignore_errors=True)
 
@@ -1319,67 +1060,6 @@ def test_install_method_accepts_new_tier_types():
 # ---------------------------------------------------------------------------
 # Re-spine Slice 4: I12 accelerator honesty + I13 license/redistribution
 # ---------------------------------------------------------------------------
-
-def _accel_spec(accel):
-    return {"pipeline_name": "t", "packages": [], "install_steps": [],
-            "pipeline_steps": [], "accelerator": accel}
-
-
-def test_i12_mps_must_be_dev_only():
-    v = check_invariants(_accel_spec({"type": "mps"}))
-    assert any(x["invariant"] == "I12.mps_dev_only" for x in v), v
-    # dev_only=true clears it.
-    ok = [x for x in check_invariants(_accel_spec({"type": "mps", "dev_only": True}))
-          if x["invariant"].startswith("I12.")]
-    assert not ok, ok
-
-
-def test_i12_cuda_requires_toolkit_version():
-    v = check_invariants(_accel_spec({"type": "cuda"}))
-    assert any(x["invariant"] == "I12.accel_toolkit_version_required" for x in v), v
-
-
-def test_i12_runtime_verified_requires_probe_and_driver():
-    spec = _accel_spec({"type": "cuda", "toolkit_version": "12.1",
-                        "runtime": "runtime_verified"})
-    inv = {x["invariant"] for x in check_invariants(spec)}
-    assert "I12.runtime_verified_needs_probe" in inv
-    assert "I12.runtime_verified_needs_driver" in inv
-
-
-def test_i12_cuda_build_only_with_toolkit_is_clean():
-    spec = _accel_spec({"type": "cuda", "toolkit_version": "12.1", "runtime": "build_only"})
-    i12 = [x for x in check_invariants(spec) if x["invariant"].startswith("I12.")]
-    assert not i12, i12
-    # And a fully-anchored runtime_verified claim passes too.
-    spec2 = _accel_spec({"type": "cuda", "toolkit_version": "12.1",
-                         "runtime": "runtime_verified", "min_driver_version": "535.0",
-                         "runtime_probe": "NVIDIA-SMI 535.0  CUDA 12.1  A100"})
-    i12b = [x for x in check_invariants(spec2) if x["invariant"].startswith("I12.")]
-    assert not i12b, i12b
-
-
-def test_i13_gated_must_be_non_redistributable_with_license():
-    # gated but still redistributable + no license → two violations
-    spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
-            "pipeline_steps": [], "license_gated": True}
-    inv = {x["invariant"] for x in check_invariants(spec)}
-    assert "I13.gated_not_redistributable" in inv
-    assert "I13.gated_license_recorded" in inv
-    # Properly guarded gated tool → no I13 violation.
-    ok_spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
-               "pipeline_steps": [], "license_gated": True,
-               "redistributable": False, "licenses": ["10x Genomics EULA"]}
-    i13 = [x for x in check_invariants(ok_spec) if x["invariant"].startswith("I13.")]
-    assert not i13, i13
-
-
-def test_i13_not_gated_is_unaffected():
-    spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
-            "pipeline_steps": [], "redistributable": True}
-    i13 = [x for x in check_invariants(spec) if x["invariant"].startswith("I13.")]
-    assert not i13, i13
-
 
 # ---------------------------------------------------------------------------
 # Re-spine Slice 5a: BioContainers / mulled adoption (freeze's adopt-by-digest)

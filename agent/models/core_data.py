@@ -15,7 +15,7 @@ Single source of truth for:
 Used by:
   - scripts/gen_provenance.py   (setup script path)
   - scripts/gen_manifest.py     (manifest rebuilder)
-  - agent/skills/spec_writer.py (save_pipeline_spec + write_provenance)
+  - agent/skills/spec_writer.py (write_workflow_spec + write_provenance)
   - agent/skills/resources.py   (list_available_resources reader)
 """
 

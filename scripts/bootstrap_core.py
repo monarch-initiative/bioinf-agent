@@ -2,14 +2,14 @@
 """
 bootstrap_core.py — One-time setup for the bioinf-agent.
 
-Dogfoods the agent's own tooling: the core_tools env is installed via the
-same PipelineState + spec_writer path that user pipelines use, so it lands
-in env_reports/ alongside everything else.
+Dogfoods the agent's own tooling: the core_tools env is built via the same
+PipelineState + env_manager path that user pipelines use.
 
 Steps:
   1. Install the core_tools conda env (samtools + bcftools + seqkit + bwa)
      via start_pipeline → search_package → install_packages →
-     verify_installation → finalize_pipeline
+     verify_installation (host env; no spec is written — the combined env-spec
+     writer was retired with the host build path)
   2. Download the reference chromosome FASTA and build fai + bwa indexes
      using the env we just installed
   3. Download the canonical test datasets listed in config/core_datasets.yaml
@@ -27,7 +27,6 @@ import gzip
 import shutil
 import sys
 import urllib.request
-from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +35,10 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.models.core_data import PipelineSpec
 from agent.skills.core_test_data import add_core_test_data, add_phenopacket
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.pipeline_state import PipelineState
-from agent.skills.spec_writer import save_pipeline_spec
 from agent.validators.output_validator import OutputValidator
 
 
@@ -192,22 +189,18 @@ def install_core_tools(config: dict) -> dict[str, Any]:
             "verify_output":  (v.get("output") or "")[:500],
         })
 
-    # Finalize: write the spec, delete the draft
+    # The env is built and every tool verified. The combined env-spec writer
+    # (save_pipeline_spec) was retired with the host build path — an env is now
+    # solved once by freeze() and verified IN its shipped image (install==ship).
+    # bootstrap's job is just to stand up the core_tools conda env + test data on
+    # the host, so we stop here and clear the draft.
     draft = state.get_draft(pid)
-    draft["created_at"] = str(date.today())
-
-    try:
-        PipelineSpec.model_validate(draft)
-    except Exception as e:
-        log(f"WARN: spec validation failed ({e}); env is usable but no final spec")
-        return {"installed": True, "env_path": str(env_path), "spec_validation_error": str(e)}
-
-    save = save_pipeline_spec(draft, config)
+    n_pkgs = len(draft.get("packages", []) or [])
     state.pop_for_finalize(pid)
     state.delete_draft_file(pid)
-    log(f"Finalized: {Path(save['saved_yaml']).name} (status={save['status']})")
+    log(f"core_tools env ready at {env_path} ({n_pkgs} packages verified)")
 
-    return {"installed": True, "env_path": str(env_path), **save}
+    return {"installed": True, "env_path": str(env_path), "packages_verified": n_pkgs}
 
 
 # ---------------------------------------------------------------------------

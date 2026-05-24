@@ -19,15 +19,11 @@ import re
 import subprocess
 import sys
 import urllib.request
-from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 from fastmcp import FastMCP
-from pydantic import ValidationError
-
-from agent.models.core_data import PipelineSpec
 
 # ---------------------------------------------------------------------------
 # Config + skill singletons (initialised once at server startup)
@@ -56,7 +52,6 @@ from agent.skills.core_test_data import add_core_test_data as _add_core_test_dat
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
 from agent.validators.output_validator import OutputValidator
-from agent.skills.spec_writer import save_pipeline_spec as _save_pipeline_spec
 from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
@@ -1633,8 +1628,8 @@ def validate_output(
     the canonical case).
 
     If pipeline_id+step are supplied, every result is merged into
-    draft.pipeline_steps[step].validation[basename] — save_pipeline_spec
-    then derives the step's validation_status from the aggregate."""
+    draft.pipeline_steps[step].validation[basename] — the step's
+    validation_status (I3) is derived from the aggregate at seal time."""
     # Batch path
     if files:
         validations: dict = {}
@@ -1697,36 +1692,6 @@ def validate_output(
 # ---------------------------------------------------------------------------
 # Docker
 # ---------------------------------------------------------------------------
-
-@mcp.tool()
-def build_docker_image(
-    env_name: str,
-    pipeline_name: str,
-    pipeline_description: str,
-    version: str = "",
-    gpu_required: bool = False,
-    cuda_version: str = "",
-    pipeline_id: str = "",
-) -> dict:
-    """Package a conda env into an HPC-compatible Docker image via conda-pack.
-    version:      resolved version string for the image tag, e.g. '1.21'. Defaults to 'latest'.
-    gpu_required: when True, uses a CUDA base image and sets NVIDIA runtime labels.
-    cuda_version: CUDA version string, e.g. '12.1'. Defaults to config gpu.default_cuda_version.
-
-    If pipeline_id is supplied, draft.docker is set to the DockerBuild-shaped subset
-    of this return."""
-    result = _docker.build(
-        env_name, pipeline_name, pipeline_description,
-        version=version, gpu_required=gpu_required, cuda_version=cuda_version,
-    )
-    if pipeline_id:
-        ok = _pipeline_state.set_docker(pipeline_id, result)
-        result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id} if ok
-            else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
-        )
-    return result
-
 
 @mcp.tool()
 def freeze(
@@ -2018,20 +1983,6 @@ def seal_workflow(
 
 
 @mcp.tool()
-def save_pipeline_report(spec: dict) -> dict:
-    """Validate and write the pipeline spec as YAML + HTML report to env_reports/.
-
-    Required fields: pipeline_name, description, conda_env, created_at,
-    packages (list), pipeline_steps (list), docker (dict).
-
-    The pipeline-level `status` field is derived automatically from step states —
-    "fully_validated" requires every step to have validation_status="passed"
-    (set by validate_output). If you set `status` it will be overwritten by the
-    derived value, which also returned in the response."""
-    return _save_pipeline_spec(spec, config, env_manager=_env_mgr, validator=_validator)
-
-
-@mcp.tool()
 def write_pipeline_provenance(
     pipeline: str,
     conda_env_path: str,
@@ -2297,9 +2248,11 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
 
     Returns pipeline_id (= pipeline_name). Pass pipeline_id to subsequent
     tools (search_package, create_conda_env, verify_installation, run_in_env,
-    validate_output, build_docker_image, select_test_data) so their results
-    are auto-merged into a server-side draft. You don't have to hand-assemble
-    the final spec at the end — call finalize_pipeline(pipeline_id) instead.
+    validate_output, run_pipeline_step, select_test_data) so their results
+    are auto-merged into a server-side draft. You don't hand-assemble the
+    final artifacts — freeze(pipeline_id) produces the Layer-1 env image and
+    seal_workflow(pipeline_id, freeze_request_key) writes the Layer-2
+    WorkflowSpec + guide from the validated run.
 
     Resume semantics: if a draft for this pipeline_name already exists (e.g.
     after an MCP restart mid-install), it is loaded and resumed silently;
@@ -2338,143 +2291,6 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
             "suspect_unvalidated_steps": suspect_steps,
         }
     return r
-
-
-@mcp.tool()
-def validate_pipeline_draft(pipeline_id: str) -> dict:
-    """Dry-run finalize: validate against PipelineSpec without writing artifacts
-    or deleting the draft. Runs the same env-derivation pass finalize_pipeline
-    does, so the env_status / pipeline_status reported here reflect what the
-    real finalize will produce.
-
-    Returns {valid: bool, validation_errors?: [...], env_status, pipeline_status,
-             package_count, install_steps, pipeline_steps}.
-
-    Use before finalize_pipeline to catch schema problems early (notes shape,
-    docker.volume_mounts type, runtime_configs.format, OutputFile.type, ...)
-    without having to repair-finalize-repeat through the live save path.
-    """
-    draft = _pipeline_state.get_draft(pipeline_id)
-    if draft is None:
-        return {"error": f"unknown pipeline_id: {pipeline_id}"}
-
-    # Operate on a deep copy so we don't mutate the live draft.
-    import copy
-    from agent.skills.spec_writer import (
-        derive_packages_from_env,
-        reconcile_packages_with_env,
-        derive_step_dag,
-        _derive_reference_database_availability,
-        _derive_step_validation_status,
-        _derive_env_status,
-        _derive_pipeline_status,
-        _derive_docker_status,
-        check_invariants,
-        self_test_usage,
-    )
-    sim = copy.deepcopy(draft)
-    if not sim.get("created_at"):
-        sim["created_at"] = str(date.today())
-
-    # Run the same derivation pass finalize_pipeline does so the reported
-    # env_status / pipeline_status match what finalize would emit.
-    env_name = sim.get("conda_env")
-    if env_name:
-        try:
-            derive_packages_from_env(sim, _env_mgr, env_name)
-            reconcile_packages_with_env(sim, _env_mgr, env_name)
-        except Exception as e:
-            # Non-fatal — surface the issue rather than crashing.
-            sim["__derive_warning__"] = f"derive_packages_from_env failed: {e}"
-    derive_step_dag(sim)
-    _derive_reference_database_availability(sim)
-    _derive_step_validation_status(sim)
-    sim["env_status"]      = _derive_env_status(sim)
-    sim["pipeline_status"] = _derive_pipeline_status(sim)
-    sim["docker_status"]   = _derive_docker_status(sim)
-
-    # Run the usage self-test so dry-run matches finalize behavior fully.
-    # An agent injecting a bogus command_template (or unresolvable slot) gets
-    # caught here, not just at finalize-time.
-    self_test_result = None
-    if env_name and sim.get("usage"):
-        try:
-            self_test_result = self_test_usage(sim, _env_mgr)
-            sim["usage_verified"] = bool(self_test_result.get("ok"))
-        except Exception as e:
-            self_test_result = {"ok": False, "reason": f"self_test_usage errored: {e}"}
-            sim["usage_verified"] = False
-
-    # Apply invariant checks — same rules finalize uses.
-    violations = check_invariants(sim)
-
-    try:
-        PipelineSpec.model_validate(sim)
-        schema_ok = True
-        schema_errors = None
-    except ValidationError as e:
-        schema_ok = False
-        schema_errors = e.errors()
-
-    valid = schema_ok and not violations
-    out = {
-        "valid":             valid,
-        "env_status":        sim.get("env_status"),
-        "pipeline_status":   sim.get("pipeline_status"),
-        "docker_status":     sim.get("docker_status"),
-        "usage_verified":    sim.get("usage_verified"),
-        "package_count":     len(sim.get("packages", []) or []),
-        "install_steps":     len(sim.get("install_steps", []) or []),
-        "pipeline_steps":    len(sim.get("pipeline_steps", []) or []),
-        "invariant_violations": violations,
-        "derive_warning":    sim.get("__derive_warning__"),
-    }
-    if not schema_ok:
-        out["validation_errors"] = schema_errors
-    if self_test_result:
-        # Trim the bulky fields so the dry-run response stays compact.
-        out["self_test"] = {
-            "ok":             self_test_result.get("ok"),
-            "reason":         self_test_result.get("reason"),
-            "command_run":    self_test_result.get("command_run", "")[:300],
-            "substitutions":  self_test_result.get("substitutions"),
-        }
-    return out
-
-
-@mcp.tool()
-def finalize_pipeline(pipeline_id: str) -> dict:
-    """Validate the accumulated draft against PipelineSpec, write the final
-    YAML + HTML report to env_reports/{name}_{version}.yaml, and delete the
-    draft. Returns the saved paths and the derived status.
-
-    If validation fails, the draft is preserved and validation_errors are
-    returned — call patch_pipeline to fix and retry, or discard_pipeline_draft
-    to start over."""
-    draft = _pipeline_state.get_draft(pipeline_id)
-    if draft is None:
-        return {"error": f"unknown pipeline_id: {pipeline_id}"}
-
-    if not draft.get("created_at"):
-        draft["created_at"] = str(date.today())
-
-    try:
-        PipelineSpec.model_validate(draft)
-    except ValidationError as e:
-        return {
-            "error":             "PipelineSpec validation failed",
-            "validation_errors": e.errors(),
-            "draft_path":        str(_pipeline_state._draft_path(pipeline_id)),
-        }
-
-    result = _save_pipeline_spec(draft, config, env_manager=_env_mgr, validator=_validator)
-    # Only consume the draft if the save actually succeeded. Invariant
-    # violations / validation errors must leave the draft on disk so the
-    # agent can patch + retry without re-running the whole install.
-    if not result.get("error") and result.get("saved_yaml"):
-        _pipeline_state.pop_for_finalize(pipeline_id)
-        _pipeline_state.delete_draft_file(pipeline_id)
-    return result
 
 
 @mcp.tool()
@@ -2968,17 +2784,19 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     Returns: {pipeline_name, version, hints, invariants, primitives, protocol}.
     """
     invariants = [
-        "I1: every install_step.returncode is 0 (or marked status=failed)",
-        "I2: every non-infrastructure package has verify_output AND its check_command invokes the package (or its unprefixed library name for conda r-/bioconductor-/python-/perl- packages) as a word-boundary token (echo-cheats rejected)",
+        # Layer 1 — the env image (env_honesty.check_build; install==ship is ONE event,
+        # so the per-tier env-build invariants I1/I2/I5/I9/I10/I11/I12/I13/I14 collapse
+        # into three structural guarantees enforced INSIDE the shipped image):
+        "BUILT: the env image + image_digest resolve in the local Docker daemon",
+        "VALIDATED_IN_IMAGE: every tool's evidence command re-runs green INSIDE the shipped image AND references the tool (echo/print/true cheats rejected) — because install==ship, the bytes validated are the bytes that run on HPC",
+        "POLICY_CLEAN: I12 accelerator honesty (cuda/rocm need toolkit_version; runtime_verified needs a captured probe + min_driver_version; mps is dev_only) + I13 license firewall (gated => redistributable:false AND licenses[] recorded)",
+        # Layer 2 — the workflow run (check_workflow_invariants, over the validated run):
+        "I0: every top-level list-of-records holds only dicts (shape sanity)",
         "I3: every pipeline_step has validated detected_outputs AND no validation uses expected_type='any' — declare types via run_pipeline_step's output_types",
         "I4: usage.command_template executes against every declared trial AND each produced file passes type-aware validate_output (samtools/bcftools/json.loads/etc — touch-and-hope cheats fail)",
-        "I5: every reference_database.local_path exists on disk",
-        "I6: every input/output path is absolute",
-        "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step",
+        "I6: every input/output path is absolute AND every {PLACEHOLDER} in usage.command_template is declared",
+        "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step / run_step_in_container",
         "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs, authored_artifacts)",
-        "I9: every authored_artifact is on disk AND its bytes hash to the recorded sha256 — post-stage drift is rejected",
-        "I10: every service_dependency has ≥1 entry in health_check_log with healthy=true — claim-only declarations are rejected",
-        "I11: every source (git-repo) install has a recorded commit_sha AND its clone exists on disk — use install_git_repo",
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
@@ -2993,17 +2811,14 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "verify_service_dependency: append an additional health probe to a declared service's log; satisfies I10 if start_service's initial probe wasn't recorded against this pipeline",
         "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
     ]
-    build_docker = bool(hints.get("build_docker", False))
     protocol = [
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
-        "2. install_*_* primitives — compose for this tool; primitives handle category details",
-        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input and finalize refuses to write.",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies / docker / lock_sha256 are runtime-captured and CANNOT be hand-patched — they must flow through their dedicated primitives.",
-        ("5. build_docker_image (BEFORE finalize) — Docker daemon must be available."
-         if build_docker else
-         "5. SKIPPED: build_docker_image — pass hints={build_docker: true} to install_pipeline_brief to include it. When skipped, docker_status stays not_attempted; the spec is still finalize-able."),
-        "6. validate_pipeline_draft (dry-run; fix anything reported)",
-        "7. finalize_pipeline — runs invariant check + self-test of usage.command_template against every declared trial. Type-aware validation (samtools/bcftools/json.loads/etc) is run on produced files; touch-and-hope cheats fail.",
+        "2. install_*_* primitives — compose the env for this tool; primitives handle category details",
+        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input.",
+        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
+        "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
+        "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
+        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (I0/I3/I6/I7/I8), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
         "8. write_pipeline_provenance with the right input shape",
     ]
     return {
@@ -3015,8 +2830,9 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "protocol":      protocol,
         "note": (
             "This brief is the entire 'how to install a pipeline' protocol — no per-tool prose. "
-            "Compose primitives until the invariants hold; finalize_pipeline machine-verifies "
-            "everything and refuses to write a fake-able report."
+            "Compose primitives until the invariants hold; freeze() machine-verifies the env IN "
+            "the shipped image and seal_workflow() machine-verifies the run — neither writes a "
+            "fake-able artifact."
         ),
     }
 

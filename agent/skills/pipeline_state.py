@@ -299,20 +299,6 @@ class PipelineState:
         self._persist(pipeline_id)
         return len(artifacts) - 1
 
-    def set_docker(self, pipeline_id: str, docker_result: dict) -> bool:
-        """Pluck just the DockerBuild-shaped fields from a build_docker_image return."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        keys = {
-            "build_attempted", "build_success", "image_tag", "registry",
-            "pushed_to_registry", "reason", "nvidia_runtime",
-            "volume_mounts", "runtime_data_env",
-        }
-        draft["docker"] = {k: docker_result[k] for k in keys if k in docker_result}
-        self._persist(pipeline_id)
-        return True
-
     # Top-level keys patch_pipeline is allowed to write. Anything else is
     # runtime-captured (pipeline_steps / install_steps / packages / validation
     # / verifications / resource_usage) or finalize-derived (env_status,
@@ -368,7 +354,7 @@ class PipelineState:
                     f"patch refused — these keys are runtime-captured or "
                     f"finalize-derived and cannot be hand-supplied: {rejected}. "
                     f"Use the dedicated primitive (run_pipeline_step, "
-                    f"verify_installation, install_conda_packages, build_docker_image) "
+                    f"verify_installation, install_conda_packages, freeze) "
                     f"so the spec stays anchored to observed reality."
                 ),
                 "rejected_keys":  rejected,
