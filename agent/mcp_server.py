@@ -394,6 +394,130 @@ def install_release_binary(
     return result
 
 
+def _merge_simple_install(pipeline_id, step, result, name, channel, tool, command, purpose):
+    """Shared draft-merge for the single-package install tiers (perl/cargo/go):
+    record one install_step carrying the install_method, and cache the verify so
+    the derived PackageRecord satisfies I2. Returns the pipeline_merge dict."""
+    install_method = result.get("install_method") or {}
+    ip_record = {
+        "name": name, "channel": channel,
+        "source": install_method.get("source", ""),
+        "install_method": install_method,
+    }
+    step_data = {
+        "tool": tool, "subcommand": "install", "purpose": purpose,
+        "command": command,
+        "returncode": 0 if result.get("success") else 1,
+        "installed_packages": [ip_record],
+    }
+    if result.get("success") and result.get("verify_command"):
+        step_data["verify_command"] = result["verify_command"]
+    idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+    if result.get("success") and result.get("verify_output"):
+        _pipeline_state.cache_verification(pipeline_id, name, {
+            "verify_command": result.get("verify_command"),
+            "verify_output":  result.get("verify_output"),
+        })
+    return (
+        {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+        if idx is not None else
+        {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
+    )
+
+
+@mcp.tool()
+def install_perl_package(
+    env_name: str,
+    module: str,
+    distribution: str = "",
+    cpanm_flags: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a Perl/CPAN module via cpanm (Tier: perl) — Ensembl VEP, BioPerl,
+    and other Perl tools conda/pip don't cover. Requires perl + cpanm in the env
+    (install conda packages `perl` and `perl-app-cpanminus` first).
+
+    `module` is the Perl package name (e.g. Bio::DB::HTS) used for the
+    `perl -M{module} -e1` load-or-die verify — the registry anchor for cpanm
+    modules (tracked by neither conda nor pip). Set `distribution` when the CPAN
+    distribution name differs from the module name. With pipeline_id, records the
+    install_step (install_method.type="perl") and caches the verify (I2).
+
+    Returns: {success, module, verify_command, verify_output, install_method, log}.
+    """
+    result = _env_mgr.install_perl_package(env_name, module, distribution, cpanm_flags)
+    if pipeline_id:
+        result["pipeline_merge"] = _merge_simple_install(
+            pipeline_id, step, result, name=module, channel="cpan", tool="cpanm",
+            command=f"cpanm {distribution or module}",
+            purpose=f"Install Perl module {module}",
+        )
+    return result
+
+
+@mcp.tool()
+def install_cargo_tool(
+    env_name: str,
+    crate: str,
+    version: str = "",
+    binary_name: str = "",
+    git_url: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a Rust crate's binary via `cargo install` (Tier: cargo) — Rust
+    tools not on bioconda. Requires rust+cargo in the env (conda: `rust`).
+    Installs with --root {env} so the binary lands on the env PATH; `binary_name`
+    (defaults to crate) is the cli_which anchor. `git_url` installs from a git
+    repo instead of crates.io. Pin `version` for reproducibility.
+
+    NOTE many Rust genomics tools (sylph, skani, sourmash) are ALSO on bioconda —
+    prefer install_conda_packages when available; this is the fallback. With
+    pipeline_id, records the install_step + caches the verify (I2).
+
+    Returns: {success, crate, binary_name, verify_command, verify_output, install_method, log}.
+    """
+    result = _env_mgr.install_cargo_tool(env_name, crate, version, binary_name, git_url)
+    if pipeline_id:
+        name = binary_name or crate
+        result["pipeline_merge"] = _merge_simple_install(
+            pipeline_id, step, result, name=name, channel="cargo", tool="cargo",
+            command=f"cargo install {git_url or crate}" + (f" --version {version}" if version else ""),
+            purpose=f"Install Rust tool {name}",
+        )
+    return result
+
+
+@mcp.tool()
+def install_go_tool(
+    env_name: str,
+    package: str,
+    version: str = "latest",
+    binary_name: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Install a Go tool via `go install pkg@version` (Tier: go) — Go tools not
+    on bioconda. Requires go in the env (conda: `go`). Sets GOBIN={env}/bin so
+    the binary lands on the env PATH; `binary_name` (defaults to the last path
+    segment of `package`) is the cli_which anchor. Pin `version` (not "latest")
+    for reproducibility. With pipeline_id, records the install_step + caches the
+    verify (I2).
+
+    Returns: {success, package, binary_name, verify_command, verify_output, install_method, log}.
+    """
+    result = _env_mgr.install_go_tool(env_name, package, version, binary_name)
+    if pipeline_id:
+        name = binary_name or package.rstrip("/").split("/")[-1]
+        result["pipeline_merge"] = _merge_simple_install(
+            pipeline_id, step, result, name=name, channel="go", tool="go",
+            command=f"go install {package}@{version}",
+            purpose=f"Install Go tool {name}",
+        )
+    return result
+
+
 @mcp.tool()
 def install_jar_tool(
     env_name: str,

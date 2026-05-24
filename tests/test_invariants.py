@@ -1007,6 +1007,7 @@ def test_evidence_registry_exposes_named_strategies():
     from agent.skills import evidence
     expected = {
         "cli_which", "conda_registry", "pip_show", "r_namespace",
+        "perl_module_load", "file_present",
         "registry_anchor", "presence_anchor",
     }
     assert expected <= set(evidence.STRATEGIES), \
@@ -1199,3 +1200,100 @@ def test_stage_release_binary_extracts_locates_and_wraps(tmp_path):
     launcher = _Path(res["wrapper_path"])
     assert launcher.exists() and launcher.name == "sometool"
     assert res["binary_path"] in launcher.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 2/3: Perl/CPAN + cargo/go tiers
+# ---------------------------------------------------------------------------
+
+def test_perl_module_load_evidence_shape():
+    """perl_module_load anchors on rc==0 and rejects an injection-unsafe module
+    name without running anything."""
+    from agent.skills import evidence
+
+    class _FakeEM:
+        def __init__(self, rc): self.rc = rc
+        def run_in_env(self, env, cmd, timeout=0):
+            return {"returncode": self.rc, "stdout": "", "stderr": ""}
+
+    ok = evidence.perl_module_load(_FakeEM(0), "e", "Bio::DB::HTS")
+    assert ok["anchored"] is True and ok["detail"] == "Bio::DB::HTS"
+    miss = evidence.perl_module_load(_FakeEM(2), "e", "Nonexistent::Module")
+    assert miss["anchored"] is False
+    # Injection-unsafe name is rejected pre-exec (no run, not anchored).
+    bad = evidence.perl_module_load(_FakeEM(0), "e", "Foo; rm -rf /")
+    assert bad["anchored"] is False and "invalid" in bad["detail"]
+
+
+def test_install_method_accepts_new_tier_types():
+    """The InstallMethod type union must accept the new tiers so their
+    install_steps round-trip through the spec model."""
+    from agent.models.core_data import InstallMethod
+    for t in ("perl", "cargo", "go", "binary"):
+        m = InstallMethod(type=t, source="x")
+        assert m.type == t
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 4: I12 accelerator honesty + I13 license/redistribution
+# ---------------------------------------------------------------------------
+
+def _accel_spec(accel):
+    return {"pipeline_name": "t", "packages": [], "install_steps": [],
+            "pipeline_steps": [], "accelerator": accel}
+
+
+def test_i12_mps_must_be_dev_only():
+    v = check_invariants(_accel_spec({"type": "mps"}))
+    assert any(x["invariant"] == "I12.mps_dev_only" for x in v), v
+    # dev_only=true clears it.
+    ok = [x for x in check_invariants(_accel_spec({"type": "mps", "dev_only": True}))
+          if x["invariant"].startswith("I12.")]
+    assert not ok, ok
+
+
+def test_i12_cuda_requires_toolkit_version():
+    v = check_invariants(_accel_spec({"type": "cuda"}))
+    assert any(x["invariant"] == "I12.accel_toolkit_version_required" for x in v), v
+
+
+def test_i12_runtime_verified_requires_probe_and_driver():
+    spec = _accel_spec({"type": "cuda", "toolkit_version": "12.1",
+                        "runtime": "runtime_verified"})
+    inv = {x["invariant"] for x in check_invariants(spec)}
+    assert "I12.runtime_verified_needs_probe" in inv
+    assert "I12.runtime_verified_needs_driver" in inv
+
+
+def test_i12_cuda_build_only_with_toolkit_is_clean():
+    spec = _accel_spec({"type": "cuda", "toolkit_version": "12.1", "runtime": "build_only"})
+    i12 = [x for x in check_invariants(spec) if x["invariant"].startswith("I12.")]
+    assert not i12, i12
+    # And a fully-anchored runtime_verified claim passes too.
+    spec2 = _accel_spec({"type": "cuda", "toolkit_version": "12.1",
+                         "runtime": "runtime_verified", "min_driver_version": "535.0",
+                         "runtime_probe": "NVIDIA-SMI 535.0  CUDA 12.1  A100"})
+    i12b = [x for x in check_invariants(spec2) if x["invariant"].startswith("I12.")]
+    assert not i12b, i12b
+
+
+def test_i13_gated_must_be_non_redistributable_with_license():
+    # gated but still redistributable + no license → two violations
+    spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
+            "pipeline_steps": [], "license_gated": True}
+    inv = {x["invariant"] for x in check_invariants(spec)}
+    assert "I13.gated_not_redistributable" in inv
+    assert "I13.gated_license_recorded" in inv
+    # Properly guarded gated tool → no I13 violation.
+    ok_spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
+               "pipeline_steps": [], "license_gated": True,
+               "redistributable": False, "licenses": ["10x Genomics EULA"]}
+    i13 = [x for x in check_invariants(ok_spec) if x["invariant"].startswith("I13.")]
+    assert not i13, i13
+
+
+def test_i13_not_gated_is_unaffected():
+    spec = {"pipeline_name": "t", "packages": [], "install_steps": [],
+            "pipeline_steps": [], "redistributable": True}
+    i13 = [x for x in check_invariants(spec) if x["invariant"].startswith("I13.")]
+    assert not i13, i13

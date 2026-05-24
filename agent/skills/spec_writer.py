@@ -808,6 +808,95 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_binary_installs(spec))
 
+    # ------------------------------------------------------------------
+    # I12: accelerator honesty. A GPU/accel claim must be structurally honest —
+    # a CUDA/ROCm image must record its toolkit version, and may only claim it
+    # was RUNTIME-verified on a device if a runtime_probe (captured nvidia-smi /
+    # device output) is recorded. MPS is local-dev only and cannot survive
+    # containerization, so it must be flagged dev_only. This is a structural
+    # guard; true runtime anchoring needs the GPU runner (Phase 3).
+    # ------------------------------------------------------------------
+    violations.extend(_check_accelerator(spec))
+
+    # ------------------------------------------------------------------
+    # I13: license / redistribution guard. A license-gated tool's image must not
+    # be marked redistributable and must record its license(s) — the procedural
+    # firewall that stops us republishing someone else's gated artifact.
+    # ------------------------------------------------------------------
+    violations.extend(_check_license(spec))
+
+    return violations
+
+
+def _check_accelerator(spec: dict) -> list[dict]:
+    """I12 — hardware-acceleration claims must be structurally honest."""
+    violations: list[dict] = []
+    acc = spec.get("accelerator")
+    if not isinstance(acc, dict):
+        return violations
+    atype = acc.get("type") or "none"
+    if atype == "none":
+        return violations
+
+    if atype == "mps":
+        if not acc.get("dev_only"):
+            violations.append({
+                "invariant": "I12.mps_dev_only",
+                "message":   "accelerator.type=mps must set dev_only=true — Metal/MPS does "
+                             "not survive containerization to the shipped linux/amd64 image, "
+                             "so it can never be a property of the deliverable.",
+                "where":     "accelerator",
+            })
+        return violations
+
+    # cuda / rocm
+    if not (acc.get("toolkit_version") or "").strip():
+        violations.append({
+            "invariant": "I12.accel_toolkit_version_required",
+            "message":   f"accelerator.type={atype} requires toolkit_version (the CUDA/ROCm "
+                         f"toolkit baked into the image) — host-driver compatibility depends on it.",
+            "where":     "accelerator",
+        })
+    if (acc.get("runtime") or "build_only") == "runtime_verified":
+        if not (acc.get("runtime_probe") or "").strip():
+            violations.append({
+                "invariant": "I12.runtime_verified_needs_probe",
+                "message":   f"accelerator.runtime=runtime_verified claims a kernel ran on a real "
+                             f"{atype} device, but no runtime_probe (captured nvidia-smi/device output) "
+                             f"is recorded — without a GPU runner this must stay runtime=build_only.",
+                "where":     "accelerator",
+            })
+        if not (acc.get("min_driver_version") or "").strip():
+            violations.append({
+                "invariant": "I12.runtime_verified_needs_driver",
+                "message":   f"accelerator.runtime=runtime_verified for {atype} must record "
+                             f"min_driver_version (the host-driver floor the image needs to run).",
+                "where":     "accelerator",
+            })
+    return violations
+
+
+def _check_license(spec: dict) -> list[dict]:
+    """I13 — license-gated artifacts must not be marked redistributable and must
+    name their license(s)."""
+    violations: list[dict] = []
+    if not spec.get("license_gated"):
+        return violations
+    if spec.get("redistributable", True):
+        violations.append({
+            "invariant": "I13.gated_not_redistributable",
+            "message":   "license_gated=true requires redistributable=false — a gated tool's "
+                         "image (cellranger, dorado, AlphaFold params, …) must never be marked "
+                         "redistributable; we never republish someone else's gated artifact.",
+            "where":     "redistributable",
+        })
+    if not (spec.get("licenses") or []):
+        violations.append({
+            "invariant": "I13.gated_license_recorded",
+            "message":   "license_gated=true requires at least one entry in licenses[] naming the "
+                         "license/terms the artifact is bound by.",
+            "where":     "licenses",
+        })
     return violations
 
 

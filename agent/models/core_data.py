@@ -116,7 +116,8 @@ class InstallMethod(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source", "binary", "manual"] = "conda"
+    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source",
+                  "binary", "perl", "cargo", "go", "manual"] = "conda"
     # conda
     conda_spec: Optional[str] = None   # e.g. "samtools=1.21"
     channel:    Optional[str] = None   # e.g. "bioconda"
@@ -135,6 +136,35 @@ class InstallMethod(BaseModel):
     sha256:     Optional[str] = None   # sha256 of the downloaded asset — immutable content anchor (I14)
     # docker_pull — tool only available as a pulled image (no conda/JAR path)
     docker_image: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Hardware acceleration
+# ---------------------------------------------------------------------------
+
+class Accelerator(BaseModel):
+    """Hardware-acceleration contract for the env.
+
+    Honest because the runtime distinction is enforced by I12: a spec may not
+    CLAIM a kernel ran on a real device (runtime="runtime_verified") without a
+    recorded runtime_probe. Default is build_only — the toolchain/image is
+    correct, but execution was not verified on hardware (the case when building
+    a CUDA image on a machine with no GPU). True runtime verification needs the
+    GPU runner (Phase 3).
+
+    MPS (Apple Metal) is dev-only: it does NOT survive containerization to the
+    shipped linux/amd64 image, so I12 forces dev_only=true for it — a local MPS
+    run can never become a property of the deliverable.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    type:                Literal["none", "cuda", "rocm", "mps"] = "none"
+    toolkit_version:     Optional[str] = None   # CUDA/ROCm toolkit baked into the image, e.g. "12.1"
+    min_driver_version:  Optional[str] = None   # host driver floor required for the image to run
+    compute_capability:  Optional[str] = None   # e.g. "8.0" (A100), "9.0" (H100)
+    runtime:             Literal["build_only", "runtime_verified"] = "build_only"
+    runtime_probe:       Optional[str] = None   # captured nvidia-smi/nvcc/device output — the proof
+    dev_only:            bool = False            # mps: local-dev accel that does not containerize
 
 
 # ---------------------------------------------------------------------------
@@ -1052,6 +1082,11 @@ class PipelineSpec(BaseModel):
     usage_verified:       bool = False             # True after self-test runs usage.command_template successfully
     packages:             list[PackageRecord]
     reference_free:       bool = False
+    # Hardware acceleration + licensing contract (I12 / I13 enforce honesty).
+    accelerator:          Optional[Accelerator] = None          # None → CPU-only
+    license_gated:        bool = False                          # tool requires accepting a license / auth to obtain
+    licenses:             list[str] = []                        # the license/terms the artifact is bound by
+    redistributable:      bool = True                           # False when gated — blocks public-registry push (I13)
     runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)
     reference_databases:  list[ReferenceDatabase] = []
     runtime_configs:      list[RuntimeConfig] = []

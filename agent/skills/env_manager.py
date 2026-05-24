@@ -861,6 +861,110 @@ class EnvManager:
             "log": log,
         }
 
+    def install_perl_package(
+        self, env_name: str, module: str, distribution: str = "", cpanm_flags: str = "",
+    ) -> dict[str, Any]:
+        """Install a Perl/CPAN module via cpanm into the env's perl site lib —
+        the Perl tier (Ensembl VEP, BioPerl) that conda/pip don't cover.
+        Requires perl + cpanm in the env (conda: perl perl-app-cpanminus).
+
+        `module` is the Perl package name (Bio::DB::HTS) used for the
+        load-or-die verify; `distribution` overrides the cpanm install target
+        when the CPAN distribution name differs from the module name.
+        """
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return {"success": False, "error": f"env not found: {env_path}"}
+        target = distribution or module
+        flags  = cpanm_flags or "--notest"
+        log: list[str] = []
+        inst = self.run_in_env(env_name, f"cpanm {flags} {shlex.quote(target)}", timeout=1800)
+        log.append(f"cpanm rc={inst['returncode']}")
+        if inst["returncode"] != 0:
+            return {"success": False, "error": "cpanm install failed",
+                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+        ev = evidence.perl_module_load(self, env_name, module)
+        return {
+            "success":        ev["anchored"],
+            "module":         module,
+            "distribution":   target,
+            "verify_command": f"perl -M{module} -e1",
+            "verify_output":  f"{module} loaded (perl -M{module} -e1 rc=0)" if ev["anchored"] else "",
+            "install_method": {"type": "perl", "source": f"cpanm {target}"},
+            "log":            log,
+        }
+
+    def install_cargo_tool(
+        self, env_name: str, crate: str, version: str = "",
+        binary_name: str = "", git_url: str = "",
+    ) -> dict[str, Any]:
+        """Install a Rust crate's binary via `cargo install --root {env}` so it
+        lands on the env PATH — the cargo tier for Rust tools not on bioconda.
+        Requires rust+cargo in the env (conda: rust). `binary_name` (defaults to
+        crate) is what the cli_which anchor checks; `git_url` installs from a git
+        repo instead of crates.io. A locally-built binary can't be wrong-arch, so
+        presence (cli_which) is the honest anchor here."""
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return {"success": False, "error": f"env not found: {env_path}"}
+        bin_name = binary_name or crate
+        if git_url:
+            src = f"--git {shlex.quote(git_url)}"
+        else:
+            src = shlex.quote(crate) + (f" --version {shlex.quote(version)}" if version else "")
+        log: list[str] = []
+        inst = self.run_in_env(
+            env_name, f"cargo install {src} --root {shlex.quote(str(env_path))}", timeout=3600,
+        )
+        log.append(f"cargo install rc={inst['returncode']}")
+        if inst["returncode"] != 0:
+            return {"success": False, "error": "cargo install failed",
+                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+        ev = evidence.cli_which(self, env_name, bin_name)
+        return {
+            "success":        ev["anchored"],
+            "crate":          crate,
+            "binary_name":    bin_name,
+            "verify_command": f"which {bin_name}",
+            "verify_output":  ev["detail"] or "",
+            "install_method": {"type": "cargo",
+                               "source": git_url or f"crates.io:{crate}" + (f"@{version}" if version else "")},
+            "log":            log,
+        }
+
+    def install_go_tool(
+        self, env_name: str, package: str, version: str = "latest", binary_name: str = "",
+    ) -> dict[str, Any]:
+        """Install a Go tool via `go install pkg@version` into {env}/bin — the go
+        tier for Go tools not on bioconda. Requires go in the env (conda: go).
+        Sets GOBIN={env}/bin so the binary lands on the env PATH; presence
+        (cli_which) is the anchor (a locally-built binary can't be wrong-arch)."""
+        env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            return {"success": False, "error": f"env not found: {env_path}"}
+        bin_name = binary_name or package.rstrip("/").split("/")[-1]
+        spec = f"{package}@{version}" if version else package
+        log: list[str] = []
+        inst = self.run_in_env(
+            env_name,
+            f"GOBIN={shlex.quote(str(env_path / 'bin'))} go install {shlex.quote(spec)}",
+            timeout=3600,
+        )
+        log.append(f"go install rc={inst['returncode']}")
+        if inst["returncode"] != 0:
+            return {"success": False, "error": "go install failed",
+                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+        ev = evidence.cli_which(self, env_name, bin_name)
+        return {
+            "success":        ev["anchored"],
+            "package":        package,
+            "binary_name":    bin_name,
+            "verify_command": f"which {bin_name}",
+            "verify_output":  ev["detail"] or "",
+            "install_method": {"type": "go", "source": f"{package}@{version}"},
+            "log":            log,
+        }
+
     @staticmethod
     def _select_jar(jars: list[Path], tool_name: str) -> Path:
         """Pick the most likely "primary" JAR from a directory of jars.

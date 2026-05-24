@@ -328,6 +328,12 @@ class PipelineState:
         "conda_env", "created_at", "python_version", "reference_free",
         "runtime_environment", "runtime_configs", "reference_databases",
         "usage",
+        # Acceleration + licensing claims. Agent-authored, but their internal
+        # consistency is guarded by I12 / I13 (an inconsistent claim — e.g.
+        # runtime_verified with no probe, or license_gated + redistributable —
+        # is rejected at finalize). The resolver is the *detector*; these
+        # invariants are the *guard*.
+        "accelerator", "license_gated", "licenses", "redistributable",
     })
 
     # Keys that are runtime-captured or finalize-derived. Blocked from patch

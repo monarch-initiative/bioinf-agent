@@ -81,6 +81,23 @@ def r_namespace(em, env_name: str, name: str) -> dict[str, Any]:
             "detail": sorted(r_names) if anchored else None}
 
 
+def perl_module_load(em, env_name: str, module: str) -> dict[str, Any]:
+    """Perl module presence: `perl -M{module} -e1` loads cleanly. The anchor for
+    the Perl/CPAN tier (Ensembl VEP, BioPerl) — cpanm-installed modules live in
+    the env's perl site lib and are tracked by NEITHER conda nor pip, so this is
+    their registry anchor. `module` is the Perl package name (Bio::DB::HTS), not
+    a conda-style name. Module names are restricted to [A-Za-z0-9_:] (shell-safe),
+    and a name outside that set is rejected rather than run."""
+    import re as _re
+    if not _re.match(r"^[A-Za-z0-9_:]+$", module or ""):
+        return {"strategy": "perl_module_load", "anchored": False,
+                "detail": f"invalid perl module name: {module!r}"}
+    res = em.run_in_env(env_name, f"perl -M{module} -e1", timeout=60)
+    anchored = res.get("returncode") == 0
+    return {"strategy": "perl_module_load", "anchored": anchored,
+            "detail": module if anchored else None}
+
+
 def file_present(em, env_name: str, path: str, sha256: str | None = None) -> dict[str, Any]:
     """Filesystem presence: `path` exists as a file, and (if `sha256` is given)
     its bytes hash to it. The anchor for the release-binary tier (I14) and any
@@ -138,6 +155,7 @@ STRATEGIES: dict[str, Callable[..., dict[str, Any]]] = {
     "conda_registry":   conda_registry,
     "pip_show":         pip_show,
     "r_namespace":      r_namespace,
+    "perl_module_load": perl_module_load,
     "file_present":     file_present,
     "registry_anchor":  registry_anchor,
     "presence_anchor":  presence_anchor,
