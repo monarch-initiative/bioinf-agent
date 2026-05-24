@@ -2553,3 +2553,51 @@ def test_env_freeze_maps_pip_and_r_install():
     assert "r-base" in out and "fortran-compiler" in out
     # pip is NOT a generator (no toolchain injected for it)
     assert ef.plan_conda([], [{"type": "pip"}]) == []
+
+
+def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch):
+    """C4 wiring (the gap that was py_compile-only): the re-pointed freeze, on a draft
+    with a non-conda install, takes the container-native branch — calls
+    env_freeze.build_env_image with conda_deps from requested_conda_specs + the docker
+    platform + primary_tools, and maps the result to a build/container-native
+    freeze_record registered in the EnvCache. (The build is live-proven separately;
+    this proves the FACE wiring deterministically — no docker.)"""
+    import agent.mcp_server as m
+    draft = {"install_steps": [
+        {"tool": "conda", "subcommand": "install",
+         "installed_packages": [{"name": "samtools", "version": "1.21",
+                                 "install_method": {"type": "conda"}}]},
+        {"tool": "install_release_binary", "subcommand": "install",
+         "installed_packages": [{"name": "seqkit", "version": "2.13.0",
+                                 "install_method": {"type": "binary",
+                                                    "binary_url": "https://x/seqkit_darwin_arm64.tar.gz",
+                                                    "local_path": "/h/seqkit"}}]},
+    ]}
+    monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: draft)
+    monkeypatch.setattr(m._biocontainers, "resolve_biocontainer", lambda parsed: {"found": False})
+    monkeypatch.setattr(m._env_cache, "lookup", lambda k: None)
+    registered = {}
+    monkeypatch.setattr(m._env_cache, "register", lambda k, rec: registered.update({k: rec}) or rec)
+    monkeypatch.setattr(m._env_mgr, "generate_lock", lambda *a, **k: {"success": False})
+    monkeypatch.setattr(m._docker, "save_archive", lambda img, path: {"success": False})
+    monkeypatch.setattr(m._docker, "image_digest", lambda img: "")
+    captured = {}
+    def fake_build(spec, **kw):
+        captured["spec"], captured["kw"] = spec, kw
+        return {"success": True, "image": "samtools-seqkit:latest", "image_digest": "sha256:deadbeef",
+                "content_digest": "sha256:cd",
+                "longtail_steps": [{"purpose": "seqkit (release binary)", "command": "set -eux; curl ..."}]}
+    monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
+
+    res = m.freeze("bioinf_x", ["samtools=1.21", "seqkit"], platform="linux-64", pipeline_id="p1")
+
+    assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
+    assert res["image"] == "samtools-seqkit:latest" and res["image_digest"] == "sha256:deadbeef"
+    # the re-point derived the right args for the container-native builder
+    assert captured["kw"]["conda_deps"] == ["samtools=1.21"]      # requested_conda_specs (no bootstrap python)
+    assert captured["kw"]["platform"] == "linux/amd64"            # converted from the conda subdir linux-64
+    assert set(captured["kw"]["primary_tools"]) == {"samtools", "seqkit"}
+    assert captured["spec"] is draft
+    # registered in the cache; shipped_binaries record the baked long-tail command
+    assert registered and any(sb.get("name") == "seqkit (release binary)"
+                              for sb in res.get("shipped_binaries", []))
