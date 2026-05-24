@@ -732,6 +732,168 @@ class EnvManager:
     )
 
     @staticmethod
+    def clone_and_read_build_files(repo_url: str, ref: str = "", *,
+                                   is_relevant=None, max_file_bytes: int = 5_000_000) -> dict[str, Any]:
+        """Programmatic ground-truth fetch for the synthesis tier. Clones repo_url,
+        checks out `ref` (tag/branch/commit; default HEAD), resolves the CONCRETE
+        commit via `git rev-parse HEAD` (the agent NEVER supplies it), and reads the
+        build-relevant files (those for which is_relevant(path) is true) + sha256
+        each. The runtime is the sole source of these facts — the agent only reads
+        what comes back. Returns {success, commit, ref, files:[{path,sha256,text}]};
+        always cleans up the clone.
+
+        A plain git op (no conda env): git is on the host PATH, and this is query-
+        only ground-truth gathering, so it needs no build container."""
+        import hashlib
+        import tempfile
+        is_relevant = is_relevant or (lambda p: True)
+        tmp = tempfile.mkdtemp(prefix="synth_fetch_")
+        try:
+            cl = subprocess.run(["git", "clone", "--quiet", repo_url, tmp],
+                                capture_output=True, text=True, timeout=600)
+            if cl.returncode != 0:
+                return {"success": False, "error": "git clone failed",
+                        "stderr": (cl.stderr or "")[-400:]}
+            if ref:
+                co = subprocess.run(["git", "-C", tmp, "checkout", "--quiet", ref],
+                                    capture_output=True, text=True, timeout=120)
+                if co.returncode != 0:
+                    return {"success": False, "error": f"git checkout {ref!r} failed",
+                            "stderr": (co.stderr or "")[-400:]}
+            rp = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=30)
+            commit = (rp.stdout or "").strip()
+            base = Path(tmp)
+            files: list[dict[str, Any]] = []
+            for p in sorted(base.rglob("*")):
+                if not p.is_file():
+                    continue
+                rel = str(p.relative_to(base))
+                if rel.startswith(".git/") or not is_relevant(rel):
+                    continue
+                try:
+                    data = p.read_bytes()
+                except Exception:
+                    continue
+                if len(data) > max_file_bytes:        # a build file this big is suspect — skip
+                    continue
+                files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
+                              "text": data.decode("utf-8", errors="replace")})
+            return {"success": True, "commit": commit, "ref": ref or "HEAD", "files": files}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @staticmethod
+    def download_and_read_build_files(url: str, *, is_relevant=None,
+                                     max_file_bytes: int = 5_000_000) -> dict[str, Any]:
+        """Ground-truth fetch for a NON-GIT source (the 'no GitHub' case): a tool
+        shipped as a raw release/vendor ARCHIVE (tarball/zip over http/ftp). Streams
+        the download, computes its sha256 (the immutable anchor, analogous to a git
+        commit), extracts it PATH-TRAVERSAL-SAFELY, and reads the build-relevant
+        files + sha256 each. The runtime is the sole source of these facts. Returns
+        {success, source_kind:'archive', archive_url, archive_sha256,
+        files:[{path,sha256,text}]}; always cleans up."""
+        import hashlib
+        import tarfile
+        import tempfile
+        import urllib.request
+        import zipfile
+        is_relevant = is_relevant or (lambda p: True)
+        tmp = tempfile.mkdtemp(prefix="synth_dl_")
+        try:
+            archive = Path(tmp) / "src_archive"
+            h = hashlib.sha256()
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "bioinf-agent"})
+                with urllib.request.urlopen(req, timeout=600) as r, open(archive, "wb") as fh:
+                    while True:
+                        chunk = r.read(1 << 16)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        fh.write(chunk)
+            except Exception as e:
+                return {"success": False, "error": f"download failed: {e}"}
+            archive_sha = h.hexdigest()
+
+            ext = Path(tmp) / "extracted"
+            ext.mkdir()
+            try:
+                if zipfile.is_zipfile(archive):
+                    with zipfile.ZipFile(archive) as z:
+                        EnvManager._safe_extract_zip(z, ext)
+                elif tarfile.is_tarfile(archive):
+                    with tarfile.open(archive) as t:
+                        EnvManager._safe_extract_tar(t, ext)
+                else:
+                    return {"success": False,
+                            "error": "downloaded file is neither a tar nor a zip archive"}
+            except Exception as e:
+                return {"success": False, "error": f"extract failed: {e}"}
+
+            files: list[dict[str, Any]] = []
+            for p in sorted(ext.rglob("*")):
+                if not p.is_file():
+                    continue
+                rel = str(p.relative_to(ext))
+                if not is_relevant(rel):
+                    continue
+                try:
+                    data = p.read_bytes()
+                except Exception:
+                    continue
+                if len(data) > max_file_bytes:
+                    continue
+                files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
+                              "text": data.decode("utf-8", errors="replace")})
+            return {"success": True, "source_kind": "archive", "archive_url": url,
+                    "archive_sha256": archive_sha, "files": files}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @staticmethod
+    def _safe_extract_tar(tar, dest: "Path") -> None:
+        """Extract a tar refusing any member that escapes `dest` (path traversal /
+        absolute paths / symlink escape — the classic tarbomb). Uses the stdlib
+        'data' filter when available (py3.12+/backports), else a manual guard."""
+        try:
+            tar.extractall(dest, filter="data")     # py3.12+: rejects traversal/links
+            return
+        except TypeError:
+            pass
+        dest = Path(dest).resolve()
+        for m in tar.getmembers():
+            target = (dest / m.name).resolve()
+            if not str(target).startswith(str(dest) + os.sep) and target != dest:
+                raise ValueError(f"unsafe tar member escapes extract dir: {m.name!r}")
+            if m.issym() or m.islnk():
+                raise ValueError(f"refusing link member in archive: {m.name!r}")
+        tar.extractall(dest)
+
+    @staticmethod
+    def _safe_extract_zip(zf, dest: "Path") -> None:
+        """Extract a zip refusing any member that escapes `dest`."""
+        dest = Path(dest).resolve()
+        for name in zf.namelist():
+            target = (dest / name).resolve()
+            if not str(target).startswith(str(dest) + os.sep) and target != dest:
+                raise ValueError(f"unsafe zip member escapes extract dir: {name!r}")
+        zf.extractall(dest)
+
+    @staticmethod
+    def fetch_build_source(url: str, ref: str = "", *, mode: str = "auto",
+                           is_relevant=None) -> dict[str, Any]:
+        """Unified ground-truth fetch for the synthesis tier: dispatch on source kind
+        (synthesis.source_kind) — a git repo → clone_and_read_build_files (anchored by
+        commit), a raw archive → download_and_read_build_files (anchored by sha256).
+        Plain git clone already covers ANY git host (GitHub/GitLab/Bitbucket/self-
+        hosted); the archive path covers the non-git long tail."""
+        from agent.skills import synthesis as _synth
+        if _synth.source_kind(url, mode) == "archive":
+            return EnvManager.download_and_read_build_files(url, is_relevant=is_relevant)
+        return EnvManager.clone_and_read_build_files(url, ref, is_relevant=is_relevant)
+
+    @staticmethod
     def _is_archive(name: str) -> bool:
         n = name.lower()
         return any(n.endswith(s) for s in EnvManager._ARCHIVE_SUFFIXES)

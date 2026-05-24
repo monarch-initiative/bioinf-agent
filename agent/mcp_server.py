@@ -51,6 +51,8 @@ from agent.skills import user_guide as _user_guide
 from agent.skills import env_report as _env_report
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
+from agent.skills import synthesis as _synth
+from agent.skills import provenance as _prov
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
@@ -367,6 +369,152 @@ def install_git_repo(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+    return result
+
+
+@mcp.tool()
+def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
+    """Synthesis tier, call 1 of 2 — PROGRAMMATIC ground-truth fetch for a long-tail
+    tool that has no conda/pip/cran/cargo/go/perl/binary/jar home. Acquires the
+    source two ways (auto-detected, or force via `mode`='git'|'archive'):
+      - GIT repo (any host — GitHub/GitLab/Bitbucket/self-hosted): clone, check out
+        `ref` (tag/branch/commit; default HEAD), resolve the CONCRETE commit
+        (`git rev-parse` — you never supply it).
+      - non-git ARCHIVE (a raw release/vendor tarball or zip over http/ftp — the 'no
+        GitHub' case): download, sha256-anchor, extract path-traversal-safely.
+    Either way it returns the tool's OWN build files so you read them and decide how
+    it installs — the universal residual path: no per-tool generator, you read the
+    repo's real build instructions; provenance + the honesty contract make it safe.
+
+    Returns {success, source_kind, files:[{path,sha256,text}], ranked_sources, ...}
+    where the immutable anchor is `commit` (git) or `archive_sha256` (archive).
+    `ranked_sources` orders the build files by how authoritative a recipe each is
+    (Dockerfile › install.sh › CI workflow › Makefile/CMakeLists › setup.py/
+    pyproject › README). READ them, then call synth_build with:
+      - commands tagged source='extracted' (lifted VERBATIM from a file — pass its
+        path as origin_file; PREFER this), or source='agent_authored' (composed
+        from the repo's prose — every URL/remote you use MUST appear in the repo).
+    synth_build re-fetches at the SAME anchor and re-verifies every command against
+    these exact bytes, so an extraction you claim must really be in the file and an
+    authored command must be grounded. Nothing you state from memory can ship."""
+    fetch = _env_mgr.fetch_build_source(
+        repo_url, ref, mode=mode, is_relevant=_synth.is_build_relevant)
+    if not fetch.get("success"):
+        return fetch
+    paths = [f["path"] for f in fetch["files"]]
+    fetch["ranked_sources"] = _synth.rank_build_sources(paths)
+    fetch["corpus_chars"] = sum(len(f.get("text", "")) for f in fetch["files"])
+    return fetch
+
+
+@mcp.tool()
+def synth_build(
+    env_name: str,
+    repo_url: str,
+    tool_name: str,
+    commit: str = "",
+    commands: list = [],
+    evidence: str = "",
+    ref: str = "",
+    mode: str = "auto",
+    archive_sha256: str = "",
+    engine_coupled: bool = False,
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Synthesis tier, call 2 of 2 — record a VALIDATED, provenance-tagged install
+    recipe for a long-tail tool. The UNIVERSAL residual installer: it replaces a
+    per-tool generator with the agent reading the tool's own build files, gated so
+    nothing is taken on faith. Works for a git repo OR a non-git archive (the anchor
+    is `commit` for git, `archive_sha256` for an archive — pass whichever synth_fetch
+    returned; `mode` mirrors synth_fetch).
+
+    `commands` = the ordered install sequence, each:
+      {command, source, origin_file?, engine_coupled?}
+    where source is 'extracted' (the command occurs VERBATIM in origin_file — the
+    file you name from synth_fetch; preferred) or 'agent_authored' (you composed it
+    from the repo's prose — its URLs/remotes must appear in the repo).
+
+    This RE-FETCHES at the SAME anchor (deterministic ground truth) and refuses if
+    the anchor no longer matches (the source moved/changed), then validate_submission
+    re-verifies EVERY command against the runtime's own bytes: an 'extracted' command
+    must really occur in origin_file (sha256 stamped by the runtime, not you); an
+    'agent_authored' command must be grounded. The source URL — and for an archive
+    its sha256 — are ground truth by construction (we fetched exactly them), so a
+    `git clone {url}` / `curl {url}` + `sha256sum -c` ground; every OTHER external
+    reference must trace to the repo's files. Any violation → refused, no record. On
+    success it records ONE install_method (type='synthesized') into the draft; freeze()
+    replays it verbatim and the honesty contract proves the tool RUNS (`evidence`).
+
+    NOTE — runtime SERVICES (MongoDB/Postgres/Redis/Spark) are NOT installed here:
+    synthesis bakes the TOOL only (install-time); a service is provisioned per-run via
+    start_service (Layer 2, I10). Keep synthesized commands install-time, not a
+    long-running daemon.
+
+    `evidence`: the in-image check that proves the tool works (must reference the
+    tool as a real token — echo/true cheats are rejected by the contract). Default
+    `command -v {tool_name}`. Returns {success, anchor, records, install_method,
+    violations?, pipeline_merge?}."""
+    fetch = _env_mgr.fetch_build_source(
+        repo_url, commit or ref, mode=mode, is_relevant=_synth.is_build_relevant)
+    if not fetch.get("success"):
+        return {"success": False, "stage": "refetch", **fetch}
+    kind = fetch.get("source_kind", "git")
+    # Anchor verification — the re-fetch must resolve the SAME immutable bytes.
+    if kind == "git":
+        if commit and fetch.get("commit") != commit:
+            return {"success": False, "stage": "refetch",
+                    "error": f"re-fetch resolved {fetch.get('commit')!r}, expected {commit!r} "
+                             f"— ref is not pinned to an immutable commit"}
+        anchor = {"commit_sha": fetch.get("commit"), "ref": ref or commit or "HEAD"}
+        ground_extra = repo_url
+        anchor_val = fetch.get("commit")
+    else:  # archive
+        if archive_sha256 and fetch.get("archive_sha256") != archive_sha256:
+            return {"success": False, "stage": "refetch",
+                    "error": f"re-download sha256 {fetch.get('archive_sha256')!r} != expected "
+                             f"{archive_sha256!r} — the archive at that URL changed; re-run synth_fetch"}
+        anchor = {"archive_sha256": fetch.get("archive_sha256")}
+        # the archive URL AND its sha256 are ground truth (we downloaded exactly it),
+        # so a `curl {url}` + `sha256sum -c {sha}` grounds.
+        ground_extra = repo_url + "\n" + (fetch.get("archive_sha256") or "")
+        anchor_val = fetch.get("archive_sha256")
+    fetch["corpus"] = _synth.build_corpus(fetch["files"]) + "\n" + ground_extra
+    val = _synth.validate_submission(fetch, list(commands))
+    if not val["ok"]:
+        return {"success": False, "stage": "validate_submission",
+                "violations": val["violations"],
+                "hint": "an 'extracted' command must occur verbatim in its origin_file; "
+                        "an 'agent_authored' command's URLs/remotes must appear in the repo "
+                        "(the source URL and an archive's sha256 are auto-grounded)"}
+    records = val["records"]
+    install_method = {
+        "type":         "synthesized",
+        "source":       repo_url,
+        "tool":         tool_name,
+        "evidence":     evidence or f"command -v {tool_name}",
+        "engine_coupled": engine_coupled,
+        "commands":     records,                       # validated, provenance-tagged
+        "file_hashes":  {f["path"]: f["sha256"] for f in fetch["files"]},
+        **anchor,
+    }
+    result: dict = {"success": True, "source_kind": kind, "anchor": anchor_val,
+                    "records": records, "install_method": install_method}
+    if pipeline_id:
+        ip_record = {"name": tool_name, "channel": kind, "source": repo_url,
+                     "install_method": install_method,
+                     "version": (anchor_val or "")[:12]}
+        step_data = {
+            "tool": "git", "subcommand": "synthesize",
+            "purpose": f"Synthesize {tool_name} from {repo_url} (agent-authored, gated)",
+            "command": f"synth_build {tool_name} @ {(anchor_val or '')[:12]}",
+            "returncode": 0, "installed_packages": [ip_record],
+        }
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
     return result
 
 

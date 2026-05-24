@@ -424,7 +424,8 @@ class ContainerBuild:
 
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "",
-            engine_coupled: bool = False, timeout: int = 1800) -> dict[str, Any]:
+            engine_coupled: bool = False, provenance: dict | None = None,
+            timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
         baking; `evidence` is re-run in the built image at freeze.
@@ -442,7 +443,10 @@ class ContainerBuild:
         if ev["returncode"] != 0:
             return {"success": False, "stage": "evidence", "evidence": ev_cmd,
                     "stderr": (ev["stderr"] or "")[-800:]}
-        self.longtail.append({"command": cmd, "purpose": purpose, "evidence": ev_cmd})
+        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd}
+        if provenance:                       # synthesis tier: carry the per-command
+            rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
+        self.longtail.append(rec)
         self.log.append(f"run [{purpose}] rc=0 ev_ok coupled={engine_coupled}")
         return {"success": True, "evidence_output": (ev["stdout"] or "").strip()[:200]}
 
@@ -451,7 +455,8 @@ class ContainerBuild:
         engine_coupled?}). The single entry point for every long-tail tier — the
         generator carries the per-tier knowledge; the locus just runs+bakes it."""
         return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
-                        engine_coupled=spec.get("engine_coupled", False), timeout=timeout)
+                        engine_coupled=spec.get("engine_coupled", False),
+                        provenance=spec.get("provenance"), timeout=timeout)
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""

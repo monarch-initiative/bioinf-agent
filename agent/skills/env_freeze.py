@@ -117,6 +117,19 @@ def _map_install(
                                   build_command=im.get("build_command"),
                                   bin_path=im.get("bin_path"), wrapper=name)}
 
+    if t == "synthesized":
+        # The UNIVERSAL tail: a validated, provenance-tagged command sequence the
+        # agent synthesized from the tool's OWN build files (gated at authoring by
+        # synthesis.validate_submission). Replayed verbatim; no per-tool generator.
+        cmds = im.get("commands") or []
+        if not cmds:
+            return {"error": f"synthesized tool '{name}' has no commands to replay"}
+        return {"spec": ic.synthesized(name, cmds, tool=im.get("tool") or name,
+                                       evidence=im.get("evidence") or "",
+                                       engine_coupled=im.get("engine_coupled", False),
+                                       repo=im.get("source") or "",
+                                       commit=im.get("commit_sha") or "")}
+
     if t == "cargo":
         return {"spec": ic.cargo(name, im.get("crate") or name, version=im.get("version") or "",
                                  git_url=im.get("git_url") or "",
