@@ -581,6 +581,8 @@ class EnvManager:
         build_command: str = "",
         verify_command: str = "",
         bin_path: str = "",
+        entrypoint: str = "",
+        interpreter: str = "",
     ) -> dict[str, Any]:
         """Vendor a git repository as a source-installed tool, end-to-end.
 
@@ -673,6 +675,23 @@ class EnvManager:
             wrapper.chmod(0o755)
             wrapper_path = str(wrapper)
             log.append(f"wrapper written: {wrapper}")
+        elif entrypoint:
+            # Run-by-path script collection (no compiled binary — the half-baked
+            # academic norm: a repo of scripts run as `python run_thing.py …`).
+            # Wrap the entry script so it has the same launch contract as a binary,
+            # and so freeze can REPLAY it in-image via install_commands.script_repo.
+            entry = share_dir / entrypoint
+            if not entry.is_file():
+                return {"success": False, "error": f"entrypoint not found in clone: {entry}",
+                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+            bin_dir = env_path / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            wrapper = bin_dir / tool_name
+            runline = (f"{interpreter} " if interpreter else "") + shlex.quote(str(entry))
+            wrapper.write_text(f"#!/usr/bin/env bash\nexec {runline} \"$@\"\n")
+            wrapper.chmod(0o755)
+            wrapper_path = str(wrapper)
+            log.append(f"run-by-path wrapper: {wrapper} -> {runline}")
 
         # Verify anchor. Default: the rev-parse we already ran proves the exact
         # pinned commit is on disk. A caller-supplied verify_command (e.g. a
@@ -698,6 +717,8 @@ class EnvManager:
             "ref":            ref or "HEAD",
             "build_command":  build_command,
             "bin_path":       bin_path,
+            "entrypoint":     entrypoint,
+            "interpreter":    interpreter,
             "wrapper_path":   wrapper_path,
             "verify_command": verify_command,
             "verify_output":  verify_output,

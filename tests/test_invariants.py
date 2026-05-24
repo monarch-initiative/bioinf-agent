@@ -2337,7 +2337,11 @@ def test_build_env_from_tools_assembles_plan_across_tiers(monkeypatch):
     # R (cran) + binary became add_tool generator specs
     tool_tools = {t["tool"] for t in plan["tools"]}
     assert "ape" in tool_tools and "sylph" in tool_tools
-    assert ("samtools", "command -v samtools") in plan["conda_verify"]
+    # conda verify is presence-based: a CLI on PATH, else installed dist-metadata
+    # (so library-only packages validate too). Both clauses name the tool token.
+    sv = dict(plan["conda_verify"])
+    assert sv["samtools"].startswith("command -v samtools")
+    assert "importlib.metadata" in sv["samtools"]
 
 
 def test_build_env_from_tools_refuses_ambiguous_and_unroutable(monkeypatch):
@@ -2390,3 +2394,93 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch)
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
     assert captured["conda_deps"] == ["samtools=1.21", "bcftools=1.21"]   # from tools (no draft)
     assert captured["platform"] == "linux/amd64" and captured["license_gated"] is False
+
+
+# ---------------------------------------------------------------------------
+# GAB shakeout fixes — real-world half-baked academic install robustness
+# (baumannlab/Genome_Assembly_Booster: sci-python co-solve + run-by-path repo)
+# ---------------------------------------------------------------------------
+
+def test_ensure_python_for_pip_injects_interpreter():
+    """pip via the engine (pixi --pypi/uv) needs python IN the env; inject it when
+    no conda package provides one (the pip analog of toolchain injection)."""
+    from agent.skills import env_freeze as ef
+    assert "python" in ef.ensure_python_for_pip(["r-base"], True)        # pip + no python -> injected
+    assert ef.ensure_python_for_pip(["python=3.12"], True) == ["python=3.12"]  # explicit python kept, no dupe
+    assert ef.ensure_python_for_pip(["python"], True) == ["python"]
+    assert ef.ensure_python_for_pip(["r-base"], False) == ["r-base"]     # no pip -> untouched
+    out = ef.ensure_python_for_pip(["python-louvain"], True)             # python-foo is NOT python
+    assert "python" in out and out != ["python-louvain"]
+
+
+def test_conda_presence_check_validates_libraries_honesty_safe():
+    """Library-only conda packages (no CLI) validate via installed dist-metadata,
+    NOT command -v. The check still NAMES the package, so env_honesty's anti-cheat
+    shape rule accepts it — and a bare `import community` (name != package) is still
+    rejected, proving the guarantee isn't weakened."""
+    from agent.skills import env_freeze as ef
+    from agent.skills import env_honesty as eh
+    chk = ef._conda_presence_check("python-louvain")
+    assert "command -v python-louvain" in chk and "distribution('python-louvain')" in chk
+    assert eh.evidence_shape_violation(chk, "python-louvain") is None          # accepted (names the token)
+    assert eh.evidence_shape_violation('python -c "import community"', "python-louvain") is not None  # cheat-shape still caught
+
+
+def test_map_install_routes_run_by_path_to_script_repo():
+    """A clone-and-run script collection (entrypoint, no compiled binary) is
+    replayable via the script_repo generator; without entrypoint OR build/bin_path
+    it's still refused."""
+    from agent.skills import env_freeze as ef
+    m = ef._map_install({"name": "gab", "type": "source", "install_method": {
+        "type": "source", "source": "https://github.com/x/gab", "commit_sha": "abc",
+        "entrypoint": "HIC_ASSEMBLER/run_hicAssembler.py", "interpreter": "python"}})
+    assert "spec" in m and "error" not in m
+    cmd = m["spec"]["command"]
+    assert "git clone" in cmd and "run_hicAssembler.py" in cmd and "/usr/local/bin/gab" in cmd
+    bad = ef._map_install({"name": "gab", "type": "source", "install_method": {
+        "type": "source", "source": "https://github.com/x/gab", "commit_sha": "abc"}})
+    assert "error" in bad
+
+
+def test_resolver_filters_serial_version_anomaly():
+    """An abandoned date/serial 'version' (bioconda hmmlearn's 20151031) must not
+    masquerade as latest — picked over the real semver only if nothing else parses."""
+    from agent.skills import resolver as r
+    assert r._looks_like_serial("20151031")
+    assert not r._looks_like_serial("0.3.3") and not r._looks_like_serial("2026.4.0")  # CalVer ok
+    assert r._pick_latest(["20151031", "0.1.1"]) == "0.1.1"
+    assert r._pick_latest(["0.2.0", "0.3.3", "0.3.2"]) == "0.3.3"
+    assert r._pick_latest(["20151031"]) == "20151031"   # all-serial -> still resolves
+
+
+def test_build_env_from_tools_bare_name_for_unpinned_conda(monkeypatch):
+    """Unpinned conda tools join the co-solve as BARE names (the solver co-resolves
+    compatible versions); an explicit user pin is honored. Over-pinning each to its
+    independent latest is what broke GAB's numba/numpy co-solve."""
+    from agent.skills import env_freeze as ef
+    cap = {}
+    class FakeEB:
+        def __init__(self, *a, **k): pass
+        def add_conda(self, specs, verify): cap["conda"] = specs
+        def add_pip(self, *a, **k): pass
+        def add_tool(self, *a, **k): pass
+        def run(self): return {"success": True, "image": "x:1"}
+        def request_key(self): return "rk"
+    monkeypatch.setattr(ef, "EnvBuild", FakeEB)
+    dec = lambda tool, **k: {"chosen": "conda", "tool": tool, "version": k.get("version", ""),
+                             "probed": {"conda": {"latest": "2.4.6", "channel": "conda-forge"}}, "found": True}
+    ef.build_env_from_tools("d", ["numpy", "samtools=1.21"], resolve_fn=dec)
+    assert "numpy" in cap["conda"] and "numpy=2.4.6" not in cap["conda"]   # bare (no auto-latest pin)
+    assert "samtools=1.21" in cap["conda"]                                  # explicit pin honored
+
+
+def test_runtime_image_is_self_activating_env_on_path():
+    """GAB fix #5: the shipped runtime image must bake the conda env onto PATH so
+    `apptainer exec image <tool>` / plain `docker run image <tool>` reach the conda
+    tools + python directly (not only via `pixi run`). Without this every conda
+    tool — and a run-by-path wrapper's `python` — 404s under the HPC delivery."""
+    from agent.skills.container_build import PixiEngine, MicromambaEngine
+    pix = "\n".join(PixiEngine().runtime_lines())
+    assert "/work/.pixi/envs/default/bin" in pix and "ENV PATH" in pix and "CONDA_PREFIX" in pix
+    mam = "\n".join(MicromambaEngine().runtime_lines())
+    assert "/opt/micromamba/envs/env/bin" in mam and "ENV PATH" in mam and "CONDA_PREFIX" in mam

@@ -267,12 +267,21 @@ def install_git_repo(
     build_command: str = "",
     verify_command: str = "",
     bin_path: str = "",
+    entrypoint: str = "",
+    interpreter: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
     """Vendor a git repository as a source-installed tool (the clone-and-run
     pattern that conda/pip/jar primitives don't cover — e.g. an academic repo
     you run as `python run_thing.py …`).
+
+    Two shapes: a COMPILED tool (pass `build_command` + `bin_path`, the relative
+    path to the built executable) or a RUN-BY-PATH script collection (pass
+    `entrypoint`, the repo-relative entry script, and `interpreter` e.g. `python`
+    — the half-baked academic norm: no compiled binary). Either writes a PATH
+    wrapper at {env}/bin/{tool_name}; freeze REPLAYS a compiled tool via the
+    source generator and a run-by-path repo via the script_repo generator.
 
     Clones repo_url into {env}/share/{tool_name}, checks out `ref` (branch /
     tag / commit; default HEAD), resolves the commit SHA (the immutable content
@@ -303,6 +312,8 @@ def install_git_repo(
         build_command  = build_command,
         verify_command = verify_command,
         bin_path       = bin_path,
+        entrypoint     = entrypoint,
+        interpreter    = interpreter,
     )
     if pipeline_id:
         from urllib.parse import urlparse
@@ -317,6 +328,10 @@ def install_git_repo(
             # Recorded so freeze can REPLAY the build on the ship platform.
             "build_command": build_command,
             "bin_path":      bin_path,
+            # Run-by-path (script collection) replay fields — freeze routes these
+            # to the script_repo generator instead of a compiled-source build.
+            "entrypoint":    entrypoint,
+            "interpreter":   interpreter,
         }
         ip_record = {
             "name":           tool_name,

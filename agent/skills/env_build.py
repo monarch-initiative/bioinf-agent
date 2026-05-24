@@ -114,8 +114,12 @@ class EnvBuild:
         record per verification (label, tool, RAW check, engine_coupled, rc,
         passed, out). The contract (env_honesty.check_build) reads these to assert
         VALIDATED_IN_IMAGE — both the shape (on the RAW check) and the pass."""
-        finals = [(v, self.cb.engine.run(v["check"]) if v["engine_coupled"] else v["check"])
-                  for v in self.verifications]
+        # Run each tool's evidence the way the shipped image is RUN on HPC: PLAIN
+        # exec in the self-activating image (env baked onto PATH), NOT via `pixi run`
+        # / `micromamba run`. This makes validated==shipped literal — a tool that
+        # passes only under engine-run activation but is unreachable via `apptainer
+        # exec image <tool>` is now correctly caught (the GAB python-on-PATH gap).
+        finals = [(v, v["check"]) for v in self.verifications]
         res = self.cb.validate_in_image(image, [c for _, c in finals])
         records = []
         for v, run_cmd in finals:

@@ -49,6 +49,20 @@ def _pip_presence_check(name: str) -> str:
     return f"python -c \"import importlib.metadata as _m; _m.version('{name}')\""
 
 
+def _conda_presence_check(name: str) -> str:
+    """In-image presence for a conda tool: a CLI on PATH, ELSE the package's
+    installed python dist-metadata. The second clause covers library-only packages
+    (numpy, scipy, networkx, python-louvain) that have no CLI — and is dist-NAME
+    based, so an import name that differs from the package name (python-louvain ->
+    `import community`) doesn't matter. BOTH clauses name the package, so
+    env_honesty.evidence_shape still anchors on the tool token (a `command -v X`
+    / metadata probe on a clean image can only pass if X is genuinely installed —
+    no anti-cheat weakening). CLI tools short-circuit on the first clause, so a
+    pure-CLI env with no python never reaches the fallback."""
+    return (f"command -v {name} || "
+            f"python -c \"import importlib.metadata as _m; _m.distribution('{name}')\"")
+
+
 def _r_source_from_method(im: dict) -> str:
     """Reconstruct install_r_package's source arg (cran|bioconductor|github:owner/
     repo) from the recorded install_method.source R expression."""
@@ -85,9 +99,19 @@ def _map_install(
                                java_flags=im.get("java_flags"), wrapper=name)}
 
     if t == "source":
+        # Run-by-path script collection (the half-baked academic norm: a repo of
+        # scripts, no compiled binary) → script_repo: clone + a wrapper that execs
+        # `{interpreter} {entry}`. No build_command/bin_path needed.
+        if im.get("entrypoint"):
+            return {"spec": ic.script_repo(name, im.get("source") or "",
+                                           ref=im.get("commit_sha") or im.get("ref") or "",
+                                           script_rel=im.get("entrypoint"),
+                                           interpreter=im.get("interpreter") or "",
+                                           wrapper=name)}
         if not im.get("build_command") or not im.get("bin_path"):
             return {"error": f"source tool '{name}' is not replayable: install_method needs "
-                             f"build_command + bin_path (re-run install_git_repo with bin_path)."}
+                             f"build_command + bin_path (compiled tool) OR entrypoint "
+                             f"(run-by-path script repo) — re-run install_git_repo with one."}
         return {"spec": ic.source(name, im.get("source") or "",
                                   ref=im.get("commit_sha") or im.get("ref") or "",
                                   build_command=im.get("build_command"),
@@ -141,6 +165,19 @@ def plan_conda(conda_deps: list[str], non_conda: list[dict]) -> list[str]:
     return list(conda_deps) + extra
 
 
+def ensure_python_for_pip(conda_specs: list[str], has_pip: bool) -> list[str]:
+    """pip is installed via the engine's PyPI path (`pixi add --pypi` → uv), which
+    needs a python interpreter IN the env. If pip specs are present but no conda
+    package provides python, inject `python` — the pip analog of plan_conda's
+    toolchain injection. (A bare `python` lets the solver choose; a transitively-
+    provided python makes this a no-op via the explicit-match guard.)"""
+    if not has_pip:
+        return conda_specs
+    if any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in conda_specs):
+        return conda_specs
+    return list(conda_specs) + ["python"]
+
+
 def build_env_image(
     spec: dict,
     *,
@@ -184,10 +221,10 @@ def build_env_image(
                   accelerator=accelerator, license_gated=license_gated,
                   licenses=licenses, redistributable=redistributable)
 
-    all_conda = plan_conda(conda_deps, non_conda)
+    all_conda = ensure_python_for_pip(plan_conda(conda_deps, non_conda), bool(pip_installs))
     if all_conda:
         non_conda_names = {x.get("name", "") for x in non_conda}
-        verify = [(t, f"command -v {t}") for t in primary_tools if t not in non_conda_names]
+        verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]
         eb.add_conda(all_conda, verify=verify)
     if pip_installs:
         versions = {p.get("name"): p.get("version") for p in _freeze.installed_packages(spec)
@@ -260,8 +297,16 @@ def build_env_from_tools(
         action = _resolver.route(d, platform)
         kind = action.get("kind")
         if kind == "conda":
-            conda_specs.append(action["spec"])
-            conda_verify.append((tool, f"command -v {tool}"))
+            # Honor an EXPLICIT user pin (samtools=1.21); otherwise add the BARE
+            # name and let the solver co-resolve compatible versions. Pinning every
+            # auto-resolved package to its independent latest over-constrains the
+            # co-solve (e.g. numpy=latest vs numba's older-numpy requirement →
+            # python_abi conflict). The lock still records exact versions, so
+            # reproducibility is preserved; bare names just hand the SAT problem to
+            # the solver instead of pre-deciding it wrong.
+            base = action["spec"].split("=")[0]
+            conda_specs.append(f"{base}={ver}" if ver else base)
+            conda_verify.append((tool, _conda_presence_check(tool)))
         elif kind == "pip":
             pip_specs.append(action["spec"])
             pip_verify.append((tool, _pip_presence_check(tool)))
@@ -278,6 +323,7 @@ def build_env_from_tools(
             if s not in conda_specs:
                 conda_specs.append(s)
 
+    conda_specs = ensure_python_for_pip(conda_specs, bool(pip_specs))
     eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
                   accelerator=accelerator, license_gated=license_gated,
                   licenses=licenses, redistributable=redistributable)

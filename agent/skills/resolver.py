@@ -61,13 +61,53 @@ def _head_ok(url: str, timeout: int = 12) -> bool:
         return False
 
 
+def _looks_like_serial(v: str) -> bool:
+    """A bare integer of 8+ digits (e.g. 20151031) is a date/serial 'version' from
+    an abandoned build, NOT a semver — it sorts as a huge release number and would
+    masquerade as 'latest'. (Real CalVer like xarray's 2026.4.0 has dots and is
+    NOT caught.)"""
+    s = str(v).strip()
+    return s.isdigit() and len(s) >= 8
+
+
+def _version_key(v: str):
+    try:
+        from packaging.version import Version
+        return Version(str(v))
+    except Exception:
+        return None
+
+
+def _pick_latest(versions: list, latest_hint: str = "") -> str:
+    """Most recent NORMAL version: drop serial/date anomalies, then pick the max by
+    PEP440 ordering. Falls back to the (non-serial) hint or last entry if nothing
+    parses — so a genuinely odd-versioned package still resolves to something."""
+    vs = [str(v) for v in (versions or []) if v]
+    pool = [v for v in vs if not _looks_like_serial(v)] or vs
+    parsed = [(k, v) for v in pool if (k := _version_key(v)) is not None]
+    if parsed:
+        return max(parsed, key=lambda kv: kv[0])[1]
+    if latest_hint and not _looks_like_serial(latest_hint):
+        return latest_hint
+    return pool[-1] if pool else ""
+
+
 def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
-    """Available on bioconda or conda-forge? (anaconda.org package API)."""
+    """Available on bioconda or conda-forge? Probes BOTH channels and picks the one
+    with the higher REAL version — guards against an abandoned date-versioned build
+    on one channel (e.g. bioconda's hmmlearn reports latest_version='20151031')
+    shadowing the maintained package on the other. Ties keep bioconda (probed
+    first), so bio-primary tools are unaffected."""
+    best = None  # (version_key, channel, version)
     for channel in ("bioconda", "conda-forge"):
         data = _get_json(f"https://api.anaconda.org/package/{channel}/{name.lower()}", timeout)
         if isinstance(data, dict) and data.get("versions"):
-            return {"available": True, "channel": channel,
-                    "latest": data.get("latest_version") or (data["versions"][-1])}
+            ver = _pick_latest(data["versions"], data.get("latest_version") or "")
+            key = _version_key(ver)
+            if best is None or (key is not None and (best[0] is None or key > best[0])):
+                best = (key, channel, ver)
+    if best:
+        return {"available": True, "channel": best[1], "latest": best[2]}
     return {"available": False}
 
 

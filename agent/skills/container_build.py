@@ -48,8 +48,11 @@ from typing import Any, Optional
 # against) — build-essential/git/-dev headers are dropped from the shipped image.
 # The conda env bundles its OWN deps, so conda tools need nothing here; this set
 # covers the source/binary tiers compiled against the system libs in the build stage.
-_RUNTIME_APT = "ca-certificates procps zlib1g libbz2-1.0 liblzma5 libcurl4 libssl3"
-_BUILD_APT = (_RUNTIME_APT + " curl tar gzip bzip2 xz-utils unzip time "
+# `time` ships in the RUNTIME set so run_step_in_container's GNU `time -v` path
+# works IN the shipped image (exact peak RSS for I7); without it, sub-second tools
+# fall back to a single docker-stats sample that reads 0.
+_RUNTIME_APT = "ca-certificates procps time zlib1g libbz2-1.0 liblzma5 libcurl4 libssl3"
+_BUILD_APT = (_RUNTIME_APT + " curl tar gzip bzip2 xz-utils unzip "
               "build-essential git zlib1g-dev libbz2-dev liblzma-dev "
               "libcurl4-openssl-dev libssl-dev")
 _BASE_APT = _BUILD_APT  # back-compat: ContainerBuild.start() provisions the build toolchain
@@ -146,13 +149,23 @@ class PixiEngine(EnvEngine):
     def materialize_lines(self):
         return [f"WORKDIR {self.workdir}", "COPY pixi.toml pixi.lock ./",
                 "RUN pixi install --locked", ""]
+    def env_prefix(self) -> str:
+        return f"{self.workdir}/.pixi/envs/default"   # pixi's default-env conda prefix
     def runtime_lines(self):
         # COPY the pixi launcher + the project env from the builder at the SAME paths
         # (pixi/conda prefixes are path-baked, so identical paths keep them valid —
         # no relocation). The build toolchain stays behind in the builder stage.
+        #
+        # SELF-ACTIVATING: bake the solved env's bin on PATH (+ CONDA_PREFIX) so the
+        # shipped image runs the way HPC runs it — `apptainer exec image <tool>` /
+        # plain `docker run image <tool>` reach the conda tools AND python directly,
+        # NOT only via `pixi run`. Without this the env is invisible to apptainer
+        # exec (every conda tool 404s) and a run-by-path wrapper's `python` breaks.
+        ep = self.env_prefix()
         return [f"COPY --from=builder {self._BIN.rsplit('/bin', 1)[0]} {self._BIN.rsplit('/bin', 1)[0]}",
-                f'ENV PATH="{self._BIN}:$PATH"',
-                f"COPY --from=builder {self.workdir} {self.workdir}", ""]
+                f"COPY --from=builder {self.workdir} {self.workdir}",
+                f'ENV PATH="{ep}/bin:{self._BIN}:$PATH"',
+                f'ENV CONDA_PREFIX="{ep}"', ""]
     def lock_artifacts(self):
         return ["pixi.toml", "pixi.lock"]
 
@@ -205,12 +218,19 @@ class MicromambaEngine(EnvEngine):
     def materialize_lines(self):
         return [f"WORKDIR {self.workdir}", "COPY env.lock ./",
                 "RUN micromamba create -y -n env --file env.lock && micromamba clean -afy", ""]
+    def env_prefix(self) -> str:
+        return f"{self._ROOT}/envs/env"   # the named env's conda prefix
     def runtime_lines(self):
         # COPY the named env from the builder at the SAME root prefix (paths are
         # baked into conda prefixes); the micromamba binary rides the generic
-        # /usr/local COPY. Build toolchain stays in the builder.
+        # /usr/local COPY. Build toolchain stays in the builder. SELF-ACTIVATING:
+        # the env bin on PATH (+ CONDA_PREFIX) so plain `apptainer exec image <tool>`
+        # reaches the conda tools — not only via `micromamba run`.
+        ep = self.env_prefix()
         return [f"COPY --from=builder {self._ROOT} {self._ROOT}",
-                f'ENV MAMBA_ROOT_PREFIX={self._ROOT}', ""]
+                f'ENV MAMBA_ROOT_PREFIX={self._ROOT}',
+                f'ENV PATH="{ep}/bin:$PATH"',
+                f'ENV CONDA_PREFIX="{ep}"', ""]
     def lock_artifacts(self):
         return ["environment.yml", "env.lock"]
 
@@ -455,11 +475,15 @@ class ContainerBuild:
                 "build_method": "container-native", "platform": self.platform}
 
     def validate_in_image(self, image: str, checks: list[str]) -> dict[str, Any]:
-        """Re-run checks in the BUILT image — proves validated==shipped."""
+        """Re-run checks in the BUILT image — proves validated==shipped. Runs each
+        check PLAIN (no engine activation prefix): the runtime image is self-
+        activating (env baked onto PATH), so this is byte-for-byte how `apptainer
+        exec image <check>` runs it on HPC. (Activating here would mask a tool that
+        the deployment contract can't actually reach.)"""
         results, ok = {}, True
         for c in checks:
             r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
-                          f'{self.engine.exec_env()}; cd {self.workdir} 2>/dev/null || true; {c}'],
+                          f'cd {self.workdir} 2>/dev/null || true; {c}'],
                          timeout=300)
             results[c] = {"rc": r["returncode"], "out": (r["stdout"] or "").strip()[:200]}
             ok = ok and r["returncode"] == 0
