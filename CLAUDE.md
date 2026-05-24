@@ -46,6 +46,7 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 
 | Primitive | When |
 |-----------|------|
+| `resolve_tool(tool, version?, github_repo?, prefer?)` | **Start here when unsure which tier.** Probes conda/PyPI/CRAN (+release-binary/source if `github_repo` given), ranks (conda > pip/cran/bioc > binary > source > manual), returns the concrete `install_call` + rationale + rejected alternatives. Query-only. **Cross-registry name collisions exist** (a PyPI `ape` ≠ CRAN's R `ape`) — pass `prefer` to force the ecosystem |
 | `install_conda_packages(env, [{spec, channel}], pipeline_id)` | Anything on bioconda / conda-forge / defaults |
 | `install_r_package(env, name, source, pipeline_id)` | source = `cran` \| `bioconductor` \| `github:owner/repo` — handles library isolation, BiocManager bootstrap, requireNamespace load-or-die |
 | `install_pip_package(env, name, version?, pipeline_id)` | pip / PyPI — handles import check |
