@@ -2052,6 +2052,21 @@ def test_envbuild_run_stamps_validation_locus(monkeypatch):
     assert rec["validation_locus"] == "native"
 
 
+def test_stamp_i7_authority_tracks_locus(monkeypatch):
+    """Captured I7 numbers are marked authoritative only on a native locus; under
+    emulation they're stamped non-authoritative (emulator artefacts). Pass/fail of
+    the step is unaffected — this is a truth label, not a gate."""
+    from agent import mcp_server as m
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "amd64")  # native
+    ru = m._stamp_i7_authority({"peak_rss_kb": 123, "wall_s": 4.2}, "linux/amd64")
+    assert ru["i7_authoritative"] is True and ru["locus"] == "native"
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "arm64")  # emulated amd64
+    ru2 = m._stamp_i7_authority({"peak_rss_kb": 123}, "linux/amd64")
+    assert ru2["i7_authoritative"] is False and ru2["locus"] == "emulated"
+    assert m._stamp_i7_authority(None, "linux/amd64") is None  # no measurement → no crash
+
+
 def test_base_image_is_pinned_by_digest():
     """The build/ship base must be pinned by DIGEST, not a moving tag — OS-layer
     reproducibility (the env layer is lock-pinned, binaries sha256-anchored). Both

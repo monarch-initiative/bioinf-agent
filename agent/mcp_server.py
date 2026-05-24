@@ -49,6 +49,7 @@ from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
 from agent.skills import env_report as _env_report
+from agent.skills import locus as _locus
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -1074,6 +1075,19 @@ def _infer_validator_type(basename: str, ext: str) -> str:
     return "any"
 
 
+def _stamp_i7_authority(resource_usage, platform: str):
+    """Mark whether captured I7 resource numbers (wall, peak RSS, peak CPU) are
+    authoritative. They are real only when the step ran on a NATIVE locus; under
+    emulation (qemu/Rosetta) they are emulator artefacts. This does NOT change the
+    step's pass/fail or the I7 invariant (the measurement still happened) — it stops
+    the spec/guide from presenting emulated timings as ship-architecture truth."""
+    if isinstance(resource_usage, dict):
+        loc = _locus.detect_locus(platform)
+        resource_usage["i7_authoritative"] = loc["i7_authoritative"]
+        resource_usage["locus"] = loc["locus"]
+    return resource_usage
+
+
 @mcp.tool()
 def run_step_in_container(
     freeze_request_key: str,
@@ -1144,6 +1158,10 @@ def run_step_in_container(
     before = _snap()
     res = _docker.run_in_container(image, command, mounts=mounts, workdir=str(ddir),
                                    platform=platform, timeout=timeout_seconds)
+    # I7 numbers measured under emulation are emulator artefacts, not real — stamp
+    # whether they're authoritative (native locus) so the spec/guide never presents
+    # emulated timings as if they were measured on the ship architecture.
+    res["resource_usage"] = _stamp_i7_authority(res.get("resource_usage"), platform)
     after = _snap()
     detected = sorted(p for p, sig in after.items() if before.get(p) != sig)
 
