@@ -1804,16 +1804,30 @@ def freeze(
         # unvalidated artifact, so refuse to adopt even if a biocontainer exists.
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
-        unsupported = sorted({x["type"] for x in non_conda if x["type"] != "binary"})
+        unsupported = sorted({x["type"] for x in non_conda if x["type"] not in ("binary", "jar")})
         if unsupported:
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "reason": f"recipe build does not yet replay install types {unsupported} on the "
-                              f"ship platform; supported today: conda + binary. (Build on a linux/amd64 "
-                              f"host, or add a replay path for these tiers.)",
+                              f"ship platform; supported today: conda + binary + jar. (Build on a "
+                              f"linux/amd64 host, or add a replay path for these tiers.)",
                     "non_conda": non_conda}
-        binaries = []
-        for x in non_conda:  # all type == "binary" here
+        binaries, jars = [], []
+        for x in non_conda:
             im = x["install_method"]
+            if x["type"] == "jar":
+                jar_url = im.get("source") or im.get("jar_url")
+                if not jar_url:
+                    return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                            "reason": f"jar tool '{x['name']}' has no jar_url to replay"}
+                hh = _resolver.sha256_of_url(jar_url)  # jars rarely publish a checksum; best-effort
+                jsha = hh["sha256"] if hh.get("ok") else ""
+                jars.append({"name": x["name"], "jar_url": jar_url,
+                             "java_flags": im.get("java_flags") or ["-Xmx4g"],
+                             "wrapper": x["name"], "sha256": jsha})
+                shipped_binaries.append({"name": x["name"], "platform": "noarch",
+                                         "url": jar_url, "sha256": jsha})
+                continue
+            # binary tier
             la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
             if not la.get("found"):
                 return {"success": False, "stage": "recipe_build", "request_key": rkey,
@@ -1833,8 +1847,10 @@ def freeze(
         conda_yml = _env_mgr.export_environment_yml(env_name) if has_conda else ""
         smoke = [f"{b['wrapper']} version 2>&1 || {b['wrapper']} --version 2>&1 || "
                  f"{b['wrapper']} --help 2>&1" for b in binaries]
+        if jars:
+            smoke.append("java -version")  # proves the JRE; the in-container run proves each jar
         rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
-                                  binaries=binaries, version=version, smoke_commands=smoke)
+                                  binaries=binaries, jars=jars, version=version, smoke_commands=smoke)
         if not rb.get("success"):
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "adopt_attempt": adopt, "build": rb}

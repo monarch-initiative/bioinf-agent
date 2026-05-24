@@ -1834,6 +1834,30 @@ def test_recipe_dockerfile_replays_binary_with_sha_gate():
     assert "FROM continuumio/miniconda3" in df2 and "conda env create" in df2
 
 
+def test_recipe_dockerfile_replays_jar_with_jre():
+    """The JAR tier (arch-independent): download the jar, sha256-verify it, write a
+    `java -jar` wrapper, and provide a JRE — apt default-jre on a slim base, or the
+    conda layer's openjdk when conda tools are present (no double JRE)."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.docker_builder import DockerBuilder
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    db = DockerBuilder(cfg)
+    j = {"name": "picard", "wrapper": "picard", "sha256": "e76128c2",
+         "java_flags": ["-Xmx2g"], "jar_url": "https://x/picard.jar"}
+    df = db._recipe_dockerfile("picard", "dedup", conda_env_yml="", binaries=[], jars=[j])
+    assert "default-jre-headless" in df                       # JRE provisioned (no conda layer)
+    assert "curl -L --fail -o /opt/tools/picard/picard.jar" in df
+    assert "e76128c2  /opt/tools/picard/picard.jar" in df and "sha256sum -c -" in df
+    assert "java -Xmx2g -jar /opt/tools/picard/picard.jar" in df
+    assert "/usr/local/bin/picard" in df
+    # with a conda layer (openjdk) we must NOT also apt-install a JRE
+    df_conda = db._recipe_dockerfile("picard", "dedup",
+                                     conda_env_yml="name: env\ndependencies: [openjdk]\n",
+                                     binaries=[], jars=[j])
+    assert "default-jre-headless" not in df_conda and "conda env create" in df_conda
+
+
 def _selfverify_workflow(with_test_data: bool) -> dict:
     step = {"step": 1, "returncode": 0,
             "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",
