@@ -228,5 +228,8 @@ def render_env_report(record: dict) -> str:
     L.append("- **Reproducibility** — the conda/PyPI layer is lock-pinned, the base image is "
              "digest-pinned, and release binaries are sha256-anchored. (System apt packages "
              "are not yet version-pinned.)")
+    L.append(f"- **Attestation** — a standard in-toto/SLSA provenance Statement of all the "
+             f"above is emitted to `env_reports/{name}.attestation.json` (sign with "
+             f"`cosign attest`).")
     L.append("")
     return "\n".join(L)

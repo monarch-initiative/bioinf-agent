@@ -2179,6 +2179,31 @@ def test_env_report_renders_for_adopted_image_without_crashing():
 # Registry push as default delivery — the push-target derivation + I13 firewall.
 # ---------------------------------------------------------------------------
 
+def test_attestation_is_intoto_slsa_statement_from_record():
+    """The attestation is a standard in-toto Statement v1 / SLSA Provenance v1,
+    built purely from the record: subject = image+digest, resolvedDependencies =
+    the closure as purls + base image, and the validated==shipped evidence +
+    honesty guarantees live in the predicate."""
+    from agent.skills.attestation import build_attestation, STATEMENT_TYPE, SLSA_PREDICATE
+    att = build_attestation(_sample_record("native"), base_image="debian:bookworm-slim@sha256:dead")
+    assert att["_type"] == STATEMENT_TYPE
+    assert att["predicateType"] == SLSA_PREDICATE
+    # subject names the image with a parsed digest set
+    assert att["subject"][0]["name"] == "demo:1.0"
+    assert att["subject"][0]["digest"] == {"sha256": "img"}
+    pred = att["predicate"]
+    # the resolved closure became purls, plus the base image as a dependency
+    uris = [d["uri"] for d in pred["buildDefinition"]["resolvedDependencies"]]
+    assert "pkg:conda/htslib@1.21" in uris
+    assert any(u.startswith("docker:debian:bookworm-slim@sha256:") for u in uris)
+    ip = pred["buildDefinition"]["internalParameters"]
+    assert ip["honesty_contract"] == ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+    assert ip["validation_locus"] == "native"
+    # validated==shipped evidence is carried per tool
+    assert any(v["tool"] == "samtools" and v["passed"] for v in ip["validated_in_image"])
+    assert pred["runDetails"]["builder"]["id"]
+
+
 def test_effective_push_target_derivation_and_i13():
     from agent.mcp_server import _effective_push_target as ept
     # nothing configured → no push (registry-free tarball default)

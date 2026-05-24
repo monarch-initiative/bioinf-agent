@@ -49,7 +49,9 @@ from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
 from agent.skills import env_report as _env_report
+from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
+from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -1920,19 +1922,28 @@ def freeze(
         record["push_status"] = push_status
     _env_cache.register(rkey, record)
 
-    # Layer-1 deliverable: the env report, rendered PURELY from the verified record.
-    report_path = None
+    # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):
+    # the human env report + a standard in-toto/SLSA provenance attestation. Both are
+    # views — never block a good freeze on a render error.
+    report_path = attestation_path = None
+    reports_dir = _env_mgr.project_root / "env_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
     try:
-        md = _env_report.render_env_report(record)
-        rp = _env_mgr.project_root / "env_reports" / f"{name}.ENV.md"
-        rp.parent.mkdir(parents=True, exist_ok=True)
-        rp.write_text(md)
-        report_path = str(rp)
-    except Exception as e:  # the report is a view, never block a good freeze on it
+        (reports_dir / f"{name}.ENV.md").write_text(_env_report.render_env_report(record))
+        report_path = str(reports_dir / f"{name}.ENV.md")
+    except Exception as e:
         report_path = f"(report render failed: {e!r})"
+    try:
+        import json as _json
+        att = _attestation.build_attestation(record, base_image=_BASE_IMAGE if mode == "build" else "")
+        (reports_dir / f"{name}.attestation.json").write_text(_json.dumps(att, indent=2))
+        attestation_path = str(reports_dir / f"{name}.attestation.json")
+    except Exception as e:
+        attestation_path = f"(attestation render failed: {e!r})"
 
     out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
     out["env_report"] = report_path
+    out["attestation"] = attestation_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     return out
