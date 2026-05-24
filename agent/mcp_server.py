@@ -1131,6 +1131,16 @@ def run_step_in_container(
     image = rec.get("image")
     if not image:
         return {"error": f"freeze record for '{freeze_request_key}' has no image handle"}
+    if _locus.daemon_is_remote():
+        # This step bind-mounts LOCAL test data; a remote daemon (DOCKER_HOST) can't
+        # see local paths, so outputs would never land back here for validation.
+        # (Layer-1 freeze() build+validation IS daemon-agnostic and runs natively on
+        # a remote amd64 host — only these Layer-2 DATA steps need the daemon local.)
+        return {"error": "run_step_in_container bind-mounts local test data, but the active "
+                "Docker daemon is REMOTE (DOCKER_HOST). It cannot see local paths. Use a local "
+                "daemon for Layer-2 data steps, or stage the data on the remote host and pass "
+                "data_dir as its path there. Note: Layer-1 freeze() validation runs natively on "
+                "a remote amd64 host with no change."}
     # An adopted biocontainer is referenced by digest — pull it local so it can run.
     if _docker._run(["docker", "image", "inspect", image])["returncode"] != 0:
         pull = _docker._run(["docker", "pull", "--platform", platform, image], timeout=900)

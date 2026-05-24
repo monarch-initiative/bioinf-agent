@@ -40,6 +40,17 @@ def target_arch(platform: str) -> str:
     return (platform.split("/")[-1] or "").strip() or "amd64"
 
 
+def daemon_is_remote() -> bool:
+    """Is the active Docker daemon REMOTE (DOCKER_HOST=ssh://… or tcp://…)? The build
+    + in-image validation path is daemon-agnostic — point DOCKER_HOST at a native
+    amd64 host and freeze() builds + validates natively (locus=native) with no code
+    change. The one caveat is Layer-2 run_step_in_container, which bind-mounts LOCAL
+    test data: a remote daemon can't see local paths, so that path needs the daemon
+    local (or the data on the remote host)."""
+    import os
+    return os.environ.get("DOCKER_HOST", "").strip().startswith(("ssh://", "tcp://"))
+
+
 @lru_cache(maxsize=1)
 def daemon_arch() -> str:
     """The Docker daemon's native architecture (amd64/arm64). On Apple Silicon
@@ -89,8 +100,10 @@ def _emulation_advisory(emulator: str) -> str:
     caveat = (" Most work runs near-native, but some operations (e.g. heavy scientific "
               "imports such as scipy.stats) can be far slower than native — a slow or "
               "timed-out validation under emulation is INCONCLUSIVE, not a failure. I7 "
-              "resource numbers are not authoritative; use a native amd64 host for "
-              "authoritative validation and real timings.")
+              "resource numbers are not authoritative. For authoritative native validation, "
+              "point Docker at a native amd64 host (export DOCKER_HOST=ssh://user@amd64-host); "
+              "the build + in-image validation path is daemon-agnostic, so freeze() then "
+              "reports locus=native with no other change.")
     if emulator == "qemu" and apple_silicon:
         return ("amd64 is emulated via qemu (slow). Enable 'Use Rosetta for x86/amd64 "
                 "emulation' in Docker Desktop → Settings → General." + caveat)
@@ -112,26 +125,30 @@ def detect_locus(platform: str = "linux/amd64") -> dict[str, Any]:
       locus            : "native" | "emulated" | "unknown"
       daemon_arch      : the daemon's arch ("" if unqueryable)
       target_arch      : the requested arch
+      daemon_location  : "local" | "remote" (DOCKER_HOST ssh://|tcp://)
       i7_authoritative : True ONLY when native — the gate for trusting I7 timings
       emulator         : "none" | "rosetta" | "qemu" | "unknown"
       advisory         : an actionable one-liner ("" when native)
     """
     tgt = target_arch(platform)
     dmn = daemon_arch()
+    location = "remote" if daemon_is_remote() else "local"
 
     if not dmn:
         return {"locus": "unknown", "daemon_arch": "", "target_arch": tgt,
-                "i7_authoritative": False, "emulator": "unknown",
+                "daemon_location": location, "i7_authoritative": False,
+                "emulator": "unknown",
                 "advisory": "could not query the Docker daemon (is Docker running?)"}
 
     if dmn == tgt:
         return {"locus": "native", "daemon_arch": dmn, "target_arch": tgt,
-                "i7_authoritative": True, "emulator": "none", "advisory": ""}
+                "daemon_location": location, "i7_authoritative": True,
+                "emulator": "none", "advisory": ""}
 
     emulator = _detect_emulator()
     return {"locus": "emulated", "daemon_arch": dmn, "target_arch": tgt,
-            "i7_authoritative": False, "emulator": emulator,
-            "advisory": _emulation_advisory(emulator)}
+            "daemon_location": location, "i7_authoritative": False,
+            "emulator": emulator, "advisory": _emulation_advisory(emulator)}
 
 
 def i7_authoritative(platform: str = "linux/amd64") -> bool:

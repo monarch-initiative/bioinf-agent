@@ -2010,6 +2010,35 @@ def test_locus_emulated_when_daemon_differs(monkeypatch):
     assert "I7" in d["advisory"]
 
 
+def test_daemon_is_remote_reads_docker_host(monkeypatch):
+    from agent.skills import locus
+    monkeypatch.setenv("DOCKER_HOST", "ssh://user@amd64-box")
+    assert locus.daemon_is_remote() is True
+    monkeypatch.setenv("DOCKER_HOST", "tcp://10.0.0.5:2375")
+    assert locus.daemon_is_remote() is True
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    assert locus.daemon_is_remote() is False
+
+
+def test_detect_locus_native_via_remote_amd64_host(monkeypatch):
+    """Point DOCKER_HOST at a native amd64 daemon → locus=native (daemon-agnostic
+    build/validate), daemon_location=remote, I7 authoritative."""
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "amd64")
+    monkeypatch.setenv("DOCKER_HOST", "ssh://user@amd64-box")
+    d = locus.detect_locus("linux/amd64")
+    assert d["locus"] == "native" and d["i7_authoritative"] is True
+    assert d["daemon_location"] == "remote"
+
+
+def test_emulation_advisory_points_to_native_docker_host(monkeypatch):
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "daemon_arch", lambda: "arm64")
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    adv = locus.detect_locus("linux/amd64")["advisory"]
+    assert "DOCKER_HOST" in adv and "INCONCLUSIVE" in adv
+
+
 def test_locus_unknown_when_daemon_unqueryable(monkeypatch):
     """No daemon (docker absent) → unknown, never crashes, never claims authority."""
     from agent.skills import locus
