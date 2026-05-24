@@ -226,6 +226,10 @@ class EnvBuild:
                 "validation_locus": locus["locus"],
                 "i7_authoritative": locus["i7_authoritative"],
                 "locus_advisory": locus["advisory"],
+                # the full resolved closure (for the env report's "along for the
+                # ride" split) — read from the built env, captured while the build
+                # container is still alive (close() is in the finally below).
+                "resolved_packages": self.cb.resolved_packages(),
                 # POLICY_CLEAN inputs
                 "accelerator": self.accelerator,
                 "license_gated": self.license_gated,

@@ -48,6 +48,7 @@ from agent.skills import env_freeze as _env_freeze
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
+from agent.skills import env_report as _env_report
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -1855,8 +1856,30 @@ def freeze(
     if shipped_binaries:
         record["shipped_binaries"] = shipped_binaries
     record["validation_locus"] = validation_locus
+    # report inputs — all runtime-captured (from the BuildResult), so the env
+    # report rendered from them can't be faked. Absent on the adopt path.
+    record["name"] = name
+    record["requested_tools"] = [n for n, _ in parsed]
+    if mode == "build":
+        record["engine"] = br.get("engine", "none")
+        record["conda_specs"] = br.get("conda_specs", [])
+        record["verifications"] = br.get("verifications", [])
+        record["resolved_packages"] = br.get("resolved_packages", [])
     _env_cache.register(rkey, record)
+
+    # Layer-1 deliverable: the env report, rendered PURELY from the verified record.
+    report_path = None
+    try:
+        md = _env_report.render_env_report(record)
+        rp = _env_mgr.project_root / "env_reports" / f"{name}.ENV.md"
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(md)
+        report_path = str(rp)
+    except Exception as e:  # the report is a view, never block a good freeze on it
+        report_path = f"(report render failed: {e!r})"
+
     out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    out["env_report"] = report_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     return out

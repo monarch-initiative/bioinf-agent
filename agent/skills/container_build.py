@@ -505,6 +505,36 @@ class ContainerBuild:
         r = self._sh(["docker", "image", "inspect", "--format", "{{index .Id}}", image])
         return (r["stdout"] or "").strip() if r["returncode"] == 0 else ""
 
+    def resolved_packages(self) -> list[dict]:
+        """The FULL resolved package closure actually installed in the env —
+        captured ENGINE-AGNOSTICALLY from the conda prefix metadata: conda-meta/
+        *.json (every conda package) + site-packages/*.dist-info (every PyPI
+        package). Read from the built env in the live build container, so it's the
+        ground truth the agent can't fake — this is the 'along for the ride'
+        provenance the env report splits against the requested tools. Empty for a
+        pure long-tail env (no conda/pip layer → no prefix)."""
+        if not self.cid or not self.has_env_layer:
+            return []
+        ep = self.engine.env_prefix()
+        cmd = (f'for f in {ep}/conda-meta/*.json; do [ -e "$f" ] && '
+               f'echo "conda $(basename "$f" .json)"; done; '
+               f'for d in {ep}/lib/python*/site-packages/*.dist-info; do [ -e "$d" ] && '
+               f'echo "pypi $(basename "$d" .dist-info)"; done')
+        r = self.exec(cmd, timeout=120)
+        pkgs: dict[str, dict] = {}
+        for line in (r.get("stdout") or "").splitlines():
+            kind, _, stem = line.strip().partition(" ")
+            if not stem:
+                continue
+            if kind == "conda":           # name-version-build
+                parts = stem.rsplit("-", 2)
+                name, ver = (parts[0], parts[1]) if len(parts) == 3 else (stem, "")
+            else:                          # pypi: name-version
+                name, _, ver = stem.rpartition("-")
+                name = (name or stem).replace("_", "-")
+            pkgs.setdefault(name.lower(), {"name": name, "version": ver, "kind": kind})
+        return sorted(pkgs.values(), key=lambda p: p["name"].lower())
+
     def close(self) -> None:
         if self.cid:
             self._sh(["docker", "rm", "-f", self.cid])

@@ -2069,6 +2069,72 @@ def test_base_image_is_pinned_by_digest():
 
 
 # ---------------------------------------------------------------------------
+# Env report — rendered PURELY from the verified record (can't be faked).
+# ---------------------------------------------------------------------------
+
+def test_resolved_packages_parses_conda_meta_and_dist_info(monkeypatch):
+    """The closure is read engine-agnostically from conda-meta/*.json (name-version-
+    build) + site-packages/*.dist-info (name-version) — not a fragile engine table."""
+    from agent.skills.container_build import ContainerBuild
+    cb = ContainerBuild()
+    cb.cid, cb.has_env_layer = "fake", True
+    monkeypatch.setattr(cb, "exec", lambda *a, **k: {"returncode": 0, "stderr": "",
+        "stdout": ("conda samtools-1.21-h50ea8bc_0\n"
+                   "conda libdeflate-1.19-hd590300_0\n"
+                   "pypi pyfaidx-0.8.1.1\n")})
+    pkgs = cb.resolved_packages()
+    by = {p["name"]: p for p in pkgs}
+    assert by["samtools"] == {"name": "samtools", "version": "1.21", "kind": "conda"}
+    assert by["libdeflate"]["version"] == "1.19"
+    assert by["pyfaidx"] == {"name": "pyfaidx", "version": "0.8.1.1", "kind": "pypi"}
+
+
+def _sample_record(locus="emulated"):
+    return {
+        "name": "demo", "image": "demo:1.0", "image_digest": "sha256:img",
+        "content_digest": "sha256:cd", "platform": "linux/amd64", "mode": "build",
+        "build_method": "container-native", "engine": "pixi", "gated": False,
+        "redistributable": True, "validation_locus": locus, "created_at": "2026-05-24",
+        "requested_tools": ["samtools"], "conda_specs": ["samtools=1.21"],
+        "verifications": [{"tool": "samtools", "label": "samtools",
+                           "check": "command -v samtools", "passed": True, "rc": 0}],
+        "resolved_packages": [
+            {"name": "samtools", "version": "1.21", "kind": "conda"},
+            {"name": "htslib", "version": "1.21", "kind": "conda"},
+            {"name": "libdeflate", "version": "1.19", "kind": "conda"}],
+    }
+
+
+def test_env_report_splits_requested_vs_ride_along():
+    from agent.skills.env_report import render_env_report
+    md = render_env_report(_sample_record())
+    assert "## Requested tools (1)" in md
+    assert "## Along for the ride (2)" in md          # htslib + libdeflate, NOT samtools
+    assert "| samtools | 1.21 | conda | ✓" in md      # requested row with in-image evidence
+    assert "htslib" in md and "libdeflate" in md
+    # samtools must NOT appear in the ride-along dependency table (scope to that
+    # section only — the Install & provenance block below legitimately names it)
+    ride = md.split("## Along for the ride")[1].split("## Install")[0]
+    assert "samtools" not in ride
+
+
+def test_env_report_honesty_footer_reflects_locus():
+    from agent.skills.env_report import render_env_report
+    assert "NOT authoritative" in render_env_report(_sample_record("emulated"))
+    assert "are authoritative" in render_env_report(_sample_record("native"))
+
+
+def test_env_report_renders_for_adopted_image_without_crashing():
+    """Adopt path has no in-locus validation/closure — the report still renders."""
+    from agent.skills.env_report import render_env_report
+    md = render_env_report({"name": "bt", "image": "biocontainers/x@sha256:d",
+                            "image_digest": "sha256:d", "mode": "adopt",
+                            "validation_locus": "adopted", "requested_tools": ["x"]})
+    assert "adopted" in md.lower()
+    assert "## Requested tools (1)" in md
+
+
+# ---------------------------------------------------------------------------
 # pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
 # ---------------------------------------------------------------------------
 
