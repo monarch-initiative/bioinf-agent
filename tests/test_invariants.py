@@ -1813,133 +1813,12 @@ def test_non_conda_installs_reads_draft_install_steps():
     assert freeze.has_conda_packages(d) is True
 
 
-def test_recipe_dockerfile_replays_binary_with_sha_gate():
-    """The recipe Dockerfile downloads the linux asset, VERIFIES its sha256
-    in-image, and symlinks it onto PATH. A slim base when there are no conda
-    tools; a conda base when there are."""
-    import shutil as _sh, yaml as _yaml
-    from pathlib import Path as _P
-    from agent.skills.docker_builder import DockerBuilder
-    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
-    db = DockerBuilder(cfg)
-    b = {"name": "seqkit", "wrapper": "seqkit", "binary_in_archive": "seqkit",
-         "sha256": "7d686de4", "url": "https://x/seqkit_linux_amd64.tar.gz"}
-    df = db._recipe_dockerfile("seqkit", "stats", conda_env_yml="", binaries=[b])
-    assert "FROM debian:bookworm-slim" in df            # no conda tools → slim base
-    assert "seqkit_linux_amd64.tar.gz" in df
-    assert "7d686de4  /tmp/seqkit_linux_amd64.tar.gz" in df and "sha256sum -c -" in df
-    assert "ln -sf" in df and "/usr/local/bin/seqkit" in df
-    df2 = db._recipe_dockerfile("x", "d", conda_env_yml="name: env\ndependencies: [python=3.11]\n",
-                                binaries=[b])
-    assert "FROM continuumio/miniconda3" in df2 and "conda env create" in df2
-
-
-def test_recipe_dockerfile_replays_jar_with_jre():
-    """The JAR tier (arch-independent): download the jar, sha256-verify it, write a
-    `java -jar` wrapper, and provide a JRE — apt default-jre on a slim base, or the
-    conda layer's openjdk when conda tools are present (no double JRE)."""
-    import yaml as _yaml
-    from pathlib import Path as _P
-    from agent.skills.docker_builder import DockerBuilder
-    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
-    db = DockerBuilder(cfg)
-    j = {"name": "picard", "wrapper": "picard", "sha256": "e76128c2",
-         "java_flags": ["-Xmx2g"], "jar_url": "https://x/picard.jar"}
-    df = db._recipe_dockerfile("picard", "dedup", conda_env_yml="", binaries=[], jars=[j])
-    assert "default-jre-headless" in df                       # JRE provisioned (no conda layer)
-    assert "curl -L --fail -o /opt/tools/picard/picard.jar" in df
-    assert "e76128c2  /opt/tools/picard/picard.jar" in df and "sha256sum -c -" in df
-    assert "java -Xmx2g -jar /opt/tools/picard/picard.jar" in df
-    assert "/usr/local/bin/picard" in df
-    # with a conda layer (openjdk) we must NOT also apt-install a JRE
-    df_conda = db._recipe_dockerfile("picard", "dedup",
-                                     conda_env_yml="name: env\ndependencies: [openjdk]\n",
-                                     binaries=[], jars=[j])
-    assert "default-jre-headless" not in df_conda and "conda env create" in df_conda
-
-
-def test_recipe_dockerfile_rebuilds_source_at_pinned_commit():
-    """The SOURCE tier: add a build toolchain, clone the repo, checkout the pinned
-    commit, run build_command, symlink the built executable onto PATH. build_apt
-    extras are appended."""
-    import yaml as _yaml
-    from pathlib import Path as _P
-    from agent.skills.docker_builder import DockerBuilder
-    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
-    db = DockerBuilder(cfg)
-    s = {"name": "seqtk", "repo_url": "https://github.com/lh3/seqtk",
-         "commit_sha": "deadbeefcafe1234", "build_command": "make", "bin_path": "seqtk",
-         "wrapper": "seqtk", "build_apt": "libdeflate-dev"}
-    df = db._recipe_dockerfile("seqtk", "subseq", conda_env_yml="", binaries=[], jars=[], sources=[s])
-    assert "build-essential" in df and "zlib1g-dev" in df      # toolchain
-    assert "libdeflate-dev" in df                              # per-source extra
-    assert "git clone https://github.com/lh3/seqtk /opt/tools/seqtk/src" in df
-    assert "git checkout deadbeefcafe1234" in df               # pinned commit
-    assert "make;" in df                                       # build_command
-    assert "ln -sf /opt/tools/seqtk/src/seqtk /usr/local/bin/seqtk" in df
-    assert "test -f /opt/tools/seqtk/src/seqtk" in df
-
-
 def _db():
     import yaml as _yaml
     from pathlib import Path as _P
     from agent.skills.docker_builder import DockerBuilder
     cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
     return DockerBuilder(cfg)
-
-
-def test_recipe_dockerfile_rebuilds_cargo_with_pinned_rustc():
-    """The CARGO tier: install rustup pinned to the captured host rustc, then
-    `cargo install … --root /usr/local --locked`. Falls back to 'stable' when no
-    rust_version was captured. A C build toolchain (linker) is provisioned."""
-    db = _db()
-    c = {"name": "rasusa", "crate": "rasusa", "version": "4.1.0",
-         "binary_name": "rasusa", "rust_version": "1.83.0"}
-    df = db._recipe_dockerfile("rasusa", "subsample", conda_env_yml="",
-                               binaries=[], jars=[], sources=[], cargos=[c])
-    assert "build-essential" in df                                # Rust needs a linker (cc)
-    assert "sh.rustup.rs" in df and "--default-toolchain 1.83.0" in df   # pinned rustc
-    assert "cargo install rasusa --version 4.1.0 --root /usr/local --locked" in df
-    assert "test -x /usr/local/bin/rasusa" in df
-    # git_url variant + no captured version → rustup 'stable' fallback
-    cg = {"name": "tool", "git_url": "https://github.com/o/r", "binary_name": "tool",
-          "crate": "tool", "version": "", "rust_version": ""}
-    df2 = db._recipe_dockerfile("tool", "d", conda_env_yml="", cargos=[cg])
-    assert "--default-toolchain stable" in df2
-    assert "cargo install --git https://github.com/o/r --root /usr/local --locked" in df2
-
-
-def test_recipe_dockerfile_rebuilds_go_with_pinned_toolchain():
-    """The GO tier: fetch the official Go tarball pinned to the captured host go
-    version FOR THE SHIP ARCH, then `GOBIN=/usr/local/bin go install pkg@ver`.
-    GOTOOLCHAIN=local pins it. The arch token follows the build platform."""
-    db = _db()
-    g = {"name": "gofasta", "package": "github.com/virus-evolution/gofasta",
-         "version": "v1.2.3", "binary_name": "gofasta", "go_version": "1.22.6"}
-    df = db._recipe_dockerfile("gofasta", "align", conda_env_yml="",
-                               binaries=[], jars=[], sources=[], gos=[g], platform="linux/amd64")
-    assert "go1.22.6.linux-amd64.tar.gz" in df                   # pinned version + amd64 token
-    assert "GOTOOLCHAIN=local" in df
-    assert "GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install" in df
-    assert "github.com/virus-evolution/gofasta@v1.2.3" in df
-    assert "test -x /usr/local/bin/gofasta" in df
-    # arm64 ship platform → arm64 tarball token
-    df_arm = db._recipe_dockerfile("gofasta", "align", conda_env_yml="",
-                                   gos=[g], platform="linux/arm64")
-    assert "go1.22.6.linux-arm64.tar.gz" in df_arm
-    # no captured go_version → auto-managed fallback (still arch-correct)
-    g0 = {**g, "go_version": ""}
-    df0 = db._recipe_dockerfile("gofasta", "align", conda_env_yml="", gos=[g0], platform="linux/amd64")
-    assert ".linux-amd64.tar.gz" in df0 and "GOTOOLCHAIN" not in df0
-
-
-def test_pick_toolchain_version_picks_highest():
-    """One image → one compiler: the highest recorded version (a newer compiler
-    builds an older crate; the reverse may not). Empty when none recorded."""
-    db = _db()
-    items = [{"rust_version": "1.79.0"}, {"rust_version": "1.83.0"}, {"rust_version": ""}]
-    assert db._pick_toolchain_version(items, "rust_version") == "1.83.0"
-    assert db._pick_toolchain_version([{"go_version": ""}], "go_version") == ""
 
 
 def test_cargo_go_install_method_captures_toolchain_version(tmp_path, monkeypatch):
@@ -1998,32 +1877,6 @@ def test_conda_to_docker_platform_map():
     from agent.mcp_server import _CONDA_TO_DOCKER_PLATFORM as M
     assert M["linux-64"] == "linux/amd64"
     assert M["linux-aarch64"] == "linux/arm64"
-
-
-def test_recipe_dockerfile_rebuilds_perl_with_cpanm():
-    """The PERL tier: replay `cpanm {target}` on the ship platform (perl+cpanm from
-    the conda layer; a C toolchain for XS), then prove the module LOADS in-image.
-    build_env (e.g. HTSLIB_DIR=$CONDA_PREFIX) is threaded for XS link hints, and
-    the conda layer exports CONDA_PREFIX so it resolves at build time."""
-    db = _db()
-    p = {"module": "Bio::DB::HTS", "distribution": "Bio::DB::HTS",
-         "cpanm_flags": "--notest", "build_env": "HTSLIB_DIR=$CONDA_PREFIX"}
-    yml = "name: env\ndependencies:\n  - perl\n  - perl-app-cpanminus\n  - htslib\n"
-    df = db._recipe_dockerfile("vep", "annotate", conda_env_yml=yml, perls=[p])
-    assert "build-essential" in df                              # XS compiles C
-    assert 'ENV CONDA_PREFIX="/opt/conda/envs/env"' in df       # so $CONDA_PREFIX resolves
-    # XS-against-conda-perl needs the conda toolchain + xlocale shim + activation
-    assert "conda install -n env -y -c conda-forge c-compiler cxx-compiler" in df
-    assert "/opt/conda/envs/env/include/xlocale.h" in df
-    assert ". /opt/conda/etc/profile.d/conda.sh; conda activate env; "\
-           "HTSLIB_DIR=$CONDA_PREFIX cpanm --notest Bio::DB::HTS" in df
-    assert "perl -MBio::DB::HTS -e1" in df                      # load-or-die proof in-image
-    # No conda layer → perl+cpanm from apt; native gcc matches → no activation/shim
-    p2 = {"module": "JSON::XS", "distribution": "JSON::XS", "cpanm_flags": "--notest", "build_env": ""}
-    df2 = db._recipe_dockerfile("x", "d", conda_env_yml="", perls=[p2])
-    assert "perl cpanminus" in df2 and "FROM debian:bookworm-slim" in df2
-    assert "cpanm --notest JSON::XS" in df2 and "perl -MJSON::XS -e1" in df2
-    assert "conda activate env" not in df2 and "xlocale.h" not in df2
 
 
 def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
@@ -2601,3 +2454,37 @@ def test_env_freeze_build_refuses_nonreplayable_before_building(monkeypatch):
     monkeypatch.setattr(ef, "EnvBuild", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not build")))
     r = ef.build_env_image(spec, name="demo")
     assert r["success"] is False and r["stage"] == "map_install"
+
+
+# ---------------------------------------------------------------------------
+# C4 — migrated intent: the recipe-zoo tests' guarantees now live on the container-
+# native side (generators + translator). These lock in what the deleted recipe tests
+# proved (binary sha gate, perl XS shim, conda-spec extraction).
+# ---------------------------------------------------------------------------
+
+def test_requested_conda_specs_excludes_bootstrap_python():
+    """freeze.requested_conda_specs returns the EXPLICITLY-requested conda tools
+    (install steps), not the bootstrap python from create_conda_env (a create step)."""
+    from agent.skills.freeze import requested_conda_specs
+    draft = {"install_steps": [
+        {"tool": "conda", "subcommand": "create",
+         "installed_packages": [{"name": "python", "version": "3.11"}]},   # scaffolding — excluded
+        {"tool": "conda", "subcommand": "install",
+         "installed_packages": [{"name": "samtools", "version": "1.21"},
+                                {"name": "bcftools"}]},                      # no version -> bare name
+        {"tool": "pip", "subcommand": "install",
+         "installed_packages": [{"name": "pysam", "version": "0.22"}]},     # not conda -> excluded
+    ]}
+    assert requested_conda_specs(draft) == ["samtools=1.21", "bcftools"]
+
+
+def test_perl_cpanm_bakes_xlocale_shim_and_release_binary_sha_gate():
+    """Migrated intent: perl XS builds against conda perl get the xlocale.h shim
+    (recipe's _emit_perl_conda_builddeps knowledge), and a release binary with a
+    sha256 emits the sha256sum -c gate (recipe's binary sha-gate knowledge)."""
+    from agent.skills import install_commands as ic
+    p = ic.perl_cpanm("JSON::XS")
+    assert 'xlocale.h' in p["command"] and "$CONDA_PREFIX/include" in p["command"]
+    assert "cpanm --notest" in p["command"] and p["engine_coupled"]
+    b = ic.release_binary("mosdepth", "https://x/mosdepth_linux_amd64", sha256="cafef00d")
+    assert "cafef00d  mosdepth_linux_amd64" in b["command"] and "sha256sum -c" in b["command"]

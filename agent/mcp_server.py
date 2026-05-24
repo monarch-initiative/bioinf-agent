@@ -49,6 +49,7 @@ from agent.skills.env_manager import EnvManager
 from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
+from agent.skills import env_freeze as _env_freeze
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
@@ -1822,120 +1823,36 @@ def freeze(
                                          image_by_digest=adopt["image_by_digest"])
 
     elif non_conda:
-        # RECIPE BUILD — the env has hand-installed (binary/source/…) tools that a
-        # biocontainer can't contain and conda-pack can't move cross-arch. Replay
-        # them on the ship platform. Adopting here would silently ship a DIFFERENT,
-        # unvalidated artifact, so refuse to adopt even if a biocontainer exists.
+        # CONTAINER-NATIVE BUILD — the env has hand-installed (binary/jar/source/
+        # cargo/go/perl) tools that a biocontainer can't contain and conda-pack can't
+        # move cross-arch. env_freeze routes each install to its install_commands
+        # generator and builds on the ship platform (install + validate IN the image,
+        # one generic bake, validated==shipped) — the container-native replacement for
+        # the old recipe replay (build_recipe + the nine _emit_*). Adopting here would
+        # ship a different, unvalidated artifact, so refuse to adopt even if one exists.
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
-        unsupported = sorted({x["type"] for x in non_conda
-                              if x["type"] not in ("binary", "jar", "source", "cargo", "go", "perl")})
-        if unsupported:
-            return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                    "reason": f"recipe build does not yet replay install types {unsupported} on the "
-                              f"ship platform; supported today: conda + binary + jar + source + "
-                              f"cargo + go + perl. (Build on a linux/amd64 host, or add a replay path "
-                              f"for these tiers.)",
-                    "non_conda": non_conda}
-        binaries, jars, sources, cargos, gos, perls = [], [], [], [], [], []
-        for x in non_conda:
-            im = x["install_method"]
-            if x["type"] == "jar":
-                jar_url = im.get("source") or im.get("jar_url")
-                if not jar_url:
-                    return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                            "reason": f"jar tool '{x['name']}' has no jar_url to replay"}
-                hh = _resolver.sha256_of_url(jar_url)  # jars rarely publish a checksum; best-effort
-                jsha = hh["sha256"] if hh.get("ok") else ""
-                jars.append({"name": x["name"], "jar_url": jar_url,
-                             "java_flags": im.get("java_flags") or ["-Xmx4g"],
-                             "wrapper": x["name"], "sha256": jsha})
-                shipped_binaries.append({"name": x["name"], "platform": "noarch",
-                                         "url": jar_url, "sha256": jsha})
-                continue
-            if x["type"] == "source":
-                if not im.get("build_command") or not im.get("bin_path"):
-                    return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                            "reason": f"source tool '{x['name']}' is not replayable: install_method "
-                                      f"needs build_command + bin_path (re-run install_git_repo with "
-                                      f"bin_path so freeze can rebuild it in the image)."}
-                sources.append({"name": x["name"], "repo_url": im.get("source"),
-                                "commit_sha": im.get("commit_sha"), "ref": im.get("ref"),
-                                "build_command": im.get("build_command"),
-                                "bin_path": im.get("bin_path"), "wrapper": x["name"]})
-                shipped_binaries.append({"name": x["name"], "platform": platform,
-                                         "url": im.get("source"), "commit_sha": im.get("commit_sha")})
-                continue
-            if x["type"] == "cargo":
-                cargos.append({"name": x["name"], "crate": im.get("crate") or x["name"],
-                               "version": im.get("version") or "", "git_url": im.get("git_url") or "",
-                               "binary_name": im.get("binary_name") or x["name"],
-                               "rust_version": im.get("rust_version") or ""})
-                shipped_binaries.append({"name": x["name"], "platform": platform,
-                                         "url": im.get("source"), "rust_version": im.get("rust_version")})
-                continue
-            if x["type"] == "go":
-                gos.append({"name": x["name"], "package": im.get("package") or x["name"],
-                            "version": im.get("version") or "latest",
-                            "binary_name": im.get("binary_name") or x["name"],
-                            "go_version": im.get("go_version") or ""})
-                shipped_binaries.append({"name": x["name"], "platform": platform,
-                                         "url": im.get("source"), "go_version": im.get("go_version")})
-                continue
-            if x["type"] == "perl":
-                module = im.get("module") or x["name"]
-                perls.append({"module": module,
-                              "distribution": im.get("distribution")
-                                  or (im.get("source") or "").replace("cpanm ", "").strip() or module,
-                              "cpanm_flags": im.get("cpanm_flags") or "--notest",
-                              "build_env": im.get("build_env") or ""})
-                shipped_binaries.append({"name": x["name"], "platform": platform,
-                                         "url": im.get("source")})
-                continue
-            # binary tier
-            la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
-            if not la.get("found"):
-                return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                        "reason": f"could not resolve a {platform} asset for binary '{x['name']}': "
-                                  f"{la.get('reason')}", "available": la.get("available")}
-            hh = _resolver.sha256_of_url(la["url"])
-            if not hh.get("ok"):
-                return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                        "reason": f"could not hash {platform} asset for '{x['name']}': {hh.get('reason')}"}
-            inner = Path(im.get("local_path") or x["name"]).name
-            binaries.append({"name": x["name"], "url": la["url"], "sha256": hh["sha256"],
-                             "binary_in_archive": inner, "wrapper": x["name"]})
-            shipped_binaries.append({"name": x["name"], "platform": platform, "url": la["url"],
-                                     "sha256": hh["sha256"],
-                                     "validated_host_sha256": im.get("sha256", "")})
-        has_conda = _freeze.has_conda_packages(draft)
-        conda_yml = _env_mgr.export_environment_yml(env_name) if has_conda else ""
-        smoke = [f"{b['wrapper']} version 2>&1 || {b['wrapper']} --version 2>&1 || "
-                 f"{b['wrapper']} --help 2>&1" for b in binaries]
-        if jars:
-            smoke.append("java -version")  # proves the JRE; the in-container run proves each jar
-        # source/cargo/go builds: presence+executable (compilation already proved
-        # the arch; the in-container run proves real execution).
-        smoke += [f"test -x /usr/local/bin/{s['wrapper']}" for s in sources]
-        smoke += [f"test -x /usr/local/bin/{c['binary_name']}" for c in cargos]
-        smoke += [f"test -x /usr/local/bin/{g['binary_name']}" for g in gos]
-        # perl modules aren't binaries — the load-or-die IS the proof (also baked
-        # into the emit's RUN step, so a non-loading module already fails the build).
-        smoke += [f"perl -M{p['module']} -e1" for p in perls]
-        # buildx wants a docker platform ("linux/amd64"); freeze's `platform` is a
-        # conda subdir ("linux-64"). Normalize, so the recipe targets the requested
-        # arch (toolchains + go tarball arch derive from this).
         docker_platform = _CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
-        rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
-                                  binaries=binaries, jars=jars, sources=sources,
-                                  cargos=cargos, gos=gos, perls=perls, platform=docker_platform,
-                                  version=version, smoke_commands=smoke)
-        if not rb.get("success"):
-            return {"success": False, "stage": "recipe_build", "request_key": rkey,
-                    "adopt_attempt": adopt, "build": rb}
-        mode, build_method, image = "build", "recipe", rb["image_tag"]
-        image_digest, tarball, hpc = _deliver_built(image)
-        if has_conda:  # portable lock recipe for the conda layer (image digest is the real anchor)
+        br = _env_freeze.build_env_image(
+            draft, name=name, version=version,
+            conda_deps=_freeze.requested_conda_specs(draft),
+            primary_tools=[n for n, _ in parsed], platform=docker_platform,
+            accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
+            license_gated=gated, redistributable=not gated)
+        if not br.get("success"):
+            # map_install refuses pip/r_install (no container-native generator yet —
+            # the follow-up slice) + non-replayable source; the build refuses on any
+            # honesty-contract violation. Surface it verbatim.
+            return {"success": False, "stage": "container_build", "request_key": rkey,
+                    "adopt_attempt": adopt, "build": br}
+        mode, build_method, image = "build", "container-native", br["image"]
+        image_digest = br["image_digest"]
+        _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
+        # record what shipped: each baked long-tail step (binary/jar/source/cargo/go/
+        # perl) — the command IS the provenance in the container-native model.
+        shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
+                            for s in br.get("longtail_steps", [])]
+        if _freeze.has_conda_packages(draft):  # portable lock for the conda layer (image digest is the anchor)
             plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
             cl = _env_mgr.generate_lock(env_name, platforms=plats)
             conda_lock_path = cl.get("lockfile") if cl.get("success") else None

@@ -136,6 +136,26 @@ def has_conda_packages(spec: dict) -> bool:
     return False
 
 
+def requested_conda_specs(spec: dict) -> list[str]:
+    """The conda specs the agent EXPLICITLY asked for — install_conda_packages
+    steps (tool==conda, subcommand==install) as 'name=version' / 'name'. EXCLUDES
+    the bootstrap python from create_conda_env (a 'create' step: scaffolding, not a
+    requested tool), matching has_conda_packages's view. This is the TOP-LEVEL
+    request the container-native build re-solves from via the engine — not the full
+    dependency closure (the engine resolves that; the in-image lock content-addresses
+    what was actually got)."""
+    out: list[str] = []
+    for st in (spec.get("install_steps") or []):
+        if not isinstance(st, dict):
+            continue
+        if st.get("tool") == "conda" and st.get("subcommand") == "install":
+            for ip in (st.get("installed_packages") or []):
+                if isinstance(ip, dict) and ip.get("name"):
+                    v = ip.get("version")
+                    out.append(f"{ip['name']}={v}" if v else ip["name"])
+    return out
+
+
 def parse_tools(specs: list[str]) -> list[tuple[str, Optional[str]]]:
     """['samtools=1.21', 'bwa==0.7.17', 'fastqc'] → [('samtools','1.21'), …].
     Accepts '=' or '==' (conda/pip), and a bare name (no version)."""
