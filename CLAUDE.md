@@ -46,7 +46,7 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 
 | Primitive | When |
 |-----------|------|
-| `resolve_tool(tool, version?, github_repo?, prefer?)` | **Start here when unsure which tier.** Probes conda/PyPI/CRAN (+release-binary/source if `github_repo` given), ranks (conda > pip/cran/bioc > binary > source > manual), returns the concrete `install_call` + rationale + rejected alternatives. Query-only. **Cross-registry name collisions exist** (a PyPI `ape` ≠ CRAN's R `ape`) — pass `prefer` to force the ecosystem |
+| `resolve_tool(tool, version?, github_repo?, prefer?, language?)` | **Start here when unsure which tier.** Probes conda/PyPI/CRAN (+release-binary/source if `github_repo` given), ranks (conda > pip/cran/bioc > binary > source > manual), returns the concrete `install_call` + rationale + rejected alternatives. Query-only. **Cross-registry name collisions** (a PyPI `ape` ≠ CRAN's R `ape`) come back `ambiguous: true` — pass `language='python'\|'r'` to restrict the ecosystem (or `prefer` to force a tier) |
 | `install_conda_packages(env, [{spec, channel}], pipeline_id)` | Anything on bioconda / conda-forge / defaults |
 | `install_r_package(env, name, source, pipeline_id)` | source = `cran` \| `bioconductor` \| `github:owner/repo` — handles library isolation, BiocManager bootstrap, requireNamespace load-or-die |
 | `install_pip_package(env, name, version?, pipeline_id)` | pip / PyPI — handles import check |

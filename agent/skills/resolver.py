@@ -102,6 +102,23 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     return out
 
 
+def probe_bioconductor(name: str, timeout: int = 12) -> dict[str, Any]:
+    """Best-effort: does a release Bioconductor package page exist for `name`?"""
+    ok = _head_ok(f"https://bioconductor.org/packages/release/bioc/html/{name}.html", timeout)
+    return {"available": ok}
+
+
+def _is_ambiguous(availability: dict[str, dict], language: str) -> bool:
+    """A bare tool name is dangerously ambiguous when it resolves in BOTH a
+    Python registry (PyPI) and an R registry (CRAN) with no language hint — they
+    are almost certainly different packages (e.g. PyPI `ape` ≠ CRAN's R `ape`).
+    A language hint removes the ambiguity by construction."""
+    if language:
+        return False
+    return bool(availability.get("pip", {}).get("available")
+                and availability.get("cran", {}).get("available"))
+
+
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
     """Pure: given per-tier availability, pick the tier and explain. `prefer`
     forces a tier when it is available. Returns chosen tier (or None), the
@@ -135,7 +152,8 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:
     v = version or detail.get("latest") or ""
     if tier == "conda":
-        spec = f"{tool}={v}" if v else tool
+        base = detail.get("r_spec") or tool          # r-{name} when resolving an R tool via conda
+        spec = f"{base}={v}" if v else base
         return f'install_conda_packages(env, [{{"spec": "{spec}", "channel": "{detail.get("channel","bioconda")}"}}])'
     if tier == "pip":
         return f'install_pip_package(env, "{tool}"' + (f', version="{v}")' if v else ")")
@@ -156,31 +174,62 @@ def resolve(
     version: str = "",
     github_repo: str = "",
     prefer: Optional[str] = None,
+    language: str = "",
     timeout: int = 12,
 ) -> dict[str, Any]:
-    """Probe every applicable tier for `tool` and return a ResolutionDecision:
+    """Probe the applicable tiers for `tool` and return a ResolutionDecision:
     chosen tier + the concrete install primitive call + rationale + the rejected
-    alternatives that were actually available. `github_repo` ('owner/repo')
-    unlocks the binary/source tiers (a release asset can't be probed from a bare
-    tool name)."""
-    availability: dict[str, dict] = {
-        "conda": probe_conda(tool, timeout),
-        "pip":   probe_pypi(tool, timeout),
-        "cran":  probe_cran(tool, timeout),
-    }
+    alternatives that were actually available.
+
+    `language` ('python' | 'r' | '') disambiguates cross-registry name
+    collisions by restricting the tier set to one ecosystem — for 'r' it probes
+    CRAN, Bioconductor, and conda's `r-{name}` (NOT bare PyPI). With no hint, a
+    name found in BOTH PyPI and CRAN is flagged `ambiguous` (different packages
+    likely) so the caller disambiguates rather than the resolver guessing.
+
+    `github_repo` ('owner/repo') unlocks the binary/source tiers (a release
+    asset can't be probed from a bare tool name). `prefer` forces a tier when
+    available; it composes with `language`.
+    """
+    language = (language or "").lower().strip()
+    availability: dict[str, dict] = {}
+    if language == "r":
+        rconda = probe_conda(f"r-{tool}", timeout)
+        if rconda.get("available"):
+            rconda["r_spec"] = f"r-{tool}"
+        availability["conda"]        = rconda
+        availability["cran"]         = probe_cran(tool, timeout)
+        availability["bioconductor"] = probe_bioconductor(tool, timeout)
+    elif language == "python":
+        availability["conda"] = probe_conda(tool, timeout)
+        availability["pip"]   = probe_pypi(tool, timeout)
+    else:
+        availability["conda"] = probe_conda(tool, timeout)
+        availability["pip"]   = probe_pypi(tool, timeout)
+        availability["cran"]  = probe_cran(tool, timeout)
+
     if github_repo:
         gh = probe_github(github_repo, timeout)
         availability["binary"] = {"available": gh["has_release_assets"], **gh}
         availability["source"] = {"available": gh["repo_exists"], **gh}
 
     decision = rank_decision(availability, prefer=prefer)
+    ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
     decision.update({
         "tool": tool,
         "version": version or None,
+        "language": language or None,
         "github_repo": github_repo or None,
+        "ambiguous": ambiguous,
         "probed": availability,
     })
+    if ambiguous:
+        decision["rationale"] = (
+            f"AMBIGUOUS: '{tool}' exists on BOTH PyPI (python) and CRAN (R) — likely "
+            f"different packages. Pass language='python'|'r' (or prefer=) to disambiguate. "
+            + decision["rationale"]
+        )
     if chosen:
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo

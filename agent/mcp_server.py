@@ -130,6 +130,7 @@ def resolve_tool(
     version: str = "",
     github_repo: str = "",
     prefer: str = "",
+    language: str = "",
 ) -> dict:
     """Decide WHICH install tier to use for `tool`, and record WHY (the
     ResolutionDecision). Probes availability independently per tier
@@ -138,17 +139,21 @@ def resolve_tool(
     binary > source > manual (reproducibility + clean containerization + least
     build fragility).
 
-    Returns {chosen, install_call, rationale, alternatives, probed, …}: the
-    concrete install primitive call to make, why it was chosen over the others,
-    and the rejected-but-available alternatives. `prefer` forces a tier when
-    available. `github_repo` ('owner/repo') unlocks the binary/source tiers — a
-    release asset can't be probed from a bare tool name.
+    Returns {chosen, install_call, rationale, alternatives, ambiguous, probed,
+    …}: the concrete install primitive call to make, why it was chosen over the
+    others, and the rejected-but-available alternatives.
+
+    DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
+    CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one
+    ecosystem; with no hint, a name found in both PyPI and CRAN comes back
+    `ambiguous: true`. `prefer` forces a tier when available. `github_repo`
+    ('owner/repo') unlocks the binary/source tiers.
 
     Query-only: it does NOT install. Use the returned install_call with the
     matching primitive, then freeze().
     """
     return _resolver.resolve(tool, version=version, github_repo=github_repo,
-                             prefer=(prefer or None))
+                             prefer=(prefer or None), language=language)
 
 
 @mcp.tool()

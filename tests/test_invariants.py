@@ -1507,3 +1507,31 @@ def test_resolve_live_samtools_chooses_conda():
         _pytest.skip("registries unreachable")
     assert d["chosen"] == "conda", f"expected conda for samtools, got {d['chosen']} ({d['probed']})"
     assert "install_conda_packages" in d["install_call"]
+
+
+def test_is_ambiguous_only_for_python_plus_r_without_hint():
+    from agent.skills.resolver import _is_ambiguous
+    both = {"pip": {"available": True}, "cran": {"available": True}}
+    assert _is_ambiguous(both, "") is True            # collision, no hint
+    assert _is_ambiguous(both, "r") is False           # hint removes ambiguity
+    assert _is_ambiguous(both, "python") is False
+    assert _is_ambiguous({"conda": {"available": True}, "pip": {"available": True}}, "") is False
+    assert _is_ambiguous({"cran": {"available": True}}, "") is False
+
+
+def test_resolve_live_ape_disambiguated_by_language():
+    """The collision finding, fixed: bare 'ape' is flagged ambiguous (PyPI vs
+    CRAN), and language='r' steers it to an R tier (cran/bioconductor/conda
+    r-ape), never pip. Network-guarded."""
+    import pytest as _pytest
+    from agent.skills.resolver import resolve
+    bare = resolve("ape", timeout=15)
+    if not bare.get("probed", {}).get("pip", {}).get("available") or \
+       not bare.get("probed", {}).get("cran", {}).get("available"):
+        _pytest.skip("ape not present in both PyPI and CRAN right now")
+    assert bare["ambiguous"] is True
+    assert "AMBIGUOUS" in bare["rationale"]
+    r = resolve("ape", language="r", timeout=15)
+    assert r["ambiguous"] is False
+    assert r["chosen"] in ("conda", "cran", "bioconductor"), f"R tool went to {r['chosen']}"
+    assert r["chosen"] != "pip"
