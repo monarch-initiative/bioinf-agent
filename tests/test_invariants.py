@@ -2052,6 +2052,22 @@ def test_envbuild_run_stamps_validation_locus(monkeypatch):
     assert rec["validation_locus"] == "native"
 
 
+def test_base_image_is_pinned_by_digest():
+    """The build/ship base must be pinned by DIGEST, not a moving tag — OS-layer
+    reproducibility (the env layer is lock-pinned, binaries sha256-anchored). Both
+    EnvBuild and ContainerBuild must honor the single pinned constant so a rebuild
+    gets identical base bytes."""
+    from agent.skills.container_build import BASE_IMAGE, ContainerBuild
+    from agent.skills.env_build import EnvBuild
+    assert "@sha256:" in BASE_IMAGE, "base must be digest-pinned, not a bare tag"
+    assert ContainerBuild().base == BASE_IMAGE
+    assert EnvBuild("x").cb.base == BASE_IMAGE
+    # and it flows into the emitted Dockerfile's FROM (what actually ships)
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    df = emit_dockerfile(BASE_IMAGE, engine=PixiEngine(), has_env_layer=False, longtail_steps=[])
+    assert f"FROM {BASE_IMAGE}" in df
+
+
 # ---------------------------------------------------------------------------
 # pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
 # ---------------------------------------------------------------------------

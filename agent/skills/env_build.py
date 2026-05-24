@@ -26,12 +26,12 @@ from typing import Any, Optional
 from agent.skills import env_honesty as _honesty
 from agent.skills import freeze as _freeze
 from agent.skills import locus as _locus
-from agent.skills.container_build import ContainerBuild, EnvEngine
+from agent.skills.container_build import BASE_IMAGE, ContainerBuild, EnvEngine
 
 
 class EnvBuild:
     def __init__(self, name: str, version: str = "", *, platform: str = "linux/amd64",
-                 base: str = "debian:bookworm-slim", engine: Optional[EnvEngine] = None,
+                 base: str = BASE_IMAGE, engine: Optional[EnvEngine] = None,
                  channels: Optional[list[str]] = None,
                  accelerator: Optional[dict] = None, license_gated: bool = False,
                  licenses: Optional[list[str]] = None, redistributable: bool = True):

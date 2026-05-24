@@ -57,6 +57,17 @@ _BUILD_APT = (_RUNTIME_APT + " curl tar gzip bzip2 xz-utils unzip "
               "libcurl4-openssl-dev libssl-dev")
 _BASE_APT = _BUILD_APT  # back-compat: ContainerBuild.start() provisions the build toolchain
 
+# The build/ship base, PINNED BY DIGEST for reproducibility. The
+# `debian:bookworm-slim` tag moves with security updates, so a bare tag makes a
+# rebuild non-reproducible at the OS layer. Pinning the multi-arch *index* digest
+# freezes the base bytes while `--platform` still resolves the per-arch sub-image
+# deterministically — so the conda/pip lock (env layer) + sha256-anchored binaries
+# + THIS pin together make the whole stack reproducible-by-rebuild, except the apt
+# packages installed on top (still floating — a separate follow-up). Bump this
+# DELIBERATELY to take base security updates.
+BASE_IMAGE = ("debian:bookworm-slim@sha256:"
+              "0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb")
+
 # docker platform → conda subdir token (for engines that need it in a URL).
 _PLATFORM_SUBDIR = {"linux/amd64": "linux-64", "linux/arm64": "linux-aarch64",
                     "linux/arm64/v8": "linux-aarch64"}
@@ -303,7 +314,7 @@ class ContainerBuild:
         fr = cb.freeze("demo", "1.0"); cb.validate_in_image(fr["image"], [...]); cb.close()
     """
 
-    def __init__(self, base: str = "debian:bookworm-slim",
+    def __init__(self, base: str = BASE_IMAGE,
                  platform: str = "linux/amd64",
                  engine: Optional[EnvEngine] = None,
                  channels: Optional[list[str]] = None,
