@@ -2095,6 +2095,44 @@ def test_container_native_repo_name_sanitized():
     assert _docker_repo("---") == "bioinf"                   # empty after strip → fallback
 
 
+def test_install_command_generators_self_contained_tiers():
+    """Per-tier knowledge in ONE place: each generator returns a shell command that
+    installs to /usr/local/bin + an evidence check. These get baked VERBATIM."""
+    from agent.skills import install_commands as ic
+    # release binary (archive): download → sha → extract → find → symlink
+    rb = ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                           sha256="DEAD", binary_in_archive="seqkit")
+    assert "curl -fsSL -o seqkit_linux_amd64.tar.gz" in rb["command"]
+    assert "dead  seqkit_linux_amd64.tar.gz" in rb["command"] and "sha256sum -c -" in rb["command"]
+    assert "tar -xf" in rb["command"] and "/usr/local/bin/seqkit" in rb["command"]
+    # bare binary: install, no extract
+    rb2 = ic.release_binary("mosdepth", "https://x/mosdepth")
+    assert "install -m 0755 mosdepth /usr/local/bin/mosdepth" in rb2["command"]
+    # source: clone → checkout → build → MANUAL install (no make install target)
+    s = ic.source("tabtk", "https://github.com/lh3/tabtk", ref="abc123", build_command="make")
+    assert "git clone https://github.com/lh3/tabtk" in s["command"]
+    assert "git checkout abc123" in s["command"] and "make" in s["command"]
+    assert "install -m 0755 /opt/tools/tabtk/src/tabtk /usr/local/bin/tabtk" in s["command"]
+    assert s["evidence"] == "command -v tabtk"
+    # script repo (half-baked run-by-path): clone → wrapper exec'ing the entry script
+    sr = ic.script_repo("mytool", "https://github.com/lab/mytool", script_rel="run.py",
+                        interpreter="python")
+    assert "git clone https://github.com/lab/mytool" in sr["command"]
+    assert "exec python /opt/tools/mytool/run.py" in sr["command"]
+    assert "/usr/local/bin/mytool" in sr["command"]
+
+
+def test_container_native_engine_optional_for_longtail_only():
+    """A pure binary/source/half-baked env carries NO engine (no pixi/micromamba) —
+    bootstrap lines appear only when conda/pip specs were declared."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    steps = [{"command": "set -eux; git clone x && make && install -m755 t /usr/local/bin/", "purpose": "t"}]
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False, longtail_steps=steps)
+    assert "pixi" not in df and "micromamba" not in df          # no engine at all
+    assert "RUN set -eux; git clone x && make" in df            # long-tail baked verbatim
+    assert "build-essential" in df                              # apt toolchain present for source
+
+
 def test_non_conda_installs_includes_perl():
     """perl installs must surface in non_conda_installs so freeze replays (not adopts)."""
     from agent.skills.freeze import non_conda_installs
