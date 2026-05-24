@@ -35,7 +35,8 @@ from typing import Any, Optional
 # contract) and so handles EVERY repo — half-baked, run-by-path, custom build — not
 # just the conventional make+binary case the `source` generator assumes. `source`
 # (and binary) survive as opt-in FAST-PATHS, not the boundary of installable.
-TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "binary", "synthesis", "source", "manual"]
+TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "binary", "spack",
+              "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
     "conda":        "on bioconda/conda-forge — solver-managed, pinned, containerizes cleanly (preferred)",
@@ -43,6 +44,9 @@ _TIER_RATIONALE = {
     "cran":         "on CRAN — R language registry via install_r_package(source=cran)",
     "bioconductor": "on Bioconductor — R via install_r_package(source=bioconductor)",
     "binary":       "precompiled release binary — exact bytes (sha256), but platform-specific",
+    "spack":        "in the Spack HPC registry — a curated from-source recipe (community-maintained); "
+                    "store baked under /opt/tools so RPATHs resolve in the slim image. Build is slow "
+                    "(from source) — best on a native amd64 host",
     "synthesis":    "agent reads the repo's OWN build files and synthesizes a grounded, contract-"
                     "gated install — the universal path for any source/bespoke tool (no per-tool recipe)",
     "source":       "conventional `make`+binary fast-path (install_git_repo) — faster than synthesis "
@@ -337,6 +341,8 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "binary":
         asset = (detail.get("assets") or ["<release-asset-url>"])[0]
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
+    if tier == "spack":
+        return f'install_spack_package(env, "{tool}")  # Spack curated recipe; best on a native amd64 host'
     if tier == "synthesis":
         url = f"https://github.com/{github_repo}" if github_repo else "<repo-or-archive-url>"
         return (f'synth_fetch("{url}")  # read its build files, then '
@@ -394,6 +400,10 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
         return {"kind": "tool", "tier": tier,
                 "spec": ic.release_binary(tool, url, binary_in_archive=tool),
                 "needs_sha256": True}
+
+    if tier == "spack":
+        return {"kind": "tool", "tier": tier,
+                "spec": ic.spack(tool, package=detail.get("package") or tool)}
 
     if tier == "synthesis":
         # The universal repo tail is AGENT-DRIVEN (two-call: synth_fetch → read the
@@ -467,19 +477,20 @@ def resolve(
         availability["synthesis"] = {"available": gh["repo_exists"], **gh}
         availability["source"]    = {"available": gh["repo_exists"], **gh}
 
+    # Spack is a real (curated, from-source) tier — ranks below precompiled binary
+    # but above the agent-read synthesis fallback (a community recipe beats
+    # improvisation). Needs only a name (registry probe), no github_repo.
+    availability["spack"] = probe_spack(tool, timeout)
+
     decision = rank_decision(availability, prefer=prefer)
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
-    # Spack is ADVISORY (not a chosen build tier yet): record that the tool ALSO has
-    # a Spack recipe so the operator knows the option exists, without claiming we can
-    # yet build it slim (the relocation work is pending — see _TIER_RATIONALE/probe).
     decision.update({
         "tool": tool,
         "version": version or None,
         "language": language or None,
         "github_repo": github_repo or None,
         "ambiguous": ambiguous,
-        "also_on_spack": probe_spack(tool, timeout).get("available", False),
         "probed": availability,
     })
     if ambiguous:

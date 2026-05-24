@@ -130,6 +130,11 @@ def _map_install(
                                        repo=im.get("source") or "",
                                        commit=im.get("commit_sha") or "")}
 
+    if t == "spack":
+        return {"spec": ic.spack(name, package=im.get("package") or name,
+                                 spack_ref=im.get("spack_ref") or "v0.22.1",
+                                 evidence=im.get("evidence") or "")}
+
     if t == "cargo":
         return {"spec": ic.cargo(name, im.get("crate") or name, version=im.get("version") or "",
                                  git_url=im.get("git_url") or "",

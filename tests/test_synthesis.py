@@ -264,6 +264,43 @@ def test_source_only_still_resolves_to_source_unit():
     assert resolver.rank_decision({"source": {"available": True}})["chosen"] == "source"
 
 
+# -- buildable Spack tier --------------------------------------------------------
+def test_spack_generator_store_under_opt_tools_and_relocation():
+    spec = ic.spack("bzip2", evidence="bzip2 --help")
+    cmd = spec["command"]
+    assert "git clone --depth 1 --branch v0.22.1 https://github.com/spack/spack /opt/tools/spack" in cmd
+    assert "spack compiler find" in cmd                      # use system gcc, don't build one
+    assert "spack install --fail-fast bzip2" in cmd
+    assert "spack gc -y" in cmd                              # trim build-only deps
+    assert "/usr/local/bin/" in cmd                          # bins symlinked onto PATH
+    assert "! -name opt" in cmd                              # drop spack source, keep the store
+    assert spec["evidence"] == "bzip2 --help" and spec["tool"] == "bzip2"
+
+
+def test_map_install_routes_spack():
+    record = {"name": "bzip2", "type": "spack",
+              "install_method": {"type": "spack", "package": "bzip2", "spack_ref": "v0.22.1",
+                                 "evidence": "bzip2 --help"}}
+    out = env_freeze._map_install(record)
+    assert "spec" in out and "spack install --fail-fast bzip2" in out["spec"]["command"]
+
+
+def test_rank_spack_below_binary_above_synthesis():
+    # binary (precompiled exact bytes) beats spack; spack (curated recipe) beats the
+    # agent-read synthesis fallback and the conventional source generator.
+    assert resolver.rank_decision({"binary": {"available": True}, "spack": {"available": True}}
+                                  )["chosen"] == "binary"
+    d = resolver.rank_decision({"spack": {"available": True}, "synthesis": {"available": True},
+                                "source": {"available": True}})
+    assert d["chosen"] == "spack"
+    assert [a["tier"] for a in d["alternatives"]] == ["synthesis", "source"]
+
+
+def test_route_spack_is_a_tool_spec():
+    r = resolver.route({"chosen": "spack", "tool": "bzip2", "probed": {"spack": {}}})
+    assert r["kind"] == "tool" and "spack install" in r["spec"]["command"]
+
+
 def test_probe_spack_live_advisory():
     # Spack is ADVISORY (not a chosen build tier). Live: a real Spack package is
     # detected, a nonsense one isn't. Network-guarded so it doesn't fail offline.

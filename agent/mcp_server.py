@@ -519,6 +519,59 @@ def synth_build(
 
 
 @mcp.tool()
+def install_spack_package(
+    env_name: str,
+    tool_name: str,
+    package: str = "",
+    spack_ref: str = "v0.22.1",
+    evidence: str = "",
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Declare a Spack package (the HPC from-source registry — thousands of curated
+    community recipes) for a tool not on conda/pip/cran. A DECLARE primitive: it
+    records the install_method (type='spack') into the draft; the actual build +
+    validation happen at freeze() INSIDE the ship image (Spack on the host is
+    impractical, and container-native is where 'validated == shipped' holds anyway).
+
+    freeze() bootstraps Spack with its store under /opt/tools (so the dep-closure
+    RPATHs resolve in the slim runtime), builds `package` (default = tool_name) from
+    source with the build container's gcc, trims build-only deps, and symlinks the
+    tool onto PATH — then the honesty contract proves the tool RUNS in the shipped
+    image via `evidence`. NOTE: from-source builds are slow; this tier is practical
+    on a NATIVE amd64 host. Pass an `evidence` that RUNS the tool (e.g.
+    'samtools --version') — `command -v` alone can't catch a mis-relocated binary.
+    `spack_ref` pins Spack (default v0.22.1; v1.0 split builtin packages out).
+
+    Returns {success, install_method, pipeline_merge?}."""
+    install_method = {
+        "type":      "spack",
+        "package":   package or tool_name,
+        "spack_ref": spack_ref,
+        "evidence":  evidence or f"command -v {tool_name}",
+        "source":    f"spack:{package or tool_name}@{spack_ref}",
+    }
+    result: dict = {"success": True, "tool_name": tool_name, "install_method": install_method,
+                    "note": "declared — Spack builds + validates at freeze() in the ship image "
+                            "(best on a native amd64 host; from-source is slow under emulation)"}
+    if pipeline_id:
+        ip_record = {"name": tool_name, "channel": "spack",
+                     "source": install_method["source"], "install_method": install_method}
+        step_data = {
+            "tool": "spack", "subcommand": "install",
+            "purpose": f"Declare {tool_name} via Spack ({package or tool_name}@{spack_ref})",
+            "command": f"spack install {package or tool_name}",
+            "returncode": 0, "installed_packages": [ip_record],
+        }
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
+    return result
+
+
+@mcp.tool()
 def install_release_binary(
     env_name: str,
     tool_name: str,
