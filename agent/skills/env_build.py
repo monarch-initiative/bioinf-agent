@@ -219,7 +219,8 @@ class EnvBuild:
                 "image": fr["image"], "image_digest": digest,
                 "content_digest": self.content_digest(),
                 "conda_specs": list(self.conda_specs),
-                "longtail_steps": [{"command": s["command"], "purpose": s["purpose"]}
+                "longtail_steps": [{"command": s["command"], "purpose": s["purpose"],
+                                    **({"provenance": s["provenance"]} if s.get("provenance") else {})}
                                    for s in self.cb.longtail],
                 "verifications": v["verifications"],
                 "validated_in_shipped_image": v["success"],

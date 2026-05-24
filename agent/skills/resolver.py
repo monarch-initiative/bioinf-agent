@@ -28,7 +28,14 @@ from typing import Any, Optional
 
 # Preference order — lower index wins. Cross-cutting concerns (gpu/service/
 # license/db) are flags layered on top, not tiers.
-TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "binary", "source", "manual"]
+#
+# `synthesis` is the UNIVERSAL repo tail (the "reduce infinity to 1" floor): for any
+# fetchable repo it ranks ABOVE the conventional `source` generator, because the
+# agent reads the tool's OWN build files (gated by provenance + grounding + the
+# contract) and so handles EVERY repo — half-baked, run-by-path, custom build — not
+# just the conventional make+binary case the `source` generator assumes. `source`
+# (and binary) survive as opt-in FAST-PATHS, not the boundary of installable.
+TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "binary", "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
     "conda":        "on bioconda/conda-forge — solver-managed, pinned, containerizes cleanly (preferred)",
@@ -36,8 +43,11 @@ _TIER_RATIONALE = {
     "cran":         "on CRAN — R language registry via install_r_package(source=cran)",
     "bioconductor": "on Bioconductor — R via install_r_package(source=bioconductor)",
     "binary":       "precompiled release binary — exact bytes (sha256), but platform-specific",
-    "source":       "build from source at a pinned commit — image digest becomes the lock",
-    "manual":       "no automatable tier found — needs a hand-authored path",
+    "synthesis":    "agent reads the repo's OWN build files and synthesizes a grounded, contract-"
+                    "gated install — the universal path for any source/bespoke tool (no per-tool recipe)",
+    "source":       "conventional `make`+binary fast-path (install_git_repo) — faster than synthesis "
+                    "when the repo builds conventionally; synthesis is the robust fallback otherwise",
+    "manual":       "no fetchable source at all — needs a hand-authored path",
 }
 
 
@@ -280,7 +290,8 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
 
     if chosen is None:
         return {"chosen": None, "available": [], "alternatives": [],
-                "rationale": "no automatable tier found — fall back to source (with a repo) or manual"}
+                "rationale": "no registry/repo tier found — pass a github_repo (or repo/archive URL) "
+                             "to unlock synthesis (the universal agent-read path), else manual"}
 
     why = _TIER_RATIONALE.get(chosen, chosen)
     others = [t for t in available if t != chosen]
@@ -312,6 +323,10 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "binary":
         asset = (detail.get("assets") or ["<release-asset-url>"])[0]
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
+    if tier == "synthesis":
+        url = f"https://github.com/{github_repo}" if github_repo else "<repo-or-archive-url>"
+        return (f'synth_fetch("{url}")  # read its build files, then '
+                f'synth_build(env, "{url}", "{tool}", commit, commands=[...], evidence="...")')
     if tier == "source":
         return f'install_git_repo(env, "https://github.com/{github_repo}", "{tool}", ref="<tag/commit>")'
     return "# no automatable tier — author a manual path (and stage_authored_artifact for any scripts)"
@@ -365,6 +380,17 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
         return {"kind": "tool", "tier": tier,
                 "spec": ic.release_binary(tool, url, binary_in_archive=tool),
                 "needs_sha256": True}
+
+    if tier == "synthesis":
+        # The universal repo tail is AGENT-DRIVEN (two-call: synth_fetch → read the
+        # repo's build files → synth_build), so a declarative route can't auto-build
+        # it — it hands off to the agent. The build itself still flows through the ONE
+        # `synthesized` generator + the honesty contract (validated == shipped).
+        url = f"https://github.com/{repo}" if repo else ""
+        return {"kind": "synthesize", "tier": tier, "repo": url,
+                "instruction": "agent: call synth_fetch(repo_url) to read the tool's own build "
+                               "files, then synth_build(env, repo_url, tool, commit, commands, "
+                               "evidence) — commands tagged extracted/agent_authored (grounded)."}
 
     if tier == "source":
         if not repo:
@@ -421,8 +447,11 @@ def resolve(
 
     if github_repo:
         gh = probe_github(github_repo, timeout)
-        availability["binary"] = {"available": gh["has_release_assets"], **gh}
-        availability["source"] = {"available": gh["repo_exists"], **gh}
+        availability["binary"]    = {"available": gh["has_release_assets"], **gh}
+        # synthesis ranks above source (both need only repo_exists): the agent reads
+        # the repo's real build, so it's the robust default; source is the fast-path.
+        availability["synthesis"] = {"available": gh["repo_exists"], **gh}
+        availability["source"]    = {"available": gh["repo_exists"], **gh}
 
     decision = rank_decision(availability, prefer=prefer)
     ambiguous = _is_ambiguous(availability, language)

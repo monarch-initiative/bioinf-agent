@@ -732,6 +732,58 @@ class EnvManager:
     )
 
     @staticmethod
+    def clone_and_read_build_files(repo_url: str, ref: str = "", *,
+                                   is_relevant=None, max_file_bytes: int = 5_000_000) -> dict[str, Any]:
+        """Programmatic ground-truth fetch for the synthesis tier. Clones repo_url,
+        checks out `ref` (tag/branch/commit; default HEAD), resolves the CONCRETE
+        commit via `git rev-parse HEAD` (the agent NEVER supplies it), and reads the
+        build-relevant files (those for which is_relevant(path) is true) + sha256
+        each. The runtime is the sole source of these facts — the agent only reads
+        what comes back. Returns {success, commit, ref, files:[{path,sha256,text}]};
+        always cleans up the clone.
+
+        A plain git op (no conda env): git is on the host PATH, and this is query-
+        only ground-truth gathering, so it needs no build container."""
+        import hashlib
+        import tempfile
+        is_relevant = is_relevant or (lambda p: True)
+        tmp = tempfile.mkdtemp(prefix="synth_fetch_")
+        try:
+            cl = subprocess.run(["git", "clone", "--quiet", repo_url, tmp],
+                                capture_output=True, text=True, timeout=600)
+            if cl.returncode != 0:
+                return {"success": False, "error": "git clone failed",
+                        "stderr": (cl.stderr or "")[-400:]}
+            if ref:
+                co = subprocess.run(["git", "-C", tmp, "checkout", "--quiet", ref],
+                                    capture_output=True, text=True, timeout=120)
+                if co.returncode != 0:
+                    return {"success": False, "error": f"git checkout {ref!r} failed",
+                            "stderr": (co.stderr or "")[-400:]}
+            rp = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=30)
+            commit = (rp.stdout or "").strip()
+            base = Path(tmp)
+            files: list[dict[str, Any]] = []
+            for p in sorted(base.rglob("*")):
+                if not p.is_file():
+                    continue
+                rel = str(p.relative_to(base))
+                if rel.startswith(".git/") or not is_relevant(rel):
+                    continue
+                try:
+                    data = p.read_bytes()
+                except Exception:
+                    continue
+                if len(data) > max_file_bytes:        # a build file this big is suspect — skip
+                    continue
+                files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
+                              "text": data.decode("utf-8", errors="replace")})
+            return {"success": True, "commit": commit, "ref": ref or "HEAD", "files": files}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @staticmethod
     def _is_archive(name: str) -> bool:
         n = name.lower()
         return any(n.endswith(s) for s in EnvManager._ARCHIVE_SUFFIXES)

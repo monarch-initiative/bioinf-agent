@@ -51,6 +51,8 @@ from agent.skills import user_guide as _user_guide
 from agent.skills import env_report as _env_report
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
+from agent.skills import synthesis as _synth
+from agent.skills import provenance as _prov
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
@@ -367,6 +369,123 @@ def install_git_repo(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+    return result
+
+
+@mcp.tool()
+def synth_fetch(repo_url: str, ref: str = "") -> dict:
+    """Synthesis tier, call 1 of 2 — PROGRAMMATIC ground-truth fetch for a long-tail
+    tool that has no conda/pip/cran/cargo/go/perl/binary/jar home. Clones repo_url,
+    checks out `ref` (tag/branch/commit; default HEAD), resolves the CONCRETE commit
+    (`git rev-parse` — you never supply it), and returns the tool's OWN build files
+    so you can read them and decide how it installs. This is the universal residual
+    path: instead of a per-tool generator, you read the repo's real build
+    instructions; provenance + the honesty contract make that safe.
+
+    Returns {success, commit, ref, files:[{path,sha256,text}], ranked_sources}.
+    `ranked_sources` orders the build files by how authoritative a recipe each is
+    (Dockerfile › install.sh › CI workflow › Makefile/CMakeLists › setup.py/
+    pyproject › README). READ them, then call synth_build with:
+      - commands tagged source='extracted' (lifted VERBATIM from a file — pass its
+        path as origin_file; PREFER this), or source='agent_authored' (composed
+        from the repo's prose — every URL/remote you use MUST appear in the repo).
+    synth_build re-fetches at this commit and re-verifies every command against
+    these exact bytes, so an extraction you claim must really be in the file and an
+    authored command must be grounded. Nothing you state from memory can ship."""
+    fetch = _env_mgr.clone_and_read_build_files(
+        repo_url, ref, is_relevant=_synth.is_build_relevant)
+    if not fetch.get("success"):
+        return fetch
+    paths = [f["path"] for f in fetch["files"]]
+    fetch["ranked_sources"] = _synth.rank_build_sources(paths)
+    fetch["corpus_chars"] = sum(len(f.get("text", "")) for f in fetch["files"])
+    return fetch
+
+
+@mcp.tool()
+def synth_build(
+    env_name: str,
+    repo_url: str,
+    tool_name: str,
+    commit: str,
+    commands: list,
+    evidence: str = "",
+    ref: str = "",
+    engine_coupled: bool = False,
+    pipeline_id: str = "",
+    step: int = 0,
+) -> dict:
+    """Synthesis tier, call 2 of 2 — record a VALIDATED, provenance-tagged install
+    recipe for a long-tail tool. The UNIVERSAL residual installer: it replaces a
+    per-tool generator with the agent reading the tool's own build files, gated so
+    nothing is taken on faith.
+
+    `commands` = the ordered install sequence, each:
+      {command, source, origin_file?, engine_coupled?}
+    where source is 'extracted' (the command occurs VERBATIM in origin_file — the
+    file you name from synth_fetch; preferred) or 'agent_authored' (you composed it
+    from the repo's prose — its URLs/remotes must appear in the repo).
+
+    This RE-FETCHES the repo at `commit` (deterministic ground truth), then
+    validate_submission re-verifies EVERY command against the runtime's own bytes:
+    an 'extracted' command must really occur in origin_file (sha256 stamped by the
+    runtime, not you); an 'agent_authored' command must be grounded. Any violation
+    → refused, no record. On success it records ONE install_method (type=
+    'synthesized', carrying the commands + per-command provenance + commit + file
+    hashes) into the draft; freeze() replays it verbatim in the ship image and the
+    honesty contract still proves the tool RUNS there (`evidence`).
+
+    `evidence`: the in-image check that proves the tool works (must reference the
+    tool as a real token — echo/true cheats are rejected by the contract). Default
+    `command -v {tool_name}`. Returns {success, commit, records, install_method,
+    violations?, pipeline_merge?}."""
+    fetch = _env_mgr.clone_and_read_build_files(
+        repo_url, commit or ref, is_relevant=_synth.is_build_relevant)
+    if not fetch.get("success"):
+        return {"success": False, "stage": "refetch", **fetch}
+    if commit and fetch.get("commit") != commit:
+        return {"success": False, "stage": "refetch",
+                "error": f"re-fetch resolved {fetch.get('commit')!r}, expected {commit!r} "
+                         f"— ref is not pinned to an immutable commit"}
+    # The repo's OWN url is ground truth by construction (we just cloned exactly it),
+    # so a `git clone {repo_url}` grounds even when the README never cites its own
+    # URL. Every OTHER external reference must still trace to the repo's files.
+    fetch["corpus"] = _synth.build_corpus(fetch["files"]) + "\n" + repo_url
+    val = _synth.validate_submission(fetch, list(commands))
+    if not val["ok"]:
+        return {"success": False, "stage": "validate_submission",
+                "violations": val["violations"],
+                "hint": "an 'extracted' command must occur verbatim in its origin_file; "
+                        "an 'agent_authored' command's URLs/remotes must appear in the repo"}
+    records = val["records"]
+    install_method = {
+        "type":         "synthesized",
+        "source":       repo_url,
+        "commit_sha":   fetch.get("commit"),
+        "ref":          ref or commit or "HEAD",
+        "tool":         tool_name,
+        "evidence":     evidence or f"command -v {tool_name}",
+        "engine_coupled": engine_coupled,
+        "commands":     records,                       # validated, provenance-tagged
+        "file_hashes":  {f["path"]: f["sha256"] for f in fetch["files"]},
+    }
+    result: dict = {"success": True, "commit": fetch.get("commit"),
+                    "records": records, "install_method": install_method}
+    if pipeline_id:
+        ip_record = {"name": tool_name, "channel": "git", "source": repo_url,
+                     "install_method": install_method,
+                     "version": (fetch.get("commit") or "")[:12]}
+        step_data = {
+            "tool": "git", "subcommand": "synthesize",
+            "purpose": f"Synthesize {tool_name} from {repo_url} (agent-authored, gated)",
+            "command": f"synth_build {tool_name} @ {fetch.get('commit','')[:12]}",
+            "returncode": 0, "installed_packages": [ip_record],
+        }
+        idx = _pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        result["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
     return result
 
 

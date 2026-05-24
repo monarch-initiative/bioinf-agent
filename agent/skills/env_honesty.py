@@ -159,6 +159,46 @@ def _check_accelerator(acc: Any) -> list[dict]:
     return v
 
 
+def _check_provenance(result: dict) -> list[dict]:
+    """PROVENANCE_CLEAN — the firewall around the synthesis tier (agent-as-generator).
+    A synthesized install must carry a full audit trail INTO the recipe: every
+    sub-command tagged EXTRACTED (lifted verbatim from a named repo file, with that
+    file's sha256) or AGENT_AUTHORED. The authoritative grounding ran at authoring
+    (synth_build re-verified every command against the live repo fetch); this is the
+    defense-in-depth that refuses a synthesized recipe which reached the build
+    WITHOUT its provenance — a hand-injected or bug-dropped record — so nothing
+    untraceable to the tool's own files can ship. Structural (no network)."""
+    v: list[dict] = []
+    for st in result.get("longtail_steps") or []:
+        if not isinstance(st, dict):
+            continue
+        prov = st.get("provenance") or {}
+        if prov.get("source") != "synthesized":
+            continue
+        cmds = prov.get("commands") or []
+        if not cmds:
+            v.append({"invariant": "PROVENANCE_CLEAN.synthesized_empty",
+                      "where": f"longtail[{st.get('purpose','?')}]",
+                      "message": "a synthesized install carries no command provenance — its audit "
+                                 "trail was lost; refusing to ship an untraceable recipe."})
+            continue
+        for i, c in enumerate(cmds):
+            cp = (c or {}).get("provenance") or {}
+            src = cp.get("source")
+            if src not in ("extracted", "agent_authored"):
+                v.append({"invariant": "PROVENANCE_CLEAN.untagged_command",
+                          "where": f"longtail[{st.get('purpose','?')}].commands[{i}]",
+                          "message": f"synthesized command {i} has provenance source {src!r} — only "
+                                     f"'extracted' or 'agent_authored' may ship (it is untraceable)."})
+            elif src == "extracted" and not (cp.get("origin_file") and cp.get("origin_sha256")):
+                v.append({"invariant": "PROVENANCE_CLEAN.extraction_unanchored",
+                          "where": f"longtail[{st.get('purpose','?')}].commands[{i}]",
+                          "message": f"synthesized command {i} claims EXTRACTED but names no "
+                                     f"origin_file + origin_sha256 — an extraction must anchor to the "
+                                     f"file it was lifted from."})
+    return v
+
+
 def _check_license(result: dict) -> list[dict]:
     """I13 — license-gated artifacts must not be marked redistributable and must
     name their license(s). The procedural firewall against republishing a gated
@@ -236,5 +276,10 @@ def check_build(result: dict) -> list[dict]:
     # -- POLICY_CLEAN ----------------------------------------------------
     violations.extend(_check_accelerator(result.get("accelerator")))
     violations.extend(_check_license(result))
+
+    # -- PROVENANCE_CLEAN (synthesis tier) -------------------------------
+    # A synthesized (agent-as-generator) install must carry its provenance into the
+    # recipe — nothing untraceable to the tool's own files ships.
+    violations.extend(_check_provenance(result))
 
     return violations

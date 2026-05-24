@@ -192,6 +192,33 @@ def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-
             "purpose": f"{name} (R {source})", "engine_coupled": True}
 
 
+def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: str = "",
+                engine_coupled: bool = False, repo: str = "", commit: str = "") -> dict[str, Any]:
+    """The UNIVERSAL long-tail installer — the ONE shape the bespoke tail (compiled
+    source / run-by-path script / release binary / jar / half-baked) collapses into.
+    Instead of enumerating a generator per tool, the AGENT reads the tool's own
+    build files and submits a VALIDATED, provenance-tagged command sequence; this
+    runs it VERBATIM in the build container (joined under `set -eux`, one shell so
+    `cd` persists) and proves it with a single `evidence` check. Safe because every
+    command was gated by provenance + grounding (synthesis.validate_submission) and
+    the result is gated by the honesty contract (the tool must run in the shipped
+    image). `commands` = [{command, provenance, engine_coupled?}]; the per-command
+    provenance rides into the recipe (the longtail) for audit + verify-by-rebuild.
+
+    If ANY command is engine-coupled (built against an engine toolchain), the whole
+    sequence runs with the engine env active — harmless for the plain steps."""
+    seq = [c["command"] for c in commands if c.get("command")]
+    cmd = "set -eux; " + "; ".join(seq)
+    wrap = tool or name
+    coupled = engine_coupled or any(c.get("engine_coupled") for c in commands)
+    return {"command": cmd, "evidence": evidence or f"command -v {wrap}", "tool": wrap,
+            "purpose": f"{name} (synthesized @ {(commit or 'HEAD')[:12]})",
+            "engine_coupled": coupled,
+            "provenance": {"source": "synthesized", "repo": repo, "commit": commit,
+                           "commands": [{"command": c.get("command"),
+                                         "provenance": c.get("provenance")} for c in commands]}}
+
+
 def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = "",
                 interpreter: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
     """Run-by-path script collection (very common for half-baked academic tools:
