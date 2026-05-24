@@ -1297,3 +1297,57 @@ def test_i13_not_gated_is_unaffected():
             "pipeline_steps": [], "redistributable": True}
     i13 = [x for x in check_invariants(spec) if x["invariant"].startswith("I13.")]
     assert not i13, i13
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 5a: BioContainers / mulled adoption (freeze's adopt-by-digest)
+# ---------------------------------------------------------------------------
+
+def test_mulled_v2_name_matches_canonical_oracle():
+    """Our self-contained mulled-v2 name must match galaxy's canonical
+    v2_image_name exactly (SHA1). Vectors generated from galaxy-tool-util — if
+    these drift, adopt-by-digest silently stops finding real images."""
+    from agent.skills.biocontainers import mulled_v2_name
+    P = "mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40"   # sha1(bwa\nsamtools)
+    assert mulled_v2_name([("samtools", "1.21")]) == "samtools:1.21"
+    assert mulled_v2_name([("samtools", None)]) == "samtools"
+    assert mulled_v2_name([("bwa", "0.7.17"), ("samtools", "1.21")]) == \
+        f"{P}:93034fdc1427845187877ba74191d0963fd1cad3"
+    assert mulled_v2_name([("samtools", "1.3.1"), ("bwa", "0.7.13")]) == \
+        f"{P}:4d0535c94ef45be8459f429561f0894c3fe0ebcf"
+    assert mulled_v2_name([("samtools", "1.3.1"), ("bwa", None)]) == \
+        f"{P}:b0c847e4fb89c343b04036e33b2daa19c4152cf5"
+    assert mulled_v2_name([("samtools", None), ("bwa", None)]) == P
+    assert mulled_v2_name([("samtools", "1.3.1"), ("bwa", "0.7.13")], image_build="0") == \
+        f"{P}:4d0535c94ef45be8459f429561f0894c3fe0ebcf-0"
+
+
+def test_mulled_v2_name_is_order_independent_and_lowercases():
+    from agent.skills.biocontainers import mulled_v2_name
+    a = mulled_v2_name([("BWA", "0.7.17"), ("Samtools", "1.21")])
+    b = mulled_v2_name([("samtools", "1.21"), ("bwa", "0.7.17")])
+    assert a == b == "mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40:93034fdc1427845187877ba74191d0963fd1cad3"
+
+
+def test_build_number_ranking():
+    from agent.skills.biocontainers import _build_number
+    assert _build_number("1.21--h96c455f_1") == 1
+    assert _build_number("1.21--h50ea8bc_0") == 0
+    assert _build_number("66ed1b38d280722529bb8a0167b0cf02f8a0b488-0") == 0
+    assert _build_number("1476e745a911a5a2ac22207311b275c51e745ba9-2") == 2
+    assert _build_number("noversion") == -1
+
+
+def test_resolve_biocontainer_single_tool_live():
+    """Live adoption against quay.io for a tool that definitely has a
+    biocontainer (samtools 1.21). Network-guarded: skips if the registry is
+    unreachable so the suite stays green offline."""
+    import pytest as _pytest
+    from agent.skills.biocontainers import resolve_biocontainer
+    res = resolve_biocontainer([("samtools", "1.21")], timeout=20)
+    if not res.get("found"):
+        _pytest.skip(f"quay.io unreachable or tag absent: {res.get('reason')}")
+    assert res["repo"] == "samtools"
+    assert res["tag"].startswith("1.21--")
+    assert res["digest"].startswith("sha256:")
+    assert res["image_by_digest"].startswith("quay.io/biocontainers/samtools@sha256:")
