@@ -15,7 +15,6 @@ starts it automatically.
 from __future__ import annotations
 
 import os
-import platform as _hostplat
 import re
 import subprocess
 import sys
@@ -1739,6 +1738,7 @@ def freeze(
     platform: str = "linux-64",
     accel: str = "none",
     gated: bool = False,
+    licenses: list[str] = [],
     push_target: str = "",
     gpu_required: bool = False,
     cuda_version: str = "",
@@ -1754,15 +1754,15 @@ def freeze(
          proven artifact by hash with NO re-solve (the scale unlock).
       2. content_digest (what was GOT): lock + source/binary/artifact hashes +
          platform + accel (from the draft when pipeline_id is given).
-      3. ADOPT-or-BUILD, by what the env actually contains:
+      3. ADOPT-or-BUILD:
          - pure conda + a published biocontainer → ADOPT it BY DIGEST (no build).
-         - any non-conda install (binary/source/…) → RECIPE BUILD: replay the
-           installs on the ship platform (release binaries re-fetched from the
-           SAME release's linux asset, sha256-anchored) + smoke-tested in-image.
-           A biocontainer is NOT adopted here — it would ship a different,
-           unvalidated artifact that lacks the hand-installed tools.
-         - pure conda, no biocontainer → conda-pack build, but ONLY when host
-           arch == ship arch (a cross-arch conda-pack is refused, not shipped).
+         - everything else → CONTAINER-NATIVE BUILD via env_freeze: install +
+           validate IN the ship image (one generic bake, validated==shipped). Covers
+           hand-installed tools (binary/jar/source/cargo/go/perl), pure conda, and
+           pip/R — cross-arch too (built in-container; no host-arch conda-pack and no
+           cross-arch refusal). A biocontainer is NOT adopted when the env has non-
+           conda installs it can't represent (that would ship a different artifact).
+           Gated builds must pass `licenses` (I13).
       4. HPC delivery, registry-free by DEFAULT: adopted → `apptainer pull
          docker://…@digest`; built → `docker save` tarball + `apptainer build
          docker-archive://…`. A push_target pushes the built image instead
@@ -1822,63 +1822,43 @@ def freeze(
         hpc = _freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
 
-    elif non_conda:
-        # CONTAINER-NATIVE BUILD — the env has hand-installed (binary/jar/source/
-        # cargo/go/perl) tools that a biocontainer can't contain and conda-pack can't
-        # move cross-arch. env_freeze routes each install to its install_commands
-        # generator and builds on the ship platform (install + validate IN the image,
-        # one generic bake, validated==shipped) — the container-native replacement for
-        # the old recipe replay (build_recipe + the nine _emit_*). Adopting here would
-        # ship a different, unvalidated artifact, so refuse to adopt even if one exists.
+    else:
+        # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
+        # uses conda-pack at all). env_freeze installs + validates IN the ship image
+        # (one generic bake, validated==shipped), covering hand-installed tools
+        # (binary/jar/source/cargo/go/perl), pure conda, and pip/R — cross-arch too
+        # (build in-container, no host-arch conda-pack and no cross-arch refusal).
+        # A biocontainer is not adopted when the env has non-conda installs it can't
+        # represent (adopting would ship a different, unvalidated artifact).
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
         docker_platform = _CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
+        conda_deps = _freeze.requested_conda_specs(draft) if draft else []
+        if not conda_deps and not non_conda:
+            # no draft (or no recorded conda installs): treat the requested tools as
+            # conda specs (the declarative pure-conda case).
+            conda_deps = [f"{n}={v}" if v else n for n, v in parsed]
         br = _env_freeze.build_env_image(
-            draft, name=name, version=version,
-            conda_deps=_freeze.requested_conda_specs(draft),
+            draft or {}, name=name, version=version, conda_deps=conda_deps,
             primary_tools=[n for n, _ in parsed], platform=docker_platform,
             accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
-            license_gated=gated, redistributable=not gated)
+            license_gated=gated, licenses=licenses, redistributable=not gated)
         if not br.get("success"):
-            # map_install refuses pip/r_install (no container-native generator yet —
-            # the follow-up slice) + non-replayable source; the build refuses on any
-            # honesty-contract violation. Surface it verbatim.
+            # build_env_image refuses pip/r_install with no generator, a non-replayable
+            # source, or any honesty-contract violation (incl. I13: a gated build needs
+            # licenses[]). Surface it verbatim.
             return {"success": False, "stage": "container_build", "request_key": rkey,
                     "adopt_attempt": adopt, "build": br}
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
         _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
-        # record what shipped: each baked long-tail step (binary/jar/source/cargo/go/
-        # perl) — the command IS the provenance in the container-native model.
+        # record what shipped: each baked long-tail step (the command IS the provenance).
         shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
                             for s in br.get("longtail_steps", [])]
-        if _freeze.has_conda_packages(draft):  # portable lock for the conda layer (image digest is the anchor)
+        if conda_deps:  # portable lock for the conda layer (image digest is the real anchor)
             plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
             cl = _env_mgr.generate_lock(env_name, platforms=plats)
             conda_lock_path = cl.get("lockfile") if cl.get("success") else None
-
-    else:
-        # PURE CONDA, no biocontainer (or gated). conda-pack snapshots the HOST
-        # env, so it is only valid when host arch == ship arch — refuse a cross-
-        # arch conda-pack rather than ship host-arch binaries in a foreign image.
-        host_is_linux_x86 = sys.platform.startswith("linux") and \
-            _hostplat.machine().lower() in ("x86_64", "amd64")
-        if platform.startswith("linux") and not host_is_linux_x86:
-            return {"success": False, "stage": "build", "request_key": rkey, "adopt_attempt": adopt,
-                    "reason": f"cross-arch conda-pack would ship host-arch ({_hostplat.machine()}) "
-                              f"binaries in a {platform} image, and no biocontainer exists to adopt. "
-                              f"Build on a linux/amd64 host, or choose a tool with a biocontainer."}
-        mode = "build"
-        build_info = _docker.build(env_name, name, pipeline_description or name,
-                                   version=version, gpu_required=gpu_required, cuda_version=cuda_version)
-        if not build_info.get("success"):
-            return {"success": False, "stage": "build", "request_key": rkey,
-                    "adopt_attempt": adopt, "build": build_info}
-        image = build_info["image_tag"]
-        image_digest, tarball, hpc = _deliver_built(image)
-        plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
-        cl = _env_mgr.generate_lock(env_name, platforms=plats)
-        conda_lock_path = cl.get("lockfile") if cl.get("success") else None
 
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,

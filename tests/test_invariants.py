@@ -2688,3 +2688,25 @@ def test_container_native_multistage_runtime_provisions_jar_jre():
     df2 = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False,
                           longtail_steps=bin_step)
     assert "default-jre-headless" not in df2
+
+
+def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch):
+    """Phase E (E1): freeze no longer uses conda-pack. A pure-conda env (no draft, no
+    biocontainer) builds container-native — conda_deps derived from the requested
+    tools — cross-arch with NO refusal."""
+    import agent.mcp_server as m
+    monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: None)
+    monkeypatch.setattr(m._biocontainers, "resolve_biocontainer", lambda parsed: {"found": False})
+    monkeypatch.setattr(m._env_cache, "lookup", lambda k: None)
+    monkeypatch.setattr(m._env_cache, "register", lambda k, rec: rec)
+    monkeypatch.setattr(m._env_mgr, "generate_lock", lambda *a, **k: {"success": False})
+    monkeypatch.setattr(m._docker, "save_archive", lambda img, path: {"success": False})
+    monkeypatch.setattr(m._docker, "image_digest", lambda img: "")
+    captured = {}
+    monkeypatch.setattr(m._env_freeze, "build_env_image",
+                        lambda spec, **kw: captured.update(kw) or {
+                            "success": True, "image": "x:1", "image_digest": "sha256:d", "longtail_steps": []})
+    res = m.freeze("bioinf_x", ["samtools=1.21", "bcftools=1.21"], platform="linux/amd64", pipeline_id="")
+    assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
+    assert captured["conda_deps"] == ["samtools=1.21", "bcftools=1.21"]   # from tools (no draft)
+    assert captured["platform"] == "linux/amd64" and captured["license_gated"] is False
