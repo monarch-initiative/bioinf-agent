@@ -57,6 +57,7 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 | `install_cargo_tool(env, crate, version?, binary_name?, git_url?, pipeline_id)` / `install_go_tool(env, package, version?, binary_name?, pipeline_id)` | Rust / Go tools not on bioconda. `cargo install --root {env}` / `GOBIN={env}/bin go install`. cli_which is the anchor (locally built ⇒ can't be wrong-arch). **Prefer conda when available** (many are on bioconda); these are the fallback |
 | `freeze(env, tools, pipeline_name?, platform?, accel?, gated?, push_target?, pipeline_id)` | Freeze the env into a content-addressed, HPC-shippable artifact. request_key→EnvCache lookup (hit = proven artifact by hash, no re-solve); ADOPT a pre-built BioContainer by digest when one exists else BUILD via conda-pack+docker; emits the Apptainer HPC delivery contract (registry-free `docker save`→`apptainer build docker-archive` by default; gated ⇒ tarball-only per I13). `tools` = the PRIMARY requested tools |
 | `generate_user_guide(pipeline_id\|spec, freeze_request_key?)` | Layer-2 deliverable: render a runnable Markdown guide from the pipeline's PASSING, validated run — every command shown was executed + validated (only validated pipeline_steps + a self-tested usage template). `freeze_request_key` pins the env BY DIGEST (Apptainer delivery + content/image digests) from the EnvCache. Writes `env_reports/{name}.GUIDE.md` |
+| `seal_workflow(pipeline_id, freeze_request_key, workflow_name?, description?)` | **Layer-2 seal.** Validate the run-side invariants (I0/I3/I6/I7/I8 — env-build invariants are Layer 1's), PIN the frozen env BY DIGEST, render the guide, write a `WorkflowSpec` (`{name}.workflow.yaml` + `{name}.GUIDE.md`). Call `freeze()` first. Refuses on any workflow-invariant violation |
 | `download_reference_database(name, url, local_path, pipeline_id)` | Large DBs (>100 MB). Watchdog-safe via run_in_background. Auto-records ReferenceDatabase entry |
 | `run_pipeline_step(env, command, pipeline_id, inputs, output_types?, watch_dir?)` | Run + auto-validate every detected output in one call |
 | `stage_authored_artifact(pipeline_id, path, role, description, content?, generated_by?, language?)` | Any time the agent writes a file outside MCP — driver scripts, synthetic test data, hand-staged BAM/VCF/FASTA, transformed configs. Records content verbatim (text) or genesis command (binary) + sha256. Without this, the artifact's path is an orphan to I8 and finalize fails. |
@@ -66,6 +67,10 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 | `phenopacket_to_vcf(phenopacket_id, output_vcf)` | Materialize a single-sample VCF from a phenopacket — eliminates hand-VCF synthesis |
 
 Below the primitives there are still lower-level tools (`run_in_env`, `validate_output`, `verify_installation`, `patch_pipeline`, etc.) — use them when a primitive doesn't fit. Prefer the primitive when it does.
+
+### Two layers — environment vs. workflow
+
+The re-spine separates two lifecycles. **Layer 1 — the environment** is solved *once*, frozen, and content-addressed: build it with the install primitives, then `freeze()` produces a digest-addressed, HPC-shippable artifact registered in the EnvCache (a later identical request returns it by hash, no re-solve). **Layer 2 — the workflow** *consumes* a frozen env by digest: `seal_workflow()` validates the run-side invariants, pins the env, and writes a `WorkflowSpec` + a user guide rendered from the passing run. The env is the reusable "solved component"; workflows are the run-many, per-experiment artifacts on top of it. (The combined `finalize_pipeline` path still exists and coexists during the re-spine.)
 
 ---
 
