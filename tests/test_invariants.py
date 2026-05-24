@@ -1459,3 +1459,51 @@ def test_freeze_record_derives_redistributable_from_gated():
                          image="q@sha256:d", image_digest="sha256:d", platform="linux-64",
                          gated=False)
     assert rec2["redistributable"] is True and rec2["created_at"]
+
+
+# ---------------------------------------------------------------------------
+# Re-spine: resolver (tier selection + ResolutionDecision) — ranking is pure
+# ---------------------------------------------------------------------------
+
+def test_rank_decision_prefers_conda_records_alternatives():
+    from agent.skills.resolver import rank_decision
+    avail = {"conda": {"available": True, "channel": "bioconda"},
+             "pip": {"available": True}, "cran": {"available": False}}
+    d = rank_decision(avail)
+    assert d["chosen"] == "conda"
+    assert [a["tier"] for a in d["alternatives"]] == ["pip"]
+    assert "conda" in d["rationale"] and "pip" in d["rationale"]
+
+
+def test_rank_decision_prefer_override_and_fallthrough():
+    from agent.skills.resolver import rank_decision
+    avail = {"conda": {"available": True}, "pip": {"available": True}}
+    assert rank_decision(avail, prefer="pip")["chosen"] == "pip"
+    # prefer a tier that isn't available → ignored, normal order wins
+    assert rank_decision(avail, prefer="source")["chosen"] == "conda"
+    # only a lower tier available → it is chosen
+    assert rank_decision({"source": {"available": True}})["chosen"] == "source"
+    # nothing available → no tier
+    assert rank_decision({"conda": {"available": False}})["chosen"] is None
+
+
+def test_install_call_maps_each_tier_to_its_primitive():
+    from agent.skills.resolver import _install_call
+    assert "install_conda_packages" in _install_call("conda", "samtools", "1.21", {"channel": "bioconda"}, "")
+    assert "install_pip_package" in _install_call("pip", "multiqc", "1.21", {}, "")
+    assert 'source="cran"' in _install_call("cran", "ape", "", {}, "")
+    assert 'source="bioconductor"' in _install_call("bioconductor", "DESeq2", "", {}, "")
+    assert "install_release_binary" in _install_call("binary", "mosdepth", "", {"assets": ["http://x/mosdepth"]}, "brentp/mosdepth")
+    assert "install_git_repo" in _install_call("source", "thing", "", {}, "owner/thing")
+
+
+def test_resolve_live_samtools_chooses_conda():
+    """Live resolve: samtools is on bioconda, so the resolver must choose the
+    conda tier. Network-guarded — skips if registries are unreachable."""
+    import pytest as _pytest
+    from agent.skills.resolver import resolve
+    d = resolve("samtools", timeout=15)
+    if not d.get("chosen"):
+        _pytest.skip("registries unreachable")
+    assert d["chosen"] == "conda", f"expected conda for samtools, got {d['chosen']} ({d['probed']})"
+    assert "install_conda_packages" in d["install_call"]

@@ -49,6 +49,7 @@ from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
 from agent.skills import freeze as _freeze
+from agent.skills import resolver as _resolver
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -122,6 +123,33 @@ def search_package(
 # ---------------------------------------------------------------------------
 # Environment management
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+def resolve_tool(
+    tool: str,
+    version: str = "",
+    github_repo: str = "",
+    prefer: str = "",
+) -> dict:
+    """Decide WHICH install tier to use for `tool`, and record WHY (the
+    ResolutionDecision). Probes availability independently per tier
+    (conda/bioconda, PyPI, CRAN — plus release-binary/source when github_repo is
+    given) and ranks by the preference order conda > pip/cran/bioconductor >
+    binary > source > manual (reproducibility + clean containerization + least
+    build fragility).
+
+    Returns {chosen, install_call, rationale, alternatives, probed, …}: the
+    concrete install primitive call to make, why it was chosen over the others,
+    and the rejected-but-available alternatives. `prefer` forces a tier when
+    available. `github_repo` ('owner/repo') unlocks the binary/source tiers — a
+    release asset can't be probed from a bare tool name.
+
+    Query-only: it does NOT install. Use the returned install_call with the
+    matching primitive, then freeze().
+    """
+    return _resolver.resolve(tool, version=version, github_repo=github_repo,
+                             prefer=(prefer or None))
+
 
 @mcp.tool()
 def create_conda_env(
@@ -1609,8 +1637,11 @@ def freeze(
     name = pipeline_name or env_name
     sif = f"{name}.sif"
     adopt = _biocontainers.resolve_biocontainer(parsed)
+    conda_lock_path = None
 
     if adopt.get("found") and adopt.get("image_by_digest") and not gated:
+        # Adopt: the biocontainer IS the artifact; its provenance is the digest,
+        # not our env — so no conda-lock of our env (it would be irrelevant).
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
         hpc = _freeze.apptainer_delivery(
             mode="adopt", sif_name=sif, image_by_digest=adopt["image_by_digest"],
@@ -1637,11 +1668,10 @@ def freeze(
         hpc = _freeze.apptainer_delivery(
             mode="build", sif_name=sif, push_target=pushed_ref, tarball=tarball, gated=gated,
         )
-
-    # Multi-platform conda-lock (best-effort; never fatal).
-    plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
-    cl = _env_mgr.generate_conda_lock(env_name, platforms=plats)
-    conda_lock_path = cl.get("lockfile") if cl.get("success") else None
+        # Multi-platform conda-lock of OUR built env (best-effort; never fatal).
+        plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
+        cl = _env_mgr.generate_conda_lock(env_name, platforms=plats)
+        conda_lock_path = cl.get("lockfile") if cl.get("success") else None
 
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
