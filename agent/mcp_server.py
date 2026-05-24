@@ -2050,7 +2050,30 @@ def seal_workflow(
         except Exception:
             usage_ok = False
     render_spec = {**draft, "usage_verified": usage_ok}
-    guide_md = _user_guide.render_user_guide(render_spec, freeze_record=fr)
+
+    # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
+    # frozen env (their own freeze). Validate every step's container digest against
+    # the set of ALL frozen env digests, not just the one we sealed from — so a
+    # multi-env workflow is still "validated == shipped" when every step ran in some
+    # shipped env. `fr` remains the PRIMARY env (the guide's get-the-image section).
+    all_envs = _env_cache.all()
+    valid_digests = {r.get("image_digest") for r in all_envs.values() if r.get("image_digest")}
+    by_digest = {r.get("image_digest"): (k, r) for k, r in all_envs.items() if r.get("image_digest")}
+    envs_used: list[dict] = []
+    seen_dig: set = set()
+    for s in draft.get("pipeline_steps", []):
+        if not isinstance(s, dict):
+            continue
+        d = s.get("container_image_digest")
+        is_validated = s.get("validation") or s.get("validation_status") == "passed"
+        if d and is_validated and d not in seen_dig:
+            seen_dig.add(d)
+            rk, rr = by_digest.get(d, ("", {}))
+            envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
+                              "image_digest": d})
+
+    guide_md = _user_guide.render_user_guide(render_spec, freeze_record=fr,
+                                             valid_digests=valid_digests)
     key_packages = _user_guide.key_packages(draft)
 
     from datetime import datetime, timezone
@@ -2063,9 +2086,14 @@ def seal_workflow(
         "env_content_digest": fr.get("content_digest", ""),
         "env_image":          fr.get("image", ""),
         "env_hpc_delivery":   fr.get("hpc_delivery", {}),
+        # every frozen env this workflow chains (multi-env); the primary env above
+        # is for the guide's get-the-image step. Each step also carries its own
+        # container_image_digest, so a reader can map step → env.
+        "envs":               envs_used,
         "pipeline_status":    draft.get("pipeline_status", "in_progress"),
         "usage_verified":     usage_ok,
-        "validated_in_shipped_image": _user_guide.validated_in_shipped_image(draft, fr),
+        "validated_in_shipped_image": _user_guide.validated_in_shipped_image(
+            draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),
         "pipeline_steps":     draft.get("pipeline_steps", []),
         # External sources carried so the artifact self-verifies (I8 standalone).

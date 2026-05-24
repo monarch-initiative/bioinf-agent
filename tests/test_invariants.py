@@ -1828,6 +1828,23 @@ def test_validated_in_shipped_image_requires_digest_match():
     assert validated_in_shipped_image({"pipeline_steps": []}, fr) is False
 
 
+def test_validated_in_shipped_image_multi_env_chaining():
+    """A multi-env workflow chains steps that ran in DIFFERENT frozen envs; it's
+    still validated==shipped iff every validated step's digest is in the set of all
+    frozen env digests."""
+    from agent.skills.user_guide import validated_in_shipped_image
+    step = lambda dig: {"step": 1, "returncode": 0, "validation": {"o": {"passed": True}},
+                        "ran_in_container": True, "container_image_digest": dig}
+    spec = {"pipeline_steps": [step("sha256:envA"), step("sha256:envB")]}
+    # both envs are frozen → validated==shipped across the chain
+    assert validated_in_shipped_image(spec, valid_digests={"sha256:envA", "sha256:envB"}) is True
+    # one step ran in an env that isn't a known frozen env → not shippable
+    assert validated_in_shipped_image(spec, valid_digests={"sha256:envA"}) is False
+    # single-env default still works (one digest)
+    assert validated_in_shipped_image({"pipeline_steps": [step("sha256:envA")]},
+                                      {"image_digest": "sha256:envA"}) is True
+
+
 def test_lock_engine_prefers_pixi(monkeypatch):
     """The lock-engine seam keeps us the universal adapter: pixi when present,
     else conda-lock, else none — callers never bind to one engine."""

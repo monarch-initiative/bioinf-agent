@@ -82,19 +82,29 @@ def executed_commands(spec: dict) -> list[dict]:
     return out
 
 
-def validated_in_shipped_image(spec: dict, freeze_record: Optional[dict] = None) -> bool:
-    """True iff EVERY validated step ran inside the pinned env image, matched by
-    digest — i.e. the bytes the user will run are the exact bytes we validated.
-    The strongest honesty claim the two-layer model can make."""
-    dig = (freeze_record or {}).get("image_digest")
-    if not dig:
+def validated_in_shipped_image(spec: dict, freeze_record: Optional[dict] = None,
+                               valid_digests: Optional[set] = None) -> bool:
+    """True iff EVERY validated step ran inside a SHIPPED frozen env image, matched
+    by digest — the bytes the user will run are the exact bytes we validated. The
+    strongest honesty claim the two-layer model can make.
+
+    Multi-env workflows chain several frozen envs: a step may run in its OWN env
+    image (its own freeze). Pass `valid_digests` = the set of ALL frozen env image
+    digests (from the EnvCache); each validated step must have run in container with
+    a digest IN that set. Single-env (the common case) is the default: omit
+    valid_digests and it falls back to the one freeze_record's digest."""
+    if valid_digests is None:
+        dig = (freeze_record or {}).get("image_digest")
+        valid_digests = {dig} if dig else set()
+    valid_digests = {d for d in valid_digests if d}
+    if not valid_digests:
         return False
     steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
     validated = [s for s in steps
                  if s.get("validation") or s.get("validation_status") == "passed"]
     if not validated:
         return False
-    return all(s.get("ran_in_container") and s.get("container_image_digest") == dig
+    return all(s.get("ran_in_container") and s.get("container_image_digest") in valid_digests
                for s in validated)
 
 
@@ -102,16 +112,18 @@ def _fence(text: str) -> str:
     return f"```\n{text}\n```"
 
 
-def render_user_guide(spec: dict, freeze_record: Optional[dict] = None) -> str:
+def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
+                      valid_digests: Optional[set] = None) -> str:
     """Render the Markdown user guide. `freeze_record` (from freeze()) supplies
     the HPC delivery + the image/content digests; without it the guide falls
-    back to the spec's docker info."""
+    back to the spec's docker info. `valid_digests` (the set of all frozen env
+    digests) makes the shipped-image badge correct for multi-env workflows."""
     name = spec.get("pipeline_name", "pipeline")
     kpkgs = key_packages(spec)
     version = next((v for n, v in kpkgs.items()
                     if n.lower() == name.lower() and v not in ("", "?")), "")
     title = f"{name}" + (f" {version}" if version else "")
-    in_shipped = validated_in_shipped_image(spec, freeze_record)
+    in_shipped = validated_in_shipped_image(spec, freeze_record, valid_digests)
     L: list[str] = [f"# {title} — user guide", ""]
     if spec.get("description"):
         L += [spec["description"], ""]
