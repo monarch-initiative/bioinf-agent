@@ -17,7 +17,30 @@ as well as a container-native build.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
+
+# a conservative version token (2.13.0, 1.4-r122, v1.21, 0.8.1.1) for pulling a
+# long-tail tool's version out of its own in-image evidence output (honest — it's
+# what the tool printed, captured in the shipped image).
+_VER_RE = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)*(?:[-_]?r?\d+)?)\b")
+
+
+def _extract_version(text: str) -> str:
+    m = _VER_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _tier_from_purpose(purpose: str) -> str:
+    """The install tier behind a long-tail tool, read from its recorded purpose
+    string (e.g. 'seqkit binary', 'seqtk (source @ sha)', 'X jar')."""
+    p = purpose.lower()
+    if "script repo" in p or "run-by-path" in p:
+        return "source (run-by-path)"
+    for tier in ("binary", "source", "jar", "perl", "cargo", "go"):
+        if tier in p:
+            return tier
+    return "long-tail (baked)"
 
 
 def _verif_index(verifications: list[dict]) -> dict[str, dict]:
@@ -43,7 +66,7 @@ def _install_method(name: str, pkg: Optional[dict], shipped: list[dict]) -> str:
     for s in shipped or []:
         purpose = (s.get("name") or s.get("purpose") or "").lower()
         if low in purpose:
-            return "long-tail (baked)"
+            return _tier_from_purpose(purpose)
     return "—"
 
 
@@ -121,9 +144,12 @@ def render_env_report(record: dict) -> str:
         L.append("|------|---------|---------|--------------------|")
         for t in requested:
             pkg = pidx.get(t.lower())
-            ver = (pkg or {}).get("version", "") or "—"
+            v = vidx.get(t.lower())
+            # conda version when known; else the version the tool printed in its
+            # in-image evidence (real, captured output — not fabricated)
+            ver = (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or "—"
             L.append(f"| {t} | {ver} | {_install_method(t, pkg, shipped)} | "
-                     f"{_evidence_cell(vidx.get(t.lower()))} |")
+                     f"{_evidence_cell(v)} |")
     else:
         L.append("_(none recorded)_")
     L.append("")
@@ -171,14 +197,20 @@ def render_env_report(record: dict) -> str:
 
     # -- delivery ---------------------------------------------------------
     hpc = r.get("hpc_delivery") or {}
-    if hpc or r.get("tarball"):
+    push = r.get("push_status", "")
+    if hpc or r.get("tarball") or (push and push != "not-configured"):
         L.append("## Delivery (HPC / Apptainer)")
         L.append("")
-        for key in ("pull", "build", "command", "note"):
-            if hpc.get(key):
-                L.append(f"- {hpc[key]}")
+        if push and push != "not-configured":
+            L.append(f"- Registry: {push}")
+        if hpc.get("get_image"):
+            L.append(f"- Get the image: `{hpc['get_image']}`")
+        if hpc.get("run_example"):
+            L.append(f"- Run: `{hpc['run_example']}`")
         if r.get("tarball"):
             L.append(f"- docker-save tarball: `{r['tarball']}`")
+        if hpc.get("source_note"):
+            L.append(f"- _{hpc['source_note']}_")
         L.append("")
 
     # -- the honesty footer ----------------------------------------------
@@ -193,5 +225,8 @@ def render_env_report(record: dict) -> str:
     L.append("- **POLICY_CLEAN** — accelerator-honesty (I12) and the license firewall (I13) "
              "passed.")
     L.append(f"- **Validation locus** — {_locus_line(r.get('validation_locus',''))}.")
+    L.append("- **Reproducibility** — the conda/PyPI layer is lock-pinned, the base image is "
+             "digest-pinned, and release binaries are sha256-anchored. (System apt packages "
+             "are not yet version-pinned.)")
     L.append("")
     return "\n".join(L)

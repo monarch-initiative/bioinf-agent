@@ -2118,6 +2118,32 @@ def test_env_report_splits_requested_vs_ride_along():
     assert "samtools" not in ride
 
 
+def test_env_report_long_tail_tier_version_and_delivery():
+    """Long-tail tools show their real install tier + the version they printed
+    in-image (not '—'/'long-tail (baked)'); the Delivery section + reproducibility
+    line render from the record."""
+    from agent.skills.env_report import render_env_report
+    rec = {
+        "name": "vc", "image": "vc:1", "image_digest": "sha256:i", "mode": "build",
+        "validation_locus": "native", "requested_tools": ["seqkit", "seqtk"],
+        "push_status": "pushed: ghcr.io/org/vc:1",
+        "shipped_binaries": [{"name": "seqkit binary", "command": "curl ... | sha256sum -c"},
+                             {"name": "seqtk (source @ 7c04ce7)", "command": "git clone ... && make"}],
+        "verifications": [{"tool": "seqkit", "label": "seqkit", "check": "seqkit version",
+                           "passed": True, "out": "seqkit v2.13.0"},
+                          {"tool": "seqtk", "label": "seqtk", "check": "seqtk 2>&1 | head",
+                           "passed": True, "out": "Version: 1.4-r122"}],
+        "resolved_packages": [],
+        "hpc_delivery": {"get_image": "apptainer pull vc.sif docker://ghcr.io/org/vc:1"},
+    }
+    md = render_env_report(rec)
+    assert "| seqkit | 2.13.0 | binary |" in md      # version from in-image output + real tier
+    assert "| seqtk | 1.4-r122 | source |" in md
+    assert "Registry: pushed: ghcr.io/org/vc:1" in md
+    assert "apptainer pull vc.sif docker://ghcr.io/org/vc:1" in md
+    assert "Reproducibility" in md and "digest-pinned" in md
+
+
 def test_env_report_honesty_footer_reflects_locus():
     from agent.skills.env_report import render_env_report
     assert "NOT authoritative" in render_env_report(_sample_record("emulated"))
