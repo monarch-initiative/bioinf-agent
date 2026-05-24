@@ -81,6 +81,14 @@ if _orphan_reap.get("removed"):
 
 mcp = FastMCP("bioinf-agent")
 
+# freeze()'s `platform` is a conda subdir (linux-64); buildx/recipe builds want a
+# docker platform (linux/amd64). Map the ones we ship to.
+_CONDA_TO_DOCKER_PLATFORM = {
+    "linux-64": "linux/amd64",
+    "linux-aarch64": "linux/arm64",
+    "linux-arm64": "linux/arm64",
+}
+
 # ---------------------------------------------------------------------------
 # Research
 # ---------------------------------------------------------------------------
@@ -1815,14 +1823,15 @@ def freeze(
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
         unsupported = sorted({x["type"] for x in non_conda
-                              if x["type"] not in ("binary", "jar", "source")})
+                              if x["type"] not in ("binary", "jar", "source", "cargo", "go")})
         if unsupported:
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "reason": f"recipe build does not yet replay install types {unsupported} on the "
-                              f"ship platform; supported today: conda + binary + jar + source. (Build "
-                              f"on a linux/amd64 host, or add a replay path for these tiers.)",
+                              f"ship platform; supported today: conda + binary + jar + source + "
+                              f"cargo + go. (Build on a linux/amd64 host, or add a replay path for "
+                              f"these tiers.)",
                     "non_conda": non_conda}
-        binaries, jars, sources = [], [], []
+        binaries, jars, sources, cargos, gos = [], [], [], [], []
         for x in non_conda:
             im = x["install_method"]
             if x["type"] == "jar":
@@ -1851,6 +1860,22 @@ def freeze(
                 shipped_binaries.append({"name": x["name"], "platform": platform,
                                          "url": im.get("source"), "commit_sha": im.get("commit_sha")})
                 continue
+            if x["type"] == "cargo":
+                cargos.append({"name": x["name"], "crate": im.get("crate") or x["name"],
+                               "version": im.get("version") or "", "git_url": im.get("git_url") or "",
+                               "binary_name": im.get("binary_name") or x["name"],
+                               "rust_version": im.get("rust_version") or ""})
+                shipped_binaries.append({"name": x["name"], "platform": platform,
+                                         "url": im.get("source"), "rust_version": im.get("rust_version")})
+                continue
+            if x["type"] == "go":
+                gos.append({"name": x["name"], "package": im.get("package") or x["name"],
+                            "version": im.get("version") or "latest",
+                            "binary_name": im.get("binary_name") or x["name"],
+                            "go_version": im.get("go_version") or ""})
+                shipped_binaries.append({"name": x["name"], "platform": platform,
+                                         "url": im.get("source"), "go_version": im.get("go_version")})
+                continue
             # binary tier
             la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
             if not la.get("found"):
@@ -1873,11 +1898,18 @@ def freeze(
                  f"{b['wrapper']} --help 2>&1" for b in binaries]
         if jars:
             smoke.append("java -version")  # proves the JRE; the in-container run proves each jar
-        # source builds: presence+executable (compilation already proved the arch;
-        # the in-container run proves real execution).
+        # source/cargo/go builds: presence+executable (compilation already proved
+        # the arch; the in-container run proves real execution).
         smoke += [f"test -x /usr/local/bin/{s['wrapper']}" for s in sources]
+        smoke += [f"test -x /usr/local/bin/{c['binary_name']}" for c in cargos]
+        smoke += [f"test -x /usr/local/bin/{g['binary_name']}" for g in gos]
+        # buildx wants a docker platform ("linux/amd64"); freeze's `platform` is a
+        # conda subdir ("linux-64"). Normalize, so the recipe targets the requested
+        # arch (toolchains + go tarball arch derive from this).
+        docker_platform = _CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
         rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
                                   binaries=binaries, jars=jars, sources=sources,
+                                  cargos=cargos, gos=gos, platform=docker_platform,
                                   version=version, smoke_commands=smoke)
         if not rb.get("success"):
             return {"success": False, "stage": "recipe_build", "request_key": rkey,

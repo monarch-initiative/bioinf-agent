@@ -223,6 +223,8 @@ class DockerBuilder:
         binaries: list[dict] | None = None,
         jars: list[dict] | None = None,
         sources: list[dict] | None = None,
+        cargos: list[dict] | None = None,
+        gos: list[dict] | None = None,
         version: str = "",
         smoke_commands: list[str] | None = None,
         platform: str = "linux/amd64",
@@ -239,6 +241,12 @@ class DockerBuilder:
         sources: [{name, repo_url, commit_sha?, build_command, bin_path, wrapper?,
             build_apt?}] — git-source tools rebuilt at the pinned commit on the
             ship platform (a build toolchain is added to the image).
+        cargos: [{name, crate, version?, git_url?, binary_name?, rust_version?}] —
+            Rust crates rebuilt on the ship platform with the SAME rustc (rustup,
+            pinned to rust_version) so the binary is reproducible cross-arch.
+        gos: [{name, package, version?, binary_name?, go_version?}] — Go tools
+            rebuilt with the SAME go toolchain (official pinned tarball for the
+            ship arch).
         smoke_commands: commands run in the built image to prove the tools run
             (e.g. ["seqkit version"]); a failure fails the build.
 
@@ -248,6 +256,8 @@ class DockerBuilder:
         binaries = binaries or []
         jars = jars or []
         sources = sources or []
+        cargos = cargos or []
+        gos = gos or []
         smoke_commands = smoke_commands or []
         build_dir = self.output_dir / name
         build_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +266,8 @@ class DockerBuilder:
             (build_dir / "environment.yml").write_text(conda_env_yml)
         dockerfile_path = build_dir / "Dockerfile"
         dockerfile_path.write_text(
-            self._recipe_dockerfile(name, description, conda_env_yml, binaries, jars, sources))
+            self._recipe_dockerfile(name, description, conda_env_yml, binaries, jars,
+                                    sources, cargos, gos, platform=platform))
 
         registry = self.config["docker"].get("registry", "")
         tag_base = f"{registry}/{name}" if registry else name
@@ -293,20 +304,36 @@ class DockerBuilder:
     _SOURCE_BUILD_APT = ("build-essential git zlib1g-dev libbz2-dev liblzma-dev "
                          "libcurl4-openssl-dev libssl-dev")
 
+    # platform token → the arch slug used by the official Go release tarballs
+    # (and our toolchain selectors). The recipe is built for ONE ship platform.
+    _PLATFORM_ARCH = {"linux/amd64": "amd64", "linux/arm64": "arm64",
+                      "linux/arm64/v8": "arm64"}
+
     def _recipe_dockerfile(self, name: str, description: str, conda_env_yml: str,
-                           binaries: list[dict], jars: list[dict] | None = None,
-                           sources: list[dict] | None = None) -> str:
+                           binaries: list[dict] | None = None,
+                           jars: list[dict] | None = None,
+                           sources: list[dict] | None = None,
+                           cargos: list[dict] | None = None,
+                           gos: list[dict] | None = None,
+                           platform: str = "linux/amd64") -> str:
         """Assemble the recipe Dockerfile text (pure — no filesystem/docker), so
         the generated recipe is unit-testable. A conda layer is added only when
         conda_env_yml is non-empty; otherwise a slim Debian base carries just the
-        replayed release binaries / jars / source builds."""
+        replayed release binaries / jars / source builds / cargo / go tools."""
+        binaries = binaries or []
         jars = jars or []
         sources = sources or []
+        cargos = cargos or []
+        gos = gos or []
         has_conda = bool(conda_env_yml.strip())
+        arch = self._PLATFORM_ARCH.get(platform, "amd64")
+        # Rust needs a linker (cc); cgo Go builds may too — so any compiled tier
+        # pulls in the C build toolchain + common bioinformatics libs.
+        needs_build = bool(sources) or bool(cargos) or bool(gos)
         apt = "ca-certificates curl procps tar gzip bzip2 xz-utils unzip time"
         if jars and not has_conda:            # JAR tools need a JRE (else conda openjdk)
             apt += " default-jre-headless"
-        if sources:                            # source builds need a toolchain + libs
+        if needs_build:                        # source/cargo/go builds need a toolchain + libs
             apt += " " + self._SOURCE_BUILD_APT
             for s in sources:
                 if s.get("build_apt"):
@@ -327,14 +354,96 @@ class DockerBuilder:
             lines += ["COPY environment.yml /tmp/environment.yml",
                       "RUN conda env create -n env -f /tmp/environment.yml && conda clean -afy",
                       'ENV PATH="/opt/conda/envs/env/bin:$PATH"', ""]
+        if cargos:
+            lines += [self._emit_rust_toolchain(cargos), ""]
+        if gos:
+            lines += [self._emit_go_toolchain(gos, arch), ""]
         for b in binaries:
             lines += [self._emit_binary_install(b), ""]
         for j in jars:
             lines += [self._emit_jar_install(j), ""]
         for s in sources:
             lines += [self._emit_source_install(s), ""]
+        for c in cargos:
+            lines += [self._emit_cargo_install(c), ""]
+        for g in gos:
+            lines += [self._emit_go_install(g), ""]
         lines += ["WORKDIR /data", 'CMD ["/bin/bash"]', ""]
         return "\n".join(lines)
+
+    @staticmethod
+    def _pick_toolchain_version(items: list[dict], key: str) -> str:
+        """Pick one toolchain version for a set of same-tier tools. They share an
+        image, so we install ONE compiler: the highest recorded version (a newer
+        compiler builds an older crate/module; the reverse may not). Empty when
+        none recorded — the install step then uses the tier default."""
+        vers = [str(i.get(key) or "").strip() for i in items if i.get(key)]
+        def _parse(v): return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+        return max(vers, key=_parse) if vers else ""
+
+    # rustup default when the host rust_version wasn't captured (older installs).
+    _RUST_FALLBACK = "stable"
+
+    def _emit_rust_toolchain(self, cargos: list[dict]) -> str:
+        """Install rustup pinned to the captured host rustc version, so the
+        replayed `cargo install` uses the IDENTICAL compiler (reproducible)."""
+        ver = self._pick_toolchain_version(cargos, "rust_version") or self._RUST_FALLBACK
+        return ("# Rust toolchain (rustup, pinned to the host rustc that built these crates)\n"
+                "RUN set -eux; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\\n"
+                f"    | sh -s -- -y --profile minimal --default-toolchain {ver}\n"
+                'ENV PATH="/root/.cargo/bin:${PATH}"')
+
+    def _emit_go_toolchain(self, gos: list[dict], arch: str) -> str:
+        """Install the official Go toolchain pinned to the captured host go
+        version, for the ship arch — so the replayed `go install` is reproducible.
+        GOTOOLCHAIN=local pins it (no surprise auto-download of a different go)."""
+        ver = self._pick_toolchain_version(gos, "go_version")
+        if not ver:
+            # No captured version → let Go self-manage from the module's directive.
+            return ('# Go toolchain (auto-managed: host go version was not captured)\n'
+                    'RUN set -eux; curl -L --fail -o /tmp/go.tgz '
+                    f'"https://go.dev/dl/go1.22.6.linux-{arch}.tar.gz"; \\\n'
+                    '    tar -C /usr/local -xzf /tmp/go.tgz; rm /tmp/go.tgz\n'
+                    'ENV PATH="/usr/local/go/bin:${PATH}"')
+        return ("# Go toolchain (official tarball, pinned to the host go that built these tools)\n"
+                "RUN set -eux; curl -L --fail -o /tmp/go.tgz \\\n"
+                f'    "https://go.dev/dl/go{ver}.linux-{arch}.tar.gz"; \\\n'
+                "    tar -C /usr/local -xzf /tmp/go.tgz; rm /tmp/go.tgz\n"
+                'ENV PATH="/usr/local/go/bin:${PATH}"\n'
+                "ENV GOTOOLCHAIN=local")
+
+    def _emit_cargo_install(self, c: dict) -> str:
+        """Emit the Dockerfile RUN step that rebuilds ONE Rust crate on the ship
+        platform with the pinned rustc: `cargo install … --root /usr/local` so the
+        binary lands on PATH. --locked uses the crate's Cargo.lock (reproducible)."""
+        import shlex
+        name    = c["name"]
+        binp    = c.get("binary_name") or name
+        git_url = c.get("git_url") or ""
+        crate   = c.get("crate") or name
+        version = c.get("version") or ""
+        if git_url:
+            src = f"--git {shlex.quote(git_url)}"
+            origin = git_url
+        else:
+            src = shlex.quote(crate) + (f" --version {shlex.quote(version)}" if version else "")
+            origin = f"crates.io:{crate}" + (f"@{version}" if version else "")
+        return (f"# cargo install {origin} (rebuilt for the ship platform)\n"
+                f"RUN set -eux; cargo install {src} --root /usr/local --locked; \\\n"
+                f"    test -x /usr/local/bin/{binp}")
+
+    def _emit_go_install(self, g: dict) -> str:
+        """Emit the Dockerfile RUN step that rebuilds ONE Go tool on the ship
+        platform with the pinned go: `GOBIN=/usr/local/bin go install pkg@ver`."""
+        import shlex
+        name    = g["name"]
+        binp    = g.get("binary_name") or name
+        package = g.get("package") or name
+        version = g.get("version") or "latest"
+        spec    = f"{package}@{version}"
+        return (f"# go install {spec} (rebuilt for the ship platform)\n"
+                f"RUN set -eux; GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}; \\\n"
+                f"    test -x /usr/local/bin/{binp}")
 
     def _emit_source_install(self, s: dict) -> str:
         """Emit the Dockerfile RUN step that REBUILDS one git-source tool at its

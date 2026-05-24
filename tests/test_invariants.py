@@ -1880,6 +1880,126 @@ def test_recipe_dockerfile_rebuilds_source_at_pinned_commit():
     assert "test -f /opt/tools/seqtk/src/seqtk" in df
 
 
+def _db():
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.docker_builder import DockerBuilder
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    return DockerBuilder(cfg)
+
+
+def test_recipe_dockerfile_rebuilds_cargo_with_pinned_rustc():
+    """The CARGO tier: install rustup pinned to the captured host rustc, then
+    `cargo install … --root /usr/local --locked`. Falls back to 'stable' when no
+    rust_version was captured. A C build toolchain (linker) is provisioned."""
+    db = _db()
+    c = {"name": "rasusa", "crate": "rasusa", "version": "4.1.0",
+         "binary_name": "rasusa", "rust_version": "1.83.0"}
+    df = db._recipe_dockerfile("rasusa", "subsample", conda_env_yml="",
+                               binaries=[], jars=[], sources=[], cargos=[c])
+    assert "build-essential" in df                                # Rust needs a linker (cc)
+    assert "sh.rustup.rs" in df and "--default-toolchain 1.83.0" in df   # pinned rustc
+    assert "cargo install rasusa --version 4.1.0 --root /usr/local --locked" in df
+    assert "test -x /usr/local/bin/rasusa" in df
+    # git_url variant + no captured version → rustup 'stable' fallback
+    cg = {"name": "tool", "git_url": "https://github.com/o/r", "binary_name": "tool",
+          "crate": "tool", "version": "", "rust_version": ""}
+    df2 = db._recipe_dockerfile("tool", "d", conda_env_yml="", cargos=[cg])
+    assert "--default-toolchain stable" in df2
+    assert "cargo install --git https://github.com/o/r --root /usr/local --locked" in df2
+
+
+def test_recipe_dockerfile_rebuilds_go_with_pinned_toolchain():
+    """The GO tier: fetch the official Go tarball pinned to the captured host go
+    version FOR THE SHIP ARCH, then `GOBIN=/usr/local/bin go install pkg@ver`.
+    GOTOOLCHAIN=local pins it. The arch token follows the build platform."""
+    db = _db()
+    g = {"name": "gofasta", "package": "github.com/virus-evolution/gofasta",
+         "version": "v1.2.3", "binary_name": "gofasta", "go_version": "1.22.6"}
+    df = db._recipe_dockerfile("gofasta", "align", conda_env_yml="",
+                               binaries=[], jars=[], sources=[], gos=[g], platform="linux/amd64")
+    assert "go1.22.6.linux-amd64.tar.gz" in df                   # pinned version + amd64 token
+    assert "GOTOOLCHAIN=local" in df
+    assert "GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install" in df
+    assert "github.com/virus-evolution/gofasta@v1.2.3" in df
+    assert "test -x /usr/local/bin/gofasta" in df
+    # arm64 ship platform → arm64 tarball token
+    df_arm = db._recipe_dockerfile("gofasta", "align", conda_env_yml="",
+                                   gos=[g], platform="linux/arm64")
+    assert "go1.22.6.linux-arm64.tar.gz" in df_arm
+    # no captured go_version → auto-managed fallback (still arch-correct)
+    g0 = {**g, "go_version": ""}
+    df0 = db._recipe_dockerfile("gofasta", "align", conda_env_yml="", gos=[g0], platform="linux/amd64")
+    assert ".linux-amd64.tar.gz" in df0 and "GOTOOLCHAIN" not in df0
+
+
+def test_pick_toolchain_version_picks_highest():
+    """One image → one compiler: the highest recorded version (a newer compiler
+    builds an older crate; the reverse may not). Empty when none recorded."""
+    db = _db()
+    items = [{"rust_version": "1.79.0"}, {"rust_version": "1.83.0"}, {"rust_version": ""}]
+    assert db._pick_toolchain_version(items, "rust_version") == "1.83.0"
+    assert db._pick_toolchain_version([{"go_version": ""}], "go_version") == ""
+
+
+def test_cargo_go_install_method_captures_toolchain_version(tmp_path, monkeypatch):
+    """install_cargo_tool / install_go_tool must record the host toolchain version
+    + the replay fields (crate/package, version, binary_name) in install_method, so
+    freeze can rebuild reproducibly. The version is parsed from `rustc --version`
+    / `go version`."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.env_manager import EnvManager
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    em = EnvManager(cfg)
+    em.envs_dir = tmp_path
+    (tmp_path / "bioinf_x").mkdir()
+
+    def fake_run(env, cmd, timeout=0, **kw):
+        if "rustc --version" in cmd:
+            return {"returncode": 0, "stdout": "rustc 1.83.0 (90b35a623 2024-11-26)", "stderr": ""}
+        if "go version" in cmd:
+            return {"returncode": 0, "stdout": "go version go1.22.6 darwin/arm64", "stderr": ""}
+        if cmd.startswith("which "):
+            name = cmd.split()[1]
+            return {"returncode": 0, "stdout": f"/{env}/bin/{name}", "stderr": ""}
+        return {"returncode": 0, "stdout": "", "stderr": ""}   # cargo/go install
+    monkeypatch.setattr(em, "run_in_env", fake_run)
+
+    rc = em.install_cargo_tool("bioinf_x", "rasusa", version="4.1.0")
+    im = rc["install_method"]
+    assert im["type"] == "cargo" and im["rust_version"] == "1.83.0"
+    assert im["crate"] == "rasusa" and im["version"] == "4.1.0" and im["binary_name"] == "rasusa"
+
+    rg = em.install_go_tool("bioinf_x", "github.com/virus-evolution/gofasta", version="v1.2.3")
+    im = rg["install_method"]
+    assert im["type"] == "go" and im["go_version"] == "1.22.6"
+    assert im["package"].endswith("gofasta") and im["version"] == "v1.2.3" and im["binary_name"] == "gofasta"
+
+
+def test_non_conda_installs_includes_cargo_and_go():
+    """freeze's recipe dispatch keys off non_conda_installs — cargo/go installs
+    must surface there with their install_method so they get replayed (not adopted)."""
+    from agent.skills.freeze import non_conda_installs
+    draft = {"install_steps": [
+        {"installed_packages": [{"name": "rasusa",
+            "install_method": {"type": "cargo", "crate": "rasusa", "version": "4.1.0",
+                               "binary_name": "rasusa", "rust_version": "1.83.0"}}]},
+        {"installed_packages": [{"name": "gofasta",
+            "install_method": {"type": "go", "package": "github.com/x/gofasta",
+                               "version": "v1.2.3", "binary_name": "gofasta", "go_version": "1.22.6"}}]},
+    ]}
+    nc = {x["name"]: x["type"] for x in non_conda_installs(draft)}
+    assert nc == {"rasusa": "cargo", "gofasta": "go"}
+
+
+def test_conda_to_docker_platform_map():
+    """freeze's conda subdir must normalize to a docker platform for buildx."""
+    from agent.mcp_server import _CONDA_TO_DOCKER_PLATFORM as M
+    assert M["linux-64"] == "linux/amd64"
+    assert M["linux-aarch64"] == "linux/arm64"
+
+
 def _selfverify_workflow(with_test_data: bool) -> dict:
     step = {"step": 1, "returncode": 0,
             "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",

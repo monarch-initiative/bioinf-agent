@@ -962,6 +962,12 @@ class EnvManager:
             return {"success": False, "error": "cargo install failed",
                     "stderr": (inst.get("stderr") or "")[-800:], "log": log}
         ev = evidence.cli_which(self, env_name, bin_name)
+        # Capture the EXACT host toolchain version so freeze can replay the build
+        # with the identical rustc on the ship platform (reproducible cross-arch).
+        rv = self.run_in_env(env_name, "rustc --version", timeout=60)
+        m = re.search(r"rustc\s+(\d+\.\d+\.\d+)", (rv.get("stdout") or ""))
+        rust_version = m.group(1) if m else ""
+        log.append(f"rust_version={rust_version or '?'}")
         return {
             "success":        ev["anchored"],
             "crate":          crate,
@@ -969,7 +975,9 @@ class EnvManager:
             "verify_command": f"which {bin_name}",
             "verify_output":  ev["detail"] or "",
             "install_method": {"type": "cargo",
-                               "source": git_url or f"crates.io:{crate}" + (f"@{version}" if version else "")},
+                               "source": git_url or f"crates.io:{crate}" + (f"@{version}" if version else ""),
+                               "crate": crate, "version": version, "git_url": git_url,
+                               "binary_name": bin_name, "rust_version": rust_version},
             "log":            log,
         }
 
@@ -996,13 +1004,21 @@ class EnvManager:
             return {"success": False, "error": "go install failed",
                     "stderr": (inst.get("stderr") or "")[-800:], "log": log}
         ev = evidence.cli_which(self, env_name, bin_name)
+        # Capture the EXACT host Go toolchain so freeze replays with the identical
+        # `go` (official pinned tarball for the ship arch) — reproducible cross-arch.
+        gv = self.run_in_env(env_name, "go version", timeout=60)
+        m = re.search(r"go(\d+\.\d+(?:\.\d+)?)", (gv.get("stdout") or ""))
+        go_version = m.group(1) if m else ""
+        log.append(f"go_version={go_version or '?'}")
         return {
             "success":        ev["anchored"],
             "package":        package,
             "binary_name":    bin_name,
             "verify_command": f"which {bin_name}",
             "verify_output":  ev["detail"] or "",
-            "install_method": {"type": "go", "source": f"{package}@{version}"},
+            "install_method": {"type": "go", "source": f"{package}@{version}",
+                               "package": package, "version": version,
+                               "binary_name": bin_name, "go_version": go_version},
             "log":            log,
         }
 
