@@ -368,7 +368,7 @@ class PipelineState:
                     f"patch refused — these keys are runtime-captured or "
                     f"finalize-derived and cannot be hand-supplied: {rejected}. "
                     f"Use the dedicated primitive (run_pipeline_step, "
-                    f"verify_installation, install_packages, build_docker_image) "
+                    f"verify_installation, install_conda_packages, build_docker_image) "
                     f"so the spec stays anchored to observed reality."
                 ),
                 "rejected_keys":  rejected,

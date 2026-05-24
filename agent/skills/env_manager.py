@@ -61,7 +61,7 @@ def parse_conda_spec(spec: str) -> dict:
     """Parse a conda package spec into {name, version, constraint}.
 
     Returns {name: ..., version: <without operator>, constraint: <operator | ''>}.
-    Used by install_packages to record clean PackageRecord fields rather than
+    Used by install_conda_packages to record clean PackageRecord fields rather than
     splitting on '=' (which puts the '>' from '>=' onto the name).
     """
     s = (spec or "").strip()
@@ -177,7 +177,7 @@ class EnvManager:
         Groups packages by channel to minimise solver calls, but always
         runs a single solve across all channels for best dependency resolution.
 
-        Auto-creates the env if it doesn't exist — install_packages used to fail
+        Auto-creates the env if it doesn't exist — install_conda_packages used to fail
         with EnvironmentLocationNotFound when an agent forgot to call create()
         first. Now: missing env → create with default python version → install.
         """
@@ -997,7 +997,7 @@ class EnvManager:
 
         The channel field on each record is conda's authoritative answer to "where
         did this package come from" — the spec's PackageRecord.channel should be
-        derived from here, not from whatever the agent passed to install_packages
+        derived from here, not from whatever the agent passed to install_conda_packages
         (which is the channel hint, not the resolved channel).
         """
         env_path = self.envs_dir / env_name

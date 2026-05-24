@@ -1392,7 +1392,7 @@ def derive_packages_from_env(spec: dict, env_manager: Any, env_name: str) -> dic
 
     # Pull the full conda record (version + channel + build_string) so the
     # PackageRecord.channel can be set from conda's authoritative answer,
-    # not from whatever the agent passed to install_packages (which is the
+    # not from whatever the agent passed to install_conda_packages (which is the
     # hint, not the resolved channel).
     conda_records = env_manager.list_conda_package_records(env_name)
     conda_versions = {n: rec["version"] for n, rec in conda_records.items()}

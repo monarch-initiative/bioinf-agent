@@ -97,7 +97,7 @@ def search_package(
     conda env + install_steps' installed_packages (the source of truth),
     NOT from search_package. So this tool is query-only: use the returned
     versions/channels to choose what to actually install via
-    `install_packages` / `run_install_command`.
+    `install_conda_packages` / `run_install_command`.
 
     If pipeline_id is supplied, description/homepage/input_types/output_types
     are cached on `draft.search_cache[package_name]` so the finalize pass can
@@ -170,7 +170,7 @@ def create_conda_env(
     host arch — most commonly `subdir="osx-64"` on Apple Silicon for
     osx-64-only bioconda packages (plink, plink2, older C/C++ tools), which
     then run under Rosetta 2. The subdir is persisted to the env's .condarc so
-    every subsequent install_packages into this env honors it. Check
+    every subsequent install_conda_packages into this env honors it. Check
     search_package's `installable_on_current_platform` / `available_subdirs`
     first; if the host arch is missing but osx-64/linux-64 exists, create with
     that subdir.
@@ -202,13 +202,13 @@ def create_conda_env(
 
 
 @mcp.tool()
-def install_packages(
+def install_conda_packages(
     env_name: str,
     packages: list[dict],
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
-    """Install packages into a conda env.
+    """Install conda packages (bioconda / conda-forge / defaults) into a conda env.
     packages: list of {spec: str, channel: str}, e.g. [{spec: 'samtools=1.21', channel: 'bioconda'}]
     conda-pack is added automatically.
 
@@ -221,6 +221,10 @@ def install_packages(
     conflict, etc). Default is append — same semantics as run_install_command."""
     result = _env_mgr.install(env_name, packages)
     if pipeline_id:
+        # Record the env this installed into. install() auto-creates the env when
+        # absent (a supported path), so an agent that skips create_conda_env would
+        # otherwise leave draft.conda_env unset — breaking finalize + the guide.
+        _pipeline_state.set_conda_env(pipeline_id, env_name)
         from agent.skills.env_manager import parse_conda_spec
         installed: list[dict] = []
         for pkg in packages:
@@ -1986,7 +1990,7 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
         "install_strategy": [
             "1. For each dep in all_required, call search_package to check conda-forge "
             "(r-{lowercase}) and bioconda (bioconductor-{lowercase}) availability.",
-            "2. Install all conda-available deps in one install_packages call.",
+            "2. Install all conda-available deps in one install_conda_packages call.",
             "3. For deps not found on conda, install via BiocManager — it resolves both "
             "CRAN and Bioconductor packages without needing to know which is which: "
             "Rscript -e \"lib<-file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'); "

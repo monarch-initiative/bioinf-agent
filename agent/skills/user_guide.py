@@ -113,6 +113,16 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None) -> str:
     if spec.get("python_version"):
         L.append(f"- python: {spec['python_version']}")
     pkgs = [p for p in (spec.get("packages") or []) if isinstance(p, dict) and p.get("name")]
+    if not pkgs:
+        # Draft fallback: spec.packages is finalize-derived, so before finalize
+        # reconstruct the package list from the install_steps' installed_packages.
+        seen: dict[str, str] = {}
+        for st in spec.get("install_steps", []) or []:
+            for ip in (st.get("installed_packages") or []):
+                n = ip.get("name")
+                if n and n not in seen:
+                    seen[n] = ip.get("version", "?")
+        pkgs = [{"name": n, "version": v} for n, v in seen.items()]
     if pkgs:
         listed = ", ".join(f"{p['name']}={p.get('version','?')}" for p in pkgs[:12])
         L += [f"- key packages: {listed}" + (" …" if len(pkgs) > 12 else "")]

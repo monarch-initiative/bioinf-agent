@@ -1599,3 +1599,21 @@ def test_render_user_guide_without_freeze_falls_back_to_docker():
     s["docker"] = {"image_tag": "bwa_samtools:1.21"}
     md = render_user_guide(s, freeze_record=None)
     assert "apptainer pull" in md and "bwa_samtools:1.21" in md
+
+
+def test_user_guide_derives_packages_from_install_steps_on_draft():
+    """Regression for the end-to-end finding: spec.packages is finalize-derived,
+    so on a DRAFT the guide must reconstruct the env details from install_steps
+    rather than rendering an empty section."""
+    from agent.skills.user_guide import render_user_guide
+    draft = {
+        "pipeline_name": "x", "conda_env": "bioinf_x",
+        "packages": [],   # not materialized pre-finalize
+        "install_steps": [{"step": 1, "installed_packages": [
+            {"name": "samtools", "version": "1.21"},
+            {"name": "bwa", "version": "0.7.17"}]}],
+        "pipeline_steps": [],
+    }
+    md = render_user_guide(draft)
+    assert "conda env: `bioinf_x`" in md
+    assert "samtools=1.21" in md and "bwa=0.7.17" in md
