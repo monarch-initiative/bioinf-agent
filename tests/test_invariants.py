@@ -2293,3 +2293,136 @@ def test_lock_engine_prefers_pixi(monkeypatch):
     assert EnvManager.lock_engine() == "conda-lock"
     present.clear()
     assert EnvManager.lock_engine() == "none"
+
+
+# ---------------------------------------------------------------------------
+# env_honesty — the container-native Layer-1 contract (REPLACES the host moat's
+# env-build invariants: I1/I2/I5/I9/I10/I11/I12/I13/I14 → BUILT · VALIDATED_IN_IMAGE
+# · POLICY_CLEAN). Pure: check_build over a hand-built BuildResult, no container.
+# ---------------------------------------------------------------------------
+
+def _clean_build_result(**over):
+    """A BuildResult that satisfies the contract; override fields to break it."""
+    r = {
+        "image": "demo:1.0", "image_digest": "sha256:abc",
+        "verifications": [
+            {"label": "samtools", "tool": "samtools", "check": "samtools --version", "passed": True},
+            {"label": "seqkit (release binary)", "tool": "seqkit",
+             "check": "command -v seqkit", "passed": True},
+        ],
+        "accelerator": None, "license_gated": False, "licenses": [], "redistributable": True,
+    }
+    r.update(over)
+    return r
+
+
+def test_env_honesty_accepts_a_clean_build():
+    from agent.skills.env_honesty import check_build
+    assert check_build(_clean_build_result()) == []
+
+
+def test_env_honesty_BUILT_requires_image_and_digest():
+    """BUILT absorbs I1/I9/I11/I14: the image existing IS the anchor (a failed RUN,
+    each carrying its own inline sha256/commit/bake anchor, fails docker build)."""
+    from agent.skills.env_honesty import check_build
+    inv = {v["invariant"] for v in check_build(_clean_build_result(image=""))}
+    assert "BUILT.image_present" in inv
+    inv = {v["invariant"] for v in check_build(_clean_build_result(image_digest=""))}
+    assert "BUILT.image_digest_resolved" in inv
+
+
+def test_env_honesty_VALIDATED_catches_failed_in_image_evidence():
+    """validated==shipped: a tool whose evidence didn't pass in the SHIPPED image
+    is not provably present in what we ship (the strong form of I2)."""
+    from agent.skills.env_honesty import check_build
+    r = _clean_build_result()
+    r["verifications"][1]["passed"] = False
+    r["verifications"][1]["rc"] = 127
+    inv = {v["invariant"] for v in check_build(r)}
+    assert "VALIDATED_IN_IMAGE.evidence_passed" in inv
+
+
+def test_env_honesty_VALIDATED_rejects_echo_cheat_shapes():
+    """The carried I2 anti-echo-cheat shape rule: a constant-true / bare-echo /
+    no-tool-token evidence is rejected even if it 'passes' (rc=0) in the image —
+    it never exercised the tool."""
+    from agent.skills.env_honesty import check_build
+    for cheat in ("true", ":", "exit 0", 'echo "samtools 1.21"', "[ 1 = 1 ]"):
+        r = _clean_build_result()
+        r["verifications"][0]["check"] = cheat   # but still passed=True (the cheat works)
+        inv = {v["invariant"] for v in check_build(r)}
+        assert "VALIDATED_IN_IMAGE.evidence_shape" in inv, f"missed cheat: {cheat!r}"
+
+
+def test_env_honesty_VALIDATED_requires_some_evidence():
+    from agent.skills.env_honesty import check_build
+    inv = {v["invariant"] for v in check_build(_clean_build_result(verifications=[]))}
+    assert "VALIDATED_IN_IMAGE.no_evidence" in inv
+
+
+def test_env_honesty_evidence_shape_word_boundary_and_perl_and_probes():
+    """The shape rule mirrors I2's word-boundary token (cat ≠ concatenate), accepts
+    the perl -M idiom (module glued to a capital letter) and conda-prefix-stripped
+    forms (r-ape→ape), and accepts a tool-less authored-file probe (test -f)."""
+    from agent.skills.env_honesty import evidence_shape_violation as sv
+    # real probes pass
+    assert sv("samtools --version", "samtools") is None
+    assert sv("command -v seqkit", "seqkit") is None
+    assert sv("perl -MBio::DB::HTS -e1", "Bio::DB::HTS") is None
+    assert sv("Rscript -e 'library(ape)'", "r-ape") is None          # prefix-stripped
+    assert sv("test -f /opt/x/config.yaml") is None                   # no tool token, real probe
+    # cheats fail
+    assert sv("true", "samtools")
+    assert sv('echo "cat 1.0"', "cat")
+    assert sv("concatenate --help", "cat")                            # word-boundary: cat ⊄ concatenate
+    assert sv("", "samtools")
+    assert sv("uname -a")                                             # no token, no recognizable probe
+
+
+def test_env_honesty_POLICY_carries_I12_accelerator():
+    from agent.skills.env_honesty import check_build
+    # mps must be dev_only
+    inv = {v["invariant"] for v in check_build(_clean_build_result(accelerator={"type": "mps"}))}
+    assert "I12.mps_dev_only" in inv
+    # cuda needs a toolkit version
+    inv = {v["invariant"] for v in check_build(_clean_build_result(accelerator={"type": "cuda"}))}
+    assert "I12.accel_toolkit_version_required" in inv
+    # honest cuda passes
+    assert check_build(_clean_build_result(
+        accelerator={"type": "cuda", "toolkit_version": "12.4", "runtime": "build_only"})) == []
+
+
+def test_env_honesty_POLICY_carries_I13_license_firewall():
+    from agent.skills.env_honesty import check_build
+    inv = {v["invariant"] for v in check_build(
+        _clean_build_result(license_gated=True, redistributable=True, licenses=[]))}
+    assert "I13.gated_not_redistributable" in inv and "I13.gated_license_recorded" in inv
+    # honest gated artifact passes
+    assert check_build(_clean_build_result(
+        license_gated=True, redistributable=False, licenses=["10x EULA"])) == []
+
+
+def test_envbuild_run_uses_check_build_as_the_gate(monkeypatch):
+    """EnvBuild.run() refuses (success=False) when the contract is violated, even
+    if the raw in-image validation 'succeeded' — the contract is the sole gate."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills import install_commands as ic
+    eb = EnvBuild("demo", "1.0")
+    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                                  binary_in_archive="seqkit"))
+    # stub the container-driving stages: build ok, freeze ok, digest ok, and an
+    # in-image verify that "passes" but with a CHEAT shape on the recorded check.
+    monkeypatch.setattr(eb, "build", lambda: {"success": True})
+    monkeypatch.setattr(eb, "freeze", lambda: {"success": True, "image": "demo:1.0"})
+    monkeypatch.setattr(eb.cb, "image_digest", lambda img: "sha256:abc")
+    monkeypatch.setattr(eb.cb, "close", lambda: None)
+    monkeypatch.setattr(eb, "verify_in_image", lambda img: {"success": True, "verifications": [
+        {"label": "seqkit", "tool": "seqkit", "check": "true", "passed": True}]})
+    res = eb.run()
+    assert res["success"] is False
+    assert any(v["invariant"] == "VALIDATED_IN_IMAGE.evidence_shape"
+               for v in res["honesty_violations"])
+    # and the happy path: honest evidence → accepted
+    monkeypatch.setattr(eb, "verify_in_image", lambda img: {"success": True, "verifications": [
+        {"label": "seqkit", "tool": "seqkit", "check": "command -v seqkit", "passed": True}]})
+    assert eb.run()["success"] is True

@@ -1,0 +1,240 @@
+"""
+env_honesty — the container-native Layer-1 honesty contract.
+
+This REPLACES spec_writer's env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14)
+for the container-native build locus, learning from what those invariants earned
+but shedding the machinery the locus makes redundant. The honesty model collapses
+because the locus collapsed install-and-ship into ONE event:
+
+    host model:   install on host → record sha256/commit → REPLAY in a linux image
+                  → re-hash / re-clone / re-verify at finalize (drift could happen
+                  between the two events, so every claim is re-anchored).
+
+    container-native: install == ship is one event. The download's `sha256sum -c`,
+                  the `git checkout {ref}`, the base64-baked file all live INSIDE the
+                  RUN that becomes the image. A failed or mismatched anchor fails
+                  `docker build` — there is no image to ship. Nothing is re-anchored
+                  because there is no second event to drift from.
+
+So nine env-build invariants + three re-anchoring walks (binary re-hash, source
+re-clone, authored re-hash) collapse into THREE structural guarantees:
+
+  BUILT              — the image exists (image + image_digest resolve). Every RUN,
+                       each carrying its own inline anchor, returned 0; else no
+                       image. Absorbs I1 + the structural core of I9/I11/I14.
+  VALIDATED_IN_IMAGE — every declared tool's evidence passes when re-run in the
+                       SHIPPED image, AND each evidence genuinely exercises its tool
+                       (the anti-echo-cheat shape rule — the one piece of I2 that
+                       still has work to do, since the presence anchor is now free:
+                       a clean image can't `command -v X` a tool it doesn't carry).
+                       This is I2 in its strongest form — validated == shipped.
+  POLICY_CLEAN       — accelerator honesty (I12) + the license firewall (I13),
+                       carried verbatim. These are policy (what we may ship), not
+                       anchoring, so the locus shift doesn't touch them.
+
+`content_digest` (the EnvCache key) is a REPRODUCIBILITY property, not an honesty
+gate, and lives in freeze.py — it answers "same request → same bytes?", a different
+question from "did we ship what we validated?".
+
+Pure: check_build(build_result: dict) -> list[violation]. Mirrors spec_writer's
+check_invariants shape so the mental model transfers and it's unit-testable with a
+hand-built BuildResult (no container needed).
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# The anti-echo-cheat shape rule (carried from evidence.py / env_manager.verify).
+#
+# In the host model the cheat was the "library-only echo cheat": agent-supplied
+# stdout like `echo "samtools 1.21"` faking a verify. The defense layered a word-
+# boundary token check WITH an independent presence anchor (which / conda-list).
+# In the container-native model the presence anchor is FREE — evidence runs in a
+# clean image, so `command -v X` can only pass if X is genuinely installed; no
+# agent stdout is trusted. What remains to guard is the LAZY evidence: a constant-
+# true (`true`, `:`, `exit 0`) or a bare `echo` that passes without touching the
+# tool. So we keep I2's word-boundary token rule (evidence must reference the tool)
+# and reject constant-true / bare-echo shapes.
+# ---------------------------------------------------------------------------
+
+_CONST_TRUE = re.compile(
+    r"^\s*(true|:|exit\s+0|\[\s*1\s*=\s*1\s*\]|test\s+1\s*=\s*1)\s*$", re.I)
+_BARE_ECHO = re.compile(r"^\s*(echo|printf)\b", re.I)
+# probe verbs that prove SOMETHING even when no tool token is known (e.g. an
+# authored file's `test -f {path}`), so the shape rule has a positive anchor.
+_PROBE_HINTS = ("command -v", "which ", "--version", "-version", "version",
+                "test -f", "test -e", "import ", "-e1", "rscript", "perl -m")
+
+
+def _tool_tokens(tool: str) -> set[str]:
+    """The tool plus its conda-prefix-stripped forms — mirrors evidence.r_namespace
+    (r-ape→ape, bioconductor-deseq2→deseq2, python-foo→foo, perl-bio-x→bio-x)."""
+    toks = {tool}
+    for pre in ("r-", "bioconductor-", "python-", "perl-"):
+        if tool.lower().startswith(pre):
+            toks.add(tool[len(pre):])
+    return {t for t in toks if t}
+
+
+def _references_tool(evidence: str, tool: str) -> bool:
+    """Does `evidence` invoke `tool` as a word-boundary token? Boundary = the
+    adjacent char is not an alphanumeric continuation (so `cat` does NOT match
+    inside `concatenate`), with a perl `-M` exception (`-MBio::DB::HTS` glues the
+    module to a capital letter, which is legitimate)."""
+    low = evidence.lower()
+    for t in _tool_tokens(tool):
+        tl = t.lower()
+        idx = low.find(tl)
+        while idx != -1:
+            before = low[idx - 1] if idx > 0 else " "
+            after = low[idx + len(tl)] if idx + len(tl) < len(low) else " "
+            left_ok = (not before.isalnum()) or low[max(0, idx - 2):idx] == "-m"
+            right_ok = not after.isalnum()
+            if left_ok and right_ok:
+                return True
+            idx = low.find(tl, idx + 1)
+    return False
+
+
+def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
+    """Return a reason string if `evidence` is a cheat shape, else None. Public so
+    a face (MCP/CLI) can pre-flight an agent-authored evidence before a build."""
+    ev = (evidence or "").strip()
+    if not ev:
+        return "evidence is empty — nothing was checked"
+    if _CONST_TRUE.match(ev):
+        return f"evidence {ev!r} is a constant-true cheat — it passes without exercising the tool"
+    if _BARE_ECHO.match(ev) and "$(" not in ev and "`" not in ev:
+        return f"evidence {ev!r} only echoes a string — it never invokes the tool"
+    if tool:
+        if not _references_tool(ev, tool):
+            return (f"evidence {ev!r} never references the tool token {tool!r} as a "
+                    f"word-boundary invocation — it cannot prove {tool!r} is present")
+        return None
+    # no tool token (e.g. an authored file): require a recognizable presence probe
+    if not any(h in ev.lower() for h in _PROBE_HINTS):
+        return f"evidence {ev!r} has no recognizable presence probe and no tool token to anchor on"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# POLICY (carried verbatim from spec_writer._check_accelerator / _check_license).
+# These are decoupled from spec_writer on purpose — env_honesty is the surviving
+# contract; the host moat is slated for teardown. Same invariant IDs + messages so
+# they stay recognizable.
+# ---------------------------------------------------------------------------
+
+def _check_accelerator(acc: Any) -> list[dict]:
+    """I12 — hardware-acceleration claims must be structurally honest."""
+    v: list[dict] = []
+    if not isinstance(acc, dict):
+        return v
+    atype = acc.get("type") or "none"
+    if atype == "none":
+        return v
+    if atype == "mps":
+        if not acc.get("dev_only"):
+            v.append({"invariant": "I12.mps_dev_only", "where": "accelerator",
+                      "message": "accelerator.type=mps must set dev_only=true — Metal/MPS does "
+                                 "not survive containerization to the shipped linux image, so it "
+                                 "can never be a property of the deliverable."})
+        return v
+    if not (acc.get("toolkit_version") or "").strip():
+        v.append({"invariant": "I12.accel_toolkit_version_required", "where": "accelerator",
+                  "message": f"accelerator.type={atype} requires toolkit_version (the CUDA/ROCm "
+                             f"toolkit baked into the image) — host-driver compatibility depends on it."})
+    if (acc.get("runtime") or "build_only") == "runtime_verified":
+        if not (acc.get("runtime_probe") or "").strip():
+            v.append({"invariant": "I12.runtime_verified_needs_probe", "where": "accelerator",
+                      "message": f"accelerator.runtime=runtime_verified claims a kernel ran on a real "
+                                 f"{atype} device, but no runtime_probe is recorded — without a GPU "
+                                 f"runner this must stay runtime=build_only."})
+        if not (acc.get("min_driver_version") or "").strip():
+            v.append({"invariant": "I12.runtime_verified_needs_driver", "where": "accelerator",
+                      "message": f"accelerator.runtime=runtime_verified for {atype} must record "
+                                 f"min_driver_version (the host-driver floor the image needs)."})
+    return v
+
+
+def _check_license(result: dict) -> list[dict]:
+    """I13 — license-gated artifacts must not be marked redistributable and must
+    name their license(s). The procedural firewall against republishing a gated
+    artifact (cellranger, dorado, AlphaFold params, …)."""
+    v: list[dict] = []
+    if not result.get("license_gated"):
+        return v
+    if result.get("redistributable", True):
+        v.append({"invariant": "I13.gated_not_redistributable", "where": "redistributable",
+                  "message": "license_gated=true requires redistributable=false — a gated tool's "
+                             "image must never be marked redistributable."})
+    if not (result.get("licenses") or []):
+        v.append({"invariant": "I13.gated_license_recorded", "where": "licenses",
+                  "message": "license_gated=true requires at least one entry in licenses[] naming "
+                             "the license/terms the artifact is bound by."})
+    return v
+
+
+# ---------------------------------------------------------------------------
+# The contract.
+# ---------------------------------------------------------------------------
+
+def check_build(result: dict) -> list[dict]:
+    """The container-native Layer-1 honesty contract over a BuildResult dict.
+    Returns a list of violations (empty == honest). EnvBuild.run() calls this and
+    refuses (success=False) on any violation.
+
+    Expects:
+      image, image_digest        — the shipped artifact handles (BUILT)
+      verifications: list of      — the in-image evidence outcomes + their shapes
+        {label, tool, check, passed}  (VALIDATED_IN_IMAGE)
+      accelerator, license_gated, — policy fields (POLICY_CLEAN)
+        licenses, redistributable
+    """
+    violations: list[dict] = []
+
+    # -- BUILT -----------------------------------------------------------
+    # The image existing is the structural anchor for I1/I9/I11/I14: every RUN
+    # (each with its inline sha256/commit/bake anchor) returned 0, else there is
+    # no image. We assert the handles resolve.
+    if not (result.get("image") or "").strip():
+        violations.append({"invariant": "BUILT.image_present", "where": "image",
+                           "message": "no shipped image tag — the build did not produce an artifact "
+                                      "(a failed RUN fails `docker build`; nothing to ship)."})
+    if not (result.get("image_digest") or "").strip():
+        violations.append({"invariant": "BUILT.image_digest_resolved", "where": "image_digest",
+                           "message": "image has no content id (docker image inspect returned no Id) — "
+                                      "the artifact isn't present in the local daemon."})
+
+    # -- VALIDATED_IN_IMAGE ----------------------------------------------
+    # Every declared tool's evidence must (a) have a non-cheat shape and (b) have
+    # PASSED when re-run in the shipped image. (a) is the carried I2 knowledge;
+    # (b) is validated==shipped — strictly stronger than the host verify.
+    verifications = result.get("verifications") or []
+    if not verifications:
+        violations.append({"invariant": "VALIDATED_IN_IMAGE.no_evidence", "where": "verifications",
+                           "message": "the build declared no tool evidence — an env with nothing "
+                                      "proven in the shipped image is an unverified claim."})
+    for ver in verifications:
+        if not isinstance(ver, dict):
+            continue
+        label = ver.get("label", "?")
+        shape = evidence_shape_violation(ver.get("check", ""), ver.get("tool", ""))
+        if shape:
+            violations.append({"invariant": "VALIDATED_IN_IMAGE.evidence_shape",
+                               "where": f"verifications[{label}]",
+                               "message": f"{label}: {shape}"})
+        if not ver.get("passed"):
+            violations.append({"invariant": "VALIDATED_IN_IMAGE.evidence_passed",
+                               "where": f"verifications[{label}]",
+                               "message": f"{label}: evidence {ver.get('check','')!r} did not pass "
+                                          f"(rc={ver.get('rc')}) in the shipped image — the tool is "
+                                          f"not provably present/runnable in what we ship."})
+
+    # -- POLICY_CLEAN ----------------------------------------------------
+    violations.extend(_check_accelerator(result.get("accelerator")))
+    violations.extend(_check_license(result))
+
+    return violations

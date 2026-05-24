@@ -54,7 +54,7 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
         parts.append(f"install -m 0755 {asset} /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
     ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
-    return {"command": cmd, "evidence": ev, "purpose": f"{name} (release binary)"}
+    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)"}
 
 
 def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "make",
@@ -74,7 +74,8 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
               f"install -m 0755 {src}/{binp} /usr/local/bin/{wrap}"]
     cmd = "set -eux; " + "; ".join(parts)
     ev = evidence or f"command -v {wrap}"
-    return {"command": cmd, "evidence": ev, "purpose": f"{name} (source @ {ref or 'HEAD'})"}
+    return {"command": cmd, "evidence": ev, "tool": wrap,
+            "purpose": f"{name} (source @ {ref or 'HEAD'})"}
 
 
 def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
@@ -89,7 +90,7 @@ def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
     else:
         src = shlex.quote(crate or name) + (f" --version {shlex.quote(version)}" if version else "")
     return {"command": f"cargo install {src} --root /usr/local --locked",
-            "evidence": evidence or f"command -v {binp}",
+            "evidence": evidence or f"command -v {binp}", "tool": binp,
             "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True}
 
 
@@ -100,7 +101,7 @@ def go(name: str, package: str, *, version: str = "latest", binary_name: str = "
     binp = binary_name or package.rstrip("/").split("/")[-1]
     spec = f"{package}@{version}" if version else package
     return {"command": f"GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}",
-            "evidence": evidence or f"command -v {binp}",
+            "evidence": evidence or f"command -v {binp}", "tool": binp,
             "purpose": f"{name} (go, via engine go)", "engine_coupled": True}
 
 
@@ -115,7 +116,7 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
     target = distribution or module
     pre = f"{build_env} " if build_env.strip() else ""
     return {"command": f"{pre}cpanm {cpanm_flags} {shlex.quote(target)}",
-            "evidence": evidence or f"perl -M{module} -e1",
+            "evidence": evidence or f"perl -M{module} -e1", "tool": module,
             "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True}
 
 
@@ -137,4 +138,5 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     parts.append(f"chmod +x /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
     ev = evidence or f"command -v {wrap}"
-    return {"command": cmd, "evidence": ev, "purpose": f"{name} (script repo @ {ref or 'HEAD'})"}
+    return {"command": cmd, "evidence": ev, "tool": wrap,
+            "purpose": f"{name} (script repo @ {ref or 'HEAD'})"}

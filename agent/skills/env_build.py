@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from agent.skills import env_honesty as _honesty
 from agent.skills import freeze as _freeze
 from agent.skills.container_build import ContainerBuild, EnvEngine
 
@@ -30,30 +31,41 @@ from agent.skills.container_build import ContainerBuild, EnvEngine
 class EnvBuild:
     def __init__(self, name: str, version: str = "", *, platform: str = "linux/amd64",
                  base: str = "debian:bookworm-slim", engine: Optional[EnvEngine] = None,
-                 channels: Optional[list[str]] = None):
+                 channels: Optional[list[str]] = None,
+                 accelerator: Optional[dict] = None, license_gated: bool = False,
+                 licenses: Optional[list[str]] = None, redistributable: bool = True):
         self.name = name
         self.version = version
         self.platform = platform
         self.cb = ContainerBuild(base=base, platform=platform, engine=engine, channels=channels)
         self.conda_specs: list[str] = []
         self.tools: list[dict] = []           # long-tail generator specs
-        self.verifications: list[dict] = []   # [{label, check, engine_coupled}]
+        self.verifications: list[dict] = []   # [{label, tool, check, engine_coupled}]
         self.lock_text = ""
+        # POLICY_CLEAN inputs (I12/I13) — env-level claims the contract guards.
+        self.accelerator = accelerator
+        self.license_gated = license_gated
+        self.licenses = licenses or []
+        self.redistributable = redistributable
 
     # -- DECLARE the request (no container work yet) -----------------------
     def add_conda(self, specs: list[str], verify: list[tuple[str, str]]) -> "EnvBuild":
         """Add conda/pip specs (co-solved together) + how to verify each in the
-        image: verify = [(label, tool_command)], run via the engine."""
+        image: verify = [(label, tool_command)], run via the engine. The label is
+        the tool token the contract's shape rule anchors on."""
         self.conda_specs += specs
         for label, cmd in verify:
-            self.verifications.append({"label": label, "check": cmd, "engine_coupled": True})
+            self.verifications.append({"label": label, "tool": label, "check": cmd,
+                                       "engine_coupled": True})
         return self
 
     def add_tool(self, spec: dict) -> "EnvBuild":
         """Add a long-tail tool from an install_commands generator. Its `evidence`
-        (with the right engine coupling) becomes the in-image verification."""
+        (with the right engine coupling) becomes the in-image verification; its
+        `tool` token anchors the anti-echo-cheat shape rule."""
         self.tools.append(spec)
         self.verifications.append({"label": spec.get("purpose", "tool"),
+                                   "tool": spec.get("tool", ""),
                                    "check": spec["evidence"],
                                    "engine_coupled": spec.get("engine_coupled", False)})
         return self
@@ -82,13 +94,21 @@ class EnvBuild:
         return self.cb.freeze(self.name, self.version)
 
     def verify_in_image(self, image: str) -> dict[str, Any]:
-        """Honesty gate: re-run EVERY tool's evidence in the shipped image. A build
-        is only honest if validated==shipped."""
-        finals = [(v["label"], self.cb.engine.run(v["check"]) if v["engine_coupled"] else v["check"])
+        """Re-run EVERY tool's evidence in the shipped image and return one rich
+        record per verification (label, tool, RAW check, engine_coupled, rc,
+        passed, out). The contract (env_honesty.check_build) reads these to assert
+        VALIDATED_IN_IMAGE — both the shape (on the RAW check) and the pass."""
+        finals = [(v, self.cb.engine.run(v["check"]) if v["engine_coupled"] else v["check"])
                   for v in self.verifications]
         res = self.cb.validate_in_image(image, [c for _, c in finals])
-        return {"success": res["success"],
-                "results": {lbl: res["checks"].get(c, {}) for lbl, c in finals}}
+        records = []
+        for v, run_cmd in finals:
+            r = res["checks"].get(run_cmd, {})
+            records.append({"label": v["label"], "tool": v.get("tool", ""),
+                            "check": v["check"], "engine_coupled": v["engine_coupled"],
+                            "rc": r.get("rc"), "passed": r.get("rc") == 0,
+                            "out": r.get("out", "")})
+        return {"success": res["success"], "verifications": records}
 
     # -- the content address ---------------------------------------------
     def content_digest(self) -> str:
@@ -104,8 +124,9 @@ class EnvBuild:
 
     # -- run it all -------------------------------------------------------
     def run(self) -> dict[str, Any]:
-        """Full core flow → a BuildResult. Refuses (success=False) unless every
-        tool verifies IN the shipped image."""
+        """Full core flow → a BuildResult. The honesty gate is env_honesty.check_build:
+        the build is accepted (success=True) only if it satisfies the container-native
+        Layer-1 contract — BUILT, VALIDATED_IN_IMAGE, POLICY_CLEAN."""
         try:
             b = self.build()
             if not b.get("success"):
@@ -115,8 +136,7 @@ class EnvBuild:
                 return {"success": False, "stage": "freeze", **fr}
             digest = self.cb.image_digest(fr["image"])
             v = self.verify_in_image(fr["image"])
-            return {
-                "success": v["success"],
+            result = {
                 "name": self.name, "version": self.version, "platform": self.platform,
                 "engine": self.cb.engine.name if self.conda_specs else "none",
                 "image": fr["image"], "image_digest": digest,
@@ -124,8 +144,17 @@ class EnvBuild:
                 "conda_specs": list(self.conda_specs),
                 "longtail_steps": [{"command": s["command"], "purpose": s["purpose"]}
                                    for s in self.cb.longtail],
+                "verifications": v["verifications"],
                 "validated_in_shipped_image": v["success"],
-                "verifications": v["results"],
+                # POLICY_CLEAN inputs
+                "accelerator": self.accelerator,
+                "license_gated": self.license_gated,
+                "licenses": self.licenses,
+                "redistributable": self.redistributable,
             }
+            violations = _honesty.check_build(result)
+            result["honesty_violations"] = violations
+            result["success"] = not violations
+            return result
         finally:
             self.cb.close()
