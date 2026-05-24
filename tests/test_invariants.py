@@ -2000,6 +2000,62 @@ def test_conda_to_docker_platform_map():
     assert M["linux-aarch64"] == "linux/arm64"
 
 
+def test_recipe_dockerfile_rebuilds_perl_with_cpanm():
+    """The PERL tier: replay `cpanm {target}` on the ship platform (perl+cpanm from
+    the conda layer; a C toolchain for XS), then prove the module LOADS in-image.
+    build_env (e.g. HTSLIB_DIR=$CONDA_PREFIX) is threaded for XS link hints, and
+    the conda layer exports CONDA_PREFIX so it resolves at build time."""
+    db = _db()
+    p = {"module": "Bio::DB::HTS", "distribution": "Bio::DB::HTS",
+         "cpanm_flags": "--notest", "build_env": "HTSLIB_DIR=$CONDA_PREFIX"}
+    yml = "name: env\ndependencies:\n  - perl\n  - perl-app-cpanminus\n  - htslib\n"
+    df = db._recipe_dockerfile("vep", "annotate", conda_env_yml=yml, perls=[p])
+    assert "build-essential" in df                              # XS compiles C
+    assert 'ENV CONDA_PREFIX="/opt/conda/envs/env"' in df       # so $CONDA_PREFIX resolves
+    # XS-against-conda-perl needs the conda toolchain + xlocale shim + activation
+    assert "conda install -n env -y -c conda-forge c-compiler cxx-compiler" in df
+    assert "/opt/conda/envs/env/include/xlocale.h" in df
+    assert ". /opt/conda/etc/profile.d/conda.sh; conda activate env; "\
+           "HTSLIB_DIR=$CONDA_PREFIX cpanm --notest Bio::DB::HTS" in df
+    assert "perl -MBio::DB::HTS -e1" in df                      # load-or-die proof in-image
+    # No conda layer → perl+cpanm from apt; native gcc matches → no activation/shim
+    p2 = {"module": "JSON::XS", "distribution": "JSON::XS", "cpanm_flags": "--notest", "build_env": ""}
+    df2 = db._recipe_dockerfile("x", "d", conda_env_yml="", perls=[p2])
+    assert "perl cpanminus" in df2 and "FROM debian:bookworm-slim" in df2
+    assert "cpanm --notest JSON::XS" in df2 and "perl -MJSON::XS -e1" in df2
+    assert "conda activate env" not in df2 and "xlocale.h" not in df2
+
+
+def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
+    """install_perl_package must record module/distribution/cpanm_flags/build_env in
+    install_method so freeze can replay the cpanm build reproducibly."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.env_manager import EnvManager
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    em = EnvManager(cfg)
+    em.envs_dir = tmp_path
+    (tmp_path / "bioinf_x").mkdir()
+    monkeypatch.setattr(em, "run_in_env",
+                        lambda env, cmd, timeout=0, **kw: {"returncode": 0, "stdout": "", "stderr": ""})
+    r = em.install_perl_package("bioinf_x", "Bio::DB::HTS", cpanm_flags="--notest",
+                                build_env="HTSLIB_DIR=$CONDA_PREFIX")
+    im = r["install_method"]
+    assert im["type"] == "perl" and im["module"] == "Bio::DB::HTS"
+    assert im["distribution"] == "Bio::DB::HTS" and im["cpanm_flags"] == "--notest"
+    assert im["build_env"] == "HTSLIB_DIR=$CONDA_PREFIX"
+
+
+def test_non_conda_installs_includes_perl():
+    """perl installs must surface in non_conda_installs so freeze replays (not adopts)."""
+    from agent.skills.freeze import non_conda_installs
+    draft = {"install_steps": [{"installed_packages": [{"name": "Bio::DB::HTS",
+        "install_method": {"type": "perl", "module": "Bio::DB::HTS",
+                           "distribution": "Bio::DB::HTS", "cpanm_flags": "--notest"}}]}]}
+    nc = {x["name"]: x["type"] for x in non_conda_installs(draft)}
+    assert nc == {"Bio::DB::HTS": "perl"}
+
+
 def _selfverify_workflow(with_test_data: bool) -> dict:
     step = {"step": 1, "returncode": 0,
             "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",

@@ -493,6 +493,7 @@ def install_perl_package(
     module: str,
     distribution: str = "",
     cpanm_flags: str = "",
+    build_env: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -503,12 +504,17 @@ def install_perl_package(
     `module` is the Perl package name (e.g. Bio::DB::HTS) used for the
     `perl -M{module} -e1` load-or-die verify — the registry anchor for cpanm
     modules (tracked by neither conda nor pip). Set `distribution` when the CPAN
-    distribution name differs from the module name. With pipeline_id, records the
-    install_step (install_method.type="perl") and caches the verify (I2).
+    distribution name differs from the module name. `build_env` = space-separated
+    KEY=VAL exports for XS builds that link a conda C lib (e.g.
+    "HTSLIB_DIR=$CONDA_PREFIX" for Bio::DB::HTS) — use $CONDA_PREFIX so freeze's
+    recipe replay resolves it inside the SHIP image. With pipeline_id, records the
+    install_step (install_method.type="perl", recorded for replay) + caches the
+    verify (I2). freeze rebuilds the module from CPAN on the ship platform with a C
+    toolchain + the conda layer's libs.
 
     Returns: {success, module, verify_command, verify_output, install_method, log}.
     """
-    result = _env_mgr.install_perl_package(env_name, module, distribution, cpanm_flags)
+    result = _env_mgr.install_perl_package(env_name, module, distribution, cpanm_flags, build_env)
     if pipeline_id:
         result["pipeline_merge"] = _merge_simple_install(
             pipeline_id, step, result, name=module, channel="cpan", tool="cpanm",
@@ -1823,15 +1829,15 @@ def freeze(
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
         unsupported = sorted({x["type"] for x in non_conda
-                              if x["type"] not in ("binary", "jar", "source", "cargo", "go")})
+                              if x["type"] not in ("binary", "jar", "source", "cargo", "go", "perl")})
         if unsupported:
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "reason": f"recipe build does not yet replay install types {unsupported} on the "
                               f"ship platform; supported today: conda + binary + jar + source + "
-                              f"cargo + go. (Build on a linux/amd64 host, or add a replay path for "
-                              f"these tiers.)",
+                              f"cargo + go + perl. (Build on a linux/amd64 host, or add a replay path "
+                              f"for these tiers.)",
                     "non_conda": non_conda}
-        binaries, jars, sources, cargos, gos = [], [], [], [], []
+        binaries, jars, sources, cargos, gos, perls = [], [], [], [], [], []
         for x in non_conda:
             im = x["install_method"]
             if x["type"] == "jar":
@@ -1876,6 +1882,16 @@ def freeze(
                 shipped_binaries.append({"name": x["name"], "platform": platform,
                                          "url": im.get("source"), "go_version": im.get("go_version")})
                 continue
+            if x["type"] == "perl":
+                module = im.get("module") or x["name"]
+                perls.append({"module": module,
+                              "distribution": im.get("distribution")
+                                  or (im.get("source") or "").replace("cpanm ", "").strip() or module,
+                              "cpanm_flags": im.get("cpanm_flags") or "--notest",
+                              "build_env": im.get("build_env") or ""})
+                shipped_binaries.append({"name": x["name"], "platform": platform,
+                                         "url": im.get("source")})
+                continue
             # binary tier
             la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
             if not la.get("found"):
@@ -1903,13 +1919,16 @@ def freeze(
         smoke += [f"test -x /usr/local/bin/{s['wrapper']}" for s in sources]
         smoke += [f"test -x /usr/local/bin/{c['binary_name']}" for c in cargos]
         smoke += [f"test -x /usr/local/bin/{g['binary_name']}" for g in gos]
+        # perl modules aren't binaries — the load-or-die IS the proof (also baked
+        # into the emit's RUN step, so a non-loading module already fails the build).
+        smoke += [f"perl -M{p['module']} -e1" for p in perls]
         # buildx wants a docker platform ("linux/amd64"); freeze's `platform` is a
         # conda subdir ("linux-64"). Normalize, so the recipe targets the requested
         # arch (toolchains + go tarball arch derive from this).
         docker_platform = _CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
         rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
                                   binaries=binaries, jars=jars, sources=sources,
-                                  cargos=cargos, gos=gos, platform=docker_platform,
+                                  cargos=cargos, gos=gos, perls=perls, platform=docker_platform,
                                   version=version, smoke_commands=smoke)
         if not rb.get("success"):
             return {"success": False, "stage": "recipe_build", "request_key": rkey,

@@ -225,6 +225,7 @@ class DockerBuilder:
         sources: list[dict] | None = None,
         cargos: list[dict] | None = None,
         gos: list[dict] | None = None,
+        perls: list[dict] | None = None,
         version: str = "",
         smoke_commands: list[str] | None = None,
         platform: str = "linux/amd64",
@@ -247,6 +248,10 @@ class DockerBuilder:
         gos: [{name, package, version?, binary_name?, go_version?}] — Go tools
             rebuilt with the SAME go toolchain (official pinned tarball for the
             ship arch).
+        perls: [{module, distribution?, cpanm_flags?, build_env?}] — CPAN modules
+            rebuilt with cpanm on the ship platform (the conda layer provides the
+            pinned perl+cpanm; a C toolchain is added for XS). The RUN step
+            verifies the module LOADS in-image (`perl -M{module} -e1`).
         smoke_commands: commands run in the built image to prove the tools run
             (e.g. ["seqkit version"]); a failure fails the build.
 
@@ -258,6 +263,7 @@ class DockerBuilder:
         sources = sources or []
         cargos = cargos or []
         gos = gos or []
+        perls = perls or []
         smoke_commands = smoke_commands or []
         build_dir = self.output_dir / name
         build_dir.mkdir(parents=True, exist_ok=True)
@@ -267,7 +273,7 @@ class DockerBuilder:
         dockerfile_path = build_dir / "Dockerfile"
         dockerfile_path.write_text(
             self._recipe_dockerfile(name, description, conda_env_yml, binaries, jars,
-                                    sources, cargos, gos, platform=platform))
+                                    sources, cargos, gos, perls, platform=platform))
 
         registry = self.config["docker"].get("registry", "")
         tag_base = f"{registry}/{name}" if registry else name
@@ -288,7 +294,7 @@ class DockerBuilder:
         smoke: dict[str, str] = {}
         for cmd in smoke_commands:
             r = self._run(["docker", "run", "--rm", "--platform", platform, image_tag,
-                           "bash", "-lc", cmd], timeout=180)
+                           "bash", "-c", cmd], timeout=180)  # -c not -lc: honor ENV PATH (the env), not base
             out = ((r.get("stdout") or "") + (r.get("stderr") or "")).strip()
             smoke[cmd] = out[:300]
             if r["returncode"] != 0:
@@ -315,25 +321,29 @@ class DockerBuilder:
                            sources: list[dict] | None = None,
                            cargos: list[dict] | None = None,
                            gos: list[dict] | None = None,
+                           perls: list[dict] | None = None,
                            platform: str = "linux/amd64") -> str:
         """Assemble the recipe Dockerfile text (pure — no filesystem/docker), so
         the generated recipe is unit-testable. A conda layer is added only when
         conda_env_yml is non-empty; otherwise a slim Debian base carries just the
-        replayed release binaries / jars / source builds / cargo / go tools."""
+        replayed release binaries / jars / source / cargo / go / perl tools."""
         binaries = binaries or []
         jars = jars or []
         sources = sources or []
         cargos = cargos or []
         gos = gos or []
+        perls = perls or []
         has_conda = bool(conda_env_yml.strip())
         arch = self._PLATFORM_ARCH.get(platform, "amd64")
-        # Rust needs a linker (cc); cgo Go builds may too — so any compiled tier
-        # pulls in the C build toolchain + common bioinformatics libs.
-        needs_build = bool(sources) or bool(cargos) or bool(gos)
+        # Rust needs a linker (cc); cgo Go builds may too; cpanm XS modules compile
+        # C — so any compiled tier pulls in the C build toolchain + common libs.
+        needs_build = bool(sources) or bool(cargos) or bool(gos) or bool(perls)
         apt = "ca-certificates curl procps tar gzip bzip2 xz-utils unzip time"
         if jars and not has_conda:            # JAR tools need a JRE (else conda openjdk)
             apt += " default-jre-headless"
-        if needs_build:                        # source/cargo/go builds need a toolchain + libs
+        if perls and not has_conda:           # perl+cpanm come from the conda layer; else apt
+            apt += " perl cpanminus"
+        if needs_build:                        # source/cargo/go/perl builds need a toolchain + libs
             apt += " " + self._SOURCE_BUILD_APT
             for s in sources:
                 if s.get("build_apt"):
@@ -353,11 +363,16 @@ class DockerBuilder:
         if has_conda:
             lines += ["COPY environment.yml /tmp/environment.yml",
                       "RUN conda env create -n env -f /tmp/environment.yml && conda clean -afy",
-                      'ENV PATH="/opt/conda/envs/env/bin:$PATH"', ""]
+                      'ENV PATH="/opt/conda/envs/env/bin:$PATH"',
+                      # so $CONDA_PREFIX in a perl build_env (HTSLIB_DIR=$CONDA_PREFIX
+                      # for XS modules linking a conda C lib) resolves at build time.
+                      'ENV CONDA_PREFIX="/opt/conda/envs/env"', ""]
         if cargos:
             lines += [self._emit_rust_toolchain(cargos), ""]
         if gos:
             lines += [self._emit_go_toolchain(gos, arch), ""]
+        if perls and has_conda:                # XS-against-conda-perl needs conda's toolchain
+            lines += [self._emit_perl_conda_builddeps(), ""]
         for b in binaries:
             lines += [self._emit_binary_install(b), ""]
         for j in jars:
@@ -368,6 +383,8 @@ class DockerBuilder:
             lines += [self._emit_cargo_install(c), ""]
         for g in gos:
             lines += [self._emit_go_install(g), ""]
+        for p in perls:
+            lines += [self._emit_perl_install(p, conda_activate=has_conda), ""]
         lines += ["WORKDIR /data", 'CMD ["/bin/bash"]', ""]
         return "\n".join(lines)
 
@@ -444,6 +461,36 @@ class DockerBuilder:
         return (f"# go install {spec} (rebuilt for the ship platform)\n"
                 f"RUN set -eux; GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}; \\\n"
                 f"    test -x /usr/local/bin/{binp}")
+
+    def _emit_perl_conda_builddeps(self) -> str:
+        """Emit the RUN step that makes XS modules compile against the CONDA perl:
+        install the conda C/C++ toolchain (matching the compiler perl was built
+        with — the system gcc has the wrong sysroot) + shim xlocale.h (conda perl
+        5.32 still #includes it; modern glibc folded it into locale.h). Emitted
+        once, before the cpanm steps, when there's a conda layer."""
+        return ("# conda toolchain matching the conda perl (XS needs perl's own compiler)\n"
+                "# + xlocale.h shim (conda perl 5.32 vs modern glibc's renamed header).\n"
+                "RUN set -eux; conda install -n env -y -c conda-forge c-compiler cxx-compiler; \\\n"
+                "    conda clean -afy; \\\n"
+                "    printf '#include <locale.h>\\n' > /opt/conda/envs/env/include/xlocale.h")
+
+    def _emit_perl_install(self, p: dict, conda_activate: bool = False) -> str:
+        """Emit the Dockerfile RUN step that rebuilds ONE CPAN module with cpanm on
+        the ship platform, then proves it LOADS in-image (`perl -M{module} -e1`).
+        When building against a conda perl (conda_activate), the env is ACTIVATED
+        so the conda compiler's activation sets CC/CXX/sysroot for XS. build_env
+        carries XS link hints (e.g. HTSLIB_DIR=$CONDA_PREFIX), kept verbatim so
+        $CONDA_PREFIX resolves to the IMAGE's conda env at build time."""
+        import shlex
+        module  = p["module"]
+        target  = p.get("distribution") or module
+        flags   = p.get("cpanm_flags") or "--notest"
+        be      = (p.get("build_env") or "").strip()
+        prefix  = f"{be} " if be else ""
+        act     = ". /opt/conda/etc/profile.d/conda.sh; conda activate env; " if conda_activate else ""
+        return (f"# cpanm {target} (CPAN module rebuilt for the ship platform)\n"
+                f"RUN set -eux; {act}{prefix}cpanm {flags} {shlex.quote(target)}; \\\n"
+                f"    perl -M{module} -e1")
 
     def _emit_source_install(self, s: dict) -> str:
         """Emit the Dockerfile RUN step that REBUILDS one git-source tool at its
@@ -605,7 +652,12 @@ class DockerBuilder:
             run_cmd += ["-v", f"{host}:{cont}"]
         if workdir:
             run_cmd += ["-w", workdir]
-        run_cmd += [image, "bash", "-lc", launcher]
+        # bash -c (NOT -lc): honor the image's ENV PATH (which points at the conda
+        # ENV), exactly as `apptainer exec`/`docker run <cmd>` does. A login shell
+        # re-runs conda init and auto-activates BASE, shadowing the env's tools
+        # (e.g. the env perl → wrong @INC) — tools in /usr/local/bin survive that,
+        # conda-env tools do not.
+        run_cmd += [image, "bash", "-c", launcher]
 
         started = self._run(run_cmd, timeout=300)
         if started["returncode"] != 0:

@@ -904,6 +904,7 @@ class EnvManager:
 
     def install_perl_package(
         self, env_name: str, module: str, distribution: str = "", cpanm_flags: str = "",
+        build_env: str = "",
     ) -> dict[str, Any]:
         """Install a Perl/CPAN module via cpanm into the env's perl site lib —
         the Perl tier (Ensembl VEP, BioPerl) that conda/pip don't cover.
@@ -912,14 +913,19 @@ class EnvManager:
         `module` is the Perl package name (Bio::DB::HTS) used for the
         load-or-die verify; `distribution` overrides the cpanm install target
         when the CPAN distribution name differs from the module name.
+        `build_env` = space-separated KEY=VAL exports for the cpanm build (e.g.
+        "HTSLIB_DIR=$CONDA_PREFIX" for XS modules that link a conda C lib) —
+        use $CONDA_PREFIX (not an absolute host path) so freeze's replay resolves
+        it to the IMAGE's env, and is recorded for that replay.
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
             return {"success": False, "error": f"env not found: {env_path}"}
         target = distribution or module
         flags  = cpanm_flags or "--notest"
+        prefix = f"{build_env} " if build_env.strip() else ""
         log: list[str] = []
-        inst = self.run_in_env(env_name, f"cpanm {flags} {shlex.quote(target)}", timeout=1800)
+        inst = self.run_in_env(env_name, f"{prefix}cpanm {flags} {shlex.quote(target)}", timeout=1800)
         log.append(f"cpanm rc={inst['returncode']}")
         if inst["returncode"] != 0:
             return {"success": False, "error": "cpanm install failed",
@@ -931,7 +937,9 @@ class EnvManager:
             "distribution":   target,
             "verify_command": f"perl -M{module} -e1",
             "verify_output":  f"{module} loaded (perl -M{module} -e1 rc=0)" if ev["anchored"] else "",
-            "install_method": {"type": "perl", "source": f"cpanm {target}"},
+            "install_method": {"type": "perl", "source": f"cpanm {target}",
+                               "module": module, "distribution": target,
+                               "cpanm_flags": flags, "build_env": build_env},
             "log":            log,
         }
 
