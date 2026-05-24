@@ -2047,21 +2047,41 @@ def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
 
 
 def test_container_native_dockerfile_bakes_recorded_commands():
-    """The container-native emitter: a pixi layer from the lock (reproducible) +
-    one verbatim RUN per recorded long-tail command — NO per-tier translation."""
-    from agent.skills.container_build import emit_dockerfile
+    """The container-native emitter: an engine env-layer from the lock + one
+    verbatim RUN per recorded long-tail command — NO per-tier translation."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
     steps = [{"command": "curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit",
               "purpose": "seqkit release binary"}]
-    df = emit_dockerfile("debian:bookworm-slim", has_pixi_layer=True, longtail_steps=steps)
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=True, longtail_steps=steps)
     assert "FROM debian:bookworm-slim" in df
     assert "pixi.sh/install.sh" in df                      # pixi engine layered on
     assert "COPY pixi.toml pixi.lock ./" in df and "pixi install --locked" in df  # reproducible conda/pip
     assert "# seqkit release binary" in df
     assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df        # baked VERBATIM
-    # no conda/pip tools → no pixi layer; long-tail only still works
-    df2 = emit_dockerfile("debian:bookworm-slim", has_pixi_layer=False, longtail_steps=steps)
+    # no conda/pip tools → no env layer; long-tail only still works
+    df2 = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False, longtail_steps=steps)
     assert "pixi install --locked" not in df2 and "COPY pixi.toml" not in df2
     assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df2
+
+
+def test_container_native_engine_is_swappable():
+    """The locus is engine-agnostic: swap pixi→micromamba and ONLY the env-layer
+    lines change; the long-tail bake + base are identical. Proves we're not married
+    to pixi ('universal adapter' one level down)."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine, MicromambaEngine
+    steps = [{"command": "install -m0755 /tmp/mosdepth /usr/local/bin/", "purpose": "mosdepth"}]
+    dp = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=True, longtail_steps=steps)
+    dm = emit_dockerfile("debian:bookworm-slim", engine=MicromambaEngine(), has_env_layer=True, longtail_steps=steps)
+    # pixi-specific vs micromamba-specific env layers
+    assert "pixi install --locked" in dp and "micromamba" not in dp
+    assert "micromamba create -y -n env --file env.lock" in dm and "pixi" not in dm
+    assert 'env_engine="pixi"' in dp and 'env_engine="micromamba"' in dm
+    # identical locus: same base + same verbatim long-tail bake regardless of engine
+    assert "FROM debian:bookworm-slim" in dp and "FROM debian:bookworm-slim" in dm
+    assert "RUN install -m0755 /tmp/mosdepth /usr/local/bin/" in dp
+    assert "RUN install -m0755 /tmp/mosdepth /usr/local/bin/" in dm
+    # micromamba's explicit lock is single-platform but reproducible (URLs+sha)
+    assert "env.lock" in MicromambaEngine().lock_artifacts()
 
 
 def test_container_native_repo_name_sanitized():

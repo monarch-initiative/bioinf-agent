@@ -8,19 +8,27 @@ perl_install`) into ONE generic "bake the recorded commands" path: a command
 that ran in the build container is baked VERBATIM as a `RUN` — no translation.
 
 Two phases:
-  DECLARE     — accumulate ALL conda/pip specs (pixi, one co-solve) + record
-                each long-tail command (binary/jar/source/…) as it runs.
-  MATERIALIZE — emit a Dockerfile: pixi layer from the lock (reproducible) +
-                one `RUN` per recorded long-tail command; build for the ship
-                platform; validate in the freshly-built image (validated==shipped).
+  DECLARE     — accumulate ALL conda/pip specs (one co-solve via the EnvEngine) +
+                record each long-tail command (binary/jar/source/…) as it runs.
+  MATERIALIZE — emit a Dockerfile: the engine's env layer from the lock
+                (reproducible) + one `RUN` per recorded long-tail command; build
+                for the ship platform; validate in the freshly-built image
+                (validated==shipped).
+
+THE ENGINE IS A STRATEGY, NOT A MARRIAGE. The LOCUS (build-in-container +
+verbatim long-tail bake) is engine-agnostic. HOW the conda/pip env is declared,
+solved, locked, and invoked is an `EnvEngine` — pixi by default, micromamba+
+explicit-lock as the conservative alternative, and an org could drop in conda-lock
+or (later) nix. "We are the universal adapter" — one level down. A single-platform
+explicit lock is fully reproducible (we always target one ship platform), so
+reproducibility does NOT depend on any one engine.
 
 Host-agnostic by construction: everything runs in a linux/{arch} container via
-buildx — qemu on a non-linux/amd64 host (e.g. an Apple-Silicon dev box), native
-on a linux-x86 box / CI — SAME artifact on any host. Docker (+buildx) is the
-only host requirement.
+buildx — qemu on a non-linux/amd64 host (e.g. Apple Silicon), native on linux-x86
+/CI — SAME artifact on any host. Docker (+buildx) is the only host requirement.
 
-`emit_dockerfile` is pure (unit-testable). `ContainerBuild` drives a real build
-container (docker + network) and is exercised by live verification.
+`emit_dockerfile` + the engines' line-emitters are pure (unit-testable);
+`ContainerBuild` drives a real build container and is exercised by live verification.
 """
 
 from __future__ import annotations
@@ -29,59 +37,156 @@ import re
 import subprocess
 from typing import Any, Optional
 
-
-def _docker_repo(name: str) -> str:
-    """Sanitize an image repository name to docker's rules: lowercase, and only
-    [a-z0-9._-] (a pipeline name like 'VEP_annotate' is otherwise rejected)."""
-    s = re.sub(r"[^a-z0-9._-]+", "-", name.lower()).strip("-._") or "bioinf"
-    return s
-
-# pixi's installer drops the binary here; the build container + ship image both
-# put it on PATH. (continuumio/miniconda3 is deprecated — we layer pixi on a slim
-# Debian base instead; pixi brings its own conda/pip solving.)
-_PIXI_BIN = "/root/.pixi/bin"
-
-# Base apt for the build/ship image: curl+certs for pixi's installer and any
+# Base apt for the build/ship image: curl+certs for the engine installer and any
 # long-tail download; the common archive + C-build tools so a long-tail command
 # (tar/zip extract, `make`, cargo/go/cpanm XS) just works when baked.
 _BASE_APT = ("ca-certificates curl procps tar gzip bzip2 xz-utils unzip time "
              "build-essential git")
 
+# docker platform → conda subdir token (for engines that need it in a URL).
+_PLATFORM_SUBDIR = {"linux/amd64": "linux-64", "linux/arm64": "linux-aarch64",
+                    "linux/arm64/v8": "linux-aarch64"}
+
+
+def _docker_repo(name: str) -> str:
+    """Sanitize an image repository name to docker's rules: lowercase, and only
+    [a-z0-9._-] (a pipeline name like 'VEP_annotate' is otherwise rejected)."""
+    return re.sub(r"[^a-z0-9._-]+", "-", name.lower()).strip("-._") or "bioinf"
+
+
+# ---------------------------------------------------------------------------
+# EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
+# ---------------------------------------------------------------------------
+
+class EnvEngine:
+    """Strategy for the conda/pip layer. Subclasses implement: how to install the
+    engine (in the build container AND the ship Dockerfile), how to declare+co-
+    solve+lock, how to materialize from the lock, and how to invoke a tool. The
+    locus (ContainerBuild) is written ONLY against this interface."""
+    name = "base"
+    workdir = "/work"
+
+    def exec_env(self) -> str:                       # shell prefix so the engine is on PATH in exec
+        raise NotImplementedError
+    def install_commands(self) -> str:              # shell to install the engine in the build container
+        raise NotImplementedError
+    def setup(self, cb: "ContainerBuild") -> dict:  # init the project/env
+        raise NotImplementedError
+    def add(self, cb: "ContainerBuild", specs: list[str], channels: list[str]) -> dict:  # ONE co-solve + lock
+        raise NotImplementedError
+    def run(self, tool_cmd: str) -> str:            # wrap a conda-env tool invocation
+        raise NotImplementedError
+    def bootstrap_lines(self) -> list[str]:         # Dockerfile: install the engine
+        raise NotImplementedError
+    def materialize_lines(self) -> list[str]:       # Dockerfile: build env from the lock
+        raise NotImplementedError
+    def lock_artifacts(self) -> list[str]:          # files to copy out of the build container
+        raise NotImplementedError
+
+
+class PixiEngine(EnvEngine):
+    """Default. pixi.toml + pixi.lock (multi-platform, conda+PyPI in one). Solves
+    cross-platform; `pixi run` invokes without activation."""
+    name = "pixi"
+    _BIN = "/root/.pixi/bin"
+
+    def __init__(self, platform: str = "linux/amd64"):
+        self.platform = platform
+
+    def exec_env(self) -> str:
+        return f'export PATH="{self._BIN}:$PATH"'
+    def install_commands(self) -> str:
+        return "curl -fsSL https://pixi.sh/install.sh | bash"
+    def setup(self, cb):
+        chans = " ".join(f"-c {c}" for c in cb.channels)
+        r = cb.exec(f"pixi init {self.workdir} {chans}", timeout=120)
+        return {"success": r["returncode"] == 0, "stderr": r["stderr"][-400:]}
+    def add(self, cb, specs, channels):
+        quoted = " ".join(f'"{s}"' for s in specs)
+        r = cb.exec(f"pixi add {quoted}", timeout=1800)
+        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
+    def run(self, tool_cmd):
+        return f"pixi run {tool_cmd}"
+    def bootstrap_lines(self):
+        return [f"RUN {self.install_commands()}", f'ENV PATH="{self._BIN}:$PATH"', ""]
+    def materialize_lines(self):
+        return [f"WORKDIR {self.workdir}", "COPY pixi.toml pixi.lock ./",
+                "RUN pixi install --locked", ""]
+    def lock_artifacts(self):
+        return ["pixi.toml", "pixi.lock"]
+
+
+class MicromambaEngine(EnvEngine):
+    """Conservative alternative. environment.yml → one solve → an EXPLICIT lock
+    (`micromamba env export --explicit`: URLs+sha256, bit-reproducible for the
+    ship platform). `micromamba run -n env` invokes. Proves the locus is engine-
+    agnostic and that reproducibility doesn't require pixi."""
+    name = "micromamba"
+    _ROOT = "/opt/micromamba"
+
+    def __init__(self, platform: str = "linux/amd64"):
+        self.platform = platform
+        self.subdir = _PLATFORM_SUBDIR.get(platform, "linux-64")
+
+    def exec_env(self) -> str:
+        return f'export MAMBA_ROOT_PREFIX={self._ROOT}; export PATH="/usr/local/bin:$PATH"'
+    def install_commands(self) -> str:
+        # static micromamba binary for the ship arch → /usr/local/bin
+        return (f"curl -Ls https://micro.mamba.pm/api/micromamba/{self.subdir}/latest "
+                f"| tar -xj -C /usr/local bin/micromamba")
+    def setup(self, cb):
+        return {"success": True}                     # env.yml is written at add()
+    def add(self, cb, specs, channels):
+        chans = "\n".join(f"  - {c}" for c in channels)
+        deps = "\n".join(f"  - {s}" for s in specs)
+        yml = f"name: env\nchannels:\n{chans}\ndependencies:\n{deps}\n"
+        # write environment.yml, solve into a named env, then EXPORT an explicit lock
+        cb.exec(f"mkdir -p {self.workdir}", timeout=60)
+        w = cb.exec(f"cat > {self.workdir}/environment.yml <<'YML'\n{yml}YML", timeout=60)
+        if w["returncode"] != 0:
+            return {"success": False, "stage": "write_yml", "stderr": w["stderr"][-400:]}
+        s = cb.exec(f"micromamba create -y -n env -f {self.workdir}/environment.yml", timeout=1800)
+        if s["returncode"] != 0:
+            return {"success": False, "stage": "solve", "stderr": (s["stderr"] or "")[-800:]}
+        e = cb.exec(f"micromamba env export -n env --explicit > {self.workdir}/env.lock", timeout=120)
+        return {"success": e["returncode"] == 0, "stderr": (e["stderr"] or "")[-400:]}
+    def run(self, tool_cmd):
+        return f"micromamba run -n env {tool_cmd}"
+    def bootstrap_lines(self):
+        return [f"RUN {self.install_commands()}", f'ENV MAMBA_ROOT_PREFIX={self._ROOT}', ""]
+    def materialize_lines(self):
+        return [f"WORKDIR {self.workdir}", "COPY env.lock ./",
+                "RUN micromamba create -y -n env --file env.lock && micromamba clean -afy", ""]
+    def lock_artifacts(self):
+        return ["environment.yml", "env.lock"]
+
 
 def emit_dockerfile(
     base: str,
     *,
-    has_pixi_layer: bool,
+    engine: EnvEngine,
+    has_env_layer: bool,
     longtail_steps: list[dict],
-    install_pixi: bool = True,
     apt_extra: str = "",
 ) -> str:
     """Assemble the ship-image Dockerfile from a recorded build (pure — no docker).
-
-    has_pixi_layer: a pixi project (pixi.toml + pixi.lock) is COPYable into the
-        build context → `pixi install --locked` reproduces the co-solved env.
-    longtail_steps: [{command, purpose?}] — each baked VERBATIM as a `RUN`. These
-        are the exact commands that already ran (and validated) in the build
-        container, so there is nothing to translate per tier.
-    """
+    Engine-specific lines come from `engine`; long-tail commands are baked VERBATIM
+    (the exact commands that already ran + validated in the build container)."""
     apt = _BASE_APT + (f" {apt_extra}" if apt_extra.strip() else "")
     lines = [
         "# Auto-generated by bioinf_agent — container-native build (validated==shipped)",
         f"FROM {base}",
         'LABEL build_method="container-native"',
+        f'LABEL env_engine="{engine.name}"',
         "",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\",
         f"        {apt} \\",
         "    && rm -rf /var/lib/apt/lists/*",
         "",
     ]
-    if install_pixi:
-        lines += ["RUN curl -fsSL https://pixi.sh/install.sh | bash",
-                  f'ENV PATH="{_PIXI_BIN}:$PATH"', ""]
-    if has_pixi_layer:
-        lines += ["WORKDIR /work",
-                  "COPY pixi.toml pixi.lock ./",
-                  "RUN pixi install --locked", ""]
+    lines += engine.bootstrap_lines()
+    if has_env_layer:
+        lines += engine.materialize_lines()
     for step in longtail_steps:
         if step.get("purpose"):
             lines.append(f"# {step['purpose']}")
@@ -91,87 +196,79 @@ def emit_dockerfile(
 
 
 class ContainerBuild:
-    """A live linux build container that records what it installs, then freezes
-    to a ship image. The recorded build is the honest source of truth: every
-    command ran here, in the ship platform, before it's baked.
+    """A live linux build container that records what it installs, then freezes to
+    a ship image. Written ONLY against EnvEngine — swap the engine, same locus.
 
     Usage:
-        cb = ContainerBuild(platform="linux/amd64"); cb.start()
-        cb.pixi_init(["conda-forge", "bioconda"]); cb.pixi_add(["samtools=1.21"])
-        cb.run("curl ... | tar ...", evidence="seqkit version", purpose="seqkit binary")
-        cb.freeze("demo", "1.0")  # → {image, dockerfile, ...}
-        cb.close()
+        cb = ContainerBuild(platform="linux/amd64", engine=PixiEngine("linux/amd64"))
+        cb.start(); cb.declare(["samtools=1.21"])
+        cb.run("curl ... seqkit ...", evidence="seqkit version", purpose="seqkit binary")
+        fr = cb.freeze("demo", "1.0"); cb.validate_in_image(fr["image"], [...]); cb.close()
     """
 
     def __init__(self, base: str = "debian:bookworm-slim",
-                 platform: str = "linux/amd64", workdir: str = "/work"):
+                 platform: str = "linux/amd64",
+                 engine: Optional[EnvEngine] = None,
+                 channels: Optional[list[str]] = None,
+                 workdir: str = "/work"):
         self.base = base
         self.platform = platform
+        self.engine = engine or PixiEngine(platform)
+        self.channels = channels or ["conda-forge", "bioconda"]
         self.workdir = workdir
         self.cid: Optional[str] = None
-        self.has_pixi_layer = False
-        self.longtail: list[dict] = []      # [{command, purpose, evidence}]
+        self.has_env_layer = False
+        self.longtail: list[dict] = []
         self.log: list[str] = []
 
-    # -- low-level ---------------------------------------------------------
     @staticmethod
     def _sh(args: list[str], timeout: int = 1800) -> dict[str, Any]:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
 
     def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:
-        """Run a shell command in the build container (pixi on PATH)."""
+        """Run a shell command in the build container (engine on PATH)."""
         assert self.cid, "call start() first"
-        full = f'export PATH="{_PIXI_BIN}:$PATH"; cd {self.workdir} 2>/dev/null || true; {command}'
+        full = f'{self.engine.exec_env()}; cd {self.workdir} 2>/dev/null || true; {command}'
         return self._sh(["docker", "exec", self.cid, "bash", "-c", full], timeout=timeout)
 
-    # -- lifecycle ---------------------------------------------------------
     def start(self) -> dict[str, Any]:
-        """Launch the build container for the ship platform and install pixi +
-        the base toolchain (so installs here match what freeze bakes)."""
+        """Launch the build container for the ship platform + install the engine."""
         r = self._sh(["docker", "run", "-d", "--platform", self.platform,
                       self.base, "sleep", "infinity"], timeout=300)
         if r["returncode"] != 0:
             return {"success": False, "stage": "run", "stderr": r["stderr"][-800:]}
         self.cid = (r["stdout"] or "").strip()
         setup = (f"apt-get -qq update && apt-get -qq install -y --no-install-recommends {_BASE_APT} "
-                 ">/dev/null 2>&1 && curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1")
+                 f">/dev/null 2>&1 && {self.engine.install_commands()} >/dev/null 2>&1")
         s = self._sh(["docker", "exec", self.cid, "bash", "-c", setup], timeout=900)
-        self.log.append(f"start rc={s['returncode']}")
-        return {"success": s["returncode"] == 0, "container": self.cid,
-                "stderr": s["stderr"][-800:] if s["returncode"] else ""}
+        es = self.engine.setup(self)
+        self.log.append(f"start rc={s['returncode']} engine={self.engine.name}")
+        ok = s["returncode"] == 0 and es.get("success", True)
+        return {"success": ok, "container": self.cid, "engine": self.engine.name,
+                "stderr": (s["stderr"][-800:] if s["returncode"] else es.get("stderr", ""))}
 
-    # -- DECLARE: conda/pip via pixi (one co-solve) ------------------------
-    def pixi_init(self, channels: list[str]) -> dict[str, Any]:
-        chans = " ".join(f"-c {c}" for c in channels)
-        r = self.exec(f"pixi init {self.workdir} {chans}", timeout=120)
-        return {"success": r["returncode"] == 0, "stderr": r["stderr"][-400:]}
-
-    def pixi_add(self, specs: list[str], timeout: int = 1800) -> dict[str, Any]:
-        """Add ALL conda/pip specs in ONE call → one co-solve → pixi.lock. (Never
-        add tools one-at-a-time — sequential solves are order-dependent and can
-        downgrade earlier picks.)"""
+    # -- DECLARE: conda/pip (one co-solve via the engine) ------------------
+    def declare(self, specs: list[str], timeout: int = 1800) -> dict[str, Any]:
+        """Add ALL conda/pip specs in ONE call → one co-solve → a lock. (Never one
+        at a time — sequential solves are order-dependent and can downgrade.)"""
         if not specs:
             return {"success": True, "skipped": "no specs"}
-        quoted = " ".join(f'"{s}"' for s in specs)
-        r = self.exec(f"pixi add {quoted}", timeout=timeout)
-        self.log.append(f"pixi add {specs} rc={r['returncode']}")
-        if r["returncode"] == 0:
-            self.has_pixi_layer = True
-        return {"success": r["returncode"] == 0,
-                "stderr": (r["stderr"] or "")[-800:], "stdout": (r["stdout"] or "")[-400:]}
+        res = self.engine.add(self, specs, self.channels)
+        self.log.append(f"declare {specs} -> {res.get('success')}")
+        if res.get("success"):
+            self.has_env_layer = True
+        return res
 
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "",
             timeout: int = 1800) -> dict[str, Any]:
-        """Run a long-tail install command, then PROVE it with `evidence` (a shell
-        command that must exit 0), both in the build container. On success the
-        command is recorded for verbatim baking; `evidence` is re-run in the built
-        image at freeze (validated==shipped)."""
+        """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
+        both in the build container. On success the command is recorded for verbatim
+        baking; `evidence` is re-run in the built image at freeze."""
         inst = self.exec(command, timeout=timeout)
         if inst["returncode"] != 0:
-            return {"success": False, "stage": "install",
-                    "stderr": (inst["stderr"] or "")[-800:]}
+            return {"success": False, "stage": "install", "stderr": (inst["stderr"] or "")[-800:]}
         ev = self.exec(evidence, timeout=120)
         if ev["returncode"] != 0:
             return {"success": False, "stage": "evidence", "evidence": evidence,
@@ -180,24 +277,27 @@ class ContainerBuild:
         self.log.append(f"run [{purpose}] rc=0 ev_ok")
         return {"success": True, "evidence_output": (ev["stdout"] or "").strip()[:200]}
 
+    def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
+        """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""
+        return self.exec(self.engine.run(tool_cmd), timeout=timeout)
+
     # -- MATERIALIZE -------------------------------------------------------
     def freeze(self, name: str, version: str = "", *, output_dir: str = "/tmp") -> dict[str, Any]:
         """Emit the Dockerfile from the recorded build, build it for the ship
-        platform, and return the image tag + dockerfile path. The conda/pip layer
-        is copied from the build container's pixi project (manifest+lock)."""
+        platform, and return the image tag. The env layer's lock artifacts are
+        copied from the build container into the build context."""
         from pathlib import Path
         assert self.cid, "call start() first"
-        name = _docker_repo(name)               # docker repo names must be lowercase
+        name = _docker_repo(name)
         build_dir = Path(output_dir) / f"cbuild_{name}"
         build_dir.mkdir(parents=True, exist_ok=True)
-        if self.has_pixi_layer:
-            for f in ("pixi.toml", "pixi.lock"):
+        if self.has_env_layer:
+            for f in self.engine.lock_artifacts():
                 cp = self._sh(["docker", "cp", f"{self.cid}:{self.workdir}/{f}", str(build_dir / f)])
                 if cp["returncode"] != 0:
-                    return {"success": False, "stage": "cp", "file": f,
-                            "stderr": cp["stderr"][-400:]}
-        dockerfile = emit_dockerfile(self.base, has_pixi_layer=self.has_pixi_layer,
-                                     longtail_steps=self.longtail)
+                    return {"success": False, "stage": "cp", "file": f, "stderr": cp["stderr"][-400:]}
+        dockerfile = emit_dockerfile(self.base, engine=self.engine,
+                                     has_env_layer=self.has_env_layer, longtail_steps=self.longtail)
         (build_dir / "Dockerfile").write_text(dockerfile)
         tag = f"{name}:{version}" if version else f"{name}:latest"
         b = self._sh(["docker", "buildx", "build", "--platform", self.platform,
@@ -205,16 +305,16 @@ class ContainerBuild:
         if b["returncode"] != 0:
             return {"success": False, "stage": "build", "dockerfile": str(build_dir / "Dockerfile"),
                     "stderr": (b["stderr"] or "")[-1200:]}
-        return {"success": True, "image": tag, "dockerfile": str(build_dir / "Dockerfile"),
+        return {"success": True, "image": tag, "engine": self.engine.name,
+                "dockerfile": str(build_dir / "Dockerfile"),
                 "build_method": "container-native", "platform": self.platform}
 
     def validate_in_image(self, image: str, checks: list[str]) -> dict[str, Any]:
-        """Re-run evidence checks in the BUILT image — proves validated==shipped."""
-        results = {}
-        ok = True
+        """Re-run checks in the BUILT image — proves validated==shipped."""
+        results, ok = {}, True
         for c in checks:
-            r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image,
-                          "bash", "-c", f'export PATH="{_PIXI_BIN}:$PATH"; cd {self.workdir} 2>/dev/null || true; {c}'],
+            r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
+                          f'{self.engine.exec_env()}; cd {self.workdir} 2>/dev/null || true; {c}'],
                          timeout=300)
             results[c] = {"rc": r["returncode"], "out": (r["stdout"] or "").strip()[:200]}
             ok = ok and r["returncode"] == 0
