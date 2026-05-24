@@ -167,6 +167,31 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
             "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True}
 
 
+def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-project.org",
+              evidence: str = "") -> dict[str, Any]:
+    """R package (TOOLCHAIN-COUPLED): installed into the engine's R via Rscript
+    (declare ['r-base'] first — and the conda c-/cxx-compiler when a source build
+    compiles C/C++/Fortran). source = 'cran' | 'bioconductor' | 'github:owner/repo'.
+    Verified in-image by `library(name)` (loads or exits non-zero). PREFER conda when
+    the package is on bioconda (r-* / bioconductor-* install far more reliably) — this
+    is the unpackaged-residue fallback, the R analog of perl_cpanm."""
+    if source == "bioconductor":
+        inst = (f'if(!requireNamespace("BiocManager",quietly=TRUE)) '
+                f'install.packages("BiocManager",repos="{repos}"); '
+                f'BiocManager::install("{name}",ask=FALSE,update=FALSE)')
+    elif source.startswith("github:"):
+        repo = source.split(":", 1)[1]
+        inst = (f'if(!requireNamespace("remotes",quietly=TRUE)) '
+                f'install.packages("remotes",repos="{repos}"); '
+                f'remotes::install_github("{repo}")')
+    else:  # cran (default)
+        inst = f'install.packages("{name}",repos="{repos}")'
+    cmd = f"Rscript -e {shlex.quote(inst)}"
+    ev = evidence or f"Rscript -e {shlex.quote(f'library({name})')}"
+    return {"command": cmd, "evidence": ev, "tool": name,
+            "purpose": f"{name} (R {source})", "engine_coupled": True}
+
+
 def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = "",
                 interpreter: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
     """Run-by-path script collection (very common for half-baked academic tools:

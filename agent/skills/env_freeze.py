@@ -22,6 +22,7 @@ the network. `build_env_image` drives a real ContainerBuild and is live-proven.
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 from typing import Any, Callable, Optional
 
@@ -31,11 +32,26 @@ from agent.skills import resolver as _resolver
 from agent.skills.env_build import EnvBuild
 
 # coupled tiers → the engine toolchain conda specs they need to BUILD in-container.
+# (pip is NOT here — it's declared through the engine directly via add_pip, not a
+# long-tail generator; it needs no extra toolchain.)
 _TOOLCHAIN_SPECS = {
-    "cargo": ["rust"],
-    "go":    ["go"],
-    "perl":  ["perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"],
+    "cargo":     ["rust"],
+    "go":        ["go"],
+    "perl":      ["perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"],
+    "r_install": ["r-base", "c-compiler", "cxx-compiler", "fortran-compiler"],
 }
+
+
+def _r_source_from_method(im: dict) -> str:
+    """Reconstruct install_r_package's source arg (cran|bioconductor|github:owner/
+    repo) from the recorded install_method.source R expression."""
+    expr = im.get("source", "") or ""
+    m = re.search(r"install_github\(['\"]([^'\"]+)['\"]", expr)
+    if m:
+        return f"github:{m.group(1)}"
+    if "BiocManager" in expr:
+        return "bioconductor"
+    return "cran"
 
 
 def _map_install(
@@ -85,6 +101,9 @@ def _map_install(
         return {"spec": ic.perl_cpanm(module, distribution=dist,
                                       cpanm_flags=im.get("cpanm_flags") or "--notest",
                                       build_env=im.get("build_env") or "")}
+
+    if t == "r_install":
+        return {"spec": ic.r_package(name, source=_r_source_from_method(im))}
 
     if t == "binary":
         la = resolve_linux_asset(im.get("binary_url") or "")
@@ -139,10 +158,15 @@ def build_env_image(
     primary_tools = primary_tools or []
     non_conda = _freeze.non_conda_installs(spec)
 
-    # map every non-conda install up front so a non-replayable one fails BEFORE
+    # pip is declared THROUGH the engine (engine --pypi → into the lock), not as a
+    # long-tail generator — partition it out. Everything else maps to a generator.
+    pip_installs = [x for x in non_conda if x.get("type") == "pip"]
+    tool_installs = [x for x in non_conda if x.get("type") != "pip"]
+
+    # map every generator install up front so a non-replayable one fails BEFORE
     # we spin a build container.
     tool_specs = []
-    for x in non_conda:
+    for x in tool_installs:
         m = _map_install(x, platform)
         if "error" in m:
             return {"success": False, "stage": "map_install", "reason": m["error"],
@@ -158,6 +182,19 @@ def build_env_image(
         non_conda_names = {x.get("name", "") for x in non_conda}
         verify = [(t, f"command -v {t}") for t in primary_tools if t not in non_conda_names]
         eb.add_conda(all_conda, verify=verify)
+    if pip_installs:
+        versions = {p.get("name"): p.get("version") for p in _freeze.installed_packages(spec)
+                    if isinstance(p, dict)}
+        pip_specs, pip_verify = [], []
+        for x in pip_installs:
+            nm = x.get("name", "")
+            v = versions.get(nm)
+            pip_specs.append(f"{nm}=={v}" if v else nm)
+            # presence via python's dist metadata — NOT `pip show` (pixi --pypi uses
+            # uv, so the env has no pip binary), and dist-name based (robust to an
+            # import-name mismatch like pyyaml->yaml).
+            pip_verify.append((nm, f"python -c \"import importlib.metadata as _m; _m.version('{nm}')\""))
+        eb.add_pip(pip_specs, verify=pip_verify)
     for s in tool_specs:
         eb.add_tool(s)
 

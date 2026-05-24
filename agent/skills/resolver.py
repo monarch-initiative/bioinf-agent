@@ -281,15 +281,15 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
     """Container-native sibling of `_install_call`: map a resolve() decision to an
     EnvBuild action instead of a host-primitive call string. Pure (no network).
 
-      conda  → {"kind":"conda", "spec","channel"}           — fed to EnvBuild.add_conda
-      binary → {"kind":"tool",  "spec": <release_binary gen>} — fed to EnvBuild.add_tool
-      source → {"kind":"tool",  "spec": <source gen>}         —      "
+      conda        → {"kind":"conda", "spec","channel"}        — fed to EnvBuild.add_conda
+      pip          → {"kind":"pip",   "spec"}                  — fed to EnvBuild.add_pip
+      cran / bioc  → {"kind":"tool",  "spec": <r_package gen>} — fed to EnvBuild.add_tool
+      binary       → {"kind":"tool",  "spec": <release_binary gen>}
+      source       → {"kind":"tool",  "spec": <source gen>}
 
-    pip / cran / bioconductor are DEFERRED on purpose: a `chosen` of cran/bioc means
-    conda did NOT carry the name (conda outranks them), so mapping to an r-{tool}
-    conda spec would fail the solve; the honest container-native path is an R/pip
-    install generator (engine-coupled), the next slice. Returning kind='defer' with
-    a reason is better than papering a mapping that would silently break the build."""
+    pip uses the engine (pixi --pypi → into the lock); cran/bioconductor use the R
+    install generator (engine-coupled Rscript) — both engine-native, so a `chosen` of
+    cran/bioc is installed by Rscript, NOT a (would-fail) r-{tool} conda mapping."""
     from agent.skills import install_commands as ic
     tier = decision.get("chosen")
     tool = decision.get("tool") or ""
@@ -303,6 +303,14 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
         spec = f"{base}={v}" if v else base
         return {"kind": "conda", "tier": tier, "spec": spec,
                 "channel": detail.get("channel", "bioconda")}
+
+    if tier == "pip":
+        v = version or detail.get("latest") or ""
+        return {"kind": "pip", "tier": tier, "spec": f"{tool}=={v}" if v else tool}
+
+    if tier in ("cran", "bioconductor"):
+        return {"kind": "tool", "tier": tier,
+                "spec": ic.r_package(tool, source="bioconductor" if tier == "bioconductor" else "cran")}
 
     if tier == "binary":
         os_tok, _, arch_tok = platform.partition("/")

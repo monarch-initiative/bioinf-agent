@@ -89,6 +89,8 @@ class EnvEngine:
         raise NotImplementedError
     def add(self, cb: "ContainerBuild", specs: list[str], channels: list[str]) -> dict:  # ONE co-solve + lock
         raise NotImplementedError
+    def add_pypi(self, cb: "ContainerBuild", specs: list[str]) -> dict:  # PyPI specs into the env+lock
+        raise NotImplementedError
     def run(self, tool_cmd: str) -> str:            # wrap a conda-env tool invocation
         raise NotImplementedError
     def bootstrap_lines(self) -> list[str]:         # Dockerfile: install the engine
@@ -119,6 +121,12 @@ class PixiEngine(EnvEngine):
     def add(self, cb, specs, channels):
         quoted = " ".join(f'"{s}"' for s in specs)
         r = cb.exec(f"pixi add {quoted}", timeout=1800)
+        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
+    def add_pypi(self, cb, specs):
+        # PyPI specs land in pixi.toml/pixi.lock and materialize via the SAME
+        # `pixi install --locked` (no extra Dockerfile step) — in-lock, reproducible.
+        quoted = " ".join(f'"{s}"' for s in specs)
+        r = cb.exec(f"pixi add --pypi {quoted}", timeout=1800)
         return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
     def run(self, tool_cmd):
         # wrap in a shell so builtins/pipes/env-prefixes in tool_cmd work (pixi run
@@ -167,6 +175,13 @@ class MicromambaEngine(EnvEngine):
             return {"success": False, "stage": "solve", "stderr": (s["stderr"] or "")[-800:]}
         e = cb.exec(f"micromamba env export -n env --explicit > {self.workdir}/env.lock", timeout=120)
         return {"success": e["returncode"] == 0, "stderr": (e["stderr"] or "")[-400:]}
+    def add_pypi(self, cb, specs):
+        # micromamba's explicit lock (URLs+sha256) can't capture PyPI, so a pip
+        # install here would NOT replay in the materialized image — refuse honestly
+        # rather than silently drop it. PyPI specs ⇒ use the pixi engine (default).
+        return {"success": False, "reason": "PyPI specs are not supported by the micromamba "
+                "engine (its explicit lock can't capture pip, so they wouldn't materialize in "
+                "the shipped image) — use the pixi engine (the default) for PyPI."}
     def run(self, tool_cmd):
         return f"micromamba run -n env bash -c {shlex.quote(tool_cmd)}"
     def bootstrap_lines(self):
@@ -286,6 +301,27 @@ class ContainerBuild:
             self._engine_installed = True
         res = self.engine.add(self, specs, self.channels)
         self.log.append(f"declare {specs} -> {res.get('success')}")
+        if res.get("success"):
+            self.has_env_layer = True
+        return res
+
+    # -- DECLARE: PyPI specs (co-solved into the env+lock by the engine) ----
+    def declare_pypi(self, specs: list[str], timeout: int = 1800) -> dict[str, Any]:
+        """Add PyPI specs via the engine (pixi add --pypi → pixi.lock, materializes
+        with the conda layer). The engine is installed lazily here on first use, so a
+        pip-only env still gets one. Refused by engines whose lock can't hold pip."""
+        if not specs:
+            return {"success": True, "skipped": "no specs"}
+        if not self._engine_installed:
+            inst = self.exec(self.engine.install_commands(), timeout=900)
+            if inst["returncode"] != 0:
+                return {"success": False, "stage": "engine_install", "stderr": (inst["stderr"] or "")[-800:]}
+            es = self.engine.setup(self)
+            if not es.get("success", True):
+                return {"success": False, "stage": "engine_setup", "stderr": es.get("stderr", "")}
+            self._engine_installed = True
+        res = self.engine.add_pypi(self, specs)
+        self.log.append(f"declare_pypi {specs} -> {res.get('success')}")
         if res.get("success"):
             self.has_env_layer = True
         return res

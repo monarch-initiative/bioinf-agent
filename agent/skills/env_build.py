@@ -39,6 +39,7 @@ class EnvBuild:
         self.platform = platform
         self.cb = ContainerBuild(base=base, platform=platform, engine=engine, channels=channels)
         self.conda_specs: list[str] = []
+        self.pip_specs: list[str] = []        # PyPI specs (engine --pypi, into the lock)
         self.tools: list[dict] = []           # long-tail generator specs
         self.verifications: list[dict] = []   # [{label, tool, check, engine_coupled}]
         self.lock_text = ""
@@ -54,6 +55,16 @@ class EnvBuild:
         image: verify = [(label, tool_command)], run via the engine. The label is
         the tool token the contract's shape rule anchors on."""
         self.conda_specs += specs
+        for label, cmd in verify:
+            self.verifications.append({"label": label, "tool": label, "check": cmd,
+                                       "engine_coupled": True})
+        return self
+
+    def add_pip(self, specs: list[str], verify: list[tuple[str, str]]) -> "EnvBuild":
+        """Add PyPI specs (engine --pypi → into the lock, materializes with the conda
+        layer) + how to verify each in the image. Verifications are engine-coupled
+        (pip CLIs / `python -c import` run in the engine env, not the base PATH)."""
+        self.pip_specs += specs
         for label, cmd in verify:
             self.verifications.append({"label": label, "tool": label, "check": cmd,
                                        "engine_coupled": True})
@@ -79,7 +90,12 @@ class EnvBuild:
             d = self.cb.declare(self.conda_specs)
             if not d.get("success"):
                 return {"success": False, "stage": "declare", **d}
-            # capture the lock for the content digest (what was actually GOT)
+        if self.pip_specs:
+            dp = self.cb.declare_pypi(self.pip_specs)
+            if not dp.get("success"):
+                return {"success": False, "stage": "declare_pypi", **dp}
+        if self.conda_specs or self.pip_specs:
+            # capture the lock AFTER both layers — the content digest is what was GOT
             for art in self.cb.engine.lock_artifacts():
                 cat = self.cb.exec(f"cat {self.cb.workdir}/{art} 2>/dev/null")
                 self.lock_text += cat.get("stdout", "")
@@ -118,7 +134,7 @@ class EnvBuild:
             "lock": self.lock_text,
             "longtail": sorted(s["command"] for s in self.cb.longtail),
             "platform": self.platform,
-            "engine": self.cb.engine.name if self.conda_specs else "none",
+            "engine": self.cb.engine.name if (self.conda_specs or self.pip_specs) else "none",
         }
         return _freeze.compute_content_digest(parts)
 
@@ -129,7 +145,7 @@ class EnvBuild:
         is just the handle freeze.request_key produces for the host path too, so
         the same env asked for either way collides in one cache."""
         tools: list[tuple[str, str]] = []
-        for s in self.conda_specs:
+        for s in self.conda_specs + self.pip_specs:
             name, _, ver = s.replace("==", "=").partition("=")
             tools.append((name.strip(), ver.strip()))
         for spec in self.tools:
@@ -187,7 +203,7 @@ class EnvBuild:
             v = self.verify_in_image(fr["image"])
             result = {
                 "name": self.name, "version": self.version, "platform": self.platform,
-                "engine": self.cb.engine.name if self.conda_specs else "none",
+                "engine": self.cb.engine.name if (self.conda_specs or self.pip_specs) else "none",
                 "image": fr["image"], "image_digest": digest,
                 "content_digest": self.content_digest(),
                 "conda_specs": list(self.conda_specs),

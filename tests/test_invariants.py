@@ -2347,14 +2347,22 @@ def test_envbuild_build_or_cached_returns_hit_without_building(tmp_path, monkeyp
     assert cache.lookup(eb3.request_key())["image_digest"] == "sha256:o"   # registered
 
 
-def test_resolver_route_conda_binary_source_and_defers_pip_r():
-    """route() maps a decision to an EnvBuild action: conda spec / release_binary /
-    source generator; pip/cran/bioconductor are honestly deferred (no generator yet)."""
+def test_resolver_route_maps_every_tier():
+    """route() maps a decision to an EnvBuild action across ALL tiers: conda spec /
+    pip spec / R generator (cran|bioc) / release_binary / source generator."""
     from agent.skills.resolver import route
     # conda
     a = route({"chosen": "conda", "tool": "samtools", "version": "1.21",
                "probed": {"conda": {"channel": "bioconda"}}})
     assert a["kind"] == "conda" and a["spec"] == "samtools=1.21" and a["channel"] == "bioconda"
+    # pip → engine --pypi spec
+    a = route({"chosen": "pip", "tool": "cyvcf2", "version": "0.31.1", "probed": {"pip": {}}})
+    assert a["kind"] == "pip" and a["spec"] == "cyvcf2==0.31.1"
+    # cran / bioconductor → R install generator (engine-coupled Rscript)
+    a = route({"chosen": "cran", "tool": "ape", "probed": {"cran": {}}})
+    assert a["kind"] == "tool" and a["spec"]["engine_coupled"] and "install.packages" in a["spec"]["command"]
+    a = route({"chosen": "bioconductor", "tool": "DESeq2", "probed": {"bioconductor": {}}})
+    assert a["kind"] == "tool" and "BiocManager::install" in a["spec"]["command"]
     # binary → picks the linux/amd64 asset (rejects wrong-arch + wrong-os), emits a
     # release_binary generator spec
     a = route({"chosen": "binary", "tool": "sylph", "github_repo": "bluenote-1577/sylph",
@@ -2369,10 +2377,7 @@ def test_resolver_route_conda_binary_source_and_defers_pip_r():
     a = route({"chosen": "source", "tool": "seqtk", "github_repo": "lh3/seqtk",
                "probed": {"source": {"tag": "v1.4"}}})
     assert a["kind"] == "tool" and "github.com/lh3/seqtk" in a["spec"]["command"] and "v1.4" in a["spec"]["command"]
-    # deferred tiers
-    for tier in ("pip", "cran", "bioconductor"):
-        d = route({"chosen": tier, "tool": "x", "probed": {tier: {}}})
-        assert d["kind"] == "defer" and d["tier"] == tier and d["reason"]
+    # no automatable tier → honest defer
     assert route({"chosen": None, "tool": "x"})["kind"] == "defer"
 
 
@@ -2488,3 +2493,63 @@ def test_perl_cpanm_bakes_xlocale_shim_and_release_binary_sha_gate():
     assert "cpanm --notest" in p["command"] and p["engine_coupled"]
     b = ic.release_binary("mosdepth", "https://x/mosdepth_linux_amd64", sha256="cafef00d")
     assert "cafef00d  mosdepth_linux_amd64" in b["command"] and "sha256sum -c" in b["command"]
+
+
+# ---------------------------------------------------------------------------
+# Follow-up slice: container-native pip (engine --pypi) + R install generator.
+# ---------------------------------------------------------------------------
+
+def test_install_command_r_package_generator():
+    """r_package: cran/bioconductor/github via Rscript, engine-coupled, verified by
+    library() in-image; tool token anchors the shape rule."""
+    from agent.skills import install_commands as ic
+    c = ic.r_package("ape", source="cran")
+    assert c["engine_coupled"] and c["tool"] == "ape"
+    assert 'install.packages("ape"' in c["command"] and "Rscript -e" in c["command"]
+    assert c["evidence"] == "Rscript -e 'library(ape)'"
+    b = ic.r_package("DESeq2", source="bioconductor")
+    assert 'BiocManager::install("DESeq2"' in b["command"]
+    g = ic.r_package("treedater", source="github:emvolz-phylodynamics/treedater")
+    assert 'remotes::install_github("emvolz-phylodynamics/treedater")' in g["command"]
+
+
+def test_pixi_engine_add_pypi_and_micromamba_refuses():
+    """PixiEngine.add_pypi → `pixi add --pypi` (into the lock); MicromambaEngine
+    refuses honestly (its explicit lock can't capture pip)."""
+    from agent.skills.container_build import PixiEngine, MicromambaEngine
+    calls = []
+    class FakeCB:
+        def exec(self, cmd, timeout=0):
+            calls.append(cmd); return {"returncode": 0, "stdout": "", "stderr": ""}
+    assert PixiEngine().add_pypi(FakeCB(), ["cyvcf2==0.31.1"])["success"]
+    assert any("pixi add --pypi" in c and "cyvcf2==0.31.1" in c for c in calls)
+    r = MicromambaEngine().add_pypi(FakeCB(), ["cyvcf2"])
+    assert r["success"] is False and "pip" in r["reason"].lower()
+
+
+def test_envbuild_add_pip_records_engine_coupled_verification():
+    from agent.skills.env_build import EnvBuild
+    eb = EnvBuild("demo", "1.0")
+    eb.add_pip(["cyvcf2==0.31.1"], verify=[("cyvcf2", "pip show cyvcf2")])
+    assert eb.pip_specs == ["cyvcf2==0.31.1"]
+    v = eb.verifications[-1]
+    assert v["tool"] == "cyvcf2" and v["engine_coupled"] is True
+    assert "cyvcf2=0.31.1" in eb.request_key()   # pip specs feed the lookup handle (== normalized to =)
+
+
+def test_env_freeze_maps_pip_and_r_install():
+    """env_freeze routes r_install -> r_package generator (source reconstructed from
+    the recorded R expr) and injects the R toolchain; pip is partitioned to add_pip."""
+    from agent.skills import env_freeze as ef
+    # r_install mapping: source reconstructed from install_method.source expr
+    r = ef._map_install({"name": "ape", "type": "r_install",
+                         "install_method": {"type": "r_install", "source": "install.packages('ape')"}})
+    assert r["spec"]["tool"] == "ape" and 'install.packages("ape"' in r["spec"]["command"]
+    rg = ef._map_install({"name": "treedater", "type": "r_install",
+                          "install_method": {"source": "remotes::install_github('emvolz/treedater')"}})
+    assert "install_github(\"emvolz/treedater\")" in rg["spec"]["command"]
+    # plan_conda injects the R toolchain (r-base + compilers)
+    out = ef.plan_conda([], [{"type": "r_install"}])
+    assert "r-base" in out and "fortran-compiler" in out
+    # pip is NOT a generator (no toolchain injected for it)
+    assert ef.plan_conda([], [{"type": "pip"}]) == []
