@@ -376,6 +376,11 @@ class ContainerBuild:
             ok = ok and r["returncode"] == 0
         return {"success": ok, "checks": results}
 
+    def image_digest(self, image: str) -> str:
+        """The built image's content id (sha256), the local shipping handle."""
+        r = self._sh(["docker", "image", "inspect", "--format", "{{index .Id}}", image])
+        return (r["stdout"] or "").strip() if r["returncode"] == 0 else ""
+
     def close(self) -> None:
         if self.cid:
             self._sh(["docker", "rm", "-f", self.cid])

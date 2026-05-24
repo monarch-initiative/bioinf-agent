@@ -2158,6 +2158,31 @@ def test_install_spec_engine_coupling_wraps_with_engine_run(monkeypatch):
     assert cb.longtail[-1]["command"] == "install -m0755 /tmp/x /usr/local/bin/x"
 
 
+def test_envbuild_orchestrator_plan_and_content_digest():
+    """The core orchestrator records conda specs + long-tail tools + how to verify
+    each in the image, and content-addresses by what was GOT (lock + commands +
+    platform + engine). Pure parts — no container."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills import install_commands as ic
+    eb = EnvBuild("demo", "1.0", platform="linux/amd64")
+    eb.add_conda(["samtools=1.21"], verify=[("samtools", "samtools --version")])
+    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz", binary_in_archive="seqkit"))
+    eb.add_tool(ic.cargo("rasusa", "rasusa", version="4.1.0"))
+    # routing: conda verify is engine-coupled; binary is bare; cargo is coupled
+    by = {v["label"]: v for v in eb.verifications}
+    assert by["samtools"]["engine_coupled"] is True
+    assert by["seqkit (release binary)"]["engine_coupled"] is False
+    assert any(v["engine_coupled"] for v in eb.verifications if "cargo" in v["label"])
+    assert eb.conda_specs == ["samtools=1.21"] and len(eb.tools) == 2
+    # content digest: stable, and sensitive to the recipe (lock + commands)
+    eb.lock_text = "pixi.lock-bytes"
+    eb.cb.longtail = [{"command": "RUN x"}]
+    d1 = eb.content_digest()
+    assert d1.startswith("sha256:") and d1 == eb.content_digest()
+    eb.cb.longtail = [{"command": "RUN y"}]
+    assert eb.content_digest() != d1
+
+
 def test_container_native_engine_optional_for_longtail_only():
     """A pure binary/source/half-baked env carries NO engine (no pixi/micromamba) —
     bootstrap lines appear only when conda/pip specs were declared."""
