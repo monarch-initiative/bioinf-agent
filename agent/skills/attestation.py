@@ -34,9 +34,15 @@ def _digest_dict(image_digest: str) -> dict:
 
 
 def _purl(pkg: dict) -> str:
-    """A package-URL for a resolved dependency (conda or pypi)."""
+    """A package-URL for a resolved dependency (conda / pypi / apt-deb)."""
     name, ver = pkg.get("name", ""), pkg.get("version", "")
-    eco = "pypi" if pkg.get("kind") == "pypi" else "conda"
+    kind = pkg.get("kind")
+    if kind == "pypi":
+        eco = "pypi"
+    elif kind == "apt":
+        eco = "deb/debian"           # pkg:deb/debian/<name>@<version>
+    else:
+        eco = "conda"
     return f"pkg:{eco}/{name}@{ver}" if ver else f"pkg:{eco}/{name}"
 
 
@@ -51,8 +57,10 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
     r = record or {}
     subject = [{"name": r.get("image", ""), "digest": _digest_dict(r.get("image_digest", ""))}]
 
+    # the full SBOM: conda/pip closure + the apt/OS layer, all as purls
+    closure = (r.get("resolved_packages") or []) + (r.get("system_packages") or [])
     resolved = [{"uri": _purl(p), "annotations": {"kind": p.get("kind", "")}}
-                for p in (r.get("resolved_packages") or []) if isinstance(p, dict) and p.get("name")]
+                for p in closure if isinstance(p, dict) and p.get("name")]
     if base_image:
         resolved.append({"uri": f"docker:{base_image}",
                          "digest": _digest_dict(base_image.split("@")[-1]) if "@sha256:" in base_image else {},

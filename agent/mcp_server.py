@@ -1919,6 +1919,7 @@ def freeze(
         record["conda_specs"] = br.get("conda_specs", [])
         record["verifications"] = br.get("verifications", [])
         record["resolved_packages"] = br.get("resolved_packages", [])
+        record["system_packages"] = br.get("system_packages", [])
         record["push_status"] = push_status
     _env_cache.register(rkey, record)
 

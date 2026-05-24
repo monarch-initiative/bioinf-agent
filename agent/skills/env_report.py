@@ -93,6 +93,7 @@ def render_env_report(record: dict) -> str:
     name = r.get("name") or (r.get("image") or "env").split(":")[0].split("/")[-1]
     requested = list(r.get("requested_tools") or [])
     resolved = list(r.get("resolved_packages") or [])
+    system = list(r.get("system_packages") or [])
     verifs = list(r.get("verifications") or [])
     shipped = list(r.get("shipped_binaries") or [])
     conda_specs = list(r.get("conda_specs") or [])
@@ -174,6 +175,22 @@ def render_env_report(record: dict) -> str:
         L.append("_(no conda/pip layer — pure long-tail env, or an adopted image whose "
                  "closure was not captured in-locus)_")
     L.append("")
+
+    # -- system (apt) packages — the OS layer of the SBOM -----------------
+    if system:
+        L.append(f"## System packages ({len(system)})")
+        L.append("The OS/apt layer baked into the shipped image — captured for a complete, "
+                 "auditable SBOM (you know exactly what's in the artifact).")
+        L.append("")
+        L.append(f"<details><summary>{len(system)} apt packages</summary>")
+        L.append("")
+        L.append("| Package | Version |")
+        L.append("|---------|---------|")
+        for p in system:
+            L.append(f"| {p['name']} | {p.get('version','')} |")
+        L.append("")
+        L.append("</details>")
+        L.append("")
 
     # -- install / provenance --------------------------------------------
     L.append("## Install & provenance")

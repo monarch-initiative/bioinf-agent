@@ -535,6 +535,25 @@ class ContainerBuild:
             pkgs.setdefault(name.lower(), {"name": name, "version": ver, "kind": kind})
         return sorted(pkgs.values(), key=lambda p: p["name"].lower())
 
+    def system_packages(self, image: str) -> list[dict]:
+        """The apt/dpkg packages in the SHIPPED image — the system (OS) layer of the
+        SBOM. Read from the FINAL image, not the build container: the multi-stage
+        builder carries the full toolchain (build-essential, -dev headers) that does
+        NOT ship, so only the runtime image tells the truth about what's delivered.
+        Completes the self-describing artifact (conda + pip + apt, all versioned) so
+        it's auditable WITHOUT forcing byte-identical rebuilds. Best-effort: [] if
+        the image has no dpkg (e.g. a non-debian adopted base)."""
+        r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
+                      "dpkg-query -W -f='${Package} ${Version}\\n' 2>/dev/null"], timeout=120)
+        if r["returncode"] != 0:
+            return []
+        pkgs = []
+        for line in (r["stdout"] or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                pkgs.append({"name": parts[0], "version": parts[1], "kind": "apt"})
+        return sorted(pkgs, key=lambda p: p["name"])
+
     def close(self) -> None:
         if self.cid:
             self._sh(["docker", "rm", "-f", self.cid])

@@ -2159,6 +2159,29 @@ def test_env_report_long_tail_tier_version_and_delivery():
     assert "Reproducibility" in md and "digest-pinned" in md
 
 
+def test_env_report_system_packages_sbom_section():
+    """The apt/OS layer renders as its own collapsible SBOM section."""
+    from agent.skills.env_report import render_env_report
+    rec = dict(_sample_record("native"))
+    rec["system_packages"] = [{"name": "libssl3", "version": "3.0.14-1", "kind": "apt"},
+                              {"name": "zlib1g", "version": "1:1.2.13", "kind": "apt"}]
+    md = render_env_report(rec)
+    assert "## System packages (2)" in md
+    assert "| libssl3 | 3.0.14-1 |" in md
+
+
+def test_attestation_sbom_includes_apt_as_deb_purls():
+    """A complete SBOM: the apt layer joins conda/pip in resolvedDependencies as
+    deb purls — self-describing artifact for audit."""
+    from agent.skills.attestation import build_attestation
+    rec = dict(_sample_record("native"))
+    rec["system_packages"] = [{"name": "libssl3", "version": "3.0.14-1", "kind": "apt"}]
+    att = build_attestation(rec)
+    uris = [d["uri"] for d in att["predicate"]["buildDefinition"]["resolvedDependencies"]]
+    assert "pkg:conda/htslib@1.21" in uris        # tool closure
+    assert "pkg:deb/debian/libssl3@3.0.14-1" in uris  # OS layer
+
+
 def test_env_report_honesty_footer_reflects_locus():
     from agent.skills.env_report import render_env_report
     assert "NOT authoritative" in render_env_report(_sample_record("emulated"))

@@ -230,6 +230,9 @@ class EnvBuild:
                 # ride" split) — read from the built env, captured while the build
                 # container is still alive (close() is in the finally below).
                 "resolved_packages": self.cb.resolved_packages(),
+                # the OS/apt layer of the SBOM, read from the SHIPPED image — makes
+                # the artifact fully self-describing (conda + pip + apt, versioned).
+                "system_packages": self.cb.system_packages(fr["image"]),
                 # POLICY_CLEAN inputs
                 "accelerator": self.accelerator,
                 "license_gated": self.license_gated,
