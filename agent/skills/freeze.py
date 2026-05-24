@@ -273,6 +273,21 @@ class EnvCache:
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)
 
+    def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
+        """A cache hit RE-ANCHORED against reality: returns the record only if its
+        image is still present per `image_present(ref) -> bool`. The cache spans
+        events (unlike EnvBuild.run(), which verifies on live calls in one pass), so
+        a hit is a claim until re-checked — the container-native analog of anchoring
+        docker_status to `docker image inspect` at finalize. An evicted image is
+        treated as a MISS (None) so the caller rebuilds rather than shipping a
+        dangling reference. `image_present` is injected to keep this module network-
+        free (a face supplies the docker-backed check)."""
+        rec = self.lookup(key)
+        if not rec:
+            return None
+        ref = rec.get("image") or rec.get("image_digest") or ""
+        return rec if (ref and image_present(ref)) else None
+
     def register(self, key: str, record: dict) -> dict:
         data = self._load()
         data[key] = record

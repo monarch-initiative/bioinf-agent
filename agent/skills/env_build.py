@@ -122,6 +122,55 @@ class EnvBuild:
         }
         return _freeze.compute_content_digest(parts)
 
+    # -- EnvCache bridge: "solve once, pull by digest" --------------------
+    def request_key(self) -> str:
+        """The cache LOOKUP handle — what was ASKED for (tools+platform+accel),
+        order-independent. content_digest (what was GOT) is the real identity; this
+        is just the handle freeze.request_key produces for the host path too, so
+        the same env asked for either way collides in one cache."""
+        tools: list[tuple[str, str]] = []
+        for s in self.conda_specs:
+            name, _, ver = s.replace("==", "=").partition("=")
+            tools.append((name.strip(), ver.strip()))
+        for spec in self.tools:
+            tools.append((spec.get("tool", "") or spec.get("purpose", ""), ""))
+        accel = (self.accelerator or {}).get("type", "none") if self.accelerator else "none"
+        return _freeze.request_key(tools, self.platform, accel)
+
+    def to_cache_record(self, result: dict) -> dict:
+        """The artifact record stored in the EnvCache from a successful BuildResult.
+        Container-native is always a recipe BUILD (we never adopt a foreign image);
+        redistributable derives from the I13 firewall."""
+        return {
+            "request_key":     self.request_key(),
+            "content_digest":  result["content_digest"],
+            "mode":            "container-native",
+            "image":           result["image"],
+            "image_digest":    result["image_digest"],
+            "platform":        result["platform"],
+            "engine":          result.get("engine", "none"),
+            "gated":           self.license_gated,
+            "redistributable": self.redistributable,
+        }
+
+    def build_or_cached(self, cache, image_present=None) -> dict[str, Any]:
+        """Solve-once entry: an anchored cache hit (image still present) is returned
+        without rebuilding; otherwise run() builds, and a successful+honest build is
+        registered. `image_present` defaults to the docker-backed check (injectable
+        for tests)."""
+        if image_present is None:
+            from agent.skills.container_build import image_present as _ip
+            image_present = _ip
+        key = self.request_key()
+        hit = cache.lookup_anchored(key, image_present)
+        if hit:
+            return {"success": True, "cached": True, **hit}
+        result = self.run()
+        if result.get("success"):
+            cache.register(key, self.to_cache_record(result))
+            result["cached"] = False
+        return result
+
     # -- run it all -------------------------------------------------------
     def run(self) -> dict[str, Any]:
         """Full core flow → a BuildResult. The honesty gate is env_honesty.check_build:

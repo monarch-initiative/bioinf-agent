@@ -2426,3 +2426,98 @@ def test_envbuild_run_uses_check_build_as_the_gate(monkeypatch):
     monkeypatch.setattr(eb, "verify_in_image", lambda img: {"success": True, "verifications": [
         {"label": "seqkit", "tool": "seqkit", "check": "command -v seqkit", "passed": True}]})
     assert eb.run()["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
+# ---------------------------------------------------------------------------
+
+def test_envbuild_request_key_and_cache_record():
+    """request_key is the order-independent lookup handle (tools+platform+accel);
+    to_cache_record carries content_digest + image handles + the I13 firewall."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills import install_commands as ic
+    eb = EnvBuild("demo", "1.0", platform="linux/amd64")
+    eb.add_conda(["samtools=1.21"], verify=[("samtools", "samtools --version")])
+    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                                  binary_in_archive="seqkit"))
+    key = eb.request_key()
+    assert "samtools=1.21" in key and "seqkit" in key and "linux/amd64" in key and key.endswith("none")
+    # order-independence: adding in a different order yields the same handle
+    eb2 = EnvBuild("demo", "1.0", platform="linux/amd64")
+    eb2.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                                   binary_in_archive="seqkit"))
+    eb2.add_conda(["samtools=1.21"], verify=[("samtools", "samtools --version")])
+    assert eb2.request_key() == key
+    rec = eb.to_cache_record({"content_digest": "sha256:cd", "image": "demo:1.0",
+                              "image_digest": "sha256:img", "platform": "linux/amd64",
+                              "engine": "pixi"})
+    assert rec["mode"] == "container-native" and rec["content_digest"] == "sha256:cd"
+    assert rec["image_digest"] == "sha256:img" and rec["redistributable"] is True
+
+
+def test_envcache_lookup_anchored_treats_evicted_image_as_miss(tmp_path):
+    """A cache hit is re-anchored against reality: present image → hit; evicted
+    image → MISS (None) so the caller rebuilds rather than ship a dangling ref."""
+    from agent.skills.freeze import EnvCache
+    cache = EnvCache(tmp_path / "envcache.json")
+    cache.register("k", {"image": "demo:1.0", "image_digest": "sha256:img"})
+    assert cache.lookup_anchored("k", image_present=lambda ref: True)["image"] == "demo:1.0"
+    assert cache.lookup_anchored("k", image_present=lambda ref: False) is None   # evicted
+    assert cache.lookup_anchored("missing", image_present=lambda ref: True) is None
+
+
+def test_envbuild_build_or_cached_returns_hit_without_building(tmp_path, monkeypatch):
+    """build_or_cached short-circuits on an anchored hit (no run()); on a miss it
+    runs and registers the successful build."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills.freeze import EnvCache
+    from agent.skills import install_commands as ic
+    cache = EnvCache(tmp_path / "c.json")
+    eb = EnvBuild("demo", "1.0")
+    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
+                                  binary_in_archive="seqkit"))
+    # pre-seed the cache with a record under eb's key → anchored hit, run() never called
+    cache.register(eb.request_key(), {"image": "demo:1.0", "image_digest": "sha256:img",
+                                      "content_digest": "sha256:cd"})
+    monkeypatch.setattr(eb, "run", lambda: (_ for _ in ()).throw(AssertionError("run() should not be called on a hit")))
+    hit = eb.build_or_cached(cache, image_present=lambda ref: True)
+    assert hit["cached"] is True and hit["image"] == "demo:1.0"
+    # miss path (different key via a new build) → run() called + registered
+    eb3 = EnvBuild("other", "9")
+    eb3.add_tool(ic.release_binary("mosdepth", "https://x/mosdepth_linux_amd64", binary_in_archive="mosdepth"))
+    monkeypatch.setattr(eb3, "run", lambda: {"success": True, "content_digest": "sha256:z",
+                                             "image": "other:9", "image_digest": "sha256:o",
+                                             "platform": "linux/amd64", "engine": "none"})
+    miss = eb3.build_or_cached(cache, image_present=lambda ref: False)
+    assert miss["cached"] is False
+    assert cache.lookup(eb3.request_key())["image_digest"] == "sha256:o"   # registered
+
+
+def test_resolver_route_conda_binary_source_and_defers_pip_r():
+    """route() maps a decision to an EnvBuild action: conda spec / release_binary /
+    source generator; pip/cran/bioconductor are honestly deferred (no generator yet)."""
+    from agent.skills.resolver import route
+    # conda
+    a = route({"chosen": "conda", "tool": "samtools", "version": "1.21",
+               "probed": {"conda": {"channel": "bioconda"}}})
+    assert a["kind"] == "conda" and a["spec"] == "samtools=1.21" and a["channel"] == "bioconda"
+    # binary → picks the linux/amd64 asset (rejects wrong-arch + wrong-os), emits a
+    # release_binary generator spec
+    a = route({"chosen": "binary", "tool": "sylph", "github_repo": "bluenote-1577/sylph",
+               "probed": {"binary": {"assets": [
+                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-linux-x86_64.tar.gz",
+                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-linux-aarch64.tar.gz",
+                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-macos-x86_64.tar.gz"]}}})
+    assert a["kind"] == "tool" and a["spec"]["tool"] == "sylph" and a["needs_sha256"] is True
+    assert "linux-x86_64" in a["spec"]["command"] and "aarch64" not in a["spec"]["command"] \
+        and "macos" not in a["spec"]["command"]
+    # source → clone at the release tag
+    a = route({"chosen": "source", "tool": "seqtk", "github_repo": "lh3/seqtk",
+               "probed": {"source": {"tag": "v1.4"}}})
+    assert a["kind"] == "tool" and "github.com/lh3/seqtk" in a["spec"]["command"] and "v1.4" in a["spec"]["command"]
+    # deferred tiers
+    for tier in ("pip", "cran", "bioconductor"):
+        d = route({"chosen": tier, "tool": "x", "probed": {tier: {}}})
+        assert d["kind"] == "defer" and d["tier"] == tier and d["reason"]
+    assert route({"chosen": None, "tool": "x"})["kind"] == "defer"

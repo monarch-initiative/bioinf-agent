@@ -58,6 +58,17 @@ def _docker_repo(name: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", name.lower()).strip("-._") or "bioinf"
 
 
+def image_present(ref: str) -> bool:
+    """Is `ref` (a tag or sha256:… digest) present in the local docker daemon?
+    The real backing for EnvCache.lookup_anchored — a cache hit is only honest if
+    the image it points at still exists to be shipped."""
+    if not ref:
+        return False
+    p = subprocess.run(["docker", "image", "inspect", ref],
+                       capture_output=True, text=True, timeout=60)
+    return p.returncode == 0
+
+
 # ---------------------------------------------------------------------------
 # EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
 # ---------------------------------------------------------------------------

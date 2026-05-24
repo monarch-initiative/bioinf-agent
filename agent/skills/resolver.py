@@ -277,6 +277,61 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     return "# no automatable tier — author a manual path (and stage_authored_artifact for any scripts)"
 
 
+def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
+    """Container-native sibling of `_install_call`: map a resolve() decision to an
+    EnvBuild action instead of a host-primitive call string. Pure (no network).
+
+      conda  → {"kind":"conda", "spec","channel"}           — fed to EnvBuild.add_conda
+      binary → {"kind":"tool",  "spec": <release_binary gen>} — fed to EnvBuild.add_tool
+      source → {"kind":"tool",  "spec": <source gen>}         —      "
+
+    pip / cran / bioconductor are DEFERRED on purpose: a `chosen` of cran/bioc means
+    conda did NOT carry the name (conda outranks them), so mapping to an r-{tool}
+    conda spec would fail the solve; the honest container-native path is an R/pip
+    install generator (engine-coupled), the next slice. Returning kind='defer' with
+    a reason is better than papering a mapping that would silently break the build."""
+    from agent.skills import install_commands as ic
+    tier = decision.get("chosen")
+    tool = decision.get("tool") or ""
+    version = decision.get("version") or ""
+    detail = (decision.get("probed") or {}).get(tier, {}) if tier else {}
+    repo = decision.get("github_repo") or ""
+
+    if tier == "conda":
+        base = detail.get("r_spec") or tool
+        v = version or detail.get("latest") or ""
+        spec = f"{base}={v}" if v else base
+        return {"kind": "conda", "tier": tier, "spec": spec,
+                "channel": detail.get("channel", "bioconda")}
+
+    if tier == "binary":
+        os_tok, _, arch_tok = platform.partition("/")
+        url = _pick_platform_asset(detail.get("assets") or [], os_tok or "linux",
+                                   arch_tok or "amd64")
+        if not url:
+            return {"kind": "defer", "tier": tier,
+                    "reason": f"no {platform} asset among the release assets — pass an explicit "
+                              f"linux URL or pick a different tier"}
+        # sha256 anchoring is a network step (resolver.sha256_of_url) the caller adds
+        # before build; absent, the in-image smoke evidence still catches a wrong arch.
+        return {"kind": "tool", "tier": tier,
+                "spec": ic.release_binary(tool, url, binary_in_archive=tool),
+                "needs_sha256": True}
+
+    if tier == "source":
+        if not repo:
+            return {"kind": "defer", "tier": tier,
+                    "reason": "source tier needs github_repo to clone"}
+        return {"kind": "tool", "tier": tier,
+                "spec": ic.source(tool, f"https://github.com/{repo}",
+                                  ref=detail.get("tag") or "")}
+
+    return {"kind": "defer", "tier": tier,
+            "reason": (f"tier {tier!r} has no container-native generator yet — pip needs engine "
+                       f"pypi support; cran/bioconductor need an R install generator (engine-coupled). "
+                       f"Next slice.") if tier else "no automatable tier found"}
+
+
 def resolve(
     tool: str,
     version: str = "",
