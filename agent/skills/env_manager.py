@@ -1149,6 +1149,41 @@ class EnvManager:
         )
         return result["stdout"] if result["returncode"] == 0 else ""
 
+    def generate_conda_lock(
+        self, env_name: str, platforms: list[str] | None = None, out_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Produce a MULTI-PLATFORM conda-lock.yml from the env's
+        environment.yml — the portable lock artifact (vs export_explicit_lock,
+        which is bit-exact but single-arch). conda-lock re-solves per platform;
+        the default target is linux-64 (the HPC arch). A platform that can't
+        solve is reported, not fatal. Requires conda-lock on PATH.
+        """
+        import shutil as _shutil
+        import tempfile
+
+        if not _shutil.which("conda-lock"):
+            return {"success": False, "error": "conda-lock not on PATH (pip install conda-lock)"}
+        platforms = platforms or ["linux-64"]
+        env_yml = self.export_environment_yml(env_name, from_history=True)
+        out = Path(out_path) if out_path else (
+            self.project_root / "env_reports" / f"{env_name}.conda-lock.yml"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as td:
+            yml_path = Path(td) / "environment.yml"
+            yml_path.write_text(env_yml)
+            cmd = ["conda-lock", "lock", "-f", str(yml_path), "--lockfile", str(out)]
+            for p in platforms:
+                cmd += ["-p", p]
+            res = self._run(cmd, timeout=self.config["agent"].get("install_timeout_seconds", 1800))
+        return {
+            "success":   res["returncode"] == 0 and out.exists(),
+            "lockfile":  str(out) if out.exists() else None,
+            "platforms": platforms,
+            "returncode": res["returncode"],
+            "stderr":    res["stderr"][-800:],
+        }
+
     def r_package_version(self, env_name: str, package_name: str) -> str:
         """Return the version `packageVersion('X')` reports for an R package,
         or '' if not installed / not loadable.

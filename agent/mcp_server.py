@@ -47,6 +47,8 @@ from agent.skills.package_search import PackageSearch
 from agent.skills.env_manager import EnvManager
 from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
+from agent.skills import biocontainers as _biocontainers
+from agent.skills import freeze as _freeze
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -65,6 +67,7 @@ _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
 _job_manager    = JobManager(config)
+_env_cache      = _freeze.EnvCache(_env_mgr.project_root / "env_reports" / "_env_cache.json")
 
 # Reap stale PID files from prior agent sessions whose owning process has
 # already exited. Living services owned by other processes are left alone.
@@ -1547,6 +1550,107 @@ def build_docker_image(
             else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     return result
+
+
+@mcp.tool()
+def freeze(
+    env_name: str,
+    tools: list[str],
+    pipeline_name: str = "",
+    pipeline_description: str = "",
+    version: str = "",
+    platform: str = "linux-64",
+    accel: str = "none",
+    gated: bool = False,
+    push_target: str = "",
+    gpu_required: bool = False,
+    cuda_version: str = "",
+    pipeline_id: str = "",
+) -> dict:
+    """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
+
+    The re-spine's env-artifact primitive — adopt a pre-built BioContainer by
+    digest when one exists, else build our own, and emit the Apptainer/HPC
+    delivery contract. Steps:
+
+      1. request_key (what was ASKED) → EnvCache lookup; a hit returns the
+         proven artifact by hash with NO re-solve (the scale unlock).
+      2. content_digest (what was GOT): lock + source/binary/artifact hashes +
+         platform + accel (from the draft when pipeline_id is given).
+      3. ADOPT-or-BUILD: resolve_biocontainer(tools); if a pre-built image
+         exists (and not gated), adopt it BY DIGEST with no build — else build
+         via conda-pack + docker (procps included for in-container psutil).
+      4. HPC delivery, registry-free by DEFAULT: adopted → `apptainer pull
+         docker://…@digest`; built → `docker save` tarball + `apptainer build
+         docker-archive://…`. A push_target pushes the built image instead
+         (NEVER for gated — I13: gated images stay tarball-only).
+      5. EnvCache.register(request_key → record).
+
+    `tools` are the PRIMARY requested tools (e.g. ['samtools=1.21',
+    'bwa=0.7.17']) — what biocontainer/mulled adoption matches on, NOT the full
+    dependency closure. Returns {mode, image, image_digest, content_digest,
+    request_key, hpc_delivery, cache_hit, …}.
+    """
+    parsed = _freeze.parse_tools(tools)
+    rkey = _freeze.request_key([(n, v or "") for n, v in parsed], platform, accel)
+
+    cached = _env_cache.lookup(rkey)
+    if cached:
+        return {"success": True, "cache_hit": True, "request_key": rkey, **cached}
+
+    if pipeline_id and _pipeline_state.get_draft(pipeline_id) is not None:
+        content_digest = _freeze.content_digest_from_spec(_pipeline_state.get_draft(pipeline_id))
+    else:
+        content_digest = _freeze.compute_content_digest({
+            "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
+            "platform": platform, "accel": accel,
+        })
+
+    name = pipeline_name or env_name
+    sif = f"{name}.sif"
+    adopt = _biocontainers.resolve_biocontainer(parsed)
+
+    if adopt.get("found") and adopt.get("image_by_digest") and not gated:
+        mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
+        hpc = _freeze.apptainer_delivery(
+            mode="adopt", sif_name=sif, image_by_digest=adopt["image_by_digest"],
+        )
+    else:
+        mode = "build"
+        build_info = _docker.build(
+            env_name, name, pipeline_description or name,
+            version=version, gpu_required=gpu_required, cuda_version=cuda_version,
+        )
+        if not build_info.get("success"):
+            return {"success": False, "stage": "build", "request_key": rkey,
+                    "adopt_attempt": adopt, "build": build_info}
+        image = build_info["image_tag"]
+        image_digest = _docker.image_digest(image)
+        tar_path = _env_mgr.project_root / "docker_images" / name / f"{name}.tar"
+        save = _docker.save_archive(image, tar_path)
+        tarball = save.get("tarball") if save.get("success") else None
+        pushed_ref = None
+        if push_target and not gated:
+            if _docker._run(["docker", "tag", image, push_target])["returncode"] == 0 and \
+               _docker._run(["docker", "push", push_target], timeout=900)["returncode"] == 0:
+                pushed_ref = push_target
+        hpc = _freeze.apptainer_delivery(
+            mode="build", sif_name=sif, push_target=pushed_ref, tarball=tarball, gated=gated,
+        )
+
+    # Multi-platform conda-lock (best-effort; never fatal).
+    plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
+    cl = _env_mgr.generate_conda_lock(env_name, platforms=plats)
+    conda_lock_path = cl.get("lockfile") if cl.get("success") else None
+
+    record = _freeze.freeze_record(
+        request_key=rkey, content_digest=content_digest, mode=mode,
+        image=image, image_digest=image_digest, platform=platform, gated=gated,
+        conda_lock_path=conda_lock_path, tarball=tarball, hpc=hpc,
+    )
+    _env_cache.register(rkey, record)
+    return {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+
 
 # ---------------------------------------------------------------------------
 # Artifacts

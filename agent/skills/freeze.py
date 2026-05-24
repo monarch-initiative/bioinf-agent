@@ -83,6 +83,119 @@ def content_digest_from_spec(spec: dict) -> str:
     return compute_content_digest(content_digest_parts(spec))
 
 
+def parse_tools(specs: list[str]) -> list[tuple[str, Optional[str]]]:
+    """['samtools=1.21', 'bwa==0.7.17', 'fastqc'] → [('samtools','1.21'), …].
+    Accepts '=' or '==' (conda/pip), and a bare name (no version)."""
+    out: list[tuple[str, Optional[str]]] = []
+    for s in specs:
+        s = (s or "").strip()
+        if not s:
+            continue
+        if "==" in s:
+            n, v = s.split("==", 1)
+        elif "=" in s:
+            n, v = s.split("=", 1)
+        else:
+            n, v = s, None
+        out.append((n.strip(), (v.strip() or None) if v else None))
+    return out
+
+
+def apptainer_delivery(
+    *,
+    mode: str,
+    sif_name: str,
+    image_by_digest: Optional[str] = None,
+    push_target: Optional[str] = None,
+    tarball: Optional[str] = None,
+    gated: bool = False,
+) -> dict[str, Any]:
+    """The HPC delivery + run contract, matching the validated monarch-phenologs
+    Apptainer pattern. Picks the get-it-onto-the-cluster command by case:
+
+      adopt (public biocontainer)  → `apptainer pull` the immutable digest (no
+                                     push, no transfer — it's already public)
+      build + push_target (and not gated) → `apptainer pull` the pushed ref
+      build (default / gated)      → registry-free: scp the docker-save tarball,
+                                     `apptainer build … docker-archive://…`
+
+    Returns the pull/build command, a run example, and a SLURM sbatch template
+    (module load apptainer, APPTAINER_TMPDIR→scratch, --bind /scratch:/data).
+    This block is recorded on the artifact and doubles as Layer-2 user-guide
+    content (every command here is the real, runnable delivery path).
+    """
+    if mode == "adopt" and image_by_digest:
+        get_cmd = f"apptainer pull {sif_name} docker://{image_by_digest}"
+        source_note = "adopted public BioContainer — pulled by immutable digest, no push/transfer"
+    elif mode == "build" and push_target and not gated:
+        get_cmd = f"apptainer pull {sif_name} docker://{push_target}"
+        source_note = f"built image pushed to {push_target}"
+    else:
+        tar = Path(tarball).name if tarball else f"{sif_name.removesuffix('.sif')}.tar"
+        get_cmd = (
+            f"# transfer {tar} to the cluster (scp/rsync), then on the HPC:\n"
+            f"apptainer build {sif_name} docker-archive://{tar}"
+        )
+        source_note = ("registry-free transfer (docker save → docker-archive)"
+                       + (" — required: image is license-gated" if gated else ""))
+
+    run_example = f"apptainer exec --bind /scratch/$USER/data:/data {sif_name} <command>"
+    sbatch = (
+        "#!/bin/bash\n"
+        "#SBATCH --job-name=bioinf\n"
+        "#SBATCH --time=24:00:00\n"
+        "#SBATCH --mem=32G\n"
+        "#SBATCH --cpus-per-task=4\n\n"
+        "module load apptainer\n"
+        "export APPTAINER_TMPDIR=/scratch/$USER/tmp && mkdir -p \"$APPTAINER_TMPDIR\"\n\n"
+        f"apptainer exec --bind /scratch/$USER/data:/data {sif_name} <command>\n"
+    )
+    return {
+        "mode": mode,
+        "source_note": source_note,
+        "get_image": get_cmd,
+        "run_example": run_example,
+        "sbatch_template": sbatch,
+    }
+
+
+def freeze_record(
+    *,
+    request_key: str,
+    content_digest: str,
+    mode: str,
+    image: str,
+    image_digest: str,
+    platform: str,
+    gated: bool,
+    lock_path: Optional[str] = None,
+    conda_lock_path: Optional[str] = None,
+    tarball: Optional[str] = None,
+    hpc: Optional[dict] = None,
+    created_at: Optional[str] = None,
+) -> dict[str, Any]:
+    """Assemble the artifact record stored in the EnvCache and returned by
+    freeze(). `image` is the shipping handle (adopted digest ref or built tag);
+    `image_digest` its immutable content id; redistributable is derived from
+    `gated` (the I13 firewall)."""
+    from datetime import datetime, timezone
+    return {
+        "request_key":     request_key,
+        "content_digest":  content_digest,
+        "mode":            mode,                 # "adopt" | "build"
+        "image":           image,
+        "image_digest":    image_digest,
+        "platform":        platform,
+        "gated":           gated,
+        "redistributable": not gated,
+        "lock":            lock_path,
+        "conda_lock":      conda_lock_path,
+        "tarball":         tarball,
+        "hpc_delivery":    hpc or {},
+        "created_at":      created_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class EnvCache:
     """Persisted request_key → artifact-record map. The store that makes
     'solve once, pull by digest' real: a cache hit returns the content_digest +

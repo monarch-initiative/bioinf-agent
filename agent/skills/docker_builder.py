@@ -34,7 +34,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 RUN apt-get update && apt-get install -y --no-install-recommends \\
         libgomp1 libz-dev libbz2-dev liblzma-dev \\
         libncurses5-dev libcurl4-openssl-dev \\
-        ca-certificates curl \\
+        ca-certificates curl procps \\
     && rm -rf /var/lib/apt/lists/*
 
 ENV CONDA_DIR=/opt/conda/envs/{env_name}
@@ -65,7 +65,7 @@ LABEL maintainer="{maintainer}"
 RUN apt-get update && apt-get install -y --no-install-recommends \\
         libgomp1 libz-dev libbz2-dev liblzma-dev \\
         libncurses5-dev libcurl4-openssl-dev \\
-        ca-certificates curl \\
+        ca-certificates curl procps \\
     && rm -rf /var/lib/apt/lists/*
 
 # Unpack the conda environment
@@ -196,6 +196,28 @@ class DockerBuilder:
             "tarball": str(tarball),
             "dockerfile": str(dockerfile_path),
             "platform": platform,
+        }
+
+    def image_digest(self, image_tag: str) -> str:
+        """Local content digest of a built image (its config Id sha256). This is
+        the immutable handle freeze() records for a built (non-adopted) image —
+        the build's analog of an adopted biocontainer's manifest digest."""
+        res = self._run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag], timeout=60
+        )
+        return (res.get("stdout") or "").strip() if res["returncode"] == 0 else ""
+
+    def save_archive(self, image_tag: str, out_path: str | Path) -> dict:
+        """`docker save` the image to a tarball for the registry-free HPC route
+        (scp → `apptainer build X.sif docker-archive://X.tar`). The default
+        delivery path, and the ONLY one allowed for license-gated images."""
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        res = self._run(["docker", "save", "-o", str(out), image_tag], timeout=900)
+        return {
+            "success": res["returncode"] == 0 and out.exists(),
+            "tarball": str(out),
+            "stderr": res["stderr"][-500:],
         }
 
     def _conda_pack(self, env_name: str, output_path: Path) -> dict:

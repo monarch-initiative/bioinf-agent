@@ -1413,3 +1413,49 @@ def test_env_cache_roundtrip(tmp_path):
     # Corrupt file degrades to empty, never raises.
     (tmp_path / "env_cache.json").write_text("{ not json")
     assert EnvCache(tmp_path / "env_cache.json").lookup(key) is None
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 5c: freeze() orchestration helpers (HPC delivery, record)
+# ---------------------------------------------------------------------------
+
+def test_parse_tools_handles_eq_and_bare():
+    from agent.skills.freeze import parse_tools
+    assert parse_tools(["samtools=1.21", "bwa==0.7.17", "fastqc", " "]) == \
+        [("samtools", "1.21"), ("bwa", "0.7.17"), ("fastqc", None)]
+
+
+def test_apptainer_delivery_picks_correct_route():
+    from agent.skills.freeze import apptainer_delivery
+    # Adopted public biocontainer → pull by digest, no transfer.
+    a = apptainer_delivery(mode="adopt", sif_name="x.sif",
+                           image_by_digest="quay.io/biocontainers/samtools@sha256:abc")
+    assert "apptainer pull x.sif docker://quay.io/biocontainers/samtools@sha256:abc" in a["get_image"]
+    # Built + pushed → pull the pushed ref.
+    b = apptainer_delivery(mode="build", sif_name="x.sif", push_target="reg/img:1", tarball="/d/x.tar")
+    assert "apptainer pull x.sif docker://reg/img:1" in b["get_image"]
+    # Built, no push → registry-free docker-archive.
+    c = apptainer_delivery(mode="build", sif_name="x.sif", tarball="/d/x.tar")
+    assert "docker-archive://x.tar" in c["get_image"] and "apptainer build" in c["get_image"]
+    # Gated ALWAYS tarball-only, even if a push_target is supplied (I13).
+    d = apptainer_delivery(mode="build", sif_name="x.sif", push_target="reg/img:1",
+                           tarball="/d/x.tar", gated=True)
+    assert "docker-archive://x.tar" in d["get_image"]
+    assert "pull" not in d["get_image"]
+    assert "license-gated" in d["source_note"]
+    # Every route carries a SLURM template + bind run example.
+    for r in (a, b, c, d):
+        assert "module load apptainer" in r["sbatch_template"]
+        assert "--bind /scratch/$USER/data:/data" in r["run_example"]
+
+
+def test_freeze_record_derives_redistributable_from_gated():
+    from agent.skills.freeze import freeze_record
+    rec = freeze_record(request_key="k", content_digest="sha256:c", mode="build",
+                        image="img:1", image_digest="sha256:i", platform="linux-64",
+                        gated=True, hpc={"get_image": "..."})
+    assert rec["redistributable"] is False and rec["gated"] is True
+    rec2 = freeze_record(request_key="k", content_digest="sha256:c", mode="adopt",
+                         image="q@sha256:d", image_digest="sha256:d", platform="linux-64",
+                         gated=False)
+    assert rec2["redistributable"] is True and rec2["created_at"]
