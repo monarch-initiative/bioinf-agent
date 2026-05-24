@@ -132,8 +132,11 @@ class InstallMethod(BaseModel):
     ref:        Optional[str] = None   # branch / tag / commit requested
     local_path: Optional[str] = None   # absolute path to the clone / binary on disk
     # binary — precompiled release binary (mosdepth/dorado/sylph/cellranger pattern)
-    binary_url: Optional[str] = None   # download URL of the release asset
-    sha256:     Optional[str] = None   # sha256 of the downloaded asset — immutable content anchor (I14)
+    binary_url:   Optional[str] = None  # download URL of the release asset
+    sha256:       Optional[str] = None  # sha256 of the EXTRACTED binary at local_path — I14 re-hashes this
+    asset_sha256: Optional[str] = None  # sha256 of the downloaded asset (the .tar.gz/.zip); == sha256 for
+                                        # single-binary downloads. Provenance anchor checked vs the publisher
+                                        # checksum at download. I14 anchors the runnable binary, not the archive.
     # docker_pull — tool only available as a pulled image (no conda/JAR path)
     docker_image: Optional[str] = None
 
@@ -1062,8 +1065,19 @@ class WorkflowSpec(BaseModel):
     # The validated run.
     pipeline_status:    PipelineStatus = "in_progress"
     usage_verified:     bool = False
+    # validated == shipped: every validated step ran INSIDE the pinned env image
+    # (matched by digest), so the bytes the user runs are the bytes we tested.
+    validated_in_shipped_image: bool = False
     usage:              Optional[UsageTemplate] = None
     pipeline_steps:     list[PipelineStep] = []
+    # External input sources the run consumes. Carried so the WorkflowSpec is
+    # SELF-VERIFYING: I8 (every step input traces to a prior output or an external
+    # source) can be re-checked against the artifact alone, not just the draft it
+    # was sealed from.
+    test_data:            Optional[TestDataRef] = None
+    reference_databases:  list[ReferenceDatabase] = []
+    runtime_configs:      list[RuntimeConfig] = []
+    authored_artifacts:   list[AuthoredArtifact] = []
     # Driver env: what runs the workflow (records the orchestrator's env, too).
     driver_env:         dict = {}                  # {conda_env, python_version, key_packages}
     user_guide:         Optional[str] = None       # rendered markdown (from the passing run)

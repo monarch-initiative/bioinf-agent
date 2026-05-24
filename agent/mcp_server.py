@@ -15,6 +15,7 @@ starts it automatically.
 from __future__ import annotations
 
 import os
+import platform as _hostplat
 import re
 import subprocess
 import sys
@@ -355,10 +356,12 @@ def install_release_binary(
     a HARD FAIL), extracts if it's a tar/zip, chmods the executable, and writes a
     PATH launcher at {env}/bin/{wrapper_name or tool_name}.
 
-    sha256: pass the published checksum to guarantee you got the exact asset; if
-    omitted, the computed sha256 is recorded. Either way the spec carries the
-    immutable content anchor I14 re-checks at finalize (it re-hashes the on-disk
-    binary).
+    sha256: pass the published checksum of the ASSET (the .tar.gz/.zip the
+    publisher ships) to guarantee you got the exact download — verified before
+    extraction and recorded as install_method.asset_sha256. The EXTRACTED binary
+    is separately hashed into install_method.sha256 — that's the anchor I14
+    re-hashes on disk at finalize (for an archive, the runnable binary differs
+    from the tarball; for a single-binary download they coincide).
 
     binary_in_archive: for archive assets, the executable's path inside it
     (basename accepted); omit for single-binary downloads.
@@ -1037,6 +1040,117 @@ def _infer_validator_type(basename: str, ext: str) -> str:
 
 
 @mcp.tool()
+def run_step_in_container(
+    freeze_request_key: str,
+    command: str,
+    pipeline_id: str,
+    inputs: list = [],
+    output_types: dict = {},
+    data_dir: str = "",
+    watch_dir: str = "",
+    extra_mounts: list = [],
+    tool: str = "",
+    subcommand: str = "",
+    purpose: str = "",
+    step: int = 0,
+    timeout_seconds: int = 1800,
+    platform: str = "linux/amd64",
+) -> dict:
+    """Run a pipeline step INSIDE the frozen env image and auto-validate every
+    produced output — the validation-locus pivot: **the artifact you ship is the
+    artifact you validate.** Use this instead of run_pipeline_step once the env is
+    frozen, so the recorded run is the one that actually executes on HPC.
+
+    Resolves the image from the EnvCache by `freeze_request_key` (call freeze()
+    first), pulling an adopted-by-digest image local if needed. The data dir is
+    bind-mounted at its OWN host path inside the container, so the same absolute
+    paths in `command`/`inputs` work unchanged and outputs land back on the host
+    for validation. Resource usage (I7) is captured IN the container (GNU time →
+    exact peak RSS, falling back to host docker-stats sampling). The step is
+    stamped ran_in_container + container_image[_digest] so seal can assert
+    validated==shipped.
+
+    output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
+    extra_mounts: ["host:container", …] for data outside data_dir."""
+    if not pipeline_id:
+        return {"error": "pipeline_id is required for run_step_in_container"}
+    rec = _env_cache.lookup(freeze_request_key)
+    if not rec:
+        return {"error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
+    image = rec.get("image")
+    if not image:
+        return {"error": f"freeze record for '{freeze_request_key}' has no image handle"}
+    # An adopted biocontainer is referenced by digest — pull it local so it can run.
+    if _docker._run(["docker", "image", "inspect", image])["returncode"] != 0:
+        pull = _docker._run(["docker", "pull", "--platform", platform, image], timeout=900)
+        if pull["returncode"] != 0:
+            return {"error": f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}"}
+
+    ddir = (Path(data_dir) if data_dir else (_env_mgr.project_root / "data")).resolve()
+    mounts = [(str(ddir), str(ddir))]   # same-path mount → host abs paths work verbatim
+    for m in extra_mounts:
+        if isinstance(m, str) and ":" in m:
+            h, c = m.split(":", 1)
+            mounts.append((h, c))
+
+    wdir = (Path(watch_dir).resolve() if watch_dir else ddir)
+
+    def _snap() -> dict:
+        snap = {}
+        for p in wdir.rglob("*"):
+            if p.is_file():
+                try:
+                    stt = p.stat()
+                    snap[str(p)] = (stt.st_mtime_ns, stt.st_size)
+                except OSError:
+                    pass
+        return snap
+
+    before = _snap()
+    res = _docker.run_in_container(image, command, mounts=mounts, workdir=str(ddir),
+                                   platform=platform, timeout=timeout_seconds)
+    after = _snap()
+    detected = sorted(p for p, sig in after.items() if before.get(p) != sig)
+
+    norm_inputs = [{"path": i, "references": []} if isinstance(i, str) else i for i in inputs]
+    step_data = {
+        "tool":            tool or (command.split() or [""])[0],
+        "subcommand":      subcommand or None,
+        "purpose":         purpose or None,
+        "command":         command,
+        "returncode":      res.get("returncode"),
+        "resource_usage":  res.get("resource_usage"),
+        "inputs":          norm_inputs,
+        "detected_outputs": detected,
+        "ran_in_container": True,
+        "container_image":  image,
+        "container_image_digest": rec.get("image_digest"),
+    }
+    step_data = {k: v for k, v in step_data.items() if v is not None}
+    idx = _pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
+
+    validations: dict = {}
+    if res.get("returncode") == 0 and idx is not None:
+        for path in detected:
+            basename = Path(path).name
+            ext = "".join(Path(path).suffixes).lower()
+            etype = (output_types.get(basename) or output_types.get(ext)
+                     or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename, ext))
+            v = _validator.validate(path, etype)
+            validations[basename] = v
+            _pipeline_state.add_validation(pipeline_id, idx, basename, v)
+
+    return {
+        **res,
+        "detected_outputs":  detected,
+        "validated_in_image": image,
+        "pipeline_merge":    {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx},
+        "validations":       validations,
+        "validation_count":  len(validations),
+    }
+
+
+@mcp.tool()
 def verify_installation(
     env_name: str,
     package_name: str,
@@ -1615,9 +1729,15 @@ def freeze(
          proven artifact by hash with NO re-solve (the scale unlock).
       2. content_digest (what was GOT): lock + source/binary/artifact hashes +
          platform + accel (from the draft when pipeline_id is given).
-      3. ADOPT-or-BUILD: resolve_biocontainer(tools); if a pre-built image
-         exists (and not gated), adopt it BY DIGEST with no build — else build
-         via conda-pack + docker (procps included for in-container psutil).
+      3. ADOPT-or-BUILD, by what the env actually contains:
+         - pure conda + a published biocontainer → ADOPT it BY DIGEST (no build).
+         - any non-conda install (binary/source/…) → RECIPE BUILD: replay the
+           installs on the ship platform (release binaries re-fetched from the
+           SAME release's linux asset, sha256-anchored) + smoke-tested in-image.
+           A biocontainer is NOT adopted here — it would ship a different,
+           unvalidated artifact that lacks the hand-installed tools.
+         - pure conda, no biocontainer → conda-pack build, but ONLY when host
+           arch == ship arch (a cross-arch conda-pack is refused, not shipped).
       4. HPC delivery, registry-free by DEFAULT: adopted → `apptainer pull
          docker://…@digest`; built → `docker save` tarball + `apptainer build
          docker-archive://…`. A push_target pushes the built image instead
@@ -1648,39 +1768,104 @@ def freeze(
     sif = f"{name}.sif"
     adopt = _biocontainers.resolve_biocontainer(parsed)
     conda_lock_path = None
+    shipped_binaries: list[dict] = []
+    build_method = None
 
-    if adopt.get("found") and adopt.get("image_by_digest") and not gated:
-        # Adopt: the biocontainer IS the artifact; its provenance is the digest,
-        # not our env — so no conda-lock of our env (it would be irrelevant).
+    draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
+    non_conda = _freeze.non_conda_installs(draft) if draft else []
+    can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
+
+    def _deliver_built(image):
+        """docker-save tarball + optional push → registry-free Apptainer contract."""
+        idg = _docker.image_digest(image)
+        tar_path = _env_mgr.project_root / "docker_images" / name / f"{name}.tar"
+        save = _docker.save_archive(image, tar_path)
+        tball = save.get("tarball") if save.get("success") else None
+        pushed = None
+        if push_target and not gated:
+            if _docker._run(["docker", "tag", image, push_target])["returncode"] == 0 and \
+               _docker._run(["docker", "push", push_target], timeout=900)["returncode"] == 0:
+                pushed = push_target
+        h = _freeze.apptainer_delivery(mode="build", sif_name=sif, push_target=pushed,
+                                       tarball=tball, gated=gated)
+        return idg, tball, h
+
+    if can_adopt and not non_conda:
+        # ADOPT — pure-conda env with a published biocontainer. The biocontainer
+        # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
-        hpc = _freeze.apptainer_delivery(
-            mode="adopt", sif_name=sif, image_by_digest=adopt["image_by_digest"],
-        )
+        hpc = _freeze.apptainer_delivery(mode="adopt", sif_name=sif,
+                                         image_by_digest=adopt["image_by_digest"])
+
+    elif non_conda:
+        # RECIPE BUILD — the env has hand-installed (binary/source/…) tools that a
+        # biocontainer can't contain and conda-pack can't move cross-arch. Replay
+        # them on the ship platform. Adopting here would silently ship a DIFFERENT,
+        # unvalidated artifact, so refuse to adopt even if a biocontainer exists.
+        if can_adopt:
+            adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
+        unsupported = sorted({x["type"] for x in non_conda if x["type"] != "binary"})
+        if unsupported:
+            return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                    "reason": f"recipe build does not yet replay install types {unsupported} on the "
+                              f"ship platform; supported today: conda + binary. (Build on a linux/amd64 "
+                              f"host, or add a replay path for these tiers.)",
+                    "non_conda": non_conda}
+        binaries = []
+        for x in non_conda:  # all type == "binary" here
+            im = x["install_method"]
+            la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
+            if not la.get("found"):
+                return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                        "reason": f"could not resolve a {platform} asset for binary '{x['name']}': "
+                                  f"{la.get('reason')}", "available": la.get("available")}
+            hh = _resolver.sha256_of_url(la["url"])
+            if not hh.get("ok"):
+                return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                        "reason": f"could not hash {platform} asset for '{x['name']}': {hh.get('reason')}"}
+            inner = Path(im.get("local_path") or x["name"]).name
+            binaries.append({"name": x["name"], "url": la["url"], "sha256": hh["sha256"],
+                             "binary_in_archive": inner, "wrapper": x["name"]})
+            shipped_binaries.append({"name": x["name"], "platform": platform, "url": la["url"],
+                                     "sha256": hh["sha256"],
+                                     "validated_host_sha256": im.get("sha256", "")})
+        has_conda = _freeze.has_conda_packages(draft)
+        conda_yml = _env_mgr.export_environment_yml(env_name) if has_conda else ""
+        smoke = [f"{b['wrapper']} version 2>&1 || {b['wrapper']} --version 2>&1 || "
+                 f"{b['wrapper']} --help 2>&1" for b in binaries]
+        rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
+                                  binaries=binaries, version=version, smoke_commands=smoke)
+        if not rb.get("success"):
+            return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                    "adopt_attempt": adopt, "build": rb}
+        mode, build_method, image = "build", "recipe", rb["image_tag"]
+        image_digest, tarball, hpc = _deliver_built(image)
+        if has_conda:  # portable lock recipe for the conda layer (image digest is the real anchor)
+            plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
+            cl = _env_mgr.generate_lock(env_name, platforms=plats)
+            conda_lock_path = cl.get("lockfile") if cl.get("success") else None
+
     else:
+        # PURE CONDA, no biocontainer (or gated). conda-pack snapshots the HOST
+        # env, so it is only valid when host arch == ship arch — refuse a cross-
+        # arch conda-pack rather than ship host-arch binaries in a foreign image.
+        host_is_linux_x86 = sys.platform.startswith("linux") and \
+            _hostplat.machine().lower() in ("x86_64", "amd64")
+        if platform.startswith("linux") and not host_is_linux_x86:
+            return {"success": False, "stage": "build", "request_key": rkey, "adopt_attempt": adopt,
+                    "reason": f"cross-arch conda-pack would ship host-arch ({_hostplat.machine()}) "
+                              f"binaries in a {platform} image, and no biocontainer exists to adopt. "
+                              f"Build on a linux/amd64 host, or choose a tool with a biocontainer."}
         mode = "build"
-        build_info = _docker.build(
-            env_name, name, pipeline_description or name,
-            version=version, gpu_required=gpu_required, cuda_version=cuda_version,
-        )
+        build_info = _docker.build(env_name, name, pipeline_description or name,
+                                   version=version, gpu_required=gpu_required, cuda_version=cuda_version)
         if not build_info.get("success"):
             return {"success": False, "stage": "build", "request_key": rkey,
                     "adopt_attempt": adopt, "build": build_info}
         image = build_info["image_tag"]
-        image_digest = _docker.image_digest(image)
-        tar_path = _env_mgr.project_root / "docker_images" / name / f"{name}.tar"
-        save = _docker.save_archive(image, tar_path)
-        tarball = save.get("tarball") if save.get("success") else None
-        pushed_ref = None
-        if push_target and not gated:
-            if _docker._run(["docker", "tag", image, push_target])["returncode"] == 0 and \
-               _docker._run(["docker", "push", push_target], timeout=900)["returncode"] == 0:
-                pushed_ref = push_target
-        hpc = _freeze.apptainer_delivery(
-            mode="build", sif_name=sif, push_target=pushed_ref, tarball=tarball, gated=gated,
-        )
-        # Multi-platform conda-lock of OUR built env (best-effort; never fatal).
+        image_digest, tarball, hpc = _deliver_built(image)
         plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
-        cl = _env_mgr.generate_conda_lock(env_name, platforms=plats)
+        cl = _env_mgr.generate_lock(env_name, platforms=plats)
         conda_lock_path = cl.get("lockfile") if cl.get("success") else None
 
     record = _freeze.freeze_record(
@@ -1688,6 +1873,10 @@ def freeze(
         image=image, image_digest=image_digest, platform=platform, gated=gated,
         conda_lock_path=conda_lock_path, tarball=tarball, hpc=hpc,
     )
+    if build_method:
+        record["build_method"] = build_method
+    if shipped_binaries:
+        record["shipped_binaries"] = shipped_binaries
     _env_cache.register(rkey, record)
     return {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
 
@@ -1764,18 +1953,26 @@ def seal_workflow(
         return {"success": False,
                 "error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
 
-    from agent.skills.spec_writer import check_workflow_invariants, write_workflow_spec
+    from agent.skills.spec_writer import (check_workflow_invariants, self_test_usage,
+                                          write_workflow_spec)
     violations = check_workflow_invariants(draft)
     if violations:
         return {"success": False, "stage": "workflow_invariants",
                 "violations": violations, "violation_count": len(violations)}
 
-    guide_md = _user_guide.render_user_guide(draft, freeze_record=fr)
-    key_packages: dict = {}
-    for st in draft.get("install_steps", []) or []:
-        for ip in (st.get("installed_packages") or []):
-            if ip.get("name"):
-                key_packages[ip["name"]] = ip.get("version", "?")
+    # The usage.command_template IS the workflow's run contract — establish
+    # usage_verified honestly by self-testing it (I4), since the draft doesn't
+    # persist the field (it's derived only at validate/finalize). A verified
+    # template is what the guide shows as the runnable form.
+    usage_ok = False
+    if draft.get("usage") and draft.get("conda_env"):
+        try:
+            usage_ok = bool(self_test_usage(draft, _env_mgr, validator=_validator).get("ok"))
+        except Exception:
+            usage_ok = False
+    render_spec = {**draft, "usage_verified": usage_ok}
+    guide_md = _user_guide.render_user_guide(render_spec, freeze_record=fr)
+    key_packages = _user_guide.key_packages(draft)
 
     from datetime import datetime, timezone
     wname = workflow_name or f"{draft.get('pipeline_name', 'workflow')}_workflow"
@@ -1788,14 +1985,29 @@ def seal_workflow(
         "env_image":          fr.get("image", ""),
         "env_hpc_delivery":   fr.get("hpc_delivery", {}),
         "pipeline_status":    draft.get("pipeline_status", "in_progress"),
-        "usage_verified":     draft.get("usage_verified", False),
+        "usage_verified":     usage_ok,
+        "validated_in_shipped_image": _user_guide.validated_in_shipped_image(draft, fr),
         "usage":              draft.get("usage"),
         "pipeline_steps":     draft.get("pipeline_steps", []),
+        # External sources carried so the artifact self-verifies (I8 standalone).
+        "test_data":            draft.get("test_data"),
+        "reference_databases":  draft.get("reference_databases", []),
+        "runtime_configs":      draft.get("runtime_configs", []),
+        "authored_artifacts":   draft.get("authored_artifacts", []),
         "driver_env":         {"conda_env": draft.get("conda_env"),
                                "python_version": draft.get("python_version"),
                                "key_packages": key_packages},
         "user_guide":         guide_md,
     }
+    # The artifact must pass its OWN run-side invariants — validate what we WRITE,
+    # not just the draft we sealed from (the draft is richer; the artifact must
+    # stand on its own).
+    self_violations = check_workflow_invariants(wf)
+    if self_violations:
+        return {"success": False, "stage": "workflow_self_verify",
+                "reason": "constructed WorkflowSpec failed its own run-side invariants — "
+                          "it would not be re-verifiable standalone",
+                "violations": self_violations, "violation_count": len(self_violations)}
     result = {
         "success": True,
         "workflow_name": wname,

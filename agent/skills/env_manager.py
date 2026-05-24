@@ -795,16 +795,21 @@ class EnvManager:
             asset      → {env}/share/{tool_name}/
             launcher   → {env}/bin/{wrapper_name or tool_name}
 
-        sha256: if given, the downloaded asset MUST hash to it — a mismatch is a
-        HARD FAIL, so a tampered or wrong-arch asset never gets installed. If
-        omitted, the computed sha256 is recorded so I14 can re-anchor it at
-        finalize. Either way the spec carries an immutable content anchor.
+        sha256: the published checksum of the downloaded ASSET (the .tar.gz/.zip
+        as the publisher ships + checksums it). If given, the asset MUST hash to
+        it — a mismatch is a HARD FAIL, so a tampered or wrong-arch asset never
+        gets installed. It is recorded as install_method.asset_sha256 (provenance).
+        Separately, the EXTRACTED binary is always hashed and recorded as
+        install_method.sha256 — that's the anchor I14 re-hashes at finalize
+        (the archive is unpacked, so the runnable binary, not the tarball, is the
+        artifact that must stay unmodified). For a single-binary download the two
+        hashes coincide.
 
         binary_in_archive: for .tar.gz/.zip assets, the executable's path inside
         the archive (basename also accepted). Omit for single-binary downloads.
 
         Returns: {success, tool_name, binary_path, wrapper_path, url, sha256,
-                  install_method, log}.
+                  asset_sha256, install_method, log}.
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
@@ -830,13 +835,16 @@ class EnvManager:
             return {"success": False, "error": "binary download failed",
                     "stderr": (curl.get("stderr") or "")[-500:], "log": log}
 
-        digest = self._sha256_file(download_target)
-        log.append(f"sha256={digest}")
-        if sha256 and digest.lower() != sha256.lower():
+        # The download-time anchor is the ASSET (what the publisher checksums:
+        # the .tar.gz / .zip / single binary as shipped). A user-supplied sha256
+        # is the published asset checksum — match it before we even extract.
+        asset_digest = self._sha256_file(download_target)
+        log.append(f"asset sha256={asset_digest}")
+        if sha256 and asset_digest.lower() != sha256.lower():
             return {"success": False,
                     "error": "sha256 mismatch — refusing to install a non-matching asset",
-                    "expected_sha256": sha256.lower(), "actual_sha256": digest, "log": log}
-        recorded_sha = sha256.lower() if sha256 else digest
+                    "expected_sha256": sha256.lower(), "actual_sha256": asset_digest, "log": log}
+        recorded_asset_sha = sha256.lower() if sha256 else asset_digest
 
         staged = self._stage_release_binary(
             share_dir, bin_dir, download_target, tool_name,
@@ -845,18 +853,28 @@ class EnvManager:
         if not staged.get("success"):
             return {**staged, "log": log}
 
+        # I14 re-hashes the EXECUTABLE THAT ACTUALLY RUNS, not the archive it
+        # shipped in. For an archive asset these differ (tarball ≠ inner binary);
+        # for a single-binary download they're identical. Anchor install_method
+        # .sha256 to the extracted binary so I14's finalize re-hash matches, and
+        # keep the asset hash separately as provenance.
+        binary_digest = self._sha256_file(staged["binary_path"])
+        log.append(f"binary sha256={binary_digest}")
+
         return {
             "success":      True,
             "tool_name":    tool_name,
             "binary_path":  staged["binary_path"],
             "wrapper_path": staged["wrapper_path"],
             "url":          url,
-            "sha256":       recorded_sha,
+            "sha256":       binary_digest,
+            "asset_sha256": recorded_asset_sha,
             "install_method": {
-                "type":       "binary",
-                "binary_url": url,
-                "sha256":     recorded_sha,
-                "local_path": staged["binary_path"],
+                "type":         "binary",
+                "binary_url":   url,
+                "sha256":       binary_digest,
+                "asset_sha256": recorded_asset_sha,
+                "local_path":   staged["binary_path"],
             },
             "log": log,
         }
@@ -1180,9 +1198,45 @@ class EnvManager:
             "success":   res["returncode"] == 0 and out.exists(),
             "lockfile":  str(out) if out.exists() else None,
             "platforms": platforms,
+            "engine":    "conda-lock",
             "returncode": res["returncode"],
             "stderr":    res["stderr"][-800:],
         }
+
+    @staticmethod
+    def lock_engine() -> str:
+        """Which multi-platform lock engine is available, best first. pixi
+        (rattler) is preferred when present — faster, PyPI-aware, one lockfile for
+        all platforms — else conda-lock. We stay the universal adapter: callers
+        use generate_lock() and never bind to a specific engine."""
+        import shutil as _sh
+        if _sh.which("pixi"):
+            return "pixi"
+        if _sh.which("conda-lock"):
+            return "conda-lock"
+        return "none"
+
+    def generate_lock(
+        self, env_name: str, platforms: list[str] | None = None, out_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Multi-platform lock via the best available engine, behind one contract
+        ({success, engine, lockfile, platforms}). conda-lock is the working engine
+        today; pixi slots in here when adopted (it is detected and preferred, but
+        the pixi-from-conda-env path is not wired yet, so we fall back to conda-
+        lock and say so rather than emit an unproven lock)."""
+        eng = self.lock_engine()
+        if eng == "pixi":
+            # pixi detected, but generating a pixi.lock from an arbitrary existing
+            # conda env (vs a pixi.toml manifest) is its own integration — defer
+            # to conda-lock for now and flag it honestly.
+            r = self.generate_conda_lock(env_name, platforms, out_path)
+            r["engine"] = "conda-lock"
+            r["note"] = "pixi present but pixi-from-env not yet wired; used conda-lock"
+            return r
+        if eng == "conda-lock":
+            return self.generate_conda_lock(env_name, platforms, out_path)
+        return {"success": False, "engine": "none", "lockfile": None,
+                "error": "no lock engine (pixi/conda-lock) on PATH"}
 
     def r_package_version(self, env_name: str, package_name: str) -> str:
         """Return the version `packageVersion('X')` reports for an R package,

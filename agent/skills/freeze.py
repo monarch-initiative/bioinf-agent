@@ -83,6 +83,59 @@ def content_digest_from_spec(spec: dict) -> str:
     return compute_content_digest(content_digest_parts(spec))
 
 
+def _packages(spec: dict) -> list[dict]:
+    return [p for p in (spec.get("packages") or []) if isinstance(p, dict)]
+
+
+def installed_packages(spec: dict) -> list[dict]:
+    """Every package record in a draft OR finalized spec. A finalized spec carries
+    a derived packages[]; a LIVE DRAFT does not (packages[] is derived only at
+    finalize) — it only has install_steps[].installed_packages. Union both and
+    dedup by name, with the derived packages[] authoritative when present."""
+    out: dict[str, dict] = {}
+    for st in (spec.get("install_steps") or []):
+        if isinstance(st, dict):
+            for ip in (st.get("installed_packages") or []):
+                if isinstance(ip, dict) and ip.get("name"):
+                    out.setdefault(ip["name"], ip)
+    for p in _packages(spec):
+        if p.get("name"):
+            out[p["name"]] = p
+    return list(out.values())
+
+
+def non_conda_installs(spec: dict) -> list[dict]:
+    """Packages installed by anything OTHER than conda (binary/source/jar/perl/
+    cargo/go). These cannot be represented by adopting a bioconda biocontainer
+    (it only knows conda packages), and cannot be conda-packed cross-arch — so
+    their presence forces a recipe build that replays them on the ship platform.
+    Returns [{name, type, install_method}]."""
+    out = []
+    for p in installed_packages(spec):
+        im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
+        t = im.get("type") or "conda"
+        if t not in ("conda", "docker_pull"):
+            out.append({"name": p.get("name", ""), "type": t, "install_method": im})
+    return out
+
+
+def has_conda_packages(spec: dict) -> bool:
+    """True if any TOOL was installed via conda (so the recipe build needs a
+    conda layer). The bootstrap python from create_conda_env is scaffolding, not
+    a tool — it lands in the 'conda create' step and must NOT trigger a conda
+    layer. So we look for a real 'conda install' step (install_conda_packages),
+    or, in a finalized spec, a package with install_method.type == conda."""
+    for st in (spec.get("install_steps") or []):
+        if (isinstance(st, dict) and st.get("tool") == "conda"
+                and st.get("subcommand") == "install" and st.get("installed_packages")):
+            return True
+    for p in _packages(spec):
+        im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
+        if im.get("type") == "conda":
+            return True
+    return False
+
+
 def parse_tools(specs: list[str]) -> list[tuple[str, Optional[str]]]:
     """['samtools=1.21', 'bwa==0.7.17', 'fastqc'] → [('samtools','1.21'), …].
     Accepts '=' or '==' (conda/pip), and a bare name (no version)."""

@@ -8,6 +8,7 @@ Strategy:
   4. Optionally push to registry if configured
 """
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -197,6 +198,321 @@ class DockerBuilder:
             "dockerfile": str(dockerfile_path),
             "platform": platform,
         }
+
+    # -----------------------------------------------------------------------
+    # Recipe-based build — the cross-arch-faithful path.
+    #
+    # conda-pack (build, above) snapshots the HOST env, so it is only valid when
+    # the host arch == the ship arch. On an Apple-Silicon dev box shipping
+    # linux/amd64 it would stuff osx-arm64 binaries into a linux image. The
+    # recipe path instead REBUILDS the env on linux inside the image: conda
+    # packages re-solved from a portable environment.yml, and every non-conda
+    # install REPLAYED for linux (release binaries re-fetched from the SAME
+    # release's linux asset, sha256-anchored). The image is then what we ship,
+    # and a smoke command proves the tool actually runs under linux/amd64.
+    # -----------------------------------------------------------------------
+
+    _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+
+    def build_recipe(
+        self,
+        name: str,
+        description: str = "",
+        *,
+        conda_env_yml: str = "",
+        binaries: list[dict] | None = None,
+        version: str = "",
+        smoke_commands: list[str] | None = None,
+        platform: str = "linux/amd64",
+    ) -> dict[str, Any]:
+        """Build a ship-platform image by REPLAYING the install journey on linux.
+
+        conda_env_yml: portable environment.yml text for the conda packages
+            ("" → no conda layer; a slim Debian base is used).
+        binaries: [{name, url, sha256, binary_in_archive?, wrapper?}] — release
+            binaries re-fetched for linux, each sha256-verified in the image.
+        smoke_commands: commands run in the built image to prove the tools run
+            (e.g. ["seqkit version"]); a failure fails the build.
+
+        Returns {success, image_tag, dockerfile, build_method:"recipe",
+                 smoke:{cmd:output}, ...}.
+        """
+        binaries = binaries or []
+        smoke_commands = smoke_commands or []
+        build_dir = self.output_dir / name
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+        if conda_env_yml.strip():
+            (build_dir / "environment.yml").write_text(conda_env_yml)
+        dockerfile_path = build_dir / "Dockerfile"
+        dockerfile_path.write_text(self._recipe_dockerfile(name, description, conda_env_yml, binaries))
+
+        registry = self.config["docker"].get("registry", "")
+        tag_base = f"{registry}/{name}" if registry else name
+        image_tag = f"{tag_base}:{version}" if version else f"{tag_base}:latest"
+
+        build_cmd = ["docker", "buildx", "build", "--platform", platform,
+                     "--load", "-t", image_tag, str(build_dir)]
+        res = self._run(build_cmd, timeout=1800)
+        if res["returncode"] != 0:
+            res = self._run(["docker", "build", "-t", image_tag, str(build_dir)], timeout=1800)
+        if res["returncode"] != 0:
+            return {"success": False, "build_method": "recipe", "image_tag": None,
+                    "dockerfile": str(dockerfile_path),
+                    "reason": "docker build failed: " + (res["stderr"] or "")[-800:]}
+
+        # Smoke-test in the built image — proves the linux binary actually runs
+        # (catches a wrong-arch/missing-libc asset that built fine but can't exec).
+        smoke: dict[str, str] = {}
+        for cmd in smoke_commands:
+            r = self._run(["docker", "run", "--rm", "--platform", platform, image_tag,
+                           "bash", "-lc", cmd], timeout=180)
+            out = ((r.get("stdout") or "") + (r.get("stderr") or "")).strip()
+            smoke[cmd] = out[:300]
+            if r["returncode"] != 0:
+                return {"success": False, "build_method": "recipe", "image_tag": image_tag,
+                        "dockerfile": str(dockerfile_path), "smoke": smoke,
+                        "reason": f"smoke command failed in image: `{cmd}` rc={r['returncode']}"}
+
+        return {"success": True, "build_method": "recipe", "image_tag": image_tag,
+                "registry": registry or "local", "dockerfile": str(dockerfile_path),
+                "platform": platform, "smoke": smoke}
+
+    def _recipe_dockerfile(self, name: str, description: str, conda_env_yml: str,
+                           binaries: list[dict]) -> str:
+        """Assemble the recipe Dockerfile text (pure — no filesystem/docker), so
+        the generated recipe is unit-testable. A conda layer is added only when
+        conda_env_yml is non-empty; otherwise a slim Debian base carries just the
+        replayed release binaries."""
+        has_conda = bool(conda_env_yml.strip())
+        lines = ["# Auto-generated by bioinf_agent — recipe build (cross-arch faithful)",
+                 "FROM continuumio/miniconda3" if has_conda else "FROM debian:bookworm-slim",
+                 f'LABEL pipeline="{name}"',
+                 f'LABEL description="{description.replace(chr(34), "")}"',
+                 f'LABEL created="{datetime.now(timezone.utc).isoformat()}"',
+                 'LABEL hpc_compatible="true"',
+                 'LABEL build_method="recipe"',
+                 "",
+                 "RUN apt-get update && apt-get install -y --no-install-recommends \\",
+                 "        ca-certificates curl procps tar gzip bzip2 xz-utils unzip time \\",
+                 "    && rm -rf /var/lib/apt/lists/*",
+                 ""]
+        if has_conda:
+            lines += ["COPY environment.yml /tmp/environment.yml",
+                      "RUN conda env create -n env -f /tmp/environment.yml && conda clean -afy",
+                      'ENV PATH="/opt/conda/envs/env/bin:$PATH"', ""]
+        for b in binaries:
+            lines += [self._emit_binary_install(b), ""]
+        lines += ["WORKDIR /data", 'CMD ["/bin/bash"]', ""]
+        return "\n".join(lines)
+
+    def _emit_binary_install(self, b: dict) -> str:
+        """Emit the Dockerfile RUN step that installs ONE release binary for the
+        ship platform: download → sha256-verify → extract/place → PATH symlink."""
+        import shlex
+        from pathlib import PurePosixPath
+        name    = b["name"]
+        url     = b["url"]
+        sha     = (b.get("sha256") or "").lower()
+        wrapper = b.get("wrapper") or name
+        asset   = url.rsplit("/", 1)[-1]
+        is_archive = asset.lower().endswith(self._ARCHIVE_SUFFIXES)
+        dest = f"/opt/tools/{name}"
+        u = shlex.quote(url)
+        head = (
+            f"# install {name} (ship-platform release binary) from {url}\n"
+            f"RUN set -eux; mkdir -p {dest}; \\\n"
+            f"    curl -L --fail -o /tmp/{asset} {u}; \\\n"
+        )
+        if sha:
+            head += f'    echo "{sha}  /tmp/{asset}" | sha256sum -c -; \\\n'
+        if is_archive:
+            if asset.lower().endswith(".zip"):
+                extract = f"    unzip -o /tmp/{asset} -d {dest}; \\\n"
+            else:
+                extract = f"    tar -xf /tmp/{asset} -C {dest}; \\\n"
+            basename = PurePosixPath(b.get("binary_in_archive") or name).name
+            locate = (
+                f'    BIN="$(find {dest} -type f -name {shlex.quote(basename)} | head -n1)"; \\\n'
+                f'    test -n "$BIN"; chmod +x "$BIN"; ln -sf "$BIN" /usr/local/bin/{wrapper}; \\\n'
+            )
+            tail = f"    rm -f /tmp/{asset}"
+            return head + extract + locate + tail
+        # bare single binary
+        return head + f"    install -m 0755 /tmp/{asset} /usr/local/bin/{wrapper}; rm -f /tmp/{asset}"
+
+    # -----------------------------------------------------------------------
+    # Run a step INSIDE the env image — the validation-locus pivot.
+    #
+    # The honest model: the artifact we ship is the artifact we validate. Instead
+    # of running on the host (a different arch) and shipping a separately-built
+    # image, run the workflow step in the SHIPPED image and capture its outputs +
+    # resources. Resource usage (I7) is sampled from the HOST via `docker stats`
+    # so it works for ANY image — our recipe builds AND adopted biocontainers —
+    # with no in-container dependency (mirrors the host psutil monitor's sampling).
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_mem_mb(tok: str) -> float | None:
+        tok = tok.strip()
+        m = re.match(r"([0-9.]+)\s*([A-Za-z]+)", tok)
+        if not m:
+            return None
+        val, unit = float(m.group(1)), m.group(2).lower()
+        scale = {"b": 1 / 2**20, "kib": 1 / 2**10, "kb": 1 / 2**10,
+                 "mib": 1.0, "mb": 1.0, "gib": 2**10, "gb": 2**10,
+                 "tib": 2**20, "tb": 2**20}.get(unit)
+        return val * scale if scale is not None else None
+
+    @staticmethod
+    def _parse_pct(tok: str) -> float | None:
+        try:
+            return float(tok.strip().rstrip("%"))
+        except (ValueError, AttributeError):
+            return None
+
+    _RUNDIR = "/bioinf_run"  # fixed scratch mount (cmd script + rusage), kept off the data mount
+
+    def run_in_container(
+        self, image: str, command: str, *,
+        mounts: list[tuple[str, str]] | None = None,
+        workdir: str | None = None,
+        platform: str = "linux/amd64",
+        timeout: int = 1800,
+        poll_interval: float = 0.25,
+    ) -> dict[str, Any]:
+        """Run `command` (via bash) inside `image`, bind-mounting `mounts`
+        [(host, container), …], and capture {returncode, stdout, stderr,
+        resource_usage, resource_method}.
+
+        Resource capture is two-tier so I7 is honest for any run length AND any
+        image: GNU `time -v` (getrusage → exact peak RSS even for sub-second
+        tools) writes to a private scratch mount when the image has it (our
+        recipe images always do); host-side `docker stats` polling is the
+        universal fallback (sampled) for images without `time` (e.g. some adopted
+        biocontainers). The command is staged as a script on the scratch mount so
+        no user quoting can break the wrapper, and the data mount stays clean."""
+        import tempfile, time as _time
+        mounts = list(mounts or [])
+        scratch = Path(tempfile.mkdtemp(prefix="bioinf_run_"))
+        (scratch / "cmd.sh").write_text(command + "\n")
+        mounts.append((str(scratch), self._RUNDIR))
+        rd = self._RUNDIR
+        # GNU time if present → exact rusage; else run plainly (stats fallback covers it).
+        launcher = (f'if command -v /usr/bin/time >/dev/null 2>&1; then '
+                    f'/usr/bin/time -v -o {rd}/rusage bash {rd}/cmd.sh; '
+                    f'else bash {rd}/cmd.sh; fi')
+
+        run_cmd = ["docker", "run", "-d", "--platform", platform]
+        for host, cont in mounts:
+            run_cmd += ["-v", f"{host}:{cont}"]
+        if workdir:
+            run_cmd += ["-w", workdir]
+        run_cmd += [image, "bash", "-lc", launcher]
+
+        started = self._run(run_cmd, timeout=300)
+        if started["returncode"] != 0:
+            import shutil as _sh; _sh.rmtree(scratch, ignore_errors=True)
+            return {"returncode": -1, "stdout": "", "image": image,
+                    "stderr": "docker run failed: " + (started["stderr"] or "")[-400:],
+                    "resource_usage": None}
+        cid = (started["stdout"] or "").strip().split("\n")[-1]
+
+        t0 = _time.time()
+        peak_rss_mb = 0.0
+        max_cpu = 0.0
+        samples = 0
+        deadline = t0 + timeout
+        killed = False
+        while True:
+            st = self._run(["docker", "stats", "--no-stream", "--format",
+                            "{{.MemUsage}}|{{.CPUPerc}}", cid], timeout=30)
+            if st["returncode"] == 0 and "|" in (st["stdout"] or ""):
+                mem, _, cpu = st["stdout"].strip().partition("|")
+                rss = self._parse_mem_mb(mem.split("/")[0])
+                cpv = self._parse_pct(cpu)
+                if rss is not None:
+                    peak_rss_mb = max(peak_rss_mb, rss)
+                    samples += 1
+                if cpv is not None:
+                    max_cpu = max(max_cpu, cpv)
+            running = self._run(["docker", "inspect", "-f", "{{.State.Running}}", cid], timeout=30)
+            if (running["stdout"] or "").strip() != "true":
+                break
+            if _time.time() > deadline:
+                self._run(["docker", "kill", cid], timeout=60)
+                killed = True
+                break
+            _time.sleep(poll_interval)
+        wall = _time.time() - t0
+
+        ins = self._run(["docker", "inspect", "-f", "{{.State.ExitCode}}", cid], timeout=30)
+        try:
+            rc = int((ins["stdout"] or "").strip())
+        except ValueError:
+            rc = -1
+        logs = self._run(["docker", "logs", cid], timeout=120)
+        self._run(["docker", "rm", "-f", cid], timeout=60)
+
+        # Prefer exact rusage (GNU time) over the sampled values when available.
+        method = "docker_stats_sampled"
+        ru_file = scratch / "rusage"
+        accurate = self._parse_gnu_time(ru_file.read_text()) if ru_file.exists() else None
+        import shutil as _sh; _sh.rmtree(scratch, ignore_errors=True)
+        if accurate:
+            method = "gnu_time_rusage"
+            peak_rss_mb = accurate["peak_rss_mb"]
+            if accurate.get("max_cpu_percent") is not None:
+                max_cpu = accurate["max_cpu_percent"]
+            if accurate.get("wall_seconds") is not None:
+                wall = accurate["wall_seconds"]
+
+        return {
+            "returncode": -1 if killed else rc,
+            "stdout": logs.get("stdout", ""),
+            "stderr": logs.get("stderr", "") + (" [killed: timeout]" if killed else ""),
+            "image": image,
+            "resource_method": method,
+            "resource_usage": {
+                "wall_seconds":    round(wall, 2),
+                "peak_rss_mb":     round(peak_rss_mb, 1),
+                "max_cpu_percent": round(max_cpu, 1),
+                "sample_count":    samples,
+            },
+        }
+
+    @staticmethod
+    def _parse_gnu_time(text: str) -> dict | None:
+        """Parse `/usr/bin/time -v` output → {peak_rss_mb, max_cpu_percent,
+        wall_seconds}. Returns None if the key line is absent."""
+        rss_kb = None
+        cpu = None
+        wall = None
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("Maximum resident set size"):
+                m = re.search(r"(\d+)", s)
+                if m:
+                    rss_kb = int(m.group(1))
+            elif s.startswith("Percent of CPU"):
+                m = re.search(r"(\d+)", s)
+                if m:
+                    cpu = float(m.group(1))
+            elif s.startswith("Elapsed (wall clock)"):
+                # The label itself contains colons ("(h:mm:ss or m:ss)") — the
+                # actual value is the trailing token, e.g. "0:01.08" or "1:02:03".
+                parts = (s.split()[-1] if s.split() else "").split(":")
+                try:
+                    if len(parts) == 3:
+                        wall = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                    elif len(parts) == 2:
+                        wall = int(parts[0]) * 60 + float(parts[1])
+                except ValueError:
+                    wall = None
+        if rss_kb is None:
+            return None
+        return {"peak_rss_mb": round(rss_kb / 1024, 1), "max_cpu_percent": cpu,
+                "wall_seconds": round(wall, 2) if wall is not None else None}
 
     def image_digest(self, image_tag: str) -> str:
         """Local content digest of a built image (its config Id sha256). This is

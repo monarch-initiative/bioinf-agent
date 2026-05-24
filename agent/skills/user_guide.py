@@ -17,7 +17,43 @@ nf-core/Snakemake leave open).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
+
+
+def _version_of(pkg: dict) -> str:
+    """Best-known version of a package record, with fallbacks for tiers that
+    don't carry a plain `version` (a release binary records its version only in
+    the release tag of binary_url; conda/pip carry it in the spec string)."""
+    v = pkg.get("version")
+    if v:
+        return str(v)
+    im = pkg.get("install_method") if isinstance(pkg.get("install_method"), dict) else {}
+    url = im.get("binary_url") or im.get("source") or ""
+    m = re.search(r"/releases/download/([^/]+)/", url)   # .../download/v2.13.0/asset
+    if m:
+        return m.group(1).lstrip("vV")
+    for key in ("conda_spec", "pip_spec"):
+        mm = re.search(r"[=@]{1,2}([0-9][\w.\-]*)", im.get(key) or "")
+        if mm:
+            return mm.group(1)
+    return "?"
+
+
+def key_packages(spec: dict) -> dict[str, str]:
+    """name → version for the tools in this env, from a draft OR finalized spec.
+    Drafts only have install_steps[].installed_packages; finalized specs have a
+    derived packages[] (authoritative). Version uses _version_of's fallbacks so a
+    release-binary tool shows its real version, not '?'."""
+    out: dict[str, str] = {}
+    for st in spec.get("install_steps", []) or []:
+        for ip in (st.get("installed_packages") or []):
+            if isinstance(ip, dict) and ip.get("name") and ip["name"] not in out:
+                out[ip["name"]] = _version_of(ip)
+    for p in spec.get("packages", []) or []:
+        if isinstance(p, dict) and p.get("name"):
+            out[p["name"]] = _version_of(p)
+    return out
 
 
 def executed_commands(spec: dict) -> list[dict]:
@@ -46,6 +82,22 @@ def executed_commands(spec: dict) -> list[dict]:
     return out
 
 
+def validated_in_shipped_image(spec: dict, freeze_record: Optional[dict] = None) -> bool:
+    """True iff EVERY validated step ran inside the pinned env image, matched by
+    digest — i.e. the bytes the user will run are the exact bytes we validated.
+    The strongest honesty claim the two-layer model can make."""
+    dig = (freeze_record or {}).get("image_digest")
+    if not dig:
+        return False
+    steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
+    validated = [s for s in steps
+                 if s.get("validation") or s.get("validation_status") == "passed"]
+    if not validated:
+        return False
+    return all(s.get("ran_in_container") and s.get("container_image_digest") == dig
+               for s in validated)
+
+
 def _fence(text: str) -> str:
     return f"```\n{text}\n```"
 
@@ -55,17 +107,21 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None) -> str:
     the HPC delivery + the image/content digests; without it the guide falls
     back to the spec's docker info."""
     name = spec.get("pipeline_name", "pipeline")
-    version = ""
-    for p in spec.get("packages", []) or []:
-        if isinstance(p, dict) and p.get("name", "").lower() == name.lower() and p.get("version"):
-            version = p["version"]
-            break
+    kpkgs = key_packages(spec)
+    version = next((v for n, v in kpkgs.items()
+                    if n.lower() == name.lower() and v not in ("", "?")), "")
     title = f"{name}" + (f" {version}" if version else "")
+    in_shipped = validated_in_shipped_image(spec, freeze_record)
     L: list[str] = [f"# {title} — user guide", ""]
     if spec.get("description"):
         L += [spec["description"], ""]
-    L += ["> Generated from the build's passing, validated run — every command below was "
-          "executed and its outputs checked (provenance at the bottom). Not hand-written.", ""]
+    if in_shipped:
+        L += ["> Generated from a run **inside the shipped image** (digest in Provenance) — "
+              "the bytes you run are the bytes we validated. Every command below was executed "
+              "there and its outputs checked. Not hand-written.", ""]
+    else:
+        L += ["> Generated from the build's passing, validated run — every command below was "
+              "executed and its outputs checked (provenance at the bottom). Not hand-written.", ""]
 
     # 1. Get the environment (HPC / Apptainer) — pinned by digest.
     L += ["## 1. Get the environment", ""]
@@ -84,27 +140,49 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None) -> str:
               _fence(f"apptainer pull {name}.sif docker://{tag}\n"
                      f"apptainer exec --bind /scratch/$USER/data:/data {name}.sif <command>"), ""]
 
-    # 2. Run it — only validated commands.
+    # 2. Run it. The runnable form is the self-tested command_template (container-
+    # agnostic — you fill its {PLACEHOLDER} slots), NOT the build-time host paths.
     L += ["## 2. Run it", ""]
+    usage = spec.get("usage") or {}
     cmds = executed_commands(spec)
-    if not cmds:
+    template = usage.get("command_template") if spec.get("usage_verified") else None
+    if template:
+        L += ["Fill the `{PLACEHOLDER}` slots with your inputs. Inside the container the "
+              "paths live under the `--bind` mount (e.g. `/data/reads.fastq.gz`):",
+              "", _fence(template), ""]
+    elif cmds:
+        for c in cmds:
+            L += [f"_{c['source']}_", _fence(c["command"]), ""]
+    else:
         L += ["_No validated run command recorded yet — run the tool via run_pipeline_step "
               "and set a verified usage.command_template, then regenerate._", ""]
-    for c in cmds:
-        L += [f"_{c['source']}_", _fence(c["command"])]
-        if c["outputs"]:
-            L += ["Produces (validated):", ""] + [f"- `{o}`" for o in c["outputs"]] + [""]
-        else:
-            L += [""]
-    usage = spec.get("usage") or {}
+
     if usage.get("inputs"):
         L += ["**Inputs**", ""] + [
-            f"- `{i.get('name','?')}` — {i.get('format', i.get('description',''))}"
+            f"- `{i.get('name','?')}` — {i.get('format') or i.get('description','')}"
             for i in usage["inputs"] if isinstance(i, dict)] + [""]
     if usage.get("outputs"):
-        L += ["**Outputs**", ""] + [
-            f"- {o.get('files', o.get('name','?'))}"
-            for o in usage["outputs"] if isinstance(o, dict)] + [""]
+        L += ["**Outputs**", ""]
+        for o in usage["outputs"]:
+            if not isinstance(o, dict):
+                continue
+            files = o.get("files")
+            patt = (", ".join(f"`{f}`" for f in files) if isinstance(files, list)
+                    else (f"`{files}`" if files else ""))
+            desc = f" — {o['description']}" if o.get("description") else ""
+            L.append(f"- {o.get('name', 'output')}: {patt}{desc}")
+        L.append("")
+
+    # The actual executed commands (host/test paths) — proof, kept out of the way.
+    proof = [c for c in cmds if str(c["source"]).startswith("pipeline_step")]
+    if proof:
+        L += ["<details><summary>Validated proof run (executed during the build, on test data)"
+              "</summary>", ""]
+        for c in proof:
+            L += [_fence(c["command"])]
+            L += (["Produced + validated:", ""] + [f"- `{o}`" for o in c["outputs"]] + [""]
+                  if c["outputs"] else [""])
+        L += ["</details>", ""]
 
     # 3. Environment / driver details (the nf-core gap: record the runner env).
     L += ["## 3. Environment details", ""]
@@ -112,32 +190,32 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None) -> str:
         L.append(f"- conda env: `{spec['conda_env']}`")
     if spec.get("python_version"):
         L.append(f"- python: {spec['python_version']}")
-    pkgs = [p for p in (spec.get("packages") or []) if isinstance(p, dict) and p.get("name")]
-    if not pkgs:
-        # Draft fallback: spec.packages is finalize-derived, so before finalize
-        # reconstruct the package list from the install_steps' installed_packages.
-        seen: dict[str, str] = {}
-        for st in spec.get("install_steps", []) or []:
-            for ip in (st.get("installed_packages") or []):
-                n = ip.get("name")
-                if n and n not in seen:
-                    seen[n] = ip.get("version", "?")
-        pkgs = [{"name": n, "version": v} for n, v in seen.items()]
-    if pkgs:
-        listed = ", ".join(f"{p['name']}={p.get('version','?')}" for p in pkgs[:12])
-        L += [f"- key packages: {listed}" + (" …" if len(pkgs) > 12 else "")]
+    if kpkgs:
+        listed = ", ".join(f"{n}={v}" for n, v in list(kpkgs.items())[:12])
+        L += [f"- key packages: {listed}" + (" …" if len(kpkgs) > 12 else "")]
+    for sb in (freeze_record or {}).get("shipped_binaries", []) or []:
+        L.append(f"- shipped binary: `{sb.get('name')}` ({sb.get('platform')}, "
+                 f"sha256 {str(sb.get('sha256', ''))[:12]}…)")
     L.append("")
 
-    # 4. Provenance — the machine-verified anchors.
+    # 4. Provenance — the machine-verified anchors. Run status is computed from
+    # the steps (the draft's pipeline_status is only derived at finalize).
     L += ["## Provenance (machine-verified)", ""]
     fr = freeze_record or {}
+    steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
+    validated = [s for s in steps
+                 if s.get("validation") or s.get("validation_status") == "passed"]
+    run_status = ("fully_validated" if steps and len(validated) == len(steps)
+                  else (spec.get("pipeline_status") or "in_progress"))
     rows = [
         ("content digest", fr.get("content_digest")),
         ("image", fr.get("image")),
         ("image digest", fr.get("image_digest")),
+        ("build method", fr.get("build_method")),
         ("lock sha256", spec.get("lock_sha256")),
-        ("env_status", spec.get("env_status")),
-        ("pipeline_status", spec.get("pipeline_status")),
+        ("run status", run_status),
+        ("steps validated", f"{len(validated)}/{len(steps)}" if steps else None),
+        ("validated in shipped image", "yes — validated == shipped" if in_shipped else None),
         ("usage_verified", spec.get("usage_verified")),
     ]
     L += [f"- {k}: `{v}`" for k, v in rows if v not in (None, "")]

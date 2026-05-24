@@ -19,7 +19,9 @@ repo is supplied (you can't probe a release asset from a bare tool name).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -100,6 +102,112 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
         out["assets"] = assets[:10]
         out["tag"] = rel.get("tag_name")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Ship-platform asset resolution — the release-binary tier's cross-arch bridge.
+#
+# A binary is installed from the HOST-platform asset (e.g. *_darwin_arm64, so it
+# runs for validation on an Apple-Silicon dev box), but the SHIP target is
+# linux/amd64. The host binary cannot containerize. freeze() therefore re-fetches
+# the SAME release's linux/amd64 asset and bakes THAT into the image, sha256-
+# anchored — same tool, same version, same publisher, correct platform.
+# ---------------------------------------------------------------------------
+
+_GH_RELEASE_RE = re.compile(
+    r"https?://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$"
+)
+
+# Arch tokens as they appear in real release-asset filenames.
+_ARCH_ALIASES = {
+    "amd64": ["amd64", "x86_64", "x86-64", "x64", "linux64", "linux-64", "64bit", "64-bit"],
+    "arm64": ["arm64", "aarch64"],
+}
+# Checksum / signature / metadata sidecars that sit next to the real asset.
+_SIDECAR_SUFFIXES = (
+    ".md5", ".sha256", ".sha256sum", ".sha1", ".sig", ".asc",
+    ".txt", ".sbom", ".json", ".pem", ".cert", ".sha512",
+)
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+
+
+def _pick_platform_asset(
+    assets: list[str], target_os: str = "linux", target_arch: str = "amd64"
+) -> Optional[str]:
+    """Pure selection (no network): from a list of asset URLs/names, choose the
+    one matching target_os + target_arch. Returns the URL or None.
+
+    Rules: the OS token MUST be present; any arch alias counts; an asset naming
+    the WRONG arch is rejected (so a linux/arm64 build is never picked for
+    linux/amd64); checksum/signature sidecars are excluded. Ties break toward an
+    archive, then the least-adorned (shortest) name."""
+    arch_ok = _ARCH_ALIASES.get(target_arch, [target_arch])
+    other_arch = [a for k, v in _ARCH_ALIASES.items() if k != target_arch for a in v]
+    cands: list[str] = []
+    for url in assets:
+        if not url:
+            continue
+        name = url.rsplit("/", 1)[-1].lower()
+        if name.endswith(_SIDECAR_SUFFIXES):
+            continue
+        if target_os not in name:
+            continue
+        if any(a in name for a in other_arch):
+            continue
+        if not any(a in name for a in arch_ok):
+            continue
+        cands.append(url)
+    if not cands:
+        return None
+    cands.sort(key=lambda u: (0 if u.lower().endswith(_ARCHIVE_SUFFIXES) else 1, len(u)))
+    return cands[0]
+
+
+def resolve_linux_asset(
+    binary_url: str, target_os: str = "linux", target_arch: str = "amd64", timeout: int = 12,
+) -> dict[str, Any]:
+    """Given the GitHub release-asset URL of an installed binary (typically a
+    host build like *_darwin_arm64), find the SAME release's asset for the ship
+    platform. Queries the release BY TAG (not 'latest') so the version matches
+    what was installed. Returns {found, url, tag, repo, asset_name} or
+    {found: False, reason, available?}."""
+    m = _GH_RELEASE_RE.match(binary_url or "")
+    if not m:
+        return {"found": False,
+                "reason": "not a github release-download URL — pass a linux asset URL explicitly"}
+    owner, repo, tag = m.group(1), m.group(2), m.group(3)
+    rel = _get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", timeout)
+    if not isinstance(rel, dict):
+        return {"found": False, "reason": f"could not fetch release {owner}/{repo}@{tag}"}
+    assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
+              if a.get("browser_download_url")]
+    pick = _pick_platform_asset(assets, target_os, target_arch)
+    if not pick:
+        return {"found": False,
+                "reason": f"no {target_os}/{target_arch} asset in {owner}/{repo}@{tag}",
+                "available": assets[:20]}
+    return {"found": True, "url": pick, "tag": tag, "repo": f"{owner}/{repo}",
+            "asset_name": pick.rsplit("/", 1)[-1]}
+
+
+def sha256_of_url(url: str, timeout: int = 600) -> dict[str, Any]:
+    """Stream-download an asset and return {ok, sha256, size} without keeping it
+    — used to anchor a ship-platform binary at freeze time. Network failure →
+    {ok: False, reason}."""
+    h = hashlib.sha256()
+    n = 0
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "bioinf-agent-resolver"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                h.update(chunk)
+                n += len(chunk)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        return {"ok": False, "reason": str(e)}
+    return {"ok": True, "sha256": h.hexdigest(), "size": n}
 
 
 def probe_bioconductor(name: str, timeout: int = 12) -> dict[str, Any]:

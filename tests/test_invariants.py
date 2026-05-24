@@ -24,12 +24,20 @@ ENV_REPORTS  = PROJECT_ROOT / "env_reports"
 
 
 def _finalized_specs() -> list[Path]:
+    """Layer-1 env specs only. Drafts aren't finalized; .workflow.yaml is a
+    Layer-2 artifact validated by its own (run-side) invariant subset below."""
     if not ENV_REPORTS.exists():
         return []
     return sorted(
         Path(p) for p in glob.glob(str(ENV_REPORTS / "*.yaml"))
-        if not p.endswith(".draft.yaml")
+        if not p.endswith(".draft.yaml") and not p.endswith(".workflow.yaml")
     )
+
+
+def _workflow_specs() -> list[Path]:
+    if not ENV_REPORTS.exists():
+        return []
+    return sorted(Path(p) for p in glob.glob(str(ENV_REPORTS / "*.workflow.yaml")))
 
 
 @pytest.mark.parametrize("spec_path", _finalized_specs(),
@@ -46,6 +54,24 @@ def test_spec_passes_invariants(spec_path: Path):
     violations = check_invariants(spec)
     if violations:
         msg_lines = [f"{len(violations)} invariant violations in {spec_path.name}:"]
+        for v in violations[:10]:
+            msg_lines.append(f"  [{v['invariant']}] {v['message']}")
+        pytest.fail("\n".join(msg_lines))
+
+
+@pytest.mark.parametrize("spec_path", _workflow_specs(),
+                         ids=lambda p: p.name if isinstance(p, Path) else str(p))
+def test_workflow_spec_passes_invariants(spec_path: Path):
+    """A Layer-2 WorkflowSpec must pass its OWN run-side invariant subset
+    (I0/I3/I6/I7/I8) standalone — Layer-1 env-build invariants don't apply to it
+    (it references the env by digest, it doesn't embed the build). This is the
+    self-verifiability guarantee: a sealed workflow re-checks against the
+    artifact alone, not the draft it was sealed from."""
+    from agent.skills.spec_writer import check_workflow_invariants
+    spec = yaml.safe_load(spec_path.read_text())
+    violations = check_workflow_invariants(spec)
+    if violations:
+        msg_lines = [f"{len(violations)} workflow-invariant violations in {spec_path.name}:"]
         for v in violations[:10]:
             msg_lines.append(f"  [{v['invariant']}] {v['message']}")
         pytest.fail("\n".join(msg_lines))
@@ -1202,6 +1228,62 @@ def test_stage_release_binary_extracts_locates_and_wraps(tmp_path):
     assert res["binary_path"] in launcher.read_text()
 
 
+def test_install_release_binary_archive_anchors_extracted_binary(tmp_path, monkeypatch):
+    """REGRESSION (archive I14 mismatch): for a .tar.gz/.zip asset, the recorded
+    install_method.sha256 must be the hash of the EXTRACTED binary — the artifact
+    I14 re-hashes on disk — NOT the tarball. The archive's hash is kept separately
+    as asset_sha256 (provenance). Before the fix, sha256 carried the tarball hash
+    while local_path pointed at the inner binary, so I14 always mismatched for any
+    real release binary (they all ship as archives).
+
+    Offline: the curl-in-env download is monkeypatched to a local copy, so no
+    conda env / network is needed — this exercises the real hash-recording logic."""
+    import tarfile, hashlib, shlex, shutil as _sh, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+
+    env_name = "bioinf_unit_relbin"
+    env_path = em.envs_dir / env_name
+    (env_path / "bin").mkdir(parents=True, exist_ok=True)
+    try:
+        # sometool/sometool inside a tarball — inner binary bytes ≠ tarball bytes.
+        pkgroot = tmp_path / "pkg"
+        (pkgroot / "sometool").mkdir(parents=True)
+        exe = pkgroot / "sometool" / "sometool"
+        exe.write_bytes(b"#!/bin/sh\necho hi\n")
+        archive = tmp_path / "sometool-2.13.0-darwin-arm64.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            tf.add(exe, arcname="sometool")
+        tarball_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+        binary_sha  = hashlib.sha256(exe.read_bytes()).hexdigest()
+        assert tarball_sha != binary_sha, "fixture must be a genuine archive case"
+
+        def fake_curl(en, command, timeout=None):
+            toks = shlex.split(command)
+            _sh.copy(archive, toks[toks.index("-o") + 1])  # simulate the download
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        monkeypatch.setattr(em, "run_in_env", fake_curl)
+
+        res = em.install_release_binary(
+            env_name=env_name, tool_name="sometool",
+            url=f"file://{archive}", binary_in_archive="sometool",
+        )
+        assert res["success"], res
+        im = res["install_method"]
+        assert im["sha256"]       == binary_sha,  "sha256 must anchor the extracted binary (I14 target)"
+        assert im["asset_sha256"] == tarball_sha, "asset_sha256 must keep the archive hash (provenance)"
+        assert im["sha256"] != im["asset_sha256"]
+        # The recorded local_path must actually hash to the recorded sha256 → I14 passes.
+        assert hashlib.sha256(_Path(im["local_path"]).read_bytes()).hexdigest() == im["sha256"]
+        i14 = [v for v in check_invariants(_binary_spec("sometool", im))
+               if v["invariant"].startswith("I14.")]
+        assert not i14, f"a freshly-installed archive binary must pass I14: {i14}"
+    finally:
+        _sh.rmtree(env_path, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Re-spine Slice 2/3: Perl/CPAN + cargo/go tiers
 # ---------------------------------------------------------------------------
@@ -1661,3 +1743,183 @@ def test_workflow_spec_pins_env_by_digest():
     # env build fields (packages/install_steps) are NOT part of the workflow spec
     assert not hasattr(wf, "packages") or "packages" not in wf.model_dump()
     assert "env_content_digest" in wf.to_yaml()
+
+
+# ---------------------------------------------------------------------------
+# Re-spine shakeout fixes — cross-arch recipe freeze (B) + WorkflowSpec
+# self-verifiability (D) + guide version fallback (C).
+# ---------------------------------------------------------------------------
+
+def test_pick_platform_asset_disambiguates_os_and_arch():
+    """The pure asset selector picks the right OS+arch, skips checksum sidecars,
+    and rejects the wrong arch (so a darwin/arm asset is never used for linux64)."""
+    from agent.skills.resolver import _pick_platform_asset
+    assets = [
+        "https://x/tool_darwin_amd64.tar.gz", "https://x/tool_darwin_arm64.tar.gz",
+        "https://x/tool_linux_amd64.tar.gz",  "https://x/tool_linux_amd64.tar.gz.md5.txt",
+        "https://x/tool_linux_arm64.tar.gz",  "https://x/tool_windows_amd64.exe.tar.gz",
+    ]
+    assert _pick_platform_asset(assets).endswith("tool_linux_amd64.tar.gz")
+    assert _pick_platform_asset(assets, target_arch="arm64").endswith("tool_linux_arm64.tar.gz")
+    # x86_64 alias + no linux asset → None (don't fall back to a wrong-OS build)
+    assert _pick_platform_asset(["https://x/tool_darwin_arm64.tar.gz"]) is None
+
+
+def test_resolve_linux_asset_uses_installed_tag(monkeypatch):
+    """From the host (darwin) asset URL, resolve the SAME release's linux/amd64
+    asset — by TAG, not 'latest'. Non-github URLs are refused (can't auto-map)."""
+    from agent.skills import resolver as r
+    fake = {"assets": [{"browser_download_url": u} for u in [
+        "https://github.com/o/repo/releases/download/v1.2.3/tool_darwin_arm64.tar.gz",
+        "https://github.com/o/repo/releases/download/v1.2.3/tool_linux_amd64.tar.gz",
+        "https://github.com/o/repo/releases/download/v1.2.3/tool_linux_amd64.tar.gz.md5",
+    ]]}
+    monkeypatch.setattr(r, "_get_json", lambda url, timeout=12: fake)
+    got = r.resolve_linux_asset(
+        "https://github.com/o/repo/releases/download/v1.2.3/tool_darwin_arm64.tar.gz")
+    assert got["found"] and got["asset_name"] == "tool_linux_amd64.tar.gz"
+    assert got["tag"] == "v1.2.3" and got["repo"] == "o/repo"
+    assert r.resolve_linux_asset("https://vendor.com/downloads/tool.bin")["found"] is False
+
+
+def _draft_with_binary():
+    """A draft-shaped dict: bootstrap python (conda create) + a binary-tier tool."""
+    return {
+        "pipeline_name": "seqkit", "conda_env": "bioinf_seqkit",
+        "install_steps": [
+            {"step": 1, "tool": "conda", "subcommand": "create",
+             "installed_packages": [{"name": "python", "version": "3.11"}]},
+            {"step": 2, "tool": "curl", "subcommand": "download",
+             "installed_packages": [{"name": "seqkit", "install_method": {
+                 "type": "binary",
+                 "binary_url": "https://github.com/shenwei356/seqkit/releases/download/v2.13.0/seqkit_darwin_arm64.tar.gz",
+                 "sha256": "dac78516", "local_path": "/e/share/seqkit/seqkit"}}]},
+        ],
+    }
+
+
+def test_non_conda_installs_reads_draft_install_steps():
+    """non_conda_installs must read the DRAFT (install_steps), not just the
+    finalize-derived packages[] — else a binary env looks pure-conda and gets
+    wrongly adopted. Bootstrap python must NOT count as a conda 'tool'."""
+    from agent.skills import freeze
+    d = _draft_with_binary()
+    nc = freeze.non_conda_installs(d)
+    assert [(x["name"], x["type"]) for x in nc] == [("seqkit", "binary")]
+    assert freeze.has_conda_packages(d) is False   # only bootstrap python present
+    # a real 'conda install' step flips has_conda_packages on
+    d["install_steps"].append({"step": 3, "tool": "conda", "subcommand": "install",
+                               "installed_packages": [{"name": "samtools", "version": "1.21"}]})
+    assert freeze.has_conda_packages(d) is True
+
+
+def test_recipe_dockerfile_replays_binary_with_sha_gate():
+    """The recipe Dockerfile downloads the linux asset, VERIFIES its sha256
+    in-image, and symlinks it onto PATH. A slim base when there are no conda
+    tools; a conda base when there are."""
+    import shutil as _sh, yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.docker_builder import DockerBuilder
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    db = DockerBuilder(cfg)
+    b = {"name": "seqkit", "wrapper": "seqkit", "binary_in_archive": "seqkit",
+         "sha256": "7d686de4", "url": "https://x/seqkit_linux_amd64.tar.gz"}
+    df = db._recipe_dockerfile("seqkit", "stats", conda_env_yml="", binaries=[b])
+    assert "FROM debian:bookworm-slim" in df            # no conda tools → slim base
+    assert "seqkit_linux_amd64.tar.gz" in df
+    assert "7d686de4  /tmp/seqkit_linux_amd64.tar.gz" in df and "sha256sum -c -" in df
+    assert "ln -sf" in df and "/usr/local/bin/seqkit" in df
+    df2 = db._recipe_dockerfile("x", "d", conda_env_yml="name: env\ndependencies: [python=3.11]\n",
+                                binaries=[b])
+    assert "FROM continuumio/miniconda3" in df2 and "conda env create" in df2
+
+
+def _selfverify_workflow(with_test_data: bool) -> dict:
+    step = {"step": 1, "returncode": 0,
+            "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",
+            "inputs": [{"path": "/abs/reads.fastq.gz"}],
+            "detected_outputs": ["/abs/out/stats.tsv"],
+            "validation": {"stats.tsv": {"passed": True, "validation_method": "tsv_parse"}},
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 50.0}}
+    spec = {"pipeline_name": "wf", "pipeline_steps": [step]}
+    if with_test_data:
+        spec["test_data"] = {"r1": "/abs/reads.fastq.gz"}
+    return spec
+
+
+def test_workflow_spec_self_verifies_only_with_its_sources():
+    """A sealed WorkflowSpec must carry the external input sources I8 needs, or it
+    can't be re-verified standalone. Without test_data the step input is an
+    orphan (I8 fires); carrying test_data makes it self-verifying."""
+    from agent.skills.spec_writer import check_workflow_invariants
+    bad = check_workflow_invariants(_selfverify_workflow(with_test_data=False))
+    assert any(v["invariant"].startswith("I8") for v in bad), f"expected I8 orphan; got {bad}"
+    good = check_workflow_invariants(_selfverify_workflow(with_test_data=True))
+    assert not good, f"workflow carrying its test_data must self-verify; got {good}"
+
+
+def test_key_packages_version_fallback_for_binary_tier():
+    """A release-binary tool has no plain `version`; the guide must recover it
+    from the release tag in binary_url (not render 'seqkit=?')."""
+    from agent.skills.user_guide import key_packages
+    kp = key_packages(_draft_with_binary())
+    assert kp.get("seqkit") == "2.13.0"
+    assert kp.get("python") == "3.11"
+
+
+# ---------------------------------------------------------------------------
+# Validation-locus pivot — in-container resource capture (I7), validated==shipped,
+# lock-engine seam.
+# ---------------------------------------------------------------------------
+
+def test_gnu_time_and_stat_parsers():
+    """The in-container resource capture must parse GNU `time -v` (exact peak via
+    getrusage) and `docker stats` (sampled fallback) into I7-shaped numbers."""
+    from agent.skills.docker_builder import DockerBuilder as DB
+    rusage = (
+        "\tCommand being timed: \"seqkit\"\n"
+        "\tPercent of CPU this job got: 129%\n"
+        "\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:01.08\n"
+        "\tMaximum resident set size (kbytes): 80384\n"
+    )
+    got = DB._parse_gnu_time(rusage)
+    assert got["peak_rss_mb"] == 78.5 and got["max_cpu_percent"] == 129.0
+    assert got["wall_seconds"] == 1.08
+    assert DB._parse_gnu_time("no rusage line here") is None
+    # docker-stats MemUsage / CPUPerc fallback
+    assert abs(DB._parse_mem_mb("1.5GiB") - 1536.0) < 0.1
+    assert DB._parse_mem_mb("512MiB") == 512.0
+    assert DB._parse_pct("124.00%") == 124.0
+
+
+def test_validated_in_shipped_image_requires_digest_match():
+    """validated==shipped holds ONLY when every validated step ran in the env
+    image AND its recorded image digest matches the frozen env's digest."""
+    from agent.skills.user_guide import validated_in_shipped_image
+    fr = {"image_digest": "sha256:abc"}
+    step = lambda dig, ran=True: {"step": 1, "returncode": 0,
+                                  "validation": {"o": {"passed": True}},
+                                  "ran_in_container": ran, "container_image_digest": dig}
+    assert validated_in_shipped_image({"pipeline_steps": [step("sha256:abc")]}, fr) is True
+    # wrong digest (validated a different image than we ship) → False
+    assert validated_in_shipped_image({"pipeline_steps": [step("sha256:zzz")]}, fr) is False
+    # ran on the host, not in the image → False
+    assert validated_in_shipped_image({"pipeline_steps": [step("sha256:abc", ran=False)]}, fr) is False
+    # no freeze digest → can't claim it
+    assert validated_in_shipped_image({"pipeline_steps": [step("sha256:abc")]}, {}) is False
+    # no validated steps → False
+    assert validated_in_shipped_image({"pipeline_steps": []}, fr) is False
+
+
+def test_lock_engine_prefers_pixi(monkeypatch):
+    """The lock-engine seam keeps us the universal adapter: pixi when present,
+    else conda-lock, else none — callers never bind to one engine."""
+    import shutil
+    from agent.skills.env_manager import EnvManager
+    present = {"pixi", "conda-lock"}
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}" if n in present else None)
+    assert EnvManager.lock_engine() == "pixi"
+    present.discard("pixi")
+    assert EnvManager.lock_engine() == "conda-lock"
+    present.clear()
+    assert EnvManager.lock_engine() == "none"
