@@ -42,6 +42,13 @@ _TOOLCHAIN_SPECS = {
 }
 
 
+def _pip_presence_check(name: str) -> str:
+    """In-image presence for a pip dist via python's metadata — NOT `pip show`
+    (pixi --pypi uses uv, so the env ships no pip binary), and dist-name based
+    (robust to an import-name mismatch like pyyaml->yaml)."""
+    return f"python -c \"import importlib.metadata as _m; _m.version('{name}')\""
+
+
 def _r_source_from_method(im: dict) -> str:
     """Reconstruct install_r_package's source arg (cran|bioconductor|github:owner/
     repo) from the recorded install_method.source R expression."""
@@ -190,13 +197,96 @@ def build_env_image(
             nm = x.get("name", "")
             v = versions.get(nm)
             pip_specs.append(f"{nm}=={v}" if v else nm)
-            # presence via python's dist metadata — NOT `pip show` (pixi --pypi uses
-            # uv, so the env has no pip binary), and dist-name based (robust to an
-            # import-name mismatch like pyyaml->yaml).
-            pip_verify.append((nm, f"python -c \"import importlib.metadata as _m; _m.version('{nm}')\""))
+            pip_verify.append((nm, _pip_presence_check(nm)))
         eb.add_pip(pip_specs, verify=pip_verify)
     for s in tool_specs:
         eb.add_tool(s)
+
+    result = eb.run()
+    result["request_key"] = eb.request_key()
+    return result
+
+
+# R needs its toolchain (compile C/C++/Fortran source pkgs) — the resolver-tier
+# names for R, mapped to the engine specs (build_env_image uses the install_method
+# 'r_install' key; this is the resolve→route path's equivalent).
+_R_TIERS = {"cran", "bioconductor"}
+
+
+def build_env_from_tools(
+    name: str,
+    tools: list[str],
+    *,
+    github_repos: Optional[dict] = None,
+    languages: Optional[dict] = None,
+    prefers: Optional[dict] = None,
+    version: str = "",
+    channels: Optional[list[str]] = None,
+    platform: str = "linux/amd64",
+    accelerator: Optional[dict] = None,
+    license_gated: bool = False,
+    licenses: Optional[list[str]] = None,
+    redistributable: bool = True,
+    engine=None,
+    resolve_fn: Callable[..., dict] = _resolver.resolve,
+) -> dict[str, Any]:
+    """Declarative container-native build straight from TOOL NAMES — no host install.
+
+    For each requested tool: resolve() the best tier, route() it to an EnvBuild
+    action, and build the image (gated by env_honesty.check_build). This is the
+    'call once per tool, get a trustworthy artifact' entry point — the container-
+    native alternative to the host install→draft→freeze flow (and the Phase-E
+    enabler). Covers the resolvable tiers (conda/pip/cran/bioconductor/binary/
+    source); cargo/go/perl come via their install primitives → build_env_image.
+
+    `github_repos`/`languages`/`prefers` are per-tool {tool: value} hints passed to
+    resolve(). `resolve_fn` is injectable for testing. Refuses (success=False) on an
+    ambiguous resolve or a tier with no container-native route, BEFORE building."""
+    github_repos, languages, prefers = github_repos or {}, languages or {}, prefers or {}
+    conda_specs: list[str] = []
+    conda_verify: list[tuple[str, str]] = []
+    pip_specs: list[str] = []
+    pip_verify: list[tuple[str, str]] = []
+    tool_actions: list[dict] = []
+    needs_r = False
+
+    for ts in tools:
+        tool, _, ver = ts.replace("==", "=").partition("=")
+        tool, ver = tool.strip(), ver.strip()
+        d = resolve_fn(tool, version=ver, github_repo=github_repos.get(tool, ""),
+                       language=languages.get(tool, ""), prefer=prefers.get(tool, ""))
+        if d.get("ambiguous"):
+            return {"success": False, "stage": "resolve", "tool": tool, "reason": d.get("rationale")}
+        action = _resolver.route(d, platform)
+        kind = action.get("kind")
+        if kind == "conda":
+            conda_specs.append(action["spec"])
+            conda_verify.append((tool, f"command -v {tool}"))
+        elif kind == "pip":
+            pip_specs.append(action["spec"])
+            pip_verify.append((tool, _pip_presence_check(tool)))
+        elif kind == "tool":
+            tool_actions.append(action)
+            if action.get("tier") in _R_TIERS:
+                needs_r = True
+        else:  # defer / no automatable tier
+            return {"success": False, "stage": "route", "tool": tool,
+                    "reason": action.get("reason"), "decision": d}
+
+    if needs_r:  # R toolchain for the engine (compiles source CRAN/Bioc pkgs)
+        for s in ("r-base", "c-compiler", "cxx-compiler", "fortran-compiler"):
+            if s not in conda_specs:
+                conda_specs.append(s)
+
+    eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
+                  accelerator=accelerator, license_gated=license_gated,
+                  licenses=licenses, redistributable=redistributable)
+    if conda_specs:
+        eb.add_conda(conda_specs, verify=conda_verify)
+    if pip_specs:
+        eb.add_pip(pip_specs, verify=pip_verify)
+    for action in tool_actions:
+        eb.add_tool(action["spec"])
 
     result = eb.run()
     result["request_key"] = eb.request_key()

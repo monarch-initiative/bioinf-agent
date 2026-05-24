@@ -2601,3 +2601,59 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch):
     # registered in the cache; shipped_binaries record the baked long-tail command
     assert registered and any(sb.get("name") == "seqkit (release binary)"
                               for sb in res.get("shipped_binaries", []))
+
+
+# ---------------------------------------------------------------------------
+# Declarative builder: resolve -> route -> EnvBuild, straight from tool NAMES
+# (no host install). The container-native "call once per tool" entry point.
+# ---------------------------------------------------------------------------
+
+def test_build_env_from_tools_assembles_plan_across_tiers(monkeypatch):
+    """resolve->route->EnvBuild: a conda tool, a pip tool, an R (cran) tool, and a
+    binary are each resolved + routed to the right EnvBuild call; the R toolchain is
+    injected. EnvBuild is stubbed to capture the assembled plan (no container)."""
+    from agent.skills import env_freeze as ef
+
+    decisions = {
+        "samtools": {"chosen": "conda", "tool": "samtools", "version": "1.21",
+                     "probed": {"conda": {"channel": "bioconda"}}},
+        "pyfaidx":  {"chosen": "pip", "tool": "pyfaidx", "probed": {"pip": {}}},
+        "ape":      {"chosen": "cran", "tool": "ape", "probed": {"cran": {}}},
+        "sylph":    {"chosen": "binary", "tool": "sylph", "github_repo": "x/sylph",
+                     "probed": {"binary": {"assets": ["https://x/sylph-linux-x86_64.tar.gz"]}}},
+    }
+    plan = {"conda": [], "conda_verify": [], "pip": [], "tools": []}
+    class FakeEB:
+        def __init__(self, *a, **k): plan["init"] = k
+        def add_conda(self, specs, verify): plan["conda"] = specs; plan["conda_verify"] = verify
+        def add_pip(self, specs, verify): plan["pip"] = specs
+        def add_tool(self, spec): plan["tools"].append(spec)
+        def run(self): return {"success": True, "image": "x:1"}
+        def request_key(self): return "rk"
+    monkeypatch.setattr(ef, "EnvBuild", FakeEB)
+
+    res = ef.build_env_from_tools("demo", ["samtools=1.21", "pyfaidx", "ape", "sylph"],
+                                  github_repos={"sylph": "x/sylph"},
+                                  resolve_fn=lambda tool, **k: decisions[tool])
+    assert res["success"] and res["request_key"] == "rk"
+    assert "samtools=1.21" in plan["conda"]
+    # R toolchain injected because a cran tool is present
+    assert {"r-base", "c-compiler", "cxx-compiler", "fortran-compiler"} <= set(plan["conda"])
+    assert plan["pip"] == ["pyfaidx"]
+    # R (cran) + binary became add_tool generator specs
+    tool_tools = {t["tool"] for t in plan["tools"]}
+    assert "ape" in tool_tools and "sylph" in tool_tools
+    assert ("samtools", "command -v samtools") in plan["conda_verify"]
+
+
+def test_build_env_from_tools_refuses_ambiguous_and_unroutable(monkeypatch):
+    """Refuses BEFORE building on an ambiguous resolve or a tier with no route."""
+    from agent.skills import env_freeze as ef
+    monkeypatch.setattr(ef, "EnvBuild", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not build")))
+    r = ef.build_env_from_tools("demo", ["ape"],
+                                resolve_fn=lambda tool, **k: {"ambiguous": True, "rationale": "ape is PyPI AND CRAN"})
+    assert r["success"] is False and r["stage"] == "resolve"
+    # no automatable tier -> route returns defer -> refuse
+    r = ef.build_env_from_tools("demo", ["weirdtool"],
+                                resolve_fn=lambda tool, **k: {"chosen": None, "tool": tool})
+    assert r["success"] is False and r["stage"] == "route"
