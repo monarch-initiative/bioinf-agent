@@ -2122,6 +2122,42 @@ def test_install_command_generators_self_contained_tiers():
     assert "/usr/local/bin/mytool" in sr["command"]
 
 
+def test_install_command_generators_toolchain_coupled_tiers():
+    """cargo/go/perl build with the ENGINE's toolchain → engine_coupled=True so the
+    command (and evidence) run via engine.run(). Output binaries are self-contained
+    at runtime (/usr/local/bin); perl's module lives in the engine perl."""
+    from agent.skills import install_commands as ic
+    c = ic.cargo("rasusa", "rasusa", version="2.0.0")
+    assert c["engine_coupled"] and "cargo install rasusa --version 2.0.0 --root /usr/local --locked" in c["command"]
+    g = ic.go("gofasta", "github.com/virus-evolution/gofasta", version="v1.2.3")
+    assert g["engine_coupled"] and "go install github.com/virus-evolution/gofasta@v1.2.3" in g["command"]
+    p = ic.perl_cpanm("Bio::DB::HTS", build_env="HTSLIB_DIR=$CONDA_PREFIX")
+    assert p["engine_coupled"] and "HTSLIB_DIR=$CONDA_PREFIX cpanm --notest Bio::DB::HTS" in p["command"]
+    assert p["evidence"] == "perl -MBio::DB::HTS -e1"
+
+
+def test_install_spec_engine_coupling_wraps_with_engine_run(monkeypatch):
+    """ContainerBuild.install() wraps a coupled spec's command+evidence with
+    engine.run() (so it's correct in the build container AND when baked), and leaves
+    a self-contained spec bare."""
+    from agent.skills.container_build import ContainerBuild, PixiEngine
+    cb = ContainerBuild(engine=PixiEngine())
+    cb.cid = "fake"
+    calls = []
+    monkeypatch.setattr(cb, "_sh", lambda args, timeout=0: (
+        calls.append(args[-1]), {"returncode": 0, "stdout": "ok", "stderr": ""})[1])
+    # coupled → wrapped with `pixi run`
+    cb.install({"command": "cargo install rasusa --root /usr/local --locked",
+                "evidence": "command -v rasusa", "purpose": "rasusa", "engine_coupled": True})
+    # baked form is wrapped in `pixi run bash -c '...'` (shell so builtins/pipes work)
+    assert cb.longtail[-1]["command"].startswith("pixi run bash -c ")
+    assert "cargo install rasusa --root /usr/local --locked" in cb.longtail[-1]["command"]
+    # self-contained → bare
+    cb.install({"command": "install -m0755 /tmp/x /usr/local/bin/x", "evidence": "command -v x",
+                "purpose": "x"})
+    assert cb.longtail[-1]["command"] == "install -m0755 /tmp/x /usr/local/bin/x"
+
+
 def test_container_native_engine_optional_for_longtail_only():
     """A pure binary/source/half-baked env carries NO engine (no pixi/micromamba) —
     bootstrap lines appear only when conda/pip specs were declared."""

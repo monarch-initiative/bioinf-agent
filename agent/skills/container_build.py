@@ -34,6 +34,7 @@ buildx — qemu on a non-linux/amd64 host (e.g. Apple Silicon), native on linux-
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from typing import Any, Optional
 
@@ -109,7 +110,9 @@ class PixiEngine(EnvEngine):
         r = cb.exec(f"pixi add {quoted}", timeout=1800)
         return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
     def run(self, tool_cmd):
-        return f"pixi run {tool_cmd}"
+        # wrap in a shell so builtins/pipes/env-prefixes in tool_cmd work (pixi run
+        # execs directly otherwise — `pixi run command -v X` would fail).
+        return f"pixi run bash -c {shlex.quote(tool_cmd)}"
     def bootstrap_lines(self):
         return [f"RUN {self.install_commands()}", f'ENV PATH="{self._BIN}:$PATH"', ""]
     def materialize_lines(self):
@@ -154,7 +157,7 @@ class MicromambaEngine(EnvEngine):
         e = cb.exec(f"micromamba env export -n env --explicit > {self.workdir}/env.lock", timeout=120)
         return {"success": e["returncode"] == 0, "stderr": (e["stderr"] or "")[-400:]}
     def run(self, tool_cmd):
-        return f"micromamba run -n env {tool_cmd}"
+        return f"micromamba run -n env bash -c {shlex.quote(tool_cmd)}"
     def bootstrap_lines(self):
         return [f"RUN {self.install_commands()}", f'ENV MAMBA_ROOT_PREFIX={self._ROOT}', ""]
     def materialize_lines(self):
@@ -301,20 +304,34 @@ class ContainerBuild:
 
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "",
-            timeout: int = 1800) -> dict[str, Any]:
+            engine_coupled: bool = False, timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
-        baking; `evidence` is re-run in the built image at freeze."""
-        inst = self.exec(command, timeout=timeout)
+        baking; `evidence` is re-run in the built image at freeze.
+
+        engine_coupled: the command (and evidence) need the engine env active — the
+        BUILD uses an engine-provided toolchain (rust/go/perl) or the artifact lives
+        in the engine env. Wrapped with engine.run() so it's correct both in the
+        build container AND when baked (the engine layer is in the image)."""
+        cmd = self.engine.run(command) if engine_coupled else command
+        ev_cmd = self.engine.run(evidence) if engine_coupled else evidence
+        inst = self.exec(cmd, timeout=timeout)
         if inst["returncode"] != 0:
             return {"success": False, "stage": "install", "stderr": (inst["stderr"] or "")[-800:]}
-        ev = self.exec(evidence, timeout=120)
+        ev = self.exec(ev_cmd, timeout=120)
         if ev["returncode"] != 0:
-            return {"success": False, "stage": "evidence", "evidence": evidence,
+            return {"success": False, "stage": "evidence", "evidence": ev_cmd,
                     "stderr": (ev["stderr"] or "")[-800:]}
-        self.longtail.append({"command": command, "purpose": purpose, "evidence": evidence})
-        self.log.append(f"run [{purpose}] rc=0 ev_ok")
+        self.longtail.append({"command": cmd, "purpose": purpose, "evidence": ev_cmd})
+        self.log.append(f"run [{purpose}] rc=0 ev_ok coupled={engine_coupled}")
         return {"success": True, "evidence_output": (ev["stdout"] or "").strip()[:200]}
+
+    def install(self, spec: dict, timeout: int = 1800) -> dict[str, Any]:
+        """Run an install_commands generator's spec ({command, evidence, purpose,
+        engine_coupled?}). The single entry point for every long-tail tier — the
+        generator carries the per-tier knowledge; the locus just runs+bakes it."""
+        return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
+                        engine_coupled=spec.get("engine_coupled", False), timeout=timeout)
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""

@@ -77,6 +77,48 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
     return {"command": cmd, "evidence": ev, "purpose": f"{name} (source @ {ref or 'HEAD'})"}
 
 
+def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
+          binary_name: str = "", evidence: str = "") -> dict[str, Any]:
+    """Rust crate (TOOLCHAIN-COUPLED): built with the engine's rust toolchain
+    (declare ['rust'] first), output to /usr/local/bin via --root. --locked uses
+    the crate's Cargo.lock. The OUTPUT binary is self-contained at runtime; only
+    the BUILD needs the engine, so it runs via engine.run() (engine_coupled)."""
+    binp = binary_name or crate or name
+    if git_url:
+        src = f"--git {shlex.quote(git_url)}"
+    else:
+        src = shlex.quote(crate or name) + (f" --version {shlex.quote(version)}" if version else "")
+    return {"command": f"cargo install {src} --root /usr/local --locked",
+            "evidence": evidence or f"command -v {binp}",
+            "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True}
+
+
+def go(name: str, package: str, *, version: str = "latest", binary_name: str = "",
+       evidence: str = "") -> dict[str, Any]:
+    """Go tool (TOOLCHAIN-COUPLED): built with the engine's go toolchain (declare
+    ['go'] first), output to /usr/local/bin via GOBIN. Self-contained at runtime."""
+    binp = binary_name or package.rstrip("/").split("/")[-1]
+    spec = f"{package}@{version}" if version else package
+    return {"command": f"GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}",
+            "evidence": evidence or f"command -v {binp}",
+            "purpose": f"{name} (go, via engine go)", "engine_coupled": True}
+
+
+def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--notest",
+               build_env: str = "", evidence: str = "") -> dict[str, Any]:
+    """CPAN module (TOOLCHAIN-COUPLED): installed into the engine's perl via cpanm
+    (declare ['perl','perl-app-cpanminus', and for XS 'c-compiler'/'cxx-compiler']
+    first). Both install AND the `perl -M{module} -e1` load run via engine.run(),
+    since the module lives in the engine's perl. PREFER conda when the module is
+    packaged (perl-* on bioconda) — this is the unpackaged-residue fallback.
+    build_env (e.g. HTSLIB_DIR=$CONDA_PREFIX) handles XS link hints."""
+    target = distribution or module
+    pre = f"{build_env} " if build_env.strip() else ""
+    return {"command": f"{pre}cpanm {cpanm_flags} {shlex.quote(target)}",
+            "evidence": evidence or f"perl -M{module} -e1",
+            "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True}
+
+
 def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = "",
                 interpreter: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
     """Run-by-path script collection (very common for half-baked academic tools:
