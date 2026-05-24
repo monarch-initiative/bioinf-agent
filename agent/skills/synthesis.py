@@ -80,6 +80,26 @@ def build_corpus(files: list[dict]) -> str:
     return "\n".join(f.get("text", "") for f in files if isinstance(f, dict))
 
 
+# Non-git distribution: a tool shipped as a raw release/vendor ARCHIVE rather than a
+# clone-able repo (the "no GitHub" case). Detected by file suffix; the agent can
+# force the kind via mode=.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
+                     ".tar", ".zip")
+
+
+def source_kind(url: str, mode: str = "auto") -> str:
+    """How synth_fetch should acquire `url`: a git repo ('git' → clone, anchored by
+    commit) or a release/vendor ARCHIVE ('archive' → download+extract, anchored by
+    sha256). auto = an archive file suffix → 'archive', else 'git' (most sources are
+    clone-able repos — and a plain git clone already covers ANY git host, not just
+    GitHub). Pass mode='archive' to force a raw tarball/zip whose URL has no
+    recognizable suffix. Honors an explicit mode verbatim."""
+    if mode in ("git", "archive"):
+        return mode
+    u = url.lower().split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return "archive" if u.endswith(_ARCHIVE_SUFFIXES) else "git"
+
+
 def _norm(s: str) -> str:
     """Whitespace-normalize for verbatim comparison — collapses backslash-newline
     continuations and indentation so a copied Dockerfile RUN body matches the file

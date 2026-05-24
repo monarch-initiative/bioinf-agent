@@ -36,6 +36,19 @@ def test_is_build_relevant():
     assert not s.is_build_relevant("data/sample.bam")
 
 
+def test_source_kind_detection():
+    # git host (any) → clone; archive suffix → download+extract
+    assert s.source_kind("https://github.com/x/y") == "git"
+    assert s.source_kind("https://gitlab.com/a/b") == "git"          # any git host, not just GH
+    assert s.source_kind("https://x.org/y.git") == "git"
+    assert s.source_kind("https://github.com/x/y/archive/v1.0.tar.gz") == "archive"
+    assert s.source_kind("https://vendor.com/tool-1.2.zip") == "archive"
+    assert s.source_kind("https://vendor.com/t.tar.bz2") == "archive"
+    assert s.source_kind("https://x/y.tar.gz?token=abc") == "archive"  # query stripped
+    assert s.source_kind("https://vendor.com/tool", mode="archive") == "archive"  # forced
+    assert s.source_kind("https://github.com/x/y/archive/v1.tgz", mode="git") == "git"  # forced
+
+
 def test_rank_build_sources_dockerfile_first_readme_last():
     paths = ["README.md", "src/x.c", "Dockerfile", ".github/workflows/build.yml", "Makefile"]
     ranked = s.rank_build_sources(paths)
