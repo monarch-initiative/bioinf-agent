@@ -1900,20 +1900,34 @@ def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
 
 
 def test_container_native_dockerfile_bakes_recorded_commands():
-    """The container-native emitter: an engine env-layer from the lock + one
-    verbatim RUN per recorded long-tail command — NO per-tier translation."""
+    """The container-native emitter: an engine env-layer from the lock + one verbatim
+    RUN per recorded long-tail command (NO per-tier translation), MULTI-STAGE — a
+    builder with the full toolchain and a slim runtime that COPYs only the env +
+    artifacts (Phase D)."""
     from agent.skills.container_build import emit_dockerfile, PixiEngine
     steps = [{"command": "curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit",
               "purpose": "seqkit release binary"}]
     df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=True, longtail_steps=steps)
-    assert "FROM debian:bookworm-slim" in df
-    assert "pixi.sh/install.sh" in df                      # pixi engine layered on
+    # two stages: a named builder + a slim runtime
+    assert "FROM debian:bookworm-slim AS builder" in df and df.count("FROM debian:bookworm-slim") == 2
+    assert "pixi.sh/install.sh" in df                      # pixi engine layered on (builder)
     assert "COPY pixi.toml pixi.lock ./" in df and "pixi install --locked" in df  # reproducible conda/pip
     assert "# seqkit release binary" in df
-    assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df        # baked VERBATIM
-    # no conda/pip tools → no env layer; long-tail only still works
+    assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df        # baked VERBATIM (builder)
+    # runtime stage COPYs the env (same paths) + the built artifacts from the builder
+    assert "COPY --from=builder /root/.pixi /root/.pixi" in df
+    assert "COPY --from=builder /work /work" in df
+    assert "COPY --from=builder /usr/local /usr/local" in df
+    # build toolchain is BUILD-only; the runtime apt is the slim *.so set (no build-essential
+    # after the runtime FROM)
+    runtime = df.split("# ---- runtime image (shipped) ----", 1)[1]
+    assert "build-essential" not in runtime and "zlib1g-dev" not in runtime
+    assert "zlib1g" in runtime and "ca-certificates" in runtime
+    # no conda/pip tools → no env layer; long-tail only still works (still multi-stage)
     df2 = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False, longtail_steps=steps)
     assert "pixi install --locked" not in df2 and "COPY pixi.toml" not in df2
+    assert "COPY --from=builder /root/.pixi" not in df2     # no env to copy
+    assert "COPY --from=builder /usr/local /usr/local" in df2
     assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df2
 
 
@@ -2657,3 +2671,20 @@ def test_build_env_from_tools_refuses_ambiguous_and_unroutable(monkeypatch):
     r = ef.build_env_from_tools("demo", ["weirdtool"],
                                 resolve_fn=lambda tool, **k: {"chosen": None, "tool": tool})
     assert r["success"] is False and r["stage"] == "route"
+
+
+def test_container_native_multistage_runtime_provisions_jar_jre():
+    """Phase D: a jar tool's wrapper needs java at RUNTIME — the runtime stage adds a
+    JRE only when a jar step is present (non-jar images stay lean)."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    jar_step = [{"command": "set -eux; curl -o /opt/tools/picard/picard.jar x; ...",
+                 "purpose": "picard (java jar)"}]
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False,
+                         longtail_steps=jar_step)
+    runtime = df.split("# ---- runtime image (shipped) ----", 1)[1]
+    assert "default-jre-headless" in runtime          # JRE shipped for the jar wrapper
+    # a non-jar image does NOT carry a JRE
+    bin_step = [{"command": "install -m0755 /tmp/x /usr/local/bin/x", "purpose": "x (release binary)"}]
+    df2 = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False,
+                          longtail_steps=bin_step)
+    assert "default-jre-headless" not in df2
