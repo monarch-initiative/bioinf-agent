@@ -2135,6 +2135,24 @@ def test_env_report_renders_for_adopted_image_without_crashing():
 
 
 # ---------------------------------------------------------------------------
+# Registry push as default delivery — the push-target derivation + I13 firewall.
+# ---------------------------------------------------------------------------
+
+def test_effective_push_target_derivation_and_i13():
+    from agent.mcp_server import _effective_push_target as ept
+    # nothing configured → no push (registry-free tarball default)
+    assert ept("", "", "demo", "1.0", False) == ""
+    # configured default registry → auto-derived ref, no per-call arg needed
+    assert ept("", "ghcr.io/myorg", "demo", "1.0", False) == "ghcr.io/myorg/demo:1.0"
+    assert ept("", "ghcr.io/myorg/", "demo", "", False) == "ghcr.io/myorg/demo:latest"  # trailing slash + default tag
+    # explicit push_target WINS over the configured default
+    assert ept("reg.io/x:9", "ghcr.io/myorg", "demo", "1.0", False) == "reg.io/x:9"
+    # I13: gated artifacts are NEVER pushed, even with a target or a default registry
+    assert ept("reg.io/x:9", "ghcr.io/myorg", "demo", "1.0", True) == ""
+    assert ept("", "ghcr.io/myorg", "demo", "1.0", True) == ""
+
+
+# ---------------------------------------------------------------------------
 # pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
 # ---------------------------------------------------------------------------
 

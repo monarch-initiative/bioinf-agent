@@ -1709,6 +1709,21 @@ def validate_output(
 # Docker
 # ---------------------------------------------------------------------------
 
+def _effective_push_target(push_target: str, registry: str, name: str,
+                           version: str, gated: bool) -> str:
+    """The registry ref to push a built image to. An explicit push_target wins;
+    else a configured default registry derives `{registry}/{name}:{version}` so a
+    push happens with no per-call argument. Returns "" (no push, tarball delivery)
+    when nothing is configured OR the artifact is gated (I13 — gated images stay
+    tarball-only, never pushed)."""
+    if gated:
+        return ""
+    if (push_target or "").strip():
+        return push_target.strip()
+    reg = (registry or "").strip().rstrip("/")
+    return f"{reg}/{name}:{version or 'latest'}" if reg else ""
+
+
 @mcp.tool()
 def freeze(
     env_name: str,
@@ -1744,10 +1759,13 @@ def freeze(
            cross-arch refusal). A biocontainer is NOT adopted when the env has non-
            conda installs it can't represent (that would ship a different artifact).
            Gated builds must pass `licenses` (I13).
-      4. HPC delivery, registry-free by DEFAULT: adopted → `apptainer pull
-         docker://…@digest`; built → `docker save` tarball + `apptainer build
-         docker-archive://…`. A push_target pushes the built image instead
-         (NEVER for gated — I13: gated images stay tarball-only).
+      4. HPC delivery: adopted → `apptainer pull docker://…@digest`. Built →
+         registry-free by DEFAULT (`docker save` tarball + `apptainer build
+         docker-archive://…`, zero config/auth). If a default registry is
+         configured (config docker.registry) OR a push_target is passed, the built
+         image is pushed and delivery becomes `apptainer pull docker://…`; a push
+         failure falls back to the tarball and is reported in push_status. Gated
+         images are NEVER pushed (I13 — tarball-only).
       5. EnvCache.register(request_key → record).
 
     `tools` are the PRIMARY requested tools (e.g. ['samtools=1.21',
@@ -1783,17 +1801,33 @@ def freeze(
     non_conda = _freeze.non_conda_installs(draft) if draft else []
     can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
 
+    # Registry push as a first-class delivery: an explicit push_target wins, else a
+    # configured default registry (config docker.registry) auto-derives the ref so a
+    # push happens with no per-call argument. Tarball→Apptainer stays the genuine
+    # zero-config default (no registry configured → no push, no auth needed). Gated
+    # artifacts are NEVER pushed (I13).
+    default_registry = (config.get("docker", {}).get("registry") or "").strip()
+    effective_push = _effective_push_target(push_target, default_registry, name, version, gated)
+    push_status = "not-configured"   # surfaced honestly: pushed / push-failed / skipped
+
     def _deliver_built(image):
-        """docker-save tarball + optional push → registry-free Apptainer contract."""
+        """docker-save tarball + registry push (when a target is configured) →
+        Apptainer contract. Push failure falls back to the tarball but is reported,
+        never silently swallowed."""
+        nonlocal push_status
         idg = _docker.image_digest(image)
         tar_path = _env_mgr.project_root / "docker_images" / name / f"{name}.tar"
         save = _docker.save_archive(image, tar_path)
         tball = save.get("tarball") if save.get("success") else None
         pushed = None
-        if push_target and not gated:
-            if _docker._run(["docker", "tag", image, push_target])["returncode"] == 0 and \
-               _docker._run(["docker", "push", push_target], timeout=900)["returncode"] == 0:
-                pushed = push_target
+        if effective_push:
+            tagged = _docker._run(["docker", "tag", image, effective_push])["returncode"] == 0
+            if tagged and _docker._run(["docker", "push", effective_push], timeout=900)["returncode"] == 0:
+                pushed, push_status = effective_push, f"pushed: {effective_push}"
+            else:
+                push_status = f"push-failed: {effective_push} (tarball fallback)"
+        elif gated and (push_target or default_registry):
+            push_status = "skipped: gated artifacts are never pushed (I13)"
         h = _freeze.apptainer_delivery(mode="build", sif_name=sif, push_target=pushed,
                                        tarball=tball, gated=gated)
         return idg, tball, h
@@ -1865,6 +1899,7 @@ def freeze(
         record["conda_specs"] = br.get("conda_specs", [])
         record["verifications"] = br.get("verifications", [])
         record["resolved_packages"] = br.get("resolved_packages", [])
+        record["push_status"] = push_status
     _env_cache.register(rkey, record)
 
     # Layer-1 deliverable: the env report, rendered PURELY from the verified record.

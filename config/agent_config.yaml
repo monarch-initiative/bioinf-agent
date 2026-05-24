@@ -23,6 +23,12 @@ core_tools:
 docker:
   base_image: "ubuntu:22.04"
   platform: "linux/amd64"
+  # Default push registry for freeze() delivery. Empty = registry-free default
+  # (docker-save tarball → `apptainer build docker-archive`, zero config/auth). Set
+  # e.g. "ghcr.io/myorg" and `docker login` once → every freeze pushes
+  # {registry}/{name}:{version} and the HPC delivery becomes `apptainer pull
+  # docker://…`. Gated artifacts are never pushed (I13). A per-call push_target
+  # overrides this.
   registry: ""
   hpc:
     singularity_compatible: true
