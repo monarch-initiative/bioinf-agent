@@ -2046,6 +2046,35 @@ def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
     assert im["build_env"] == "HTSLIB_DIR=$CONDA_PREFIX"
 
 
+def test_container_native_dockerfile_bakes_recorded_commands():
+    """The container-native emitter: a pixi layer from the lock (reproducible) +
+    one verbatim RUN per recorded long-tail command — NO per-tier translation."""
+    from agent.skills.container_build import emit_dockerfile
+    steps = [{"command": "curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit",
+              "purpose": "seqkit release binary"}]
+    df = emit_dockerfile("debian:bookworm-slim", has_pixi_layer=True, longtail_steps=steps)
+    assert "FROM debian:bookworm-slim" in df
+    assert "pixi.sh/install.sh" in df                      # pixi engine layered on
+    assert "COPY pixi.toml pixi.lock ./" in df and "pixi install --locked" in df  # reproducible conda/pip
+    assert "# seqkit release binary" in df
+    assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df        # baked VERBATIM
+    # no conda/pip tools → no pixi layer; long-tail only still works
+    df2 = emit_dockerfile("debian:bookworm-slim", has_pixi_layer=False, longtail_steps=steps)
+    assert "pixi install --locked" not in df2 and "COPY pixi.toml" not in df2
+    assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df2
+
+
+def test_container_native_repo_name_sanitized():
+    """docker repo names must be lowercase [a-z0-9._-]; freeze must sanitize a
+    pipeline name like 'VEP_annotate' rather than fail the build."""
+    from agent.skills.container_build import _docker_repo
+    assert _docker_repo("VEP_annotate") == "vep_annotate"   # uppercase→lower; _ is legal
+    assert _docker_repo("phaseA_demo") == "phasea_demo"
+    assert _docker_repo("Tool:weird name") == "tool-weird-name"  # illegal chars → '-'
+    assert _docker_repo("samtools") == "samtools"
+    assert _docker_repo("---") == "bioinf"                   # empty after strip → fallback
+
+
 def test_non_conda_installs_includes_perl():
     """perl installs must surface in non_conda_installs so freeze replays (not adopts)."""
     from agent.skills.freeze import non_conda_installs
