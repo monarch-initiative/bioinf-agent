@@ -1351,3 +1351,65 @@ def test_resolve_biocontainer_single_tool_live():
     assert res["tag"].startswith("1.21--")
     assert res["digest"].startswith("sha256:")
     assert res["image_by_digest"].startswith("quay.io/biocontainers/samtools@sha256:")
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Slice 5b: content-addressing (content_digest / request_key / cache)
+# ---------------------------------------------------------------------------
+
+def test_request_key_is_order_independent():
+    from agent.skills.freeze import request_key
+    a = request_key([("samtools", "1.21"), ("bwa", "0.7.17")], "linux-64")
+    b = request_key([("bwa", "0.7.17"), ("samtools", "1.21")], "linux-64", accel="none")
+    assert a == b == "bwa=0.7.17,samtools=1.21|linux-64|none"
+    # platform / accel are part of identity
+    assert request_key([("x", "1")], "osx-arm64") != request_key([("x", "1")], "linux-64")
+    assert request_key([("x", "1")], "linux-64", "cuda") != request_key([("x", "1")], "linux-64")
+
+
+def test_content_digest_is_stable_and_sensitive():
+    """Same env bytes → same digest; any captured anchor changing → different
+    digest. This is what makes the cache trustworthy."""
+    import json
+    from agent.skills.freeze import content_digest_from_spec
+    spec = {
+        "lock_sha256": "abc123",
+        "packages": [
+            {"name": "tool", "install_method": {"type": "binary", "sha256": "ff" * 32}},
+            {"name": "repo", "install_method": {"type": "source", "commit_sha": "deadbeef"}},
+        ],
+        "authored_artifacts": [{"sha256": "11" * 32}],
+        "docker": {"platform": "linux/amd64"},
+        "accelerator": {"type": "cuda"},
+    }
+    d1 = content_digest_from_spec(spec)
+    assert d1.startswith("sha256:")
+    # Re-deriving from an equivalent dict (different key order) is identical.
+    assert content_digest_from_spec(dict(reversed(list(spec.items())))) == d1
+    # Flip the lock → different digest.
+    spec2 = {**spec, "lock_sha256": "xyz789"}
+    assert content_digest_from_spec(spec2) != d1
+    # Flip a binary sha256 → different digest.
+    spec3 = json.loads(json.dumps(spec))
+    spec3["packages"][0]["install_method"]["sha256"] = "00" * 32
+    assert content_digest_from_spec(spec3) != d1
+    # Flip platform → different digest (same env, different target = different artifact).
+    spec4 = json.loads(json.dumps(spec))
+    spec4["docker"]["platform"] = "linux/arm64"
+    assert content_digest_from_spec(spec4) != d1
+
+
+def test_env_cache_roundtrip(tmp_path):
+    from agent.skills.freeze import EnvCache, request_key
+    cache = EnvCache(tmp_path / "env_cache.json")
+    key = request_key([("samtools", "1.21")], "linux-64")
+    assert cache.lookup(key) is None
+    rec = {"content_digest": "sha256:abc", "image": "quay.io/biocontainers/samtools@sha256:def"}
+    cache.register(key, rec)
+    # New instance reads the persisted store (survives process boundary).
+    again = EnvCache(tmp_path / "env_cache.json")
+    assert again.lookup(key) == rec
+    assert key in again.all()
+    # Corrupt file degrades to empty, never raises.
+    (tmp_path / "env_cache.json").write_text("{ not json")
+    assert EnvCache(tmp_path / "env_cache.json").lookup(key) is None
