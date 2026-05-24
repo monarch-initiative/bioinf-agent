@@ -1535,3 +1535,67 @@ def test_resolve_live_ape_disambiguated_by_language():
     assert r["ambiguous"] is False
     assert r["chosen"] in ("conda", "cran", "bioconductor"), f"R tool went to {r['chosen']}"
     assert r["chosen"] != "pip"
+
+
+# ---------------------------------------------------------------------------
+# Re-spine Layer 2: user-guide generator (rendered from the passing run)
+# ---------------------------------------------------------------------------
+
+def _guide_spec():
+    return {
+        "pipeline_name": "bwa_samtools",
+        "description": "Align reads and sort.",
+        "conda_env": "bioinf_bwa_samtools",
+        "python_version": "3.11",
+        "lock_sha256": "abc123",
+        "env_status": "fully_validated",
+        "pipeline_status": "fully_validated",
+        "usage_verified": True,
+        "packages": [{"name": "bwa", "version": "0.7.17", "verify_output": "x"},
+                     {"name": "samtools", "version": "1.21", "verify_output": "y"}],
+        "pipeline_steps": [
+            {"step": 1, "command": "bwa mem ref.fa r1.fq > out.sam", "returncode": 0,
+             "detected_outputs": ["/abs/out.sam"], "validation": {"out.sam": {"valid": True}}},
+            {"step": 2, "command": "SHOULD_NOT_APPEAR --broken", "returncode": 1,
+             "detected_outputs": []},
+        ],
+        "usage": {"command_template": "bwa mem {REF} {READS} | samtools sort -o {OUT_DIR}/x.bam",
+                  "inputs": [{"name": "REF", "format": "fasta"}],
+                  "outputs": [{"files": "*.bam"}]},
+    }
+
+
+def test_executed_commands_only_validated_and_run():
+    from agent.skills.user_guide import executed_commands
+    cmds = [c["command"] for c in executed_commands(_guide_spec())]
+    assert "bwa mem ref.fa r1.fq > out.sam" in cmds        # rc=0 + validated
+    assert any("samtools sort" in c for c in cmds)          # self-tested usage
+    assert not any("SHOULD_NOT_APPEAR" in c for c in cmds)  # failed step excluded
+
+
+def test_render_user_guide_excludes_unrun_and_pins_env():
+    from agent.skills.user_guide import render_user_guide
+    fr = {
+        "content_digest": "sha256:cd", "image": "quay.io/biocontainers/x@sha256:img",
+        "image_digest": "sha256:img",
+        "hpc_delivery": {
+            "source_note": "adopted public BioContainer",
+            "get_image": "apptainer pull bwa_samtools.sif docker://quay.io/biocontainers/x@sha256:img",
+            "run_example": "apptainer exec --bind /scratch/$USER/data:/data bwa_samtools.sif <command>",
+            "sbatch_template": "#!/bin/bash\nmodule load apptainer\n",
+        },
+    }
+    md = render_user_guide(_guide_spec(), freeze_record=fr)
+    assert "SHOULD_NOT_APPEAR" not in md                      # failed command never shown
+    assert "bwa mem ref.fa r1.fq" in md                       # validated command shown
+    assert "apptainer pull bwa_samtools.sif docker://quay.io/biocontainers/x@sha256:img" in md
+    assert "sha256:cd" in md and "module load apptainer" in md
+    assert "conda env: `bioinf_bwa_samtools`" in md           # driver env recorded
+
+
+def test_render_user_guide_without_freeze_falls_back_to_docker():
+    from agent.skills.user_guide import render_user_guide
+    s = _guide_spec()
+    s["docker"] = {"image_tag": "bwa_samtools:1.21"}
+    md = render_user_guide(s, freeze_record=None)
+    assert "apptainer pull" in md and "bwa_samtools:1.21" in md

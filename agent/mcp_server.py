@@ -50,6 +50,7 @@ from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
+from agent.skills import user_guide as _user_guide
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
@@ -1690,6 +1691,44 @@ def freeze(
 # ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+def generate_user_guide(
+    pipeline_id: str = "",
+    spec: dict = {},
+    freeze_request_key: str = "",
+    write: bool = True,
+) -> dict:
+    """Render the Layer-2 user guide for a pipeline (Markdown) from its PASSING,
+    validated run — every command shown was actually executed and its outputs
+    checked (drawn only from validated pipeline_steps + a self-tested
+    usage.command_template). A workflow consumes its env BY DIGEST: the
+    "Get the environment" section is the freeze() Apptainer delivery and
+    provenance pins the content/image digests.
+
+    Pass `pipeline_id` (uses its draft) or a `spec` dict. `freeze_request_key`
+    looks the frozen artifact up in the EnvCache (e.g. 'samtools=1.21|linux-64|
+    none') to source the HPC delivery + digests. Writes env_reports/{name}.GUIDE.md
+    when write=True.
+    """
+    s = spec or (_pipeline_state.get_draft(pipeline_id) if pipeline_id else None)
+    if not s:
+        return {"success": False, "error": "provide pipeline_id (with a draft) or a spec dict"}
+    fr = _env_cache.lookup(freeze_request_key) if freeze_request_key else None
+    md = _user_guide.render_user_guide(s, freeze_record=fr)
+    result = {
+        "success": True,
+        "markdown": md,
+        "commands_shown": len(_user_guide.executed_commands(s)),
+        "env_pinned": bool(fr),
+    }
+    if write:
+        out = _env_mgr.project_root / "env_reports" / f"{s.get('pipeline_name','pipeline')}.GUIDE.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(md)
+        result["path"] = str(out)
+    return result
+
 
 @mcp.tool()
 def save_pipeline_report(spec: dict) -> dict:
