@@ -262,3 +262,14 @@ def test_route_synthesis_hands_off_to_agent():
 def test_source_only_still_resolves_to_source_unit():
     # back-compat: when ONLY source is offered (synthesis absent), source is chosen.
     assert resolver.rank_decision({"source": {"available": True}})["chosen"] == "source"
+
+
+def test_probe_spack_live_advisory():
+    # Spack is ADVISORY (not a chosen build tier). Live: a real Spack package is
+    # detected, a nonsense one isn't. Network-guarded so it doesn't fail offline.
+    import pytest
+    hit = resolver.probe_spack("samtools")
+    miss = resolver.probe_spack("definitely-not-a-real-pkg-xyz-000")
+    if hit.get("available") is False and miss.get("available") is False:
+        pytest.skip("no network / spack-packages unreachable")
+    assert hit["available"] is True and miss["available"] is False

@@ -135,6 +135,20 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
     return {"available": False}
 
 
+def probe_spack(name: str, timeout: int = 12) -> dict[str, Any]:
+    """Is `name` a Spack builtin package (the HPC from-source registry, ~thousands
+    of recipes)? Checks the package recipe exists via raw.githubusercontent (no Spack
+    install, and not the rate-limited GitHub API). Spack names are lowercase; C/C++/
+    Fortran tools usually match the bare name (py-/r- prefixes exist but aren't probed
+    here). ADVISORY for now — see _TIER_RATIONALE note: the buildable Spack tier
+    needs slim-runtime relocation work before it can be a CHOSEN build tier."""
+    # Spack v1.0 (2025) split builtin recipes into the spack/spack-packages repo:
+    # repos/spack_repo/builtin/packages/<name>/package.py
+    url = (f"https://raw.githubusercontent.com/spack/spack-packages/develop/"
+           f"repos/spack_repo/builtin/packages/{name.lower()}/package.py")
+    return {"available": _head_ok(url, timeout), "package": name.lower()}
+
+
 def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     """For a github 'owner/repo': does it exist (→ source tier) and does its
     latest release carry downloadable assets (→ binary tier)?"""
@@ -456,12 +470,16 @@ def resolve(
     decision = rank_decision(availability, prefer=prefer)
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
+    # Spack is ADVISORY (not a chosen build tier yet): record that the tool ALSO has
+    # a Spack recipe so the operator knows the option exists, without claiming we can
+    # yet build it slim (the relocation work is pending — see _TIER_RATIONALE/probe).
     decision.update({
         "tool": tool,
         "version": version or None,
         "language": language or None,
         "github_repo": github_repo or None,
         "ambiguous": ambiguous,
+        "also_on_spack": probe_spack(tool, timeout).get("available", False),
         "probed": availability,
     })
     if ambiguous:
