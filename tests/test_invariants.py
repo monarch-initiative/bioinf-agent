@@ -2521,3 +2521,83 @@ def test_resolver_route_conda_binary_source_and_defers_pip_r():
         d = route({"chosen": tier, "tool": "x", "probed": {tier: {}}})
         assert d["kind"] == "defer" and d["tier"] == tier and d["reason"]
     assert route({"chosen": None, "tool": "x"})["kind"] == "defer"
+
+
+def test_install_command_jar_generator_self_contained():
+    """jar generator (C1): self-contained (JRE via apt only if java absent),
+    sha256-anchored, single-jar AND zip-distribution wrappers, honest evidence."""
+    from agent.skills import install_commands as ic
+    # single jar (Picard-style)
+    j = ic.jar("picard", "https://github.com/broadinstitute/picard/releases/download/3.1.1/picard.jar",
+               sha256="abc123")
+    assert j["tool"] == "picard" and j.get("engine_coupled", False) is False
+    assert "default-jre-headless" in j["command"] and "command -v java" in j["command"]
+    assert "sha256sum -c" in j["command"] and "abc123" in j["command"]
+    assert "exec java -Xmx4g -jar /opt/tools/picard/picard.jar" in j["command"]
+    assert j["evidence"] == "command -v picard && java -version"
+    # zip distribution (Exomiser-style) → locate the jar inside
+    z = ic.jar("exomiser", "https://x/exomiser-cli-14.0.0.zip", java_flags=["-Xmx8g"], wrapper="exomiser")
+    assert "unzip -o" in z["command"] and "find /opt/tools/exomiser -name '*.jar'" in z["command"]
+    assert "-Xmx8g" in z["command"]
+
+
+# ---------------------------------------------------------------------------
+# C3 — env_freeze: the container-native freeze translator (spec -> ContainerBuild).
+# Pure parts (install_method -> generator mapping + toolchain injection) tested with
+# network mocked; build_env_image's container drive is live-proven separately.
+# ---------------------------------------------------------------------------
+
+def test_env_freeze_maps_each_install_method_to_its_generator():
+    from agent.skills import env_freeze as ef
+    fake_la = lambda url, **k: {"found": True, "url": "https://x/tool-linux-x86_64.tar.gz"}
+    fake_sha = lambda url, **k: {"ok": True, "sha256": "deadbeef"}
+    # binary → release_binary with the resolved linux asset + sha
+    b = ef._map_install({"name": "mosdepth", "type": "binary",
+                         "install_method": {"binary_url": "https://x/mosdepth_darwin", "local_path": "/h/mosdepth"}},
+                        resolve_linux_asset=fake_la, sha256_of_url=fake_sha)
+    assert "spec" in b and b["spec"]["tool"] == "mosdepth" and "deadbeef" in b["spec"]["command"]
+    # jar → jar generator
+    j = ef._map_install({"name": "picard", "type": "jar", "install_method": {"source": "https://x/picard.jar"}},
+                        sha256_of_url=fake_sha)
+    assert j["spec"]["tool"] == "picard" and "-jar /opt/tools/picard/picard.jar" in j["spec"]["command"]
+    # source → source generator (needs build_command + bin_path)
+    s = ef._map_install({"name": "seqtk", "type": "source",
+                         "install_method": {"source": "https://github.com/lh3/seqtk", "commit_sha": "abc123",
+                                            "build_command": "make", "bin_path": "seqtk"}})
+    assert s["spec"]["tool"] == "seqtk" and "abc123" in s["spec"]["command"]
+    # cargo / go / perl → coupled generators
+    assert ef._map_install({"name": "rasusa", "type": "cargo",
+                            "install_method": {"crate": "rasusa", "version": "2.0.0"}})["spec"]["engine_coupled"]
+    assert ef._map_install({"name": "gofasta", "type": "go",
+                            "install_method": {"package": "github.com/x/gofasta"}})["spec"]["engine_coupled"]
+    assert ef._map_install({"name": "BioX", "type": "perl",
+                            "install_method": {"module": "JSON::XS"}})["spec"]["tool"] == "JSON::XS"
+    # non-replayable source (no build_command/bin_path) → error, not a silent pass
+    e = ef._map_install({"name": "x", "type": "source", "install_method": {"source": "https://x"}})
+    assert "error" in e and "not replayable" in e["error"]
+
+
+def test_env_freeze_injects_engine_toolchains_for_coupled_tiers():
+    """plan_conda adds rust/go/perl(+compilers) to the conda layer when those tiers
+    are present — the container-native replacement for the host rustup/go-tarball/
+    conda-builddeps emitters. Order-stable, deduped."""
+    from agent.skills.env_freeze import plan_conda
+    non_conda = [{"type": "cargo"}, {"type": "go"}, {"type": "perl"}, {"type": "binary"}]
+    out = plan_conda(["samtools=1.21"], non_conda)
+    assert out[0] == "samtools=1.21"
+    assert set(out[1:]) == {"rust", "go", "perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"}
+    # dedup: a toolchain already declared isn't doubled
+    assert plan_conda(["rust"], [{"type": "cargo"}]) == ["rust"]
+    # no coupled tiers → unchanged
+    assert plan_conda(["bwa=0.7.18"], [{"type": "binary"}]) == ["bwa=0.7.18"]
+
+
+def test_env_freeze_build_refuses_nonreplayable_before_building(monkeypatch):
+    """build_env_image fails on a non-replayable record BEFORE spinning a container."""
+    from agent.skills import env_freeze as ef
+    spec = {"install_steps": [{"installed_packages": [
+        {"name": "x", "install_method": {"type": "source", "source": "https://x"}}]}]}
+    # EnvBuild must never be constructed/run on a map failure
+    monkeypatch.setattr(ef, "EnvBuild", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not build")))
+    r = ef.build_env_image(spec, name="demo")
+    assert r["success"] is False and r["stage"] == "map_install"

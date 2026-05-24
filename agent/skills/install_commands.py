@@ -57,6 +57,45 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
     return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)"}
 
 
+def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | None = None,
+        wrapper: str = "", evidence: str = "") -> dict[str, Any]:
+    """Java tool (SELF-CONTAINED): ensure a JRE is on PATH (apt default-jre-headless,
+    only if `java` is absent — so N jars don't re-apt), download the jar (arch-
+    independent bytecode), optional sha256 verify, then write a `java -jar` wrapper
+    on PATH. A single-.jar URL (Picard/GATK) and a .zip distribution (Exomiser; the
+    jar is auto-located) are both handled. The JRE comes from apt (base PATH), NOT
+    the engine, so a jar wrapper runs without `pixi run` — locus-clean, no engine
+    coupling. Default evidence proves the wrapper is installed AND the JRE runs; the
+    jar's actual execution is proven at workflow-run time (run_step_in_container)."""
+    wrap = wrapper or name
+    flags = " ".join(java_flags or ["-Xmx4g"])
+    asset = jar_url.rsplit("/", 1)[-1] or f"{name}.jar"
+    dest = f"{_TOOLS}/{name}"
+    parts = [
+        'command -v java >/dev/null 2>&1 || { apt-get update && '
+        'apt-get install -y --no-install-recommends default-jre-headless && '
+        'rm -rf /var/lib/apt/lists/*; }',
+        f"mkdir -p {dest}",
+        f"curl -fsSL -o {dest}/{asset} {shlex.quote(jar_url)}",
+    ]
+    if sha256:
+        parts.append(f'echo "{sha256.lower()}  {dest}/{asset}" | sha256sum -c -')
+    if asset.lower().endswith(".zip"):
+        parts += [
+            f"unzip -o {dest}/{asset} -d {dest}",
+            f"JAR=\"$(find {dest} -name '*.jar' | grep -i {shlex.quote(name)} | head -n1)\"",
+            f'JAR="${{JAR:-$(find {dest} -name \'*.jar\' | head -n1)}}"', 'test -n "$JAR"',
+            f"printf '#!/bin/sh\\nexec java {flags} -jar %s \"$@\"\\n' \"$JAR\" > /usr/local/bin/{wrap}",
+        ]
+    else:
+        parts.append(
+            f"printf '#!/bin/sh\\nexec java {flags} -jar {dest}/{asset} \"$@\"\\n' > /usr/local/bin/{wrap}")
+    parts.append(f"chmod +x /usr/local/bin/{wrap}")
+    cmd = "set -eux; " + "; ".join(parts)
+    ev = evidence or f"command -v {wrap} && java -version"
+    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (java jar)"}
+
+
 def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "make",
            bin_path: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
     """Git-source tool built with the apt C toolchain: clone → checkout pinned ref
@@ -112,10 +151,18 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
     first). Both install AND the `perl -M{module} -e1` load run via engine.run(),
     since the module lives in the engine's perl. PREFER conda when the module is
     packaged (perl-* on bioconda) — this is the unpackaged-residue fallback.
-    build_env (e.g. HTSLIB_DIR=$CONDA_PREFIX) handles XS link hints."""
+    build_env (e.g. HTSLIB_DIR=$CONDA_PREFIX) handles XS link hints.
+
+    XS-against-conda-perl hardening (C2): conda perl (5.32) still #includes
+    <xlocale.h>, which modern glibc folded into <locale.h> — so we shim it in the
+    engine perl's include dir BEFORE cpanm compiles. $CONDA_PREFIX resolves under
+    engine.run() (the env is active), and the conda c-/cxx-compiler (declared in the
+    env) gives XS perl's OWN toolchain (the system gcc has the wrong sysroot). The
+    shim is harmless for pure-perl modules (an unused header)."""
     target = distribution or module
     pre = f"{build_env} " if build_env.strip() else ""
-    return {"command": f"{pre}cpanm {cpanm_flags} {shlex.quote(target)}",
+    shim = 'printf "#include <locale.h>\\n" > "$CONDA_PREFIX/include/xlocale.h" 2>/dev/null || true'
+    return {"command": f"{shim}; {pre}cpanm {cpanm_flags} {shlex.quote(target)}",
             "evidence": evidence or f"perl -M{module} -e1", "tool": module,
             "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True}
 
