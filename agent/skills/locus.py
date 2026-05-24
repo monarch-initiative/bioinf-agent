@@ -81,19 +81,26 @@ def _detect_emulator() -> str:
 def _emulation_advisory(emulator: str) -> str:
     host = _platform.system()
     apple_silicon = host == "Darwin" and _platform.machine() in ("arm64", "aarch64")
-    floor = " Resource numbers (I7) are not authoritative under emulation — run on a native amd64 host for real timings."
-    if emulator == "rosetta":
-        return "amd64 is emulated via Rosetta (fast, near-native)." + floor
+    # Rosetta-class emulation is near-native for MOST work, but specific workloads —
+    # notably heavy compute-at-import like scipy.stats (measured ~100x slower under
+    # Rosetta than native arm64) — can be pathologically slow. So a slow or
+    # timed-out validation under emulation is INCONCLUSIVE, not a failure: the tool
+    # may be perfectly healthy on the native ship arch. I7 timings aren't real here.
+    caveat = (" Most work runs near-native, but some operations (e.g. heavy scientific "
+              "imports such as scipy.stats) can be far slower than native — a slow or "
+              "timed-out validation under emulation is INCONCLUSIVE, not a failure. I7 "
+              "resource numbers are not authoritative; use a native amd64 host for "
+              "authoritative validation and real timings.")
     if emulator == "qemu" and apple_silicon:
         return ("amd64 is emulated via qemu (slow). Enable 'Use Rosetta for x86/amd64 "
-                "emulation' in Docker Desktop → Settings → General for much faster builds." + floor)
+                "emulation' in Docker Desktop → Settings → General." + caveat)
+    if emulator == "rosetta":
+        return "amd64 is emulated via Rosetta." + caveat
     if apple_silicon:
-        # Docker Desktop ≥4 defaults amd64 emulation to Rosetta (fast) on Apple
-        # Silicon, so this is normal and usually fine — do NOT falsely nag to flip a
-        # switch that's already on. Only the I7 caveat is load-bearing.
-        return ("amd64 is emulated on Apple Silicon (Docker Desktop defaults this to Rosetta, "
-                "which is fast)." + floor)
-    return "the target platform is emulated on this host." + floor
+        # Docker Desktop ≥4 defaults amd64 emulation to Rosetta on Apple Silicon, so
+        # this is normal — do NOT falsely nag to flip a switch that's already on.
+        return "amd64 is emulated on Apple Silicon (Docker Desktop defaults to Rosetta)." + caveat
+    return "the target platform is emulated on this host." + caveat
 
 
 def detect_locus(platform: str = "linux/amd64") -> dict[str, Any]:
