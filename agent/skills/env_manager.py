@@ -580,6 +580,7 @@ class EnvManager:
         ref: str = "",
         build_command: str = "",
         verify_command: str = "",
+        bin_path: str = "",
     ) -> dict[str, Any]:
         """Vendor a git repository as a source-installed tool, end-to-end.
 
@@ -654,6 +655,25 @@ class EnvManager:
                         "stderr": (build.get("stderr") or "")[-500:],
                         "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
 
+        # If the build produces an executable, expose it on PATH via a wrapper —
+        # gives the source tool the same launch contract as binary/jar (and is
+        # what freeze replays in-container). Omit for run-by-path script repos.
+        wrapper_path = ""
+        if bin_path:
+            built = share_dir / bin_path
+            if not built.is_file():
+                return {"success": False, "error": f"bin_path not found after build: {built}",
+                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+            import stat as _stat
+            built.chmod(built.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+            bin_dir = env_path / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            wrapper = bin_dir / tool_name
+            wrapper.write_text(f"#!/usr/bin/env bash\nexec {shlex.quote(str(built))} \"$@\"\n")
+            wrapper.chmod(0o755)
+            wrapper_path = str(wrapper)
+            log.append(f"wrapper written: {wrapper}")
+
         # Verify anchor. Default: the rev-parse we already ran proves the exact
         # pinned commit is on disk. A caller-supplied verify_command (e.g. a
         # python import smoke or `--help`) runs in the env at the clone dir.
@@ -676,6 +696,9 @@ class EnvManager:
             "commit_sha":     commit_sha,
             "repo_url":       repo_url,
             "ref":            ref or "HEAD",
+            "build_command":  build_command,
+            "bin_path":       bin_path,
+            "wrapper_path":   wrapper_path,
             "verify_command": verify_command,
             "verify_output":  verify_output,
             "log":            log,

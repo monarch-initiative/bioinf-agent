@@ -263,6 +263,7 @@ def install_git_repo(
     ref: str = "",
     build_command: str = "",
     verify_command: str = "",
+    bin_path: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -282,9 +283,14 @@ def install_git_repo(
     PackageRecord satisfies I2. The clone path + commit_sha are re-checked at
     finalize by I11 (source_install_present).
 
+    `bin_path` (relative path to the built executable in the clone, e.g.
+    "seqtk") makes a PATH wrapper at {env}/bin/{tool_name} and is recorded with
+    build_command so freeze can REPLAY the build in the ship image. Omit for
+    run-by-path script repos.
+
     Pin `ref` to a tag or commit for reproducibility — a bare default branch
     drifts. Returns: {success, clone_path, commit_sha, repo_url, ref,
-    verify_command, verify_output, log}.
+    build_command, bin_path, wrapper_path, verify_command, verify_output, log}.
     """
     result = _env_mgr.install_git_repo(
         env_name       = env_name,
@@ -293,6 +299,7 @@ def install_git_repo(
         ref            = ref,
         build_command  = build_command,
         verify_command = verify_command,
+        bin_path       = bin_path,
     )
     if pipeline_id:
         from urllib.parse import urlparse
@@ -304,6 +311,9 @@ def install_git_repo(
             "commit_sha": result.get("commit_sha"),
             "ref":        result.get("ref") or (ref or "HEAD"),
             "local_path": result.get("clone_path"),
+            # Recorded so freeze can REPLAY the build on the ship platform.
+            "build_command": build_command,
+            "bin_path":      bin_path,
         }
         ip_record = {
             "name":           tool_name,
@@ -1804,14 +1814,15 @@ def freeze(
         # unvalidated artifact, so refuse to adopt even if a biocontainer exists.
         if can_adopt:
             adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
-        unsupported = sorted({x["type"] for x in non_conda if x["type"] not in ("binary", "jar")})
+        unsupported = sorted({x["type"] for x in non_conda
+                              if x["type"] not in ("binary", "jar", "source")})
         if unsupported:
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "reason": f"recipe build does not yet replay install types {unsupported} on the "
-                              f"ship platform; supported today: conda + binary + jar. (Build on a "
-                              f"linux/amd64 host, or add a replay path for these tiers.)",
+                              f"ship platform; supported today: conda + binary + jar + source. (Build "
+                              f"on a linux/amd64 host, or add a replay path for these tiers.)",
                     "non_conda": non_conda}
-        binaries, jars = [], []
+        binaries, jars, sources = [], [], []
         for x in non_conda:
             im = x["install_method"]
             if x["type"] == "jar":
@@ -1826,6 +1837,19 @@ def freeze(
                              "wrapper": x["name"], "sha256": jsha})
                 shipped_binaries.append({"name": x["name"], "platform": "noarch",
                                          "url": jar_url, "sha256": jsha})
+                continue
+            if x["type"] == "source":
+                if not im.get("build_command") or not im.get("bin_path"):
+                    return {"success": False, "stage": "recipe_build", "request_key": rkey,
+                            "reason": f"source tool '{x['name']}' is not replayable: install_method "
+                                      f"needs build_command + bin_path (re-run install_git_repo with "
+                                      f"bin_path so freeze can rebuild it in the image)."}
+                sources.append({"name": x["name"], "repo_url": im.get("source"),
+                                "commit_sha": im.get("commit_sha"), "ref": im.get("ref"),
+                                "build_command": im.get("build_command"),
+                                "bin_path": im.get("bin_path"), "wrapper": x["name"]})
+                shipped_binaries.append({"name": x["name"], "platform": platform,
+                                         "url": im.get("source"), "commit_sha": im.get("commit_sha")})
                 continue
             # binary tier
             la = _resolver.resolve_linux_asset(im.get("binary_url") or "")
@@ -1849,8 +1873,12 @@ def freeze(
                  f"{b['wrapper']} --help 2>&1" for b in binaries]
         if jars:
             smoke.append("java -version")  # proves the JRE; the in-container run proves each jar
+        # source builds: presence+executable (compilation already proved the arch;
+        # the in-container run proves real execution).
+        smoke += [f"test -x /usr/local/bin/{s['wrapper']}" for s in sources]
         rb = _docker.build_recipe(name, pipeline_description or name, conda_env_yml=conda_yml,
-                                  binaries=binaries, jars=jars, version=version, smoke_commands=smoke)
+                                  binaries=binaries, jars=jars, sources=sources,
+                                  version=version, smoke_commands=smoke)
         if not rb.get("success"):
             return {"success": False, "stage": "recipe_build", "request_key": rkey,
                     "adopt_attempt": adopt, "build": rb}

@@ -1858,6 +1858,28 @@ def test_recipe_dockerfile_replays_jar_with_jre():
     assert "default-jre-headless" not in df_conda and "conda env create" in df_conda
 
 
+def test_recipe_dockerfile_rebuilds_source_at_pinned_commit():
+    """The SOURCE tier: add a build toolchain, clone the repo, checkout the pinned
+    commit, run build_command, symlink the built executable onto PATH. build_apt
+    extras are appended."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.docker_builder import DockerBuilder
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    db = DockerBuilder(cfg)
+    s = {"name": "seqtk", "repo_url": "https://github.com/lh3/seqtk",
+         "commit_sha": "deadbeefcafe1234", "build_command": "make", "bin_path": "seqtk",
+         "wrapper": "seqtk", "build_apt": "libdeflate-dev"}
+    df = db._recipe_dockerfile("seqtk", "subseq", conda_env_yml="", binaries=[], jars=[], sources=[s])
+    assert "build-essential" in df and "zlib1g-dev" in df      # toolchain
+    assert "libdeflate-dev" in df                              # per-source extra
+    assert "git clone https://github.com/lh3/seqtk /opt/tools/seqtk/src" in df
+    assert "git checkout deadbeefcafe1234" in df               # pinned commit
+    assert "make;" in df                                       # build_command
+    assert "ln -sf /opt/tools/seqtk/src/seqtk /usr/local/bin/seqtk" in df
+    assert "test -f /opt/tools/seqtk/src/seqtk" in df
+
+
 def _selfverify_workflow(with_test_data: bool) -> dict:
     step = {"step": 1, "returncode": 0,
             "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",
