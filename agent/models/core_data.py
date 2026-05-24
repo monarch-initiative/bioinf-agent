@@ -1036,6 +1036,44 @@ class DockerBuild(BaseModel):
     runtime_data_env:     Optional[str] = None
 
 
+class WorkflowSpec(BaseModel):
+    """Layer 2 — a workflow that runs on a FROZEN environment, pinned by digest.
+
+    The two-layer split: an ENVIRONMENT is solved once (Layer 1 — finalize +
+    freeze + EnvCache, content-addressed) and a WORKFLOW *consumes* it. The
+    workflow is the run-many, per-experiment artifact; pinning the env by
+    content_digest is the wall that lets the biology layer ignore install
+    concerns entirely. Where PipelineSpec embeds the env build (packages,
+    install_steps, docker), a WorkflowSpec only REFERENCES the env by digest and
+    carries the validated run + usage contract + the rendered user guide + the
+    driver env (the env that runs the workflow — the gap nf-core/Snakemake
+    leave open).
+    """
+    model_config = ConfigDict(extra="allow")
+
+    workflow_name:      str
+    description:        str
+    created_at:         str
+    # The environment this workflow runs on — pinned by digest (Layer-1 artifact).
+    env_request_key:    str
+    env_content_digest: str
+    env_image:          str                       # adopt/built shipping handle (by digest)
+    env_hpc_delivery:   dict = {}                  # how to get the env onto the HPC
+    # The validated run.
+    pipeline_status:    PipelineStatus = "in_progress"
+    usage_verified:     bool = False
+    usage:              Optional[UsageTemplate] = None
+    pipeline_steps:     list[PipelineStep] = []
+    # Driver env: what runs the workflow (records the orchestrator's env, too).
+    driver_env:         dict = {}                  # {conda_env, python_version, key_packages}
+    user_guide:         Optional[str] = None       # rendered markdown (from the passing run)
+    user_guide_path:    Optional[str] = None
+
+    def to_yaml(self) -> str:
+        return yaml.dump(self.model_dump(exclude_none=True),
+                         default_flow_style=False, sort_keys=False)
+
+
 class PipelineSpec(BaseModel):
     """
     Complete record of an installed, validated pipeline.

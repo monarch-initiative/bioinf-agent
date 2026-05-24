@@ -144,6 +144,35 @@ def save_pipeline_spec(spec: dict, config: dict, env_manager: Optional[Any] = No
     }
 
 
+def write_workflow_spec(workflow: dict, config: dict) -> dict:
+    """Validate + write a Layer-2 WorkflowSpec as YAML, plus its rendered user
+    guide alongside. The guide markdown is written to its own .GUIDE.md (not
+    inlined in the yaml) and its path recorded on the spec."""
+    from agent.models.core_data import WorkflowSpec
+
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    out_dir = project_root / config["paths"]["pipelines_dir"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        wf = WorkflowSpec.model_validate(workflow)
+    except Exception as e:
+        return {"error": f"WorkflowSpec validation failed: {e}"}
+
+    name = wf.workflow_name
+    yaml_path = out_dir / f"{name}.workflow.yaml"
+    guide_path = out_dir / f"{name}.GUIDE.md"
+    data = wf.model_dump(exclude_none=True)
+    guide_md = data.pop("user_guide", None)
+    if guide_md:
+        guide_path.write_text(guide_md)
+        data["user_guide_path"] = str(guide_path)
+    yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    return {
+        "workflow_spec_path": str(yaml_path),
+        "user_guide_path": str(guide_path) if guide_md else None,
+    }
+
+
 def _normalize_pkg_name(name: str) -> str:
     """Canonical key for comparing package / pipeline names across naming variants.
 
@@ -826,6 +855,21 @@ def check_invariants(spec: dict) -> list[dict]:
     violations.extend(_check_license(spec))
 
     return violations
+
+
+# Layer-2 (workflow) invariant subset. A WorkflowSpec consumes a frozen env by
+# digest, so only the RUN-side invariants apply — the env-build invariants
+# (I1/I2/I5/I9/I10/I11/I12/I13/I14) are Layer 1's (finalize's) concern.
+_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I6", "I7", "I8"}
+
+
+def check_workflow_invariants(spec: dict) -> list[dict]:
+    """Run only the workflow-relevant invariants (I0 shape · I3 validated
+    outputs · I6 paths/placeholders · I7 resource_usage · I8 input provenance).
+    Pass the FULL draft so I8 sees the complete universe of prior outputs +
+    external sources, but only the run-side violations are returned."""
+    return [v for v in check_invariants(spec)
+            if v.get("invariant", "").split(".")[0] in _WORKFLOW_INVARIANT_TIERS]
 
 
 def _check_accelerator(spec: dict) -> list[dict]:

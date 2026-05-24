@@ -1735,6 +1735,85 @@ def generate_user_guide(
 
 
 @mcp.tool()
+def seal_workflow(
+    pipeline_id: str,
+    freeze_request_key: str,
+    workflow_name: str = "",
+    description: str = "",
+    write: bool = True,
+) -> dict:
+    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, PIN the
+    frozen environment by digest, render the user guide, write the WorkflowSpec.
+
+    The two-layer split. Layer 1 (ENVIRONMENT) = finalize + freeze: a
+    content-addressed, reusable artifact. Layer 2 (WORKFLOW) CONSUMES it. Call
+    freeze() first to produce the env artifact, then seal_workflow with its
+    request_key to pin the env by digest — the wall that lets the workflow layer
+    ignore install concerns.
+
+    Refuses to write if any workflow invariant fails (I0 shape · I3 validated
+    outputs · I6 paths · I7 resources · I8 input provenance); the env-build
+    invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml +
+    {workflow_name}.GUIDE.md (the guide rendered from the passing run).
+    """
+    draft = _pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"success": False, "error": f"unknown pipeline_id: {pipeline_id}"}
+    fr = _env_cache.lookup(freeze_request_key)
+    if not fr:
+        return {"success": False,
+                "error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
+
+    from agent.skills.spec_writer import check_workflow_invariants, write_workflow_spec
+    violations = check_workflow_invariants(draft)
+    if violations:
+        return {"success": False, "stage": "workflow_invariants",
+                "violations": violations, "violation_count": len(violations)}
+
+    guide_md = _user_guide.render_user_guide(draft, freeze_record=fr)
+    key_packages: dict = {}
+    for st in draft.get("install_steps", []) or []:
+        for ip in (st.get("installed_packages") or []):
+            if ip.get("name"):
+                key_packages[ip["name"]] = ip.get("version", "?")
+
+    from datetime import datetime, timezone
+    wname = workflow_name or f"{draft.get('pipeline_name', 'workflow')}_workflow"
+    wf = {
+        "workflow_name":      wname,
+        "description":        description or draft.get("description", ""),
+        "created_at":         datetime.now(timezone.utc).isoformat(),
+        "env_request_key":    fr.get("request_key", freeze_request_key),
+        "env_content_digest": fr.get("content_digest", ""),
+        "env_image":          fr.get("image", ""),
+        "env_hpc_delivery":   fr.get("hpc_delivery", {}),
+        "pipeline_status":    draft.get("pipeline_status", "in_progress"),
+        "usage_verified":     draft.get("usage_verified", False),
+        "usage":              draft.get("usage"),
+        "pipeline_steps":     draft.get("pipeline_steps", []),
+        "driver_env":         {"conda_env": draft.get("conda_env"),
+                               "python_version": draft.get("python_version"),
+                               "key_packages": key_packages},
+        "user_guide":         guide_md,
+    }
+    result = {
+        "success": True,
+        "workflow_name": wname,
+        "env_pinned_digest": fr.get("content_digest"),
+        "env_image": fr.get("image"),
+        "commands_shown": len(_user_guide.executed_commands(draft)),
+    }
+    if write:
+        out = write_workflow_spec(wf, config)
+        if out.get("error"):
+            return {"success": False, **out}
+        result.update(out)
+    else:
+        result["workflow"] = wf
+    return result
+
+
+@mcp.tool()
 def save_pipeline_report(spec: dict) -> dict:
     """Validate and write the pipeline spec as YAML + HTML report to env_reports/.
 

@@ -1617,3 +1617,47 @@ def test_user_guide_derives_packages_from_install_steps_on_draft():
     md = render_user_guide(draft)
     assert "conda env: `bioinf_x`" in md
     assert "samtools=1.21" in md and "bwa=0.7.17" in md
+
+
+# ---------------------------------------------------------------------------
+# Re-spine: two-spec split — Layer 2 WorkflowSpec + workflow-invariant subset
+# ---------------------------------------------------------------------------
+
+def test_check_workflow_invariants_filters_to_run_side():
+    """The workflow check enforces ONLY the run-side invariants (I0/I3/I6/I7/I8)
+    — env-build violations (e.g. I2 unverified package) belong to Layer 1 and
+    must NOT block a workflow seal."""
+    from agent.skills.spec_writer import check_workflow_invariants
+    spec = {
+        "pipeline_name": "t",
+        # I2 env-side violation: package with no verify_output
+        "packages": [{"name": "tool"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        # I3 run-side violation: rc=0 step, output, no validation
+        "pipeline_steps": [{"step": 1, "returncode": 0,
+                            "detected_outputs": ["/abs/o.txt"]}],
+    }
+    inv = check_workflow_invariants(spec)
+    tiers = {v["invariant"].split(".")[0] for v in inv}
+    assert "I3" in tiers, f"workflow check must surface I3; got {inv}"
+    assert "I2" not in tiers, f"workflow check must NOT include env-side I2; got {inv}"
+
+
+def test_workflow_spec_pins_env_by_digest():
+    """A WorkflowSpec references its environment by content digest (the Layer-1
+    artifact) rather than embedding the env build."""
+    from agent.models.core_data import WorkflowSpec
+    wf = WorkflowSpec(
+        workflow_name="samtools_workflow", description="sort bams",
+        created_at="2026-05-23T00:00:00",
+        env_request_key="samtools=1.21|linux-64|none",
+        env_content_digest="sha256:abc",
+        env_image="quay.io/biocontainers/samtools@sha256:d158",
+        pipeline_status="fully_validated", usage_verified=True,
+        driver_env={"conda_env": "bioinf_samtools", "python_version": "3.11"},
+    )
+    assert wf.env_content_digest == "sha256:abc"
+    assert "samtools@sha256" in wf.env_image
+    # env build fields (packages/install_steps) are NOT part of the workflow spec
+    assert not hasattr(wf, "packages") or "packages" not in wf.model_dump()
+    assert "env_content_digest" in wf.to_yaml()
