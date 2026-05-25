@@ -2637,7 +2637,7 @@ def test_env_freeze_maps_pip_and_r_install():
     assert ef.plan_conda([], [{"type": "pip"}]) == []
 
 
-def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch):
+def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_path):
     """C4 wiring (the gap that was py_compile-only): the re-pointed freeze, on a draft
     with a non-conda install, takes the container-native branch — calls
     env_freeze.build_env_image with conda_deps from requested_conda_specs + the docker
@@ -2670,6 +2670,7 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch):
                 "content_digest": "sha256:cd",
                 "longtail_steps": [{"purpose": "seqkit (release binary)", "command": "set -eux; curl ..."}]}
     monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
+    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
 
     res = m.freeze("bioinf_x", ["samtools=1.21", "seqkit"], platform="linux-64", pipeline_id="p1")
 
@@ -2762,7 +2763,7 @@ def test_container_native_multistage_runtime_provisions_jar_jre():
     assert "default-jre-headless" not in df2
 
 
-def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch):
+def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch, tmp_path):
     """Phase E (E1): freeze no longer uses conda-pack. A pure-conda env (no draft, no
     biocontainer) builds container-native — conda_deps derived from the requested
     tools — cross-arch with NO refusal."""
@@ -2778,6 +2779,7 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch)
     monkeypatch.setattr(m._env_freeze, "build_env_image",
                         lambda spec, **kw: captured.update(kw) or {
                             "success": True, "image": "x:1", "image_digest": "sha256:d", "longtail_steps": []})
+    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
     res = m.freeze("bioinf_x", ["samtools=1.21", "bcftools=1.21"], platform="linux/amd64", pipeline_id="")
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
     assert captured["conda_deps"] == ["samtools=1.21", "bcftools=1.21"]   # from tools (no draft)
