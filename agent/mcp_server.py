@@ -49,6 +49,7 @@ from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
 from agent.skills import env_report as _env_report
+from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
@@ -2146,6 +2147,11 @@ def freeze(
     # report rendered from them can't be faked. Absent on the adopt path.
     record["name"] = name
     record["requested_tools"] = [n for n, _ in parsed]
+    # DECLARED POLICY (submitter-asserted, NOT runtime-verified — the contract only
+    # checks them for consistency, I12/I13). Recorded so the report can show them in
+    # a clearly-separated, honestly-labelled section.
+    record["licenses"] = list(licenses or [])
+    record["accelerator"] = draft.get("accelerator") if isinstance(draft, dict) else None
     if mode == "build":
         record["engine"] = br.get("engine", "none")
         record["conda_specs"] = br.get("conda_specs", [])
@@ -2156,11 +2162,17 @@ def freeze(
     _env_cache.register(rkey, record)
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):
-    # the human env report + a standard in-toto/SLSA provenance attestation. Both are
-    # views — never block a good freeze on a render error.
-    report_path = attestation_path = None
+    # the human env report (HTML headline + Markdown for diff/parse) + a standard
+    # in-toto/SLSA provenance attestation. Views — never block a good freeze on a
+    # render error.
+    report_path = report_html_path = attestation_path = None
     reports_dir = _env_mgr.project_root / "env_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (reports_dir / f"{name}.ENV.html").write_text(_env_report_html.render_env_report_html(record))
+        report_html_path = str(reports_dir / f"{name}.ENV.html")
+    except Exception as e:
+        report_html_path = f"(html report render failed: {e!r})"
     try:
         (reports_dir / f"{name}.ENV.md").write_text(_env_report.render_env_report(record))
         report_path = str(reports_dir / f"{name}.ENV.md")
@@ -2185,6 +2197,7 @@ def freeze(
             recipe_path = f"(recipe render failed: {e!r})"
 
     out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    out["env_report_html"] = report_html_path
     out["env_report"] = report_path
     out["attestation"] = attestation_path
     out["env_recipe"] = recipe_path

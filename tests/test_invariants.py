@@ -1724,6 +1724,11 @@ def test_envbuild_orchestrator_plan_and_content_digest():
     assert d1.startswith("sha256:") and d1 == eb.content_digest()
     eb.cb.longtail = [{"command": "RUN y"}]
     assert eb.content_digest() != d1
+    # ...and sensitive to the BASE IMAGE digest (the OS foundation is in the anchor).
+    eb.cb.longtail = [{"command": "RUN x"}]
+    d_base = eb.content_digest()
+    eb.cb.base = "debian:bookworm-slim@sha256:" + "00" * 32
+    assert eb.content_digest() != d_base
 
 
 def test_container_native_engine_optional_for_longtail_only():
@@ -2238,6 +2243,81 @@ def test_env_report_renders_for_adopted_image_without_crashing():
                             "validation_locus": "adopted", "requested_tools": ["x"]})
     assert "adopted" in md.lower()
     assert "## Requested tools (1)" in md
+
+
+def test_env_report_md_adopt_footer_does_not_overclaim():
+    """The .md footer must NOT claim VALIDATED_IN_IMAGE for an adopted image (it was
+    never validated in-locus) — it asserts ADOPTED_BY_DIGEST instead."""
+    from agent.skills.env_report import render_env_report
+    adopt = render_env_report({"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+                               "mode": "adopt", "validation_locus": "adopted",
+                               "requested_tools": ["x"]})
+    assert "ADOPTED_BY_DIGEST" in adopt and "VALIDATED_IN_IMAGE" not in adopt
+    # a real build still makes the strong claim
+    assert "VALIDATED_IN_IMAGE" in render_env_report(_sample_record())
+
+
+# ---------------------------------------------------------------------------
+# The HTML env report — the human-facing deliverable. Pure over the record,
+# escaped, deterministic, mode-honest, verified-vs-declared separation.
+# ---------------------------------------------------------------------------
+
+def test_env_report_html_deterministic_and_contains_verified_facts():
+    from agent.skills.env_report_html import render_env_report_html
+    rec = _sample_record()
+    h1 = render_env_report_html(rec)
+    assert h1 == render_env_report_html(rec)                  # deterministic (no clock read)
+    assert h1.startswith("<!DOCTYPE html>") and h1.rstrip().endswith("</html>")
+    assert "sha256:cd" in h1 and "sha256:img" in h1          # content + image digests
+    assert "samtools" in h1
+    assert "VALIDATED_IN_IMAGE" in h1                         # build-mode honesty footer
+    assert "command -v samtools" in h1                        # the actual in-image check shown
+    assert "badge ok" in h1                                   # the ✓ validated badge
+
+
+def test_env_report_html_escapes_injection():
+    """No record value can inject markup — a hostile package name is escaped."""
+    from agent.skills.env_report_html import render_env_report_html
+    rec = dict(_sample_record())
+    rec["resolved_packages"] = [{"name": "evil<script>alert(1)</script>", "version": "1", "kind": "conda"}]
+    h = render_env_report_html(rec)
+    assert "<script>alert(1)</script>" not in h
+    assert "evil&lt;script&gt;" in h
+
+
+def test_env_report_html_adopt_mode_does_not_claim_validation():
+    from agent.skills.env_report_html import render_env_report_html
+    h = render_env_report_html({"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+                                "mode": "adopt", "validation_locus": "adopted",
+                                "requested_tools": ["x"]})
+    assert "ADOPTED_BY_DIGEST" in h and "VALIDATED_IN_IMAGE" not in h
+    assert "not built or validated in-locus" in h.lower()
+
+
+def test_env_report_html_separates_declared_policy_from_verified():
+    """gated/licenses/accelerator render in a DECLARED section explicitly labelled as
+    submitter assertions, never as runtime-verified facts."""
+    from agent.skills.env_report_html import render_env_report_html
+    rec = dict(_sample_record())
+    rec.update({"gated": True, "redistributable": False, "licenses": ["proprietary-EULA"],
+                "accelerator": {"type": "cuda", "toolkit_version": "12.4"}})
+    h = render_env_report_html(rec)
+    assert "Declared policy" in h
+    assert "caller assertion" in h.lower() or "submitter-declared" in h.lower()
+    assert "proprietary-EULA" in h and "cuda" in h
+
+
+def test_attestation_adopt_mode_does_not_claim_validated_in_image():
+    """The SLSA attestation for an adopted image must assert ADOPTED_BY_DIGEST, not a
+    VALIDATED_IN_IMAGE guarantee it never performed."""
+    from agent.skills.attestation import build_attestation
+    att = build_attestation({"image": "x@sha256:d", "image_digest": "sha256:d", "mode": "adopt"})
+    guarantees = att["predicate"]["buildDefinition"]["internalParameters"]["honesty_contract"]
+    assert "ADOPTED_BY_DIGEST" in guarantees and "VALIDATED_IN_IMAGE" not in guarantees
+    # a build still claims the full contract
+    bguar = build_attestation(_sample_record())["predicate"]["buildDefinition"][
+        "internalParameters"]["honesty_contract"]
+    assert "VALIDATED_IN_IMAGE" in bguar
 
 
 # ---------------------------------------------------------------------------

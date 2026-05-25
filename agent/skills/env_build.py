@@ -134,12 +134,23 @@ class EnvBuild:
     # -- the content address ---------------------------------------------
     def content_digest(self) -> str:
         """sha256 over what was actually GOT: the engine lock + the long-tail
-        commands + platform + engine. Identical requests → identical digest."""
+        commands + platform + engine + the digest-pinned BASE IMAGE. Identical
+        requests → identical digest.
+
+        `base` is the runtime FROM (BASE_IMAGE, pinned by @sha256) — the OS
+        foundation of the artifact. Including it binds the base layer to the anchor
+        (two builds on different bases no longer collide). NOT included: the apt
+        runtime libs (system_packages) — `apt-get update` pulls fresh lists from the
+        Debian mirror, so those versions can drift even from a pinned base and would
+        make the digest non-reproducible (verify-by-rebuild would spuriously fail).
+        They are captured in the SBOM (system_packages) as informational, and the
+        report states plainly they are not version-pinned."""
         parts = {
             "lock": self.lock_text,
             "longtail": sorted(s["command"] for s in self.cb.longtail),
             "platform": self.platform,
             "engine": self.cb.engine.name if (self.conda_specs or self.pip_specs) else "none",
+            "base": self.cb.base,
         }
         return _freeze.compute_content_digest(parts)
 

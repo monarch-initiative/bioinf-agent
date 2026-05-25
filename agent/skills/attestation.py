@@ -70,6 +70,16 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                   "passed": bool(v.get("passed"))}
                  for v in (r.get("verifications") or []) if isinstance(v, dict)]
 
+    # The honesty guarantees are MODE-DEPENDENT and must not over-claim: a
+    # container-native BUILD ran the contract (BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN);
+    # an ADOPTED public biocontainer is TRUSTED BY ITS PUBLISHED DIGEST — it is NOT
+    # built or validated in-locus, so claiming VALIDATED_IN_IMAGE (with an empty
+    # evidence list) would be a false provenance assertion.
+    if r.get("mode") == "adopt":
+        guarantees = ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+    else:
+        guarantees = ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+
     predicate = {
         "buildDefinition": {
             "buildType": BUILD_TYPE,
@@ -82,9 +92,10 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "engine": r.get("engine", ""),
                 "base_image": base_image,
                 "build_method": r.get("build_method", ""),
+                "mode": r.get("mode", ""),
                 "validation_locus": r.get("validation_locus", ""),
-                "honesty_contract": ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"],
-                "validated_in_image": validated,        # validated == shipped, per tool
+                "honesty_contract": guarantees,
+                "validated_in_image": validated,        # validated == shipped, per tool (build only)
                 "redistributable": r.get("redistributable", not r.get("gated")),
             },
             "resolvedDependencies": resolved,

@@ -230,17 +230,24 @@ def render_env_report(record: dict) -> str:
             L.append(f"- _{hpc['source_note']}_")
         L.append("")
 
-    # -- the honesty footer ----------------------------------------------
+    # -- the honesty footer (per-mode — never over-claim for an adopted image) ---
     L.append("## How this was verified")
     L.append("")
-    L.append("- **BUILT** — the image and its digest resolve in the Docker daemon (every "
-             "install step's inline anchor — sha256 / git commit / baked bytes — passed, "
-             "else there would be no image).")
-    L.append("- **VALIDATED_IN_IMAGE** — every requested tool re-ran green via *plain exec* "
-             "inside the shipped image (the way `apptainer exec` runs it on HPC). "
-             "**Validated == shipped.**")
-    L.append("- **POLICY_CLEAN** — accelerator-honesty (I12) and the license firewall (I13) "
-             "passed.")
+    if r.get("mode") == "adopt":
+        L.append("- **ADOPTED_BY_DIGEST** — a public BioContainer pulled by its immutable manifest "
+                 "digest (above). Provenance is that digest; trust it as you trust the BioContainers "
+                 "project. It was NOT built or validated in-locus.")
+        L.append("- **POLICY_CLEAN** — accelerator-honesty (I12) and the license firewall (I13) "
+                 "passed.")
+    else:
+        L.append("- **BUILT** — the image and its digest resolve in the Docker daemon (every "
+                 "install step's inline anchor — sha256 / git commit / baked bytes — passed, "
+                 "else there would be no image).")
+        L.append("- **VALIDATED_IN_IMAGE** — every requested tool re-ran green via *plain exec* "
+                 "inside the shipped image (the way `apptainer exec` runs it on HPC). "
+                 "**Validated == shipped.**")
+        L.append("- **POLICY_CLEAN** — accelerator-honesty (I12) and the license firewall (I13) "
+                 "passed.")
     L.append(f"- **Validation locus** — {_locus_line(r.get('validation_locus',''))}.")
     L.append("- **Reproducibility** — the conda/PyPI layer is lock-pinned, the base image is "
              "digest-pinned, and release binaries are sha256-anchored. (System apt packages "
