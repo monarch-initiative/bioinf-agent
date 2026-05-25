@@ -1,80 +1,23 @@
 """
 Invariant regression tests.
 
-Every finalized spec in env_reports/ must satisfy the honesty rules defined
-in agent/skills/spec_writer.check_invariants. CI catches the case where a
-code change silently allows a faked or partial spec through finalize.
+Constructed-spec regression tests for the honesty checkers
+(agent/skills/spec_writer.check_invariants / check_workflow_invariants) plus the
+freeze/resolver helpers. Each test builds its own spec in-test, so coverage is
+deterministic and CI-effective. These do NOT parametrize over runtime artifacts in
+env_reports/ (which is gitignored — empty in CI, and post-respine the old `*.yaml`
+glob matched unrelated schemas like *.recipe.yaml locally); the meaningful coverage
+(positive + negative for both checkers) lives in the constructed cases below, e.g.
+test_workflow_spec_self_verifies_only_with_its_sources.
 
 Run: pytest tests/test_invariants.py -v
 """
 
 from __future__ import annotations
 
-import glob
-from pathlib import Path
-
 import pytest
-import yaml
 
 from agent.skills.spec_writer import check_invariants
-
-
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-ENV_REPORTS  = PROJECT_ROOT / "env_reports"
-
-
-def _finalized_specs() -> list[Path]:
-    """Layer-1 env specs only. Drafts aren't finalized; .workflow.yaml is a
-    Layer-2 artifact validated by its own (run-side) invariant subset below."""
-    if not ENV_REPORTS.exists():
-        return []
-    return sorted(
-        Path(p) for p in glob.glob(str(ENV_REPORTS / "*.yaml"))
-        if not p.endswith(".draft.yaml") and not p.endswith(".workflow.yaml")
-    )
-
-
-def _workflow_specs() -> list[Path]:
-    if not ENV_REPORTS.exists():
-        return []
-    return sorted(Path(p) for p in glob.glob(str(ENV_REPORTS / "*.workflow.yaml")))
-
-
-@pytest.mark.parametrize("spec_path", _finalized_specs(),
-                         ids=lambda p: p.name if isinstance(p, Path) else str(p))
-def test_spec_passes_invariants(spec_path: Path):
-    """Every finalized spec must pass all invariants.
-
-    A spec that fails this test means either:
-      (a) the spec was written before the invariant existed — re-finalize it
-      (b) a code change broke the gate that prevented faked specs from being
-          written. This is the regression we care about.
-    """
-    spec = yaml.safe_load(spec_path.read_text())
-    violations = check_invariants(spec)
-    if violations:
-        msg_lines = [f"{len(violations)} invariant violations in {spec_path.name}:"]
-        for v in violations[:10]:
-            msg_lines.append(f"  [{v['invariant']}] {v['message']}")
-        pytest.fail("\n".join(msg_lines))
-
-
-@pytest.mark.parametrize("spec_path", _workflow_specs(),
-                         ids=lambda p: p.name if isinstance(p, Path) else str(p))
-def test_workflow_spec_passes_invariants(spec_path: Path):
-    """A Layer-2 WorkflowSpec must pass its OWN run-side invariant subset
-    (I0/I3/I6/I7/I8) standalone — Layer-1 env-build invariants don't apply to it
-    (it references the env by digest, it doesn't embed the build). This is the
-    self-verifiability guarantee: a sealed workflow re-checks against the
-    artifact alone, not the draft it was sealed from."""
-    from agent.skills.spec_writer import check_workflow_invariants
-    spec = yaml.safe_load(spec_path.read_text())
-    violations = check_workflow_invariants(spec)
-    if violations:
-        msg_lines = [f"{len(violations)} workflow-invariant violations in {spec_path.name}:"]
-        for v in violations[:10]:
-            msg_lines.append(f"  [{v['invariant']}] {v['message']}")
-        pytest.fail("\n".join(msg_lines))
 
 
 def test_invariant_checker_catches_pipeline_step_without_outputs():
@@ -1161,6 +1104,38 @@ def test_content_digest_is_stable_and_sensitive():
     assert content_digest_from_spec(spec4) != d1
 
 
+def test_content_digest_from_spec_is_degenerate_on_a_draft():
+    """A LIVE draft has no packages[]/lock_sha256 (those are finalized-only), so
+    content_digest_from_spec collapses to ONE constant for any draft — which is why
+    the freeze record must NOT use it as the anchor. This guards the regression the
+    shakeout caught (4 distinct envs → identical record content_digest)."""
+    from agent.skills.freeze import content_digest_from_spec
+    draft_a = {"install_steps": [{"tool": "conda", "subcommand": "install",
+                                  "installed_packages": [{"name": "pyfaidx"}]}]}
+    draft_b = {"install_steps": [{"tool": "git", "subcommand": "synthesize",
+                                  "installed_packages": [{"name": "bwa"}]}]}
+    # Two clearly-different envs hash the SAME from a draft → degenerate (the bug).
+    assert content_digest_from_spec(draft_a) == content_digest_from_spec(draft_b)
+
+
+def test_record_content_digest_picks_the_what_was_got_anchor():
+    """The freeze anchor by mode: EnvBuild digest for a build, biocontainer manifest
+    digest for an adopt, request hash only as a last resort. Distinct envs get
+    distinct anchors (no false content collision)."""
+    from agent.skills.freeze import record_content_digest
+    # build → the EnvBuild lock+longtail digest (the one in the recipe / verify).
+    assert record_content_digest("build", build_digest="sha256:BUILD",
+                                 adopt_digest="sha256:ADOPT", fallback="sha256:FB") == "sha256:BUILD"
+    # adopt → the biocontainer manifest digest.
+    assert record_content_digest("adopt", adopt_digest="sha256:ADOPT",
+                                 fallback="sha256:FB") == "sha256:ADOPT"
+    # missing mode-specific digest → fallback (never silently empty).
+    assert record_content_digest("build", build_digest="", fallback="sha256:FB") == "sha256:FB"
+    # two builds with different EnvBuild digests → different anchors (the fix).
+    assert (record_content_digest("build", build_digest="sha256:A")
+            != record_content_digest("build", build_digest="sha256:B"))
+
+
 def test_env_cache_roundtrip(tmp_path):
     from agent.skills.freeze import EnvCache, request_key
     cache = EnvCache(tmp_path / "env_cache.json")
@@ -1443,6 +1418,27 @@ def test_pick_platform_asset_disambiguates_os_and_arch():
     assert _pick_platform_asset(assets, target_arch="arm64").endswith("tool_linux_arm64.tar.gz")
     # x86_64 alias + no linux asset → None (don't fall back to a wrong-OS build)
     assert _pick_platform_asset(["https://x/tool_darwin_arm64.tar.gz"]) is None
+
+
+def test_pick_platform_asset_bare_binary_fallback():
+    """Bare-named single-binary releases (mosdepth ships `mosdepth`, somalier ships
+    `somalier`: a Linux static binary with NO platform tokens) must still resolve —
+    the permissive fallback accepts an untagged asset, and the in-image smoke verify
+    is the safety net against a wrong pick. Foreign-OS/arch assets stay excluded even
+    in the fallback."""
+    from agent.skills.resolver import _pick_platform_asset
+    # mosdepth: ['mosdepth', 'mosdepth_d4'] — both untagged; shortest (the plain
+    # tool) wins. somalier: a single bare binary.
+    assert _pick_platform_asset(["https://x/mosdepth", "https://x/mosdepth_d4"]).endswith("/mosdepth")
+    assert _pick_platform_asset(["https://x/somalier"]).endswith("/somalier")
+    # A strict os+arch asset still wins over a bare one when both are present.
+    assert _pick_platform_asset(
+        ["https://x/tool", "https://x/tool_linux_amd64.tar.gz"]).endswith("tool_linux_amd64.tar.gz")
+    # Fallback never crosses to a foreign OS / competing arch, even with no strict match.
+    assert _pick_platform_asset(["https://x/tool_darwin", "https://x/tool.exe"]) is None
+    assert _pick_platform_asset(["https://x/tool-aarch64"]) is None
+    # A lone Linux-only build with the OS token but no arch token resolves (loose).
+    assert _pick_platform_asset(["https://x/tool-linux"]).endswith("tool-linux")
 
 
 def test_resolve_linux_asset_uses_installed_tag(monkeypatch):

@@ -79,8 +79,37 @@ def content_digest_parts(spec: dict) -> dict:
 
 
 def content_digest_from_spec(spec: dict) -> str:
-    """Content digest of an env from its (draft or finalized) spec dict."""
+    """Content digest of an env from its FINALIZED spec dict (packages[] + lock_sha256).
+
+    NOTE: this reads derived/finalized fields (packages[], lock_sha256) that a LIVE
+    DRAFT does not carry — a draft holds install_steps[].installed_packages and has
+    no lock yet. On a draft it therefore collapses to a constant (empty parts → one
+    digest for every env), so it must NOT be used as the freeze record's anchor on
+    the container-native path. Use record_content_digest() with the EnvBuild digest
+    instead — see that function."""
     return compute_content_digest(content_digest_parts(spec))
+
+
+def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: str = "",
+                          fallback: str = "") -> str:
+    """The AUTHORITATIVE 'what was GOT' content anchor for a frozen env, by mode:
+
+      build → the EnvBuild lock+longtail+platform+engine digest (unique per env,
+              reproducible by rebuild; the SAME digest recorded in the recipe and
+              checked by verify-by-rebuild).
+      adopt → the adopted biocontainer's manifest digest (content-addressed by the
+              registry, reproducible by re-pull).
+
+    `fallback` (a request-based hash) is used only if the mode-specific digest is
+    missing. This replaces content_digest_from_spec(draft) on the freeze path, which
+    read finalized-only fields a live draft lacks and so produced ONE constant digest
+    for every container-native build (a false content collision across distinct
+    envs)."""
+    if mode == "build" and build_digest:
+        return build_digest
+    if mode == "adopt" and adopt_digest:
+        return adopt_digest
+    return fallback
 
 
 def _packages(spec: dict) -> list[dict]:

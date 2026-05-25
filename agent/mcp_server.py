@@ -2012,13 +2012,16 @@ def freeze(
     if cached:
         return {"success": True, "cache_hit": True, "request_key": rkey, **cached}
 
-    if pipeline_id and _pipeline_state.get_draft(pipeline_id) is not None:
-        content_digest = _freeze.content_digest_from_spec(_pipeline_state.get_draft(pipeline_id))
-    else:
-        content_digest = _freeze.compute_content_digest({
-            "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
-            "platform": platform, "accel": accel,
-        })
+    # A request-based FALLBACK anchor only. The authoritative content_digest is the
+    # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
+    # for a build, the biocontainer manifest digest for an adopt) via
+    # _freeze.record_content_digest. The old content_digest_from_spec(draft) read
+    # finalized-only fields (packages[]/lock_sha256) a live draft lacks, collapsing
+    # to one constant for every container-native build.
+    content_digest = _freeze.compute_content_digest({
+        "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
+        "platform": platform, "accel": accel,
+    })
 
     name = pipeline_name or env_name
     sif = f"{name}.sif"
@@ -2029,6 +2032,7 @@ def freeze(
     validation_locus = "unknown"   # native | emulated | adopted — where we validated
     locus_advisory = ""
     env_recipe_dict = None         # the self-contained rebuild recipe (build path only)
+    build_cd = ""                  # the EnvBuild content_digest (the authoritative build anchor)
 
     draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     non_conda = _freeze.non_conda_installs(draft) if draft else []
@@ -2102,6 +2106,7 @@ def freeze(
                     "adopt_attempt": adopt, "build": br}
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
+        build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor
         validation_locus = br.get("validation_locus", "unknown")
         locus_advisory = br.get("locus_advisory", "")
         _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
@@ -2122,6 +2127,11 @@ def freeze(
             cl = _env_mgr.generate_lock(env_name, platforms=plats)
             conda_lock_path = cl.get("lockfile") if cl.get("success") else None
 
+    # Authoritative 'what was GOT' anchor: EnvBuild digest for a build, biocontainer
+    # manifest digest for an adopt (request hash only as a last-resort fallback).
+    content_digest = _freeze.record_content_digest(
+        mode, build_digest=build_cd, adopt_digest=adopt.get("digest", ""),
+        fallback=content_digest)
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
         image=image, image_digest=image_digest, platform=platform, gated=gated,

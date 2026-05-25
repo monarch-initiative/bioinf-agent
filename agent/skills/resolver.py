@@ -197,38 +197,53 @@ _SIDECAR_SUFFIXES = (
     ".txt", ".sbom", ".json", ".pem", ".cert", ".sha512",
 )
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+# OS/format tokens that mark an asset as a DIFFERENT platform than ours, so it can
+# be excluded even from the permissive fallback (a darwin/windows asset is never a
+# linux one). Bare 'mac' is omitted (substring-collision risk in real names).
+_FOREIGN_OS_TOKENS = ("darwin", "macos", "osx", "windows", "win64", "win32",
+                      ".exe", ".dmg", ".msi", "freebsd")
 
 
 def _pick_platform_asset(
     assets: list[str], target_os: str = "linux", target_arch: str = "amd64"
 ) -> Optional[str]:
-    """Pure selection (no network): from a list of asset URLs/names, choose the
-    one matching target_os + target_arch. Returns the URL or None.
+    """Pure selection (no network): from a list of asset URLs/names, choose the one
+    matching target_os + target_arch. Returns the URL or None.
 
-    Rules: the OS token MUST be present; any arch alias counts; an asset naming
-    the WRONG arch is rejected (so a linux/arm64 build is never picked for
-    linux/amd64); checksum/signature sidecars are excluded. Ties break toward an
-    archive, then the least-adorned (shortest) name."""
+    Two passes. STRICT (high confidence): the OS token AND an arch alias are both
+    present. If nothing matches strictly, a permissive FALLBACK accepts any asset
+    that does NOT name a competing arch or a foreign OS — this is the bare-binary
+    case (mosdepth ships `mosdepth`, somalier ships `somalier`: a single Linux
+    static binary with NO platform tokens at all). The fallback is safe because the
+    binary tier re-validates IN the linux ship image (the smoke verify rejects a
+    wrong-arch/OS pick), so selection can be generous and let the contract be the
+    net rather than refusing a whole class of popular tools. An asset naming the
+    WRONG arch or a foreign OS is rejected in BOTH passes. Sidecars excluded. Ties
+    break toward an archive, then the least-adorned (shortest) name."""
     arch_ok = _ARCH_ALIASES.get(target_arch, [target_arch])
     other_arch = [a for k, v in _ARCH_ALIASES.items() if k != target_arch for a in v]
-    cands: list[str] = []
+    foreign_os = tuple(t for t in _FOREIGN_OS_TOKENS if t != target_os)
+    strict: list[str] = []
+    loose: list[str] = []
     for url in assets:
         if not url:
             continue
         name = url.rsplit("/", 1)[-1].lower()
         if name.endswith(_SIDECAR_SUFFIXES):
             continue
-        if target_os not in name:
-            continue
         if any(a in name for a in other_arch):
-            continue
-        if not any(a in name for a in arch_ok):
-            continue
-        cands.append(url)
-    if not cands:
+            continue                          # names a competing arch → never ours
+        if any(t in name for t in foreign_os):
+            continue                          # names a foreign OS → never ours
+        if target_os in name and any(a in name for a in arch_ok):
+            strict.append(url)                # explicit os+arch (highest confidence)
+        else:
+            loose.append(url)                 # untagged/partial — smoke verify is the net
+    pool = strict or loose
+    if not pool:
         return None
-    cands.sort(key=lambda u: (0 if u.lower().endswith(_ARCHIVE_SUFFIXES) else 1, len(u)))
-    return cands[0]
+    pool.sort(key=lambda u: (0 if u.lower().endswith(_ARCHIVE_SUFFIXES) else 1, len(u)))
+    return pool[0]
 
 
 def resolve_linux_asset(
