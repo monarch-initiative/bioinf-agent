@@ -53,6 +53,7 @@ from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
 from agent.skills import provenance as _prov
+from agent.skills import env_recipe as _env_recipe
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
@@ -2027,6 +2028,7 @@ def freeze(
     build_method = None
     validation_locus = "unknown"   # native | emulated | adopted — where we validated
     locus_advisory = ""
+    env_recipe_dict = None         # the self-contained rebuild recipe (build path only)
 
     draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     non_conda = _freeze.non_conda_installs(draft) if draft else []
@@ -2106,6 +2108,15 @@ def freeze(
         # record what shipped: each baked long-tail step (the command IS the provenance).
         shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
                             for s in br.get("longtail_steps", [])]
+        # the SELF-CONTAINED rebuild recipe — everything build_env_image needs to
+        # reproduce this env with no draft/agent (the verify-by-rebuild / CI artifact).
+        # content_digest is the EnvBuild one (what a rebuild via build_env_image yields).
+        env_recipe_dict = _env_recipe.extract_recipe(
+            draft, name=name, version=version, conda_deps=conda_deps,
+            primary_tools=[n for n, _ in parsed], platform=docker_platform,
+            accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
+            license_gated=gated, licenses=licenses, redistributable=not gated,
+            content_digest=br.get("content_digest", ""))
         if conda_deps:  # portable lock for the conda layer (image digest is the real anchor)
             plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
             cl = _env_mgr.generate_lock(env_name, platforms=plats)
@@ -2152,13 +2163,62 @@ def freeze(
         attestation_path = str(reports_dir / f"{name}.attestation.json")
     except Exception as e:
         attestation_path = f"(attestation render failed: {e!r})"
+    # the SELF-CONTAINED rebuild recipe (build path only) — verify with verify_env_recipe.
+    recipe_path = None
+    if env_recipe_dict:
+        try:
+            import yaml as _yaml
+            (reports_dir / f"{name}.recipe.yaml").write_text(
+                _yaml.safe_dump(env_recipe_dict, sort_keys=False))
+            recipe_path = str(reports_dir / f"{name}.recipe.yaml")
+        except Exception as e:
+            recipe_path = f"(recipe render failed: {e!r})"
 
     out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
     out["env_report"] = report_path
     out["attestation"] = attestation_path
+    out["env_recipe"] = recipe_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     return out
+
+
+@mcp.tool()
+def verify_env_recipe(recipe_path: str) -> dict:
+    """Rebuild an env FROM ITS RECIPE ALONE (env_reports/{name}.recipe.yaml, written by
+    freeze) and check it reproduces the recorded content_digest. The recipe is self-
+    contained — it carries the conda specs + every non-conda install_method (synthesized
+    commands + provenance + commit, jar/binary/source/...), so this rebuild uses NO
+    draft / agent / pipeline-state.
+
+    WHAT A MATCH PROVES (precisely — no overclaiming):
+      • COMPLETENESS — the recipe is self-contained (rebuild from it alone succeeds).
+      • LOCAL DETERMINISM / CONVERGENCE — replaying it here yields the same content_digest;
+        the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
+        solve converged — the strongest same-machine signal for 'two runs → same result'.
+    It does NOT prove cross-machine reproducibility (different base cache / network / docker)
+    or independent-party tamper-evidence — those are this SAME rebuild run ELSEWHERE (CI, a
+    colleague) + signing. The recipe ENABLES them; this verifies the necessary local
+    conditions. Requires Docker. Returns {success, content_digest_match, rebuilt/expected
+    content_digest, proves, honesty_violations}."""
+    import yaml as _yaml
+    try:
+        with open(recipe_path) as fh:
+            recipe = _yaml.safe_load(fh)
+    except Exception as e:
+        return {"success": False, "error": f"could not load recipe {recipe_path!r}: {e}"}
+    if not isinstance(recipe, dict) or not recipe.get("name"):
+        return {"success": False, "error": "not a valid env recipe (missing name)"}
+    res = _env_recipe.rebuild_from_recipe(recipe)
+    return {
+        "success": res["success"],
+        "content_digest_match": res["content_digest_match"],
+        "rebuilt_content_digest": res["rebuilt_content_digest"],
+        "expected_content_digest": res["expected_content_digest"],
+        "proves": res["proves"],
+        "build_stage": res["build"].get("stage"),
+        "honesty_violations": res["build"].get("honesty_violations"),
+    }
 
 
 # ---------------------------------------------------------------------------
