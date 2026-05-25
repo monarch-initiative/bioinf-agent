@@ -1,27 +1,28 @@
 """
-env_report_html — the Layer-1 env report as a self-contained HTML page, rendered
-PURELY from the verified freeze record.
+env_report_html — the Layer-1 env report as a self-contained HTML page that tells
+the STORY of what happened, rendered PURELY from the verified freeze record.
 
-Same contract as the markdown report (env_report.py), but a human actually wants to
-look at it. The honesty guarantees, made structural:
+A reader should see, at a glance: what was asked for, what decisions the runtime
+made, what it built/adopted, what it validated, and what artifacts came out — as a
+process flow, not a wall of tables. The honesty guarantees are structural:
 
   • PURE over the record — render_env_report_html(record) reads ONLY the freeze
-    record (what the build runtime captured: digests, in-image validation evidence,
-    the resolved package closure, the apt layer, the long-tail commands + their
-    provenance). The agent never passes free-text in; there is no field it can author.
-  • ESCAPED — every value is HTML-escaped, so a package name / command / digest can
-    never inject markup. The page is what the record says, nothing more.
-  • DETERMINISTIC — no clock is read here (the only time shown is the record's own
-    captured `created_at`); lists render in a stable order. Same record → same bytes.
-  • MODE-HONEST — a container-native BUILD shows the per-tool "validated in the
-    shipped image" evidence (validated == shipped). An ADOPTED biocontainer is shown
-    as trusted-by-published-digest; it does NOT claim in-image validation it never ran.
+    record (digests, in-image validation evidence, the resolved closure, the apt
+    layer, the long-tail commands + provenance). No field is agent-authored, and the
+    PROCESS FLOW is derived from recorded facts (mode, per-tool tier, pass/fail) —
+    it visualizes what happened, it does not assert anything not in the record.
+  • ESCAPED — every value is HTML-escaped; a package name / command can't inject.
+  • DETERMINISTIC — no clock is read here (only the record's captured `created_at`);
+    stable ordering. Same record → same bytes.
+  • MODE-HONEST — a BUILD shows the per-tool "validated in the shipped image"
+    evidence (validated == shipped). An ADOPTED biocontainer is shown as trusted-by-
+    published-digest; the flow + footer never claim an in-image validation it didn't run.
   • VERIFIED vs DECLARED — runtime-verified facts and submitter-DECLARED policy
-    (license-gating, accelerator) live in separate, labelled sections so a reader is
-    never misled into reading a caller assertion as a machine-checked fact.
+    (license-gating, accelerator) live in separate, labelled sections.
 
-Self-contained: inline CSS, zero external resources (renders offline; nothing is
-fetched, so nothing can change what you see). One public fn: render_env_report_html.
+Self-contained: inline CSS, zero external resources, no JS. The flow is plain
+HTML/CSS (flexbox stages + arrows), so it renders offline and can't fetch anything.
+One public fn: render_env_report_html.
 """
 
 from __future__ import annotations
@@ -33,32 +34,48 @@ from agent.skills.env_report import (
     _extract_version, _install_method, _locus_line, _pkg_index, _verif_index,
 )
 
-# ---------------------------------------------------------------------------
-# CSS — inline, light, system-font; the page must look decent with zero network.
-# ---------------------------------------------------------------------------
 _CSS = """
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2330;--muted:#5b6675;--line:#e4e8ee;
---accent:#2a6df4;--ok:#1a7f47;--okbg:#e7f6ee;--bad:#c0341d;--badbg:#fcebe8;
---warn:#8a5a00;--warnbg:#fdf3e0;--code:#eef1f6;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+:root{--bg:#f5f7fa;--card:#fff;--ink:#1b2330;--muted:#5c6775;--line:#e4e8ee;
+--accent:#2a6df4;--ok:#1a7f47;--okbg:#e7f6ee;--okln:#bfe6cd;--bad:#c0341d;--badbg:#fcebe8;
+--warn:#8a5a00;--warnbg:#fdf3e0;--warnln:#f0dcb0;--blue:#234e91;--bluebg:#eaf1fe;--blueln:#cfe0fb;
+--code:#eef1f6;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:960px;margin:0 auto;padding:32px 20px 64px}
-h1{font-size:26px;margin:0 0 2px}
-h2{font-size:18px;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
-.sub{color:var(--muted);margin:0 0 16px}
-.banner{background:#eef3fe;border:1px solid #d3e0fb;color:#26426f;border-radius:10px;
-padding:12px 14px;font-size:13.5px;margin:14px 0 6px}
-.banner.adopt{background:var(--warnbg);border-color:#f0dcb0;color:var(--warn)}
+.wrap{max-width:1000px;margin:0 auto;padding:30px 20px 64px}
+h1{font-size:25px;margin:0 0 4px}
+h2{font-size:17px;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.sub{color:var(--muted);margin:0;font-size:14px}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:8px 0}
-.cell{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
-.cell .k{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
-.cell .v{font-size:14px;word-break:break-all}
 .mono,code{font-family:var(--mono);font-size:12.5px}
-code{background:var(--code);padding:1px 5px;border-radius:5px}
-.counts{color:var(--muted);font-size:13.5px;margin:10px 0 0}
-.counts b{color:var(--ink)}
+code{background:var(--code);padding:1px 5px;border-radius:5px;word-break:break-all}
+.pill{display:inline-block;font-size:12.5px;font-weight:700;padding:3px 12px;border-radius:20px;
+vertical-align:middle;margin-left:8px}
+.pill.ok{background:var(--okbg);color:var(--ok);border:1px solid var(--okln)}
+.pill.adopt{background:var(--warnbg);color:var(--warn);border:1px solid var(--warnln)}
+.pill.bad{background:var(--badbg);color:var(--bad)}
+/* headline stat cards */
+.stats{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0 6px}
+.stat{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.stat .num{font-size:28px;font-weight:700;line-height:1.1}
+.stat .lbl{font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.stat.ok .num{color:var(--ok)} .stat.adopt .num{color:var(--warn)}
+/* the process flow */
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:6px 0 4px}
+.st{flex:1 1 165px;min-width:160px;background:var(--card);border:1px solid var(--line);
+border-radius:12px;padding:12px 14px;position:relative}
+.st .ph{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.st .pt{font-weight:700;font-size:14px;margin:3px 0 5px}
+.st .pb{font-size:12.5px;color:var(--muted);line-height:1.45;word-break:break-word}
+.st.input{background:var(--bluebg);border-color:var(--blueln)}
+.st.decide{background:var(--warnbg);border-color:var(--warnln)}
+.st.valid{background:var(--okbg);border-color:var(--okln)}
+.st.valid.fail{background:var(--badbg)}
+.st.art{background:var(--bluebg);border-color:var(--blueln)}
+.arw{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px;
+flex:0 0 26px}
+@media(max-width:760px){.arw{flex-basis:100%;transform:rotate(90deg);height:22px}}
+/* tables */
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
 border-radius:10px;overflow:hidden;margin:6px 0}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:top}
@@ -68,21 +85,21 @@ tr:last-child td{border-bottom:none}
 .badge.ok{background:var(--okbg);color:var(--ok)}
 .badge.bad{background:var(--badbg);color:var(--bad)}
 .badge.na{background:var(--code);color:var(--muted)}
-.prov{font-size:11px;font-weight:600;padding:1px 7px;border-radius:20px;background:var(--code);color:var(--muted)}
-.prov.extracted{background:var(--okbg);color:var(--ok)}
-.prov.agent_authored{background:var(--warnbg);color:var(--warn)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:8px 0}
+.cell{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.cell .k{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.cell .v{font-size:14px;word-break:break-all}
 details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 14px;margin:6px 0}
 summary{cursor:pointer;font-weight:600;font-size:14px;padding:6px 0}
 details table{border:none;margin:4px 0}
 .note{color:var(--muted);font-size:12.5px;font-weight:400}
-.declared{background:var(--warnbg);border:1px solid #f0dcb0;border-radius:10px;padding:4px 16px 12px}
+.declared{background:var(--warnbg);border:1px solid var(--warnln);border-radius:10px;padding:4px 16px 12px}
 .declared .lead{color:var(--warn);font-size:12.5px;margin:10px 0 2px}
 ul.tail{list-style:none;padding:0;margin:0}
 ul.tail li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0}
 ul.tail .lbl{font-weight:600;margin-right:8px}
 pre{background:var(--code);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:6px 0 0;
 font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word}
-.foot{margin-top:14px}
 .foot li{margin:6px 0}
 .gen{color:var(--muted);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
 """
@@ -90,6 +107,15 @@ font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-wor
 
 def _e(v: Any) -> str:
     return escape("" if v is None else str(v))
+
+
+def _short(digest: str, n: int = 19) -> str:
+    """`sha256:abcd…` shortened for a flow chip (full value stays in the cards)."""
+    s = (digest or "").strip()
+    if ":" in s:
+        algo, _, val = s.partition(":")
+        return f"{algo}:{val[:n]}…" if len(val) > n else s
+    return (s[:n] + "…") if len(s) > n else s
 
 
 def _badge(passed: Optional[bool], check: str = "") -> str:
@@ -100,9 +126,63 @@ def _badge(passed: Optional[bool], check: str = "") -> str:
     return f'<span class="badge {cls}">{mark}</span>{c}'
 
 
+def _tier_summary(requested: list, pidx: dict, shipped: list) -> str:
+    """A per-tier headcount of the requested tools — the 'route' decision, derived
+    from recorded facts (the resolved package kind / the long-tail purpose)."""
+    counts: dict[str, int] = {}
+    for t in requested:
+        tier = _install_method(t, pidx.get(t.lower()), shipped)
+        counts[tier] = counts.get(tier, 0) + 1
+    parts = [f"{k} ×{v}" for k, v in sorted(counts.items()) if k != "—"]
+    return " · ".join(parts) or "—"
+
+
+def _stage(cls: str, phase: str, title: str, body: str) -> str:
+    return (f'<div class="st {cls}"><div class="ph">{_e(phase)}</div>'
+            f'<div class="pt">{_e(title)}</div><div class="pb">{body}</div></div>')
+
+
+def _flow(record: dict, *, is_adopt: bool, requested: list, pidx: dict, shipped: list,
+          passed: int, total: int) -> str:
+    """The process flow — input → decisions → build/adopt → validate → artifacts.
+    Per-mode (adopt branches differently). Every chip is a recorded fact."""
+    arw = '<div class="arw">›</div>'
+    req_names = ", ".join(_e(t) for t in requested[:6]) + ("…" if len(requested) > 6 else "")
+    art_digest = _short(record.get("image_digest", "")) or _short(record.get("content_digest", ""))
+    if is_adopt:
+        stages = [
+            _stage("input", "Input", f"{len(requested)} requested", req_names or "—"),
+            _stage("decide", "Decision", "Resolve → adopt",
+                   "pure conda; a published BioContainer matched, so adopt it (no build)"),
+            _stage("art", "Adopt by digest", "Pull immutable image",
+                   f"<code>{_e(art_digest)}</code>"),
+            _stage("decide", "Trust", "By published digest",
+                   "trusted as the BioContainers project; not built or validated in-locus"),
+            _stage("art", "Artifact", "Apptainer delivery",
+                   "<code>apptainer pull docker://…@digest</code>"),
+        ]
+    else:
+        engine = record.get("engine", "none")
+        base = _short(record.get("image_digest", ""))  # the shipped image's id
+        eng_txt = f"engine {_e(engine)}" if engine and engine != "none" else "no engine (pure long-tail)"
+        vcls = "valid" if (total and passed == total) else "valid fail"
+        stages = [
+            _stage("input", "Input", f"{len(requested)} requested", req_names or "—"),
+            _stage("decide", "Decision", "Resolve & route",
+                   f"per-tier: {_e(_tier_summary(requested, pidx, shipped))}"),
+            _stage("", "Build", "Container-native",
+                   f"{eng_txt}; co-solve + {len(shipped)} long-tail, baked into the ship image"),
+            _stage(vcls, "Validate", "In the shipped image",
+                   f"<b>{passed}/{total}</b> tools re-ran green (validated == shipped)"),
+            _stage("art", "Artifacts", "Image + provenance",
+                   f"<code>{_e(base)}</code> · recipe · attestation · Apptainer"),
+        ]
+    return '<div class="flow">' + arw.join(stages) + '</div>'
+
+
 def render_env_report_html(record: dict) -> str:
-    """Render the freeze record as a self-contained HTML page (see module docstring
-    for the honesty contract this upholds)."""
+    """Render the freeze record as a self-contained HTML page that shows the build
+    process (see module docstring for the honesty contract this upholds)."""
     r = record or {}
     name = r.get("name") or (r.get("image") or "env").split(":")[0].split("/")[-1]
     mode = r.get("mode", "?")
@@ -117,6 +197,8 @@ def render_env_report_html(record: dict) -> str:
     requested_set = {t.lower() for t in requested}
     ride = [p for p in resolved if isinstance(p, dict) and p.get("name")
             and p["name"].lower() not in requested_set]
+    passed = sum(1 for v in verifs if isinstance(v, dict) and v.get("passed"))
+    total = len(verifs)
 
     P: list[str] = []
     P.append("<!DOCTYPE html>")
@@ -125,56 +207,82 @@ def render_env_report_html(record: dict) -> str:
              f'<title>Environment report — {_e(name)}</title><style>{_CSS}</style></head><body>')
     P.append('<div class="wrap">')
 
-    # -- header ----------------------------------------------------------
-    build_desc = mode
-    if r.get("build_method"):
-        build_desc += f" · {r['build_method']}"
-    if r.get("engine") and r.get("engine") != "none":
-        build_desc += f" · engine {r['engine']}"
-    P.append(f"<h1>{_e(name)}</h1>")
-    P.append(f'<p class="sub">Layer-1 environment image · {_e(build_desc)}</p>')
+    # -- header + status pill --------------------------------------------
     if is_adopt:
-        P.append('<div class="banner adopt">Adopted public BioContainer — trusted by its '
-                 'immutable published digest. It was <b>not built or validated in-locus</b>, '
-                 'so the per-tool in-image evidence below is not collected for this artifact.</div>')
+        pill = '<span class="pill adopt">Adopted by digest</span>'
+    elif total and passed == total:
+        pill = '<span class="pill ok">✓ Validated in shipped image</span>'
     else:
-        P.append('<div class="banner">Machine-generated from the verified freeze record. Every fact '
-                 'below was captured by the build runtime — not authored — so it can\'t be faked. '
-                 '<a href="#verify">How this was verified ↓</a></div>')
+        pill = '<span class="pill bad">✗ Validation incomplete</span>'
+    P.append(f"<h1>{_e(name)}{pill}</h1>")
+    P.append(f'<p class="sub">Layer-1 environment image · <code>{_e(r.get("image",""))}</code></p>')
 
-    # -- artifact facts (cards) ------------------------------------------
-    cards = [
-        ("Image", f'<code>{_e(r.get("image",""))}</code>'),
-        ("Image digest", f'<code>{_e(r.get("image_digest",""))}</code>'),
-        ("Content digest", f'<code>{_e(r.get("content_digest",""))}</code>'),
-        ("Platform", _e(r.get("platform", ""))),
-        ("Build", _e(build_desc)),
-        ("Validation locus", _e(_locus_line(r.get("validation_locus", "")))),
-        ("Created", _e(r.get("created_at", ""))),
-    ]
-    P.append('<div class="grid">')
-    for k, v in cards:
-        P.append(f'<div class="cell"><div class="k">{_e(k)}</div><div class="v">{v}</div></div>')
+    # -- headline stats --------------------------------------------------
+    P.append('<div class="stats">')
+    P.append(f'<div class="stat"><div class="num">{len(requested)}</div>'
+             '<div class="lbl">Requested tools</div></div>')
+    if is_adopt:
+        P.append('<div class="stat adopt"><div class="num">digest</div>'
+                 '<div class="lbl">Adopted &amp; trusted</div></div>')
+    else:
+        cls = "ok" if (total and passed == total) else ""
+        P.append(f'<div class="stat {cls}"><div class="num">{passed}/{total}</div>'
+                 '<div class="lbl">Validated in image</div></div>')
+    P.append(f'<div class="stat"><div class="num">{len(ride)}</div>'
+             '<div class="lbl">Along for the ride</div></div>')
+    P.append(f'<div class="stat"><div class="num">{len(system)}</div>'
+             '<div class="lbl">System (apt) packages</div></div>')
     P.append('</div>')
-    P.append(f'<p class="counts"><b>{len(requested)}</b> requested · '
-             f'<b>{len(ride)}</b> along for the ride · <b>{len(resolved)}</b> total packages'
-             + (f' · <b>{len(system)}</b> system (apt)' if system else '') + '</p>')
 
-    # -- requested tools --------------------------------------------------
-    P.append(f'<h2>Requested tools <span class="note">({len(requested)})</span></h2>')
+    # -- the process flow -------------------------------------------------
+    P.append("<h2>How this environment was produced</h2>")
+    if is_adopt:
+        P.append('<p class="note">A pure-conda request that matched a published BioContainer — '
+                 'adopted by its immutable digest rather than rebuilt. Trust it as you trust the '
+                 'BioContainers project.</p>')
+    else:
+        P.append('<p class="note">Each stage below is reconstructed from the verified record — the '
+                 'tiers chosen, what was baked, and what re-ran green in the shipped image. '
+                 'Nothing here is asserted that the runtime did not capture.</p>')
+    P.append(_flow(r, is_adopt=is_adopt, requested=requested, pidx=pidx, shipped=shipped,
+                   passed=passed, total=total))
+
+    # -- per-tool journey (decision + validation per requested tool) ------
+    P.append(f'<h2>Per-tool journey <span class="note">({len(requested)} requested)</span></h2>')
     if requested:
-        P.append("<table><tr><th>Tool</th><th>Version</th><th>Install</th>"
-                 "<th>Validated in image</th></tr>")
+        head = ("<table><tr><th>Tool</th><th>Version</th><th>Install tier (decision)</th>"
+                "<th>Validated in image</th></tr>") if not is_adopt else (
+                "<table><tr><th>Tool</th><th>Version</th><th>Install tier</th>"
+                "<th>Status</th></tr>")
+        P.append(head)
         for t in requested:
             pkg = pidx.get(t.lower())
             v = vidx.get(t.lower())
             ver = (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or "—"
-            cell = _badge(v.get("passed") if v else None, (v or {}).get("check", ""))
+            if is_adopt:
+                status = '<span class="badge na">adopted (trusted by digest)</span>'
+            else:
+                status = _badge(v.get("passed") if v else None, (v or {}).get("check", ""))
             P.append(f"<tr><td><b>{_e(t)}</b></td><td>{_e(ver)}</td>"
-                     f"<td>{_e(_install_method(t, pkg, shipped))}</td><td>{cell}</td></tr>")
+                     f"<td>{_e(_install_method(t, pkg, shipped))}</td><td>{status}</td></tr>")
         P.append("</table>")
     else:
         P.append('<p class="note">(none recorded)</p>')
+
+    # -- artifacts (the outputs) -----------------------------------------
+    P.append("<h2>Artifacts</h2>")
+    P.append('<div class="cards">')
+    for k, val in (("Image", r.get("image", "")),
+                   ("Image digest", r.get("image_digest", "")),
+                   ("Content digest", r.get("content_digest", ""))):
+        P.append(f'<div class="cell"><div class="k">{_e(k)}</div>'
+                 f'<div class="v"><code>{_e(val)}</code></div></div>')
+    P.append('</div>')
+    P.append('<p class="note">Companion artifacts written alongside this page: '
+             f'<code>{_e(name)}.attestation.json</code> (in-toto/SLSA provenance)'
+             + ('' if is_adopt else f' · <code>{_e(name)}.recipe.yaml</code> (self-contained '
+                'rebuild recipe — verify with <code>verify_env_recipe</code>)')
+             + f' · <code>{_e(name)}.ENV.md</code>.</p>')
 
     # -- declared policy (clearly separated from verified facts) ----------
     gated = bool(r.get("gated"))
@@ -249,9 +357,9 @@ def render_env_report_html(record: dict) -> str:
     P.append('<h2 id="verify">How this was verified</h2>')
     P.append('<ul class="foot">')
     if is_adopt:
-        P.append("<li><b>ADOPTED_BY_DIGEST</b> — this is a public BioContainer pulled by its "
-                 "immutable manifest digest (shown above). Provenance is that digest; trust it as "
-                 "you trust the BioContainers project. It was not built or validated in-locus.</li>")
+        P.append("<li><b>ADOPTED_BY_DIGEST</b> — a public BioContainer pulled by its immutable "
+                 "manifest digest (above). Provenance is that digest; trust it as you trust the "
+                 "BioContainers project. It was not built or validated in-locus.</li>")
         P.append("<li><b>POLICY_CLEAN</b> — accelerator honesty (I12) and the license firewall "
                  "(I13) passed.</li>")
     else:
@@ -270,12 +378,22 @@ def render_env_report_html(record: dict) -> str:
              "are sha256-anchored. The apt runtime layer is captured (above) but not version-pinned "
              "(<code>apt-get</code> is not reproducible across time). Rebuild + diff with "
              "<code>verify_env_recipe</code>.</li>")
-    P.append(f"<li><b>Attestation</b> — an in-toto/SLSA provenance Statement of all the above is "
-             f"emitted to <code>env_reports/{_e(name)}.attestation.json</code> "
-             f"(sign with <code>cosign attest</code>).</li>")
     P.append("</ul>")
 
+    # -- build details ("date + all other juicy info", per the sketch) ----
+    P.append("<h2>Build details</h2>")
+    P.append('<div class="cards">')
+    details = [("Created", r.get("created_at", "")), ("Platform", r.get("platform", "")),
+               ("Mode", mode), ("Build method", r.get("build_method", "")),
+               ("Engine", r.get("engine", "")),
+               ("Validation locus", _locus_line(r.get("validation_locus", "")))]
+    for k, val in details:
+        if val:
+            P.append(f'<div class="cell"><div class="k">{_e(k)}</div>'
+                     f'<div class="v">{_e(val)}</div></div>')
+    P.append('</div>')
+
     P.append('<p class="gen">Generated deterministically from the freeze record — '
-             'no field on this page was authored by the agent.</p>')
+             'no field on this page, including the process flow, was authored by the agent.</p>')
     P.append("</div></body></html>")
     return "\n".join(P)
