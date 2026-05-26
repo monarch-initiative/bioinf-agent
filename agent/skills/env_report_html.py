@@ -49,14 +49,23 @@ _CSS = """
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:1080px;margin:0 auto;padding:0 22px 64px;
-border-top:3px solid var(--yellow);background:transparent}
-.head{padding:30px 0 6px;border-bottom:1px solid var(--border);margin-bottom:8px}
-h1{font-size:26px;font-weight:800;color:var(--yellow);margin:0 0 6px;letter-spacing:.01em}
-.sub{color:var(--muted);margin:0 0 14px;font-size:13px}
+.wrap{max-width:1080px;margin:0 auto;padding:30px 22px 64px;background:transparent}
+/* HEADER BANNER — yellow title, cyan border, tiny yellow corner brackets */
+.head{position:relative;border:1px solid var(--cyan);padding:22px 26px 6px;margin:0 0 28px;
+background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 80%)}
+.head::before,.head::after{content:"";position:absolute;width:14px;height:14px}
+.head::before{top:-1px;left:-1px;border-top:2px solid var(--yellow);border-left:2px solid var(--yellow)}
+.head::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--yellow);border-right:2px solid var(--yellow)}
+.head h1{font-size:24px;font-weight:800;color:var(--yellow);margin:0 0 14px;letter-spacing:.01em}
+table.head-kv{width:100%;border:none;background:transparent;font-size:12.5px;
+border-collapse:collapse}
+table.head-kv td{padding:6px 0;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
+table.head-kv tr:last-child td{border-bottom:none}
+table.head-kv td.k{background:transparent;border:none;width:185px;color:var(--muted);
+font-weight:500;padding-right:18px}
+/* SECTION HEADINGS — cyan, uppercase, just an underline (no yellow left bar) */
 h2{font-size:12.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
-color:var(--cyan);margin:34px 0 12px;padding:6px 0 9px 13px;
-border-left:3px solid var(--yellow);border-bottom:1px solid var(--cyan)}
+color:var(--cyan);margin:34px 0 12px;padding:0 0 9px 0;border-bottom:1px solid var(--cyan)}
 h2 .note{color:var(--muted);font-weight:400;letter-spacing:0;text-transform:none;font-size:12px;margin-left:8px}
 a{color:var(--yellow);text-decoration:none;border-bottom:1px dashed transparent}
 a:hover{border-bottom-color:var(--yellow)}
@@ -72,9 +81,10 @@ th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);ve
 tr:last-child td{border-bottom:none}
 th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
 letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+/* LEFTMOST COLUMN — same muted color as the build-details key column, in EVERY table */
+table:not(.head-kv) td:first-child{color:var(--muted);font-weight:500}
 td.k{color:var(--muted);width:225px;background:var(--surface-2);font-weight:500;
 border-right:1px solid var(--border)}
-td b,td strong{color:var(--yellow);font-weight:700}
 .pill{display:inline-block;font-size:11px;font-weight:800;padding:3px 12px;
 vertical-align:middle;margin-left:10px;letter-spacing:.14em;text-transform:uppercase;border-radius:0}
 .pill.ok{background:var(--cyan);color:#000}
@@ -91,13 +101,13 @@ margin-right:4px}
 .empty{background:var(--surface);border:1px dashed var(--border);padding:13px 16px;
 color:var(--muted);font-size:13px;font-style:italic;margin:4px 0}
 details{margin:6px 0;background:var(--surface);border:1px solid var(--border);
-border-left:3px solid var(--cyan);padding:0 14px;border-radius:0}
+padding:0 14px;border-radius:0}
 summary{cursor:pointer;padding:10px 0;font-weight:600;font-size:13.5px;color:var(--ink);
 list-style:none;outline:none}
 summary::-webkit-details-marker{display:none}
 summary::before{content:"▸ ";color:var(--cyan);margin-right:4px}
 details[open] summary::before{content:"▾ "}
-details table{border:1px solid var(--border);border-top:1px solid var(--border);margin:4px 0 10px}
+details table{margin:4px 0 10px}
 ul.foot{padding-left:18px;margin:6px 0 0;font-size:13.5px;line-height:1.6}
 ul.foot li{margin:6px 0}
 ul.foot li::marker{color:var(--yellow)}
@@ -194,7 +204,9 @@ def render_env_report_html(record: dict) -> str:
              f'<title>Environment report — {_e(name)}</title><style>{_CSS}</style></head><body>')
     P.append('<div class="wrap">')
 
-    # -- HEADER -------------------------------------------------------------
+    # -- HEADER BANNER ------------------------------------------------------
+    # Yellow title "Bioinfo install report — {name}" + status pill, with a small
+    # kv table of the run's at-a-glance facts inside the cyan-bordered banner.
     if is_adopt:
         pill = '<span class="pill adopt">Adopted by digest</span>'
     elif total and passed == total:
@@ -203,13 +215,6 @@ def render_env_report_html(record: dict) -> str:
         pill = '<span class="pill bad">✗ Validation incomplete</span>'
     else:
         pill = '<span class="pill na">No tools recorded</span>'
-    P.append('<div class="head">')
-    P.append(f"<h1>{_e(name)}{pill}</h1>")
-    P.append(f'<p class="sub">Layer-1 environment image · <code>{_e(r.get("image",""))}</code></p>')
-    P.append('</div>')
-
-    # -- BUILD DETAILS (top) ------------------------------------------------
-    P.append("<h2>Build details</h2>")
     mode_desc = mode
     if r.get("build_method"):
         mode_desc += f" · {r['build_method']}"
@@ -219,14 +224,19 @@ def render_env_report_html(record: dict) -> str:
     summary_parts.append("adopted by digest" if is_adopt else f"{passed}/{total} validated in image")
     summary_parts.append(f"{len(ride)} along for the ride")
     summary_parts.append(f"{len(system)} system (apt)")
-    rows = [
+    head_rows = [
+        ("Image", f'<code>{_e(r.get("image",""))}</code>' if r.get("image") else "—"),
         ("Created", _e(r.get("created_at", "—"))),
         ("Platform", _e(r.get("platform", "—"))),
         ("Mode", _e(mode_desc) or "—"),
         ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
-    P.append(_kv_table(rows))
+    P.append('<div class="head">')
+    P.append(f"<h1>Bioinfo install report — {_e(name)}{pill}</h1>")
+    body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>' for k, v in head_rows)
+    P.append(f'<table class="head-kv">{body}</table>')
+    P.append('</div>')
 
     # -- TOOLS (centerpiece — SAME columns for build & adopt) ---------------
     P.append(f'<h2>Tools <span class="note">({len(requested)} requested)</span></h2>')
@@ -247,7 +257,7 @@ def render_env_report_html(record: dict) -> str:
                 status = '<span class="badge na">trusted by digest</span>'
             else:
                 status = _badge(v.get("passed") if v else None, (v or {}).get("check", ""))
-            P.append(f"<tr><td><b>{_e(t)}</b></td><td>{req_cell}</td>"
+            P.append(f"<tr><td>{_e(t)}</td><td>{req_cell}</td>"
                      f"<td>{inst_cell}</td><td>{tier_cell}</td><td>{status}</td></tr>")
         P.append("</table></div>")
     else:
