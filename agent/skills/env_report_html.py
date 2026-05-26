@@ -87,7 +87,7 @@ border-left:3px solid var(--cyan);border-radius:0;overflow-x:auto;
 font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
 .tbl-wrap{overflow-x:auto;margin:4px 0}
 table{width:100%;border-collapse:collapse;background:var(--surface);
-border:1px solid var(--border);font-size:13.5px}
+border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}
 th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
 tr:last-child td{border-bottom:none}
 th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
