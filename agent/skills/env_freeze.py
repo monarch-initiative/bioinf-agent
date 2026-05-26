@@ -210,12 +210,28 @@ def build_env_image(
     licenses: Optional[list[str]] = None,
     redistributable: bool = True,
     engine=None,
+    conda_lock_files: Optional[dict[str, str]] = None,
+    apt_snapshot: str = "",
 ) -> dict[str, Any]:
     """Build a ship-platform env IMAGE from a spec/draft, container-native. Routes
     each non-conda install to its generator, injects coupled toolchains, and runs
     EnvBuild (which is gated by env_honesty.check_build → BUILT/VALIDATED_IN_IMAGE/
     POLICY_CLEAN). `platform` is a DOCKER platform ('linux/amd64'). Returns the
-    EnvBuild BuildResult (+ 'request_key'); refuses early on a non-replayable record."""
+    EnvBuild BuildResult (+ 'request_key'); refuses early on a non-replayable record.
+
+    `conda_lock_files`: if provided (recipe-replay path), skip the conda/pip solve
+    entirely and materialize the env from these prebaked lock files — same env
+    bytes across time/machines, no drift from bioconda moving.
+
+    `apt_snapshot`: UTC timestamp (e.g. "20260526T200000Z") pinning the apt layer
+    to snapshot.debian.org at that moment. Empty on FRESH freeze → auto-generated
+    as `now()` so the resulting recipe captures a timestamp going forward. The
+    recipe-replay path passes the recipe's stored timestamp through verbatim."""
+    if not apt_snapshot:
+        # Fresh freeze: stamp the current UTC. Granularity to the second is more
+        # than enough; snapshot.debian.org keeps every snapshot ever taken.
+        from datetime import datetime, timezone
+        apt_snapshot = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conda_deps = conda_deps or []
     primary_tools = primary_tools or []
     non_conda = _freeze.non_conda_installs(spec)
@@ -237,7 +253,9 @@ def build_env_image(
 
     eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
                   accelerator=accelerator, license_gated=license_gated,
-                  licenses=licenses, redistributable=redistributable)
+                  licenses=licenses, redistributable=redistributable,
+                  prebaked_lock_files=conda_lock_files,
+                  apt_snapshot=apt_snapshot)
 
     all_conda = ensure_python_for_pip(plan_conda(conda_deps, non_conda), bool(pip_installs))
     if all_conda:

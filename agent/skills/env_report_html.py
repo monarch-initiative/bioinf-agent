@@ -33,7 +33,8 @@ from html import escape
 from typing import Any, Optional
 
 from agent.skills.env_report import (
-    _extract_version, _install_method, _locus_line, _pkg_index, _verif_index,
+    _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
+    _resolved_version, _verif_index,
 )
 
 _CSS = """
@@ -50,14 +51,38 @@ _CSS = """
 body{margin:0;background:var(--bg);color:var(--ink);
 font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1080px;margin:0 auto;padding:30px 22px 64px;background:transparent}
-/* HEADER BANNER — yellow title, cyan border, tiny yellow corner brackets */
-.head{position:relative;border:1px solid var(--cyan);padding:22px 26px 6px;margin:0 0 28px;
+/* HEADER BANNER — the INNER CYAN frame is the ONLY continuous border (visible
+   all the way around). At the TL and BR corners (only), a solid yellow L-block
+   sits OUTSIDE the cyan with a small gap, extending ~half the panel along both
+   edges. At the FAR end of each arm, a diagonal cut spans the L's thickness —
+   so the L tapers off cleanly and there's no continuous yellow line past it.
+   Small parallelogram-shaped gaps punched in the cyan directly opposite each
+   yellow diagonal (top cyan for TL, bottom cyan for BR), with edges sloped to
+   match the yellow's diagonal — // matching ends instead of vertical || ends. */
+.head{position:relative;border:2px solid var(--cyan);padding:22px 26px 6px;margin:24px 24px 44px;
 background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 80%)}
-.head .cr{position:absolute;width:14px;height:14px;pointer-events:none}
-.head .cr-tl{top:-1px;left:-1px;border-top:2px solid var(--yellow);border-left:2px solid var(--yellow)}
-.head .cr-tr{top:-1px;right:-1px;border-top:2px solid var(--yellow);border-right:2px solid var(--yellow)}
-.head .cr-bl{bottom:-1px;left:-1px;border-bottom:2px solid var(--yellow);border-left:2px solid var(--yellow)}
-.head .cr-br{bottom:-1px;right:-1px;border-bottom:2px solid var(--yellow);border-right:2px solid var(--yellow)}
+.head .cr{position:absolute;background:var(--yellow);pointer-events:none;z-index:2}
+/* TL: block at top:-22 left:-22 → L's outer edge is 22px outside the cyan;
+   arm thickness 14px (block y=0..14); 6px gap between L's inner edge (y=14)
+   and the 2px cyan border (which sits at y=20..22 in block coords). 50% extent
+   along each edge. */
+.head .cr-tl{top:-22px;left:-22px;
+width:calc(50% + 22px);height:calc(50% + 22px);
+clip-path:polygon(0 0,100% 0,calc(100% - 30px) 14px,14px 14px,14px calc(100% - 30px),0 100%)}
+/* BR: mirror of TL (rotate 180°). */
+.head .cr-br{bottom:-22px;right:-22px;
+width:calc(50% + 22px);height:calc(50% + 22px);
+clip-path:polygon(100% 0,100% 100%,0 100%,30px calc(100% - 14px),calc(100% - 14px) calc(100% - 14px),calc(100% - 14px) 30px)}
+/* page-bg-colored masks that PUNCH a parallelogram-shaped gap through the 2px
+   cyan border. 30px wide (= horizontal projection of the yellow diagonal), with
+   each side sloped by 4px over 2px height to match the yellow diagonal's slope
+   (dx/dy ≈ -30/14). One on the TOP cyan under TL's diagonal, one on the BOTTOM
+   cyan under BR's diagonal. */
+.head .gap{position:absolute;background:var(--bg);z-index:1;pointer-events:none;
+width:34px;height:2px;
+clip-path:polygon(4px 0,34px 0,30px 100%,0 100%)}
+.head .gap-tl{top:-2px;left:calc(50% - 34px)}
+.head .gap-br{bottom:-2px;right:calc(50% - 34px)}
 /* SECTION PANELS — each remaining section is a bordered card (no yellow accents) */
 section.bx{border:1px solid var(--border);margin:22px 0;background:transparent}
 section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:none}
@@ -177,14 +202,14 @@ def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str
 
 
 def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[dict],
-                       req_v: str) -> str:
-    """For BUILD: the actually-resolved version (pidx) or the version the tool
-    printed in its in-image evidence (real captured output). For ADOPT: the
-    requested version — the biocontainer's manifest digest binds it to exactly that
-    bioconda build, so 'installed' == 'requested' is honest (no in-locus probe)."""
+                       req_v: str, shipped: Optional[list] = None) -> str:
+    """ADOPT: the requested version (biocontainer manifest digest binds it to
+    exactly that bioconda build — 'installed == requested' is honest, no in-locus
+    probe). BUILD: defer to _resolved_version (conda/pip > banner > out > anchor)
+    — shared with the .md renderer so the two views stay aligned."""
     if is_adopt:
         return req_v or ""
-    return (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or ""
+    return _resolved_version(t, pkg, v, shipped)
 
 
 def render_env_report_html(record: dict) -> str:
@@ -244,8 +269,11 @@ def render_env_report_html(record: dict) -> str:
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
     P.append('<div class="head">')
-    P.append('<span class="cr cr-tl"></span><span class="cr cr-tr"></span>'
-             '<span class="cr cr-bl"></span><span class="cr cr-br"></span>')
+    # only TL + BR corner accents — the diagonal-asymmetric reference look.
+    # Plus two small page-bg-colored masks that punch a parallelogram-shaped
+    # gap through the cyan border directly under each yellow diagonal.
+    P.append('<span class="cr cr-tl"></span><span class="cr cr-br"></span>'
+             '<span class="gap gap-tl"></span><span class="gap gap-br"></span>')
     P.append(f"<h1>Bioinfo install report — {_e(name)}{pill}</h1>")
     body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>' for k, v in head_rows)
     P.append(f'<table class="head-kv">{body}</table>')
@@ -265,8 +293,19 @@ def render_env_report_html(record: dict) -> str:
             v = vidx.get(t.lower())
             req_v = req_versions.get(t, "")
             req_cell = f"={_e(req_v)}" if req_v else '<span class="muted">(any)</span>'
-            inst_v = _installed_version(t, is_adopt, pkg, v, req_v)
-            inst_cell = _e(inst_v) if inst_v else '<span class="muted">—</span>'
+            inst_v = _installed_version(t, is_adopt, pkg, v, req_v, shipped)
+            anchor = _install_anchor(t, shipped)
+            if inst_v and anchor and anchor != inst_v and _is_sha(anchor):
+                # full provenance: banner/conda version + the commit it was built
+                # from. The commit alone IS the install identity for synthesized /
+                # source tiers — keep it visible even when a human-friendly version
+                # is now leading the cell.
+                inst_cell = (f"{_e(inst_v)} <span class=\"muted\">"
+                             f"(commit {_e(anchor[:12])})</span>")
+            elif inst_v:
+                inst_cell = _e(inst_v)
+            else:
+                inst_cell = '<span class="muted">—</span>'
             tier_cell = _e(_tier_for(t, is_adopt, pkg, shipped))
             if is_adopt:
                 status = '<span class="badge na">trusted by digest</span>'
@@ -335,6 +374,10 @@ def render_env_report_html(record: dict) -> str:
     P.append('<h2>Artifacts <span class="note">'
              'companion files link relative to env_reports/; tarball/lock are absolute file://</span></h2>')
     P.append('<div class="bx-body">')
+    # Order: identity (image + two digests) → the two PRIMARY companion artifacts
+    # (recipe = rebuild instructions, attestation = signed provenance) → delivery
+    # (tarball / lock / registry). The .ENV.md is a sibling VIEW of this same
+    # report, not an artifact in its own right, so it isn't listed.
     art_rows: list[tuple[str, str]] = [
         ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
         ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),
@@ -342,11 +385,6 @@ def render_env_report_html(record: dict) -> str:
          f'<code>{_e(r.get("content_digest","—"))}</code>'
          '<span class="note"> — reproducible anchor: lock + long-tail + platform + engine + base image</span>'
          if r.get("content_digest") else "—"),
-        ("Markdown report",
-         f'<a href="{_e(name)}.ENV.md"><code>{_e(name)}.ENV.md</code></a>'),
-        ("In-toto / SLSA attestation",
-         f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a>'
-         '<span class="note"> — sign with <code>cosign attest</code></span>'),
     ]
     if is_adopt:
         art_rows.append(("Self-contained rebuild recipe",
@@ -356,6 +394,9 @@ def render_env_report_html(record: dict) -> str:
         art_rows.append(("Self-contained rebuild recipe",
                          f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a>'
                          '<span class="note"> — verify rebuild with <code>verify_env_recipe</code></span>'))
+    art_rows.append(("In-toto / SLSA attestation",
+                     f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a>'
+                     '<span class="note"> — sign with <code>cosign attest</code></span>'))
     if r.get("tarball"):
         tb = r["tarball"]
         art_rows.append(("docker-save tarball",

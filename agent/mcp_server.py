@@ -2009,7 +2009,18 @@ def freeze(
     parsed = _freeze.parse_tools(tools)
     rkey = _freeze.request_key([(n, v or "") for n, v in parsed], platform, accel)
 
-    cached = _env_cache.lookup(rkey)
+    # Re-anchor the cache against reality: a hit is a CLAIM until we confirm the
+    # image is still present in the docker daemon. An evicted image (or one a user
+    # `docker rmi`'d) was treated as a hit before — handing back a stale record,
+    # no rebuild, no report re-render. lookup_anchored turns that into a MISS so
+    # the build path runs, materializes a fresh image, and re-renders every
+    # deliverable. (The container-native analog of the I8/I11 anchoring the host
+    # path used to do for binaries / source clones.)
+    def _docker_image_present(ref: str) -> bool:
+        r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+    cached = _env_cache.lookup_anchored(rkey, _docker_image_present)
     if cached:
         return {"success": True, "cache_hit": True, "request_key": rkey, **cached}
 
@@ -2122,7 +2133,13 @@ def freeze(
             primary_tools=[n for n, _ in parsed], platform=docker_platform,
             accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
             license_gated=gated, licenses=licenses, redistributable=not gated,
-            content_digest=br.get("content_digest", ""))
+            content_digest=br.get("content_digest", ""),
+            # ship the engine lock with the recipe — replay materializes the env
+            # from these exact bytes, no solve. Eliminates the conda drift hole.
+            conda_lock=br.get("lock_files") or None,
+            # snapshot.debian.org timestamp the BUILDER + RUNTIME stages pinned
+            # apt to — replay points at the same snapshot, same apt bytes.
+            apt_snapshot=br.get("apt_snapshot") or "")
         if conda_deps:  # portable lock for the conda layer (image digest is the real anchor)
             plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
             cl = _env_mgr.generate_lock(env_name, platforms=plats)

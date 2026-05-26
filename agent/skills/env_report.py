@@ -33,14 +33,95 @@ def _extract_version(text: str) -> str:
 
 def _tier_from_purpose(purpose: str) -> str:
     """The install tier behind a long-tail tool, read from its recorded purpose
-    string (e.g. 'seqkit binary', 'seqtk (source @ sha)', 'X jar')."""
+    string emitted by `install_commands` generators (e.g. 'seqkit (release binary)',
+    'htslib (source @ sha)', 'picard (java jar)', 'tool (synthesized @ sha)')."""
     p = purpose.lower()
     if "script repo" in p or "run-by-path" in p:
         return "source (run-by-path)"
+    if "synthesized" in p:
+        return "source (synthesized)"
     for tier in ("binary", "source", "jar", "perl", "cargo", "go"):
         if tier in p:
             return tier
     return "long-tail (baked)"
+
+
+def _version_from_purpose(purpose: str) -> str:
+    """Pull the version anchor (commit / release / version) from a long-tail
+    purpose string. `install_commands` generators emit `name (<tier> @ <ref>)`
+    for source / synthesized / script-repo / spack tiers — the ref IS the pinned
+    install identity captured by the build. Returns '' if no anchor present."""
+    if not purpose:
+        return ""
+    m = re.search(r"@\s*([A-Za-z0-9._-]{4,})", purpose)
+    return m.group(1) if m else ""
+
+
+# Strict version shape — must start with a digit and look like a real version
+# token (1.4, 1.4-r122, 0.7.17-r1188, 3.1.2, 1.21). The leading-digit constraint
+# means a banner like "Usage: seqtk <command>" can't be mistaken for a version.
+_VER_TOKEN = re.compile(r"\b[Vv]?(\d+\.\d+(?:\.\d+)?(?:[._-][A-Za-z]?\d+)?)\b")
+
+
+def _version_from_banner(banner: str) -> str:
+    """Pull a version-shaped token from a tool's self-reported banner. The banner
+    is runtime-captured stdout from `<tool> --version` / bare `<tool>` in the
+    shipped image — structurally non-fakeable by the agent (the probe command is
+    synthesized from a sanitized tool token inside container_build, no agent text
+    reaches the shell). Looks for explicit 'Version: X.Y.Z' first (the high-
+    confidence shape), then a bare version-shaped token. Returns '' if nothing
+    matches the strict shape — agent can't smuggle arbitrary text into this cell."""
+    if not banner:
+        return ""
+    m = re.search(r"[Vv]ersion[: ]+[Vv]?(\d+\.\d+[A-Za-z0-9._-]*)", banner)
+    if m:
+        return m.group(1)
+    m = _VER_TOKEN.search(banner)
+    return m.group(1) if m else ""
+
+
+def _install_anchor(tool: str, shipped: Optional[list]) -> str:
+    """The pinned commit / ref / tag freeze recorded in the long-tail purpose for
+    this tool (the install identity for source / synthesized / script-repo tiers).
+    Empty for conda / pip / binary tiers (their purpose doesn't carry `@ <ref>`)."""
+    low = (tool or "").lower()
+    for s in shipped or []:
+        purpose = s.get("name") or s.get("purpose") or ""
+        if low and low in purpose.lower():
+            return _version_from_purpose(purpose)
+    return ""
+
+
+def _is_sha(s: str) -> bool:
+    """Looks like a git commit SHA (≥7 hex chars). Used to decide whether to
+    label an anchor as 'commit <hex>' (vs a tag like 'v1.4' that we'd suppress
+    when a banner version is already showing)."""
+    return bool(s) and len(s) >= 7 and bool(re.fullmatch(r"[0-9a-fA-F]+", s))
+
+
+def _resolved_version(tool: str, pkg: Optional[dict], v: Optional[dict],
+                      shipped: Optional[list]) -> str:
+    """The single source of truth for a tool's installed-version cell, used by
+    BOTH report renderers so the .md and .html stay aligned. Honesty-ordered:
+
+      1. conda/pip metadata version — authoritative for the conda layer
+      2. banner version — what the shipped binary itself prints (non-fakeable,
+         captured by validate_in_image's tool probe)
+      3. evidence-check `out` version — same shipped binary, but the evidence
+         command itself CAN be agent-supplied via install primitives
+      4. install anchor — pinned commit / release / tag from the long-tail purpose
+
+    Returns '' when none resolves to a strict version-shaped token."""
+    cv = (pkg or {}).get("version", "")
+    if cv:
+        return cv
+    bv = _version_from_banner((v or {}).get("banner", ""))
+    if bv:
+        return bv
+    ev = _extract_version((v or {}).get("out", ""))
+    if ev:
+        return ev
+    return _install_anchor(tool, shipped)
 
 
 def _verif_index(verifications: list[dict]) -> dict[str, dict]:
@@ -146,9 +227,14 @@ def render_env_report(record: dict) -> str:
         for t in requested:
             pkg = pidx.get(t.lower())
             v = vidx.get(t.lower())
-            # conda version when known; else the version the tool printed in its
-            # in-image evidence (real, captured output — not fabricated)
-            ver = (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or "—"
+            # version cell: conda/pip > banner > evidence-out > install anchor
+            # (see _resolved_version). If we ended up with a banner/conda/out
+            # version AND there's a distinct SHA install anchor, append it in
+            # parens for full provenance ("1.4-r122 (commit 94e707082d39)").
+            ver = _resolved_version(t, pkg, v, shipped) or "—"
+            anchor = _install_anchor(t, shipped)
+            if ver != "—" and anchor and anchor != ver and _is_sha(anchor):
+                ver = f"{ver} (commit {anchor[:12]})"
             L.append(f"| {t} | {ver} | {_install_method(t, pkg, shipped)} | "
                      f"{_evidence_cell(v)} |")
     else:

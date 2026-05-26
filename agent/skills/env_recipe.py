@@ -32,10 +32,18 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
                    primary_tools: list[str], version: str = "",
                    platform: str = "linux/amd64", accelerator: Optional[dict] = None,
                    license_gated: bool = False, licenses: Optional[list[str]] = None,
-                   redistributable: bool = True, content_digest: str = "") -> dict[str, Any]:
+                   redistributable: bool = True, content_digest: str = "",
+                   conda_lock: Optional[dict[str, str]] = None,
+                   apt_snapshot: str = "") -> dict[str, Any]:
     """Assemble the self-contained recipe from a draft + the freeze args. Carries the
     install_steps subset (which holds every non-conda install_method, incl. synthesized
-    commands + provenance + commit) verbatim, so a rebuild needs nothing else."""
+    commands + provenance + commit) verbatim, so a rebuild needs nothing else.
+
+    `conda_lock` is the per-file engine lock dict (e.g. {pixi.toml: ..., pixi.lock: ...}
+    captured during freeze). When present, a replay skips the conda/pip SOLVE and
+    materializes the env from these exact bytes — eliminates the bioconda-moves-and-
+    your-rebuild-drifts class of failure. The lock is the URL+sha256 list pixi
+    generates; same lock → identical packages across time and machines."""
     draft = draft or {}
     return {
         "recipe_version": RECIPE_VERSION,
@@ -44,6 +52,10 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
         "platform": platform,
         "primary_tools": list(primary_tools or []),
         "conda_deps": list(conda_deps or []),
+        "conda_lock": dict(conda_lock) if conda_lock else {},
+        # snapshot.debian.org timestamp pinning the apt layer. Empty for pre-
+        # Phase-2 recipes; when set, replay points apt at the same snapshot URL.
+        "apt_snapshot": apt_snapshot or "",
         # install_steps carry the non-conda install_methods that build_env_image replays.
         "install_steps": [s for s in (draft.get("install_steps") or []) if isinstance(s, dict)],
         "accelerator": accelerator,
@@ -73,6 +85,13 @@ def rebuild_from_recipe(recipe: dict, *, engine=None,
         licenses=recipe.get("licenses", []),
         redistributable=recipe.get("redistributable", True),
         engine=engine,
+        # the prebaked lock (if the recipe carries one): replay materializes the env
+        # from these exact bytes, no solve — no chance of bioconda drift.
+        conda_lock_files=recipe.get("conda_lock") or None,
+        # the captured snapshot.debian.org timestamp — replay's apt resolves to
+        # the SAME bytes as the original freeze. Empty for pre-Phase-2 recipes
+        # (which keep floating-apt behavior, backward compatible).
+        apt_snapshot=recipe.get("apt_snapshot") or "",
     )
     expected = recipe.get("content_digest") or ""
     got = br.get("content_digest") or ""

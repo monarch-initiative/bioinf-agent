@@ -1651,16 +1651,19 @@ def test_install_command_generators_self_contained_tiers():
     # bare binary: install, no extract
     rb2 = ic.release_binary("mosdepth", "https://x/mosdepth")
     assert "install -m 0755 mosdepth /usr/local/bin/mosdepth" in rb2["command"]
-    # source: clone → checkout → build → MANUAL install (no make install target)
+    # source: SWH-fallback clone → checkout → build → MANUAL install (no make install target).
+    # The `_swh_clone` wrapper is the Phase 3 link-rot protection — tries upstream first,
+    # falls back to Software Heritage's vault on failure; final `git checkout <sha>` proves
+    # the bytes either way.
     s = ic.source("tabtk", "https://github.com/lh3/tabtk", ref="abc123", build_command="make")
-    assert "git clone https://github.com/lh3/tabtk" in s["command"]
+    assert "_swh_clone https://github.com/lh3/tabtk abc123 /opt/tools/tabtk/src" in s["command"]
     assert "git checkout abc123" in s["command"] and "make" in s["command"]
     assert "install -m 0755 /opt/tools/tabtk/src/tabtk /usr/local/bin/tabtk" in s["command"]
     assert s["evidence"] == "command -v tabtk"
-    # script repo (half-baked run-by-path): clone → wrapper exec'ing the entry script
+    # script repo (half-baked run-by-path): SWH-fallback clone → wrapper exec'ing the entry script
     sr = ic.script_repo("mytool", "https://github.com/lab/mytool", script_rel="run.py",
                         interpreter="python")
-    assert "git clone https://github.com/lab/mytool" in sr["command"]
+    assert "_swh_clone https://github.com/lab/mytool" in sr["command"]
     assert "exec python /opt/tools/mytool/run.py" in sr["command"]
     assert "/usr/local/bin/mytool" in sr["command"]
 
@@ -2200,7 +2203,9 @@ def test_env_report_long_tail_tier_version_and_delivery():
     }
     md = render_env_report(rec)
     assert "| seqkit | 2.13.0 | binary |" in md      # version from in-image output + real tier
-    assert "| seqtk | 1.4-r122 | source |" in md
+    # source tier with a SHA install anchor: dual-display keeps the commit
+    # visible alongside the version (full provenance — non-fakeable).
+    assert "| seqtk | 1.4-r122 (commit 7c04ce7) | source |" in md
     assert "Registry: pushed: ghcr.io/org/vc:1" in md
     assert "apptainer pull vc.sif docker://ghcr.io/org/vc:1" in md
     assert "Reproducibility" in md and "digest-pinned" in md
@@ -2826,7 +2831,7 @@ def test_map_install_routes_run_by_path_to_script_repo():
         "entrypoint": "HIC_ASSEMBLER/run_hicAssembler.py", "interpreter": "python"}})
     assert "spec" in m and "error" not in m
     cmd = m["spec"]["command"]
-    assert "git clone" in cmd and "run_hicAssembler.py" in cmd and "/usr/local/bin/gab" in cmd
+    assert "_swh_clone" in cmd and "run_hicAssembler.py" in cmd and "/usr/local/bin/gab" in cmd
     bad = ef._map_install({"name": "gab", "type": "source", "install_method": {
         "type": "source", "source": "https://github.com/x/gab", "commit_sha": "abc"}})
     assert "error" in bad
@@ -2874,3 +2879,493 @@ def test_runtime_image_is_self_activating_env_on_path():
     assert "/work/.pixi/envs/default/bin" in pix and "ENV PATH" in pix and "CONDA_PREFIX" in pix
     mam = "\n".join(MicromambaEngine().runtime_lines())
     assert "/opt/micromamba/envs/env/bin" in mam and "ENV PATH" in mam and "CONDA_PREFIX" in mam
+
+
+# ---------------------------------------------------------------------------
+# BANNER-PROBE NON-FAKEABILITY — the version-cell honesty contract.
+# The probe captures the shipped tool's self-reported version BANNER without
+# letting the agent influence what gets run or what gets accepted. These tests
+# guard the seams that make it non-fakeable: the probe command is synthesized
+# from a sanitized tool token only, an unsafe token is skipped (no banner) instead
+# of risking shell injection, and the renderer accepts only version-shaped tokens
+# extracted from the captured stdout.
+# ---------------------------------------------------------------------------
+
+def test_validate_in_image_probe_command_uses_only_tool_token(monkeypatch):
+    """The banner probe is synthesized inside container_build from the tool token
+    alone — no agent text reaches the shell. Capture every docker invocation and
+    assert each probe is `<tool> --version` / bare `<tool>`, nothing else."""
+    from agent.skills import container_build as cb
+    cb_inst = cb.ContainerBuild.__new__(cb.ContainerBuild)
+    cb_inst.platform = "linux/amd64"
+    cb_inst.workdir = "/work"
+    invocations = []
+
+    def fake_sh(argv, timeout=300):
+        invocations.append(argv)
+        return {"returncode": 0, "stdout": "Version: 1.4-r122\n", "stderr": ""}
+
+    cb_inst._sh = fake_sh
+    res = cb_inst.validate_in_image("image:tag", checks=["samtools --help 2>/dev/null"],
+                                    probe_tools=["seqtk"])
+    probe_argvs = [a for a in invocations
+                   if any("seqtk" in x and "samtools" not in x for x in a)]
+    assert probe_argvs, "expected probe invocations for seqtk"
+    for argv in probe_argvs:
+        shell_cmd = argv[-1]   # docker run ... bash -c <cmd>
+        # the probe command must mention ONLY the tool token + flags + the 2>&1 || true tail
+        assert shell_cmd.startswith("seqtk")
+        assert "samtools" not in shell_cmd   # other tools never leak in
+        # no agent-payload metacharacters beyond the fixed `2>&1 || true` suffix
+        assert ";" not in shell_cmd and "$" not in shell_cmd and "`" not in shell_cmd
+    assert res["banners"]["seqtk"].startswith("Version: 1.4-r122")
+
+
+def test_validate_in_image_unsafe_tool_token_is_skipped(monkeypatch):
+    """A tool token with shell metacharacters MUST NOT produce a probe command.
+    Closes the only shell-injection seam — the renderer would refuse the empty
+    banner anyway, but the probe must not even synthesize the dangerous string."""
+    from agent.skills import container_build as cb
+    cb_inst = cb.ContainerBuild.__new__(cb.ContainerBuild)
+    cb_inst.platform = "linux/amd64"
+    cb_inst.workdir = "/work"
+    invocations = []
+    cb_inst._sh = lambda argv, timeout=300: (invocations.append(argv),
+                                             {"returncode": 0, "stdout": "", "stderr": ""})[1]
+    bad = "seqtk; rm -rf /"
+    res = cb_inst.validate_in_image("image:tag", checks=[], probe_tools=[bad])
+    assert res["banners"][bad] == ""        # nothing captured
+    # no docker invocation ever referenced the dangerous token
+    assert not any(bad in x for argv in invocations for x in argv)
+
+
+def test_version_from_banner_accepts_only_version_shaped_tokens():
+    """The renderer extracts a version from the captured banner ONLY when it
+    matches the strict version shape (digit-led, dotted). Arbitrary text in a
+    banner can't be smuggled into the version cell."""
+    from agent.skills.env_report import _version_from_banner
+    assert _version_from_banner("Version: 1.4-r122\nUsage: seqtk ...") == "1.4-r122"
+    assert _version_from_banner("seqtk 1.4-r122\nCopyright (c) ...") == "1.4-r122"
+    assert _version_from_banner("bcftools 1.21\nUsing htslib 1.21") == "1.21"
+    assert _version_from_banner("samtools v0.7.17-r1188") == "0.7.17-r1188"
+    # garbage in → empty out
+    assert _version_from_banner("Usage: seqtk <command>\nProgram: seqtk\n") == ""
+    assert _version_from_banner("just-a-string-with-no-version") == ""
+    assert _version_from_banner("") == ""
+
+
+def test_resolved_version_prefers_conda_then_banner_then_out_then_anchor():
+    """The chain that's identical across .md + .html renderers: conda/pip > banner
+    > evidence `out` > install anchor. Each step is a runtime-captured fact (or
+    an agent-supplied evidence command — labelled honestly); fakeability decreases
+    left to right."""
+    from agent.skills.env_report import _resolved_version
+    # conda wins
+    assert _resolved_version("samtools", {"version": "1.21"},
+                             {"banner": "samtools 1.99", "out": "samtools 1.50"}, []) == "1.21"
+    # banner beats out when no conda
+    assert _resolved_version("seqtk", None,
+                             {"banner": "Version: 1.4-r122", "out": ""}, []) == "1.4-r122"
+    # out only — last resort before the anchor
+    assert _resolved_version("tool", None, {"banner": "", "out": "tool v0.9.1"}, []) == "0.9.1"
+    # anchor is the last resort (synthesized purpose carries the commit)
+    assert _resolved_version("seqtk", None, {"banner": "", "out": ""},
+                             [{"name": "seqtk (synthesized @ abc1234def56)",
+                               "command": "..."}]) == "abc1234def56"
+    # nothing → empty
+    assert _resolved_version("ghost", None, None, []) == ""
+
+
+def test_is_sha_recognizes_commit_only_for_hex_blobs():
+    """The dual-display rule appends `(commit <sha>)` only when the install
+    anchor LOOKS like a git SHA — a release tag like 'v1.4' is suppressed (would
+    just duplicate the banner version)."""
+    from agent.skills.env_report import _is_sha
+    assert _is_sha("94e707082d39")
+    assert _is_sha("abcdef1")              # 7 chars — git's short-SHA floor
+    assert not _is_sha("v1.4")
+    assert not _is_sha("1.4-r122")
+    assert not _is_sha("abc12")            # too short
+    assert not _is_sha("")
+
+
+def test_html_report_dual_displays_banner_version_with_sha_anchor():
+    """When a banner version is captured AND the install anchor is a SHA, the
+    cell renders both: '1.4-r122 (commit 94e707082d)'. Full provenance kept."""
+    from agent.skills.env_report_html import render_env_report_html
+    record = {"name": "demo", "image": "demo:latest", "image_digest": "sha256:x",
+              "content_digest": "sha256:y", "platform": "linux-64",
+              "mode": "build", "validation_locus": "native",
+              "redistributable": True, "requested_tools": ["seqtk"],
+              "verifications": [{"tool": "seqtk", "check": "seqtk 2>&1 | grep -qi usage",
+                                 "passed": True, "out": "",
+                                 "banner": "Version: 1.4-r122\nUsage: seqtk ..."}],
+              "shipped_binaries": [{"name": "seqtk (synthesized @ 94e707082d39)",
+                                    "command": "git clone ..."}],
+              "resolved_packages": [], "system_packages": [], "conda_specs": []}
+    html = render_env_report_html(record)
+    # banner version up front, commit anchor in parentheses
+    assert "1.4-r122" in html
+    assert "(commit 94e707082d39)" in html
+
+
+def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
+    """EnvBuild.verify_in_image must pass the tool tokens to validate_in_image and
+    write the per-tool banner into the verification records — this is how the
+    captured fact reaches the freeze record + the renderer."""
+    from agent.skills import env_build as eb
+
+    class FakeCB:
+        platform = "linux/amd64"
+        def validate_in_image(self, image, checks, probe_tools=None):
+            assert probe_tools == ["seqtk"], "tool tokens must be forwarded"
+            return {"success": True,
+                    "checks": {checks[0]: {"rc": 0, "out": ""}},
+                    "banners": {"seqtk": "Version: 1.4-r122"}}
+
+    inst = eb.EnvBuild.__new__(eb.EnvBuild)
+    inst.cb = FakeCB()
+    inst.verifications = [{"label": "seqtk", "tool": "seqtk",
+                           "check": "seqtk 2>&1 | grep -qi usage", "engine_coupled": False}]
+    res = inst.verify_in_image("image:tag")
+    assert res["success"]
+    assert res["verifications"][0]["banner"] == "Version: 1.4-r122"
+    assert res["verifications"][0]["tool"] == "seqtk"
+
+
+def test_mcp_freeze_evicted_image_falls_through_to_rebuild(monkeypatch, tmp_path):
+    """An EnvCache record whose image is no longer in the docker daemon (the user
+    `docker rmi`'d it, or the daemon was reset) must MISS the cache and trigger
+    a fresh build — not silently hand back a dangling reference + un-rendered
+    reports. Re-anchors the cache against the docker daemon at lookup time."""
+    import importlib
+    from agent.skills import freeze as freeze_mod
+    m = importlib.import_module("agent.mcp_server")
+    # an existing cached record pointing at an image that's NOT in the daemon
+    cache = freeze_mod.EnvCache(tmp_path / "cache.json")
+    cache.register("samtools|linux-64|none",
+                   {"image": "samtools_dangling:latest", "image_digest": "sha256:dead",
+                    "content_digest": "sha256:dead", "mode": "build", "platform": "linux-64",
+                    "tarball": "", "hpc_delivery": {}, "redistributable": True})
+    # stub the daemon to return "image not present" for any inspect call
+    monkeypatch.setattr(m, "subprocess",
+                        type("SP", (), {"run": staticmethod(
+                            lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})())})())
+    monkeypatch.setattr(m, "_env_cache", cache)
+    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
+    # force the build path to refuse so we get a clear post-cache signal that the
+    # rebuild was attempted (which is the assertion that matters here).
+    def fake_build(*a, **k):
+        return {"success": False, "stage": "container_build", "reason": "stub"}
+    monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
+    monkeypatch.setattr(m._biocontainers, "resolve_biocontainer",
+                        lambda tools, gated=False: {"found": False})
+    res = m.freeze(env_name="samtools_e", tools=["samtools"], platform="linux-64")
+    # NOT a cache hit (the dangling image was correctly invalidated)
+    assert res.get("success") is False
+    assert res.get("stage") == "container_build"   # reached the build path
+    assert "cache_hit" not in res or res["cache_hit"] is False
+
+
+# ---------------------------------------------------------------------------
+# PHASE 1 — CONDA LOCK IN THE RECIPE.
+# The recipe carries pixi.toml + pixi.lock so a rebuild materializes the env
+# from those exact bytes — no solve, no chance of bioconda drift picking a
+# newer build of htslib (etc.) and producing a different content_digest months
+# later. These tests guard the seams that thread the lock through.
+# ---------------------------------------------------------------------------
+
+def test_extract_recipe_carries_conda_lock_when_provided():
+    """extract_recipe stores the per-file lock dict as `conda_lock` in the
+    recipe (or {} when omitted — backward compatible with pre-Phase-1 recipes)."""
+    from agent.skills import env_recipe
+    lock = {"pixi.toml": '[project]\nname="x"\n', "pixi.lock": "version: 6\n"}
+    rec = env_recipe.extract_recipe(None, name="x", conda_deps=["samtools=1.21"],
+                                    primary_tools=["samtools"], conda_lock=lock)
+    assert rec["conda_lock"] == lock
+    assert rec["conda_lock"] is not lock  # defensive copy
+    # backward compatible: omitting conda_lock yields {} (not missing key)
+    rec0 = env_recipe.extract_recipe(None, name="x", conda_deps=["samtools=1.21"],
+                                     primary_tools=["samtools"])
+    assert rec0["conda_lock"] == {}
+
+
+def test_rebuild_from_recipe_passes_conda_lock_through(monkeypatch):
+    """rebuild_from_recipe must forward the recipe's `conda_lock` to build_env_image
+    as `conda_lock_files`, so the replay skips the solve. Without this thread, the
+    recipe carries the lock but the replay still re-solves — silent drift."""
+    from agent.skills import env_recipe
+    cap = {}
+    def fake_build(spec, **kw):
+        cap.update(kw)
+        return {"success": True, "content_digest": "sha256:x"}
+    recipe = {"recipe_version": 1, "name": "x", "conda_deps": ["samtools=1.21"],
+              "primary_tools": ["samtools"], "install_steps": [],
+              "conda_lock": {"pixi.toml": "...", "pixi.lock": "..."},
+              "content_digest": "sha256:x"}
+    env_recipe.rebuild_from_recipe(recipe, build_fn=fake_build)
+    assert cap["conda_lock_files"] == recipe["conda_lock"]
+
+
+def test_envbuild_prebaked_lock_skips_solve_calls_declare_locked(monkeypatch):
+    """When prebaked_lock_files is set, EnvBuild.build() must call declare_locked
+    (write the lock + `pixi install --locked`) — NOT declare/declare_pypi (which
+    would re-solve). This is the seam that makes Phase 1 non-fakeable: a recipe
+    with a lock cannot accidentally fall back to solving."""
+    from agent.skills import env_build as eb
+    calls = []
+
+    class FakeCB:
+        workdir = "/work"
+        class engine:
+            name = "pixi"
+            @staticmethod
+            def lock_artifacts(): return ["pixi.toml", "pixi.lock"]
+        def start(self): return {"success": True}
+        def declare(self, *a, **k):
+            calls.append("declare"); return {"success": True}
+        def declare_pypi(self, *a, **k):
+            calls.append("declare_pypi"); return {"success": True}
+        def declare_locked(self, lock_files):
+            calls.append(("declare_locked", sorted(lock_files)))
+            return {"success": True}
+        def exec(self, cmd, timeout=300):
+            return {"returncode": 0, "stdout": "captured-lock-content", "stderr": ""}
+
+    inst = eb.EnvBuild.__new__(eb.EnvBuild)
+    inst.cb = FakeCB()
+    inst.conda_specs = ["samtools=1.21"]
+    inst.pip_specs = []
+    inst.tools = []
+    inst.lock_text = ""
+    inst.lock_files = {}
+    inst.prebaked_lock_files = {"pixi.toml": "T", "pixi.lock": "L"}
+    inst.build()
+    assert ("declare_locked", ["pixi.lock", "pixi.toml"]) in calls
+    assert "declare" not in calls and "declare_pypi" not in calls   # NO solve
+
+
+def test_pixi_engine_install_from_lock_writes_files_and_installs():
+    """PixiEngine.install_from_lock writes each lock file via base64+`base64 -d`,
+    then runs `pixi install --locked`. The base64 encoding is what makes binary-
+    or unicode-safe lock content survive the docker exec round-trip."""
+    from agent.skills.container_build import PixiEngine
+    eng = PixiEngine()
+    calls = []
+    class FakeCB:
+        def exec(self, cmd, timeout=300):
+            calls.append(cmd)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+    r = eng.install_from_lock(FakeCB(), {"pixi.toml": "T", "pixi.lock": "L"})
+    assert r["success"]
+    # both files written via base64 decode into /work
+    written = [c for c in calls if "base64 -d" in c]
+    assert any("pixi.toml" in c for c in written)
+    assert any("pixi.lock" in c for c in written)
+    # final step is the lock-aware install — explicit `--locked`, NOT a solve
+    assert any("pixi install --locked" in c for c in calls)
+
+
+def test_base_engine_install_from_lock_refuses_rather_than_solving():
+    """The base EnvEngine returns an explicit error from install_from_lock — an
+    engine that hasn't implemented the lock-replay path must FAIL LOUD, never
+    silently fall back to solving (which would erase the whole reproducibility
+    guarantee). Micromamba inherits this default until someone implements it."""
+    from agent.skills.container_build import EnvEngine
+    r = EnvEngine().install_from_lock(None, {"foo": "bar"})
+    assert r["success"] is False
+    assert "does not implement install_from_lock" in r["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# PHASE 2 — APT LAYER PINNED TO SNAPSHOT.DEBIAN.ORG.
+# The freeze captures a UTC timestamp; every apt-get (live build container AND
+# emitted Dockerfile, builder + runtime stages) points at the snapshot archive
+# at that timestamp. Same apt bytes across time/machines — no `apt-get update`
+# drift picking newer libssl3 et al.
+# ---------------------------------------------------------------------------
+
+def test_snapshot_sources_list_formats_bookworm_main_plus_security():
+    """The sources.list emitted points at snapshot.debian.org/<timestamp>/ for
+    bookworm main AND debian-security/<timestamp>/ for bookworm-security. Both
+    are needed so security updates within the snapshot moment are resolvable."""
+    from agent.skills.container_build import _snapshot_sources_list
+    out = _snapshot_sources_list("20260526T200000Z")
+    assert "http://snapshot.debian.org/archive/debian/20260526T200000Z/ bookworm main" in out
+    assert "http://snapshot.debian.org/archive/debian-security/20260526T200000Z/ bookworm-security main" in out
+
+
+def test_emit_dockerfile_pins_apt_to_snapshot_when_timestamp_given():
+    """When apt_snapshot is set, every `apt-get update` in the Dockerfile is
+    preceded by a sources.list rewrite to snapshot.debian.org AND uses
+    Acquire::Check-Valid-Until=false (the snapshot's expired Valid-Until is
+    still GPG-valid — we accept it explicitly)."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                         has_env_layer=False, longtail_steps=[],
+                         apt_snapshot="20260526T200000Z")
+    assert "snapshot.debian.org/archive/debian/20260526T200000Z" in df
+    assert "Acquire::Check-Valid-Until=false" in df
+    # both stages (builder + runtime) must be pinned — search count.
+    assert df.count("snapshot.debian.org/archive/debian/20260526T200000Z") >= 2
+
+
+def test_emit_dockerfile_omits_snapshot_when_timestamp_empty():
+    """Backward compat: pre-Phase-2 recipes (no apt_snapshot) emit the original
+    floating-apt Dockerfile, byte-identical to the previous behavior."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                         has_env_layer=False, longtail_steps=[])
+    assert "snapshot.debian.org" not in df
+    assert "Acquire::Check-Valid-Until" not in df
+
+
+def test_envbuild_content_digest_folds_in_apt_snapshot_when_set():
+    """When apt_snapshot is set, it BINDS the apt layer into the digest — two
+    rebuilds at different snapshot timestamps yield different digests (so the
+    digest no longer lies about the apt layer). Empty apt_snapshot leaves the
+    digest unchanged (pre-Phase-2 behavior, recipes verify across versions)."""
+    from agent.skills.env_build import EnvBuild
+    eb_a = EnvBuild("demo", "1.0", platform="linux/amd64", apt_snapshot="20260526T200000Z")
+    eb_b = EnvBuild("demo", "1.0", platform="linux/amd64", apt_snapshot="20260526T200001Z")
+    eb_z = EnvBuild("demo", "1.0", platform="linux/amd64")   # no snapshot
+    eb_a.lock_text = eb_b.lock_text = eb_z.lock_text = "L"
+    da, db, dz = eb_a.content_digest(), eb_b.content_digest(), eb_z.content_digest()
+    assert da != db                    # different snapshots → different digests
+    assert dz != da and dz != db       # no-snapshot digest is its own thing
+    # second EnvBuild with the SAME snapshot must reproduce the digest
+    eb_a2 = EnvBuild("demo", "1.0", platform="linux/amd64", apt_snapshot="20260526T200000Z")
+    eb_a2.lock_text = "L"
+    assert eb_a2.content_digest() == da
+
+
+def test_envbuild_apt_snapshot_is_threaded_into_container_build():
+    """EnvBuild constructs its ContainerBuild with apt_snapshot — the live build
+    container's apt commands honor the pin, not just the emitted Dockerfile.
+    Without this, `pixi add` would solve against the snapshot-pinned env in the
+    Dockerfile but the BUILD container's apt would float (mismatch)."""
+    from agent.skills.env_build import EnvBuild
+    eb = EnvBuild("demo", platform="linux/amd64", apt_snapshot="20260526T200000Z")
+    assert eb.cb.apt_snapshot == "20260526T200000Z"
+
+
+def test_extract_recipe_carries_apt_snapshot():
+    """extract_recipe stores apt_snapshot in the recipe so rebuild_from_recipe
+    can replay against the same snapshot. Empty string when omitted (backward
+    compatible — pre-Phase-2 recipes are missing the field)."""
+    from agent.skills import env_recipe
+    rec = env_recipe.extract_recipe(None, name="x", conda_deps=[], primary_tools=[],
+                                    apt_snapshot="20260526T200000Z")
+    assert rec["apt_snapshot"] == "20260526T200000Z"
+    rec0 = env_recipe.extract_recipe(None, name="x", conda_deps=[], primary_tools=[])
+    assert rec0["apt_snapshot"] == ""
+
+
+def test_rebuild_from_recipe_forwards_apt_snapshot_to_build_env_image():
+    """The recipe-replay path threads apt_snapshot through so the rebuild's apt
+    resolves to the SAME bytes as the original freeze. No drift on rebuild."""
+    from agent.skills import env_recipe
+    cap = {}
+    def fake_build(spec, **kw):
+        cap.update(kw); return {"success": True, "content_digest": "sha256:x"}
+    recipe = {"recipe_version": 1, "name": "x", "conda_deps": [],
+              "primary_tools": [], "install_steps": [],
+              "apt_snapshot": "20260526T200000Z"}
+    env_recipe.rebuild_from_recipe(recipe, build_fn=fake_build)
+    assert cap["apt_snapshot"] == "20260526T200000Z"
+
+
+def test_build_env_image_auto_generates_snapshot_when_none_given(monkeypatch):
+    """A FIRST freeze (no recipe yet) auto-generates a UTC snapshot timestamp.
+    Captures it into the build so the recipe written from that freeze carries it,
+    closing the loop — subsequent replays pin to the captured moment."""
+    import re
+    from agent.skills import env_freeze
+    cap = {}
+    class FakeEB:
+        def __init__(self, *a, **k): cap.update(k)
+        def add_conda(self, *a, **k): pass
+        def add_pip(self, *a, **k): pass
+        def add_tool(self, *a, **k): pass
+        def run(self): return {"success": True}
+        def request_key(self): return "rk"
+    monkeypatch.setattr(env_freeze, "EnvBuild", FakeEB)
+    env_freeze.build_env_image({"install_steps": []}, name="demo", conda_deps=[])
+    assert re.fullmatch(r"\d{8}T\d{6}Z", cap["apt_snapshot"])
+
+
+# ---------------------------------------------------------------------------
+# PHASE 3 — SOFTWARE HERITAGE LINK-ROT FALLBACK FOR SOURCE-TIER INSTALLS.
+# A git source install gets a `_swh_clone` wrapper baked into the install
+# command. If the upstream URL is dead at rebuild time, SWH's git_bare vault
+# serves the same commit (SHA-verified after — SWH can't lie about contents
+# without changing the SHA). Zero freeze-time cost; pays only when needed.
+# ---------------------------------------------------------------------------
+
+def test_source_install_uses_swh_clone_not_bare_git_clone():
+    """install_commands.source emits `_swh_clone <url> <ref> <dst>` instead of
+    a bare `git clone`. This is the seam that makes link-rot self-healing — a
+    bare git clone has no fallback; _swh_clone tries upstream then SWH."""
+    from agent.skills.install_commands import source
+    s = source("seqtk", "https://github.com/lh3/seqtk",
+               ref="ae7defa8bead", build_command="make", bin_path="seqtk")
+    assert "_swh_clone https://github.com/lh3/seqtk ae7defa8bead " in s["command"]
+    assert "git clone https://" not in s["command"]   # no bare clone left
+
+
+def test_script_repo_install_uses_swh_clone_not_bare_git_clone():
+    """script_repo (run-by-path academic repos) gets the same _swh_clone wrap —
+    half-baked academic tools are the MOST common link-rot victims."""
+    from agent.skills.install_commands import script_repo
+    s = script_repo("acad_tool", "https://github.com/lab/x", ref="abc1234",
+                    script_rel="run.py", interpreter="python")
+    assert "_swh_clone https://github.com/lab/x abc1234 " in s["command"]
+    assert "git clone https://" not in s["command"]
+
+
+def test_swh_clone_script_has_required_shape():
+    """The _SWH_CLONE_SCRIPT helper installed in the builder stage must (1) try
+    upstream first, (2) hit SWH's vault API on failure, (3) poll until done or
+    fail loud, (4) clone from the resulting tarball locally."""
+    from agent.skills.container_build import _SWH_CLONE_SCRIPT
+    assert "git clone \"$url\" \"$dst\"" in _SWH_CLONE_SCRIPT         # upstream first
+    assert "archive.softwareheritage.org/api/1/vault/git_bare/" in _SWH_CLONE_SCRIPT
+    assert "swh:1:rev:${commit}" in _SWH_CLONE_SCRIPT                 # commit-anchored
+    assert "jq -r '.status" in _SWH_CLONE_SCRIPT                      # status polling
+    assert 'status" = "done"' in _SWH_CLONE_SCRIPT                    # done branch
+    assert "exit 2" in _SWH_CLONE_SCRIPT                              # fails loud on SWH failure
+
+
+def test_emit_dockerfile_installs_swh_clone_helper_in_builder_stage():
+    """The builder stage of the emitted Dockerfile must install _swh_clone BEFORE
+    any source-tier install commands run — they call it. Without this, source
+    installs would fail with `command not found: _swh_clone`."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                         has_env_layer=False, longtail_steps=[])
+    assert "/usr/local/bin/_swh_clone" in df
+    assert "chmod +x /usr/local/bin/_swh_clone" in df
+    # the install must precede `mkdir -p /opt/tools` (which is where source
+    # installs land) — installed in the builder stage early, before any source
+    # commands can call it.
+    swh_pos = df.index("/usr/local/bin/_swh_clone")
+    tools_pos = df.index("mkdir -p /opt/tools")
+    assert swh_pos < tools_pos
+
+
+def test_build_apt_includes_jq_for_swh_fallback():
+    """jq is required by _swh_clone to parse SWH's vault API JSON. It's in the
+    BUILD set (~1MB) but NOT the RUNTIME set — never ships."""
+    from agent.skills.container_build import _BUILD_APT, _RUNTIME_APT
+    assert " jq " in f" {_BUILD_APT} "
+    assert " jq " not in f" {_RUNTIME_APT} "   # never ships
+
+
+def test_env_vendor_stub_returns_explicit_not_implemented():
+    """The HEAVY mirror sidecar (audit-proof mode) is a stub for now — must
+    refuse explicitly rather than silently doing nothing. Adding it later is a
+    contained change against this contract."""
+    from agent.skills import env_vendor
+    r = env_vendor.materialize([{"install_method": {"type": "release_binary"}}], "/tmp/x")
+    assert r["success"] is False
+    assert "audit_proof" in r["reason"] or "future heavy-mode" in r["reason"]

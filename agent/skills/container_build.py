@@ -52,10 +52,84 @@ from typing import Any, Optional
 # works IN the shipped image (exact peak RSS for I7); without it, sub-second tools
 # fall back to a single docker-stats sample that reads 0.
 _RUNTIME_APT = "ca-certificates procps time zlib1g libbz2-1.0 liblzma5 libcurl4 libssl3"
-_BUILD_APT = (_RUNTIME_APT + " curl tar gzip bzip2 xz-utils unzip "
+# `jq` is in the BUILD set (not RUNTIME) because the SWH-fallback helper that
+# the source-tier installs call uses jq to parse SWH's vault API JSON. Tiny
+# (~1MB) and only present in the BUILDER stage — never ships.
+_BUILD_APT = (_RUNTIME_APT + " curl tar gzip bzip2 xz-utils unzip jq "
               "build-essential git zlib1g-dev libbz2-dev liblzma-dev "
               "libcurl4-openssl-dev libssl-dev")
 _BASE_APT = _BUILD_APT  # back-compat: ContainerBuild.start() provisions the build toolchain
+
+# A fixed UTC timestamp identifying a snapshot.debian.org archive (e.g.
+# "20260526T200000Z" → https://snapshot.debian.org/archive/debian/20260526T200000Z/).
+# snapshot.debian.org is Debian's official append-only mirror of the apt archive
+# AS IT EXISTED at any past timestamp. When we point apt-get at it, `apt-get
+# install procps libssl3 ...` resolves to the EXACT versions that existed at the
+# captured moment — same bytes across time/machines, no `apt-get update` drift.
+# We use HTTP (not HTTPS): apt verifies packages by GPG signatures embedded in
+# the signed Release files, so HTTP transport doesn't weaken authenticity. Old
+# snapshots have expired Valid-Until fields → `Acquire::Check-Valid-Until=false`
+# tells apt to accept them anyway (the GPG signature itself is still valid).
+def _snapshot_sources_list(snapshot: str) -> str:
+    base = f"http://snapshot.debian.org/archive/debian/{snapshot}"
+    sec = f"http://snapshot.debian.org/archive/debian-security/{snapshot}"
+    return (f"deb {base}/ bookworm main\n"
+            f"deb {sec}/ bookworm-security main\n")
+
+
+# Software Heritage link-rot fallback for source-tier git clones. SWH (funded by
+# INRIA + UNESCO) continuously archives GitHub/GitLab/etc.; a commit SHA that
+# resolves to the original repo is also resolvable via SWH's vault API. The
+# helper tries upstream first (fast path, zero overhead); only on failure does it
+# fall back to SWH's git_bare vault, which bakes a bare git repo on demand for a
+# specific commit. The final `git checkout <commit>` proves the bytes are right
+# regardless of source: SWH can't lie about which bytes the commit SHA names.
+# The script gets installed once during the apt setup step (live build container
+# AND emitted Dockerfile builder stage) so install_commands.source/script_repo
+# can call `_swh_clone` instead of a bare `git clone`.
+_SWH_CLONE_SCRIPT = r"""#!/bin/sh
+# _swh_clone <url> <commit> <dst>
+# Clone <url> into <dst>; if upstream is unreachable, fetch a bare git repo for
+# <commit> from Software Heritage and clone from that. Idempotent. Exits 0 on
+# success, nonzero on both upstream-AND-SWH failure (loud).
+set -eu
+url="$1"; commit="$2"; dst="$3"
+if git clone "$url" "$dst" 2>/dev/null; then
+    exit 0
+fi
+echo "[swh] upstream clone failed: $url -- falling back to Software Heritage" >&2
+api="https://archive.softwareheritage.org/api/1/vault/git_bare/swh:1:rev:${commit}/"
+status=""; fetch=""; i=0
+while [ $i -lt 60 ]; do
+    resp="$(curl -fsSL -X POST "$api" 2>/dev/null || curl -fsSL "$api" 2>/dev/null || true)"
+    [ -z "$resp" ] && { sleep 5; i=$((i+1)); continue; }
+    status="$(echo "$resp" | jq -r '.status // empty')"
+    case "$status" in
+        done)    fetch="$(echo "$resp" | jq -r '.fetch_url')"; break ;;
+        failed)  echo "[swh] cooking failed for commit $commit" >&2; exit 2 ;;
+        new|pending) sleep 10 ;;
+        *) echo "[swh] unexpected status='$status': $resp" >&2; sleep 10 ;;
+    esac
+    i=$((i+1))
+done
+[ "$status" = "done" ] || { echo "[swh] timeout waiting for $commit" >&2; exit 2; }
+tmp="$(mktemp -d)"
+curl -fsSL "$fetch" -o "$tmp/bare.tar"
+mkdir -p "$(dirname "$dst")"
+git clone "$tmp/bare.tar" "$dst"
+rm -rf "$tmp"
+"""
+
+
+def _swh_clone_install_lines() -> list[str]:
+    """Dockerfile RUN lines that install /usr/local/bin/_swh_clone. base64-encoded
+    so the multi-line script survives the single-RUN-line constraint. Idempotent;
+    safe to include even when no source-tier installs are present (tiny overhead)."""
+    import base64
+    b64 = base64.b64encode(_SWH_CLONE_SCRIPT.encode()).decode()
+    return [f"RUN echo {b64} | base64 -d > /usr/local/bin/_swh_clone \\",
+            "    && chmod +x /usr/local/bin/_swh_clone", ""]
+
 
 # The build/ship base, PINNED BY DIGEST for reproducibility. The
 # `debian:bookworm-slim` tag moves with security updates, so a bare tag makes a
@@ -112,6 +186,12 @@ class EnvEngine:
         raise NotImplementedError
     def add_pypi(self, cb: "ContainerBuild", specs: list[str]) -> dict:  # PyPI specs into the env+lock
         raise NotImplementedError
+    def install_from_lock(self, cb: "ContainerBuild", lock_files: dict[str, str]) -> dict:
+        # Install from PREBAKED lock files (recipe-replay path). Each engine writes
+        # its own lock files to the workdir and runs its lock-aware install. Default:
+        # not supported (return an error rather than silently re-solving).
+        return {"success": False, "stage": "install_from_lock",
+                "stderr": f"engine {self.name!r} does not implement install_from_lock"}
     def run(self, tool_cmd: str) -> str:            # wrap a conda-env tool invocation
         raise NotImplementedError
     def bootstrap_lines(self) -> list[str]:         # Dockerfile (builder): install the engine
@@ -179,6 +259,23 @@ class PixiEngine(EnvEngine):
                 f'ENV CONDA_PREFIX="{ep}"', ""]
     def lock_artifacts(self):
         return ["pixi.toml", "pixi.lock"]
+    def install_from_lock(self, cb, lock_files: dict[str, str]) -> dict[str, Any]:
+        """Install the env from a PREBAKED pixi.toml + pixi.lock — NO solve. The
+        recipe carries these files so a rebuild months / years later picks up the
+        IDENTICAL package set, not whatever bioconda happens to resolve today. The
+        URL+sha256 in pixi.lock makes every package byte-exact (or `pixi install`
+        fails loud — no silent substitution). The lock files come from a prior
+        freeze of the same recipe (env_build captured them as `lock_files`)."""
+        import base64
+        for name, content in lock_files.items():
+            b64 = base64.b64encode(content.encode()).decode()
+            r = cb.exec(f"mkdir -p {self.workdir} && echo {b64} | base64 -d > {self.workdir}/{name}",
+                        timeout=60)
+            if r["returncode"] != 0:
+                return {"success": False, "stage": "write_lock", "file": name,
+                        "stderr": (r["stderr"] or "")[-400:]}
+        r = cb.exec(f"cd {self.workdir} && pixi install --locked", timeout=1800)
+        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
 
 
 class MicromambaEngine(EnvEngine):
@@ -253,6 +350,7 @@ def emit_dockerfile(
     has_env_layer: bool,
     longtail_steps: list[dict],
     apt_extra: str = "",
+    apt_snapshot: str = "",
 ) -> str:
     """Assemble the ship-image Dockerfile from a recorded build (pure — no docker).
 
@@ -275,6 +373,16 @@ def emit_dockerfile(
         return out
 
     def _apt(pkgs):
+        if apt_snapshot:
+            # Point apt at snapshot.debian.org BEFORE update — freezes the apt
+            # archive bytes to the captured moment. printf builds the sources.list
+            # inline so the Dockerfile stays single-file (no COPY of a list file).
+            sources = _snapshot_sources_list(apt_snapshot).replace("\n", "\\n")
+            return [f"RUN printf '{sources}' > /etc/apt/sources.list \\",
+                    "    && rm -rf /etc/apt/sources.list.d/* \\",
+                    "    && apt-get -o Acquire::Check-Valid-Until=false update \\",
+                    "    && apt-get install -y --no-install-recommends \\",
+                    f"        {pkgs} \\", "    && rm -rf /var/lib/apt/lists/*", ""]
         return ["RUN apt-get update && apt-get install -y --no-install-recommends \\",
                 f"        {pkgs} \\", "    && rm -rf /var/lib/apt/lists/*", ""]
 
@@ -283,6 +391,9 @@ def emit_dockerfile(
              "# Multi-stage: builder (full toolchain) -> slim runtime (env + artifacts only).",
              f"FROM {base} AS builder", *_labels(), ""]
     lines += _apt(build_apt)
+    # SWH-fallback helper for source/script_repo installs — see _SWH_CLONE_SCRIPT
+    # for the contract. Stays in the BUILDER stage; never ships to runtime.
+    lines += _swh_clone_install_lines()
     lines += ["RUN mkdir -p /opt/tools", ""]     # so the runtime COPY of /opt/tools always resolves
     if has_env_layer:
         lines += engine.bootstrap_lines()
@@ -318,11 +429,16 @@ class ContainerBuild:
                  platform: str = "linux/amd64",
                  engine: Optional[EnvEngine] = None,
                  channels: Optional[list[str]] = None,
-                 workdir: str = "/work"):
+                 workdir: str = "/work",
+                 apt_snapshot: str = ""):
         self.base = base
         self.platform = platform
         self.engine = engine or PixiEngine(platform)
         self.channels = channels or ["conda-forge", "bioconda"]
+        # When set, every apt-get call (live build container AND emitted Dockerfile)
+        # points at snapshot.debian.org/<apt_snapshot> instead of the live Debian
+        # mirror. Freezes the apt layer to fixed bytes across time/machines.
+        self.apt_snapshot = apt_snapshot
         self.workdir = workdir
         self.cid: Optional[str] = None
         self.has_env_layer = False
@@ -350,11 +466,35 @@ class ContainerBuild:
         if r["returncode"] != 0:
             return {"success": False, "stage": "run", "stderr": r["stderr"][-800:]}
         self.cid = (r["stdout"] or "").strip()
-        setup = f"apt-get -qq update && apt-get -qq install -y --no-install-recommends {_BASE_APT} >/dev/null 2>&1"
+        if self.apt_snapshot:
+            # Pin apt to the captured snapshot.debian.org timestamp BEFORE update —
+            # the live build container resolves apt versions identically to what a
+            # rebuild at any future time would. Acquire::Check-Valid-Until=false
+            # accepts the snapshot's expired Valid-Until (GPG signature still valid).
+            import base64
+            b64 = base64.b64encode(_snapshot_sources_list(self.apt_snapshot).encode()).decode()
+            setup = (f"echo {b64} | base64 -d > /etc/apt/sources.list && "
+                     f"rm -rf /etc/apt/sources.list.d/* && "
+                     f"apt-get -o Acquire::Check-Valid-Until=false -qq update && "
+                     f"apt-get -qq install -y --no-install-recommends {_BASE_APT} "
+                     f">/dev/null 2>&1")
+        else:
+            setup = (f"apt-get -qq update && apt-get -qq install -y "
+                     f"--no-install-recommends {_BASE_APT} >/dev/null 2>&1")
         s = self._sh(["docker", "exec", self.cid, "bash", "-c", setup], timeout=900)
-        self.log.append(f"start rc={s['returncode']}")
-        return {"success": s["returncode"] == 0, "container": self.cid,
-                "stderr": s["stderr"][-800:] if s["returncode"] else ""}
+        if s["returncode"] != 0:
+            self.log.append(f"start rc={s['returncode']}")
+            return {"success": False, "container": self.cid, "stderr": s["stderr"][-800:]}
+        # Install the SWH-fallback helper for source-tier installs. Same script
+        # also goes into the emitted Dockerfile's builder stage so the bytes that
+        # ran here match the bytes that ship.
+        import base64
+        b64 = base64.b64encode(_SWH_CLONE_SCRIPT.encode()).decode()
+        sw = self._sh(["docker", "exec", self.cid, "bash", "-c",
+                       f"echo {b64} | base64 -d > /usr/local/bin/_swh_clone "
+                       "&& chmod +x /usr/local/bin/_swh_clone"], timeout=60)
+        self.log.append(f"start rc=0 swh_clone_install={sw['returncode']}")
+        return {"success": True, "container": self.cid, "stderr": ""}
 
     # -- DECLARE: conda/pip (one co-solve via the engine) ------------------
     def declare(self, specs: list[str], timeout: int = 1800) -> dict[str, Any]:
@@ -374,6 +514,30 @@ class ContainerBuild:
             self._engine_installed = True
         res = self.engine.add(self, specs, self.channels)
         self.log.append(f"declare {specs} -> {res.get('success')}")
+        if res.get("success"):
+            self.has_env_layer = True
+        return res
+
+    # -- DECLARE: install from a PREBAKED lock — no solve --------------------
+    def declare_locked(self, lock_files: dict[str, str], timeout: int = 1800) -> dict[str, Any]:
+        """Materialize the env from a PREBAKED lock instead of solving from specs.
+        Used by the recipe-replay path: a freeze captures the engine's lock files
+        (pixi.toml + pixi.lock for pixi) and the recipe carries them so a later
+        rebuild gets the IDENTICAL env, byte-for-byte, no consultation with the
+        live conda channels. Same lazy-engine-install pattern as `declare`."""
+        if not lock_files:
+            return {"success": True, "skipped": "no lock files"}
+        if not self._engine_installed:
+            inst = self.exec(self.engine.install_commands(), timeout=900)
+            if inst["returncode"] != 0:
+                return {"success": False, "stage": "engine_install",
+                        "stderr": (inst["stderr"] or "")[-800:]}
+            # NB: skip engine.setup() — it would `pixi init` and write a fresh
+            # pixi.toml we'd immediately overwrite. install_from_lock writes the
+            # prebaked pixi.toml + pixi.lock directly, no init needed.
+            self._engine_installed = True
+        res = self.engine.install_from_lock(self, lock_files)
+        self.log.append(f"declare_locked {sorted(lock_files)} -> {res.get('success')}")
         if res.get("success"):
             self.has_env_layer = True
         return res
@@ -478,7 +642,8 @@ class ContainerBuild:
                 if cp["returncode"] != 0:
                     return {"success": False, "stage": "cp", "file": f, "stderr": cp["stderr"][-400:]}
         dockerfile = emit_dockerfile(self.base, engine=self.engine,
-                                     has_env_layer=self.has_env_layer, longtail_steps=self.longtail)
+                                     has_env_layer=self.has_env_layer, longtail_steps=self.longtail,
+                                     apt_snapshot=self.apt_snapshot)
         (build_dir / "Dockerfile").write_text(dockerfile)
         tag = f"{name}:{version}" if version else f"{name}:latest"
         b = self._sh(["docker", "buildx", "build", "--platform", self.platform,
@@ -490,12 +655,33 @@ class ContainerBuild:
                 "dockerfile": str(build_dir / "Dockerfile"),
                 "build_method": "container-native", "platform": self.platform}
 
-    def validate_in_image(self, image: str, checks: list[str]) -> dict[str, Any]:
+    # Banner probe — non-fakeable version capture. The probe COMMAND is synthesized
+    # in here from a tool token only; no agent text reaches the shell. A token that
+    # doesn't match a safe identifier is SKIPPED (no banner captured) rather than
+    # risk shell injection through a crafted tool name.
+    _SAFE_TOOL = re.compile(r"^[A-Za-z0-9._-]+$")
+    # Two variants — `--version` first (universal among modern tools), then bare
+    # invocation (catches the long-tail like seqtk that prints its version banner
+    # only when called with no args). Each is plain-exec in the shipped image.
+    _BANNER_VARIANTS = ("--version", "")
+
+    def validate_in_image(self, image: str, checks: list[str],
+                          probe_tools: Optional[list[str]] = None) -> dict[str, Any]:
         """Re-run checks in the BUILT image — proves validated==shipped. Runs each
         check PLAIN (no engine activation prefix): the runtime image is self-
         activating (env baked onto PATH), so this is byte-for-byte how `apptainer
         exec image <check>` runs it on HPC. (Activating here would mask a tool that
-        the deployment contract can't actually reach.)"""
+        the deployment contract can't actually reach.)
+
+        Also probes each `probe_tools` token for its self-reported version banner
+        (`<tool> --version`, then bare `<tool>` — combined stdout+stderr, truncated
+        to 1200 chars). The probe is NON-FAKEABLE: the command is synthesized HERE
+        from the structural tool token only — no agent text reaches the shell.
+        Tokens that don't match `_SAFE_TOOL` are SKIPPED (empty banner) rather than
+        risk shell injection through a crafted name. Banners are returned in their
+        own `banners` field, separate from the evidence-check `out` (the renderer
+        prefers banners for version extraction; the evidence `out` is from a
+        check-command that CAN be agent-supplied via install primitives)."""
         results, ok = {}, True
         for c in checks:
             r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
@@ -503,7 +689,25 @@ class ContainerBuild:
                          timeout=300)
             results[c] = {"rc": r["returncode"], "out": (r["stdout"] or "").strip()[:200]}
             ok = ok and r["returncode"] == 0
-        return {"success": ok, "checks": results}
+        banners: dict[str, str] = {}
+        for tool in (probe_tools or []):
+            if not tool or tool in banners:
+                continue
+            if not self._SAFE_TOOL.match(tool):
+                banners[tool] = ""   # unsafe token → no probe, no banner
+                continue
+            parts: list[str] = []
+            for flag in self._BANNER_VARIANTS:
+                cmd = f"{tool} {flag}".strip()
+                p = self._sh(["docker", "run", "--rm", "--platform", self.platform, image,
+                              "bash", "-c", f"{cmd} 2>&1 || true"], timeout=60)
+                text = (p.get("stdout") or "").strip()
+                if text:
+                    parts.append(text)
+                    if sum(len(x) for x in parts) > 1200:
+                        break
+            banners[tool] = "\n".join(parts)[:1200]
+        return {"success": ok, "checks": results, "banners": banners}
 
     def image_digest(self, image: str) -> str:
         """The built image's content id (sha256), the local shipping handle."""

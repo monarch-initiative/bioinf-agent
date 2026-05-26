@@ -34,16 +34,29 @@ class EnvBuild:
                  base: str = BASE_IMAGE, engine: Optional[EnvEngine] = None,
                  channels: Optional[list[str]] = None,
                  accelerator: Optional[dict] = None, license_gated: bool = False,
-                 licenses: Optional[list[str]] = None, redistributable: bool = True):
+                 licenses: Optional[list[str]] = None, redistributable: bool = True,
+                 prebaked_lock_files: Optional[dict[str, str]] = None,
+                 apt_snapshot: str = ""):
         self.name = name
         self.version = version
         self.platform = platform
-        self.cb = ContainerBuild(base=base, platform=platform, engine=engine, channels=channels)
+        # apt_snapshot pins both the live build container's apt AND the emitted
+        # Dockerfile's apt to snapshot.debian.org/<timestamp>. Threaded through
+        # to ContainerBuild so it's used end-to-end.
+        self.apt_snapshot = apt_snapshot
+        self.cb = ContainerBuild(base=base, platform=platform, engine=engine,
+                                 channels=channels, apt_snapshot=apt_snapshot)
         self.conda_specs: list[str] = []
         self.pip_specs: list[str] = []        # PyPI specs (engine --pypi, into the lock)
         self.tools: list[dict] = []           # long-tail generator specs
         self.verifications: list[dict] = []   # [{label, tool, check, engine_coupled}]
         self.lock_text = ""
+        self.lock_files: dict[str, str] = {}  # engine lock artifacts {name: content}
+        # If set, REPLAY from these instead of solving — the recipe-replay path.
+        # The lock files (pixi.toml + pixi.lock for pixi; environment-lock.txt for
+        # micromamba) were captured at a prior freeze and carried verbatim in the
+        # recipe. Same lock → same env, byte-for-byte, across time and machines.
+        self.prebaked_lock_files = prebaked_lock_files
         # POLICY_CLEAN inputs (I12/I13) — env-level claims the contract guards.
         self.accelerator = accelerator
         self.license_gated = license_gated
@@ -87,19 +100,35 @@ class EnvBuild:
         s = self.cb.start()
         if not s.get("success"):
             return {"success": False, "stage": "start", **s}
-        if self.conda_specs:
-            d = self.cb.declare(self.conda_specs)
+        # ENV LAYER — two paths:
+        #   PREBAKED (recipe replay): write the captured lock files + materialize
+        #     via `pixi install --locked` — NO solve. Identical env across time/
+        #     machines; rebuild months later doesn't drift on newer bioconda builds.
+        #   FRESH (first freeze): co-solve all conda + pip specs in one pass, then
+        #     read the lock files back out for the recipe and the content digest.
+        if self.prebaked_lock_files:
+            d = self.cb.declare_locked(self.prebaked_lock_files)
             if not d.get("success"):
-                return {"success": False, "stage": "declare", **d}
-        if self.pip_specs:
-            dp = self.cb.declare_pypi(self.pip_specs)
-            if not dp.get("success"):
-                return {"success": False, "stage": "declare_pypi", **dp}
-        if self.conda_specs or self.pip_specs:
-            # capture the lock AFTER both layers — the content digest is what was GOT
+                return {"success": False, "stage": "declare_locked", **d}
+        else:
+            if self.conda_specs:
+                d = self.cb.declare(self.conda_specs)
+                if not d.get("success"):
+                    return {"success": False, "stage": "declare", **d}
+            if self.pip_specs:
+                dp = self.cb.declare_pypi(self.pip_specs)
+                if not dp.get("success"):
+                    return {"success": False, "stage": "declare_pypi", **dp}
+        if self.conda_specs or self.pip_specs or self.prebaked_lock_files:
+            # capture lock per-file AFTER both layers — `lock_files` carries the
+            # files individually so the recipe can ship them; `lock_text` is the
+            # concatenation order-defined by engine.lock_artifacts() for the
+            # content digest (unchanged from the pre-prebaked behavior).
             for art in self.cb.engine.lock_artifacts():
                 cat = self.cb.exec(f"cat {self.cb.workdir}/{art} 2>/dev/null")
-                self.lock_text += cat.get("stdout", "")
+                content = cat.get("stdout", "")
+                self.lock_files[art] = content
+                self.lock_text += content
         for spec in self.tools:
             r = self.cb.install(spec)
             if not r.get("success"):
@@ -121,14 +150,23 @@ class EnvBuild:
         # passes only under engine-run activation but is unreachable via `apptainer
         # exec image <tool>` is now correctly caught (the GAB python-on-PATH gap).
         finals = [(v, v["check"]) for v in self.verifications]
-        res = self.cb.validate_in_image(image, [c for _, c in finals])
+        # Banner probes — per-tool self-reported version capture from the shipped
+        # binary. Tokens come from the structural `tool` field set by the install
+        # primitive (not freeform purpose), and container_build sanitises each one
+        # before synthesizing a probe command — non-fakeable by the agent.
+        tools = list(dict.fromkeys(v.get("tool", "") for v in self.verifications
+                                   if v.get("tool")))
+        res = self.cb.validate_in_image(image, [c for _, c in finals], probe_tools=tools)
+        banners = res.get("banners", {}) or {}
         records = []
         for v, run_cmd in finals:
             r = res["checks"].get(run_cmd, {})
-            records.append({"label": v["label"], "tool": v.get("tool", ""),
+            tool = v.get("tool", "")
+            records.append({"label": v["label"], "tool": tool,
                             "check": v["check"], "engine_coupled": v["engine_coupled"],
                             "rc": r.get("rc"), "passed": r.get("rc") == 0,
-                            "out": r.get("out", "")})
+                            "out": r.get("out", ""),
+                            "banner": banners.get(tool, "")})
         return {"success": res["success"], "verifications": records}
 
     # -- the content address ---------------------------------------------
@@ -144,7 +182,12 @@ class EnvBuild:
         Debian mirror, so those versions can drift even from a pinned base and would
         make the digest non-reproducible (verify-by-rebuild would spuriously fail).
         They are captured in the SBOM (system_packages) as informational, and the
-        report states plainly they are not version-pinned."""
+        report states plainly they are not version-pinned.
+
+        UNLESS an apt_snapshot is pinned — then the apt layer IS reproducible (the
+        snapshot URL serves byte-identical bytes), so the snapshot timestamp folds
+        into the digest. When apt_snapshot is empty the digest is unchanged from
+        the pre-Phase-2 computation (existing recipes still verify)."""
         parts = {
             "lock": self.lock_text,
             "longtail": sorted(s["command"] for s in self.cb.longtail),
@@ -152,6 +195,8 @@ class EnvBuild:
             "engine": self.cb.engine.name if (self.conda_specs or self.pip_specs) else "none",
             "base": self.cb.base,
         }
+        if self.apt_snapshot:
+            parts["apt_snapshot"] = self.apt_snapshot
         return _freeze.compute_content_digest(parts)
 
     # -- EnvCache bridge: "solve once, pull by digest" --------------------
@@ -245,6 +290,16 @@ class EnvBuild:
                 # the OS/apt layer of the SBOM, read from the SHIPPED image — makes
                 # the artifact fully self-describing (conda + pip + apt, versioned).
                 "system_packages": self.cb.system_packages(fr["image"]),
+                # PER-FILE lock artifacts (pixi.toml + pixi.lock for pixi). The
+                # recipe carries these so a replay months later does NO solve —
+                # identical env across time and machines. `lock` (above) is the
+                # concatenation used for the content digest; `lock_files` is the
+                # structured form the recipe + replay path consume.
+                "lock_files": dict(self.lock_files),
+                # The snapshot.debian.org timestamp pinning the apt layer. Empty
+                # for pre-Phase-2 builds (apt floats). When set, the recipe carries
+                # it forward so every replay resolves apt to the same bytes.
+                "apt_snapshot": self.apt_snapshot,
                 # POLICY_CLEAN inputs
                 "accelerator": self.accelerator,
                 "license_gated": self.license_gated,

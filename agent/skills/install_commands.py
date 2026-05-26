@@ -101,11 +101,17 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
     """Git-source tool built with the apt C toolchain: clone → checkout pinned ref
     → build → MANUAL install of the built binary to /usr/local/bin (most academic
     tools have no `make install` target — that's the half-baked norm). Locally
-    built ⇒ can't be wrong-arch, so presence (command -v) is the honest anchor."""
+    built ⇒ can't be wrong-arch, so presence (command -v) is the honest anchor.
+
+    Clone goes through `_swh_clone` (installed in the builder stage) so a rebuild
+    when the upstream repo is dead falls back to Software Heritage's vault for
+    the same commit. `git checkout <ref>` after still proves the bytes match —
+    SWH can't lie about a commit SHA's contents."""
     src = f"{_TOOLS}/{name}/src"
     binp = bin_path or name
     wrap = wrapper or name
-    parts = [f"git clone {shlex.quote(repo_url)} {src}", f"cd {src}"]
+    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {src}",
+             f"cd {src}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
     parts += [build_command,
@@ -265,7 +271,9 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     clone = f"{_TOOLS}/{name}"
     wrap = wrapper or name
     entry = f"{clone}/{script_rel}" if script_rel else f"{clone}/{name}"
-    parts = [f"git clone {shlex.quote(repo_url)} {clone}", f"cd {clone}"]
+    # SWH-fallback clone (see `source` for the contract).
+    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {clone}",
+             f"cd {clone}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
     parts.append(f"chmod +x {entry} 2>/dev/null || true")
