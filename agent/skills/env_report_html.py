@@ -2,28 +2,29 @@
 env_report_html — the Layer-1 env report as a self-contained HTML page, rendered
 PURELY from the verified freeze record.
 
-Clean tables, no decorative tiles. Build details up top, the actual tools table
-(requested vs installed) front-and-centre, dependencies right below it, every
-artifact (and where it lives on disk) in one table, the honesty footer at the end.
+Clean tables, no decorative tiles. SAME sections + SAME columns for every install
+(adopt and build), so two reports compare cell-for-cell. Cyberpunk-inspired dark
+palette (black, cyan, yellow) — meant to give each section visual weight without
+adding any unverifiable content.
 
 Honesty guarantees, made structural:
 
   • PURE over the record — render_env_report_html(record) reads ONLY the freeze
-    record (digests, in-image validation evidence, the resolved closure, the apt
-    layer, the long-tail commands + provenance). No field is agent-authored.
+    record. No field is agent-authored.
   • ESCAPED — every value is HTML-escaped; a package name / command / digest can
     never inject markup.
   • DETERMINISTIC — no clock is read here (the only time shown is the record's own
     captured `created_at`); stable ordering. Same record → same bytes.
-  • MODE-HONEST — a container-native BUILD shows the per-tool in-image evidence
-    (validated == shipped). An ADOPTED biocontainer is shown as trusted-by-digest;
-    the page never claims a validation it did not run.
+  • MODE-HONEST — a container-native BUILD shows per-tool in-image evidence
+    (validated == shipped). An ADOPTED biocontainer keeps the same columns but its
+    "Validated in image" cell is a "trusted by digest" badge — the page never
+    claims a validation it did not run.
   • VERIFIED vs DECLARED — runtime-verified facts and submitter-DECLARED policy
     (license-gating, accelerator) live in separate, labelled sections.
 
 Self-contained: inline CSS, zero external resources, no JS. Companion-artifact
-links are RELATIVE to env_reports/, so they resolve from the file in place.
-One public fn: render_env_report_html.
+links resolve relative to env_reports/ where the file lives. One public fn:
+render_env_report_html.
 """
 
 from __future__ import annotations
@@ -36,48 +37,73 @@ from agent.skills.env_report import (
 )
 
 _CSS = """
+:root{
+  --bg:#0a0c14;--surface:#13151f;--surface-2:#1a1d29;--border:#262a3a;
+  --cyan:#22e3ee;--cyan-soft:rgba(34,227,238,.16);
+  --yellow:#fff200;--yellow-soft:rgba(255,242,0,.18);
+  --ink:#e6e9f0;--muted:#8e98ad;
+  --ok:#3ce086;--ok-bg:rgba(60,224,134,.14);
+  --bad:#ff4b6e;--bad-bg:rgba(255,75,110,.14);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
 *{box-sizing:border-box}
-body{margin:0;background:#f8f9fb;color:#1c2330;
-font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:1040px;margin:0 auto;padding:30px 22px 64px}
-h1{font-size:24px;margin:0 0 6px;font-weight:700;line-height:1.25}
-.sub{color:#5b6675;margin:0 0 18px;font-size:13.5px}
-h2{font-size:14.5px;margin:32px 0 10px;font-weight:600;letter-spacing:.02em;
-text-transform:uppercase;color:#3a4654;padding-bottom:5px;border-bottom:1px solid #e2e6ed}
-h2 .note{font-size:12px;text-transform:none;letter-spacing:0;font-weight:400;color:#5b6675;margin-left:6px}
-a{color:#2563d4;text-decoration:none}a:hover{text-decoration:underline}
-code{background:#eef1f6;padding:1px 6px;border-radius:4px;
-font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
-pre{background:#eef1f6;border-radius:6px;padding:9px 12px;margin:4px 0;overflow-x:auto;
-font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-white-space:pre-wrap;word-break:break-word}
-.tbl-wrap{overflow-x:auto;margin:6px 0}
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e6ed;
-border-radius:8px;overflow:hidden;font-size:13.5px}
-th,td{text-align:left;padding:9px 14px;border-bottom:1px solid #e9ecf1;vertical-align:top;
-line-height:1.5}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:0 22px 64px;
+border-top:3px solid var(--yellow);background:transparent}
+.head{padding:30px 0 6px;border-bottom:1px solid var(--border);margin-bottom:8px}
+h1{font-size:26px;font-weight:800;color:var(--yellow);margin:0 0 6px;letter-spacing:.01em}
+.sub{color:var(--muted);margin:0 0 14px;font-size:13px}
+h2{font-size:12.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+color:var(--cyan);margin:34px 0 12px;padding:6px 0 9px 13px;
+border-left:3px solid var(--yellow);border-bottom:1px solid var(--cyan)}
+h2 .note{color:var(--muted);font-weight:400;letter-spacing:0;text-transform:none;font-size:12px;margin-left:8px}
+a{color:var(--yellow);text-decoration:none;border-bottom:1px dashed transparent}
+a:hover{border-bottom-color:var(--yellow)}
+code{background:#0e1019;color:var(--cyan);padding:1px 6px;border:1px solid var(--border);
+border-radius:2px;font:12.5px/1.4 var(--mono);word-break:break-all}
+pre{background:#0c0e16;color:var(--ink);padding:10px 12px;margin:4px 0;border:1px solid var(--border);
+border-left:3px solid var(--cyan);border-radius:0;overflow-x:auto;
+font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+.tbl-wrap{overflow-x:auto;margin:4px 0}
+table{width:100%;border-collapse:collapse;background:var(--surface);
+border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
 tr:last-child td{border-bottom:none}
-th{background:#fafbfd;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;
-color:#5b6675;font-weight:600}
-td.k{color:#5b6675;font-weight:500;width:220px;background:#fafbfd}
-.pill{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 10px;border-radius:20px;
-vertical-align:middle;margin-left:10px}
-.pill.ok{background:#e7f6ee;color:#1a7f47}
-.pill.adopt{background:#fdf3e0;color:#8a5a00}
-.pill.bad{background:#fcebe8;color:#c0341d}
-.badge{display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:12px;margin-right:4px}
-.badge.ok{background:#e7f6ee;color:#1a7f47}
-.badge.bad{background:#fcebe8;color:#c0341d}
-.badge.na{background:#eef1f6;color:#5b6675}
-.note{color:#5b6675;font-size:12.5px;margin:6px 0}
-details{margin:6px 0;border:1px solid #e2e6ed;border-radius:8px;padding:0 14px;background:#fff}
-summary{cursor:pointer;padding:9px 0;font-weight:600;font-size:13.5px;color:#1c2330}
-details>*{font-size:13.5px}
-details table{border:none;margin:4px 0 10px}
-details ul{padding-left:18px;margin:4px 0 10px}
-ul.foot{padding-left:18px;margin:6px 0 0;font-size:13.5px}
-ul.foot li{margin:5px 0}
-.gen{color:#5b6675;font-size:12px;margin-top:30px;border-top:1px solid #e2e6ed;padding-top:12px}
+th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
+letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td.k{color:var(--muted);width:225px;background:var(--surface-2);font-weight:500;
+border-right:1px solid var(--border)}
+td b,td strong{color:var(--yellow);font-weight:700}
+.pill{display:inline-block;font-size:11px;font-weight:800;padding:3px 12px;
+vertical-align:middle;margin-left:10px;letter-spacing:.14em;text-transform:uppercase;border-radius:0}
+.pill.ok{background:var(--cyan);color:#000}
+.pill.adopt{background:var(--yellow);color:#000}
+.pill.bad{background:var(--bad);color:#fff}
+.pill.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
+.badge{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 9px;border-radius:0;
+margin-right:4px}
+.badge.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok)}
+.badge.bad{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad)}
+.badge.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
+.note{color:var(--muted);font-size:12.5px;margin:6px 0}
+.muted{color:var(--muted)}
+.empty{background:var(--surface);border:1px dashed var(--border);padding:13px 16px;
+color:var(--muted);font-size:13px;font-style:italic;margin:4px 0}
+details{margin:6px 0;background:var(--surface);border:1px solid var(--border);
+border-left:3px solid var(--cyan);padding:0 14px;border-radius:0}
+summary{cursor:pointer;padding:10px 0;font-weight:600;font-size:13.5px;color:var(--ink);
+list-style:none;outline:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";color:var(--cyan);margin-right:4px}
+details[open] summary::before{content:"▾ "}
+details table{border:1px solid var(--border);border-top:1px solid var(--border);margin:4px 0 10px}
+ul.foot{padding-left:18px;margin:6px 0 0;font-size:13.5px;line-height:1.6}
+ul.foot li{margin:6px 0}
+ul.foot li::marker{color:var(--yellow)}
+ul.foot b{color:var(--yellow);font-weight:700;letter-spacing:.04em}
+.gen{color:var(--muted);font-size:11.5px;margin-top:38px;border-top:1px solid var(--border);
+padding-top:14px;letter-spacing:.04em}
 """
 
 
@@ -94,31 +120,50 @@ def _badge(passed: Optional[bool], check: str = "") -> str:
 
 
 def _kv_table(rows: list[tuple[str, str]]) -> str:
-    """Render a 2-col label/value table (values are pre-escaped HTML)."""
-    body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>' for k, v in rows if v)
+    body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>'
+                   for k, v in rows if v != "" and v is not None)
     return f'<div class="tbl-wrap"><table>{body}</table></div>'
 
 
-def _conda_req_versions(conda_specs: list) -> dict[str, str]:
-    """Extract a {tool: requested_version_constraint} map from conda_specs (e.g.
-    'samtools=1.21' → {'samtools': '1.21'}). Honest about what was actually asked."""
+def _empty(msg: str) -> str:
+    return f'<p class="empty">{_e(msg)}</p>'
+
+
+def _requested_versions(record: dict) -> dict[str, str]:
+    """tool → user-asked version constraint (empty if any). The request_key holds
+    the original ask for every record (build OR adopt); conda_specs is a fallback
+    for older records that lack one."""
     out: dict[str, str] = {}
-    for s in conda_specs or []:
-        if not isinstance(s, str):
-            continue
-        name, _, ver = s.replace("==", "=").partition("=")
-        if name:
-            out[name.strip()] = ver.strip() or ""
+    rk = record.get("request_key", "") or ""
+    if "|" in rk:
+        spec = rk.split("|", 1)[0]
+        for tok in spec.split(","):
+            n, _, v = tok.replace("==", "=").partition("=")
+            if n.strip():
+                out[n.strip()] = v.strip()
+    for s in record.get("conda_specs", []) or []:
+        if isinstance(s, str):
+            n, _, v = s.replace("==", "=").partition("=")
+            if n.strip() and n.strip() not in out:
+                out[n.strip()] = v.strip()
     return out
 
 
-def _tier_counts(requested: list, pidx: dict, shipped: list) -> str:
-    """Per-tier headcount of the requested tools — the routing decision."""
-    counts: dict[str, int] = {}
-    for t in requested:
-        tier = _install_method(t, pidx.get(t.lower()), shipped)
-        counts[tier] = counts.get(tier, 0) + 1
-    return " · ".join(f"{k} ×{v}" for k, v in sorted(counts.items()) if k != "—") or "—"
+def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str:
+    if is_adopt:
+        return "adopted (biocontainer)"
+    return _install_method(t, pkg, shipped)
+
+
+def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[dict],
+                       req_v: str) -> str:
+    """For BUILD: the actually-resolved version (pidx) or the version the tool
+    printed in its in-image evidence (real captured output). For ADOPT: the
+    requested version — the biocontainer's manifest digest binds it to exactly that
+    bioconda build, so 'installed' == 'requested' is honest (no in-locus probe)."""
+    if is_adopt:
+        return req_v or ""
+    return (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or ""
 
 
 def render_env_report_html(record: dict) -> str:
@@ -135,7 +180,7 @@ def render_env_report_html(record: dict) -> str:
     shipped = list(r.get("shipped_binaries") or [])
     conda_specs = list(r.get("conda_specs") or [])
     vidx, pidx = _verif_index(verifs), _pkg_index(resolved)
-    req_versions = _conda_req_versions(conda_specs)
+    req_versions = _requested_versions(r)
     requested_set = {t.lower() for t in requested}
     ride = [p for p in resolved if isinstance(p, dict) and p.get("name")
             and p["name"].lower() not in requested_set]
@@ -149,7 +194,7 @@ def render_env_report_html(record: dict) -> str:
              f'<title>Environment report — {_e(name)}</title><style>{_CSS}</style></head><body>')
     P.append('<div class="wrap">')
 
-    # -- header + status pill -----------------------------------------------
+    # -- HEADER -------------------------------------------------------------
     if is_adopt:
         pill = '<span class="pill adopt">Adopted by digest</span>'
     elif total and passed == total:
@@ -157,11 +202,13 @@ def render_env_report_html(record: dict) -> str:
     elif total:
         pill = '<span class="pill bad">✗ Validation incomplete</span>'
     else:
-        pill = '<span class="pill na">—</span>'
+        pill = '<span class="pill na">No tools recorded</span>'
+    P.append('<div class="head">')
     P.append(f"<h1>{_e(name)}{pill}</h1>")
     P.append(f'<p class="sub">Layer-1 environment image · <code>{_e(r.get("image",""))}</code></p>')
+    P.append('</div>')
 
-    # -- BUILD DETAILS (top, per the sketch) --------------------------------
+    # -- BUILD DETAILS (top) ------------------------------------------------
     P.append("<h2>Build details</h2>")
     mode_desc = mode
     if r.get("build_method"):
@@ -169,143 +216,155 @@ def render_env_report_html(record: dict) -> str:
     if r.get("engine") and r.get("engine") != "none":
         mode_desc += f" · engine {r['engine']}"
     summary_parts = [f"{len(requested)} requested"]
-    if is_adopt:
-        summary_parts.append("adopted by digest")
-    else:
-        summary_parts.append(f"{passed}/{total} validated in image")
+    summary_parts.append("adopted by digest" if is_adopt else f"{passed}/{total} validated in image")
     summary_parts.append(f"{len(ride)} along for the ride")
-    if system:
-        summary_parts.append(f"{len(system)} system (apt)")
+    summary_parts.append(f"{len(system)} system (apt)")
     rows = [
-        ("Created", _e(r.get("created_at", ""))),
-        ("Platform", _e(r.get("platform", ""))),
-        ("Mode", _e(mode_desc)),
-        ("Validation locus", _e(_locus_line(r.get("validation_locus", "")))),
+        ("Created", _e(r.get("created_at", "—"))),
+        ("Platform", _e(r.get("platform", "—"))),
+        ("Mode", _e(mode_desc) or "—"),
+        ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
-    if not is_adopt and requested:
-        rows.append(("Routing decision", _e(_tier_counts(requested, pidx, shipped))))
     P.append(_kv_table(rows))
 
-    # -- TOOLS (the centerpiece: requested -> installed -> tier -> validated)
+    # -- TOOLS (centerpiece — SAME columns for build & adopt) ---------------
     P.append(f'<h2>Tools <span class="note">({len(requested)} requested)</span></h2>')
     if requested:
-        cols = ("<table><tr><th>Requested tool</th><th>Requested version</th>"
-                "<th>Installed version</th><th>Install tier</th>"
-                "<th>Validated in image</th></tr>") if not is_adopt else (
-                "<table><tr><th>Requested tool</th><th>Requested version</th>"
-                "<th>In adopted image</th><th>Install tier</th><th>Status</th></tr>")
-        P.append('<div class="tbl-wrap">')
-        P.append(cols)
+        P.append('<div class="tbl-wrap"><table>')
+        P.append("<tr><th>Requested tool</th><th>Requested version</th>"
+                 "<th>Installed version</th><th>Install tier</th>"
+                 "<th>Validated in image</th></tr>")
         for t in requested:
             pkg = pidx.get(t.lower())
             v = vidx.get(t.lower())
             req_v = req_versions.get(t, "")
-            req_cell = f"={_e(req_v)}" if req_v else '<span class="note">(any)</span>'
-            inst_v = (pkg or {}).get("version", "") or _extract_version((v or {}).get("out", "")) or ""
-            inst_cell = _e(inst_v) if inst_v else '<span class="note">—</span>'
-            tier = _install_method(t, pkg, shipped)
+            req_cell = f"={_e(req_v)}" if req_v else '<span class="muted">(any)</span>'
+            inst_v = _installed_version(t, is_adopt, pkg, v, req_v)
+            inst_cell = _e(inst_v) if inst_v else '<span class="muted">—</span>'
+            tier_cell = _e(_tier_for(t, is_adopt, pkg, shipped))
             if is_adopt:
                 status = '<span class="badge na">trusted by digest</span>'
             else:
                 status = _badge(v.get("passed") if v else None, (v or {}).get("check", ""))
             P.append(f"<tr><td><b>{_e(t)}</b></td><td>{req_cell}</td>"
-                     f"<td>{inst_cell}</td><td>{_e(tier)}</td><td>{status}</td></tr>")
+                     f"<td>{inst_cell}</td><td>{tier_cell}</td><td>{status}</td></tr>")
         P.append("</table></div>")
     else:
-        P.append('<p class="note">(none recorded)</p>')
+        P.append(_empty("(no tools recorded)"))
 
-    # -- ALONG FOR THE RIDE (right below the tools table, visible — not folded)
+    # -- ALONG FOR THE RIDE (always shown) ----------------------------------
+    P.append(f'<h2>Along for the ride <span class="note">'
+             f'({len(ride)} transitive dependencies)</span></h2>')
     if ride:
-        P.append(f'<h2>Along for the ride <span class="note">({len(ride)} transitive dependencies)</span></h2>')
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Package</th><th>Version</th><th>Kind</th></tr>")
         for p in ride:
             P.append(f"<tr><td>{_e(p['name'])}</td><td>{_e(p.get('version',''))}</td>"
                      f"<td>{_e(p.get('kind',''))}</td></tr>")
         P.append("</table></div>")
+    else:
+        P.append(_empty("(closure not captured in-locus — an adopted image is trusted "
+                        "by its published digest, not introspected here)" if is_adopt else
+                        "(none — every resolved package was directly requested)"))
 
-    # -- INSTALL COMMANDS (long-tail provenance, foldable since verbose) -----
+    # -- INSTALL COMMANDS (always shown; foldable when present) -------------
+    P.append(f'<h2>Install commands <span class="note">'
+             f'({len(shipped)} long-tail step(s) baked verbatim into the image)</span></h2>')
     if shipped:
-        P.append(f'<details><summary>Install commands — {len(shipped)} long-tail step(s) '
-                 'baked verbatim into the image (the command IS the provenance)</summary>')
+        P.append('<details open><summary>Verbatim long-tail commands — the command IS the provenance</summary>')
         for s in shipped:
             label = s.get("name") or s.get("purpose") or "tool"
             cmd = (s.get("command") or "").strip()
-            P.append(f'<p style="margin:8px 0 2px"><b>{_e(label)}</b></p>')
+            P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b></p>')
             if cmd:
                 P.append(f"<pre>{_e(cmd)}</pre>")
         P.append("</details>")
+    else:
+        P.append(_empty("(no long-tail steps — pure conda env or adopted biocontainer)"))
 
-    # -- SYSTEM PACKAGES (apt SBOM, foldable) --------------------------------
+    # -- SYSTEM (apt) PACKAGES (always shown; foldable when present) --------
+    P.append(f'<h2>System packages (apt) <span class="note">'
+             f'({len(system)} captured — OS layer; SBOM only, NOT pinned in the content digest)</span></h2>')
     if system:
-        P.append(f'<details><summary>System (apt) packages — {len(system)} '
-                 '<span class="note">OS layer; captured for the SBOM, not version-pinned '
-                 'in the content digest (apt-get is not reproducible across time)</span></summary>')
+        P.append('<details><summary>System (apt) packages</summary>')
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Package</th><th>Version</th></tr>")
         for p in system:
             if isinstance(p, dict) and p.get("name"):
                 P.append(f"<tr><td>{_e(p['name'])}</td><td>{_e(p.get('version',''))}</td></tr>")
         P.append("</table></div></details>")
+    else:
+        P.append(_empty("(no apt SBOM captured — adopted image; the apt layer was not "
+                        "introspected in-locus)" if is_adopt else
+                        "(no system packages recorded)"))
 
-    # -- ARTIFACTS (one table; companion files link to where they live) ------
-    P.append("<h2>Artifacts <span class=\"note\">links resolve relative to env_reports/</span></h2>")
-    art_rows: list[tuple[str, str]] = []
-    if r.get("image"):
-        art_rows.append(("Image", f'<code>{_e(r["image"])}</code>'))
-    if r.get("image_digest"):
-        art_rows.append(("Image digest", f'<code>{_e(r["image_digest"])}</code>'))
-    if r.get("content_digest"):
-        art_rows.append(("Content digest",
-                         f'<code>{_e(r["content_digest"])}</code> '
-                         '<span class="note">— reproducible anchor: lock + long-tail + '
-                         'platform + engine + base image</span>'))
-    art_rows.append(("Markdown report",
-                     f'<a href="{_e(name)}.ENV.md"><code>{_e(name)}.ENV.md</code></a>'))
-    art_rows.append(("In-toto / SLSA attestation",
-                     f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a> '
-                     '<span class="note">— sign with <code>cosign attest</code></span>'))
-    if not is_adopt:
+    # -- ARTIFACTS (one table — image · digests · files · delivery) ---------
+    P.append('<h2>Artifacts <span class="note">'
+             'companion files link relative to env_reports/; tarball/lock are absolute file://</span></h2>')
+    art_rows: list[tuple[str, str]] = [
+        ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
+        ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),
+        ("Content digest",
+         f'<code>{_e(r.get("content_digest","—"))}</code>'
+         '<span class="note"> — reproducible anchor: lock + long-tail + platform + engine + base image</span>'
+         if r.get("content_digest") else "—"),
+        ("Markdown report",
+         f'<a href="{_e(name)}.ENV.md"><code>{_e(name)}.ENV.md</code></a>'),
+        ("In-toto / SLSA attestation",
+         f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a>'
+         '<span class="note"> — sign with <code>cosign attest</code></span>'),
+    ]
+    if is_adopt:
         art_rows.append(("Self-contained rebuild recipe",
-                         f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a> '
-                         '<span class="note">— verify rebuild with <code>verify_env_recipe</code></span>'))
+                         '<span class="muted">— not applicable to adopt mode '
+                         '(no in-locus build to replay; the biocontainer\'s manifest digest IS the contract)</span>'))
+    else:
+        art_rows.append(("Self-contained rebuild recipe",
+                         f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a>'
+                         '<span class="note"> — verify rebuild with <code>verify_env_recipe</code></span>'))
     if r.get("tarball"):
         tb = r["tarball"]
         art_rows.append(("docker-save tarball",
                          f'<a href="file://{_e(tb)}"><code>{_e(tb)}</code></a>'))
+    else:
+        art_rows.append(("docker-save tarball",
+                         '<span class="muted">— not produced for this mode</span>' if is_adopt else
+                         '<span class="muted">— not produced (registry-only delivery, or build skipped tarball)</span>'))
     if r.get("conda_lock"):
         cl = r["conda_lock"]
         art_rows.append(("Conda lock",
                          f'<a href="file://{_e(cl)}"><code>{_e(cl)}</code></a>'))
+    else:
+        art_rows.append(("Conda lock",
+                         '<span class="muted">— not produced for this env</span>'))
     hpc = r.get("hpc_delivery") or {}
     if hpc.get("get_image"):
         art_rows.append(("Apptainer pull (HPC)", f"<pre>{_e(hpc['get_image'])}</pre>"))
     if hpc.get("run_example"):
         art_rows.append(("Run example", f"<pre>{_e(hpc['run_example'])}</pre>"))
     push = r.get("push_status", "")
-    if push and push != "not-configured":
+    if push:
         art_rows.append(("Registry status", _e(push)))
     P.append(_kv_table(art_rows))
 
-    # -- DECLARED POLICY (verified-vs-declared honesty — a plain table) ------
+    # -- DECLARED POLICY (verified vs declared — plain table + note) --------
     gated = bool(r.get("gated"))
     licenses = list(r.get("licenses") or [])
     accel = r.get("accelerator") if isinstance(r.get("accelerator"), dict) else None
     accel_type = (accel or {}).get("type") or "none"
     P.append('<h2>Declared policy <span class="note">submitter-declared; the contract checks '
-             'these for consistency (I12/I13), <b>not</b> a runtime-verified fact — a caller '
-             'assertion</span></h2>')
+             'these for consistency (I12/I13), <b>not</b> a runtime-verified fact — a caller assertion</span></h2>')
     pol_rows = [
         ("License-gated", "yes" if gated else "no"),
         ("Redistributable", "yes" if r.get("redistributable", not gated) else "no"),
+        ("Licenses", ", ".join(_e(x) for x in licenses) if licenses
+                     else '<span class="muted">— (none declared)</span>'),
         ("Accelerator", _e(accel_type)),
     ]
-    if licenses:
-        pol_rows.insert(2, ("Licenses", ", ".join(_e(x) for x in licenses)))
     P.append(_kv_table(pol_rows))
 
-    # -- HOW VERIFIED (per-mode — never over-claim for adopt) ----------------
+    # -- HOW VERIFIED (per-mode footer — never over-claim for adopt) --------
     P.append('<h2 id="verify">How this was verified</h2>')
     P.append('<ul class="foot">')
     if is_adopt:
