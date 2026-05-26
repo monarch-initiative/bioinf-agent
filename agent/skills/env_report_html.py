@@ -53,9 +53,20 @@ font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Ar
 /* HEADER BANNER — yellow title, cyan border, tiny yellow corner brackets */
 .head{position:relative;border:1px solid var(--cyan);padding:22px 26px 6px;margin:0 0 28px;
 background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 80%)}
-.head::before,.head::after{content:"";position:absolute;width:14px;height:14px}
-.head::before{top:-1px;left:-1px;border-top:2px solid var(--yellow);border-left:2px solid var(--yellow)}
-.head::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--yellow);border-right:2px solid var(--yellow)}
+.head .cr{position:absolute;width:14px;height:14px;pointer-events:none}
+.head .cr-tl{top:-1px;left:-1px;border-top:2px solid var(--yellow);border-left:2px solid var(--yellow)}
+.head .cr-tr{top:-1px;right:-1px;border-top:2px solid var(--yellow);border-right:2px solid var(--yellow)}
+.head .cr-bl{bottom:-1px;left:-1px;border-bottom:2px solid var(--yellow);border-left:2px solid var(--yellow)}
+.head .cr-br{bottom:-1px;right:-1px;border-bottom:2px solid var(--yellow);border-right:2px solid var(--yellow)}
+/* SECTION PANELS — each remaining section is a bordered card (no yellow accents) */
+section.bx{border:1px solid var(--border);margin:22px 0;background:transparent}
+section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:1px solid var(--cyan)}
+section.bx > .bx-body{padding:14px 22px 18px}
+section.bx > .bx-body > *:first-child{margin-top:0}
+section.bx > .bx-body > *:last-child{margin-bottom:0}
+/* sub-heading inside a section (e.g. "Install commands" under Along for the ride) */
+h3.sub{font-size:11.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);
+margin:22px 0 8px;font-weight:600}
 .head h1{font-size:24px;font-weight:800;color:var(--yellow);margin:0 0 14px;letter-spacing:.01em}
 table.head-kv{width:100%;border:none;background:transparent;font-size:12.5px;
 border-collapse:collapse}
@@ -233,13 +244,17 @@ def render_env_report_html(record: dict) -> str:
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
     P.append('<div class="head">')
+    P.append('<span class="cr cr-tl"></span><span class="cr cr-tr"></span>'
+             '<span class="cr cr-bl"></span><span class="cr cr-br"></span>')
     P.append(f"<h1>Bioinfo install report — {_e(name)}{pill}</h1>")
     body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>' for k, v in head_rows)
     P.append(f'<table class="head-kv">{body}</table>')
     P.append('</div>')
 
     # -- TOOLS (centerpiece — SAME columns for build & adopt) ---------------
+    P.append('<section class="bx">')
     P.append(f'<h2>Tools <span class="note">({len(requested)} requested)</span></h2>')
+    P.append('<div class="bx-body">')
     if requested:
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Requested tool</th><th>Requested version</th>"
@@ -262,10 +277,13 @@ def render_env_report_html(record: dict) -> str:
         P.append("</table></div>")
     else:
         P.append(_empty("(no tools recorded)"))
+    P.append('</div></section>')
 
-    # -- ALONG FOR THE RIDE (always shown) ----------------------------------
+    # -- ALONG FOR THE RIDE + INSTALL COMMANDS (same bordered panel) --------
+    P.append('<section class="bx">')
     P.append(f'<h2>Along for the ride <span class="note">'
              f'({len(ride)} transitive dependencies)</span></h2>')
+    P.append('<div class="bx-body">')
     if ride:
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Package</th><th>Version</th><th>Kind</th></tr>")
@@ -277,10 +295,9 @@ def render_env_report_html(record: dict) -> str:
         P.append(_empty("(closure not captured in-locus — an adopted image is trusted "
                         "by its published digest, not introspected here)" if is_adopt else
                         "(none — every resolved package was directly requested)"))
-
-    # -- INSTALL COMMANDS (always shown; foldable when present) -------------
-    P.append(f'<h2>Install commands <span class="note">'
-             f'({len(shipped)} long-tail step(s) baked verbatim into the image)</span></h2>')
+    # -- install commands as a sub-section of the same bordered panel -------
+    P.append(f'<h3 class="sub">Install commands · {len(shipped)} long-tail step(s) '
+             'baked verbatim into the image</h3>')
     if shipped:
         P.append('<details open><summary>Verbatim long-tail commands — the command IS the provenance</summary>')
         for s in shipped:
@@ -292,10 +309,13 @@ def render_env_report_html(record: dict) -> str:
         P.append("</details>")
     else:
         P.append(_empty("(no long-tail steps — pure conda env or adopted biocontainer)"))
+    P.append('</div></section>')
 
     # -- SYSTEM (apt) PACKAGES (always shown; foldable when present) --------
+    P.append('<section class="bx">')
     P.append(f'<h2>System packages (apt) <span class="note">'
              f'({len(system)} captured — OS layer; SBOM only, NOT pinned in the content digest)</span></h2>')
+    P.append('<div class="bx-body">')
     if system:
         P.append('<details><summary>System (apt) packages</summary>')
         P.append('<div class="tbl-wrap"><table>')
@@ -308,10 +328,13 @@ def render_env_report_html(record: dict) -> str:
         P.append(_empty("(no apt SBOM captured — adopted image; the apt layer was not "
                         "introspected in-locus)" if is_adopt else
                         "(no system packages recorded)"))
+    P.append('</div></section>')
 
     # -- ARTIFACTS (one table — image · digests · files · delivery) ---------
+    P.append('<section class="bx">')
     P.append('<h2>Artifacts <span class="note">'
              'companion files link relative to env_reports/; tarball/lock are absolute file://</span></h2>')
+    P.append('<div class="bx-body">')
     art_rows: list[tuple[str, str]] = [
         ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
         ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),
@@ -357,14 +380,17 @@ def render_env_report_html(record: dict) -> str:
     if push:
         art_rows.append(("Registry status", _e(push)))
     P.append(_kv_table(art_rows))
+    P.append('</div></section>')
 
     # -- DECLARED POLICY (verified vs declared — plain table + note) --------
     gated = bool(r.get("gated"))
     licenses = list(r.get("licenses") or [])
     accel = r.get("accelerator") if isinstance(r.get("accelerator"), dict) else None
     accel_type = (accel or {}).get("type") or "none"
+    P.append('<section class="bx">')
     P.append('<h2>Declared policy <span class="note">submitter-declared; the contract checks '
              'these for consistency (I12/I13), <b>not</b> a runtime-verified fact — a caller assertion</span></h2>')
+    P.append('<div class="bx-body">')
     pol_rows = [
         ("License-gated", "yes" if gated else "no"),
         ("Redistributable", "yes" if r.get("redistributable", not gated) else "no"),
@@ -373,9 +399,12 @@ def render_env_report_html(record: dict) -> str:
         ("Accelerator", _e(accel_type)),
     ]
     P.append(_kv_table(pol_rows))
+    P.append('</div></section>')
 
     # -- HOW VERIFIED (per-mode footer — never over-claim for adopt) --------
+    P.append('<section class="bx">')
     P.append('<h2 id="verify">How this was verified</h2>')
+    P.append('<div class="bx-body">')
     P.append('<ul class="foot">')
     if is_adopt:
         P.append("<li><b>ADOPTED_BY_DIGEST</b> — a public BioContainer pulled by its immutable "
@@ -398,6 +427,7 @@ def render_env_report_html(record: dict) -> str:
              "are sha256-anchored. The apt runtime layer is captured but not version-pinned "
              "(<code>apt-get</code> is not reproducible across time).</li>")
     P.append("</ul>")
+    P.append('</div></section>')
 
     P.append('<p class="gen">Generated deterministically from the freeze record — '
              'no field on this page was authored by the agent.</p>')
