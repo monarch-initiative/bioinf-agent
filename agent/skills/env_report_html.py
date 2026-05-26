@@ -60,7 +60,7 @@ background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 80%)}
 .head .cr-br{bottom:-1px;right:-1px;border-bottom:2px solid var(--yellow);border-right:2px solid var(--yellow)}
 /* SECTION PANELS — each remaining section is a bordered card (no yellow accents) */
 section.bx{border:1px solid var(--border);margin:22px 0;background:transparent}
-section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:1px solid var(--cyan)}
+section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:none}
 section.bx > .bx-body{padding:14px 22px 18px}
 section.bx > .bx-body > *:first-child{margin-top:0}
 section.bx > .bx-body > *:last-child{margin-bottom:0}
@@ -87,7 +87,7 @@ border-left:3px solid var(--cyan);border-radius:0;overflow-x:auto;
 font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
 .tbl-wrap{overflow-x:auto;margin:4px 0}
 table{width:100%;border-collapse:collapse;background:var(--surface);
-border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}
+border:1px solid var(--border);font-size:13.5px}
 th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
 tr:last-child td{border-bottom:none}
 th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
