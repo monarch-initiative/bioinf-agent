@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.request
@@ -1155,6 +1156,7 @@ def install_pip_package(
     env_name: str,
     name: str,
     version: str = "",
+    pip_flags: Optional[list[str]] = None,
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -1164,18 +1166,30 @@ def install_pip_package(
     The import-check is the load-or-die: if pip says it installed but the
     package isn't importable, the step is recorded as failed.
 
+    `pip_flags` (NEW): extra flags passed verbatim to pip install. Use for
+    `--no-binary :all:` (force source compile), `--no-build-isolation`,
+    `--index-url`, etc. PERSISTED on `install_method.pip_flags` so freeze's
+    replay path emits the SAME flags inside the shipped image — otherwise
+    pip's default wheel substitution would silently downgrade the validated
+    source compile (the pysam-stress P2 trust violation). Pass as a list of
+    tokens (`['--no-binary', ':all:']`); we shlex-quote each. Flag-bearing
+    pip installs land in the freeze build as engine-coupled long-tail steps,
+    not via `pixi add --pypi` (uv doesn't honor pip flags).
+
     Notes:
       - pip's canonical name is preserved (e.g. open-cravat stays hyphenated)
       - resolved_version is filled from `pip list --format=json` at finalize
         when no explicit version is passed
     """
+    pip_flags = list(pip_flags or [])
     spec = f"{name}=={version}" if version else name
     # Module name for the import check: pip's canonical hyphenated names use
     # underscores at import time (open-cravat → import cravat or open_cravat).
     # We default to the lowercased name; agents can override with verify_command
     # post-hoc if the import path differs.
     import_check_name = name.replace("-", "_").lower()
-    command = f"pip install {spec}"
+    _flag_str = " ".join(shlex.quote(f) for f in pip_flags)
+    command = " ".join(part for part in (f"pip install", _flag_str, spec) if part)
     verify_command = f"python -c 'import {import_check_name}' || pip show {name} > /dev/null"
 
     result = _env_mgr.run_in_env(env_name, command, timeout=600)
@@ -1192,11 +1206,19 @@ def install_pip_package(
             result["verify_output"]  = (vresult.get("stdout") or "")[:200] or "(import succeeded)"
 
     if pipeline_id:
+        # `pip_flags` persists on install_method so freeze's replay re-emits the
+        # SAME flags inside the shipped image. Without this, env_freeze would
+        # reconstruct the pip spec from {name, version} alone and silently drop
+        # the flags — the P2 trust violation (validated source compile →
+        # shipped manylinux wheel).
+        im: dict = {"type": "pip", "source": command}
+        if pip_flags:
+            im["pip_flags"] = list(pip_flags)
         ip_record = {
             "name":    name,
             "channel": "pip",
-            "source":  f"pip install {spec}",
-            "install_method": {"type": "pip", "source": f"pip install {spec}"},
+            "source":  command,
+            "install_method": im,
         }
         if version:
             ip_record["version"] = version

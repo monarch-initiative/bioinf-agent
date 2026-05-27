@@ -240,10 +240,29 @@ def build_env_image(
     primary_tools = primary_tools or []
     non_conda = _freeze.non_conda_installs(spec)
 
-    # pip is declared THROUGH the engine (engine --pypi → into the lock), not as a
-    # long-tail generator — partition it out. Everything else maps to a generator.
-    pip_installs = [x for x in non_conda if x.get("type") == "pip"]
-    tool_installs = [x for x in non_conda if x.get("type") != "pip"]
+    # pip splits THREE ways:
+    #   1. FLAGLESS pip → declared THROUGH the engine (`pixi add --pypi`, in-lock).
+    #      Default path; reproducible via the engine lock.
+    #   2. FLAG-BEARING pip → routed as ENGINE-COUPLED LONG-TAIL (a literal
+    #      `pip install <flags> <spec>` run after the engine layer materializes
+    #      python). `pixi add --pypi` (uv) doesn't honor pip flags, so routing
+    #      a `pip install --no-binary :all: pysam` through the engine silently
+    #      swaps a wheel for the validated source compile — the pysam-stress
+    #      P2 trust violation. By emitting a literal `pip install <flags>` we
+    #      preserve install fidelity (the flags are honored) at the cost of
+    #      lock representability for that one install (the command itself is
+    #      the provenance, recorded in shipped_binaries / longtail_steps).
+    #   3. (anything else) — non-conda non-pip: source/binary/jar/cargo/go/perl
+    #      already handled via _map_install below.
+    all_pip = [x for x in non_conda if x.get("type") == "pip"]
+
+    def _pip_flags(x: dict) -> list[str]:
+        f = (x.get("install_method") or {}).get("pip_flags") or []
+        return list(f) if isinstance(f, list) else []
+
+    pip_with_flags = [x for x in all_pip if _pip_flags(x)]
+    pip_installs   = [x for x in all_pip if not _pip_flags(x)]
+    tool_installs  = [x for x in non_conda if x.get("type") != "pip"]
 
     # map every generator install up front so a non-replayable one fails BEFORE
     # we spin a build container.
@@ -254,6 +273,20 @@ def build_env_image(
             return {"success": False, "stage": "map_install", "reason": m["error"],
                     "available": m.get("available")}
         tool_specs.append(m["spec"])
+
+    # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).
+    # Their versions come from the same installed_packages view as the engine pip
+    # path so move-to-end dedup of retry attempts still resolves to the
+    # last-successful version.
+    _versions = {p.get("name"): p.get("version")
+                 for p in _freeze.installed_packages(spec)
+                 if isinstance(p, dict)}
+    for x in pip_with_flags:
+        nm = x.get("name", "")
+        ver = _versions.get(nm) or ""
+        tool_specs.append(ic.pip_install_with_flags(
+            nm, version=ver, flags=_pip_flags(x),
+        ))
 
     eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
                   accelerator=accelerator, license_gated=license_gated,

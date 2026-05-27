@@ -4341,3 +4341,159 @@ def test_envbuild_request_key_threads_policy_facets():
     assert eb_bare.request_key() != eb_gated.request_key()
     # the gated one carries the marker
     assert "|gated" in eb_gated.request_key()
+
+
+# =============================================================================
+# Batch-1 stress-test fixes (2026-05-27) — pip-flag fidelity (P1 + P2)
+# =============================================================================
+
+
+def test_install_commands_pip_install_with_flags_emits_literal_flags():
+    """P2 — the pip-with-flags generator emits the LITERAL flags into the
+    install command. Without this, `pip install --no-binary :all: pysam`
+    would get reconstructed as `pip install pysam==…` by freeze's replay
+    and silently substitute a wheel for the validated source compile."""
+    from agent.skills import install_commands
+    spec = install_commands.pip_install_with_flags(
+        "pysam", version="0.24.0",
+        flags=["--no-binary", ":all:", "--no-build-isolation"],
+    )
+    assert "pip install" in spec["command"]
+    assert "--no-binary" in spec["command"]
+    assert ":all:" in spec["command"]
+    assert "--no-build-isolation" in spec["command"]
+    assert "pysam==0.24.0" in spec["command"]
+    # engine-coupled: must run under the pixi/micromamba env so python+pip exist
+    assert spec["engine_coupled"] is True
+    # evidence uses the dist-metadata probe (anchored on the tool token so
+    # the env_honesty shape rule binds)
+    assert "pysam" in spec["evidence"]
+
+
+def test_install_commands_pip_install_with_flags_shlex_quotes_unsafe_tokens():
+    """A flag value with a space or shell metachar MUST be shlex-quoted so
+    it lands as one argv token in the build container."""
+    from agent.skills import install_commands
+    spec = install_commands.pip_install_with_flags(
+        "pkg", version="1", flags=["--config-settings", "key=value with space"],
+    )
+    # the spaced value is single-quoted by shlex.quote
+    assert "'key=value with space'" in spec["command"]
+
+
+def test_env_freeze_routes_flag_bearing_pip_to_long_tail_tools(monkeypatch):
+    """P2 end-to-end — a pip install_step with install_method.pip_flags must
+    be routed as an engine-coupled long-tail tool (NOT via `pixi add --pypi`
+    which would drop the flags). The flag-less pip on the same spec stays
+    on the engine path."""
+    from agent.skills import env_freeze
+    # we only need to inspect the plan, not actually build; patch EnvBuild.
+    captured = {}
+
+    class _StubEB:
+        def __init__(self, *args, **kwargs):
+            self.tools_added = []
+            self.pip_added = []
+        def add_conda(self, *a, **kw):
+            return self
+        def add_pip(self, specs, verify):
+            self.pip_added.extend(specs)
+            captured["pip_engine_specs"] = list(specs)
+            return self
+        def add_tool(self, spec):
+            self.tools_added.append(spec)
+            return self
+        def run(self):
+            captured["tool_specs"] = list(self.tools_added)
+            return {"success": True, "image": "x", "image_digest": "sha256:" + "0" * 64,
+                    "verifications": [], "content_digest": "sha256:y"}
+        def request_key(self):
+            return "stub-rkey"
+
+    monkeypatch.setattr(env_freeze, "EnvBuild", _StubEB)
+
+    spec = {
+        "install_steps": [
+            {"tool": "pip", "subcommand": "install",
+             "installed_packages": [{
+                 "name": "pysam", "version": "0.24.0",
+                 "install_method": {"type": "pip", "source": "pip install --no-binary :all: pysam==0.24.0",
+                                    "pip_flags": ["--no-binary", ":all:"]},
+             }]},
+            {"tool": "pip", "subcommand": "install",
+             "installed_packages": [{
+                 "name": "requests", "version": "2.31.0",
+                 "install_method": {"type": "pip", "source": "pip install requests==2.31.0"},
+             }]},
+        ],
+    }
+    env_freeze.build_env_image(spec, name="x", primary_tools=["pysam", "requests"])
+    # flag-bearing pysam routed as long-tail tool (engine-coupled)
+    tool_cmds = [t["command"] for t in captured.get("tool_specs", [])]
+    assert any("pip install" in c and "--no-binary" in c and "pysam==0.24.0" in c
+               for c in tool_cmds), f"pysam-with-flags missing from long-tail: {tool_cmds!r}"
+    # flag-less requests stayed on the engine pip path
+    assert "requests==2.31.0" in (captured.get("pip_engine_specs") or [])
+    assert not any("requests" in c for c in tool_cmds), "requests wrongly routed as long-tail"
+
+
+def test_install_pip_package_persists_pip_flags_on_install_method(monkeypatch, tmp_path):
+    """P1 — `install_pip_package(pip_flags=[...])` MUST record the flags on
+    install_method.pip_flags so freeze's replay path sees them. Without this
+    the install record holds only {type:pip, source: 'pip install ...'} and
+    the freeze rebuild silently uses the engine's flag-less --pypi path."""
+    import importlib, sys
+    # Stub env_manager.run_in_env so we don't actually install. Capture the
+    # install_step that gets merged into the pipeline state.
+    from agent import mcp_server as ms
+
+    captured = {"cmds": []}
+
+    def _stub_run(env_name, cmd, **kw):
+        captured["cmds"].append(cmd)
+        return {"returncode": 0, "stdout": "", "stderr": "", "runtime_seconds": 0.1,
+                "success": True}
+
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", _stub_run)
+
+    # Spin up a fresh pipeline draft so install_pip_package can merge into it
+    pipeline_id = ms.start_pipeline("pip_flag_test", description="x")["pipeline_id"]
+    try:
+        out = ms.install_pip_package(
+            env_name="any", name="pysam", version="0.24.0",
+            pip_flags=["--no-binary", ":all:"],
+            pipeline_id=pipeline_id,
+        )
+        # The first call is the INSTALL command (the second is the verify
+        # `python -c 'import pysam'`). The install command MUST carry the flags.
+        install_cmd = captured["cmds"][0]
+        assert "--no-binary" in install_cmd
+        assert ":all:" in install_cmd
+        assert "pysam==0.24.0" in install_cmd
+        # the install_step is merged into the draft with pip_flags persisted
+        draft = ms._pipeline_state.get_draft(pipeline_id)
+        steps = draft.get("install_steps") or []
+        assert steps, "install_step was not merged into the draft"
+        last = steps[-1]
+        ip = last["installed_packages"][0]
+        im = ip.get("install_method") or {}
+        assert im.get("type") == "pip"
+        assert im.get("pip_flags") == ["--no-binary", ":all:"], (
+            "pip_flags must persist on install_method so freeze's replay re-emits them"
+        )
+    finally:
+        ms.discard_pipeline_draft(pipeline_id)
+
+
+def test_install_pip_package_no_flags_is_back_compat():
+    """The default (no pip_flags) keeps the original command shape AND records
+    no pip_flags key — back-compat with every existing pip install_step."""
+    from agent import mcp_server as ms
+    # Just call with the default; install_method must NOT carry a stray
+    # pip_flags key when the caller didn't pass one (record shape stays clean).
+    import inspect
+    sig = inspect.signature(ms.install_pip_package)
+    assert "pip_flags" in sig.parameters
+    # default value is None (Optional[list[str]]) — the param surfaces in the
+    # MCP schema and is omittable
+    assert sig.parameters["pip_flags"].default is None

@@ -231,6 +231,47 @@ def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-
             "purpose": f"{name} (R {source})", "engine_coupled": True}
 
 
+def pip_install_with_flags(name: str, *, version: str = "",
+                           flags: list[str] | None = None,
+                           evidence: str = "") -> dict[str, Any]:
+    """Pip install that needs FLAGS the engine can't express (`--no-binary`,
+    `--no-build-isolation`, `--index-url`, etc.). Routes as an engine-coupled
+    long-tail step run AFTER the pixi/micromamba layer materializes python.
+
+    Why a separate generator (not the engine's --pypi path): `pixi add --pypi`
+    is backed by uv and defaults to wheels. It doesn't accept pip flags, so a
+    `pip install --no-binary :all: pysam` request taken through the engine
+    silently SUBSTITUTES a manylinux wheel for the validated source compile —
+    the pysam-stress P2 trust violation (validated source-built pysam==0.24.0
+    cp311 → shipped pysam==0.24.0 cp314 manylinux wheel).
+
+    By contrast, this generator emits a literal `pip install <flags> <spec>`
+    that runs under the engine's python (engine_coupled=True), so the flags
+    are honored verbatim and the shipped artifact matches the validated one.
+    Verifications use the same dist-metadata probe as the engine pip path,
+    so the env report renders consistently regardless of route.
+
+    Trade-off: the flag-bearing install is NOT in the engine lock (uv can't
+    represent it). The recipe replays the exact command — same source compile,
+    same env — so reproducibility is preserved at the command level even
+    though the lock can't see this install."""
+    flags = list(flags or [])
+    spec = f"{name}=={version}" if version else name
+    flag_str = " ".join(shlex.quote(f) for f in flags)
+    cmd = f"pip install {flag_str} {shlex.quote(spec)}".strip()
+    # collapse the double-space when flag_str is empty (defensive — caller
+    # should not pass empty flags, but we don't want a malformed command if so)
+    cmd = " ".join(cmd.split())
+    # Dist-metadata probe (same shape as env_freeze._pip_presence_check): robust
+    # to import-name mismatches like pyyaml→yaml. Anchored on the package name
+    # so the env_honesty shape rule (word-boundary tool-token) still binds.
+    ev = evidence or (
+        f"python -c \"import importlib.metadata as _m; _m.version({name!r})\""
+    )
+    return {"command": cmd, "evidence": ev, "tool": name,
+            "purpose": f"{name} (pip with flags)", "engine_coupled": True}
+
+
 def spack(name: str, *, package: str = "", spack_ref: str = "v0.22.1",
           evidence: str = "") -> dict[str, Any]:
     """Spack package (the HPC from-source registry, thousands of curated recipes).
