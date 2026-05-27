@@ -397,9 +397,19 @@ def install_git_repo(
     build_command so freeze can REPLAY the build in the ship image. Omit for
     run-by-path script repos.
 
+    `entrypoint` + `interpreter` is the SIBLING shape for run-by-path academic
+    repos with no compiled binary (e.g. `HIC_ASSEMBLER/run_hicAssembler.py` run
+    as `python …`). The wrapper at {env}/bin/{tool_name} execs the entry script
+    via the named interpreter (`python`, `bash`, …); freeze's script_repo
+    generator clones the same SHA in the ship image and writes the identical
+    wrapper. Pass entrypoint AND interpreter together — omit both for compiled
+    tools that use bin_path + build_command instead. The two shapes are
+    mutually exclusive; install fails if both or neither are supplied.
+
     Pin `ref` to a tag or commit for reproducibility — a bare default branch
     drifts. Returns: {success, clone_path, commit_sha, repo_url, ref,
-    build_command, bin_path, wrapper_path, verify_command, verify_output, log}.
+    build_command, bin_path, entrypoint, interpreter, wrapper_path,
+    verify_command, verify_output, log}.
     """
     result = _env_mgr.install_git_repo(
         env_name       = env_name,

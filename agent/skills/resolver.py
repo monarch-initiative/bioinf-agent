@@ -126,17 +126,87 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
 
 
 def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
+    """PyPI metadata. Captures homepage + project_urls so a github_repo-supplied
+    resolve() can confirm a same-name PyPI hit actually references the same
+    project (and isn't a cross-namespace collision — PyPI's `gab` ≠ baumannlab's
+    Genome_Assembly_Booster despite the name match)."""
     data = _get_json(f"https://pypi.org/pypi/{name}/json", timeout)
     if isinstance(data, dict) and data.get("info"):
-        return {"available": True, "latest": data["info"].get("version")}
+        info = data["info"]
+        return {
+            "available": True,
+            "latest": info.get("version"),
+            "home_page": info.get("home_page") or "",
+            "project_urls": info.get("project_urls") or {},
+            "package_url": info.get("package_url") or "",
+        }
     return {"available": False}
 
 
 def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
+    """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
+    resolve() can confirm a same-name CRAN hit references the same project."""
     data = _get_json(f"https://crandb.r-pkg.org/{name}", timeout)
     if isinstance(data, dict) and data.get("Package"):
-        return {"available": True, "latest": data.get("Version")}
+        return {
+            "available": True,
+            "latest": data.get("Version"),
+            "url": data.get("URL") or "",
+            "bug_reports": data.get("BugReports") or "",
+        }
     return {"available": False}
+
+
+def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
+    """True if any URL in `metadata_urls` references `github_repo` (owner/repo).
+    The substring check is case-insensitive on the repo path because GitHub repo
+    URLs are case-preserving but case-insensitive: github.com/Brentp/Mosdepth ==
+    github.com/brentp/mosdepth. Matches both github.com/owner/repo and
+    github.io subpaths so a project's docs site at <owner>.github.io/<repo>
+    still counts as anchored.
+
+    This is the load-bearing check for the cross-namespace-collision guard:
+    when `github_repo` is provided to resolve() AND a same-name pip/cran hit
+    exists, the resolver MUST verify the registry's metadata actually
+    references that repo before trusting the name match. Without verification,
+    a same-name unrelated package gets confidently picked over the user's
+    explicit repo (the 'GAB' resolver bug: PyPI's `gab` chat-bot library was
+    picked over baumannlab's Genome_Assembly_Booster)."""
+    if not github_repo or "/" not in github_repo:
+        return False
+    needle = github_repo.lower().strip()
+    # also accept the github.io homepage form: <owner>.github.io/<repo>
+    owner, repo = needle.split("/", 1)
+    needle_io = f"{owner}.github.io/{repo}"
+    for url in metadata_urls:
+        if not isinstance(url, str):
+            continue
+        u = url.lower()
+        if needle in u or needle_io in u:
+            return True
+    return False
+
+
+def _pip_anchored_to_repo(probe: dict, github_repo: str) -> bool:
+    """Does PyPI's metadata for this package actually reference the user-
+    supplied github_repo? Walks home_page + project_urls.values() + package_url."""
+    if not probe.get("available"):
+        return False
+    urls = [probe.get("home_page", ""), probe.get("package_url", "")]
+    urls.extend((probe.get("project_urls") or {}).values())
+    return _anchored_to_github_repo(urls, github_repo)
+
+
+def _cran_anchored_to_repo(probe: dict, github_repo: str) -> bool:
+    """Does CRAN's metadata for this package reference the user-supplied
+    github_repo? CRAN's URL field is comma-separated; BugReports is a single URL."""
+    if not probe.get("available"):
+        return False
+    urls = [probe.get("bug_reports", "")]
+    # CRAN URL field is "https://a.example, https://b.example" — split on comma.
+    for u in (probe.get("url", "") or "").split(","):
+        urls.append(u.strip())
+    return _anchored_to_github_repo(urls, github_repo)
 
 
 def probe_spack(name: str, timeout: int = 12) -> dict[str, Any]:
@@ -497,6 +567,45 @@ def resolve(
     # improvisation). Needs only a name (registry probe), no github_repo.
     availability["spack"] = probe_spack(tool, timeout)
 
+    # PROTECTIVE: cross-namespace name-collision guard. When `github_repo` is
+    # provided, the user is signaling authoritative intent ("THIS repo is what I
+    # want"). If a same-name hit on PyPI/CRAN exists but its metadata doesn't
+    # reference github_repo, it's almost certainly a DIFFERENT project that
+    # happens to share the name — picking it would silently install the wrong
+    # tool (the 'GAB' bug: PyPI's chat-bot library `gab` confidently picked over
+    # baumannlab/Genome_Assembly_Booster). We disqualify those tiers from
+    # ranking AND record the collision so the caller can see what was rejected
+    # and why. Without this guard, `chosen` could be a same-name unrelated
+    # package; with it, the user-supplied repo wins by construction.
+    cross_namespace_collisions: list[dict] = []
+    if github_repo:
+        if availability.get("pip", {}).get("available"):
+            if not _pip_anchored_to_repo(availability["pip"], github_repo):
+                cross_namespace_collisions.append({
+                    "tier": "pip",
+                    "name": tool,
+                    "latest": availability["pip"].get("latest"),
+                    "reason": (f"PyPI '{tool}' exists but its metadata does not "
+                               f"reference github_repo '{github_repo}'; "
+                               f"likely a same-name unrelated package."),
+                })
+                availability["pip"] = {**availability["pip"],
+                                       "available": False,
+                                       "cross_namespace_collision": True}
+        if availability.get("cran", {}).get("available"):
+            if not _cran_anchored_to_repo(availability["cran"], github_repo):
+                cross_namespace_collisions.append({
+                    "tier": "cran",
+                    "name": tool,
+                    "latest": availability["cran"].get("latest"),
+                    "reason": (f"CRAN '{tool}' exists but its metadata does not "
+                               f"reference github_repo '{github_repo}'; "
+                               f"likely a same-name unrelated package."),
+                })
+                availability["cran"] = {**availability["cran"],
+                                        "available": False,
+                                        "cross_namespace_collision": True}
+
     decision = rank_decision(availability, prefer=prefer)
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
@@ -507,7 +616,19 @@ def resolve(
         "github_repo": github_repo or None,
         "ambiguous": ambiguous,
         "probed": availability,
+        "cross_namespace_collisions": cross_namespace_collisions,
     })
+    if cross_namespace_collisions:
+        # Surface the rejection prominently so an agent reading the rationale
+        # sees WHY pip/cran was disqualified — silence here would mask the very
+        # bug this guard exists to prevent (a confidently-wrong same-name pick).
+        rejected = ", ".join(
+            f"{c['tier']}/{c['name']}@{c['latest']}" for c in cross_namespace_collisions)
+        decision["rationale"] = (
+            f"REJECTED (cross-namespace collision): {rejected} — same-name hit(s) "
+            f"whose registry metadata does NOT reference github_repo '{github_repo}'. "
+            f"Trust the user-supplied repo: " + decision["rationale"]
+        )
     if ambiguous:
         decision["rationale"] = (
             f"AMBIGUOUS: '{tool}' exists on BOTH PyPI (python) and CRAN (R) — likely "

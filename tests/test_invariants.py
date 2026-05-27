@@ -1256,6 +1256,152 @@ def test_is_ambiguous_only_for_python_plus_r_without_hint():
     assert _is_ambiguous({"cran": {"available": True}}, "") is False
 
 
+def test_anchored_to_github_repo_url_matching():
+    """The metadata-anchor helper used to detect cross-namespace name collisions.
+    Matches github.com/owner/repo (case-insensitive) AND the owner.github.io/repo
+    docs-site form. False on empty / non-github URLs / partial matches."""
+    from agent.skills.resolver import _anchored_to_github_repo
+    target = "althonos/pyhmmer"
+    # canonical github URL — match
+    assert _anchored_to_github_repo(["https://github.com/althonos/pyhmmer"], target)
+    # case-insensitive
+    assert _anchored_to_github_repo(["https://GitHub.com/Althonos/PyHMMER"], target)
+    # github.io docs site form
+    assert _anchored_to_github_repo(["https://althonos.github.io/pyhmmer/"], target)
+    # subpath under the repo (issues, releases, ...) — match
+    assert _anchored_to_github_repo(["https://github.com/althonos/pyhmmer/issues"], target)
+    # unrelated GitHub repo — no match (this is the GAB case)
+    assert not _anchored_to_github_repo(
+        ["https://github.com/some-other-org/gab"], "baumannlab/Genome_Assembly_Booster")
+    # PyPI URL alone doesn't anchor — repo metadata must say so explicitly
+    assert not _anchored_to_github_repo(["https://pypi.org/project/gab/"], target)
+    # empty + malformed
+    assert not _anchored_to_github_repo([], target)
+    assert not _anchored_to_github_repo([""], target)
+    assert not _anchored_to_github_repo(["https://github.com/althonos/pyhmmer"], "")
+    assert not _anchored_to_github_repo(["https://github.com/althonos/pyhmmer"], "no-slash")
+
+
+def test_resolve_cross_namespace_collision_disqualifies_pip(monkeypatch):
+    """The GAB bug regression: when github_repo is provided AND a same-name
+    PyPI hit exists whose metadata does NOT reference that repo, the resolver
+    MUST disqualify pip from ranking (not return chosen=pip with an unrelated
+    package). The collision is recorded in cross_namespace_collisions so the
+    caller can see what was rejected and why."""
+    from agent.skills import resolver as r
+
+    # Simulate the exact GAB scenario: PyPI has a `gab` (an unrelated chat-bot
+    # library at v0.0.1), user provides github_repo=baumannlab/Genome_Assembly_Booster.
+    monkeypatch.setattr(r, "probe_conda", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_pypi", lambda n, t=12: {
+        "available": True, "latest": "0.0.1",
+        "home_page": "https://github.com/some-unrelated-author/gab-chatbot",
+        "project_urls": {"Source": "https://github.com/some-unrelated-author/gab-chatbot"},
+        "package_url": "https://pypi.org/project/gab/",
+    })
+    monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "gab"})
+    monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
+        "repo_exists": True, "has_release_assets": False, "assets": [],
+    })
+
+    d = r.resolve("gab", github_repo="baumannlab/Genome_Assembly_Booster", timeout=5)
+
+    # The pip tier MUST be disqualified — chosen is NOT pip.
+    assert d["chosen"] != "pip", \
+        ("PyPI's same-name unrelated package was confidently picked; the cross-"
+         f"namespace collision guard failed. chosen={d['chosen']!r}; rationale={d['rationale']!r}")
+    # Chosen is one of the github-anchored tiers (synthesis/source/binary).
+    assert d["chosen"] in ("synthesis", "source"), \
+        f"expected synthesis or source for github_repo-anchored resolve; got {d['chosen']!r}"
+    # Collision is RECORDED so the agent can see it.
+    assert d["cross_namespace_collisions"], "collision must be surfaced, not silenced"
+    coll = d["cross_namespace_collisions"][0]
+    assert coll["tier"] == "pip" and coll["name"] == "gab"
+    assert "baumannlab/Genome_Assembly_Booster" in coll["reason"]
+    # Probed availability shows pip was disqualified.
+    assert d["probed"]["pip"]["available"] is False
+    assert d["probed"]["pip"]["cross_namespace_collision"] is True
+    # Rationale leads with REJECTED so an agent reading it sees the problem.
+    assert "REJECTED" in d["rationale"] and "cross-namespace" in d["rationale"]
+
+
+def test_resolve_pip_anchored_to_repo_is_kept(monkeypatch):
+    """Corollary: when PyPI's metadata DOES reference the supplied github_repo,
+    the pip tier stays in ranking. Don't disqualify legitimate same-project
+    hits — only collisions."""
+    from agent.skills import resolver as r
+
+    monkeypatch.setattr(r, "probe_conda", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_pypi", lambda n, t=12: {
+        "available": True, "latest": "0.10.15",
+        "home_page": "https://github.com/althonos/pyhmmer",
+        "project_urls": {"Repository": "https://github.com/althonos/pyhmmer",
+                         "Documentation": "https://althonos.github.io/pyhmmer/"},
+        "package_url": "https://pypi.org/project/pyhmmer/",
+    })
+    monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "pyhmmer"})
+    monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
+        "repo_exists": True, "has_release_assets": False, "assets": [],
+    })
+
+    d = r.resolve("pyhmmer", github_repo="althonos/pyhmmer", timeout=5)
+    assert d["chosen"] == "pip", \
+        ("pyhmmer's PyPI metadata anchors to althonos/pyhmmer (same project) — "
+         f"pip MUST stay in ranking. Got {d['chosen']!r}.")
+    assert not d["cross_namespace_collisions"]
+    assert d["probed"]["pip"]["available"] is True
+
+
+def test_resolve_no_github_repo_no_collision_check(monkeypatch):
+    """Without github_repo there's nothing to anchor against — the resolver
+    must not invent collisions and the existing behavior is preserved."""
+    from agent.skills import resolver as r
+
+    monkeypatch.setattr(r, "probe_conda", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_pypi", lambda n, t=12: {
+        "available": True, "latest": "0.0.1",
+        "home_page": "", "project_urls": {}, "package_url": "",
+    })
+    monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "gab"})
+
+    d = r.resolve("gab", timeout=5)   # NO github_repo
+    assert d["chosen"] == "pip"
+    assert d["cross_namespace_collisions"] == []
+    assert "REJECTED" not in d["rationale"]
+
+
+def test_resolve_cran_cross_namespace_collision(monkeypatch):
+    """Same guard for CRAN: when github_repo is provided AND a same-name CRAN
+    package exists whose URL doesn't reference that repo, CRAN is disqualified.
+    CRAN URLs are comma-separated; the parser must handle that shape."""
+    from agent.skills import resolver as r
+
+    monkeypatch.setattr(r, "probe_conda", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_pypi", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {
+        "available": True, "latest": "1.0",
+        "url": "https://example.com/random-cran-package, https://example.com/docs",
+        "bug_reports": "https://example.com/bugs",
+    })
+    monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "x"})
+    monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
+        "repo_exists": True, "has_release_assets": False, "assets": [],
+    })
+
+    d = r.resolve("x", github_repo="someone/x-real", timeout=5)
+    assert d["chosen"] in ("synthesis", "source"), \
+        f"CRAN collision was not disqualified; got {d['chosen']!r}"
+    assert any(c["tier"] == "cran" for c in d["cross_namespace_collisions"])
+    assert d["probed"]["cran"]["available"] is False
+
+
 def test_resolve_live_ape_disambiguated_by_language():
     """The collision finding, fixed: bare 'ape' is flagged ambiguous (PyPI vs
     CRAN), and language='r' steers it to an R tier (cran/bioconductor/conda
