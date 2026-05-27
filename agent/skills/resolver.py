@@ -319,27 +319,59 @@ def _pick_platform_asset(
 def resolve_linux_asset(
     binary_url: str, target_os: str = "linux", target_arch: str = "amd64", timeout: int = 12,
 ) -> dict[str, Any]:
-    """Given the GitHub release-asset URL of an installed binary (typically a
-    host build like *_darwin_arm64), find the SAME release's asset for the ship
-    platform. Queries the release BY TAG (not 'latest') so the version matches
-    what was installed. Returns {found, url, tag, repo, asset_name} or
-    {found: False, reason, available?}."""
+    """Given the URL of an installed binary, return the SHIP-platform asset URL.
+
+    Two routes (in order):
+
+    A) GitHub release-download URL (the host-binary cross-arch bridge): a host
+       build like *_darwin_arm64 maps to the same release's *_linux_amd64
+       asset. Queries the release BY TAG (not 'latest') so the version matches
+       what was installed. Returns {found, url, tag, repo, asset_name}.
+
+    B) DIRECT vendor / CDN URL whose filename already identifies the ship
+       platform (e.g. dorado's `https://cdn.oxfordnanoportal.com/.../
+       dorado-2.0.0-linux-x64.tar.gz` — the URL IS the ship-platform asset).
+       Many vendors (Oxford Nanopore, 10x Genomics, certain Illumina tools)
+       publish only on a CDN, not as GitHub release assets, so the github-only
+       gate (the dorado-stress D1 finding) blocked them with the diagnostic
+       'not a github release-download URL — pass a linux asset URL
+       explicitly'. We now accept the direct URL when its filename passes the
+       SAME platform-selection rules used for github assets (_pick_platform_
+       asset): names a foreign os/arch → rejected; names target os+arch →
+       accepted (strict); platform-untagged → accepted (loose, the smoke
+       verify is the net). Returns {found, url, tag, repo, asset_name} with
+       tag/repo empty (the CDN URL doesn't expose them).
+
+    Returns {found: False, reason, available?} when neither route resolves."""
     m = _GH_RELEASE_RE.match(binary_url or "")
-    if not m:
+    if m:
+        owner, repo, tag = m.group(1), m.group(2), m.group(3)
+        rel = _get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", timeout)
+        if not isinstance(rel, dict):
+            return {"found": False, "reason": f"could not fetch release {owner}/{repo}@{tag}"}
+        assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
+                  if a.get("browser_download_url")]
+        pick = _pick_platform_asset(assets, target_os, target_arch)
+        if not pick:
+            return {"found": False,
+                    "reason": f"no {target_os}/{target_arch} asset in {owner}/{repo}@{tag}",
+                    "available": assets[:20]}
+        return {"found": True, "url": pick, "tag": tag, "repo": f"{owner}/{repo}",
+                "asset_name": pick.rsplit("/", 1)[-1]}
+    # Direct vendor / CDN URL — accept when the URL itself passes platform
+    # selection. Same rules as the github asset list, applied to the single URL.
+    url = (binary_url or "").strip()
+    if not url:
         return {"found": False,
-                "reason": "not a github release-download URL — pass a linux asset URL explicitly"}
-    owner, repo, tag = m.group(1), m.group(2), m.group(3)
-    rel = _get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", timeout)
-    if not isinstance(rel, dict):
-        return {"found": False, "reason": f"could not fetch release {owner}/{repo}@{tag}"}
-    assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
-              if a.get("browser_download_url")]
-    pick = _pick_platform_asset(assets, target_os, target_arch)
+                "reason": "no binary_url to resolve — pass an explicit asset URL"}
+    pick = _pick_platform_asset([url], target_os, target_arch)
     if not pick:
         return {"found": False,
-                "reason": f"no {target_os}/{target_arch} asset in {owner}/{repo}@{tag}",
-                "available": assets[:20]}
-    return {"found": True, "url": pick, "tag": tag, "repo": f"{owner}/{repo}",
+                "reason": (f"URL is not a github release-download AND its filename does not "
+                           f"identify a {target_os}/{target_arch} asset — pass an asset URL "
+                           f"whose name includes the OS/arch tokens"),
+                "available": [url]}
+    return {"found": True, "url": pick, "tag": "", "repo": "",
             "asset_name": pick.rsplit("/", 1)[-1]}
 
 

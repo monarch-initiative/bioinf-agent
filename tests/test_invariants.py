@@ -1594,7 +1594,10 @@ def test_pick_platform_asset_bare_binary_fallback():
 
 def test_resolve_linux_asset_uses_installed_tag(monkeypatch):
     """From the host (darwin) asset URL, resolve the SAME release's linux/amd64
-    asset — by TAG, not 'latest'. Non-github URLs are refused (can't auto-map)."""
+    asset — by TAG, not 'latest'. A non-github URL whose filename names a
+    FOREIGN OS (darwin/macos/windows) is still refused; a platform-untagged
+    URL is accepted under the loose-pass rule (the smoke verify in the build
+    container is the net for wrong-arch picks)."""
     from agent.skills import resolver as r
     fake = {"assets": [{"browser_download_url": u} for u in [
         "https://github.com/o/repo/releases/download/v1.2.3/tool_darwin_arm64.tar.gz",
@@ -1606,7 +1609,51 @@ def test_resolve_linux_asset_uses_installed_tag(monkeypatch):
         "https://github.com/o/repo/releases/download/v1.2.3/tool_darwin_arm64.tar.gz")
     assert got["found"] and got["asset_name"] == "tool_linux_amd64.tar.gz"
     assert got["tag"] == "v1.2.3" and got["repo"] == "o/repo"
-    assert r.resolve_linux_asset("https://vendor.com/downloads/tool.bin")["found"] is False
+    # Foreign-OS-tagged vendor URL: still refused
+    assert r.resolve_linux_asset("https://vendor.com/downloads/tool_darwin_arm64.bin")["found"] is False
+
+
+def test_resolve_linux_asset_accepts_vendor_cdn_linux_url():
+    """D1 — Oxford Nanopore's dorado ships only on a CDN (no GitHub release
+    assets). Pre-fix, `resolve_linux_asset` refused any non-github URL even
+    when the filename already identified the ship platform. Now we accept
+    when the filename names linux+amd64 (strict pass)."""
+    from agent.skills import resolver as r
+    url = "https://cdn.oxfordnanoportal.com/software/analysis/dorado-2.0.0-linux-x64.tar.gz"
+    got = r.resolve_linux_asset(url)
+    assert got["found"] is True
+    assert got["url"] == url
+    assert got["asset_name"] == "dorado-2.0.0-linux-x64.tar.gz"
+    # tag/repo empty for CDN URLs (no github metadata to extract)
+    assert got["tag"] == "" and got["repo"] == ""
+
+
+def test_resolve_linux_asset_accepts_platform_neutral_vendor_url():
+    """A vendor URL with NO platform tokens (and no foreign-os tokens) falls
+    into the loose pass — the smoke verify in the build container is the
+    net for a wrong-arch binary. This matches the behavior the github
+    release-asset path has for tools that ship a single Linux static
+    binary (mosdepth, somalier)."""
+    from agent.skills import resolver as r
+    got = r.resolve_linux_asset("https://vendor.com/downloads/tool.bin")
+    assert got["found"] is True
+    assert got["asset_name"] == "tool.bin"
+
+
+def test_resolve_linux_asset_refuses_foreign_arch_vendor_url():
+    """A vendor URL naming the WRONG arch is still rejected — both the strict
+    and loose passes exclude foreign-arch filenames."""
+    from agent.skills import resolver as r
+    got = r.resolve_linux_asset("https://vendor.com/downloads/tool-linux-aarch64.tar.gz")
+    assert got["found"] is False
+
+
+def test_resolve_linux_asset_refuses_empty_url():
+    """Empty URL → explicit refusal (caller must pass something)."""
+    from agent.skills import resolver as r
+    got = r.resolve_linux_asset("")
+    assert got["found"] is False
+    assert "no binary_url" in got.get("reason", "").lower()
 
 
 def _draft_with_binary():
