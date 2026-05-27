@@ -2179,7 +2179,7 @@ def freeze(
     platform: str = "linux-64",
     accel: str = "none",
     gated: bool = False,
-    licenses: list[str] = [],
+    licenses: Optional[list[str]] = None,
     push_target: str = "",
     gpu_required: bool = False,
     cuda_version: str = "",

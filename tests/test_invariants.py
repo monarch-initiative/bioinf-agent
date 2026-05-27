@@ -1656,6 +1656,51 @@ def test_resolve_linux_asset_refuses_empty_url():
     assert "no binary_url" in got.get("reason", "").lower()
 
 
+# =============================================================================
+# Batch-1 stress-test fixes (2026-05-27) — MCP schema exports list-defaulted
+# parameters (D4)
+# =============================================================================
+
+
+def test_mcp_freeze_schema_includes_licenses():
+    """D4 — pre-fix `licenses: list[str] = []` (mutable default) was missing
+    from the FastMCP schema export. An agent calling freeze(licenses=["MIT"])
+    raised pydantic 'Input should be a valid list' because the param wasn't
+    in the schema. With `Optional[list[str]] = None` (default None, unwrapped
+    internally) the schema picks it up. This makes I13-gated builds reachable
+    from the MCP surface (a gated build MUST supply licenses or I13 refuses)."""
+    import asyncio
+    from agent.mcp_server import mcp
+    async def _get():
+        return await mcp.get_tool("freeze")
+    tool = asyncio.run(_get())
+    schema = tool.parameters
+    assert "licenses" in schema["properties"], (
+        "licenses parameter must surface in the MCP schema (was missing pre-D4 "
+        "fix due to mutable default = [] hiding it from FastMCP's extractor)"
+    )
+    # anyOf array/null — the Optional[list[str]] shape
+    prop = schema["properties"]["licenses"]
+    assert prop["default"] is None
+    types = {sub.get("type") for sub in prop.get("anyOf", [])}
+    assert "array" in types and "null" in types
+
+
+def test_mcp_install_pip_package_schema_includes_pip_flags():
+    """Companion to D4 — install_pip_package's pip_flags MUST be in the
+    schema or agents can't pass `--no-binary :all:` from the MCP surface
+    (forcing the run_in_env fallback that P3 fixes)."""
+    import asyncio
+    from agent.mcp_server import mcp
+    async def _get():
+        return await mcp.get_tool("install_pip_package")
+    tool = asyncio.run(_get())
+    schema = tool.parameters
+    assert "pip_flags" in schema["properties"]
+    prop = schema["properties"]["pip_flags"]
+    assert prop["default"] is None
+
+
 def _draft_with_binary():
     """A draft-shaped dict: bootstrap python (conda create) + a binary-tier tool."""
     return {
