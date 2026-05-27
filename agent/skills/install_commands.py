@@ -174,24 +174,41 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
 
 
 def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-project.org",
+              bioc_mirror: str = "https://bioconductor.org",
               evidence: str = "") -> dict[str, Any]:
     """R package (TOOLCHAIN-COUPLED): installed into the engine's R via Rscript
     (declare ['r-base'] first — and the conda c-/cxx-compiler when a source build
     compiles C/C++/Fortran). source = 'cran' | 'bioconductor' | 'github:owner/repo'.
     Verified in-image by `library(name)` (loads or exits non-zero). PREFER conda when
     the package is on bioconda (r-* / bioconductor-* install far more reliably) — this
-    is the unpackaged-residue fallback, the R analog of perl_cpanm."""
+    is the unpackaged-residue fallback, the R analog of perl_cpanm.
+
+    Every install command ends with a `requireNamespace || stop()` load-or-die check
+    so a silent-success — BiocManager's mirror auto-detect picking an unreachable
+    mirror is the load-bearing case, observed under conda r-base where auto-select
+    pulls a foreign Bioconductor mirror that 404s — fails the build AT THIS STEP with
+    the install tool's actual warnings/error, instead of slipping past returncode 0
+    and surfacing later at the evidence stage with no diagnostic. The bioconductor
+    branch also pins `options(BioC_mirror = bioc_mirror)` so the auto-select wildcard
+    is out of the picture entirely. The github branch passes `dependencies = FALSE`
+    so transitive deps must come from conda or earlier R install steps (the install
+    plan is the source of truth, not remotes' opportunistic auto-resolution)."""
+    load_or_die = (f'if(!requireNamespace("{name}",quietly=TRUE)) '
+                   f'stop("install reported success but \'{name}\' is not loadable")')
     if source == "bioconductor":
-        inst = (f'if(!requireNamespace("BiocManager",quietly=TRUE)) '
+        inst = (f'options(BioC_mirror="{bioc_mirror}"); '
+                f'if(!requireNamespace("BiocManager",quietly=TRUE)) '
                 f'install.packages("BiocManager",repos="{repos}"); '
-                f'BiocManager::install("{name}",ask=FALSE,update=FALSE)')
+                f'BiocManager::install("{name}",ask=FALSE,update=FALSE); '
+                f'{load_or_die}')
     elif source.startswith("github:"):
         repo = source.split(":", 1)[1]
         inst = (f'if(!requireNamespace("remotes",quietly=TRUE)) '
                 f'install.packages("remotes",repos="{repos}"); '
-                f'remotes::install_github("{repo}")')
+                f'remotes::install_github("{repo}",dependencies=FALSE); '
+                f'{load_or_die}')
     else:  # cran (default)
-        inst = f'install.packages("{name}",repos="{repos}")'
+        inst = f'install.packages("{name}",repos="{repos}"); {load_or_die}'
     cmd = f"Rscript -e {shlex.quote(inst)}"
     ev = evidence or f"Rscript -e {shlex.quote(f'library({name})')}"
     return {"command": cmd, "evidence": ev, "tool": name,

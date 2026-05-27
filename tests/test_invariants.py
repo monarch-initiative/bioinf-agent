@@ -2597,7 +2597,228 @@ def test_install_command_r_package_generator():
     b = ic.r_package("DESeq2", source="bioconductor")
     assert 'BiocManager::install("DESeq2"' in b["command"]
     g = ic.r_package("treedater", source="github:emvolz-phylodynamics/treedater")
-    assert 'remotes::install_github("emvolz-phylodynamics/treedater")' in g["command"]
+    assert 'remotes::install_github("emvolz-phylodynamics/treedater",dependencies=FALSE)' in g["command"]
+
+
+def test_install_command_r_package_load_or_die_and_mirror_pin():
+    """Every r_package install command ends with a `requireNamespace || stop()` so a
+    silent BiocManager-picks-foreign-mirror failure fails the build AT this install
+    step with the tool's actual error, not later at the evidence stage with no
+    diagnostic. The bioconductor branch pins `options(BioC_mirror=...)` so the
+    auto-select wildcard is removed entirely. The github branch passes
+    `dependencies=FALSE` so transitive deps come from conda or earlier R steps (the
+    install plan is the source of truth, not remotes' opportunistic auto-resolve)."""
+    from agent.skills import install_commands as ic
+
+    # all three sources gain the load-or-die check
+    for spec in (ic.r_package("ape", source="cran"),
+                 ic.r_package("snpStats", source="bioconductor"),
+                 ic.r_package("GAPIT", source="github:jiabowang/GAPIT")):
+        name = spec["tool"]
+        assert "requireNamespace" in spec["command"]
+        assert f"\"{name}\"" in spec["command"]   # the name is checked, not a generic stop
+        assert "stop(" in spec["command"]
+        assert "not loadable" in spec["command"]
+
+    # bioconductor branch pins the mirror; the host-side observed bug is that R's
+    # in-container BiocManager auto-detect can pick an unreachable foreign mirror
+    # and silently fail. The pin removes the wildcard.
+    b = ic.r_package("snpStats", source="bioconductor")
+    assert 'options(BioC_mirror="https://bioconductor.org")' in b["command"]
+    assert b["command"].index('options(BioC_mirror') < b["command"].index("BiocManager::install"), \
+        "mirror must be pinned BEFORE BiocManager::install or it can still auto-select"
+
+    # the mirror is overridable for callers that need a local registry
+    b2 = ic.r_package("snpStats", source="bioconductor", bioc_mirror="https://bioc.example.org")
+    assert 'options(BioC_mirror="https://bioc.example.org")' in b2["command"]
+
+    # the github branch passes dependencies=FALSE (deps come from the install plan)
+    g = ic.r_package("GAPIT", source="github:jiabowang/GAPIT")
+    assert "dependencies=FALSE" in g["command"]
+    assert 'remotes::install_github("jiabowang/GAPIT",dependencies=FALSE)' in g["command"]
+
+
+def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot():
+    """The install_step-ordering trap: agent installs GAPIT (fails — missing
+    transitive snpStats), installs snpStats (succeeds), retries GAPIT with
+    step=N to replace the failed slot. The naive replace would put the
+    successful GAPIT BACK at its original slot — BEFORE snpStats — and the
+    container replay would fail with the same missing-dep error. The smart
+    replace appends instead so the new step lands AFTER snpStats. Successful
+    replaces (e.g. agent edits a version) keep the original edit-in-place
+    semantic. This is the autonomy fix: the agent doesn't have to think about
+    step numbers at all when recovering from a missing-dep failure."""
+    from agent.skills.pipeline_state import PipelineState
+
+    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_smart_replace"}})
+    ps.start("smart_replace_test", "test")
+
+    # Failed install of GAPIT lands at step 1.
+    i1 = ps.add_install_step("smart_replace_test",
+        {"tool": "Rscript", "purpose": "GAPIT first try",
+         "returncode": 1, "installed_packages": [{"name": "GAPIT"}]})
+    assert i1 == 1
+
+    # Agent then installs snpStats (the missing dep). Lands at step 2.
+    i2 = ps.add_install_step("smart_replace_test",
+        {"tool": "Rscript", "purpose": "snpStats",
+         "returncode": 0, "installed_packages": [{"name": "snpStats"}]})
+    assert i2 == 2
+
+    # Agent retries GAPIT with step=1 to "replace the failed prior attempt".
+    # Smart-replace: previous attempt at slot 1 had rc!=0 + new attempt rc==0
+    # → APPEND at step 3, NOT replace slot 1.
+    i3 = ps.add_install_step("smart_replace_test",
+        {"tool": "Rscript", "purpose": "GAPIT retry",
+         "returncode": 0, "installed_packages": [{"name": "GAPIT"}]},
+        replace_step=1)
+    assert i3 == 3, f"smart-replace must append after intervening success; got step={i3}"
+
+    steps = ps._drafts["smart_replace_test"]["install_steps"]
+    assert len(steps) == 3
+    assert steps[0]["returncode"] == 1                          # failed attempt preserved
+    assert steps[0]["installed_packages"][0]["name"] == "GAPIT"
+    assert steps[1]["installed_packages"][0]["name"] == "snpStats"
+    assert steps[2]["installed_packages"][0]["name"] == "GAPIT"
+    assert steps[2]["returncode"] == 0
+    # Replay order = [snpStats, GAPIT] once failed step is filtered — correct.
+
+    # Successful-replace still edits in place (the version-bump case): agent
+    # decides EMMREML 3.1 was wrong, wants 3.2 → step= must overwrite.
+    ps.add_install_step("smart_replace_test",
+        {"tool": "Rscript", "purpose": "EMMREML 3.1",
+         "returncode": 0, "installed_packages": [{"name": "EMMREML", "version": "3.1"}]})
+    i_edit = ps.add_install_step("smart_replace_test",
+        {"tool": "Rscript", "purpose": "EMMREML 3.2 (corrected)",
+         "returncode": 0, "installed_packages": [{"name": "EMMREML", "version": "3.2"}]},
+        replace_step=4)
+    assert i_edit == 4, "successful replace should overwrite in place"
+    steps = ps._drafts["smart_replace_test"]["install_steps"]
+    assert len(steps) == 4
+    assert steps[3]["installed_packages"][0]["version"] == "3.2"
+
+    ps.discard("smart_replace_test")
+
+
+def test_freeze_installed_packages_successful_only_filters_failed_steps():
+    """installed_packages(successful_only=True) skips install_steps with rc!=0
+    and applies last-wins dedup so a later successful retry of the same package
+    supersedes an earlier failed attempt. non_conda_installs (the build-plan
+    feeder) uses this filter — a failed install_method must never reach the
+    container build, period. Default (successful_only=False) keeps the
+    inventory/reporting view that includes failed attempts."""
+    from agent.skills.freeze import installed_packages, non_conda_installs
+
+    spec = {"install_steps": [
+        {"step": 1, "tool": "Rscript", "returncode": 1,
+         "installed_packages": [{"name": "GAPIT", "version": None,
+                                 "install_method": {"type": "r_install",
+                                                    "source": "remotes::install_github('jiabowang/GAPIT')"}}]},
+        {"step": 2, "tool": "Rscript", "returncode": 0,
+         "installed_packages": [{"name": "snpStats", "version": "1.60.0",
+                                 "install_method": {"type": "r_install",
+                                                    "source": "BiocManager::install('snpStats')"}}]},
+        {"step": 3, "tool": "Rscript", "returncode": 0,
+         "installed_packages": [{"name": "GAPIT", "version": "4.1.0",
+                                 "install_method": {"type": "r_install",
+                                                    "source": "remotes::install_github('jiabowang/GAPIT')"}}]},
+    ]}
+
+    # successful_only=True: failed step skipped, last-wins → GAPIT picks up
+    # the SUCCESSFUL row (with version), not the failed placeholder.
+    succ = {p["name"]: p for p in installed_packages(spec, successful_only=True)}
+    assert set(succ) == {"GAPIT", "snpStats"}
+    assert succ["GAPIT"]["version"] == "4.1.0", \
+        "successful-step row must win dedup over the failed placeholder"
+
+    # Default (inventory view) still surfaces the failed-step row exists.
+    all_pkgs = installed_packages(spec)
+    assert len(all_pkgs) == 2   # dedup by name (last-wins keeps successful row)
+
+    # non_conda_installs feeds the build plan → MUST filter failed.
+    nc = non_conda_installs(spec)
+    nc_names = {x["name"] for x in nc}
+    assert nc_names == {"GAPIT", "snpStats"}
+    # The GAPIT install_method must be the successful one (real source string),
+    # not whatever was in the failed-step placeholder.
+    g = next(x for x in nc if x["name"] == "GAPIT")
+    assert "install_github" in g["install_method"]["source"]
+
+
+def test_install_r_package_surfaces_missing_packages_on_failure(monkeypatch):
+    """When R install fails, parse stderr for missing-package signals and
+    surface them as a structured `missing_packages: [...]` field so the
+    autonomy loop doesn't have to grep error text. R produces two distinct
+    shapes both meaning 'install X then retry me': `Package 'X' not available
+    after install attempt` (BiocManager dep resolution) and `there is no
+    package called 'X'` (lazy-load failure during R CMD INSTALL byte-compile).
+    Both must be captured. The package WE were trying to install is NOT
+    in missing_packages — its own load-or-die already telegraphs that."""
+    import agent.mcp_server as m
+
+    # Simulate the exact stderr shape we see in the wild from a failed
+    # remotes::install_github('jiabowang/GAPIT') when snpStats is missing.
+    fake_stderr = (
+        "Using GitHub PAT from the git credential store.\n"
+        "Downloading GitHub repo jiabowang/GAPIT@HEAD\n"
+        "Running `R CMD build`...\n"
+        "* installing *source* package 'GAPIT' ...\n"
+        "** byte-compile and prepare package for lazy loading\n"
+        "ERROR: lazy loading failed for package 'GAPIT'\n"
+        "Bioconductor version 3.22 (BiocManager 1.30.27), R 4.5.3 (2026-03-11)\n"
+        "Installing package(s) 'BiocVersion', 'snpStats'\n"
+        "Warning: packages 'BiocVersion', 'snpStats' are not available for Bioconductor version '3.22'\n"
+        "Error : Package 'snpStats' not available after install attempt.\n"
+        "Error: unable to load R code in package 'GAPIT'\n"
+        "Execution halted\n"
+    )
+    monkeypatch.setattr(m._env_mgr, "run_in_env",
+        lambda env, cmd, timeout=1800: {"returncode": 1, "stdout": "", "stderr": fake_stderr,
+                                         "success": False, "command": cmd})
+
+    res = m.install_r_package(env_name="x", name="GAPIT",
+                               source="github:jiabowang/GAPIT", pipeline_id="")
+    assert res["returncode"] == 1
+    assert res.get("missing_packages") == ["snpStats"], \
+        f"expected ['snpStats']; got {res.get('missing_packages')!r}"
+
+    # The other failure shape: `there is no package called 'X'` (lazy-load).
+    fake_stderr_loadfail = (
+        "Error in loadNamespace(j <- i[[1L]], c(lib.loc, .libPaths()), versionCheck = vI[[j]]) : \n"
+        "  there is no package called 'multtest'\n"
+        "Calls: <Anonymous> ... loadNamespace -> withRestarts -> withOneRestart -> doWithOneRestart\n"
+        "Execution halted\n"
+    )
+    monkeypatch.setattr(m._env_mgr, "run_in_env",
+        lambda env, cmd, timeout=1800: {"returncode": 1, "stdout": "", "stderr": fake_stderr_loadfail,
+                                         "success": False, "command": cmd})
+    res2 = m.install_r_package(env_name="x", name="GAPIT",
+                                source="github:jiabowang/GAPIT", pipeline_id="")
+    assert res2.get("missing_packages") == ["multtest"]
+
+    # The package WE were installing must NOT appear in missing_packages even
+    # if its name appears in the load-or-die failure line.
+    self_fail = (
+        "trying to install GAPIT\n"
+        "Error: install reported success but GAPIT is not loadable\n"
+        # if R also said "there is no package called 'GAPIT'" we'd EXCLUDE GAPIT itself
+        "Error in library(GAPIT) : there is no package called 'GAPIT'\n"
+    )
+    monkeypatch.setattr(m._env_mgr, "run_in_env",
+        lambda env, cmd, timeout=1800: {"returncode": 1, "stdout": "", "stderr": self_fail,
+                                         "success": False, "command": cmd})
+    res3 = m.install_r_package(env_name="x", name="GAPIT",
+                                source="github:jiabowang/GAPIT", pipeline_id="")
+    assert "GAPIT" not in (res3.get("missing_packages") or []), \
+        "the package being installed must not appear in its own missing_packages list"
+
+    # Successful install: no missing_packages field (only set on failure).
+    monkeypatch.setattr(m._env_mgr, "run_in_env",
+        lambda env, cmd, timeout=1800: {"returncode": 0, "stdout": "1.0.0\n", "stderr": "",
+                                         "success": True, "command": cmd})
+    res4 = m.install_r_package(env_name="x", name="ape",
+                                source="cran", pipeline_id="")
+    assert "missing_packages" not in res4 or not res4.get("missing_packages")
 
 
 def test_pixi_engine_add_pypi_and_micromamba_refuses():
@@ -2634,10 +2855,15 @@ def test_env_freeze_maps_pip_and_r_install():
     assert r["spec"]["tool"] == "ape" and 'install.packages("ape"' in r["spec"]["command"]
     rg = ef._map_install({"name": "treedater", "type": "r_install",
                           "install_method": {"source": "remotes::install_github('emvolz/treedater')"}})
-    assert "install_github(\"emvolz/treedater\")" in rg["spec"]["command"]
+    assert 'install_github("emvolz/treedater",dependencies=FALSE)' in rg["spec"]["command"]
     # plan_conda injects the R toolchain (r-base + compilers)
     out = ef.plan_conda([], [{"type": "r_install"}])
     assert "r-base" in out and "fortran-compiler" in out
+    # zlib lives in the R toolchain because source-compiled Bioc/CRAN packages that
+    # work with compressed data (snpStats: -lz for read_uncertain.c; many htslib-
+    # adjacent R packages) #include <zlib.h>. Without it the container build fails
+    # at the install step with a "zlib.h: No such file or directory" hard-error.
+    assert "zlib" in out
     # pip is NOT a generator (no toolchain injected for it)
     assert ef.plan_conda([], [{"type": "pip"}]) == []
 

@@ -38,7 +38,11 @@ _TOOLCHAIN_SPECS = {
     "cargo":     ["rust"],
     "go":        ["go"],
     "perl":      ["perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"],
-    "r_install": ["r-base", "c-compiler", "cxx-compiler", "fortran-compiler"],
+    # zlib is a near-universal #include for Bioc/CRAN packages that touch compressed
+    # data (snpStats: -lz for read_uncertain.c; many htslib-adjacent R packages).
+    # The shipped conda r-base links against zlib already, but the dev headers ship
+    # in `zlib` (conda-forge) — install both so source-compiled R packages find them.
+    "r_install": ["r-base", "c-compiler", "cxx-compiler", "fortran-compiler", "zlib"],
 }
 
 
@@ -263,7 +267,11 @@ def build_env_image(
         verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]
         eb.add_conda(all_conda, verify=verify)
     if pip_installs:
-        versions = {p.get("name"): p.get("version") for p in _freeze.installed_packages(spec)
+        # successful_only: a failed pip-install step records the name but no version;
+        # the version comes from the successful retry. last-wins dedup gets us the
+        # real version even if a failed attempt for the same package exists.
+        versions = {p.get("name"): p.get("version")
+                    for p in _freeze.installed_packages(spec, successful_only=True)
                     if isinstance(p, dict)}
         pip_specs, pip_verify = [], []
         for x in pip_installs:
@@ -355,7 +363,7 @@ def build_env_from_tools(
                     "reason": action.get("reason"), "decision": d}
 
     if needs_r:  # R toolchain for the engine (compiles source CRAN/Bioc pkgs)
-        for s in ("r-base", "c-compiler", "cxx-compiler", "fortran-compiler"):
+        for s in _TOOLCHAIN_SPECS["r_install"]:
             if s not in conda_specs:
                 conda_specs.append(s)
 

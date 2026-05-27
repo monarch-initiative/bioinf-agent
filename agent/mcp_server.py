@@ -897,10 +897,21 @@ def install_r_package(
         Rscript itself (catches the "install printed ERROR but rc=0" failure)
       - Auto-records install_method.type='r_install' with the source URL
     `pipeline_id`: lands an install_step automatically. Use `step=N` to replace
-    a failed prior attempt (retry semantics).
+    a failed prior attempt (retry semantics) — note that when the previous
+    attempt at slot N FAILED (returncode != 0) and this one succeeds, the new
+    step is APPENDED at the end of install_steps rather than overwriting slot N
+    (see pipeline_state._add_to_step_list). This keeps the replay order = the
+    actual successful install order even when a missing dep was discovered
+    mid-install.
 
     Returns the run_install_command shape; failure cases include both R
-    install errors and load-failures with a clean signal.
+    install errors and load-failures with a clean signal. On failure, the
+    return ALSO includes `missing_packages: [name, ...]` parsed from stderr —
+    a structured surface for the autonomy loop. R's package-not-available
+    errors are wordy ("Error : Package 'snpStats' not available after install
+    attempt"; "there is no package called 'snpStats'") — parsing them here so
+    the caller doesn't have to. The caller installs each missing package then
+    retries this install, no string-handling round trip.
     """
     # NOTE: the executed Rscript is wrapped in `Rscript -e "..."` (outer double
     # quotes), so every R string literal inside MUST use single quotes — nested
@@ -961,6 +972,32 @@ def install_r_package(
 
     # Delegate to run_install_command for the actual install_step plumbing.
     result = _env_mgr.run_in_env(env_name, command, timeout=1800)
+    # On failure, surface every package R complained was missing as a structured
+    # field. R logs these in TWO distinct shapes — both load-bearing in the wild:
+    #   • `Error : Package 'X' not available after install attempt` — BiocManager
+    #     trying to install a dep that doesn't exist on the resolved mirror
+    #     (often: foreign Bioc mirror unreachable; or a CRAN/Bioc-only dep
+    #     opportunistically pulled by remotes during install_github)
+    #   • `there is no package called 'X'` — load failure of a transitive dep
+    #     (e.g. R CMD INSTALL byte-compiling lazy bindings that touch X)
+    # Both shapes mean the same thing for the caller: install X then retry me.
+    if result.get("returncode") != 0:
+        import re as _re
+        stderr_blob = (result.get("stderr") or "") + "\n" + (result.get("stdout") or "")
+        missing: list[str] = []
+        seen: set[str] = set()
+        for pat in (r"Package '([A-Za-z][A-Za-z0-9._]*)' not available",
+                    r"there is no package called '([A-Za-z][A-Za-z0-9._]*)'"):
+            for m in _re.finditer(pat, stderr_blob):
+                pkg = m.group(1)
+                if pkg != check_name and pkg not in seen:
+                    # don't include the package WE were trying to install — its
+                    # own load-or-die failure already telegraphs that; missing_packages
+                    # is specifically the OTHER packages this install depends on.
+                    seen.add(pkg)
+                    missing.append(pkg)
+        if missing:
+            result["missing_packages"] = missing
     if result.get("returncode") == 0:
         vresult = _env_mgr.run_in_env(env_name, verify_command, timeout=60)
         if vresult.get("returncode") != 0:

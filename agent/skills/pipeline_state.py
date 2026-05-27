@@ -178,12 +178,38 @@ class PipelineState:
         step_data: dict,
         replace_step: int,
     ) -> Optional[int]:
+        """Append or replace. Smart-replace: when `replace_step` points to a slot
+        that PREVIOUSLY FAILED (returncode != 0) AND the new step succeeded
+        (returncode == 0), APPEND at the end instead of editing in place. This
+        is the install_step-ordering fix: a retry that happens AFTER intervening
+        successful steps (e.g. agent installed GAPIT, fail; then installed the
+        missing dep snpStats; then retried GAPIT, succeed) must take its
+        chronological position in the replay so the container build sees the
+        dep before its consumer. Replacing the original slot would keep the
+        retry at GAPIT's old position — before snpStats — and the replay would
+        fail with the SAME missing-dep error. Append-on-failed-replace makes
+        the replay order = the actual successful install order, period.
+
+        Non-failed replace_step keeps the original edit-in-place semantic (the
+        agent wants to change a parameterization, e.g. version bump)."""
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return None
         steps = draft.setdefault(list_name, [])
         if replace_step > 0 and replace_step <= len(steps):
             existing = steps[replace_step - 1]
+            existing_rc = existing.get("returncode")
+            new_rc = step_data.get("returncode")
+            # Smart-replace condition: previous attempt at this slot FAILED,
+            # new attempt SUCCEEDED. Append instead so the new step lands AFTER
+            # any intervening successful steps the agent may have added (e.g.
+            # the missing dep the retry depends on).
+            if existing_rc not in (0, None) and new_rc == 0:
+                new_index = len(steps) + 1
+                step_data = {**step_data, "step": new_index}
+                steps.append(step_data)
+                self._persist(pipeline_id)
+                return new_index
             merged = {**existing, **step_data, "step": replace_step}
             steps[replace_step - 1] = merged
             self._persist(pipeline_id)

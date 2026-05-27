@@ -116,17 +116,38 @@ def _packages(spec: dict) -> list[dict]:
     return [p for p in (spec.get("packages") or []) if isinstance(p, dict)]
 
 
-def installed_packages(spec: dict) -> list[dict]:
+def installed_packages(spec: dict, *, successful_only: bool = False) -> list[dict]:
     """Every package record in a draft OR finalized spec. A finalized spec carries
     a derived packages[]; a LIVE DRAFT does not (packages[] is derived only at
     finalize) — it only has install_steps[].installed_packages. Union both and
-    dedup by name, with the derived packages[] authoritative when present."""
+    dedup by name, with the derived packages[] authoritative when present.
+
+    `successful_only`: skip install_steps with returncode != 0. The replay path
+    (non_conda_installs → _map_install → container build) wants only the steps
+    that ACTUALLY installed something — a failed attempt's installed_packages[]
+    is a partially-filled placeholder and must not contribute to the build plan.
+    A draft can legitimately carry a failed step alongside a later successful
+    retry: e.g. agent installs GAPIT before its transitive dep snpStats is
+    known → step N records rc=1; agent then installs snpStats → step N+1 rc=0;
+    agent installs GAPIT again → step N+2 rc=0. With successful_only the
+    build-plan dedup picks up GAPIT at its successful step N+2 (AFTER snpStats),
+    which is the replay order that actually works. Default False preserves
+    reporting/inventory behavior (failed attempts visible in the draft)."""
     out: dict[str, dict] = {}
     for st in (spec.get("install_steps") or []):
-        if isinstance(st, dict):
-            for ip in (st.get("installed_packages") or []):
-                if isinstance(ip, dict) and ip.get("name"):
-                    out.setdefault(ip["name"], ip)
+        if not isinstance(st, dict):
+            continue
+        if successful_only and st.get("returncode") not in (0, None):
+            # rc==0 is success; rc==None occurs for steps without a returncode
+            # field (e.g. create_conda_env records no rc) — those are skipped
+            # neither way: they don't carry installed_packages of interest to
+            # the replay (conda env CREATE, not INSTALL).
+            continue
+        # Dedup by name with LAST-WINS semantics: a successful retry at a later
+        # step supersedes an earlier failed attempt of the same package.
+        for ip in (st.get("installed_packages") or []):
+            if isinstance(ip, dict) and ip.get("name"):
+                out[ip["name"]] = ip
     for p in _packages(spec):
         if p.get("name"):
             out[p["name"]] = p
@@ -138,9 +159,17 @@ def non_conda_installs(spec: dict) -> list[dict]:
     cargo/go). These cannot be represented by adopting a bioconda biocontainer
     (it only knows conda packages), and cannot be conda-packed cross-arch — so
     their presence forces a recipe build that replays them on the ship platform.
-    Returns [{name, type, install_method}]."""
+    Returns [{name, type, install_method}].
+
+    Filters to SUCCESSFUL install_steps only — a failed install attempt's
+    install_method must never reach the container build plan, and a later
+    successful retry of the same package supersedes it (last-wins dedup in
+    installed_packages). This is what fixes the install_step-ordering trap:
+    when an agent discovers a missing dep mid-install, the failed-then-retried
+    package naturally takes its successful-step position in the replay, after
+    the intervening dep — no manual `step=` renumbering required."""
     out = []
-    for p in installed_packages(spec):
+    for p in installed_packages(spec, successful_only=True):
         im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
         t = im.get("type") or "conda"
         if t not in ("conda", "docker_pull"):
