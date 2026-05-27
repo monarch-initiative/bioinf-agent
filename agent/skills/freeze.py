@@ -164,6 +164,46 @@ def installed_packages(spec: dict, *, successful_only: bool = False) -> list[dic
     return list(out.values())
 
 
+_ENV_MUTATING_RE = __import__("re").compile(
+    r"(?:^|[\s;&|`(])(?:python\s+-m\s+)?pip3?\s+install\b"
+    r"|(?:^|[\s;&|`(])(?:mamba|micromamba|conda)\s+install\b"
+    r"|(?:^|[\s;&|`(])(?:mamba|micromamba|conda)\s+env\s+update\b",
+    __import__("re").IGNORECASE,
+)
+
+
+def env_mutating_pipeline_steps(spec: dict) -> list[dict]:
+    """Pipeline_steps whose command MUTATED the env outside the structured
+    install primitives — typically `pip install …` via run_in_env, which lands
+    in `pipeline_steps` (not `install_steps`).
+
+    The freeze adopt-vs-build decision queries this alongside non_conda_installs.
+    Without it the decision goes blind on a class of env mutations: a pip-install
+    via run_in_env doesn't surface as an install_step, so non_conda_installs
+    returns empty, the gate fires "pure conda → adopt biocontainer", and freeze
+    silently ships a BioContainer that omits whatever pip just installed.
+    (pysam-stress demonstrated this end-to-end: a host-source-built pysam==0.24.0
+    via run_in_env got freeze-adopted as a pre-built pysam==0.23.3 biocontainer.)
+
+    Matches the common shapes: `pip install foo`, `python -m pip install foo`,
+    `conda install …`, `mamba install …`, `micromamba install …`, conda env
+    updates. NOT a deep parse — a substring match is enough for "this command
+    mutated the env". A false-positive forces a container-native build instead
+    of adopt, which is the SAFE direction (we never wrongly adopt; we may
+    occasionally rebuild when adopt was actually fine).
+
+    Pure / no network; the same module's adopt-vs-build inputs live here so
+    the policy is one-stop."""
+    out: list[dict] = []
+    for st in (spec.get("pipeline_steps") or []):
+        if not isinstance(st, dict):
+            continue
+        cmd = st.get("command", "") or ""
+        if _ENV_MUTATING_RE.search(cmd):
+            out.append(st)
+    return out
+
+
 def non_conda_installs(spec: dict) -> list[dict]:
     """Packages installed by anything OTHER than conda (binary/source/jar/perl/
     cargo/go). These cannot be represented by adopting a bioconda biocontainer

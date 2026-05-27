@@ -2079,6 +2079,28 @@ def validate_output(
 # Docker
 # ---------------------------------------------------------------------------
 
+def _resolve_versions_from_install_record(
+    parsed: list[tuple[str, Optional[str]]],
+    draft: Optional[dict],
+) -> list[tuple[str, Optional[str]]]:
+    """B1 fix: fill a version slot from `install_steps[*].installed_packages`
+    when the caller passed a bare tool name. The install record is the
+    authoritative answer to "what version did we actually install and validate"
+    — the biocontainer adopt-decision must consult it, else it picks whatever
+    tag ranks highest (the BUSCO-stress 3.0.2 vs 6.0.0 wrong-version trust
+    violation, where ranking-by-build-number elevated an older major version).
+
+    An EXPLICIT caller pin (busco=5.4) is honored verbatim — the install record
+    only fills the None slot. Same trust-anchor pattern: when the user/install
+    record speaks, registry-side guessing yields. Pure / no network."""
+    if not isinstance(draft, dict):
+        return parsed
+    installed = {p.get("name"): p.get("version")
+                 for p in _freeze.installed_packages(draft)
+                 if isinstance(p, dict) and p.get("name")}
+    return [(n, v if v is not None else installed.get(n)) for n, v in parsed]
+
+
 def _synth_accelerator_from_request(accel: str, cuda_version: str,
                                     draft_accel: Optional[dict]) -> Optional[dict]:
     """Bind the MCP `freeze(accel=…, cuda_version=…)` scalars to an Accelerator
@@ -2226,7 +2248,16 @@ def freeze(
 
     name = pipeline_name or env_name
     sif = f"{name}.sif"
-    adopt = _biocontainers.resolve_biocontainer(parsed)
+    # B1 fix: when the caller asked tools=['busco'] without a version, fill the
+    # version from the AUTHORITATIVE install record (install_steps[*].installed_
+    # packages) before the biocontainer lookup. Otherwise resolve_biocontainer
+    # sees version=None and (with the build_number → version ranking fix) might
+    # still pick a higher-build older version when "latest" isn't well-defined.
+    # The install record is what we actually installed and validated; the
+    # adopted image must match it or refuse. An EXPLICIT caller pin (busco=5.4)
+    # is honored verbatim — the install record only fills the None slot.
+    parsed_for_adopt = _resolve_versions_from_install_record(parsed, draft)
+    adopt = _biocontainers.resolve_biocontainer(parsed_for_adopt)
     conda_lock_path = None
     shipped_binaries: list[dict] = []
     build_method = None
@@ -2236,6 +2267,13 @@ def freeze(
     build_cd = ""                  # the EnvBuild content_digest (the authoritative build anchor)
 
     non_conda = _freeze.non_conda_installs(draft) if draft else []
+    # P3 fix: pipeline_steps that ran `pip install …` via run_in_env mutate the
+    # env outside install_steps' structured surface — non_conda_installs misses
+    # them, so the adopt gate would otherwise see "pure conda" and ship a
+    # BioContainer that omits the pip install. (pysam-stress: host-built
+    # pysam==0.24.0 via run_in_env → freeze adopted pysam==0.23.3 biocontainer.)
+    env_mutators = _freeze.env_mutating_pipeline_steps(draft) if draft else []
+    has_env_mutations = bool(non_conda or env_mutators)
     can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
 
     # Registry push as a first-class delivery: an explicit push_target wins, else a
@@ -2269,7 +2307,7 @@ def freeze(
                                        tarball=tball, gated=gated)
         return idg, tball, h
 
-    if can_adopt and not non_conda:
+    if can_adopt and not has_env_mutations:
         # ADOPT — pure-conda env with a published biocontainer. The biocontainer
         # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
@@ -2305,7 +2343,14 @@ def freeze(
         # A biocontainer is not adopted when the env has non-conda installs it can't
         # represent (adopting would ship a different, unvalidated artifact).
         if can_adopt:
-            adopt = {**adopt, "skipped": "env has non-conda installs a biocontainer cannot represent"}
+            if non_conda:
+                _skipped = ("env has non-conda installs a biocontainer cannot represent "
+                            f"({len(non_conda)} install_step(s))")
+            else:
+                _skipped = (f"env has {len(env_mutators)} pipeline_step(s) that mutated the env "
+                            "(e.g. `pip install …` via run_in_env) — a biocontainer cannot "
+                            "represent these")
+            adopt = {**adopt, "skipped": _skipped}
         docker_platform = _CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
         conda_deps = _freeze.requested_conda_specs(draft) if draft else []
         if not conda_deps and not non_conda:

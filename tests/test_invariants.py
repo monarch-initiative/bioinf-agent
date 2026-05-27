@@ -4125,3 +4125,124 @@ def test_synth_accelerator_from_request_mps_dev_only():
     from agent.mcp_server import _synth_accelerator_from_request
     out = _synth_accelerator_from_request("mps", "", None)
     assert out == {"type": "mps", "dev_only": True}
+
+
+# =============================================================================
+# Batch-1 stress-test fixes (2026-05-27) — adopt-decision honors install record
+# (B1 + P3)
+# =============================================================================
+
+
+def test_biocontainer_version_key_ranks_by_version_then_build():
+    """B1 — the BUSCO stress headline. Ranking by build_number ALONE picked
+    BUSCO 3.0.2--py_13 (build 13) over BUSCO 6.0.0--pyhdfd78af_3 (build 3),
+    silently shipping a 3-major-version-older binary. _version_key sorts by
+    (version_tuple, build_number) so the latest VERSION wins primarily and
+    build_number is the tiebreaker within a version."""
+    from agent.skills.biocontainers import _version_key
+    # version dominates build_number
+    assert _version_key("6.0.0--pyhdfd78af_3") > _version_key("3.0.2--py_13")
+    # within a version, higher build wins
+    assert _version_key("1.21--h96c455f_2") > _version_key("1.21--h96c455f_1")
+    # mulled-v2 (no version segment) falls back to build_number
+    assert _version_key("mulled-v2-abc-3") > _version_key("mulled-v2-abc-2")
+
+
+def test_biocontainer_resolves_to_highest_version_when_unpinned(monkeypatch):
+    """End-to-end BUSCO regression: a versionless lookup MUST return the
+    highest-version tag, not the highest-build tag of an older version."""
+    from agent.skills import biocontainers
+    fake_tags = [
+        {"name": "3.0.2--py_13", "manifest_digest": "sha256:" + "3" * 64},
+        {"name": "6.0.0--pyhdfd78af_3", "manifest_digest": "sha256:" + "6" * 64},
+        {"name": "5.5.0--pyhdfd78af_0", "manifest_digest": "sha256:" + "5" * 64},
+    ]
+    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: fake_tags)
+    out = biocontainers.resolve_biocontainer([("busco", None)])
+    assert out["found"] is True
+    assert out["tag"] == "6.0.0--pyhdfd78af_3"
+    assert "6" * 64 in (out["image_by_digest"] or "")
+
+
+def test_env_mutating_pipeline_steps_detects_pip_install():
+    """P3 — pip install via run_in_env lands in pipeline_steps (not
+    install_steps). The adopt-vs-build decision needs to see these or the
+    biocontainer adoption fires on an env that has pip mutations."""
+    from agent.skills import freeze
+    spec = {"pipeline_steps": [
+        {"command": "pip install --no-binary :all: pysam==0.24.0"},
+        {"command": "samtools view input.bam | head"},
+        {"command": "python -m pip install requests"},
+    ]}
+    mutators = freeze.env_mutating_pipeline_steps(spec)
+    assert len(mutators) == 2
+    cmds = [s["command"] for s in mutators]
+    assert any("pip install --no-binary" in c for c in cmds)
+    assert any("python -m pip install" in c for c in cmds)
+
+
+def test_env_mutating_pipeline_steps_detects_conda_mamba_micromamba():
+    """All three conda-frontends' install commands are env mutations."""
+    from agent.skills import freeze
+    spec = {"pipeline_steps": [
+        {"command": "conda install -y -c bioconda samtools"},
+        {"command": "mamba install -y -c bioconda bcftools"},
+        {"command": "micromamba install -y -n env tabix"},
+        {"command": "conda env update -f env.yml"},
+    ]}
+    assert len(freeze.env_mutating_pipeline_steps(spec)) == 4
+
+
+def test_env_mutating_pipeline_steps_ignores_unrelated_commands():
+    """A normal pipeline_step (samtools view, …) is NOT an env mutation —
+    no false positive that would force a needless container build."""
+    from agent.skills import freeze
+    spec = {"pipeline_steps": [
+        {"command": "samtools view input.bam > out.sam"},
+        {"command": "echo 'pip install foo' >> notes.txt"},   # text, not exec
+        {"command": "Rscript -e 'library(GAPIT)'"},
+    ]}
+    # the `echo 'pip install …'` is a tricky one — substring-matches the regex
+    # but is enclosed in quotes / not a real install. We accept this as a SAFE
+    # false-positive: forces build over adopt, which is conservative. The
+    # pure samtools view and Rscript lines must NOT trigger.
+    mutators = freeze.env_mutating_pipeline_steps(spec)
+    cmds = {s["command"] for s in mutators}
+    assert "samtools view input.bam > out.sam" not in cmds
+    assert "Rscript -e 'library(GAPIT)'" not in cmds
+
+
+def test_resolve_versions_from_install_record_fills_unpinned():
+    """When the caller asks tools=['busco'] (no version) and the draft says
+    busco 6.0.0 was installed, the adopt lookup MUST see ('busco', '6.0.0'),
+    not ('busco', None). The install record is the trust anchor."""
+    from agent.mcp_server import _resolve_versions_from_install_record
+    draft = {"install_steps": [{
+        "tool": "conda", "subcommand": "install",
+        "installed_packages": [{"name": "busco", "version": "6.0.0"}],
+    }]}
+    parsed = [("busco", None)]
+    out = _resolve_versions_from_install_record(parsed, draft)
+    assert out == [("busco", "6.0.0")]
+
+
+def test_resolve_versions_from_install_record_honors_explicit_pin():
+    """An EXPLICIT caller pin (busco=5.4) MUST NOT be overwritten by the
+    install record — the caller's pin is the strongest intent signal."""
+    from agent.mcp_server import _resolve_versions_from_install_record
+    draft = {"install_steps": [{
+        "tool": "conda", "subcommand": "install",
+        "installed_packages": [{"name": "busco", "version": "6.0.0"}],
+    }]}
+    parsed = [("busco", "5.4")]
+    out = _resolve_versions_from_install_record(parsed, draft)
+    assert out == [("busco", "5.4")]
+
+
+def test_resolve_versions_from_install_record_no_draft_passthrough():
+    """No draft → input passes through unchanged (the declarative freeze case
+    where the caller drives without a pipeline_id)."""
+    from agent.mcp_server import _resolve_versions_from_install_record
+    parsed = [("busco", None), ("samtools", "1.21")]
+    out = _resolve_versions_from_install_record(parsed, None)
+    assert out == parsed

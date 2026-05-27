@@ -72,6 +72,38 @@ def _build_number(tag_name: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def _version_key(tag_name: str) -> tuple:
+    """Sort key for biocontainer tags: (version_tuple, build_number).
+
+    Single-package tag shape is '{version}--{recipe-hash}_{build_number}':
+      busco 6.0.0--pyhdfd78af_3  → ((6, 0, 0), 3)
+      busco 3.0.2--py_13         → ((3, 0, 2), 13)
+      samtools 1.21--h96c455f_1  → ((1, 21), 1)
+
+    Mulled-v2 tag shape is 'mulled-v2-<hash>:<vhash>-<build_number>' — the
+    version is the hash (opaque), so we fall through to build_number alone:
+      mulled-v2-abc-3            → ((), 3)
+
+    The PREVIOUS ranking was build_number alone — that picked busco 3.0.2
+    (build 13) over busco 6.0.0 (build 3) when both matched a versionless
+    lookup. The BUSCO-stress wrong-version trust violation. Ranking by
+    version_tuple FIRST gives "latest version wins"; build_number remains
+    the tiebreaker within a version.
+
+    A tag with no parseable version segment sorts BELOW any versioned tag
+    (`()` < `(0,)` < `(1,)` …) — safe for mulled-v2 (all candidates share
+    that shape, so build_number is what differs)."""
+    name = (tag_name or "").strip()
+    if "--" in name:
+        ver_part, _, _build_part = name.partition("--")
+    else:
+        # mulled-v2 has no `--` separator; version_hash + build_num are joined by `-`
+        ver_part = ""
+    nums = re.findall(r"\d+", ver_part)
+    ver_tuple = tuple(int(n) for n in nums)
+    return (ver_tuple, _build_number(name))
+
+
 def _quay_tags(repo: str, like: Optional[str] = None, limit: int = 50, timeout: int = 30) -> list[dict]:
     """Active tags for quay.io/biocontainers/{repo}, optionally filtered by a
     `like` substring. Network failures return [] (caller treats as 'no match',
@@ -125,7 +157,7 @@ def resolve_biocontainer(packages: list[tuple[str, Optional[str]]], timeout: int
             "reason": "no pre-built biocontainer for this exact version set — build our own",
         }
 
-    best = max(matches, key=lambda t: _build_number(t.get("name", "")))
+    best = max(matches, key=lambda t: _version_key(t.get("name", "")))
     tag = best.get("name")
     digest = best.get("manifest_digest")
     return {
