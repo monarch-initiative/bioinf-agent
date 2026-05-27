@@ -2154,6 +2154,73 @@ def _synth_accelerator_from_request(accel: str, cuda_version: str,
     return out
 
 
+def _freeze_in_background(**args) -> dict:
+    """Spawn freeze() in a detached subprocess via JobManager. Returns
+    immediately with {job_id, result_path, log_path, state="running"}.
+
+    W1 mitigation: the synchronous freeze() can run for 10-60 minutes on a
+    CUDA-tier build (download a multi-GB tarball, build a multi-stage image,
+    pull deps under emulation). The MCP stream-watchdog kills any tool call
+    that produces no stdout for ~600s, so the in-call freeze drops the
+    transport mid-build — the build succeeds inside the container but freeze
+    can never return its final JSON (no EnvCache record, no env report).
+
+    The background mode spawns a Python subprocess that calls freeze() in
+    SYNCHRONOUS mode (with `background=False`), writes the result JSON to
+    env_reports/{name}.freeze_result.json, and exits. The parent agent polls
+    check_job(job_id) at its own cadence; when state=='exited', it reads the
+    result file for the full freeze record. Standard env_report/attestation/
+    recipe artifacts are written by the subprocess too — pure pass-through.
+
+    Args are passed via a JSON file (not argv) to avoid shell-quoting hell
+    with lists/dicts. The subprocess's stdout/stderr stream into the
+    JobManager log, so `check_job(job_id)`'s log_tail surfaces high-level
+    progress markers (start, mode, result-path) and any exception traceback.
+
+    Defaults: license-gated/redistributable carry verbatim from the caller;
+    push_target/registry behave the same in-subprocess as in-process; the
+    EnvCache write happens in the subprocess so the parent's cache is updated
+    on disk (and the next call sees it).
+    """
+    import json as _json
+    import uuid as _uuid
+    name = (args.get("pipeline_name") or args.get("env_name") or "freeze").strip()
+    # `freeze.{name}.{8-char-hex}` — readable in `list_jobs` AND unique across
+    # repeated background freezes of the same env.
+    job_id = f"freeze.{name}.{_uuid.uuid4().hex[:8]}"
+    reports_dir = _env_mgr.project_root / "env_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    args_path = reports_dir / f"{name}.freeze_args.{job_id}.json"
+    result_path = reports_dir / f"{name}.freeze_result.json"
+    # erase any prior result so a stale file can't fool a polling caller
+    if result_path.exists():
+        result_path.unlink()
+    args_path.write_text(_json.dumps(args, default=str))
+    # Drive the synchronous freeze from a small runner script that imports the
+    # MCP module and calls freeze() with background=False. The runner captures
+    # exceptions into the result JSON so the agent gets a structured failure
+    # instead of a crashed subprocess.
+    cmd = (
+        f"python -m agent.skills.freeze_runner "
+        f"{shlex.quote(str(args_path))} {shlex.quote(str(result_path))}"
+    )
+    job = _job_manager.start(cmd, job_id=job_id)
+    if "error" in job:
+        return {"success": False, "stage": "background_spawn", **job}
+    return {
+        "success":     True,
+        "background":  True,
+        "job_id":      job_id,
+        "result_path": str(result_path),
+        "log_path":    job.get("log_path", ""),
+        "state":       "running",
+        "note": ("freeze running in background; poll check_job(job_id) until "
+                 "state='exited', then read the JSON at result_path for the full "
+                 "freeze record. The standard ENV.md / attestation.json / recipe.yaml "
+                 "are also written by the subprocess on success."),
+    }
+
+
 def _effective_push_target(push_target: str, registry: str, name: str,
                            version: str, gated: bool) -> str:
     """The registry ref to push a built image to. An explicit push_target wins;
@@ -2184,6 +2251,7 @@ def freeze(
     gpu_required: bool = False,
     cuda_version: str = "",
     pipeline_id: str = "",
+    background: bool = False,
 ) -> dict:
     """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
 
@@ -2217,7 +2285,25 @@ def freeze(
     'bwa=0.7.17']) — what biocontainer/mulled adoption matches on, NOT the full
     dependency closure. Returns {mode, image, image_digest, content_digest,
     request_key, hpc_delivery, cache_hit, …}.
+
+    `background` (W1 mitigation): when True, spawns freeze in a detached
+    subprocess via JobManager and returns IMMEDIATELY with a job_id. Use this
+    for large builds (CUDA tools, ML/AI models, big release binaries) where the
+    synchronous in-call time would exceed the MCP stream-watchdog window (~10 min).
+    The subprocess writes the full freeze result JSON to
+    `env_reports/{name}.freeze_result.json` when it finishes; poll `check_job(job_id)`
+    until state=='exited', then read that file. The standard env_report/attestation/
+    recipe artifacts are written by the subprocess too, on success.
     """
+    if background:
+        return _freeze_in_background(
+            env_name=env_name, tools=tools, pipeline_name=pipeline_name,
+            pipeline_description=pipeline_description, version=version,
+            platform=platform, accel=accel, gated=gated,
+            licenses=list(licenses or []), push_target=push_target,
+            gpu_required=gpu_required, cuda_version=cuda_version,
+            pipeline_id=pipeline_id,
+        )
     parsed = _freeze.parse_tools(tools)
     # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
     # the honesty contract (I12) can actually check it. A draft-supplied accelerator

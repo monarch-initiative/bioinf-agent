@@ -4720,3 +4720,183 @@ def test_install_pip_package_no_flags_is_back_compat():
     # default value is None (Optional[list[str]]) — the param surfaces in the
     # MCP schema and is omittable
     assert sig.parameters["pip_flags"].default is None
+
+
+# =============================================================================
+# W1 mitigation (2026-05-27) — async freeze() (background subprocess via JobManager)
+# =============================================================================
+
+
+def test_mcp_freeze_schema_includes_background_parameter():
+    """W1 — `background: bool = False` must surface in the MCP schema so
+    callers can opt into the async path. Pre-W1, large freezes hit the
+    ~600s MCP stream-watchdog and the in-call freeze dropped the transport
+    mid-build (in-container build succeeded but the freeze() return never
+    reached the caller — no EnvCache write, no env report)."""
+    import asyncio
+    from agent.mcp_server import mcp
+    async def _get():
+        return await mcp.get_tool("freeze")
+    tool = asyncio.run(_get())
+    schema = tool.parameters
+    assert "background" in schema["properties"]
+    prop = schema["properties"]["background"]
+    assert prop["default"] is False
+    assert prop["type"] == "boolean"
+
+
+def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
+    """W1 — `freeze(background=True)` MUST return immediately (before any
+    docker work happens) with a job_id, result_path, and log_path. Pre-W1,
+    the call held the MCP transport open through the entire docker build."""
+    from agent import mcp_server as ms
+
+    started_jobs = {}
+
+    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+        started_jobs["command"]  = command
+        started_jobs["job_id"]   = job_id
+        started_jobs["log_path"] = str(tmp_path / f"{job_id}.log")
+        return {"job_id": job_id, "log_path": started_jobs["log_path"],
+                "state": "running", "pid": 12345}
+
+    monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
+
+    out = ms.freeze(env_name="bgsmoke", tools=["samtools=1.21"], background=True)
+    assert out["success"] is True
+    assert out["background"] is True
+    assert out["state"] == "running"
+    assert out["job_id"].startswith("freeze.bgsmoke.")
+    assert out["job_id"] == started_jobs["job_id"]
+    assert out["result_path"].endswith("bgsmoke.freeze_result.json")
+    # the subprocess must be invoked via the dedicated runner script
+    assert "agent.skills.freeze_runner" in started_jobs["command"]
+    # and the args file must exist BEFORE spawn (the runner reads it)
+    args_files = list((tmp_path / "env_reports").glob("bgsmoke.freeze_args.*.json"))
+    assert args_files, "freeze_args file must be written BEFORE the subprocess spawns"
+    import json
+    args = json.loads(args_files[0].read_text())
+    assert args["env_name"] == "bgsmoke"
+    assert args["tools"] == ["samtools=1.21"]
+
+
+def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
+    """W1 — a prior freeze_result.json from an earlier background run MUST
+    be deleted before the new subprocess spawns. Otherwise a polling caller
+    could read the OLD result while the new build is still running and
+    silently use a stale artifact's record."""
+    from agent import mcp_server as ms
+
+    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
+    reports = tmp_path / "env_reports"
+    reports.mkdir()
+    stale = reports / "bgstale.freeze_result.json"
+    stale.write_text('{"stale": true, "value": "from a prior run"}')
+
+    def _stub_start(command, **kw):
+        return {"job_id": kw["job_id"], "log_path": "/dev/null", "state": "running"}
+
+    monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    ms.freeze(env_name="bgstale", tools=["x"], background=True)
+    assert not stale.exists(), (
+        "stale freeze_result.json from a prior run was not cleared — the "
+        "next polling caller would read the stale record as if it were the "
+        "new run's"
+    )
+
+
+def test_freeze_background_surfaces_spawn_failure(monkeypatch):
+    """W1 — if JobManager.start refuses to spawn (e.g. a duplicate job_id is
+    still running), the failure surfaces structurally with success=False
+    rather than masquerading as a successful background launch."""
+    from agent import mcp_server as ms
+
+    def _stub_start(command, **kw):
+        return {"error": "job_id 'foo' is already running", "job_id": kw.get("job_id")}
+
+    monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    out = ms.freeze(env_name="bgfail", tools=["x"], background=True)
+    assert out["success"] is False
+    assert out["stage"] == "background_spawn"
+    assert "error" in out
+
+
+def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
+    """W1 — the runner script's structural guarantee: ANY exception during
+    freeze() (including KeyboardInterrupt / SystemExit) is captured into the
+    result file. Without this, a crashed subprocess leaves NO record and the
+    polling caller is stuck (state=exited but no result file = ambiguous)."""
+    import json, signal, subprocess as sp, sys, time
+    args_path = tmp_path / "args.json"
+    result_path = tmp_path / "result.json"
+    args_path.write_text(json.dumps({
+        "env_name": "runner_smoke", "tools": ["x"],
+        # background=True in args: the runner MUST force-override to False,
+        # else it would recursively spawn another job and exit immediately
+        "background": True,
+    }))
+    proc = sp.Popen(
+        [sys.executable, "-m", "agent.skills.freeze_runner",
+         str(args_path), str(result_path)],
+        cwd="/Users/user1/Desktop/GIT_PROJECTS/bioinf_agent",
+        stdout=sp.PIPE, stderr=sp.STDOUT, text=True,
+    )
+    # SIGINT shortly after start so the runner's except BaseException catches it
+    time.sleep(3)
+    proc.send_signal(signal.SIGINT)
+    try:
+        proc.communicate(timeout=15)
+    except sp.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+
+    assert result_path.exists(), (
+        "freeze_runner died without writing a result file. The whole W1 "
+        "contract is 'every subprocess outcome leaves a result' — broken."
+    )
+    result = json.loads(result_path.read_text())
+    assert result["success"] is False
+    assert result["stage"] == "background_exception"
+    assert "traceback" in result   # full stack for diagnosis
+
+
+def test_freeze_runner_force_overrides_background_arg(tmp_path):
+    """W1 — even if the caller passes background=True in the args file (a
+    bug or copy-paste mistake), the runner MUST force background=False
+    before calling freeze. Otherwise the runner recursively spawns another
+    background job and exits without doing the actual work — the subprocess
+    becomes a router with no terminator."""
+    import json
+    from agent.skills.freeze_runner import main as _runner_main
+    args_path = tmp_path / "args.json"
+    result_path = tmp_path / "result.json"
+    # Capture what the runner passes to freeze
+    captured = {}
+
+    def _stub_freeze(**kw):
+        captured.update(kw)
+        return {"success": False, "stage": "stubbed", "request_key": "stub"}
+
+    args_path.write_text(json.dumps({
+        "env_name": "x", "tools": ["y"],
+        "background": True,   # the bug-trap — caller (or this test) misused it
+    }))
+    import sys
+    old_argv = sys.argv
+    sys.argv = ["freeze_runner", str(args_path), str(result_path)]
+    try:
+        import agent.mcp_server as ms_mod
+        old_freeze = ms_mod.freeze
+        ms_mod.freeze = _stub_freeze
+        try:
+            _runner_main()
+        finally:
+            ms_mod.freeze = old_freeze
+    finally:
+        sys.argv = old_argv
+    # the runner must have force-disabled background before calling freeze
+    assert captured["background"] is False, (
+        "freeze_runner.main passed background=True through to freeze() — "
+        "this would recursively spawn another job and exit silently"
+    )
