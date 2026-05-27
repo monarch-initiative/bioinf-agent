@@ -201,10 +201,14 @@ class EnvBuild:
 
     # -- EnvCache bridge: "solve once, pull by digest" --------------------
     def request_key(self) -> str:
-        """The cache LOOKUP handle — what was ASKED for (tools+platform+accel),
-        order-independent. content_digest (what was GOT) is the real identity; this
-        is just the handle freeze.request_key produces for the host path too, so
-        the same env asked for either way collides in one cache."""
+        """The cache LOOKUP handle — what was ASKED for (tools+platform+policy),
+        order-independent. content_digest (what was GOT) is the real identity;
+        this is just the handle freeze.request_key produces for the host path too,
+        so the same env asked for either way collides in one cache.
+
+        Includes all POLICY facets (gated, accelerator-policy hash, licenses
+        hash) so a policy-distinct artifact doesn't share a slot with one that
+        was built under different policy — the dorado-stress D5 finding."""
         tools: list[tuple[str, str]] = []
         for s in self.conda_specs + self.pip_specs:
             name, _, ver = s.replace("==", "=").partition("=")
@@ -212,7 +216,11 @@ class EnvBuild:
         for spec in self.tools:
             tools.append((spec.get("tool", "") or spec.get("purpose", ""), ""))
         accel = (self.accelerator or {}).get("type", "none") if self.accelerator else "none"
-        return _freeze.request_key(tools, self.platform, accel)
+        return _freeze.request_key(
+            tools, self.platform, accel,
+            gated=self.license_gated, accel_policy=self.accelerator,
+            licenses=self.licenses,
+        )
 
     def to_cache_record(self, result: dict) -> dict:
         """The artifact record stored in the EnvCache from a successful BuildResult.

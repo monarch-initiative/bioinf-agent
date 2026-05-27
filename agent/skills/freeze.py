@@ -29,10 +29,76 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-def request_key(tools: list[tuple[str, str]], platform: str, accel: str = "none") -> str:
-    """Canonical lookup handle for 'what was asked for'. Order-independent."""
+# Platform-spelling canonicalization (D6 fix). The cache contained BOTH
+# 'linux-64' (conda form, freeze()'s public default) and 'linux/amd64' (docker
+# form, EnvBuild's internal default) as DISTINCT keys for the same logical
+# artifact — two writers, two slots, no shared cache. Canonicalize to ONE form
+# at request_key time so both writers land in the same slot.
+_PLATFORM_CANON = {
+    "linux-64":      "linux/amd64",
+    "linux/amd64":   "linux/amd64",
+    "linux-aarch64": "linux/arm64",
+    "linux-arm64":   "linux/arm64",
+    "linux/arm64":   "linux/arm64",
+    "osx-64":        "darwin/amd64",
+    "darwin/amd64":  "darwin/amd64",
+    "osx-arm64":     "darwin/arm64",
+    "darwin/arm64":  "darwin/arm64",
+}
+
+
+def canon_platform(platform: str) -> str:
+    """Canonicalize a platform spelling. Conda form ('linux-64') and Docker form
+    ('linux/amd64') resolve to the same canonical token (the Docker form, since
+    that's what container_build actually receives). Pre-canonicalization the
+    cache had both as distinct keys — visible in dorado-stress as a duplicate
+    samtools=1.21|linux-64 / samtools=1.21|linux/amd64 entry. Unknown platforms
+    pass through unchanged so we never silently rewrite a caller's literal."""
+    p = (platform or "").strip()
+    return _PLATFORM_CANON.get(p, p)
+
+
+def request_key(tools: list[tuple[str, str]], platform: str, accel: str = "none",
+                *, gated: bool = False, accel_policy: Optional[dict] = None,
+                licenses: Optional[list[str]] = None) -> str:
+    """Canonical lookup handle for 'what was asked for'. Order-independent in
+    tools; canonical in platform; sensitive to every POLICY facet that produces
+    a materially different artifact.
+
+    The minimal 3-part form `{tools}|{platform}|{accel}` was POLICY-BLIND
+    (D5 stress finding): two callers asking for the same tools+platform+accel
+    but different gated/license/accelerator-toolkit policy collided on one
+    key, so the SECOND caller got the FIRST's artifact back — across a policy
+    boundary. Adding the policy facets to the key:
+
+      gated=True              → adds 'gated' segment (license firewall side)
+      accel_policy dict       → adds 'accel:<12-char-hash>' over
+                                {toolkit_version, runtime, min_driver_version,
+                                 compute_capability} — the metadata that
+                                actually differentiates cuda 12.1 vs 12.8 or
+                                runtime_verified vs build_only.
+      licenses[]              → adds 'lic:<12-char-hash>' over sorted(licenses)
+
+    Default (no policy supplied) keeps the bare 3-part form (back-compat with
+    every existing caller that never used policy gates).
+    """
     spec = ",".join(f"{n}={v}" if v else n for n, v in sorted(tools))
-    return f"{spec}|{platform}|{accel or 'none'}"
+    canon_p = canon_platform(platform)
+    parts = [spec, canon_p, accel or "none"]
+    if gated:
+        parts.append("gated")
+    if accel_policy and isinstance(accel_policy, dict):
+        meta = {k: accel_policy.get(k, "")
+                for k in ("toolkit_version", "runtime", "min_driver_version",
+                          "compute_capability")}
+        if any(meta.values()):
+            parts.append("accel:" + hashlib.sha256(
+                json.dumps(meta, sort_keys=True).encode()).hexdigest()[:12])
+    if licenses:
+        canon_lic = "\n".join(sorted(s.strip() for s in licenses if (s or "").strip()))
+        if canon_lic:
+            parts.append("lic:" + hashlib.sha256(canon_lic.encode()).hexdigest()[:12])
+    return "|".join(parts)
 
 
 def compute_content_digest(parts: dict) -> str:

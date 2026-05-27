@@ -1063,11 +1063,16 @@ def test_resolve_biocontainer_single_tool_live():
 # ---------------------------------------------------------------------------
 
 def test_request_key_is_order_independent():
+    """Order-independent in tools; platform canonicalized (D6 fix: conda-form
+    'linux-64' and Docker-form 'linux/amd64' collapse to one canonical token,
+    avoiding the duplicate-cache-key pollution seen in the dorado audit)."""
     from agent.skills.freeze import request_key
     a = request_key([("samtools", "1.21"), ("bwa", "0.7.17")], "linux-64")
     b = request_key([("bwa", "0.7.17"), ("samtools", "1.21")], "linux-64", accel="none")
-    assert a == b == "bwa=0.7.17,samtools=1.21|linux-64|none"
-    # platform / accel are part of identity
+    assert a == b == "bwa=0.7.17,samtools=1.21|linux/amd64|none"
+    # platform canonicalization: docker-form ↔ conda-form share one key
+    assert request_key([("x", "1")], "linux-64") == request_key([("x", "1")], "linux/amd64")
+    # but distinct platforms remain distinct
     assert request_key([("x", "1")], "osx-arm64") != request_key([("x", "1")], "linux-64")
     assert request_key([("x", "1")], "linux-64", "cuda") != request_key([("x", "1")], "linux-64")
 
@@ -4246,3 +4251,93 @@ def test_resolve_versions_from_install_record_no_draft_passthrough():
     parsed = [("busco", None), ("samtools", "1.21")]
     out = _resolve_versions_from_install_record(parsed, None)
     assert out == parsed
+
+
+# =============================================================================
+# Batch-1 stress-test fixes (2026-05-27) — request_key policy-honesty (D5 + D6)
+# =============================================================================
+
+
+def test_request_key_canon_platform_collapses_conda_and_docker_forms():
+    """D6 — pre-fix the cache had distinct keys for the conda form ('linux-64')
+    and the Docker form ('linux/amd64') of the SAME logical artifact. Now both
+    canonicalize to one token so the cache shares ONE slot."""
+    from agent.skills.freeze import canon_platform, request_key
+    assert canon_platform("linux-64") == canon_platform("linux/amd64") == "linux/amd64"
+    assert canon_platform("osx-arm64") == canon_platform("darwin/arm64") == "darwin/arm64"
+    # unknown platform passes through (never silently rewrite caller's literal)
+    assert canon_platform("freebsd-13") == "freebsd-13"
+    # end-to-end: same request_key for both spellings
+    a = request_key([("samtools", "1.21")], "linux-64")
+    b = request_key([("samtools", "1.21")], "linux/amd64")
+    assert a == b
+
+
+def test_request_key_distinguishes_gated_from_non_gated():
+    """D5 — gated artifacts MUST NOT share a cache slot with non-gated. Pre-fix:
+    two callers asking for samtools=1.21, one gated and one not, collided on
+    `samtools=1.21|linux/amd64|none` and the second got the first's record."""
+    from agent.skills.freeze import request_key
+    a = request_key([("samtools", "1.21")], "linux-64", gated=False)
+    b = request_key([("samtools", "1.21")], "linux-64", gated=True)
+    assert a != b
+    assert b.endswith("|gated")
+
+
+def test_request_key_distinguishes_accelerator_policy():
+    """D5 — two cuda artifacts with DIFFERENT toolkit_version or runtime are
+    materially different artifacts (cuda 12.1 vs 12.8 ABI; build_only vs
+    runtime_verified driver-floor claim). They MUST get distinct keys."""
+    from agent.skills.freeze import request_key
+    base = request_key([("dorado", "2.0.0")], "linux-64", "cuda")
+    cuda121 = request_key([("dorado", "2.0.0")], "linux-64", "cuda",
+                          accel_policy={"toolkit_version": "12.1"})
+    cuda128 = request_key([("dorado", "2.0.0")], "linux-64", "cuda",
+                          accel_policy={"toolkit_version": "12.8"})
+    runtime_verified = request_key([("dorado", "2.0.0")], "linux-64", "cuda",
+                                   accel_policy={"toolkit_version": "12.8",
+                                                 "runtime": "runtime_verified",
+                                                 "min_driver_version": "525.85"})
+    # all four distinct
+    assert len({base, cuda121, cuda128, runtime_verified}) == 4
+
+
+def test_request_key_distinguishes_licenses_set():
+    """D5 — two artifacts with different declared licenses are policy-distinct.
+    A 'BSD-3' build vs a 'proprietary EULA' build must not collide."""
+    from agent.skills.freeze import request_key
+    bsd = request_key([("toolX", "1")], "linux-64", licenses=["BSD-3-Clause"])
+    proprietary = request_key([("toolX", "1")], "linux-64",
+                              licenses=["proprietary-EULA"])
+    no_lic = request_key([("toolX", "1")], "linux-64")
+    assert bsd != proprietary != no_lic
+    # order/whitespace-invariant within the licenses set
+    a = request_key([("t", "1")], "linux-64", licenses=["MIT", "Apache-2.0"])
+    b = request_key([("t", "1")], "linux-64", licenses=["Apache-2.0 ", " MIT"])
+    assert a == b
+
+
+def test_request_key_empty_policy_keeps_back_compat_3_part_form():
+    """Default (no policy supplied) keeps the bare 3-part form so any existing
+    caller that never used policy gates sees the same key shape (modulo
+    platform canonicalization)."""
+    from agent.skills.freeze import request_key
+    k = request_key([("samtools", "1.21")], "linux/amd64")
+    assert k == "samtools=1.21|linux/amd64|none"
+
+
+def test_envbuild_request_key_threads_policy_facets():
+    """EnvBuild.request_key MUST pass its policy state to freeze.request_key
+    so a gated/accel/licensed env doesn't collide with the bare-policy one in
+    the cache when both come from the build path."""
+    from agent.skills.env_build import EnvBuild
+    eb_bare = EnvBuild("x", "1", platform="linux/amd64")
+    eb_bare.add_conda(["samtools=1.21"], verify=[("samtools", "command -v samtools")])
+    eb_gated = EnvBuild("x", "1", platform="linux/amd64", license_gated=True,
+                        licenses=["proprietary-EULA"], redistributable=False,
+                        accelerator={"type": "cuda", "toolkit_version": "12.8",
+                                     "runtime": "build_only"})
+    eb_gated.add_conda(["samtools=1.21"], verify=[("samtools", "command -v samtools")])
+    assert eb_bare.request_key() != eb_gated.request_key()
+    # the gated one carries the marker
+    assert "|gated" in eb_gated.request_key()

@@ -2197,7 +2197,6 @@ def freeze(
     request_key, hpc_delivery, cache_hit, …}.
     """
     parsed = _freeze.parse_tools(tools)
-    rkey = _freeze.request_key([(n, v or "") for n, v in parsed], platform, accel)
     # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
     # the honesty contract (I12) can actually check it. A draft-supplied accelerator
     # wins (richer record); when absent and the caller passed accel="cuda" but no
@@ -2207,12 +2206,18 @@ def freeze(
     # the dorado-stress D3 fix: previously `accel` only fed the cache key and never
     # reached _check_accelerator, so `accel="cuda"` on a draft with accelerator=None
     # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
-    # `draft` is fetched in full below; we read its accelerator here (one get_draft)
-    # to compute effective_accel BEFORE the cache lookup so the bound policy can be
-    # surfaced to a cache-hit caller too. Re-used by the adopt/build branches below.
+    # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix).
     draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
     effective_accel = _synth_accelerator_from_request(accel, cuda_version, _draft_accel)
+    # D5 + D6 fix: request_key now folds in gated, accelerator-policy hash, and
+    # the licenses set hash so policy-distinct artifacts don't collide on the cache
+    # key. Platform is canonicalized inside request_key so conda-form ('linux-64')
+    # and Docker-form ('linux/amd64') callers share ONE slot (D6).
+    rkey = _freeze.request_key(
+        [(n, v or "") for n, v in parsed], platform, accel,
+        gated=gated, accel_policy=effective_accel, licenses=list(licenses or []),
+    )
 
     # Re-anchor the cache against reality: a hit is a CLAIM until we confirm the
     # image is still present in the docker daemon. An evicted image (or one a user
