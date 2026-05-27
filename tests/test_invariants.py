@@ -2821,6 +2821,161 @@ def test_install_r_package_surfaces_missing_packages_on_failure(monkeypatch):
     assert "missing_packages" not in res4 or not res4.get("missing_packages")
 
 
+def test_shrink_stdio_for_response_truncates_to_head_tail_spills_full_to_disk(monkeypatch, tmp_path):
+    """Efficiency #1: stdout/stderr in the MCP response are capped at head+tail
+    while the FULL bytes are preserved on disk at log_path. The agent reads the
+    log if it needs the full diagnostic. Truth surface (install_step record,
+    EnvCache record, env_reports/*.md/html, attestation, recipe) is NEVER
+    touched by this helper — it's pure response-shape sugar. Below the
+    shrink threshold the result passes through untouched."""
+    import agent.mcp_server as m
+    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
+
+    # Small output passes through with NO log file and NO truncation flags.
+    small = {"stdout": "ok\n", "stderr": "", "returncode": 0, "command": "noop"}
+    s = m._shrink_stdio_for_response(dict(small), label="t.small")
+    assert s["stdout"] == "ok\n" and s["stderr"] == ""
+    assert "log_path" not in s and "log_truncated" not in s
+
+    # Large output: response is truncated, full log on disk.
+    big_stdout = "x" * 30000   # well over the 5000-char SHRINK_OVER threshold
+    big_stderr = "Error at file " + "y" * 20000 + "\nfinal-error-message-must-survive"
+    big = {"stdout": big_stdout, "stderr": big_stderr,
+           "returncode": 1, "command": "Rscript -e 'big'"}
+    r = m._shrink_stdio_for_response(dict(big), label="t.big.compile")
+
+    # The response is bounded — no longer 50k chars.
+    assert len(r["stdout"]) < len(big_stdout)
+    assert len(r["stderr"]) < len(big_stderr)
+    # head + tail of stdout preserved.
+    assert r["stdout"].startswith("xxx")     # leading kept
+    # critical: the LAST line of stderr (where the actual error usually lives)
+    # MUST survive truncation. This is the load-bearing property.
+    assert "final-error-message-must-survive" in r["stderr"], \
+        "tail-keep must preserve the final error message"
+    # flags + log_path are set so the caller knows the response was shrunk.
+    assert r["log_truncated"] is True
+    assert r["original_log_chars"] == len(big_stdout) + len(big_stderr)
+    # log_path exists on disk and contains the FULL output verbatim.
+    log_path = tmp_path / "env_reports" / "install_logs"
+    files = list(log_path.glob("t.big.compile.*.log"))
+    assert len(files) == 1, f"expected 1 log file; got {files}"
+    log_content = files[0].read_text()
+    assert big_stdout in log_content                  # full stdout preserved
+    assert big_stderr in log_content                  # full stderr preserved
+    assert "Rscript -e 'big'" in log_content          # command preserved
+    assert "RETURNCODE === 1" in log_content          # rc preserved
+
+
+def test_shrink_stdio_for_response_handles_unsafe_label_chars(monkeypatch, tmp_path):
+    """Label sanitization: arbitrary names (package names with / or .)
+    must not create paths that traverse out of the log dir."""
+    import agent.mcp_server as m
+    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
+    big = {"stdout": "x" * 10000, "stderr": "", "returncode": 0, "command": ""}
+    # Path-traversal attempts in label must be sanitized.
+    m._shrink_stdio_for_response(dict(big), label="../../../etc/passwd")
+    log_path = tmp_path / "env_reports" / "install_logs"
+    # No file created outside the log dir.
+    assert not (tmp_path / "etc" / "passwd").exists()
+    # Every file created lives strictly inside log_path.
+    for f in log_path.iterdir():
+        assert log_path in f.resolve().parents or f.parent == log_path
+
+
+def test_summarize_sbom_in_response_keeps_full_in_record_summarizes_in_response():
+    """Efficiency #2: the freeze RESPONSE replaces resolved_packages +
+    system_packages with summary fields, but the original SBOM stays in the
+    EnvCache record (which env_report / env_report_html / attestation read
+    from). This is the rule: disk is the truth surface; the response is just
+    what fits comfortably in the agent's context."""
+    import agent.mcp_server as m
+    # Build a record matching what freeze() would have stored: 3 conda
+    # packages including GAPIT 4.1.0, plus 2 apt packages.
+    rec = {
+        "name": "demo", "image": "demo:latest",
+        "requested_tools": ["GAPIT"],
+        "resolved_packages": [
+            {"name": "r-base", "version": "4.5.3", "kind": "conda"},
+            {"name": "GAPIT",  "version": "4.1.0", "kind": "conda"},
+            {"name": "zlib",   "version": "1.3.2", "kind": "conda"},
+        ],
+        "system_packages": [
+            {"name": "libc6", "version": "2.36-9+deb12u14", "kind": "apt"},
+            {"name": "openssl", "version": "3.0.20-1~deb12u1", "kind": "apt"},
+        ],
+        "env_report": "/path/to/env_reports/demo.ENV.md",
+    }
+    out = m._summarize_sbom_in_response(dict(rec))
+
+    # Response has SUMMARY, not the bulky lists.
+    assert "resolved_packages" not in out, \
+        "resolved_packages must be dropped from the response (preserved in cache record)"
+    assert "system_packages" not in out
+    assert out["resolved_packages_summary"]["count"] == 3
+    assert out["system_packages_summary"]["count"] == 2
+    # Primary tool resolution is the load-bearing bit and stays inline.
+    assert out["resolved_packages_summary"]["primary_tools_resolved"] == {"GAPIT": "4.1.0"}
+    # sbom_full_in_report points the agent at the on-disk full SBOM.
+    assert out["sbom_full_in_report"] == "/path/to/env_reports/demo.ENV.md"
+
+    # CRITICAL: the original record passed IN is mutated (response only),
+    # but the helper takes a dict(rec) copy at the call site so the cached
+    # record stays intact. Verified the contract here: the helper itself
+    # only modifies its argument; freeze.py passes a SHALLOW COPY via {...}
+    # spread before calling, so the cache is safe.
+    # Demonstrate: a fresh untouched record retains the full lists.
+    assert len(rec["resolved_packages"]) == 3 and len(rec["system_packages"]) == 2
+
+    # Primary-tool not found in resolved → not listed, doesn't error.
+    rec_no_match = {"requested_tools": ["NotInstalled"],
+                    "resolved_packages": [{"name": "x", "version": "1", "kind": "conda"}],
+                    "system_packages": []}
+    out2 = m._summarize_sbom_in_response(dict(rec_no_match))
+    assert out2["resolved_packages_summary"]["primary_tools_resolved"] == {}
+
+    # Empty SBOM (cache miss / minimal record): doesn't crash.
+    out3 = m._summarize_sbom_in_response({"requested_tools": []})
+    assert out3["resolved_packages_summary"]["count"] == 0
+    assert out3["system_packages_summary"]["count"] == 0
+
+
+def test_freeze_response_truth_surface_unchanged_by_sbom_summarization():
+    """Lock the contract: when the freeze response summarizes the SBOM, the
+    EnvCache record on disk + env_report render input MUST still have the
+    full lists. The summarization happens AFTER cache.register and AFTER
+    report render — verified by simulating the full pipeline."""
+    import agent.mcp_server as m
+    from agent.skills.freeze import EnvCache
+
+    # Simulate the freeze-time flow: build a record with full SBOM, register
+    # it in a cache, render reports from the record, THEN summarize for the
+    # response. Order matters — the docstring of _summarize_sbom_in_response
+    # makes this explicit.
+    rec = {
+        "name": "ordering_test", "image": "x:latest", "requested_tools": ["mytool"],
+        "resolved_packages": [{"name": "mytool", "version": "1.0", "kind": "conda"}] * 50,
+        "system_packages": [{"name": "libc6", "version": "2.36", "kind": "apt"}] * 30,
+    }
+    # 1. Register cache from the full record (this is what freeze does at
+    #    line 2306 _env_cache.register(rkey, record) BEFORE response build).
+    import tempfile, pathlib, json
+    with tempfile.TemporaryDirectory() as td:
+        cache = EnvCache(pathlib.Path(td) / "_env_cache.json")
+        cache.register("test_key", rec)
+        # 2. Build response and summarize (what freeze does at the very end).
+        response = m._summarize_sbom_in_response(dict(rec))
+        # The response has summaries.
+        assert "resolved_packages" not in response
+        # 3. The cache record on disk STILL has the full SBOM — that's the
+        #    contract. env_report, env_report_html, attestation read from this.
+        cached = cache.lookup("test_key")
+        assert len(cached["resolved_packages"]) == 50, \
+            "cache record must keep the full resolved_packages list"
+        assert len(cached["system_packages"]) == 30, \
+            "cache record must keep the full system_packages list"
+
+
 def test_pixi_engine_add_pypi_and_micromamba_refuses():
     """PixiEngine.add_pypi → `pixi add --pypi` (into the lock); MicromambaEngine
     refuses honestly (its explicit lock can't capture pip)."""

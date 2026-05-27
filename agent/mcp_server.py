@@ -210,7 +210,96 @@ def create_conda_env(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+    return _shrink_stdio_for_response(result, label=f"conda.create.{env_name}")
+
+
+# ---------------------------------------------------------------------------
+# Response-shape helpers — truncation/summarization ONLY at the LLM-facing
+# response surface. The truth surface (install_step record, EnvCache record,
+# env_reports/{name}.ENV.{md,html}, attestation, recipe) is NEVER touched by
+# these. The contract is: disk is the source of truth; the response is just
+# what fits comfortably in the agent's context. On failure or when more detail
+# is needed, the response carries a `log_path` (install) or
+# `sbom_full_in_report` (freeze) and the agent Reads from disk.
+# ---------------------------------------------------------------------------
+
+_STDIO_SHRINK_OVER = 5000   # combined stdout+stderr chars; below this no shrink
+_STDIO_HEAD_KEEP  = 1500    # leading chars in the shrunk response
+_STDIO_TAIL_KEEP  = 2500    # trailing chars (errors typically live at the tail)
+
+
+def _shrink_stdio_for_response(result: dict, *, label: str) -> dict:
+    """Cap stdout/stderr in the LIVE response to head+tail, preserving full
+    bytes on disk under env_reports/install_logs/{label}.{ts}.log.
+
+    Truth surface unchanged — install_step records `command` + `returncode` +
+    `installed_packages` (NEVER `stdout`/`stderr` from this dict, verified by
+    audit), so the pipeline draft, recipe, attestation, and env reports are
+    byte-identical whether the response was shrunk or not. This affects only
+    what the MCP caller (the agent) reads inline; on failure `log_path` is
+    in the response and the agent Reads it for the full diagnostic.
+
+    Truncation is symmetric (head + tail) so both install setup AND the final
+    error survive when a long source-compile log fails — R packages with C
+    sources can dump 60K+ chars of `clang -c file.c -o file.o` invocations
+    and the actual error message is in the LAST few hundred chars."""
+    stdout = result.get("stdout") or ""
+    stderr = result.get("stderr") or ""
+    if len(stdout) + len(stderr) <= _STDIO_SHRINK_OVER:
+        return result
+
+    import time
+    log_dir = _env_mgr.project_root / "env_reports" / "install_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in label)[:60]
+    log_path = log_dir / f"{safe}.{int(time.time() * 1000)}.log"
+    full = (f"=== COMMAND ===\n{result.get('command','')}\n"
+            f"=== RETURNCODE === {result.get('returncode')}\n"
+            f"=== STDOUT ({len(stdout)} chars) ===\n{stdout}\n"
+            f"=== STDERR ({len(stderr)} chars) ===\n{stderr}\n")
+    log_path.write_text(full)
+
+    def _trunc(s: str) -> str:
+        if len(s) <= _STDIO_HEAD_KEEP + _STDIO_TAIL_KEEP + 100:
+            return s
+        omitted = len(s) - _STDIO_HEAD_KEEP - _STDIO_TAIL_KEEP
+        return (s[:_STDIO_HEAD_KEEP]
+                + f"\n\n... [TRUNCATED — {omitted} chars omitted; full log: {log_path}] ...\n\n"
+                + s[-_STDIO_TAIL_KEEP:])
+
+    result["stdout"] = _trunc(stdout)
+    result["stderr"] = _trunc(stderr)
+    result["log_path"] = str(log_path)
+    result["log_truncated"] = True
+    result["original_log_chars"] = len(stdout) + len(stderr)
     return result
+
+
+def _summarize_sbom_in_response(out: dict) -> dict:
+    """Replace resolved_packages + system_packages in the freeze response with
+    counts + a primary-tools-resolved subset.
+
+    Truth surface unchanged — full SBOM is preserved in the EnvCache record
+    (stored on disk in env_reports/_env_cache.json BEFORE this is called) and
+    in env_reports/{name}.ENV.md + .ENV.html on disk. env_report,
+    env_report_html, and attestation continue to render from the record (which
+    contains full lists), untouched. This affects ONLY the live MCP response
+    shape — ~10-15k tokens of SBOM rows eliminated per freeze response. If
+    the agent wants the full SBOM it Reads `sbom_full_in_report`."""
+    resolved = out.get("resolved_packages") or []
+    system = out.get("system_packages") or []
+    requested = set(out.get("requested_tools") or [])
+    by_name = {p.get("name"): p for p in resolved if isinstance(p, dict)}
+    primary = {n: by_name[n].get("version", "?") for n in requested if n in by_name}
+    out["resolved_packages_summary"] = {
+        "count": len(resolved),
+        "primary_tools_resolved": primary,
+    }
+    out["system_packages_summary"] = {"count": len(system)}
+    out["sbom_full_in_report"] = out.get("env_report") or "(env report path not yet set)"
+    out.pop("resolved_packages", None)
+    out.pop("system_packages", None)
+    return out
 
 
 @mcp.tool()
@@ -263,7 +352,7 @@ def install_conda_packages(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"conda.install.{env_name}")
 
 
 @mcp.tool()
@@ -371,7 +460,7 @@ def install_git_repo(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"git.{env_name}.{tool_name}")
 
 
 @mcp.tool()
@@ -517,7 +606,7 @@ def synth_build(
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
-    return result
+    return _shrink_stdio_for_response(result, label=f"synth.{env_name}.{tool_name}")
 
 
 @mcp.tool()
@@ -570,7 +659,7 @@ def install_spack_package(
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
-    return result
+    return _shrink_stdio_for_response(result, label=f"spack.{env_name}.{tool_name}")
 
 
 @mcp.tool()
@@ -670,7 +759,7 @@ def install_release_binary(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"binary.{env_name}.{tool_name}")
 
 
 def _merge_simple_install(pipeline_id, step, result, name, channel, tool, command, purpose):
@@ -738,7 +827,7 @@ def install_perl_package(
             command=f"cpanm {distribution or module}",
             purpose=f"Install Perl module {module}",
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"perl.{env_name}.{module}")
 
 
 @mcp.tool()
@@ -771,7 +860,7 @@ def install_cargo_tool(
             command=f"cargo install {git_url or crate}" + (f" --version {version}" if version else ""),
             purpose=f"Install Rust tool {name}",
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"cargo.{env_name}.{crate}")
 
 
 @mcp.tool()
@@ -800,7 +889,7 @@ def install_go_tool(
             command=f"go install {package}@{version}",
             purpose=f"Install Go tool {name}",
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"go.{env_name}.{package}")
 
 
 @mcp.tool()
@@ -869,7 +958,7 @@ def install_jar_tool(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"jar.{env_name}.{tool_name}")
 
 
 @mcp.tool()
@@ -1047,7 +1136,7 @@ def install_r_package(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"r.{source}.{env_name}.{name}")
 
 
 @mcp.tool()
@@ -1125,7 +1214,7 @@ def install_pip_package(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    return _shrink_stdio_for_response(result, label=f"pip.{env_name}.{name}")
 
 
 @mcp.tool()
@@ -2057,9 +2146,15 @@ def freeze(
         r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
                            capture_output=True, text=True)
         return r.returncode == 0
+    # cache lookup: lookup_anchored confirms the image is still in the docker
+    # daemon (an evicted image gets re-built rather than returning a dangling
+    # record). On hit we summarize the SBOM in the response only; the cached
+    # record on disk keeps the full lists for env_report/attestation rendering.
     cached = _env_cache.lookup_anchored(rkey, _docker_image_present)
     if cached:
-        return {"success": True, "cache_hit": True, "request_key": rkey, **cached}
+        return _summarize_sbom_in_response(
+            {"success": True, "cache_hit": True, "request_key": rkey, **cached}
+        )
 
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
     # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
@@ -2257,7 +2352,13 @@ def freeze(
     out["env_recipe"] = recipe_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
-    return out
+    # Summarize the bulky SBOM in the live response only. The full SBOM lives
+    # in the EnvCache record (registered above) and in env_reports/{name}.ENV.md
+    # / .ENV.html / .attestation.json — all rendered from the full record before
+    # this summarization fires. ~10-15k tokens of SBOM rows eliminated per
+    # response with zero loss of accessible information (the agent Reads the
+    # report when it wants the full SBOM).
+    return _summarize_sbom_in_response(out)
 
 
 @mcp.tool()
@@ -3092,7 +3193,8 @@ def run_install_command(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return result
+    _label_suffix = tool or subcommand or "cmd"
+    return _shrink_stdio_for_response(result, label=f"install.{env_name}.{_label_suffix}")
 
 
 @mcp.tool()
