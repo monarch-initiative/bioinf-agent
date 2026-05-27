@@ -258,7 +258,12 @@ def pip_install_with_flags(name: str, *, version: str = "",
     flags = list(flags or [])
     spec = f"{name}=={version}" if version else name
     flag_str = " ".join(shlex.quote(f) for f in flags)
-    cmd = f"pip install {flag_str} {shlex.quote(spec)}".strip()
+    # `python -m pip install` (not bare `pip install`) because pixi/uv envs
+    # don't always put a `pip` binary on PATH — engine pip uses uv. The module
+    # form (P4 fix, verification-driven 2026-05-27) works whenever both python
+    # AND the pip module are in the env (env_freeze.ensure_python_for_pip
+    # declares both when pip_with_flags is non-empty).
+    cmd = f"python -m pip install {flag_str} {shlex.quote(spec)}".strip()
     # collapse the double-space when flag_str is empty (defensive — caller
     # should not pass empty flags, but we don't want a malformed command if so)
     cmd = " ".join(cmd.split())

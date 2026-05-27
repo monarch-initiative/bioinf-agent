@@ -187,17 +187,36 @@ def plan_conda(conda_deps: list[str], non_conda: list[dict]) -> list[str]:
     return list(conda_deps) + extra
 
 
-def ensure_python_for_pip(conda_specs: list[str], has_pip: bool) -> list[str]:
+def ensure_python_for_pip(conda_specs: list[str], has_pip: bool,
+                          *, has_flag_bearing_pip: bool = False) -> list[str]:
     """pip is installed via the engine's PyPI path (`pixi add --pypi` → uv), which
     needs a python interpreter IN the env. If pip specs are present but no conda
     package provides python, inject `python` — the pip analog of plan_conda's
     toolchain injection. (A bare `python` lets the solver choose; a transitively-
-    provided python makes this a no-op via the explicit-match guard.)"""
-    if not has_pip:
+    provided python makes this a no-op via the explicit-match guard.)
+
+    `has_flag_bearing_pip` (P4 fix, verification-driven 2026-05-27): when an env
+    has flag-bearing pip installs (routed through install_commands.pip_install_
+    with_flags as a long-tail tool, since `pixi add --pypi` doesn't honor pip
+    flags), the long-tail command runs `python -m pip install <flags> <spec>`.
+    That needs BOTH python AND the pip module in the env. pixi/uv envs do NOT
+    auto-install `pip` (uv is used instead of pip for engine-routed installs),
+    so we declare `pip` explicitly when at least one flag-bearing pip install
+    is present. Pre-fix: `pip: command not found` inside the build container.
+    """
+    if not (has_pip or has_flag_bearing_pip):
         return conda_specs
-    if any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in conda_specs):
-        return conda_specs
-    return list(conda_specs) + ["python"]
+    out = list(conda_specs)
+    if not any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in out):
+        out.append("python")
+    # For flag-bearing pip, declare `pip` itself — pixi/uv envs don't ship the
+    # pip binary or the module by default; the long-tail's `python -m pip ...`
+    # needs it.
+    if has_flag_bearing_pip and not any(
+        re.match(r"pip($|[=<>!~ ])", s.strip()) for s in out
+    ):
+        out.append("pip")
+    return out
 
 
 def build_env_image(
@@ -294,7 +313,11 @@ def build_env_image(
                   prebaked_lock_files=conda_lock_files,
                   apt_snapshot=apt_snapshot)
 
-    all_conda = ensure_python_for_pip(plan_conda(conda_deps, non_conda), bool(pip_installs))
+    all_conda = ensure_python_for_pip(
+        plan_conda(conda_deps, non_conda),
+        bool(pip_installs),
+        has_flag_bearing_pip=bool(pip_with_flags),
+    )
     if all_conda:
         non_conda_names = {x.get("name", "") for x in non_conda}
         verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]

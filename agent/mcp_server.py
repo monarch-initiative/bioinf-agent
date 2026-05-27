@@ -2228,16 +2228,26 @@ def freeze(
     # the dorado-stress D3 fix: previously `accel` only fed the cache key and never
     # reached _check_accelerator, so `accel="cuda"` on a draft with accelerator=None
     # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
-    # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix).
+    # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix)
+    # AND the install-record version fill (B7 fix — see parsed_filled).
     draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
     effective_accel = _synth_accelerator_from_request(accel, cuda_version, _draft_accel)
+    # B7 fix (verification-driven, 2026-05-27): fill version slots from the
+    # install record BEFORE computing the cache key. Pre-fix, parsed=[(busco,None)]
+    # fed request_key (yielding `busco|linux/amd64|none`) but the adopt lookup
+    # used the install-record-filled version separately. Two distinct envs
+    # (busco==6.0.0 vs busco==5.8.3) collided on ONE cache key, so the second
+    # freeze returned the FIRST's image — a wrong-version trust violation
+    # isomorphic to the original B1, surfaced at a higher layer. Filling here
+    # makes the cache key reflect what we'll actually adopt/build.
+    parsed_filled = _resolve_versions_from_install_record(parsed, draft)
     # D5 + D6 fix: request_key now folds in gated, accelerator-policy hash, and
     # the licenses set hash so policy-distinct artifacts don't collide on the cache
     # key. Platform is canonicalized inside request_key so conda-form ('linux-64')
     # and Docker-form ('linux/amd64') callers share ONE slot (D6).
     rkey = _freeze.request_key(
-        [(n, v or "") for n, v in parsed], platform, accel,
+        [(n, v or "") for n, v in parsed_filled], platform, accel,
         gated=gated, accel_policy=effective_accel, licenses=list(licenses or []),
     )
 
@@ -2275,16 +2285,11 @@ def freeze(
 
     name = pipeline_name or env_name
     sif = f"{name}.sif"
-    # B1 fix: when the caller asked tools=['busco'] without a version, fill the
-    # version from the AUTHORITATIVE install record (install_steps[*].installed_
-    # packages) before the biocontainer lookup. Otherwise resolve_biocontainer
-    # sees version=None and (with the build_number → version ranking fix) might
-    # still pick a higher-build older version when "latest" isn't well-defined.
-    # The install record is what we actually installed and validated; the
-    # adopted image must match it or refuse. An EXPLICIT caller pin (busco=5.4)
-    # is honored verbatim — the install record only fills the None slot.
-    parsed_for_adopt = _resolve_versions_from_install_record(parsed, draft)
-    adopt = _biocontainers.resolve_biocontainer(parsed_for_adopt)
+    # B1 + B7 fix: adopt lookup consumes `parsed_filled` (versions resolved from
+    # install_steps[*].installed_packages above) — the same value that fed the
+    # cache key, so the adopt-decision and the cache slot agree on what env
+    # we're building. The install record is the trust anchor.
+    adopt = _biocontainers.resolve_biocontainer(parsed_filled)
     conda_lock_path = None
     shipped_binaries: list[dict] = []
     build_method = None

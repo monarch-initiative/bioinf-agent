@@ -1701,6 +1701,137 @@ def test_mcp_install_pip_package_schema_includes_pip_flags():
     assert prop["default"] is None
 
 
+# =============================================================================
+# VERIFICATION-DRIVEN fixes (2026-05-27 second round) — B7 + P4
+# =============================================================================
+
+
+def test_freeze_cache_key_reflects_install_record_filled_version(monkeypatch, tmp_path):
+    """B7 — when the caller asks `tools=['busco']` (no version pin), the
+    cache key MUST reflect the version actually installed (per
+    install_steps[*].installed_packages). Pre-fix the version-fill happened
+    AFTER request_key was computed, so two different installed versions
+    collided on `busco|linux/amd64|none` — the BUSCO verification re-stress
+    surfaced this as a wrong-version trust violation isomorphic to B1."""
+    from agent.mcp_server import _resolve_versions_from_install_record
+    from agent.skills.freeze import request_key, parse_tools
+
+    draft_6 = {"install_steps": [{
+        "tool": "conda", "subcommand": "install",
+        "installed_packages": [{"name": "busco", "version": "6.0.0"}],
+    }]}
+    draft_5 = {"install_steps": [{
+        "tool": "conda", "subcommand": "install",
+        "installed_packages": [{"name": "busco", "version": "5.8.3"}],
+    }]}
+    parsed = parse_tools(["busco"])
+
+    # The freeze() function now applies _resolve_versions_from_install_record
+    # BEFORE request_key — so the cache key for the two drafts must differ.
+    filled_6 = _resolve_versions_from_install_record(parsed, draft_6)
+    filled_5 = _resolve_versions_from_install_record(parsed, draft_5)
+    k6 = request_key([(n, v or "") for n, v in filled_6], "linux-64", "none")
+    k5 = request_key([(n, v or "") for n, v in filled_5], "linux-64", "none")
+    assert k6 != k5
+    assert "6.0.0" in k6
+    assert "5.8.3" in k5
+
+
+def test_ensure_python_for_pip_injects_python_and_pip_when_flag_bearing():
+    """P4 — pixi/uv envs don't ship `pip` (uv replaces it). A long-tail
+    `python -m pip install --no-binary :all: pysam` needs BOTH python AND
+    the pip module in the env. The verification re-stress hit `pip: command
+    not found` inside the build container; the fix declares pip explicitly
+    when has_flag_bearing_pip=True."""
+    from agent.skills.env_freeze import ensure_python_for_pip
+
+    # No pip at all → no python, no pip injection
+    out = ensure_python_for_pip(["samtools=1.21"], has_pip=False,
+                                has_flag_bearing_pip=False)
+    assert out == ["samtools=1.21"]
+
+    # Flagless pip only → python injected, pip NOT (engine uses uv, not pip)
+    out = ensure_python_for_pip(["samtools=1.21"], has_pip=True,
+                                has_flag_bearing_pip=False)
+    assert out == ["samtools=1.21", "python"]
+
+    # Flag-bearing pip → python AND pip injected
+    out = ensure_python_for_pip(["samtools=1.21"], has_pip=False,
+                                has_flag_bearing_pip=True)
+    assert "python" in out and "pip" in out
+
+    # Already-declared python is not duplicated
+    out = ensure_python_for_pip(["python=3.11", "samtools=1.21"],
+                                has_pip=False, has_flag_bearing_pip=True)
+    python_count = sum(1 for s in out if s.startswith("python"))
+    assert python_count == 1
+    assert "pip" in out
+
+    # Already-declared pip is not duplicated
+    out = ensure_python_for_pip(["python", "pip"], has_pip=False,
+                                has_flag_bearing_pip=True)
+    pip_count = sum(1 for s in out if s.strip() == "pip" or s.startswith("pip="))
+    assert pip_count == 1
+
+
+def test_pip_install_with_flags_uses_python_dash_m_pip():
+    """P4 (defense-in-depth) — the generated command uses `python -m pip
+    install` (the module form) rather than bare `pip install`. Works
+    whenever the pip MODULE is available, even if the `pip` binary
+    isn't on PATH. Belt-and-suspenders with ensure_python_for_pip
+    declaring pip explicitly."""
+    from agent.skills import install_commands
+    spec = install_commands.pip_install_with_flags(
+        "pysam", version="0.24.0", flags=["--no-binary", ":all:"],
+    )
+    assert "python -m pip install" in spec["command"]
+    assert "--no-binary" in spec["command"]
+    assert "pysam==0.24.0" in spec["command"]
+
+
+def test_env_freeze_passes_has_flag_bearing_pip_through(monkeypatch):
+    """End-to-end P4 — env_freeze.build_env_image must pass the flag-bearing
+    pip flag to ensure_python_for_pip so the conda layer declares pip."""
+    from agent.skills import env_freeze
+
+    captured = {}
+
+    class _StubEB:
+        def __init__(self, *a, **kw):
+            pass
+        def add_conda(self, specs, verify):
+            captured["conda_specs"] = list(specs)
+            return self
+        def add_pip(self, specs, verify):
+            return self
+        def add_tool(self, spec):
+            return self
+        def run(self):
+            return {"success": True, "image": "x", "image_digest": "sha256:" + "0" * 64,
+                    "verifications": [], "content_digest": "sha256:y"}
+        def request_key(self):
+            return "stub"
+
+    monkeypatch.setattr(env_freeze, "EnvBuild", _StubEB)
+
+    spec = {"install_steps": [{
+        "tool": "pip", "subcommand": "install",
+        "installed_packages": [{
+            "name": "pysam", "version": "0.24.0",
+            "install_method": {"type": "pip",
+                               "source": "pip install --no-binary :all: pysam==0.24.0",
+                               "pip_flags": ["--no-binary", ":all:"]},
+        }]}]}
+    env_freeze.build_env_image(spec, name="x", primary_tools=["pysam"])
+    cs = captured.get("conda_specs", [])
+    # both python and pip must land in the conda layer
+    assert any(s == "python" or s.startswith("python=") for s in cs), (
+        "python missing from conda_specs when only flag-bearing pip is present")
+    assert any(s == "pip" or s.startswith("pip=") for s in cs), (
+        "pip missing from conda_specs when flag-bearing pip is present "
+        "(pre-P4: long-tail `pip install` hit `pip: command not found`)")
+
+
 def _draft_with_binary():
     """A draft-shaped dict: bootstrap python (conda create) + a binary-tier tool."""
     return {
