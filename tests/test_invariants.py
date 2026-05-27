@@ -2739,11 +2739,57 @@ def test_install_command_r_package_generator():
     c = ic.r_package("ape", source="cran")
     assert c["engine_coupled"] and c["tool"] == "ape"
     assert 'install.packages("ape"' in c["command"] and "Rscript -e" in c["command"]
-    assert c["evidence"] == "Rscript -e 'library(ape)'"
+    # Evidence: library() AND a packageVersion() cat — see the dedicated test
+    # `test_install_command_r_package_evidence_captures_version` for why.
+    assert "library(ape)" in c["evidence"] and "packageVersion" in c["evidence"]
+    assert c["evidence"].startswith("Rscript -e ")
     b = ic.r_package("DESeq2", source="bioconductor")
     assert 'BiocManager::install("DESeq2"' in b["command"]
     g = ic.r_package("treedater", source="github:emvolz-phylodynamics/treedater")
     assert 'remotes::install_github("emvolz-phylodynamics/treedater",dependencies=FALSE)' in g["command"]
+
+
+def test_install_command_r_package_evidence_captures_version():
+    """The in-image R evidence command must ALSO cat the package version, so
+    the env-report's Installed Version column shows '4.1.0' instead of '—'
+    for github / Bioconductor / CRAN R installs.
+
+    R packages installed via remotes::install_github or BiocManager::install
+    are not in conda's package db (they're not conda-installed), so the
+    container's SBOM has no entry for them. The env-report renderer walks a
+    fallback chain (conda → banner → evidence-out → install-anchor); for an
+    R library only one of those can reliably carry the version: evidence-out,
+    when the evidence command itself prints it. So `library(NAME)` becomes
+    `library(NAME); cat(as.character(packageVersion('NAME')))` — the version
+    is captured AT validation time IN the shipped image by R itself, then
+    `_extract_version` picks it up. Honest: same source of truth as the
+    host-side primitive, just evaluated at the right locus."""
+    from agent.skills import install_commands as ic
+    from agent.skills.env_report import _extract_version
+
+    for src in ("cran", "bioconductor", "github:jiabowang/GAPIT"):
+        spec = ic.r_package("GAPIT", source=src)
+        # both library AND packageVersion calls present
+        assert "library(GAPIT)" in spec["evidence"], \
+            f"missing library() call in {src!r} evidence: {spec['evidence']!r}"
+        assert "packageVersion" in spec["evidence"], \
+            f"missing packageVersion() probe in {src!r} evidence: {spec['evidence']!r}"
+        # the package name is what's passed to packageVersion (anti-cheat: the
+        # version printed MUST be of the SAME package the load checks).
+        assert "GAPIT" in spec["evidence"]
+        # suppressPackageStartupMessages keeps the load quiet so the version is
+        # the only thing on stdout — _extract_version finds it cleanly.
+        assert "suppressPackageStartupMessages" in spec["evidence"]
+
+    # Verify _extract_version actually picks up the version from a simulated
+    # in-image evidence run. R's packageVersion() prints e.g. "4.1.0".
+    assert _extract_version("4.1.0") == "4.1.0"
+    assert _extract_version("3.18.1") == "3.18.1"
+
+    # Custom evidence overrides keep working (don't break callers who pass
+    # their own evidence — the override path must take precedence).
+    custom = ic.r_package("X", source="cran", evidence="echo my-custom")
+    assert custom["evidence"] == "echo my-custom"
 
 
 def test_install_command_r_package_load_or_die_and_mirror_pin():

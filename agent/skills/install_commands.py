@@ -210,7 +210,23 @@ def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-
     else:  # cran (default)
         inst = f'install.packages("{name}",repos="{repos}"); {load_or_die}'
     cmd = f"Rscript -e {shlex.quote(inst)}"
-    ev = evidence or f"Rscript -e {shlex.quote(f'library({name})')}"
+    # Evidence loads the package AND prints its version. The version cat is what
+    # lands "GAPIT 4.1.0" in the installed-version column of the env report:
+    # R packages installed via BiocManager / remotes::install_github don't show
+    # up in conda's package db (they're not conda-installed), so the report's
+    # SBOM has no entry for them — without the cat() the renderer falls all the
+    # way through `_resolved_version`'s chain (conda → banner → evidence-out →
+    # install-anchor) and prints '—'. With it, the version lands in
+    # verifications[].out where `_extract_version` finds it.
+    #
+    # Honesty preserved: the version is captured at validation time IN the
+    # shipped image, by R's own packageVersion() reading the installed
+    # package's DESCRIPTION. It's the same source of truth the install primitive
+    # uses on the host; just executed at the right locus.
+    ev = evidence or (
+        f"Rscript -e "
+        f"{shlex.quote(f'suppressPackageStartupMessages(library({name})); cat(as.character(packageVersion(' + repr(name) + ')))')}"
+    )
     return {"command": cmd, "evidence": ev, "tool": name,
             "purpose": f"{name} (R {source})", "engine_coupled": True}
 
