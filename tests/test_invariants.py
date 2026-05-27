@@ -3988,3 +3988,140 @@ def test_env_vendor_stub_returns_explicit_not_implemented():
     r = env_vendor.materialize([{"install_method": {"type": "release_binary"}}], "/tmp/x")
     assert r["success"] is False
     assert "audit_proof" in r["reason"] or "future heavy-mode" in r["reason"]
+
+
+# =============================================================================
+# Batch-1 stress-test fixes (2026-05-27) — adopt-runs-honesty-contract (D2 + D3)
+# =============================================================================
+
+
+def test_check_adopt_refuses_cuda_accel_without_toolkit_version():
+    """D2/D3 — the dorado-stress headline. An adopted biocontainer claiming a
+    cuda accelerator but missing toolkit_version MUST fail I12. The previous
+    code path rendered POLICY_CLEAN on adopt without ever running the check,
+    producing the 'CPU-only samtools shipped under accel=cuda with POLICY_CLEAN
+    badge' lie."""
+    from agent.skills import env_honesty
+    record = {
+        "image": "quay.io/biocontainers/samtools:1.21--hd87286a_0",
+        "image_digest": "sha256:abc123" + "0" * 58,
+        "accelerator": {"type": "cuda"},                # missing toolkit_version
+        "license_gated": False, "licenses": [],
+    }
+    violations = env_honesty.check_adopt(record)
+    inv_ids = {v["invariant"] for v in violations}
+    assert "I12.accel_toolkit_version_required" in inv_ids
+
+
+def test_check_adopt_refuses_gated_without_licenses():
+    """I13 — a gated adopt must record licenses[] AND must not claim
+    redistributable=true."""
+    from agent.skills import env_honesty
+    record = {
+        "image": "quay.io/biocontainers/something:1",
+        "image_digest": "sha256:" + "a" * 64,
+        "accelerator": None,
+        "license_gated": True, "licenses": [],
+        "redistributable": True,
+    }
+    violations = env_honesty.check_adopt(record)
+    inv_ids = {v["invariant"] for v in violations}
+    assert "I13.gated_license_recorded" in inv_ids
+    assert "I13.gated_not_redistributable" in inv_ids
+
+
+def test_check_adopt_passes_clean_record_with_no_policy():
+    """A bare adopted record (image + digest, no accelerator/license policy)
+    is honest by construction — POLICY_CLEAN with no policy is the empty set."""
+    from agent.skills import env_honesty
+    record = {
+        "image": "quay.io/biocontainers/samtools:1.21--hd87286a_0",
+        "image_digest": "sha256:" + "f" * 64,
+        "accelerator": None,
+        "license_gated": False, "licenses": [],
+    }
+    assert env_honesty.check_adopt(record) == []
+
+
+def test_check_adopt_does_not_require_verifications():
+    """The mode-aware delta from check_build: adopt has NO in-locus evidence
+    (the bytes are trusted by BioContainers' published digest), so the
+    VALIDATED_IN_IMAGE.no_evidence violation MUST NOT fire on adopt. This
+    is what distinguishes ADOPTED_BY_DIGEST from VALIDATED_IN_IMAGE."""
+    from agent.skills import env_honesty
+    record = {
+        "image": "quay.io/biocontainers/samtools:1.21--hd87286a_0",
+        "image_digest": "sha256:" + "1" * 64,
+        # NO verifications key at all
+        "accelerator": None,
+        "license_gated": False, "licenses": [],
+    }
+    inv_ids = {v["invariant"] for v in env_honesty.check_adopt(record)}
+    assert "VALIDATED_IN_IMAGE.no_evidence" not in inv_ids
+
+
+def test_check_adopt_refuses_missing_image_handles():
+    """ADOPTED_BY_DIGEST requires the image + manifest digest to resolve."""
+    from agent.skills import env_honesty
+    v1 = env_honesty.check_adopt({"image": "", "image_digest": "sha256:" + "a" * 64})
+    v2 = env_honesty.check_adopt({"image": "img:tag", "image_digest": ""})
+    assert any(v["invariant"] == "ADOPTED_BY_DIGEST.image_present" for v in v1)
+    assert any(v["invariant"] == "ADOPTED_BY_DIGEST.digest_resolved" for v in v2)
+
+
+def test_synth_accelerator_from_request_draft_wins():
+    """A draft-supplied accelerator is the richer, explicit record — it MUST
+    win over a less-specific MCP scalar (which would have been a recipe to
+    silently downgrade richer policy)."""
+    from agent.mcp_server import _synth_accelerator_from_request
+    draft_accel = {"type": "cuda", "toolkit_version": "12.8",
+                   "runtime": "runtime_verified",
+                   "runtime_probe": "nvidia-smi", "min_driver_version": "525.85"}
+    out = _synth_accelerator_from_request("cuda", "", draft_accel)
+    assert out == draft_accel
+
+
+def test_synth_accelerator_from_request_synthesizes_cuda_from_scalars():
+    """When the draft has no accelerator, the MCP scalars are bound into a
+    minimal policy dict so I12 can actually evaluate them. Missing
+    toolkit_version is INTENTIONALLY left unfilled so I12 refuses."""
+    from agent.mcp_server import _synth_accelerator_from_request
+    out = _synth_accelerator_from_request("cuda", "12.8", None)
+    assert out is not None
+    assert out["type"] == "cuda"
+    assert out["toolkit_version"] == "12.8"
+    assert out["runtime"] == "build_only"
+
+
+def test_synth_accelerator_from_request_cuda_without_toolkit_version_lets_i12_fire():
+    """If the caller passes accel='cuda' but no cuda_version, the synthesized
+    dict OMITS toolkit_version — the contract then refuses with a precise
+    diagnostic instead of substituting a guessed default. This is the
+    surface where the dorado-stress 'POLICY_CLEAN with no policy' lie was
+    born: previously the synth never happened so I12 saw accelerator=None
+    and vacuously passed."""
+    from agent.mcp_server import _synth_accelerator_from_request
+    from agent.skills import env_honesty
+    out = _synth_accelerator_from_request("cuda", "", None)
+    assert out is not None
+    assert "toolkit_version" not in out
+    # piped into check_adopt, I12 fires
+    v = env_honesty.check_adopt({"image": "x", "image_digest": "sha256:" + "0" * 64,
+                                 "accelerator": out, "license_gated": False,
+                                 "licenses": []})
+    assert any(viol["invariant"] == "I12.accel_toolkit_version_required" for viol in v)
+
+
+def test_synth_accelerator_from_request_none_passthrough():
+    """accel='none' / '' yields None — no policy, no I12 check."""
+    from agent.mcp_server import _synth_accelerator_from_request
+    assert _synth_accelerator_from_request("none", "", None) is None
+    assert _synth_accelerator_from_request("", "", None) is None
+
+
+def test_synth_accelerator_from_request_mps_dev_only():
+    """The only honest claim for Metal/MPS: it does NOT survive containerization,
+    so dev_only=True is the structural baseline."""
+    from agent.mcp_server import _synth_accelerator_from_request
+    out = _synth_accelerator_from_request("mps", "", None)
+    assert out == {"type": "mps", "dev_only": True}

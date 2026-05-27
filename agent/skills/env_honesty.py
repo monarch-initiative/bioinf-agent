@@ -283,3 +283,53 @@ def check_build(result: dict) -> list[dict]:
     violations.extend(_check_provenance(result))
 
     return violations
+
+
+def check_adopt(result: dict) -> list[dict]:
+    """The MODE-AWARE Layer-1 contract for an ADOPTED public biocontainer.
+
+    Adopt mode differs from build mode in ONE structural way: we DID NOT validate
+    in-locus (the biocontainer's contents are trusted by their published manifest
+    digest). So VALIDATED_IN_IMAGE → ADOPTED_BY_DIGEST and verifications are not
+    expected.
+
+    But everything ELSE in the honesty contract still applies — POLICY_CLEAN most
+    of all. The policy WE declare on the artifact (accelerator type / toolkit, the
+    gated-license firewall) is OURS to honor regardless of who built the bytes
+    inside; rendering the badge without checking the policy was the dorado-stress
+    "the artifact lies" bug. Specifically:
+
+      ADOPTED_BY_DIGEST — the image handles resolve (BUILT, structurally)
+      POLICY_CLEAN      — I12 (accelerator honesty) + I13 (license firewall) pass
+
+    Refuses (returns violations) when the adopted record claims an accelerator
+    without the required metadata or a gated artifact without licenses[].
+
+    Symmetric with check_build so the same gate fires at the same point of the
+    freeze surface — never let a record render its "POLICY_CLEAN" badge without
+    the underlying policy check having actually run.
+    """
+    violations: list[dict] = []
+
+    # -- ADOPTED_BY_DIGEST -----------------------------------------------
+    # The structural BUILT analog: an adopted image must resolve to a tag + a
+    # manifest digest (the immutable handle). Without those, the adoption did
+    # not actually pin anything.
+    if not (result.get("image") or "").strip():
+        violations.append({"invariant": "ADOPTED_BY_DIGEST.image_present", "where": "image",
+                           "message": "no adopted image ref — the biocontainer lookup did not bind "
+                                      "to an image we can pull."})
+    if not (result.get("image_digest") or "").strip():
+        violations.append({"invariant": "ADOPTED_BY_DIGEST.digest_resolved", "where": "image_digest",
+                           "message": "adopted image has no manifest digest — without it the artifact "
+                                      "is not content-addressed and the 'pull by digest' guarantee fails."})
+
+    # -- POLICY_CLEAN ----------------------------------------------------
+    # The bytes are BioContainers' to provide; the policy we render on the artifact
+    # is ours to honor. The previous build vs adopt split rendered POLICY_CLEAN on
+    # adopt without ever checking the policy — that produced the dorado-stress
+    # "samtools=1.21|linux-64|cuda → CPU biocontainer with POLICY_CLEAN" lie.
+    violations.extend(_check_accelerator(result.get("accelerator")))
+    violations.extend(_check_license(result))
+
+    return violations

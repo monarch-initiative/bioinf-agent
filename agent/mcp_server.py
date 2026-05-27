@@ -45,6 +45,7 @@ from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
 from agent.skills import env_freeze as _env_freeze
+from agent.skills import env_honesty as _env_honesty
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
@@ -2078,6 +2079,37 @@ def validate_output(
 # Docker
 # ---------------------------------------------------------------------------
 
+def _synth_accelerator_from_request(accel: str, cuda_version: str,
+                                    draft_accel: Optional[dict]) -> Optional[dict]:
+    """Bind the MCP `freeze(accel=…, cuda_version=…)` scalars to an Accelerator
+    policy dict so env_honesty.{check_build, check_adopt} can actually evaluate
+    I12. A DRAFT-supplied accelerator (via patch_pipeline) wins — it's the richer,
+    explicit record. Otherwise we materialize a minimal policy from the scalars:
+
+      accel='none' / unset → None  (no policy, no I12 check)
+      accel='mps'          → {type: mps, dev_only: True}  (the only honest claim
+                             for Metal/MPS — it does not survive containerization)
+      accel='cuda'|'rocm'  → {type: ..., runtime: 'build_only',
+                              toolkit_version: cuda_version if given}
+
+    A missing toolkit_version is INTENTIONALLY left blank — I12 fires
+    `accel_toolkit_version_required` and freeze refuses, surfacing the caller's
+    half-formed claim instead of silently substituting a default.
+
+    Pure / unit-testable (no draft-state needed when draft_accel is supplied)."""
+    if isinstance(draft_accel, dict):
+        return draft_accel
+    a = (accel or "none").strip().lower()
+    if a in ("", "none"):
+        return None
+    if a == "mps":
+        return {"type": "mps", "dev_only": True}
+    out: dict[str, Any] = {"type": a, "runtime": "build_only"}
+    if (cuda_version or "").strip():
+        out["toolkit_version"] = cuda_version.strip()
+    return out
+
+
 def _effective_push_target(push_target: str, registry: str, name: str,
                            version: str, gated: bool) -> str:
     """The registry ref to push a built image to. An explicit push_target wins;
@@ -2144,6 +2176,21 @@ def freeze(
     """
     parsed = _freeze.parse_tools(tools)
     rkey = _freeze.request_key([(n, v or "") for n, v in parsed], platform, accel)
+    # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
+    # the honesty contract (I12) can actually check it. A draft-supplied accelerator
+    # wins (richer record); when absent and the caller passed accel="cuda" but no
+    # patch_pipeline(accelerator=…), we synthesize the minimum and let I12 catch any
+    # missing required metadata (toolkit_version, runtime_probe, min_driver_version) —
+    # the right failure mode is REFUSE-WITH-DIAGNOSTIC, not a vacuous pass. This is
+    # the dorado-stress D3 fix: previously `accel` only fed the cache key and never
+    # reached _check_accelerator, so `accel="cuda"` on a draft with accelerator=None
+    # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
+    # `draft` is fetched in full below; we read its accelerator here (one get_draft)
+    # to compute effective_accel BEFORE the cache lookup so the bound policy can be
+    # surfaced to a cache-hit caller too. Re-used by the adopt/build branches below.
+    draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
+    _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
+    effective_accel = _synth_accelerator_from_request(accel, cuda_version, _draft_accel)
 
     # Re-anchor the cache against reality: a hit is a CLAIM until we confirm the
     # image is still present in the docker daemon. An evicted image (or one a user
@@ -2188,7 +2235,6 @@ def freeze(
     env_recipe_dict = None         # the self-contained rebuild recipe (build path only)
     build_cd = ""                  # the EnvBuild content_digest (the authoritative build anchor)
 
-    draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
     non_conda = _freeze.non_conda_installs(draft) if draft else []
     can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
 
@@ -2227,6 +2273,25 @@ def freeze(
         # ADOPT — pure-conda env with a published biocontainer. The biocontainer
         # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
+        # MODE-AWARE HONESTY (D2 fix): adopt skips VALIDATED_IN_IMAGE (BioContainers'
+        # bytes are trusted by their published digest, not validated in-locus) but
+        # POLICY_CLEAN STILL MUST PASS — accelerator honesty (I12) and the license
+        # firewall (I13) describe what WE declare on this artifact, not who built it.
+        # The previous freeze code path adopted+returned without ever calling the
+        # contract, so the report rendered "POLICY_CLEAN — I12 passed" without I12
+        # ever running. dorado-stress demonstrated this with a CPU-only samtools
+        # biocontainer happily emitted under `accel=cuda`. We now refuse here.
+        adopt_check_input = {
+            "image": image, "image_digest": image_digest,
+            "accelerator": effective_accel,
+            "license_gated": gated, "licenses": list(licenses or []),
+            "redistributable": not gated,
+        }
+        adopt_violations = _env_honesty.check_adopt(adopt_check_input)
+        if adopt_violations:
+            return {"success": False, "stage": "adopt_honesty", "request_key": rkey,
+                    "adopt_attempt": adopt, "honesty_violations": adopt_violations,
+                    "violation_count": len(adopt_violations)}
         hpc = _freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
         validation_locus = "adopted"   # we trust the published digest, not an in-locus run
@@ -2250,7 +2315,7 @@ def freeze(
         br = _env_freeze.build_env_image(
             draft or {}, name=name, version=version, conda_deps=conda_deps,
             primary_tools=[n for n, _ in parsed], platform=docker_platform,
-            accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
+            accelerator=effective_accel,
             license_gated=gated, licenses=licenses, redistributable=not gated)
         if not br.get("success"):
             # build_env_image refuses pip/r_install with no generator, a non-replayable
@@ -2273,7 +2338,7 @@ def freeze(
         env_recipe_dict = _env_recipe.extract_recipe(
             draft, name=name, version=version, conda_deps=conda_deps,
             primary_tools=[n for n, _ in parsed], platform=docker_platform,
-            accelerator=draft.get("accelerator") if isinstance(draft, dict) else None,
+            accelerator=effective_accel,
             license_gated=gated, licenses=licenses, redistributable=not gated,
             content_digest=br.get("content_digest", ""),
             # ship the engine lock with the recipe — replay materializes the env
@@ -2310,7 +2375,11 @@ def freeze(
     # checks them for consistency, I12/I13). Recorded so the report can show them in
     # a clearly-separated, honestly-labelled section.
     record["licenses"] = list(licenses or [])
-    record["accelerator"] = draft.get("accelerator") if isinstance(draft, dict) else None
+    # The accelerator policy on the record is the SAME object the honesty contract
+    # was just evaluated against (effective_accel = draft.accelerator OR synthesized
+    # from the MCP scalar args). The record's accelerator MUST agree with the policy
+    # that gated the build/adopt, else the artifact and its claim diverge.
+    record["accelerator"] = effective_accel
     if mode == "build":
         record["engine"] = br.get("engine", "none")
         record["conda_specs"] = br.get("conda_specs", [])
