@@ -2700,14 +2700,17 @@ def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot(
     ps.discard("smart_replace_test")
 
 
-def test_freeze_installed_packages_successful_only_filters_failed_steps():
-    """installed_packages(successful_only=True) skips install_steps with rc!=0
-    and applies last-wins dedup so a later successful retry of the same package
-    supersedes an earlier failed attempt. non_conda_installs (the build-plan
-    feeder) uses this filter — a failed install_method must never reach the
-    container build, period. Default (successful_only=False) keeps the
-    inventory/reporting view that includes failed attempts."""
-    from agent.skills.freeze import installed_packages, non_conda_installs
+def test_freeze_installed_packages_move_to_end_dedup_on_retry():
+    """Dedup is MOVE-TO-END, not last-wins-in-place: a later install_step that
+    provides a package already seen REMOVES the prior entry and inserts the new
+    one at the end. Iteration order = the order successful retries actually
+    happened, which is what the build replay needs (a retry of GAPIT after
+    snpStats was installed must come AFTER snpStats in the replay).
+
+    successful_only=True still works as an optional filter (used by callers
+    that genuinely want only-successful steps for reporting); but the dedup
+    semantic does the load-bearing work regardless of filter."""
+    from agent.skills.freeze import installed_packages
 
     spec = {"install_steps": [
         {"step": 1, "tool": "Rscript", "returncode": 1,
@@ -2724,25 +2727,68 @@ def test_freeze_installed_packages_successful_only_filters_failed_steps():
                                                     "source": "remotes::install_github('jiabowang/GAPIT')"}}]},
     ]}
 
-    # successful_only=True: failed step skipped, last-wins → GAPIT picks up
-    # the SUCCESSFUL row (with version), not the failed placeholder.
-    succ = {p["name"]: p for p in installed_packages(spec, successful_only=True)}
-    assert set(succ) == {"GAPIT", "snpStats"}
-    assert succ["GAPIT"]["version"] == "4.1.0", \
-        "successful-step row must win dedup over the failed placeholder"
+    # Default (no filter) — both entries deduped, GAPIT entry from step 3 wins
+    # (last-wins on value), AND its POSITION is step 3's (move-to-end).
+    pkgs = installed_packages(spec)
+    names_in_order = [p["name"] for p in pkgs]
+    assert names_in_order == ["snpStats", "GAPIT"], \
+        f"move-to-end dedup must place GAPIT AFTER snpStats; got {names_in_order}"
+    by_name = {p["name"]: p for p in pkgs}
+    assert by_name["GAPIT"]["version"] == "4.1.0", \
+        "the value at the GAPIT key must come from the successful step 3, not the failed step 1"
 
-    # Default (inventory view) still surfaces the failed-step row exists.
-    all_pkgs = installed_packages(spec)
-    assert len(all_pkgs) == 2   # dedup by name (last-wins keeps successful row)
+    # successful_only=True option still works: failed step skipped, same result.
+    succ = installed_packages(spec, successful_only=True)
+    assert [p["name"] for p in succ] == ["snpStats", "GAPIT"]
 
-    # non_conda_installs feeds the build plan → MUST filter failed.
+
+def test_non_conda_installs_does_not_filter_failed_steps_for_adopt_decision():
+    """REGRESSION test for the mosdepth trust violation: a release-binary
+    install whose host verify fails (wrong-arch linux binary on a Mac host)
+    has rc != 0 but is STILL a non-conda install. non_conda_installs MUST
+    include it so the freeze adopt-vs-build decision sees it and refuses to
+    adopt a biocontainer (which would silently ship a different version of
+    the tool than what was anchored).
+
+    The fix: non_conda_installs no longer filters by returncode. Move-to-end
+    dedup handles the retry case without needing a filter — a successful
+    retry naturally supersedes a failed earlier attempt for the same package."""
+    from agent.skills.freeze import non_conda_installs
+
+    # Exact shape of the mosdepth stress-test failure:
+    # install_release_binary on osx-arm64 downloads the linux/amd64 binary
+    # successfully, sha256-anchors it, places the wrapper — but the post-install
+    # `mosdepth --version` verify fails because the host can't execute a linux
+    # binary. The install_step records rc=1.
+    spec = {"install_steps": [
+        {"step": 1, "tool": "conda", "subcommand": "create", "returncode": 0,
+         "installed_packages": [{"name": "python", "version": "3.11",
+                                 "install_method": {"type": "conda"}}]},
+        {"step": 2, "tool": "release_binary", "returncode": 1,    # <-- the host-verify-failed case
+         "installed_packages": [{"name": "mosdepth",
+                                 "install_method": {"type": "binary",
+                                                    "binary_url": "https://github.com/brentp/mosdepth/releases/download/v0.3.14/mosdepth",
+                                                    "sha256": "c5182b74a8f1b66710efa16e122cbc8a197834874b103e7c5c0bd9a6265ae7b6"}}]},
+    ]}
+
     nc = non_conda_installs(spec)
     nc_names = {x["name"] for x in nc}
-    assert nc_names == {"GAPIT", "snpStats"}
-    # The GAPIT install_method must be the successful one (real source string),
-    # not whatever was in the failed-step placeholder.
-    g = next(x for x in nc if x["name"] == "GAPIT")
-    assert "install_github" in g["install_method"]["source"]
+    assert "mosdepth" in nc_names, \
+        ("non_conda_installs must include the wrong-arch binary install "
+         "(rc=1 from host verify) — otherwise freeze adopts a biocontainer "
+         "and silently ships a DIFFERENT version than the user anchored. "
+         "Trust violation.")
+    # Type is binary so the freeze build path replays it inside the container.
+    m = next(x for x in nc if x["name"] == "mosdepth")
+    assert m["type"] == "binary"
+    assert m["install_method"]["sha256"] == \
+        "c5182b74a8f1b66710efa16e122cbc8a197834874b103e7c5c0bd9a6265ae7b6"
+
+    # The corollary: freeze.py's adopt-or-build decision uses non_conda_installs
+    # (mcp_server.freeze: `if can_adopt and not non_conda: ADOPT else BUILD`).
+    # With mosdepth in non_conda, `not non_conda` is False → BUILD path taken.
+    # Without this fix (the prior successful_only=True filter), nc was empty
+    # and adopt was taken → bug.
 
 
 def test_install_r_package_surfaces_missing_packages_on_failure(monkeypatch):

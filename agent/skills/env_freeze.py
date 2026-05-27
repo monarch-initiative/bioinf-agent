@@ -267,11 +267,11 @@ def build_env_image(
         verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]
         eb.add_conda(all_conda, verify=verify)
     if pip_installs:
-        # successful_only: a failed pip-install step records the name but no version;
-        # the version comes from the successful retry. last-wins dedup gets us the
-        # real version even if a failed attempt for the same package exists.
+        # Move-to-end dedup in installed_packages means a successful pip retry's
+        # entry supersedes a failed earlier attempt for the same package; the
+        # version-with-real-data wins naturally without needing to filter by rc.
         versions = {p.get("name"): p.get("version")
-                    for p in _freeze.installed_packages(spec, successful_only=True)
+                    for p in _freeze.installed_packages(spec)
                     if isinstance(p, dict)}
         pip_specs, pip_verify = [], []
         for x in pip_installs:

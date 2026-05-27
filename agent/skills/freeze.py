@@ -120,19 +120,22 @@ def installed_packages(spec: dict, *, successful_only: bool = False) -> list[dic
     """Every package record in a draft OR finalized spec. A finalized spec carries
     a derived packages[]; a LIVE DRAFT does not (packages[] is derived only at
     finalize) — it only has install_steps[].installed_packages. Union both and
-    dedup by name, with the derived packages[] authoritative when present.
+    dedup by name with MOVE-TO-END semantics: when a later install_step provides
+    a package already seen, the prior entry is REMOVED and the new one inserted
+    at the new position. This is what makes a smart-replaced retry land AFTER
+    its newly-added dependency in the iteration order (the GAPIT/snpStats
+    scenario: agent fails GAPIT, installs snpStats, retries GAPIT — the
+    successful retry's entry takes a position AFTER snpStats, not before).
 
-    `successful_only`: skip install_steps with returncode != 0. The replay path
-    (non_conda_installs → _map_install → container build) wants only the steps
-    that ACTUALLY installed something — a failed attempt's installed_packages[]
-    is a partially-filled placeholder and must not contribute to the build plan.
-    A draft can legitimately carry a failed step alongside a later successful
-    retry: e.g. agent installs GAPIT before its transitive dep snpStats is
-    known → step N records rc=1; agent then installs snpStats → step N+1 rc=0;
-    agent installs GAPIT again → step N+2 rc=0. With successful_only the
-    build-plan dedup picks up GAPIT at its successful step N+2 (AFTER snpStats),
-    which is the replay order that actually works. Default False preserves
-    reporting/inventory behavior (failed attempts visible in the draft)."""
+    `successful_only`: skip install_steps with returncode != 0. Used selectively
+    — NOT by non_conda_installs (the adopt-vs-build decision needs to see ALL
+    declared non-conda installs regardless of host-verify outcome; a wrong-arch
+    linux binary on a Mac host fails host verify by design but IS still a
+    non-conda install that forbids biocontainer adopt). Move-to-end dedup means
+    a successful retry naturally supersedes the failed attempt for the same
+    package, with no need to filter the failed entry out — that's the simpler
+    invariant. Default False keeps the inventory view that includes failed
+    attempts (useful for reporting + diagnostics)."""
     out: dict[str, dict] = {}
     for st in (spec.get("install_steps") or []):
         if not isinstance(st, dict):
@@ -143,13 +146,20 @@ def installed_packages(spec: dict, *, successful_only: bool = False) -> list[dic
             # neither way: they don't carry installed_packages of interest to
             # the replay (conda env CREATE, not INSTALL).
             continue
-        # Dedup by name with LAST-WINS semantics: a successful retry at a later
-        # step supersedes an earlier failed attempt of the same package.
         for ip in (st.get("installed_packages") or []):
             if isinstance(ip, dict) and ip.get("name"):
+                # Move-to-end: if we've seen this name, remove it first so the
+                # new entry lands at the END of the dict's iteration order.
+                # Python dicts preserve insertion order; del+set effectively
+                # repositions. This is what makes a successful retry sit AFTER
+                # any intervening successful installs in the replay order.
+                if ip["name"] in out:
+                    del out[ip["name"]]
                 out[ip["name"]] = ip
     for p in _packages(spec):
         if p.get("name"):
+            if p["name"] in out:
+                del out[p["name"]]
             out[p["name"]] = p
     return list(out.values())
 
@@ -161,15 +171,22 @@ def non_conda_installs(spec: dict) -> list[dict]:
     their presence forces a recipe build that replays them on the ship platform.
     Returns [{name, type, install_method}].
 
-    Filters to SUCCESSFUL install_steps only — a failed install attempt's
-    install_method must never reach the container build plan, and a later
-    successful retry of the same package supersedes it (last-wins dedup in
-    installed_packages). This is what fixes the install_step-ordering trap:
-    when an agent discovers a missing dep mid-install, the failed-then-retried
-    package naturally takes its successful-step position in the replay, after
-    the intervening dep — no manual `step=` renumbering required."""
+    Does NOT filter by returncode — and this matters: the freeze adopt-or-build
+    decision queries this function. A linux binary installed on a Mac host
+    fails the post-install host verify (wrong-arch "cannot execute binary
+    file"), and the install_step records rc=1 — but the install_method itself
+    is valid (sha256-anchored URL) and the container-native build will execute
+    it correctly. If we filtered failed steps out here, the adopt decision
+    would see an empty non_conda list and silently adopt a biocontainer (which
+    may have a DIFFERENT version of the tool than what the user pinned). That
+    is a trust violation: shipping a different artifact than what was requested.
+
+    Move-to-end dedup in installed_packages handles the retry-after-dep-fix
+    scenario without needing a filter: a successful retry takes the LAST
+    position and is the entry seen here, with the failed earlier entry
+    superseded."""
     out = []
-    for p in installed_packages(spec, successful_only=True):
+    for p in installed_packages(spec):
         im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
         t = im.get("type") or "conda"
         if t not in ("conda", "docker_pull"):
