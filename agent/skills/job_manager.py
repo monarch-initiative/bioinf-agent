@@ -287,12 +287,18 @@ class JobManager:
 
     def _done_path(self, job_id: str) -> Path:
         """The completion sentinel file. Created ONLY when the job has exited
-        (atomic by touch). Polling shell loops can `until [ -f X.done ]; do
-        sleep; done` and get correct semantics — pre-N6, the only on-disk
-        signal was status.json, but that file exists from t=0 (created with
-        state='running' before any work happens), so file-existence polls
-        misfired immediately. The status.json content remains authoritative
-        for the actual state; .done is the atomic 'is it over' signal."""
+        (atomic by touch). The CORRECT polling pattern is `while check_job(id)
+        != "exited"` OR a file-existence loop run BY THE OWNING AGENT (which
+        is also calling check_job periodically) — the SUBPROCESS does not
+        write .done; the parent writes it inside _write_status the first time
+        check() observes the terminal transition. A bare `until [ -f X.done ]`
+        loop in an EXTERNAL shell never advances state and will spin forever.
+
+        Pre-N6, the only on-disk signal was status.json, which exists from
+        t=0 (created with state='running' before any work happens), so naive
+        file-existence polls misfired immediately. status.json content
+        remains authoritative for the actual state; .done is the atomic 'is
+        it over' signal — but it needs the check() side-effect to land."""
         return self.jobs_dir / f"{job_id}.done"
 
     def _log_path(self, job_id: str) -> Path:
