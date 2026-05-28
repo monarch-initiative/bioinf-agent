@@ -143,15 +143,27 @@ def test_i8_orphan_input_refused():
 
 
 @pytest.mark.integration
-def test_i8_authored_artifact_satisfies_provenance():
+def test_i8_authored_artifact_satisfies_provenance(tmp_path):
     """authored_artifacts is a legitimate provenance source — a step that
     consumes a hand-staged BAM (recorded via stage_authored_artifact)
-    must NOT trip I8 just because the path isn't in test_data."""
+    must NOT trip I8 just because the path isn't in test_data.
+
+    Uses a REAL on-disk file with a REAL sha256 because seal-time integrity
+    (I8.authored_artifact_mutated/missing — Tier A G1) re-anchors the recorded
+    sha256 against the bytes on disk. A fake path + fake sha would fail the
+    integrity check; this test is about the COMPOSITION-coherence check, so
+    we have to satisfy integrity to isolate composition behavior."""
+    import hashlib
+    art_path = tmp_path / "authored.bam"
+    art_bytes = b"BAM\x01"
+    art_path.write_bytes(art_bytes)
+    art_sha = hashlib.sha256(art_bytes).hexdigest()
+
     spec = _minimal_passing_spec()
-    spec["pipeline_steps"][0]["inputs"] = [{"path": "/abs/path/authored.bam"}]
+    spec["pipeline_steps"][0]["inputs"] = [{"path": str(art_path)}]
     spec["authored_artifacts"] = [
-        {"path": "/abs/path/authored.bam", "role": "fixture",
-         "description": "hand-staged test BAM", "sha256": "deadbeef"},
+        {"path": str(art_path), "role": "fixture",
+         "description": "hand-staged test BAM", "sha256": art_sha},
     ]
     v = _violations(spec, "I8.")
     assert v == [], f"authored_artifact path should satisfy I8: {v}"

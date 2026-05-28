@@ -542,6 +542,16 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_composition_coherence(spec))
 
+    # ------------------------------------------------------------------
+    # I8 (authored-artifact integrity): re-hash every staged artifact at
+    # seal time. The respine retired the dedicated I9 because Layer 1 bakes
+    # the artifact into the image bytes — but Layer 2 references artifacts
+    # OUTSIDE the image on disk, so 'install==ship' doesn't cover them. The
+    # downstream consumer reads the file, not the spec, so the spec's claim
+    # about the file (sha256) must keep matching disk up to the seal moment.
+    # ------------------------------------------------------------------
+    violations.extend(_check_authored_artifact_integrity(spec))
+
     return violations
 
 
@@ -561,6 +571,73 @@ def check_workflow_invariants(spec: dict) -> list[dict]:
     external sources, but only the run-side violations are returned."""
     return [v for v in check_invariants(spec)
             if v.get("invariant", "").split(".")[0] in _WORKFLOW_INVARIANT_TIERS]
+
+
+def _check_authored_artifact_integrity(spec: dict) -> list[dict]:
+    """Re-anchor every authored_artifact against its on-disk bytes at seal
+    time. Each entry was sha256-anchored by stage_authored_artifact when it
+    landed (the runtime hashed the bytes; the agent never supplied the value).
+    A mutation between stage and seal — file overwritten, replaced with a
+    fake, or simply deleted — would otherwise let an agent claim an artifact
+    has identity X while disk holds Y. Downstream consumers read the FILE,
+    not the spec, so the spec's claim about it has to keep matching reality
+    up to the moment we freeze the record.
+
+    Pre-respine I9 enforced this. The respine collapsed I9 because in Layer
+    1 the artifact is BAKED INTO the image and the image bytes are the truth.
+    Layer-2 authored artifacts live OUTSIDE the image on disk, so the
+    'install==ship' collapse does NOT cover them — this check is the Layer-2
+    restoration. Invariant ID is I8.* because the concern is external-source
+    integrity (same family as I8.composition_coherence).
+
+    Returns violations for: (a) on-disk path missing, (b) sha256 drift. Skips
+    entries without a recorded sha256 (legacy / not produced by
+    stage_authored_artifact)."""
+    import hashlib
+    violations: list[dict] = []
+    for i, a in enumerate(spec.get("authored_artifacts", []) or []):
+        if not isinstance(a, dict):
+            continue
+        path = a.get("path")
+        recorded = a.get("sha256")
+        if not path or not isinstance(path, str):
+            continue
+        if not recorded:
+            continue   # legacy entries — nothing to re-anchor against
+        p = Path(path)
+        if not p.is_file():
+            violations.append({
+                "invariant": "I8.authored_artifact_missing",
+                "message":   f"authored_artifact '{path}' was recorded but is no "
+                             f"longer on disk — staged content is gone, downstream "
+                             f"steps that depend on it have no real source",
+                "where":     f"authored_artifacts[{i}]",
+                "path":      path,
+            })
+            continue
+        try:
+            disk_sha = hashlib.sha256(p.read_bytes()).hexdigest()
+        except Exception as e:
+            violations.append({
+                "invariant": "I8.authored_artifact_unreadable",
+                "message":   f"authored_artifact '{path}' could not be re-hashed "
+                             f"at seal time: {e!r}",
+                "where":     f"authored_artifacts[{i}]",
+                "path":      path,
+            })
+            continue
+        if disk_sha != recorded:
+            violations.append({
+                "invariant": "I8.authored_artifact_mutated",
+                "message":   f"authored_artifact '{path}' bytes changed since stage: "
+                             f"recorded sha256={recorded[:12]}..., on disk={disk_sha[:12]}... "
+                             f"— the spec's claim about this artifact no longer matches reality",
+                "where":     f"authored_artifacts[{i}]",
+                "path":      path,
+                "recorded_sha256": recorded,
+                "disk_sha256":     disk_sha,
+            })
+    return violations
 
 
 def _check_composition_coherence(spec: dict) -> list[dict]:
