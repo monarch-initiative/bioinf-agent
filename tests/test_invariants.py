@@ -5288,6 +5288,141 @@ def test_requested_conda_specs_rc_none_treated_as_passthrough():
     assert specs == ["samtools=1.21"]
 
 
+# =============================================================================
+# Batch-2 stress-test fixes (2026-05-27) — MD report parity for adopt mode (R1)
+#
+# The .md env report rendered adopt-mode rows with Version='—', Install='—',
+# Validated='—' because the recorded resolved_packages/verifications were
+# empty (correctly — adopt doesn't capture an in-locus closure). The version
+# was sitting on the request_key and the HTML report already used it; the
+# .md renderer just hadn't been updated. R1 = MD/HTML parity.
+# =============================================================================
+
+
+def test_env_report_md_adopt_renders_version_from_request_key():
+    """R1 — adopt-mode .md row pulls version from the request_key's pinned spec
+    (the biocontainer manifest digest binds the artifact to exactly that
+    bioconda build → 'installed == requested' is honest with no in-locus probe).
+    Pre-fix Version='—'."""
+    from agent.skills.env_report import render_env_report
+    md = render_env_report({
+        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+        "mode": "adopt", "validation_locus": "adopted",
+        "requested_tools": ["samtools"],
+        # the request_key is the canonical 'what was asked' tuple — present on
+        # every record, build or adopt
+        "request_key": "samtools=1.21|linux/amd64|none",
+    })
+    assert "| samtools | 1.21 |" in md, (
+        "the adopt-mode row must surface the pinned version from request_key, "
+        "not '—' (pre-R1 behavior)")
+
+
+def test_env_report_md_adopt_renders_tier_and_validated_cells():
+    """R1 — the install-tier cell says 'adopted (biocontainer)' and the
+    validated cell says 'ADOPTED_BY_DIGEST' instead of dashes. Pre-fix both
+    were '—' because the row was driven entirely by resolved_packages / verifs
+    (empty for adopt)."""
+    from agent.skills.env_report import render_env_report
+    md = render_env_report({
+        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+        "mode": "adopt", "validation_locus": "adopted",
+        "requested_tools": ["samtools"],
+        "request_key": "samtools=1.21|linux/amd64|none",
+    })
+    assert "adopted (biocontainer)" in md
+    assert "ADOPTED_BY_DIGEST" in md
+    # the row contains both the tier and the validated badge
+    row_lines = [l for l in md.splitlines() if l.startswith("| samtools |")]
+    assert row_lines, "samtools row not found"
+    assert "adopted (biocontainer)" in row_lines[0]
+    assert "ADOPTED_BY_DIGEST" in row_lines[0]
+
+
+def test_env_report_md_adopt_falls_back_to_conda_specs_when_no_request_key():
+    """R1 (defense-in-depth) — an older record without request_key but with
+    conda_specs still produces a non-dash version cell."""
+    from agent.skills.env_report import render_env_report
+    md = render_env_report({
+        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+        "mode": "adopt", "validation_locus": "adopted",
+        "requested_tools": ["samtools"],
+        "conda_specs": ["samtools=1.21"],   # the older record shape
+    })
+    assert "| samtools | 1.21 |" in md
+
+
+def test_env_report_md_build_mode_unchanged_by_r1():
+    """R1 must be additive — build-mode rendering is unchanged. The conda
+    layer's resolved_packages is the authoritative version source for build,
+    and the verifications panel still drives the validated cell."""
+    from agent.skills.env_report import render_env_report
+    record = {
+        "name": "demo", "image": "demo:1.0", "image_digest": "sha256:img",
+        "content_digest": "sha256:cd", "platform": "linux/amd64", "mode": "build",
+        "build_method": "container-native", "engine": "pixi",
+        "validation_locus": "native", "created_at": "2026-05-24",
+        "requested_tools": ["samtools"], "conda_specs": ["samtools=1.21"],
+        "verifications": [{"tool": "samtools", "label": "samtools",
+                           "check": "command -v samtools", "passed": True, "rc": 0}],
+        "resolved_packages": [{"name": "samtools", "version": "1.21", "kind": "conda"}],
+    }
+    md = render_env_report(record)
+    assert "| samtools | 1.21 | conda | ✓" in md
+    # build-mode footer language unchanged
+    assert "validated INSIDE the shipped image" in md
+    # NOT the adopt-mode language
+    assert "adopted (biocontainer)" not in md
+
+
+def test_env_report_md_adopt_uses_adopt_footer_language():
+    """R1 (consistency) — the row description above the table reflects the
+    mode: adopt rows say 'pinned by published BioContainer manifest digest',
+    not 'validated INSIDE the shipped image' (which would over-claim)."""
+    from agent.skills.env_report import render_env_report
+    md = render_env_report({
+        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+        "mode": "adopt", "validation_locus": "adopted",
+        "requested_tools": ["samtools"],
+        "request_key": "samtools=1.21|linux/amd64|none",
+    })
+    assert "validated INSIDE the shipped image" not in md
+    assert "pinned by the published BioContainer manifest digest" in md
+
+
+def test_requested_versions_helper_parses_request_key():
+    """R1 (unit) — the shared helper parses the request_key's spec segment
+    correctly, including unversioned (bare-name) tools."""
+    from agent.skills.env_report import requested_versions
+    rv = requested_versions({"request_key": "samtools=1.21,bwa=0.7.17|linux/amd64|none"})
+    assert rv == {"samtools": "1.21", "bwa": "0.7.17"}
+    # unversioned tools get empty string (not missing)
+    rv2 = requested_versions({"request_key": "fastqc|linux/amd64|none"})
+    assert rv2 == {"fastqc": ""}
+
+
+def test_requested_versions_helper_falls_back_to_conda_specs():
+    """R1 (unit) — older records without request_key fall back to conda_specs."""
+    from agent.skills.env_report import requested_versions
+    rv = requested_versions({"conda_specs": ["samtools=1.21"]})
+    assert rv == {"samtools": "1.21"}
+    # request_key wins over conda_specs when both present (request_key is
+    # the canonical "what was asked"; conda_specs may include solver fillins)
+    rv = requested_versions({
+        "request_key": "samtools=1.21|linux/amd64|none",
+        "conda_specs": ["samtools=999"],
+    })
+    assert rv["samtools"] == "1.21"
+
+
+def test_env_report_html_request_versions_alias_still_works():
+    """R1 (refactor safety) — env_report_html still exports the private
+    _requested_versions name for any in-module callers; it now aliases the
+    canonical env_report.requested_versions."""
+    from agent.skills import env_report, env_report_html
+    assert env_report_html._requested_versions is env_report.requested_versions
+
+
 def test_requested_conda_specs_unversioned_name_preserved():
     """R6 — the unversioned form is preserved (the agent declared
     `install_conda_packages(env, [{spec: 'samtools'}])` without pinning).

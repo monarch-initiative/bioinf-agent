@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from agent.skills.env_report import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
-    _resolved_version, _verif_index,
+    _resolved_version, _verif_index, requested_versions as _shared_req_versions,
 )
 
 _CSS = """
@@ -175,24 +175,10 @@ def _empty(msg: str) -> str:
     return f'<p class="empty">{_e(msg)}</p>'
 
 
-def _requested_versions(record: dict) -> dict[str, str]:
-    """tool → user-asked version constraint (empty if any). The request_key holds
-    the original ask for every record (build OR adopt); conda_specs is a fallback
-    for older records that lack one."""
-    out: dict[str, str] = {}
-    rk = record.get("request_key", "") or ""
-    if "|" in rk:
-        spec = rk.split("|", 1)[0]
-        for tok in spec.split(","):
-            n, _, v = tok.replace("==", "=").partition("=")
-            if n.strip():
-                out[n.strip()] = v.strip()
-    for s in record.get("conda_specs", []) or []:
-        if isinstance(s, str):
-            n, _, v = s.replace("==", "=").partition("=")
-            if n.strip() and n.strip() not in out:
-                out[n.strip()] = v.strip()
-    return out
+# Re-exported under the historical private name so call sites here don't churn —
+# the canonical helper now lives in env_report (so the .md renderer can share it,
+# the R1 fix point); see env_report.requested_versions docstring.
+_requested_versions = _shared_req_versions
 
 
 def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str:

@@ -140,6 +140,34 @@ def _pkg_index(resolved: list[dict]) -> dict[str, dict]:
     return {p["name"].lower(): p for p in (resolved or []) if isinstance(p, dict) and p.get("name")}
 
 
+def requested_versions(record: dict) -> dict[str, str]:
+    """tool → user-asked version constraint (empty string if unpinned). Sourced
+    from the request_key (the canonical 'what was asked' tuple, present on every
+    record build OR adopt) with conda_specs as a fallback for older records.
+
+    Moved here so the MD renderer can reach the same row data the HTML renderer
+    already had (R1 fix, batch-2 stress). Pre-fix the .md adopt-mode rows
+    rendered Version='—' / Install='—' / Validated='—' because the recorded
+    `resolved_packages` / `verifications` were empty for adopt (correctly — no
+    in-locus closure or evidence captured), but the requested_tools' versions
+    were sitting right there on the record.
+    """
+    out: dict[str, str] = {}
+    rk = (record or {}).get("request_key", "") or ""
+    if "|" in rk:
+        spec = rk.split("|", 1)[0]
+        for tok in spec.split(","):
+            n, _, v = tok.replace("==", "=").partition("=")
+            if n.strip():
+                out[n.strip()] = v.strip()
+    for s in (record or {}).get("conda_specs", []) or []:
+        if isinstance(s, str):
+            n, _, v = s.replace("==", "=").partition("=")
+            if n.strip() and n.strip() not in out:
+                out[n.strip()] = v.strip()
+    return out
+
+
 def _install_method(name: str, pkg: Optional[dict], shipped: list[dict]) -> str:
     if pkg:
         return "pip (PyPI)" if pkg.get("kind") == "pypi" else "conda"
@@ -218,8 +246,14 @@ def render_env_report(record: dict) -> str:
     L.append("")
 
     # -- requested tools --------------------------------------------------
+    is_adopt = r.get("mode") == "adopt"
+    req_versions = requested_versions(r)
     L.append(f"## Requested tools ({len(requested)})")
-    L.append("What you asked for — each validated INSIDE the shipped image.")
+    if is_adopt:
+        L.append("What you asked for — each pinned by the published BioContainer manifest digest "
+                 "(not re-validated in-locus; the published digest IS the validation).")
+    else:
+        L.append("What you asked for — each validated INSIDE the shipped image.")
     L.append("")
     if requested:
         L.append("| Tool | Version | Install | Validated in image |")
@@ -231,12 +265,30 @@ def render_env_report(record: dict) -> str:
             # (see _resolved_version). If we ended up with a banner/conda/out
             # version AND there's a distinct SHA install anchor, append it in
             # parens for full provenance ("1.4-r122 (commit 94e707082d39)").
-            ver = _resolved_version(t, pkg, v, shipped) or "—"
+            ver = _resolved_version(t, pkg, v, shipped) or ""
+            if not ver and is_adopt:
+                # R1 fallback (batch-2 stress): adopt mode has no resolved_packages /
+                # verifications / shipped_binaries — the version IS the request_key's
+                # pinned spec (the biocontainer manifest digest binds it to exactly
+                # that bioconda build, so 'installed == requested' is honest with no
+                # in-locus probe). Mirrors the HTML report's _installed_version.
+                ver = req_versions.get(t, "")
+            ver = ver or "—"
             anchor = _install_anchor(t, shipped)
             if ver != "—" and anchor and anchor != ver and _is_sha(anchor):
                 ver = f"{ver} (commit {anchor[:12]})"
-            L.append(f"| {t} | {ver} | {_install_method(t, pkg, shipped)} | "
-                     f"{_evidence_cell(v)} |")
+            install = _install_method(t, pkg, shipped)
+            evidence = _evidence_cell(v)
+            if is_adopt:
+                # R1 (batch-2 stress): an adopted biocontainer's row should
+                # reflect WHAT WE KNOW (tier=adopted, validation=by digest), not
+                # render dashes because the in-locus inspection wasn't performed.
+                # The HTML renderer already did this; the .md renderer didn't.
+                if install == "—":
+                    install = "adopted (biocontainer)"
+                if evidence == "—":
+                    evidence = "✓ ADOPTED_BY_DIGEST"
+            L.append(f"| {t} | {ver} | {install} | {evidence} |")
     else:
         L.append("_(none recorded)_")
     L.append("")
