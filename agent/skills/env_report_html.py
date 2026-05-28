@@ -32,7 +32,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any, Optional
 
-from agent.skills.env_report import (
+from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
 )
@@ -362,8 +362,8 @@ def render_env_report_html(record: dict) -> str:
     P.append('<div class="bx-body">')
     # Order: identity (image + two digests) → the two PRIMARY companion artifacts
     # (recipe = rebuild instructions, attestation = signed provenance) → delivery
-    # (tarball / lock / registry). The .ENV.md is a sibling VIEW of this same
-    # report, not an artifact in its own right, so it isn't listed.
+    # (tarball / lock / registry). This HTML IS the canonical Layer-1 view;
+    # there is no sibling .md (retired in batch-3) so we don't list one.
     art_rows: list[tuple[str, str]] = [
         ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
         ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),

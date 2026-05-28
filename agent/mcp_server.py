@@ -88,7 +88,6 @@ from agent.skills import env_honesty as _env_honesty
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import user_guide as _user_guide
-from agent.skills import env_report as _env_report
 from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
@@ -256,7 +255,7 @@ def create_conda_env(
 # ---------------------------------------------------------------------------
 # Response-shape helpers — truncation/summarization ONLY at the LLM-facing
 # response surface. The truth surface (install_step record, EnvCache record,
-# env_reports/{name}.ENV.{md,html}, attestation, recipe) is NEVER touched by
+# env_reports/{name}.ENV.html, attestation, recipe) is NEVER touched by
 # these. The contract is: disk is the source of truth; the response is just
 # what fits comfortably in the agent's context. On failure or when more detail
 # is needed, the response carries a `log_path` (install) or
@@ -321,11 +320,11 @@ def _summarize_sbom_in_response(out: dict) -> dict:
 
     Truth surface unchanged — full SBOM is preserved in the EnvCache record
     (stored on disk in env_reports/_env_cache.json BEFORE this is called) and
-    in env_reports/{name}.ENV.md + .ENV.html on disk. env_report,
-    env_report_html, and attestation continue to render from the record (which
-    contains full lists), untouched. This affects ONLY the live MCP response
-    shape — ~10-15k tokens of SBOM rows eliminated per freeze response. If
-    the agent wants the full SBOM it Reads `sbom_full_in_report`."""
+    in env_reports/{name}.ENV.html + .attestation.json on disk. env_report_html
+    and attestation continue to render from the record (which contains full
+    lists), untouched. This affects ONLY the live MCP response shape — ~10-15k
+    tokens of SBOM rows eliminated per freeze response. If the agent wants the
+    full SBOM it Reads `sbom_full_in_report` (the HTML — Layer-1 canonical)."""
     resolved = out.get("resolved_packages") or []
     system = out.get("system_packages") or []
     requested = set(out.get("requested_tools") or [])
@@ -336,7 +335,7 @@ def _summarize_sbom_in_response(out: dict) -> dict:
         "primary_tools_resolved": primary,
     }
     out["system_packages_summary"] = {"count": len(system)}
-    out["sbom_full_in_report"] = out.get("env_report") or "(env report path not yet set)"
+    out["sbom_full_in_report"] = out.get("env_report_html") or "(env report path not yet set)"
     out.pop("resolved_packages", None)
     out.pop("system_packages", None)
     return out
@@ -2354,8 +2353,8 @@ def _freeze_in_background(**args) -> dict:
         "state":       "running",
         "note": ("freeze running in background; poll check_job(job_id) until "
                  "state='exited', then read the JSON at result_path for the full "
-                 "freeze record. The standard ENV.md / attestation.json / recipe.yaml "
-                 "are also written by the subprocess on success."),
+                 "freeze record. The standard ENV.html / attestation.json / "
+                 "recipe.yaml are also written by the subprocess on success."),
     }
 
 
@@ -2756,7 +2755,10 @@ def freeze(
     # the human env report (HTML headline + Markdown for diff/parse) + a standard
     # in-toto/SLSA provenance attestation. Views — never block a good freeze on a
     # render error.
-    report_path = report_html_path = attestation_path = None
+    # The .md renderer was retired in batch-3 (the .html is the canonical Layer-1
+    # deliverable; .md was a redundant view that only existed during the AUDIT#2
+    # phase to ease grep-based diff). Two artifacts now: ENV.html + attestation.json.
+    report_html_path = attestation_path = None
     reports_dir = _env_mgr.project_root / "env_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -2764,11 +2766,6 @@ def freeze(
         report_html_path = str(reports_dir / f"{name}.ENV.html")
     except Exception as e:
         report_html_path = f"(html report render failed: {e!r})"
-    try:
-        (reports_dir / f"{name}.ENV.md").write_text(_env_report.render_env_report(record))
-        report_path = str(reports_dir / f"{name}.ENV.md")
-    except Exception as e:
-        report_path = f"(report render failed: {e!r})"
     try:
         import json as _json
         att = _attestation.build_attestation(record, base_image=_BASE_IMAGE if mode == "build" else "")
@@ -2789,17 +2786,16 @@ def freeze(
 
     out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
     out["env_report_html"] = report_html_path
-    out["env_report"] = report_path
     out["attestation"] = attestation_path
     out["env_recipe"] = recipe_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     # Summarize the bulky SBOM in the live response only. The full SBOM lives
-    # in the EnvCache record (registered above) and in env_reports/{name}.ENV.md
-    # / .ENV.html / .attestation.json — all rendered from the full record before
-    # this summarization fires. ~10-15k tokens of SBOM rows eliminated per
-    # response with zero loss of accessible information (the agent Reads the
-    # report when it wants the full SBOM).
+    # in the EnvCache record (registered above) and in env_reports/{name}.ENV.html
+    # / .attestation.json — both rendered from the full record before this
+    # summarization fires. ~10-15k tokens of SBOM rows eliminated per response
+    # with zero loss of accessible information (the agent Reads the HTML when
+    # it wants the full SBOM).
     return _summarize_sbom_in_response(out)
 
 

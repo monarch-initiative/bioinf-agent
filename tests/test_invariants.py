@@ -2544,58 +2544,6 @@ def _sample_record(locus="emulated"):
     }
 
 
-def test_env_report_splits_requested_vs_ride_along():
-    from agent.skills.env_report import render_env_report
-    md = render_env_report(_sample_record())
-    assert "## Requested tools (1)" in md
-    assert "## Along for the ride (2)" in md          # htslib + libdeflate, NOT samtools
-    assert "| samtools | 1.21 | conda | ✓" in md      # requested row with in-image evidence
-    assert "htslib" in md and "libdeflate" in md
-    # samtools must NOT appear in the ride-along dependency table (scope to that
-    # section only — the Install & provenance block below legitimately names it)
-    ride = md.split("## Along for the ride")[1].split("## Install")[0]
-    assert "samtools" not in ride
-
-
-def test_env_report_long_tail_tier_version_and_delivery():
-    """Long-tail tools show their real install tier + the version they printed
-    in-image (not '—'/'long-tail (baked)'); the Delivery section + reproducibility
-    line render from the record."""
-    from agent.skills.env_report import render_env_report
-    rec = {
-        "name": "vc", "image": "vc:1", "image_digest": "sha256:i", "mode": "build",
-        "validation_locus": "native", "requested_tools": ["seqkit", "seqtk"],
-        "push_status": "pushed: ghcr.io/org/vc:1",
-        "shipped_binaries": [{"name": "seqkit binary", "command": "curl ... | sha256sum -c"},
-                             {"name": "seqtk (source @ 7c04ce7)", "command": "git clone ... && make"}],
-        "verifications": [{"tool": "seqkit", "label": "seqkit", "check": "seqkit version",
-                           "passed": True, "out": "seqkit v2.13.0"},
-                          {"tool": "seqtk", "label": "seqtk", "check": "seqtk 2>&1 | head",
-                           "passed": True, "out": "Version: 1.4-r122"}],
-        "resolved_packages": [],
-        "hpc_delivery": {"get_image": "apptainer pull vc.sif docker://ghcr.io/org/vc:1"},
-    }
-    md = render_env_report(rec)
-    assert "| seqkit | 2.13.0 | binary |" in md      # version from in-image output + real tier
-    # source tier with a SHA install anchor: dual-display keeps the commit
-    # visible alongside the version (full provenance — non-fakeable).
-    assert "| seqtk | 1.4-r122 (commit 7c04ce7) | source |" in md
-    assert "Registry: pushed: ghcr.io/org/vc:1" in md
-    assert "apptainer pull vc.sif docker://ghcr.io/org/vc:1" in md
-    assert "Reproducibility" in md and "digest-pinned" in md
-
-
-def test_env_report_system_packages_sbom_section():
-    """The apt/OS layer renders as its own collapsible SBOM section."""
-    from agent.skills.env_report import render_env_report
-    rec = dict(_sample_record("native"))
-    rec["system_packages"] = [{"name": "libssl3", "version": "3.0.14-1", "kind": "apt"},
-                              {"name": "zlib1g", "version": "1:1.2.13", "kind": "apt"}]
-    md = render_env_report(rec)
-    assert "## System packages (2)" in md
-    assert "| libssl3 | 3.0.14-1 |" in md
-
-
 def test_attestation_sbom_includes_apt_as_deb_purls():
     """A complete SBOM: the apt layer joins conda/pip in resolvedDependencies as
     deb purls — self-describing artifact for audit."""
@@ -2607,39 +2555,6 @@ def test_attestation_sbom_includes_apt_as_deb_purls():
     assert "pkg:conda/htslib@1.21" in uris        # tool closure
     assert "pkg:deb/debian/libssl3@3.0.14-1" in uris  # OS layer
 
-
-def test_env_report_honesty_footer_reflects_locus():
-    from agent.skills.env_report import render_env_report
-    assert "NOT authoritative" in render_env_report(_sample_record("emulated"))
-    assert "are authoritative" in render_env_report(_sample_record("native"))
-
-
-def test_env_report_renders_for_adopted_image_without_crashing():
-    """Adopt path has no in-locus validation/closure — the report still renders."""
-    from agent.skills.env_report import render_env_report
-    md = render_env_report({"name": "bt", "image": "biocontainers/x@sha256:d",
-                            "image_digest": "sha256:d", "mode": "adopt",
-                            "validation_locus": "adopted", "requested_tools": ["x"]})
-    assert "adopted" in md.lower()
-    assert "## Requested tools (1)" in md
-
-
-def test_env_report_md_adopt_footer_does_not_overclaim():
-    """The .md footer must NOT claim VALIDATED_IN_IMAGE for an adopted image (it was
-    never validated in-locus) — it asserts ADOPTED_BY_DIGEST instead."""
-    from agent.skills.env_report import render_env_report
-    adopt = render_env_report({"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-                               "mode": "adopt", "validation_locus": "adopted",
-                               "requested_tools": ["x"]})
-    assert "ADOPTED_BY_DIGEST" in adopt and "VALIDATED_IN_IMAGE" not in adopt
-    # a real build still makes the strong claim
-    assert "VALIDATED_IN_IMAGE" in render_env_report(_sample_record())
-
-
-# ---------------------------------------------------------------------------
-# The HTML env report — the human-facing deliverable. Pure over the record,
-# escaped, deterministic, mode-honest, verified-vs-declared separation.
-# ---------------------------------------------------------------------------
 
 def test_env_report_html_deterministic_and_contains_verified_facts():
     from agent.skills.env_report_html import render_env_report_html
@@ -2993,7 +2908,7 @@ def test_install_command_r_package_evidence_captures_version():
     `_extract_version` picks it up. Honest: same source of truth as the
     host-side primitive, just evaluated at the right locus."""
     from agent.skills import install_commands as ic
-    from agent.skills.env_report import _extract_version
+    from agent.skills.env_report_helpers import _extract_version
 
     for src in ("cran", "bioconductor", "github:jiabowang/GAPIT"):
         spec = ic.r_package("GAPIT", source=src)
@@ -3352,9 +3267,9 @@ def test_shrink_stdio_for_response_handles_unsafe_label_chars(monkeypatch, tmp_p
 def test_summarize_sbom_in_response_keeps_full_in_record_summarizes_in_response():
     """Efficiency #2: the freeze RESPONSE replaces resolved_packages +
     system_packages with summary fields, but the original SBOM stays in the
-    EnvCache record (which env_report / env_report_html / attestation read
-    from). This is the rule: disk is the truth surface; the response is just
-    what fits comfortably in the agent's context."""
+    EnvCache record (which env_report_html / attestation read from). This is
+    the rule: disk is the truth surface; the response is just what fits
+    comfortably in the agent's context."""
     import agent.mcp_server as m
     # Build a record matching what freeze() would have stored: 3 conda
     # packages including GAPIT 4.1.0, plus 2 apt packages.
@@ -3370,7 +3285,7 @@ def test_summarize_sbom_in_response_keeps_full_in_record_summarizes_in_response(
             {"name": "libc6", "version": "2.36-9+deb12u14", "kind": "apt"},
             {"name": "openssl", "version": "3.0.20-1~deb12u1", "kind": "apt"},
         ],
-        "env_report": "/path/to/env_reports/demo.ENV.md",
+        "env_report_html": "/path/to/env_reports/demo.ENV.html",
     }
     out = m._summarize_sbom_in_response(dict(rec))
 
@@ -3382,8 +3297,8 @@ def test_summarize_sbom_in_response_keeps_full_in_record_summarizes_in_response(
     assert out["system_packages_summary"]["count"] == 2
     # Primary tool resolution is the load-bearing bit and stays inline.
     assert out["resolved_packages_summary"]["primary_tools_resolved"] == {"GAPIT": "4.1.0"}
-    # sbom_full_in_report points the agent at the on-disk full SBOM.
-    assert out["sbom_full_in_report"] == "/path/to/env_reports/demo.ENV.md"
+    # sbom_full_in_report points the agent at the on-disk full SBOM (HTML).
+    assert out["sbom_full_in_report"] == "/path/to/env_reports/demo.ENV.html"
 
     # CRITICAL: the original record passed IN is mutated (response only),
     # but the helper takes a dict(rec) copy at the call site so the cached
@@ -3408,7 +3323,7 @@ def test_summarize_sbom_in_response_keeps_full_in_record_summarizes_in_response(
 
 def test_freeze_response_truth_surface_unchanged_by_sbom_summarization():
     """Lock the contract: when the freeze response summarizes the SBOM, the
-    EnvCache record on disk + env_report render input MUST still have the
+    EnvCache record on disk + env_report_html render input MUST still have the
     full lists. The summarization happens AFTER cache.register and AFTER
     report render — verified by simulating the full pipeline."""
     import agent.mcp_server as m
@@ -3434,7 +3349,7 @@ def test_freeze_response_truth_surface_unchanged_by_sbom_summarization():
         # The response has summaries.
         assert "resolved_packages" not in response
         # 3. The cache record on disk STILL has the full SBOM — that's the
-        #    contract. env_report, env_report_html, attestation read from this.
+        #    contract. env_report_html and attestation read from this.
         cached = cache.lookup("test_key")
         assert len(cached["resolved_packages"]) == 50, \
             "cache record must keep the full resolved_packages list"
@@ -3790,7 +3705,7 @@ def test_version_from_banner_accepts_only_version_shaped_tokens():
     """The renderer extracts a version from the captured banner ONLY when it
     matches the strict version shape (digit-led, dotted). Arbitrary text in a
     banner can't be smuggled into the version cell."""
-    from agent.skills.env_report import _version_from_banner
+    from agent.skills.env_report_helpers import _version_from_banner
     assert _version_from_banner("Version: 1.4-r122\nUsage: seqtk ...") == "1.4-r122"
     assert _version_from_banner("seqtk 1.4-r122\nCopyright (c) ...") == "1.4-r122"
     assert _version_from_banner("bcftools 1.21\nUsing htslib 1.21") == "1.21"
@@ -3806,7 +3721,7 @@ def test_resolved_version_prefers_conda_then_banner_then_out_then_anchor():
     > evidence `out` > install anchor. Each step is a runtime-captured fact (or
     an agent-supplied evidence command — labelled honestly); fakeability decreases
     left to right."""
-    from agent.skills.env_report import _resolved_version
+    from agent.skills.env_report_helpers import _resolved_version
     # conda wins
     assert _resolved_version("samtools", {"version": "1.21"},
                              {"banner": "samtools 1.99", "out": "samtools 1.50"}, []) == "1.21"
@@ -3827,7 +3742,7 @@ def test_is_sha_recognizes_commit_only_for_hex_blobs():
     """The dual-display rule appends `(commit <sha>)` only when the install
     anchor LOOKS like a git SHA — a release tag like 'v1.4' is suppressed (would
     just duplicate the banner version)."""
-    from agent.skills.env_report import _is_sha
+    from agent.skills.env_report_helpers import _is_sha
     assert _is_sha("94e707082d39")
     assert _is_sha("abcdef1")              # 7 chars — git's short-SHA floor
     assert not _is_sha("v1.4")
@@ -5313,101 +5228,10 @@ def test_requested_conda_specs_rc_none_treated_as_passthrough():
 # =============================================================================
 
 
-def test_env_report_md_adopt_renders_version_from_request_key():
-    """R1 — adopt-mode .md row pulls version from the request_key's pinned spec
-    (the biocontainer manifest digest binds the artifact to exactly that
-    bioconda build → 'installed == requested' is honest with no in-locus probe).
-    Pre-fix Version='—'."""
-    from agent.skills.env_report import render_env_report
-    md = render_env_report({
-        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-        "mode": "adopt", "validation_locus": "adopted",
-        "requested_tools": ["samtools"],
-        # the request_key is the canonical 'what was asked' tuple — present on
-        # every record, build or adopt
-        "request_key": "samtools=1.21|linux/amd64|none",
-    })
-    assert "| samtools | 1.21 |" in md, (
-        "the adopt-mode row must surface the pinned version from request_key, "
-        "not '—' (pre-R1 behavior)")
-
-
-def test_env_report_md_adopt_renders_tier_and_validated_cells():
-    """R1 — the install-tier cell says 'adopted (biocontainer)' and the
-    validated cell says 'ADOPTED_BY_DIGEST' instead of dashes. Pre-fix both
-    were '—' because the row was driven entirely by resolved_packages / verifs
-    (empty for adopt)."""
-    from agent.skills.env_report import render_env_report
-    md = render_env_report({
-        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-        "mode": "adopt", "validation_locus": "adopted",
-        "requested_tools": ["samtools"],
-        "request_key": "samtools=1.21|linux/amd64|none",
-    })
-    assert "adopted (biocontainer)" in md
-    assert "ADOPTED_BY_DIGEST" in md
-    # the row contains both the tier and the validated badge
-    row_lines = [l for l in md.splitlines() if l.startswith("| samtools |")]
-    assert row_lines, "samtools row not found"
-    assert "adopted (biocontainer)" in row_lines[0]
-    assert "ADOPTED_BY_DIGEST" in row_lines[0]
-
-
-def test_env_report_md_adopt_falls_back_to_conda_specs_when_no_request_key():
-    """R1 (defense-in-depth) — an older record without request_key but with
-    conda_specs still produces a non-dash version cell."""
-    from agent.skills.env_report import render_env_report
-    md = render_env_report({
-        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-        "mode": "adopt", "validation_locus": "adopted",
-        "requested_tools": ["samtools"],
-        "conda_specs": ["samtools=1.21"],   # the older record shape
-    })
-    assert "| samtools | 1.21 |" in md
-
-
-def test_env_report_md_build_mode_unchanged_by_r1():
-    """R1 must be additive — build-mode rendering is unchanged. The conda
-    layer's resolved_packages is the authoritative version source for build,
-    and the verifications panel still drives the validated cell."""
-    from agent.skills.env_report import render_env_report
-    record = {
-        "name": "demo", "image": "demo:1.0", "image_digest": "sha256:img",
-        "content_digest": "sha256:cd", "platform": "linux/amd64", "mode": "build",
-        "build_method": "container-native", "engine": "pixi",
-        "validation_locus": "native", "created_at": "2026-05-24",
-        "requested_tools": ["samtools"], "conda_specs": ["samtools=1.21"],
-        "verifications": [{"tool": "samtools", "label": "samtools",
-                           "check": "command -v samtools", "passed": True, "rc": 0}],
-        "resolved_packages": [{"name": "samtools", "version": "1.21", "kind": "conda"}],
-    }
-    md = render_env_report(record)
-    assert "| samtools | 1.21 | conda | ✓" in md
-    # build-mode footer language unchanged
-    assert "validated INSIDE the shipped image" in md
-    # NOT the adopt-mode language
-    assert "adopted (biocontainer)" not in md
-
-
-def test_env_report_md_adopt_uses_adopt_footer_language():
-    """R1 (consistency) — the row description above the table reflects the
-    mode: adopt rows say 'pinned by published BioContainer manifest digest',
-    not 'validated INSIDE the shipped image' (which would over-claim)."""
-    from agent.skills.env_report import render_env_report
-    md = render_env_report({
-        "name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-        "mode": "adopt", "validation_locus": "adopted",
-        "requested_tools": ["samtools"],
-        "request_key": "samtools=1.21|linux/amd64|none",
-    })
-    assert "validated INSIDE the shipped image" not in md
-    assert "pinned by the published BioContainer manifest digest" in md
-
-
 def test_requested_versions_helper_parses_request_key():
     """R1 (unit) — the shared helper parses the request_key's spec segment
     correctly, including unversioned (bare-name) tools."""
-    from agent.skills.env_report import requested_versions
+    from agent.skills.env_report_helpers import requested_versions
     rv = requested_versions({"request_key": "samtools=1.21,bwa=0.7.17|linux/amd64|none"})
     assert rv == {"samtools": "1.21", "bwa": "0.7.17"}
     # unversioned tools get empty string (not missing)
@@ -5417,7 +5241,7 @@ def test_requested_versions_helper_parses_request_key():
 
 def test_requested_versions_helper_falls_back_to_conda_specs():
     """R1 (unit) — older records without request_key fall back to conda_specs."""
-    from agent.skills.env_report import requested_versions
+    from agent.skills.env_report_helpers import requested_versions
     rv = requested_versions({"conda_specs": ["samtools=1.21"]})
     assert rv == {"samtools": "1.21"}
     # request_key wins over conda_specs when both present (request_key is
@@ -5427,27 +5251,6 @@ def test_requested_versions_helper_falls_back_to_conda_specs():
         "conda_specs": ["samtools=999"],
     })
     assert rv["samtools"] == "1.21"
-
-
-def test_env_report_html_request_versions_alias_still_works():
-    """R1 (refactor safety) — env_report_html still exports the private
-    _requested_versions name for any in-module callers; it now aliases the
-    canonical env_report.requested_versions."""
-    from agent.skills import env_report, env_report_html
-    assert env_report_html._requested_versions is env_report.requested_versions
-
-
-# =============================================================================
-# Batch-2 stress-test fixes (2026-05-27) — Disk failsafe (A1 + A2)
-#
-# Apollo3 stress cascade: 4 parallel subagent freezes → docker buildkit's
-# intermediate layers piled up to 80 GB → host disk at 92% → builds entered
-# an infinite retry loop on 'no space left on device', wedging the
-# orchestrator. The failsafe is two layers: pre-flight refusal at freeze()
-# entry (A1), and post-failure buildkit prune when disk is already stressed
-# (A2). Together they make parallel freezes safe — racing freezes that hit
-# the threshold refuse cleanly instead of cascading.
-# =============================================================================
 
 
 def test_check_disk_failsafe_returns_none_when_disk_is_healthy(monkeypatch):

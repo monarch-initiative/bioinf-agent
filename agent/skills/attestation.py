@@ -121,8 +121,11 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "startedOn": r.get("created_at", ""),
             },
             "byproducts": [b for b in [
-                {"name": "env-report", "mediaType": "text/markdown",
-                 "uri": f"env_reports/{r.get('name','env')}.ENV.md"},
+                # The Layer-1 deliverable is the HTML env report. The .md sibling
+                # was retired in batch-3 (redundant view of the same pure-over-
+                # record content); .html stays as the canonical human surface.
+                {"name": "env-report", "mediaType": "text/html",
+                 "uri": f"env_reports/{r.get('name','env')}.ENV.html"},
                 {"name": "conda-lock", "uri": r.get("conda_lock")} if r.get("conda_lock") else None,
             ] if b],
         },
