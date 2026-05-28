@@ -421,6 +421,7 @@ def install_git_repo(
     bin_path: str = "",
     entrypoint: str = "",
     interpreter: str = "",
+    host_build: bool = True,
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -462,9 +463,21 @@ def install_git_repo(
     mutually exclusive; install fails if both or neither are supplied.
 
     Pin `ref` to a tag or commit for reproducibility — a bare default branch
-    drifts. Returns: {success, clone_path, commit_sha, repo_url, ref,
-    build_command, bin_path, entrypoint, interpreter, wrapper_path,
-    verify_command, verify_output, log}.
+    drifts.
+
+    `host_build=False` is the CROSS-ARCH escape: still clone + checkout +
+    rev-parse on the host (cheap, the commit_sha anchor), but DEFER the build,
+    bin_path existence check, wrapper write, and verify_command to freeze's
+    in-container source-replay. Use when the host arch ≠ the freeze platform
+    (e.g. x86 SIMD intrinsics under Apple Silicon clang on macOS). The shipped
+    image is then the only place this tool runs — pair with
+    `run_step_in_container` once frozen. The install_step still records
+    build_command + bin_path + commit_sha so freeze's `_map_install` routes to
+    the source generator.
+
+    Returns: {success, clone_path, commit_sha, repo_url, ref, build_command,
+    bin_path, entrypoint, interpreter, wrapper_path, verify_command,
+    verify_output, host_build, log}.
     """
     result = _env_mgr.install_git_repo(
         env_name       = env_name,
@@ -476,6 +489,7 @@ def install_git_repo(
         bin_path       = bin_path,
         entrypoint     = entrypoint,
         interpreter    = interpreter,
+        host_build     = host_build,
     )
     if pipeline_id:
         from urllib.parse import urlparse
@@ -503,10 +517,15 @@ def install_git_repo(
         }
         if result.get("commit_sha"):
             ip_record["version"] = result["commit_sha"][:12]
+        purpose = (
+            f"Vendor {tool_name} from {host or repo_url} "
+            + ("(source install, build deferred to freeze image — host_build=False)"
+               if not host_build else "(source install)")
+        )
         step_data = {
             "tool":        "git",
             "subcommand":  "clone",
-            "purpose":     f"Vendor {tool_name} from {host or repo_url} (source install)",
+            "purpose":     purpose,
             "command":     f"git clone {repo_url}" + (f" @ {ref}" if ref else ""),
             "returncode":  0 if result.get("success") else 1,
             "installed_packages": [ip_record],

@@ -586,6 +586,7 @@ class EnvManager:
         bin_path: str = "",
         entrypoint: str = "",
         interpreter: str = "",
+        host_build: bool = True,
     ) -> dict[str, Any]:
         """Vendor a git repository as a source-installed tool, end-to-end.
 
@@ -605,8 +606,19 @@ class EnvManager:
           5. optionally run `verify_command` (inside the env, cwd=clone dir) as
              a smoke test; otherwise the rev-parse output is the verify anchor
 
+        `host_build=False` is the CROSS-ARCH escape: still clone + checkout +
+        rev-parse on the host (cheap, gives the immutable commit_sha anchor),
+        but SKIP the host build / verify / bin_path existence check / wrapper
+        write. The install_method still carries build_command + bin_path so
+        freeze routes to source-replay; the binary gets built and the wrapper
+        gets written INSIDE the build container — which is the right place
+        when the host can't compile the target (e.g. x86 SIMD intrinsics under
+        Apple Silicon clang). Use this when the host arch ≠ the freeze
+        platform. The shipped image is the only place this tool will run; pair
+        with `run_step_in_container` once frozen.
+
         Returns: {success, tool_name, clone_path, commit_sha, repo_url, ref,
-                  verify_command, verify_output, log}.
+                  verify_command, verify_output, host_build, log}.
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
@@ -650,63 +662,98 @@ class EnvManager:
                     "stderr": (rev.get("stderr") or "")[-500:], "log": log}
         log.append(f"commit_sha={commit_sha}")
 
-        if build_command:
-            build = self.run_in_env(
-                env_name, build_command, working_dir=str(share_dir), timeout=1800
-            )
-            log.append(f"build_command rc={build['returncode']}")
-            if build["returncode"] != 0:
-                return {"success": False, "error": "build_command failed",
-                        "stderr": (build.get("stderr") or "")[-500:],
-                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
-
-        # If the build produces an executable, expose it on PATH via a wrapper —
-        # gives the source tool the same launch contract as binary/jar (and is
-        # what freeze replays in-container). Omit for run-by-path script repos.
         wrapper_path = ""
-        if bin_path:
-            built = share_dir / bin_path
-            if not built.is_file():
-                return {"success": False, "error": f"bin_path not found after build: {built}",
-                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
-            import stat as _stat
-            built.chmod(built.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
-            bin_dir = env_path / "bin"
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            wrapper = bin_dir / tool_name
-            wrapper.write_text(f"#!/usr/bin/env bash\nexec {shlex.quote(str(built))} \"$@\"\n")
-            wrapper.chmod(0o755)
-            wrapper_path = str(wrapper)
-            log.append(f"wrapper written: {wrapper}")
-        elif entrypoint:
-            # Run-by-path script collection (no compiled binary — the half-baked
-            # academic norm: a repo of scripts run as `python run_thing.py …`).
-            # Wrap the entry script so it has the same launch contract as a binary,
-            # and so freeze can REPLAY it in-image via install_commands.script_repo.
-            entry = share_dir / entrypoint
-            if not entry.is_file():
-                return {"success": False, "error": f"entrypoint not found in clone: {entry}",
-                        "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
-            bin_dir = env_path / "bin"
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            wrapper = bin_dir / tool_name
-            runline = (f"{interpreter} " if interpreter else "") + shlex.quote(str(entry))
-            wrapper.write_text(f"#!/usr/bin/env bash\nexec {runline} \"$@\"\n")
-            wrapper.chmod(0o755)
-            wrapper_path = str(wrapper)
-            log.append(f"run-by-path wrapper: {wrapper} -> {runline}")
+        if host_build:
+            if build_command:
+                build = self.run_in_env(
+                    env_name, build_command, working_dir=str(share_dir), timeout=1800
+                )
+                log.append(f"build_command rc={build['returncode']}")
+                if build["returncode"] != 0:
+                    return {"success": False, "error": "build_command failed",
+                            "stderr": (build.get("stderr") or "")[-500:],
+                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
 
-        # Verify anchor. Default: the rev-parse we already ran proves the exact
-        # pinned commit is on disk. A caller-supplied verify_command (e.g. a
-        # python import smoke or `--help`) runs in the env at the clone dir.
-        if verify_command:
-            vr = self.run_in_env(
-                env_name, verify_command, working_dir=str(share_dir), timeout=120
-            )
-            verify_output = ((vr.get("stdout") or "") + (vr.get("stderr") or "")).strip()[:500]
-            verify_ok = vr["returncode"] == 0
-            log.append(f"verify_command rc={vr['returncode']}")
+            # If the build produces an executable, expose it on PATH via a wrapper —
+            # gives the source tool the same launch contract as binary/jar (and is
+            # what freeze replays in-container). Omit for run-by-path script repos.
+            if bin_path:
+                built = share_dir / bin_path
+                if not built.is_file():
+                    return {"success": False, "error": f"bin_path not found after build: {built}",
+                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+                import stat as _stat
+                built.chmod(built.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+                bin_dir = env_path / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                wrapper = bin_dir / tool_name
+                wrapper.write_text(f"#!/usr/bin/env bash\nexec {shlex.quote(str(built))} \"$@\"\n")
+                wrapper.chmod(0o755)
+                wrapper_path = str(wrapper)
+                log.append(f"wrapper written: {wrapper}")
+            elif entrypoint:
+                # Run-by-path script collection (no compiled binary — the half-baked
+                # academic norm: a repo of scripts run as `python run_thing.py …`).
+                # Wrap the entry script so it has the same launch contract as a binary,
+                # and so freeze can REPLAY it in-image via install_commands.script_repo.
+                entry = share_dir / entrypoint
+                if not entry.is_file():
+                    return {"success": False, "error": f"entrypoint not found in clone: {entry}",
+                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+                bin_dir = env_path / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                wrapper = bin_dir / tool_name
+                runline = (f"{interpreter} " if interpreter else "") + shlex.quote(str(entry))
+                wrapper.write_text(f"#!/usr/bin/env bash\nexec {runline} \"$@\"\n")
+                wrapper.chmod(0o755)
+                wrapper_path = str(wrapper)
+                log.append(f"run-by-path wrapper: {wrapper} -> {runline}")
+
+            # Verify anchor. Default: the rev-parse we already ran proves the exact
+            # pinned commit is on disk. A caller-supplied verify_command (e.g. a
+            # python import smoke or `--help`) runs in the env at the clone dir.
+            if verify_command:
+                vr = self.run_in_env(
+                    env_name, verify_command, working_dir=str(share_dir), timeout=120
+                )
+                verify_output = ((vr.get("stdout") or "") + (vr.get("stderr") or "")).strip()[:500]
+                verify_ok = vr["returncode"] == 0
+                log.append(f"verify_command rc={vr['returncode']}")
+            else:
+                verify_command = f"git -C {share_dir} rev-parse HEAD"
+                verify_output  = commit_sha
+                verify_ok      = True
         else:
+            # Cross-arch escape: host can't build the target (e.g. x86 SIMD under
+            # Apple Silicon). The build, bin_path check, wrapper write, AND any
+            # verify_command all happen INSIDE the build container during freeze's
+            # source-replay. The host's job ended at rev-parse — that's the
+            # commit_sha anchor; image-side validation is the smoke anchor.
+            log.append("host_build=False — build/verify/wrapper deferred to "
+                       "freeze's in-container source-replay")
+            if bin_path and not entrypoint:
+                # A compiled tool needs SOMEWHERE for the build to land. We don't
+                # check existence on disk (it hasn't been built yet) — but we do
+                # require the caller to commit to bin_path so source-replay knows
+                # where to look in the image.
+                pass
+            elif entrypoint:
+                # A script collection's entrypoint MUST exist post-clone (no build
+                # is needed for it to be on disk). This is a free integrity check
+                # even in the host_build=False mode — the clone already happened.
+                entry = share_dir / entrypoint
+                if not entry.is_file():
+                    return {"success": False,
+                            "error": f"entrypoint not found in clone: {entry}",
+                            "commit_sha": commit_sha,
+                            "clone_path": str(share_dir), "log": log}
+            else:
+                return {"success": False,
+                        "error": "host_build=False requires bin_path (compiled tool) "
+                                 "or entrypoint (script repo) so freeze's source-replay "
+                                 "knows what to wrap in the image",
+                        "commit_sha": commit_sha,
+                        "clone_path": str(share_dir), "log": log}
             verify_command = f"git -C {share_dir} rev-parse HEAD"
             verify_output  = commit_sha
             verify_ok      = True
@@ -725,6 +772,7 @@ class EnvManager:
             "wrapper_path":   wrapper_path,
             "verify_command": verify_command,
             "verify_output":  verify_output,
+            "host_build":     host_build,
             "log":            log,
         }
 
