@@ -1420,9 +1420,16 @@ def run_pipeline_step(
       2. Validates every detected_output against an inferred or supplied type
       3. Validations are merged into the same pipeline_step automatically
 
-    output_types: optional dict mapping basename or extension to expected_type
-                  (e.g. {".vcf.gz": "vcf", ".bam": "bam", "report.html": "html"}).
-                  Anything not matched falls back to extension inference.
+    output_types: optional dict mapping {basename | extension | absolute path}
+                  to expected_type (e.g. `{".vcf.gz": "vcf", ".bam": "bam",
+                  "/tmp/report.html": "html"}`). Lookup order on each detected
+                  output: absolute resolved path → as-detected path → basename
+                  → ".ext" → "ext" → extension inference. Pre-N8 only the
+                  basename/extension keys worked — passing a full path
+                  silently fell through to inference (which yields
+                  expected_type='any', an I3 violation at seal time). Unmatched
+                  output_types keys are reported back in the response as
+                  `output_types_unmatched` so a typo doesn't go silent.
 
     pipeline_id is required (this primitive's purpose is the merged flow).
     """
@@ -1448,26 +1455,54 @@ def run_pipeline_step(
     idx = _pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 
     # Auto-validate every detected output if the run succeeded.
+    # N8 (batch-3): track which output_types keys were consumed so we can
+    # surface unmatched keys back to the caller — a typo or a path that
+    # didn't actually get produced should not silently fall through to
+    # _infer_validator_type (which returns "any" → I3 violation at seal).
+    output_types_used: set[str] = set()
     validations: dict = {}
     if result.get("returncode") == 0 and idx is not None:
         for path in result.get("detected_outputs", []):
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
-            # Resolve expected type: explicit basename match > extension match > "any".
-            etype = (output_types.get(basename)
-                     or output_types.get(ext)
-                     or output_types.get(ext.lstrip("."))
-                     or _infer_validator_type(basename, ext))
+            # Resolve expected type, in order of specificity:
+            #   1. absolute resolved path  (N8: full-path keys now work)
+            #   2. as-detected path        (path-as-it-came, in case agent
+            #                               keyed off a non-canonical form)
+            #   3. basename
+            #   4. ".ext"  (with leading dot)
+            #   5. "ext"   (without leading dot)
+            #   6. extension inference     (fallback — yields "any" if no
+            #                               recognized extension)
+            try:
+                resolved_path = str(Path(path).resolve())
+            except Exception:
+                resolved_path = path
+            etype = None
+            for key in (resolved_path, path, basename, ext, ext.lstrip(".")):
+                if key and key in output_types:
+                    etype = output_types[key]
+                    output_types_used.add(key)
+                    break
+            if etype is None:
+                etype = _infer_validator_type(basename, ext)
             v = _validator.validate(path, etype, env_name=env_name)
             validations[basename] = v
             _pipeline_state.add_validation(pipeline_id, idx, basename, v)
 
-    return {
+    unmatched = sorted(set(output_types) - output_types_used)
+    out = {
         **result,
         "pipeline_merge":  {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx},
         "validations":     validations,
         "validation_count": len(validations),
     }
+    if unmatched:
+        # Surface but don't fail the call — the validation outcome is still
+        # produced; the caller just needs to know their output_types key
+        # didn't bind to anything (typo, wrong extension, file not produced).
+        out["output_types_unmatched"] = unmatched
+    return out
 
 
 def _infer_validator_type(basename: str, ext: str) -> str:

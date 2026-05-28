@@ -468,7 +468,10 @@ class EnvManager:
             "runtime_seconds":  result["resource_usage"]["wall_seconds"],
             "resource_usage":   result["resource_usage"],
             "inputs": inputs or [],
-            "detected_outputs": self._diff_snapshot(before, watch),
+            # N7: pass project_root so a system-shared watch_dir (e.g. /tmp)
+            # only reports project-resident files; harness transcripts and other
+            # processes' droppings are filtered out.
+            "detected_outputs": self._diff_snapshot(before, watch, self.project_root),
         }
 
     def env_path(self, env_name: str) -> Path:
@@ -1713,7 +1716,8 @@ class EnvManager:
         }
 
     @staticmethod
-    def _diff_snapshot(before: dict[str, float], directory: Path | None) -> list[str]:
+    def _diff_snapshot(before: dict[str, float], directory: Path | None,
+                       project_root: Path | None = None) -> list[str]:
         """Return absolute paths of files created or modified since the snapshot.
 
         Returns absolute paths so downstream tools (validate_output, the next
@@ -1721,16 +1725,51 @@ class EnvManager:
         Files in subdirectories of `directory` (e.g. Flye's `00-assembly/`,
         `20-repeat/`) are preserved with their full path — the prior basename-
         only output dropped subdir info and broke pipeline lineage.
+
+        N7 fix (batch-3): when `watch_dir` is a system-shared location like
+        /tmp, the snapshot may pick up files belonging to OTHER processes
+        (or symlinks that resolve outside the project tree — e.g. the Claude
+        harness's subagent transcript dir under ~/.claude/projects/). Those
+        files aren't this step's outputs even if they appeared during the
+        run; including them in detected_outputs pollutes the install_step
+        record and causes I8 to chase orphans at seal time. Filter to paths
+        that resolve UNDER project_root. The filter only applies when both
+        project_root is supplied AND the watched dir is NOT itself inside
+        project_root (i.e. a system-shared watch like /tmp); a watch inside
+        project_root needs no filter because every produced file is already
+        a project file by construction.
         """
         if not directory or not directory.exists():
             return []
+        # Decide whether to apply the project-scope filter
+        scope_filter = None
+        if project_root is not None:
+            try:
+                pr = project_root.resolve()
+                wd = directory.resolve()
+                # If the watch_dir is itself outside project_root (e.g. /tmp),
+                # filter the diff to project-resident files. A watch_dir
+                # inside project_root needs no filter.
+                pr_parts = pr.parts
+                wd_under_pr = wd.parts[:len(pr_parts)] == pr_parts
+                if not wd_under_pr:
+                    scope_filter = pr
+            except Exception:
+                scope_filter = None
         result = []
         for p in directory.rglob("*"):
             if not p.is_file():
                 continue
             rel = str(p.relative_to(directory))
             if rel not in before or p.stat().st_mtime > before[rel]:
-                result.append(str(p.resolve()))
+                resolved = p.resolve()
+                if scope_filter is not None:
+                    try:
+                        # raises ValueError if `resolved` is not under scope_filter
+                        resolved.relative_to(scope_filter)
+                    except ValueError:
+                        continue
+                result.append(str(resolved))
         return result
 
     # -----------------------------------------------------------------------

@@ -6036,3 +6036,173 @@ def test_requested_conda_specs_unversioned_name_preserved():
     ]}
     specs = requested_conda_specs(draft)
     assert specs == ["samtools"]
+
+
+# =============================================================================
+# Batch-3 Apollo3 followup (2026-05-27) — C7: N7 + N8 step-output hygiene
+# =============================================================================
+
+
+def test_diff_snapshot_excludes_paths_outside_project_root(tmp_path):
+    """N7 (batch-3) — when watch_dir is a system-shared location (e.g. /tmp),
+    `_diff_snapshot` must filter to paths that resolve UNDER project_root.
+    Pre-fix the snapshot included files from other processes / symlinked
+    workspaces (the Apollo3 stress hit the Claude harness's subagent
+    transcript dir via a symlink resolution in /tmp)."""
+    from agent.skills.env_manager import EnvManager
+    # Two trees: a 'project_root' and a 'shared_tmp' (the watch_dir)
+    project = tmp_path / "project"
+    shared = tmp_path / "shared"
+    outside = tmp_path / "outside"
+    for d in (project, shared, outside):
+        d.mkdir()
+    # A NEW file in shared/ that lives inside project — KEEP
+    project_file = project / "step_output.bam"
+    project_file.write_text("inside")
+    project_link = shared / "step_output.bam"
+    project_link.symlink_to(project_file)
+    # A NEW file in shared/ that resolves OUTSIDE project — DROP
+    outside_file = outside / "transcript.jsonl"
+    outside_file.write_text("foreign")
+    outside_link = shared / "transcript.jsonl"
+    outside_link.symlink_to(outside_file)
+
+    before = {}    # empty snapshot — every file is "new"
+    detected = EnvManager._diff_snapshot(before, shared, project_root=project)
+    # the symlink resolving INTO project survives the filter
+    assert any("step_output.bam" in p for p in detected)
+    # the symlink resolving OUTSIDE project does NOT
+    assert not any("transcript.jsonl" in p for p in detected), (
+        f"foreign file leaked into detected_outputs: {detected}")
+
+
+def test_diff_snapshot_no_filter_when_watch_dir_inside_project(tmp_path):
+    """N7 (regression) — a watch_dir INSIDE the project must NOT be filtered.
+    Every produced file under, e.g., `data/some_pipeline_test_data/` is by
+    construction a project file; the filter only fires for system-shared
+    watches like /tmp."""
+    from agent.skills.env_manager import EnvManager
+    project = tmp_path / "project"
+    sub = project / "data" / "step_output"
+    sub.mkdir(parents=True)
+    f = sub / "out.bam"
+    f.write_text("x")
+    before = {}
+    # watch_dir is project_root or inside it → filter is a no-op
+    detected = EnvManager._diff_snapshot(before, sub, project_root=project)
+    assert any("out.bam" in p for p in detected)
+
+
+def test_diff_snapshot_no_project_root_falls_back_to_old_behavior(tmp_path):
+    """N7 (back-compat) — calling _diff_snapshot without project_root keeps
+    the pre-batch-3 behavior (no filter). Any code path that doesn't pass
+    project_root keeps working."""
+    from agent.skills.env_manager import EnvManager
+    d = tmp_path / "watch"
+    d.mkdir()
+    (d / "any.txt").write_text("x")
+    detected = EnvManager._diff_snapshot({}, d)   # no project_root kwarg
+    assert any("any.txt" in p for p in detected)
+
+
+def test_run_pipeline_step_output_types_accepts_full_path_keys(monkeypatch, tmp_path):
+    """N8 (batch-3) — `output_types={'/abs/path.log': 'txt'}` must match the
+    detected output keyed by absolute path. Pre-fix only basename/extension
+    keys worked, so a full-path key silently fell through to extension
+    inference (yielding expected_type='any' → I3 violation at seal)."""
+    import agent.mcp_server as ms
+
+    # Stub run_in_env to return one detected output at an absolute path
+    from pathlib import Path as _Path
+    out_path = str(tmp_path / "step.custom_ext")
+    _Path(out_path).write_text("data")
+
+    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None):
+        return {
+            "returncode": 0, "stdout": "", "stderr": "", "success": True,
+            "command": command, "runtime_seconds": 0.1,
+            "resource_usage": {}, "inputs": inputs or [],
+            "detected_outputs": [out_path],
+        }
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
+
+    # Stub validator + pipeline_state to capture the etype that was passed
+    seen = {}
+    monkeypatch.setattr(ms._validator, "validate",
+                        lambda path, etype, env_name="": (seen.__setitem__("etype", etype)
+                                                          or {"passed": True}))
+    monkeypatch.setattr(ms._pipeline_state, "add_step", lambda *a, **kw: 1)
+    monkeypatch.setattr(ms._pipeline_state, "add_validation", lambda *a, **kw: None)
+
+    # Key by full absolute path — this is what an agent naturally reaches for
+    result = ms.run_pipeline_step(
+        env_name="x", command="touch step.custom_ext", pipeline_id="p",
+        output_types={out_path: "txt"},
+    )
+    assert result["validation_count"] == 1
+    assert seen["etype"] == "txt", (
+        f"output_types full-path key did not bind; etype was {seen['etype']!r}")
+    assert result.get("output_types_unmatched", []) == []
+
+
+def test_run_pipeline_step_output_types_reports_unmatched_keys(monkeypatch, tmp_path):
+    """N8 (defense-in-depth) — keys that didn't bind to any detected output
+    come back in `output_types_unmatched`. Typos and 'I asked for that file
+    but the command didn't produce it' show up explicitly instead of silently
+    becoming expected_type='any'."""
+    import agent.mcp_server as ms
+
+    from pathlib import Path as _Path
+    out_path = str(tmp_path / "produced.bam")
+    _Path(out_path).write_text("x")
+
+    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None):
+        return {"returncode": 0, "stdout": "", "stderr": "", "success": True,
+                "command": command, "runtime_seconds": 0.1,
+                "resource_usage": {}, "inputs": inputs or [],
+                "detected_outputs": [out_path]}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
+    monkeypatch.setattr(ms._validator, "validate",
+                        lambda path, etype, env_name="": {"passed": True})
+    monkeypatch.setattr(ms._pipeline_state, "add_step", lambda *a, **kw: 1)
+    monkeypatch.setattr(ms._pipeline_state, "add_validation", lambda *a, **kw: None)
+
+    result = ms.run_pipeline_step(
+        env_name="x", command="touch produced.bam", pipeline_id="p",
+        output_types={".bam": "bam", "expected_but_not_produced.vcf": "vcf"},
+    )
+    assert "expected_but_not_produced.vcf" in result.get("output_types_unmatched", [])
+    # The matched key is NOT in unmatched
+    assert ".bam" not in result.get("output_types_unmatched", [])
+
+
+def test_run_pipeline_step_output_types_lookup_order(monkeypatch, tmp_path):
+    """N8 — most-specific-wins lookup. When the agent supplies BOTH a
+    full-path key AND a generic .bam key, the full-path key wins (more
+    specific). Documented in the docstring."""
+    import agent.mcp_server as ms
+
+    from pathlib import Path as _Path
+    out_path = str(tmp_path / "out.bam")
+    _Path(out_path).write_text("x")
+
+    def fake_run(*a, **kw):
+        return {"returncode": 0, "detected_outputs": [out_path],
+                "inputs": [], "resource_usage": {}, "runtime_seconds": 0.1,
+                "success": True, "stdout": "", "stderr": "", "command": kw.get("command", "")}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
+    seen = {}
+    monkeypatch.setattr(ms._validator, "validate",
+                        lambda path, etype, env_name="": (seen.__setitem__("etype", etype)
+                                                          or {"passed": True}))
+    monkeypatch.setattr(ms._pipeline_state, "add_step", lambda *a, **kw: 1)
+    monkeypatch.setattr(ms._pipeline_state, "add_validation", lambda *a, **kw: None)
+
+    result = ms.run_pipeline_step(
+        env_name="x", command="touch out.bam", pipeline_id="p",
+        output_types={out_path: "specific", ".bam": "generic"},
+    )
+    # Full-path key wins
+    assert seen["etype"] == "specific"
+    # The generic key remains unused
+    assert result.get("output_types_unmatched") == [".bam"]
