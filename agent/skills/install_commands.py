@@ -118,7 +118,14 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
               f"test -f {src}/{binp}",
               f"install -m 0755 {src}/{binp} /usr/local/bin/{wrap}"]
     cmd = "set -eux; " + "; ".join(parts)
-    ev = evidence or f"command -v {wrap}"
+    # N3 (batch-3): wrapper-smoke evidence — INVOKE the binary to prove it
+    # runs, not just that the file exists. A C source build CAN produce a
+    # binary that runs into shared-lib failures at exec time; `command -v`
+    # passed those cases silently. Chain mirrors release_binary's default.
+    ev = evidence or (
+        f"{wrap} --help >/dev/null 2>&1 || {wrap} --version >/dev/null 2>&1 || "
+        f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
+    )
     return {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (source @ {ref or 'HEAD'})"}
 
@@ -134,8 +141,15 @@ def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
         src = f"--git {shlex.quote(git_url)}"
     else:
         src = shlex.quote(crate or name) + (f" --version {shlex.quote(version)}" if version else "")
+    # N3 (batch-3): smoke-test evidence — INVOKE the binary, don't just check
+    # that the file exists. Cargo's --root produces a binary in /usr/local/bin
+    # that's self-contained AT BUILD TIME, but a botched build or a binary
+    # with missing dynamic deps would silently pass `command -v`.
     return {"command": f"cargo install {src} --root /usr/local --locked",
-            "evidence": evidence or f"command -v {binp}", "tool": binp,
+            "evidence": evidence or (
+                f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
+                f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
+            "tool": binp,
             "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True}
 
 
@@ -146,7 +160,11 @@ def go(name: str, package: str, *, version: str = "latest", binary_name: str = "
     binp = binary_name or package.rstrip("/").split("/")[-1]
     spec = f"{package}@{version}" if version else package
     return {"command": f"GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}",
-            "evidence": evidence or f"command -v {binp}", "tool": binp,
+            # N3 (batch-3): same smoke-test treatment as cargo/source/script_repo.
+            "evidence": evidence or (
+                f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
+                f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
+            "tool": binp,
             "purpose": f"{name} (go, via engine go)", "engine_coupled": True}
 
 
@@ -342,11 +360,33 @@ def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: st
 
 
 def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = "",
-                interpreter: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
-    """Run-by-path script collection (very common for half-baked academic tools:
-    a repo of Python/Perl scripts with no packaging). Clone → chmod the entry
-    script → a /usr/local/bin wrapper that execs it (optionally via `interpreter`,
-    e.g. the env python). No build."""
+                interpreter: str = "", build_command: str = "",
+                wrapper: str = "", evidence: str = "") -> dict[str, Any]:
+    """Clone-and-run script repo, with optional in-image build step.
+
+    Three shapes, one generator:
+      1. PURE RUN-BY-PATH (academic norm): a Python/Perl script collection,
+         no packaging. Clone → chmod the entry script → /usr/local/bin
+         wrapper that execs it (optionally via `interpreter`). No build.
+      2. BUILD + SCRIPT-ENTRY (N2, batch-3): a project that builds compiled
+         assets but is invoked through a script entrypoint (yarn-PnP Node:
+         `yarn install && yarn build` then `node dist/main.js`; pip-editable
+         + module: `pip install -e .` then `python -m foo`). Pass
+         `build_command` (runs at the clone dir) AND `script_rel` +
+         `interpreter`. The wrapper runs the entrypoint AFTER the build has
+         produced its artifacts.
+      3. (existing) PURE BUILD (no entrypoint, no script_rel): use the
+         `source` generator instead — it writes a wrapper around the
+         built binary at `bin_path`.
+
+    Default evidence is wrapper-smoke: `{wrap} --help || {wrap} --version
+    || {wrap} -h || command -v {wrap}`. The plain `command -v` fallback used
+    to be the ONLY evidence; it passed when the wrapper file existed even
+    if executing it crashed (N3, batch-3 Apollo3: wrapper existed, but
+    `dist/main.js` had never been built, so any actual invocation crashed
+    with MODULE_NOT_FOUND — VALIDATED_IN_IMAGE said pass anyway). Try the
+    real invocation first; fall back to `command -v` only when none of the
+    standard help/version flags exist (the truly-no-args-no-help case)."""
     clone = f"{_TOOLS}/{name}"
     wrap = wrapper or name
     entry = f"{clone}/{script_rel}" if script_rel else f"{clone}/{name}"
@@ -355,11 +395,24 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
              f"cd {clone}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
+    # OPTIONAL build (N2): runs at the clone dir before the wrapper is written,
+    # so the wrapper points at assets the build actually produced.
+    if build_command:
+        parts.append(build_command)
     parts.append(f"chmod +x {entry} 2>/dev/null || true")
     runline = f"{interpreter} {entry}".strip()
     parts.append(f"printf '#!/bin/sh\\nexec {runline} \"$@\"\\n' > /usr/local/bin/{wrap}")
     parts.append(f"chmod +x /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    ev = evidence or f"command -v {wrap}"
+    # N3 (batch-3): wrapper-smoke evidence — actually INVOKE the wrapper to
+    # prove it runs, not just that the file exists. Mirrors release_binary's
+    # default. Multiple flag tries so we handle CLIs that use --help vs -h vs
+    # --version, and CLIs that exit non-zero on `--help` (some do; the >/dev/
+    # null + chain on || tolerates either exit code as long as exec didn't
+    # crash before the binary started).
+    ev = evidence or (
+        f"{wrap} --help >/dev/null 2>&1 || {wrap} --version >/dev/null 2>&1 || "
+        f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
+    )
     return {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (script repo @ {ref or 'HEAD'})"}

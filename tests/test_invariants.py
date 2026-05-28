@@ -2033,13 +2033,164 @@ def test_install_command_generators_self_contained_tiers():
     assert "_swh_clone https://github.com/lh3/tabtk abc123 /opt/tools/tabtk/src" in s["command"]
     assert "git checkout abc123" in s["command"] and "make" in s["command"]
     assert "install -m 0755 /opt/tools/tabtk/src/tabtk /usr/local/bin/tabtk" in s["command"]
-    assert s["evidence"] == "command -v tabtk"
+    # N3 (batch-3): wrapper-smoke evidence — invoke the binary, don't just
+    # check that the file exists. `command -v tabtk` still appears as the
+    # last fallback for tools that accept no args.
+    assert "tabtk --help" in s["evidence"]
+    assert "command -v tabtk" in s["evidence"]
     # script repo (half-baked run-by-path): SWH-fallback clone → wrapper exec'ing the entry script
     sr = ic.script_repo("mytool", "https://github.com/lab/mytool", script_rel="run.py",
                         interpreter="python")
     assert "_swh_clone https://github.com/lab/mytool" in sr["command"]
     assert "exec python /opt/tools/mytool/run.py" in sr["command"]
     assert "/usr/local/bin/mytool" in sr["command"]
+
+
+# =============================================================================
+# Batch-3 Apollo3 followup (2026-05-27) — C5: N2 + N3
+#
+# N2: source-tier `_map_install` only knew two shapes — script_repo (entrypoint,
+# no build) and source (build_command + bin_path). A yarn-PnP Node monorepo
+# needs BOTH: build_command to produce dist/ AND a script entrypoint to invoke
+# it. Without it the replay skipped the build_command entirely, leaving
+# dist/main.js unbuilt → in-image MODULE_NOT_FOUND at execution.
+#
+# N3: wrapper-tier evidence was `command -v {wrap}`, which passes IFF the
+# wrapper file exists. The Apollo3 wrapper passed even though running it
+# crashed with MODULE_NOT_FOUND — structurally the same cheat as echo/true/:
+# that the contract already rejects, just at the wrapper layer. Default
+# evidence is now a smoke chain that ACTUALLY invokes: `--help || --version
+# || -h || command -v`, with the bare `command -v` only as the last-resort
+# fallback for tools that accept no help/version flags.
+# =============================================================================
+
+
+def test_script_repo_with_build_command_runs_build_before_wrapper(monkeypatch):
+    """N2 (batch-3) — when script_repo is called with build_command + entrypoint
+    together (the yarn-PnP Node / pip-install-editable + python -m shape), the
+    build command runs IN THE CLONE DIR before the wrapper is written, so the
+    wrapper points at assets the build actually produced."""
+    from agent.skills import install_commands as ic
+    sr = ic.script_repo(
+        "apollo3", "https://github.com/GMOD/Apollo3", ref="abc123",
+        script_rel="packages/apollo-collaboration-server/dist/main.js",
+        interpreter="node",
+        build_command="yarn install && yarn workspace apollo-collaboration-server build",
+    )
+    cmd = sr["command"]
+    # the build command lands BEFORE the wrapper write
+    build_idx = cmd.find("yarn install && yarn workspace apollo-collaboration-server build")
+    wrap_idx = cmd.find("/usr/local/bin/apollo3")
+    assert build_idx != -1, "build_command must be in the replay sequence"
+    assert wrap_idx != -1, "wrapper write must be in the replay sequence"
+    assert build_idx < wrap_idx, (
+        "build_command must run BEFORE the wrapper is written — otherwise the "
+        "wrapper points at assets that don't exist yet (the N2 bug)")
+    # the wrapper invokes the interpreter on the built entrypoint
+    assert "exec node /opt/tools/apollo3/packages/apollo-collaboration-server/dist/main.js" in cmd
+
+
+def test_script_repo_without_build_command_keeps_pure_run_by_path():
+    """N2 (back-compat) — script_repo without build_command remains the
+    pure run-by-path shape: clone + chmod entry + wrapper. No extra build."""
+    from agent.skills import install_commands as ic
+    sr = ic.script_repo("mytool", "https://github.com/lab/mytool",
+                        script_rel="run.py", interpreter="python")
+    cmd = sr["command"]
+    # No build step injected
+    assert "yarn" not in cmd and "pip install" not in cmd
+    assert "exec python /opt/tools/mytool/run.py" in cmd
+
+
+def test_script_repo_default_evidence_is_wrapper_smoke_not_command_v_only():
+    """N3 (batch-3) — the default evidence for a script_repo wrapper INVOKES
+    the wrapper (`--help || --version || -h || command -v`), proving the
+    wrapper EXECUTES. Pre-fix it was bare `command -v {wrap}`, which passed
+    even when the wrapped script crashed on every actual invocation
+    (Apollo3's dist/main.js MODULE_NOT_FOUND)."""
+    from agent.skills import install_commands as ic
+    sr = ic.script_repo("apollo3", "https://github.com/GMOD/Apollo3",
+                        script_rel="dist/main.js", interpreter="node")
+    ev = sr["evidence"]
+    # invokes the wrapper FIRST, falls back to command -v ONLY as last resort
+    assert "apollo3 --help" in ev
+    assert "apollo3 --version" in ev
+    assert "apollo3 -h" in ev
+    # the order: invocation chains FIRST, then `command -v` as last fallback
+    cmdv_idx = ev.find("command -v apollo3")
+    help_idx = ev.find("apollo3 --help")
+    assert 0 <= help_idx < cmdv_idx, (
+        "default evidence must INVOKE the wrapper before falling back to "
+        "command -v (which is the N3 cheat shape)")
+
+
+def test_source_default_evidence_upgraded_to_wrapper_smoke():
+    """N3 (defense-in-depth) — the `source` generator (compiled C tier) had
+    the same `command -v` vulnerability. Now it tries the binary first, falls
+    back to `command -v` as last resort."""
+    from agent.skills import install_commands as ic
+    s = ic.source("tabtk", "https://github.com/lh3/tabtk", ref="abc123",
+                  build_command="make")
+    ev = s["evidence"]
+    assert "tabtk --help" in ev
+    assert "command -v tabtk" in ev  # still present as the fallback
+    assert ev.index("tabtk --help") < ev.index("command -v tabtk")
+
+
+def test_cargo_and_go_default_evidence_upgraded_to_wrapper_smoke():
+    """N3 (defense-in-depth) — same upgrade for the toolchain-coupled tiers."""
+    from agent.skills import install_commands as ic
+    c = ic.cargo("rasusa", "rasusa", version="2.0.0")
+    assert "rasusa --help" in c["evidence"]
+    assert "command -v rasusa" in c["evidence"]
+    g = ic.go("gofasta", "github.com/virus-evolution/gofasta")
+    assert "gofasta --help" in g["evidence"]
+    assert "command -v gofasta" in g["evidence"]
+
+
+def test_map_install_routes_entrypoint_plus_build_to_script_repo(monkeypatch):
+    """N2 (batch-3) — _map_install must accept an install_method with
+    entrypoint + build_command (no bin_path) and route through script_repo
+    WITH the build_command threaded through. Pre-fix this combo got routed
+    to script_repo but build_command was silently dropped."""
+    from agent.skills.env_freeze import _map_install
+    record = {
+        "name": "apollo3", "type": "source",
+        "install_method": {
+            "type": "source",
+            "source": "https://github.com/GMOD/Apollo3",
+            "commit_sha": "8a6e4055",
+            "entrypoint": "packages/apollo-collaboration-server/dist/main.js",
+            "interpreter": "node",
+            "build_command": "yarn install && yarn workspace apollo-collaboration-server build",
+            # NO bin_path — this is the build+script-entry case
+        },
+    }
+    out = _map_install(record)
+    assert "spec" in out, f"expected a spec, got: {out}"
+    spec = out["spec"]
+    cmd = spec["command"]
+    # the build_command must appear in the replay sequence
+    assert "yarn install && yarn workspace apollo-collaboration-server build" in cmd
+    # the entrypoint wrapper invocation is also present
+    assert "exec node /opt/tools/apollo3/packages/apollo-collaboration-server/dist/main.js" in cmd
+
+
+def test_map_install_rejects_compiled_without_bin_path_or_entrypoint():
+    """N2 (regression guard) — a source install_method with NO entrypoint
+    AND NO bin_path is non-replayable. Refuse cleanly; the new combo
+    (entrypoint + build_command) doesn't loosen this check."""
+    from agent.skills.env_freeze import _map_install
+    record = {
+        "name": "unknown", "type": "source",
+        "install_method": {"type": "source", "source": "https://x",
+                           "commit_sha": "abc",
+                           "build_command": "make",   # neither bin_path nor entrypoint
+                           },
+    }
+    out = _map_install(record)
+    assert "error" in out
+    assert "build_command + bin_path" in out["error"] or "entrypoint" in out["error"]
 
 
 def test_install_command_generators_toolchain_coupled_tiers():

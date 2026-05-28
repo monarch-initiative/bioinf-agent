@@ -182,19 +182,27 @@ def _map_install(
                                java_flags=im.get("java_flags"), wrapper=name)}
 
     if t == "source":
-        # Run-by-path script collection (the half-baked academic norm: a repo of
-        # scripts, no compiled binary) → script_repo: clone + a wrapper that execs
-        # `{interpreter} {entry}`. No build_command/bin_path needed.
+        # Three replay shapes (mutually exclusive, all routed through this branch):
+        #   1. ENTRYPOINT-ONLY  → script_repo (clone + wrapper; no build)
+        #   2. ENTRYPOINT + BUILD → script_repo with build_command (N2, batch-3:
+        #      yarn-PnP Node, pip-install-editable + python -m — needs the build
+        #      AND wraps an interpreter+script invocation)
+        #   3. BUILD + BIN_PATH → source (clone + build + wrapper around the built
+        #      compiled binary)
         if im.get("entrypoint"):
-            return {"spec": ic.script_repo(name, im.get("source") or "",
-                                           ref=im.get("commit_sha") or im.get("ref") or "",
-                                           script_rel=im.get("entrypoint"),
-                                           interpreter=im.get("interpreter") or "",
-                                           wrapper=name)}
+            return {"spec": ic.script_repo(
+                name, im.get("source") or "",
+                ref=im.get("commit_sha") or im.get("ref") or "",
+                script_rel=im.get("entrypoint"),
+                interpreter=im.get("interpreter") or "",
+                build_command=im.get("build_command") or "",   # N2: optional in-image build
+                wrapper=name)}
         if not im.get("build_command") or not im.get("bin_path"):
             return {"error": f"source tool '{name}' is not replayable: install_method needs "
                              f"build_command + bin_path (compiled tool) OR entrypoint "
-                             f"(run-by-path script repo) — re-run install_git_repo with one."}
+                             f"(run-by-path script repo, optionally with build_command "
+                             f"for projects that build assets but run as a script) — "
+                             f"re-run install_git_repo with one of those shapes."}
         return {"spec": ic.source(name, im.get("source") or "",
                                   ref=im.get("commit_sha") or im.get("ref") or "",
                                   build_command=im.get("build_command"),
