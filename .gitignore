@@ -66,3 +66,10 @@ Thumbs.db
 # created by the agent during a stress campaign — not committed)
 data/*_stress_test_data/
 data/*_test_data/
+
+# One-shot driver scripts (per-session validation drivers; the integration suite
+# is the durable surface — drivers are throwaway).
+data/_drivers/
+
+# Claude Code session lock — runtime sentinel, regenerated per session.
+.claude/scheduled_tasks.lock
