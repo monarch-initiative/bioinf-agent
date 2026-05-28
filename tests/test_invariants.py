@@ -3195,19 +3195,20 @@ def test_install_command_r_package_load_or_die_and_mirror_pin():
     assert 'remotes::install_github("jiabowang/GAPIT",dependencies=FALSE)' in g["command"]
 
 
-def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot():
+def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot(tmp_path):
     """The install_step-ordering trap: agent installs GAPIT (fails — missing
     transitive snpStats), installs snpStats (succeeds), retries GAPIT with
     step=N to replace the failed slot. The naive replace would put the
     successful GAPIT BACK at its original slot — BEFORE snpStats — and the
     container replay would fail with the same missing-dep error. The smart
-    replace appends instead so the new step lands AFTER snpStats. Successful
-    replaces (e.g. agent edits a version) keep the original edit-in-place
-    semantic. This is the autonomy fix: the agent doesn't have to think about
-    step numbers at all when recovering from a missing-dep failure."""
+    replace appends instead so the new step lands AFTER snpStats; the prior
+    failed entry is REMOVED (N4, batch-3). Successful replaces (e.g. agent
+    edits a version) keep the original edit-in-place semantic. This is the
+    autonomy fix: the agent doesn't have to think about step numbers at all
+    when recovering from a missing-dep failure."""
     from agent.skills.pipeline_state import PipelineState
 
-    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_smart_replace"}})
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
     ps.start("smart_replace_test", "test")
 
     # Failed install of GAPIT lands at step 1.
@@ -3223,22 +3224,28 @@ def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot(
     assert i2 == 2
 
     # Agent retries GAPIT with step=1 to "replace the failed prior attempt".
-    # Smart-replace: previous attempt at slot 1 had rc!=0 + new attempt rc==0
-    # → APPEND at step 3, NOT replace slot 1.
+    # Smart-replace: previous attempt at slot 1 had rc!=0 + new attempt rc==0.
+    # N4 (batch-3): the new entry lands at the END (chronological position
+    # after the intervening snpStats install — necessary for replay order
+    # since GAPIT depends on snpStats); the prior failed entry is REMOVED
+    # (the user's contract: step=N means throw away whatever was at N).
     i3 = ps.add_install_step("smart_replace_test",
         {"tool": "Rscript", "purpose": "GAPIT retry",
          "returncode": 0, "installed_packages": [{"name": "GAPIT"}]},
         replace_step=1)
-    assert i3 == 3, f"smart-replace must append after intervening success; got step={i3}"
+    # After remove-then-append: steps are [snpStats, GAPIT-retry] (size 2);
+    # the new GAPIT lands at step 2 (was previously at 3 because the failed
+    # entry was kept). Re-numbered to be 1-based-contiguous.
+    assert i3 == 2, f"smart-replace must put retry after intervening success; got step={i3}"
 
     steps = ps._drafts["smart_replace_test"]["install_steps"]
-    assert len(steps) == 3
-    assert steps[0]["returncode"] == 1                          # failed attempt preserved
-    assert steps[0]["installed_packages"][0]["name"] == "GAPIT"
-    assert steps[1]["installed_packages"][0]["name"] == "snpStats"
-    assert steps[2]["installed_packages"][0]["name"] == "GAPIT"
-    assert steps[2]["returncode"] == 0
-    # Replay order = [snpStats, GAPIT] once failed step is filtered — correct.
+    assert len(steps) == 2, "the failed prior entry at slot 1 must have been REMOVED"
+    assert steps[0]["installed_packages"][0]["name"] == "snpStats"
+    assert steps[0]["step"] == 1
+    assert steps[1]["installed_packages"][0]["name"] == "GAPIT"
+    assert steps[1]["returncode"] == 0
+    assert steps[1]["step"] == 2
+    # No zombie failed-rc entries — replay order = [snpStats, GAPIT].
 
     # Successful-replace still edits in place (the version-bump case): agent
     # decides EMMREML 3.1 was wrong, wants 3.2 → step= must overwrite.
@@ -3248,13 +3255,171 @@ def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot(
     i_edit = ps.add_install_step("smart_replace_test",
         {"tool": "Rscript", "purpose": "EMMREML 3.2 (corrected)",
          "returncode": 0, "installed_packages": [{"name": "EMMREML", "version": "3.2"}]},
-        replace_step=4)
-    assert i_edit == 4, "successful replace should overwrite in place"
+        replace_step=3)
+    assert i_edit == 3, "successful replace should overwrite in place"
     steps = ps._drafts["smart_replace_test"]["install_steps"]
-    assert len(steps) == 4
-    assert steps[3]["installed_packages"][0]["version"] == "3.2"
+    assert len(steps) == 3
+    assert steps[2]["installed_packages"][0]["version"] == "3.2"
 
     ps.discard("smart_replace_test")
+
+
+# =============================================================================
+# Batch-3 Apollo3 followup (2026-05-27) — C6: N4 + N5 + N6 freeze subprocess hygiene
+# =============================================================================
+
+
+def test_add_install_step_replace_removes_failed_prior(tmp_path):
+    """N4 (batch-3) — `replace_step=N` ALWAYS removes the prior entry at N,
+    including the smart-append-on-failed-replace path. Pre-fix the prior
+    failed entry was kept alongside the new successful one, polluting the
+    draft with duplicate-name install_steps."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
+    ps.start("n4_test", "test")
+    # failed step at slot 1
+    ps.add_install_step("n4_test",
+        {"tool": "conda", "purpose": "Apollo3 first try", "returncode": 1,
+         "installed_packages": [{"name": "apollo3"}]})
+    # intervening successful install
+    ps.add_install_step("n4_test",
+        {"tool": "conda", "purpose": "missing dep", "returncode": 0,
+         "installed_packages": [{"name": "node"}]})
+    # retry of slot 1 with replace_step=1 — succeeds
+    ps.add_install_step("n4_test",
+        {"tool": "conda", "purpose": "Apollo3 retry", "returncode": 0,
+         "installed_packages": [{"name": "apollo3"}]},
+        replace_step=1)
+    steps = ps._drafts["n4_test"]["install_steps"]
+    # Pre-fix: 3 entries (failed apollo3 + node + successful apollo3)
+    # Post-fix: 2 entries (node + successful apollo3)
+    assert len(steps) == 2, (
+        f"failed prior entry must be removed on replace_step; got {steps!r}")
+    names = [s["installed_packages"][0]["name"] for s in steps]
+    assert names == ["node", "apollo3"], names
+    # No zombie rc=1 entries
+    rcs = [s["returncode"] for s in steps]
+    assert 1 not in rcs
+
+
+def test_add_install_step_replace_works_when_prior_step_was_successful(tmp_path):
+    """N4 (regression guard) — the original 'edit in place' semantic for
+    replacing a previously-successful step (version bump, parameter change)
+    still works."""
+    from agent.skills.pipeline_state import PipelineState
+    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
+    ps.start("n4_edit_test", "test")
+    ps.add_install_step("n4_edit_test",
+        {"tool": "conda", "purpose": "EMMREML 3.1", "returncode": 0,
+         "installed_packages": [{"name": "EMMREML", "version": "3.1"}]})
+    new_idx = ps.add_install_step("n4_edit_test",
+        {"tool": "conda", "purpose": "EMMREML 3.2 corrected", "returncode": 0,
+         "installed_packages": [{"name": "EMMREML", "version": "3.2"}]},
+        replace_step=1)
+    assert new_idx == 1
+    steps = ps._drafts["n4_edit_test"]["install_steps"]
+    assert len(steps) == 1
+    assert steps[0]["installed_packages"][0]["version"] == "3.2"
+
+
+def test_orphan_service_pid_reaper_does_not_fire_on_module_import(monkeypatch):
+    """N5 (batch-3) — the orphan reaper must NOT run at module-import time;
+    only the actual MCP-server entrypoint (__main__) is authorized. The W1
+    freeze_runner subprocess and tests import agent.mcp_server and must
+    NEVER touch the parent's service registry (which would delete PID files
+    belonging to services the parent started — observed Apollo3 mongod
+    being orphaned this way)."""
+    import agent.mcp_server as ms
+    # The function exists (the reaper logic) but isn't called automatically
+    assert hasattr(ms, "_reap_orphan_service_pids")
+    # Module-level only defines, doesn't call. Smoke: re-importing should
+    # not invoke EnvManager.cleanup_orphan_service_pids again.
+    call_count = {"n": 0}
+    monkeypatch.setattr(
+        "agent.skills.env_manager.EnvManager.cleanup_orphan_service_pids",
+        classmethod(lambda cls: (call_count.__setitem__("n", call_count["n"] + 1),
+                                 {"checked": 0, "removed": []})[1]),
+    )
+    # Force module reload — under the new contract the reaper is NOT called
+    # by the import machinery.
+    import importlib
+    importlib.reload(ms)
+    assert call_count["n"] == 0, (
+        "the orphan reaper ran at module-import time — this is the N5 bug "
+        "(W1 freeze_runner subprocess would clobber the parent's services)")
+
+
+def test_orphan_service_pid_reaper_runs_when_called_directly():
+    """N5 (companion to the above) — the reaper still works when invoked
+    explicitly; we only moved WHERE it fires (server entrypoint), not what
+    it does."""
+    import agent.mcp_server as ms
+    # Calling the helper directly invokes EnvManager.cleanup_orphan_service_pids;
+    # we don't assert side-effects (the /tmp dir may or may not have stale files)
+    # — just that the function is callable without error.
+    ms._reap_orphan_service_pids()
+
+
+def test_job_manager_writes_done_sentinel_on_exit(tmp_path):
+    """N6 (batch-3) — when a job transitions to a terminal state, the
+    JobManager drops an atomic `.done` sentinel file. Polling shell loops
+    that do `until [ -f X.done ]` see the right edge — pre-N6 the only on-
+    disk signal was status.json which exists from t=0 (state='running'),
+    so file-existence polls fired immediately and misfired."""
+    from agent.skills.job_manager import JobManager
+    jm = JobManager({"paths": {"conda_envs_prefix": str(tmp_path)}})
+    # Redirect jobs_dir into the test tmp_path so we don't pollute the real one
+    jm.jobs_dir = tmp_path
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    out = jm.start("true", job_id="n6_test")    # 'true' exits immediately
+    job_id = out["job_id"]
+    # Poll until check observes the exit (process is short-lived)
+    import time
+    for _ in range(20):
+        st = jm.check(job_id)
+        if st.get("state") == "exited":
+            break
+        time.sleep(0.05)
+    assert st["state"] == "exited"
+    # The done sentinel exists and is empty (its EXISTENCE is the signal)
+    done = tmp_path / f"{job_id}.done"
+    assert done.exists(), (
+        ".done sentinel must be created when the job exits — this is the "
+        "atomic poll target for file-existence shell loops")
+
+
+def test_job_manager_does_not_write_done_while_running(tmp_path):
+    """N6 (regression) — the .done sentinel is ONLY written on transition
+    to a terminal state; while the job is running, only status.json exists."""
+    from agent.skills.job_manager import JobManager
+    jm = JobManager({"paths": {"conda_envs_prefix": str(tmp_path)}})
+    # Redirect jobs_dir into the test tmp_path so we don't pollute the real one
+    jm.jobs_dir = tmp_path
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    # Long-running job that won't have exited by the time we check
+    out = jm.start("sleep 5", job_id="n6_running")
+    # immediately after start, status.json exists but .done MUST NOT
+    assert (tmp_path / "n6_running.status.json").exists()
+    assert not (tmp_path / "n6_running.done").exists(), (
+        ".done sentinel must NOT exist while the job is still running")
+    # Cancel so we don't actually wait 5s
+    jm.cancel("n6_running")
+
+
+def test_freeze_background_response_advertises_done_marker(monkeypatch, tmp_path):
+    """N6 (end-to-end) — the freeze(background=True) response advertises the
+    `done_marker` path so the polling agent has a deterministic file to
+    watch (instead of misreading status.json as the completion signal)."""
+    import agent.mcp_server as ms
+
+    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+        return {"job_id": job_id, "log_path": "/dev/null", "state": "running"}
+    monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
+    out = ms.freeze(env_name="n6_smoke", tools=["t=1"], background=True)
+    assert "done_marker" in out, (
+        "freeze background response must advertise the .done sentinel path")
+    assert out["done_marker"].endswith(".done")
 
 
 def test_freeze_installed_packages_move_to_end_dedup_on_retry():

@@ -285,6 +285,16 @@ class JobManager:
     def _status_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.status.json"
 
+    def _done_path(self, job_id: str) -> Path:
+        """The completion sentinel file. Created ONLY when the job has exited
+        (atomic by touch). Polling shell loops can `until [ -f X.done ]; do
+        sleep; done` and get correct semantics — pre-N6, the only on-disk
+        signal was status.json, but that file exists from t=0 (created with
+        state='running' before any work happens), so file-existence polls
+        misfired immediately. The status.json content remains authoritative
+        for the actual state; .done is the atomic 'is it over' signal."""
+        return self.jobs_dir / f"{job_id}.done"
+
     def _log_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.log"
 
@@ -319,6 +329,15 @@ class JobManager:
         tmp = self._status_path(job_id).with_suffix(".tmp")
         tmp.write_text(json.dumps(status, indent=2))
         os.replace(tmp, self._status_path(job_id))
+        # N6 fix (batch-3): drop the completion sentinel `.done` file once
+        # we've observed a terminal state. Pre-fix the only on-disk signal
+        # was status.json which exists from t=0; shell loops checking file-
+        # existence fired immediately. Status.json content stays the truth;
+        # .done is the atomic 'is it over' signal a polling loop can rely on.
+        if status.get("state") != "running":
+            done = self._done_path(job_id)
+            if not done.exists():
+                done.touch()
 
     def _log_size(self, job_id: str) -> int:
         p = self._log_path(job_id)

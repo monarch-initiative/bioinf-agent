@@ -192,20 +192,26 @@ class PipelineState:
         step_data: dict,
         replace_step: int,
     ) -> Optional[int]:
-        """Append or replace. Smart-replace: when `replace_step` points to a slot
-        that PREVIOUSLY FAILED (returncode != 0) AND the new step succeeded
-        (returncode == 0), APPEND at the end instead of editing in place. This
-        is the install_step-ordering fix: a retry that happens AFTER intervening
-        successful steps (e.g. agent installed GAPIT, fail; then installed the
-        missing dep snpStats; then retried GAPIT, succeed) must take its
-        chronological position in the replay so the container build sees the
-        dep before its consumer. Replacing the original slot would keep the
-        retry at GAPIT's old position — before snpStats — and the replay would
-        fail with the SAME missing-dep error. Append-on-failed-replace makes
-        the replay order = the actual successful install order, period.
+        """Append (default) or replace step N. `replace_step=N` always REMOVES
+        the prior entry at slot N — the caller is asserting 'this IS my step
+        N, throw away whatever was there'. The new entry's POSITION depends
+        on chronological-order semantics:
 
-        Non-failed replace_step keeps the original edit-in-place semantic (the
-        agent wants to change a parameterization, e.g. version bump)."""
+          - existing FAILED (rc != 0, != None) AND new SUCCEEDED (rc == 0):
+            the new entry lands at the END (after any intervening successful
+            steps). Preserves the install-order replay invariant: a retry of
+            step N after the agent installed the missing dep at N+1 must
+            replay AS step N+1 (after the dep), not at the original N.
+
+          - all other cases: the new entry lands at slot N (edit in place).
+            Agent is e.g. bumping a version on an already-successful step.
+
+        Either way the prior entry at N is DELETED. N4 (batch-3 Apollo3 fix):
+        pre-fix the smart-append-on-failed path APPENDED without removing the
+        prior entry, leaving both rc=1 and rc=0 records in install_steps —
+        which then surfaced as duplicate installs in the freeze replay and
+        required hand-editing the draft yaml to remove.
+        """
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return None
@@ -214,18 +220,30 @@ class PipelineState:
             existing = steps[replace_step - 1]
             existing_rc = existing.get("returncode")
             new_rc = step_data.get("returncode")
-            # Smart-replace condition: previous attempt at this slot FAILED,
-            # new attempt SUCCEEDED. Append instead so the new step lands AFTER
-            # any intervening successful steps the agent may have added (e.g.
-            # the missing dep the retry depends on).
+            # ALWAYS remove the prior entry at this slot first — the user's
+            # contract: 'replace_step=N means throw away whatever was at N'.
+            # (N4 fix: this previously only happened in the edit-in-place
+            # branch; the smart-replace path appended without removing,
+            # leaving the failed entry behind.)
+            del steps[replace_step - 1]
             if existing_rc not in (0, None) and new_rc == 0:
+                # Smart-replace: previous attempt failed, new succeeded → new
+                # lands at end (after any intervening successful steps).
                 new_index = len(steps) + 1
                 step_data = {**step_data, "step": new_index}
                 steps.append(step_data)
+                # Re-number any subsequent steps so step fields stay 1-based-
+                # contiguous (we just removed at replace_step - 1 and appended
+                # at end; everything between shifted down by one).
+                for i, st in enumerate(steps, start=1):
+                    if isinstance(st, dict):
+                        st["step"] = i
                 self._persist(pipeline_id)
                 return new_index
+            # Edit-in-place semantic (success-keeps-position OR rc unknown):
+            # merge the new fields over the existing record at the same slot.
             merged = {**existing, **step_data, "step": replace_step}
-            steps[replace_step - 1] = merged
+            steps.insert(replace_step - 1, merged)
             self._persist(pipeline_id)
             return replace_step
         new_index = len(steps) + 1

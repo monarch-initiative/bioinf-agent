@@ -116,10 +116,26 @@ _env_cache      = _freeze.EnvCache(_env_mgr.project_root / "env_reports" / "_env
 
 # Reap stale PID files from prior agent sessions whose owning process has
 # already exited. Living services owned by other processes are left alone.
-_orphan_reap = EnvManager.cleanup_orphan_service_pids()
-if _orphan_reap.get("removed"):
-    print(f"[bioinf] reaped {len(_orphan_reap['removed'])} orphan service PID file(s): "
-          f"{_orphan_reap['removed']}", file=sys.stderr)
+#
+# N5 fix (batch-3): the reaper used to run at MODULE-IMPORT time, which meant
+# the W1 freeze_runner subprocess (which `from agent.mcp_server import freeze`)
+# also ran it on startup — and `start_service` writes the PID of the
+# nohup-backgrounded `bash` wrapper (via `echo $!`), NOT the daemon PID that
+# the wrapper spawned. By the time the freeze subprocess imports this module,
+# the wrapper bash has often exited (mongod --fork returned, bash unwound),
+# so `os.kill(wrapper_pid, 0)` raises ProcessLookupError and the reaper
+# deletes the PID file out from under the still-running daemon. Then the
+# parent's stop_service() finds no PID file and orphans the real daemon.
+#
+# Fix: only reap in the actual MCP-server process (the __main__ entrypoint).
+# Any other importer (W1 freeze_runner, tests, ad-hoc tooling) keeps its
+# hands off the parent's service registry. The reaper still runs once at
+# server startup — just not in every subprocess that imports this module.
+def _reap_orphan_service_pids() -> None:
+    r = EnvManager.cleanup_orphan_service_pids()
+    if r.get("removed"):
+        print(f"[bioinf] reaped {len(r['removed'])} orphan service PID file(s): "
+              f"{r['removed']}", file=sys.stderr)
 
 mcp = FastMCP("bioinf-agent")
 
@@ -2353,8 +2369,14 @@ def _freeze_in_background(**args) -> dict:
         "state":       "running",
         "note": ("freeze running in background; poll check_job(job_id) until "
                  "state='exited', then read the JSON at result_path for the full "
-                 "freeze record. The standard ENV.html / attestation.json / "
-                 "recipe.yaml are also written by the subprocess on success."),
+                 "freeze record. Shell loops can also `until [ -f {job_id}.done ]; "
+                 "do sleep N; done` against data/jobs/ — the .done sentinel is "
+                 "written atomically on exit (status.json exists from t=0, so "
+                 "file-existence checks on it fire immediately and misfire). "
+                 "The standard ENV.html / attestation.json / recipe.yaml are "
+                 "also written by the subprocess on success."),
+        "done_marker": str((_env_mgr.project_root / jobs_rel /
+                            f"{job_id}.done")),
     }
 
 
@@ -3919,6 +3941,10 @@ def _watch_and_exit_on_change():
 
 
 if __name__ == "__main__":
+    # The MCP-server process is the ONLY caller authorized to reap the service
+    # registry — see _reap_orphan_service_pids comment above (N5). Subprocesses
+    # that import this module (the W1 freeze_runner, tests) never reach here.
+    _reap_orphan_service_pids()
     if os.environ.get("BIOINF_MCP_AUTO_RELOAD") == "1":
         _watch_and_exit_on_change()
     mcp.run()
