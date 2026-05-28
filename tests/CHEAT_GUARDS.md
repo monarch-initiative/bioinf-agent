@@ -73,12 +73,12 @@ what actually happened.
 
 | Cheat | Guard |
 |---|---|
-| L5.a — run on host, claim ran in shipped image | `validated_in_shipped_image` requires `ran_in_container=True` AND `container_image_digest` matches an EnvCache image_digest — `test_invariants.test_validated_in_shipped_image_*`, `tests/integration/honesty/L5_run_honesty/test_soup_to_nuts_seal.py` |
+| L5.a — run on host, claim ran in shipped image | `validated_in_shipped_image` requires `ran_in_container=True` AND `container_image_digest` matches an EnvCache image_digest — `test_invariants.test_validated_in_shipped_image_*`, `tests/integration/honesty/L5_run_honesty/test_end_to_end_seal.py` |
 | L5.b — watch_dir on /tmp picks up foreign files (harness transcripts etc.) as step outputs | N7: snapshot diff filters to `project_root` when watch is shared — `tests/integration/honesty/L5_run_honesty/test_watchdir_snapshot_filter.py` |
 | L5.c — step produces no outputs but rc=0, claim success | I3: rc=0 needs detected_outputs OR explicit `mark_step_validated` — `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py` |
 | L5.d — `expected_type="any"` to bypass type-aware validation | I3: `expected_type=="any"` rejected at seal — `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py` |
 | L5.e — `output_types` typo silently falls through to `expected_type="any"` | N8: 5-tier lookup + unmatched keys surfaced in the response — `tests/integration/honesty/L5_run_honesty/test_n8_output_types_lookup.py` |
-| L5.f — soup-to-nuts: a step missing run-side fields slips through seal | G2 soup-to-nuts wiring test — `tests/integration/honesty/L5_run_honesty/test_soup_to_nuts_seal.py` |
+| L5.f — end-to-end: a step missing run-side fields slips through seal | G2 end-to-end seal wiring test — `tests/integration/honesty/L5_run_honesty/test_end_to_end_seal.py` |
 
 ## L6 — Provenance / authored artifacts
 
@@ -88,7 +88,7 @@ about it.
 | Cheat | Guard |
 |---|---|
 | L6.a — reference a file as a step input without staging it (orphan) | I8 composition coherence: every step input must trace to an external source OR a prior step's output — `test_invariants` I8 tests + `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py` |
-| L6.b — stage with sha256=X, mutate the file before seal | G1 seal-time re-hash (`I8.authored_artifact_mutated` / `_missing`) — `tests/integration/honesty/L6_provenance/test_authored_artifact_integrity.py`, `tests/integration/honesty/L5_run_honesty/test_soup_to_nuts_seal.py` |
+| L6.b — stage with sha256=X, mutate the file before seal | G1 seal-time re-hash (`I8.authored_artifact_mutated` / `_missing`) — `tests/integration/honesty/L6_provenance/test_authored_artifact_integrity.py`, `tests/integration/honesty/L5_run_honesty/test_end_to_end_seal.py` |
 | L6.c — `patch_pipeline` writes to a runtime-captured field (pipeline_steps, install_steps, packages, ...) | PATCHABLE_KEYS allowlist — `test_invariants.test_patch_pipeline_blocks_runtime_captured_keys` |
 | L6.d — synthesize an install_method but lie about its corpus / grounding | `synth_build` re-verifies the submission: EXTRACTED must appear verbatim in the named file; AGENT_AUTHORED must be GROUNDED — `tests/test_synthesis.py`, `tests/test_provenance.py` |
 
