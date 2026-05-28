@@ -324,17 +324,44 @@ def requested_conda_specs(spec: dict) -> list[str]:
     requested tool), matching has_conda_packages's view. This is the TOP-LEVEL
     request the container-native build re-solves from via the engine — not the full
     dependency closure (the engine resolves that; the in-image lock content-addresses
-    what was actually got)."""
-    out: list[str] = []
+    what was actually got).
+
+    R6 fix (batch-2 stress, 2026-05-27): filter rc!=0 install_steps AND apply
+    move-to-end dedup by package name — mirroring installed_packages's semantics
+    (the canonical inventory view used everywhere else). Pre-fix a failed-then-
+    retried conda install surfaced both entries (potentially with different
+    versions), so the engine got asked to install both — at best a name conflict,
+    at worst the engine picking the failed version. The retry pattern (smart-
+    replace step after a missing-dep fix) is the load-bearing case the R/GAPIT
+    stress hit. install_steps with rc=None pass through (a 'create' step has no
+    rc field but also no installed_packages of interest, so this is a no-op for
+    them; the conditional explicitly only iterates `tool==conda subcommand==install`)."""
+    out: dict[str, str] = {}   # name → 'name=version' / 'name' (move-to-end by name)
     for st in (spec.get("install_steps") or []):
         if not isinstance(st, dict):
             continue
-        if st.get("tool") == "conda" and st.get("subcommand") == "install":
-            for ip in (st.get("installed_packages") or []):
-                if isinstance(ip, dict) and ip.get("name"):
-                    v = ip.get("version")
-                    out.append(f"{ip['name']}={v}" if v else ip["name"])
-    return out
+        if st.get("tool") != "conda" or st.get("subcommand") != "install":
+            continue
+        # rc==0 success; rc==None means no rc was recorded (treat as pass-through
+        # for backward compat with older drafts that didn't set it); rc != 0
+        # means the install failed — its installed_packages claim is unsafe to
+        # feed back to the engine as a request. The retry's rc==0 entry will
+        # supersede via move-to-end.
+        rc = st.get("returncode")
+        if rc is not None and rc != 0:
+            continue
+        for ip in (st.get("installed_packages") or []):
+            if isinstance(ip, dict) and ip.get("name"):
+                v = ip.get("version")
+                # Move-to-end: del the prior entry so the new one lands at the
+                # END of the dict's iteration order (Python dicts preserve
+                # insertion order). A successful retry sits AFTER any newly-
+                # added deps in the replay order — same invariant as
+                # installed_packages.
+                if ip["name"] in out:
+                    del out[ip["name"]]
+                out[ip["name"]] = f"{ip['name']}={v}" if v else ip["name"]
+    return list(out.values())
 
 
 def parse_tools(specs: list[str]) -> list[tuple[str, Optional[str]]]:

@@ -5146,3 +5146,157 @@ def test_attestation_predicate_licenses_present_on_adopt_path():
     assert ip["license_gated"] is True
     # mode-aware honesty preserved (the adopt contract)
     assert ip["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+
+
+# =============================================================================
+# Batch-2 stress-test fixes (2026-05-27) — R-package handling (R5 + R6)
+#
+# A draft with a failed-then-retried `bioconductor-deseq2` install + a stale
+# `bioconductor-deseq2=1.30` install_step exposed two breaks in the R-conda
+# path: the verify command was the python-dist probe (DESeq2 isn't a python
+# dist), and the failed-version spec got asked of the engine alongside the
+# retried one. Both surface as "the build fails IN the shipped image with a
+# diagnostic that doesn't point at the real cause".
+# =============================================================================
+
+
+def test_conda_presence_check_routes_bioconductor_to_rscript():
+    """R5 — `bioconductor-*` packages are R libraries, not python dists. The
+    verify command must invoke R's installed.packages(), not python's
+    importlib.metadata (which would silently fail with a 'no metadata' error
+    for every Bioconductor install, masquerading as a build failure)."""
+    from agent.skills.env_freeze import _conda_presence_check
+    chk = _conda_presence_check("bioconductor-deseq2")
+    assert chk.startswith("Rscript")
+    assert "installed.packages" in chk
+    # the conda-name's suffix is the lookup name (post evidence-shape's
+    # prefix-strip the tool token is `deseq2`)
+    assert "deseq2" in chk.lower()
+    # case-insensitive lookup (DESeq2 vs deseq2)
+    assert "ignore.case=TRUE" in chk
+
+
+def test_conda_presence_check_routes_rprefix_to_rscript():
+    """R5 — same routing for `r-*` packages (the CRAN-installed-via-conda tier,
+    e.g. r-tidyverse, r-ape, r-snpstats). Same library-not-CLI shape."""
+    from agent.skills.env_freeze import _conda_presence_check
+    chk = _conda_presence_check("r-tidyverse")
+    assert chk.startswith("Rscript")
+    assert "tidyverse" in chk.lower()
+
+
+def test_conda_presence_check_passes_evidence_shape_for_r_packages():
+    """R5 — env_honesty's word-boundary token rule already strips the
+    `bioconductor-` / `r-` prefix when checking tool token presence. Our
+    Rscript verify command references the SUFFIX (`deseq2`), so the
+    evidence_shape gate accepts it. Pre-fix the verify referenced the FULL
+    conda name in `command -v bioconductor-deseq2` — also passed the shape
+    rule, but the command never returned 0 in the image."""
+    from agent.skills.env_freeze import _conda_presence_check
+    from agent.skills.env_honesty import evidence_shape_violation
+    chk = _conda_presence_check("bioconductor-deseq2")
+    # the contract's evidence_shape strips the conda prefix internally; both
+    # `bioconductor-deseq2` and `deseq2` reference must satisfy the rule
+    assert evidence_shape_violation(chk, "bioconductor-deseq2") is None
+
+
+def test_conda_presence_check_unchanged_for_non_R_packages():
+    """R5 — the new R routing is a strict ADD: ordinary conda CLI/python
+    packages still use the existing `command -v X || python ... importlib`
+    probe. This is what makes R5 a safe surgical change."""
+    from agent.skills.env_freeze import _conda_presence_check
+    chk = _conda_presence_check("samtools")
+    assert chk.startswith("command -v samtools")
+    chk_py = _conda_presence_check("numpy")
+    assert chk_py.startswith("command -v numpy")
+    assert "importlib.metadata" in chk_py
+
+
+def test_r_presence_check_strips_known_prefixes():
+    """R5 (defense-in-depth) — the prefix-strip is the bioconductor- / r-
+    SET, not a regex; a name without one of those prefixes passes through
+    as-is. So `lme4` (already library-shaped, hypothetical) yields a check
+    that references `lme4`."""
+    from agent.skills.env_freeze import _r_presence_check
+    # explicit-prefix cases
+    assert "deseq2" in _r_presence_check("bioconductor-deseq2").lower()
+    assert "tidyverse" in _r_presence_check("r-tidyverse").lower()
+    # no-prefix passthrough — only matters when _r_presence_check is called
+    # directly (the dispatcher only routes prefixed names there)
+    assert "snpstats" in _r_presence_check("snpStats").lower()
+
+
+def test_requested_conda_specs_filters_failed_installs():
+    """R6 — a conda install_step with rc != 0 must NOT contribute its
+    installed_packages claim to the engine's request. The failed install's
+    package record is unsafe (the install didn't actually complete) — feeding
+    it back to the engine as a spec asks the engine to re-attempt a known-bad
+    install, often with a name that doesn't exist on the channel."""
+    from agent.skills.freeze import requested_conda_specs
+    draft = {"install_steps": [
+        # a failed install — must be filtered
+        {"tool": "conda", "subcommand": "install", "returncode": 1,
+         "installed_packages": [{"name": "ghost", "version": "0.0.0"}]},
+        # a successful install — must surface
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "installed_packages": [{"name": "samtools", "version": "1.21"}]},
+    ]}
+    specs = requested_conda_specs(draft)
+    assert specs == ["samtools=1.21"]
+
+
+def test_requested_conda_specs_move_to_end_dedup_on_retry():
+    """R6 — a retried install (failed → fixed dep → succeeded with a new
+    version) must produce ONE spec, the SUCCESSFUL retry's version, AFTER
+    any intervening successful installs in the replay order. Pre-fix both
+    versions surfaced, so the engine would be asked to install BOTH (name
+    conflict, or the engine picks the failed one). Mirrors
+    installed_packages's move-to-end semantics."""
+    from agent.skills.freeze import requested_conda_specs
+    draft = {"install_steps": [
+        # the first attempt — failed (filtered by rc check)
+        {"tool": "conda", "subcommand": "install", "returncode": 1,
+         "installed_packages": [{"name": "deseq2-deps", "version": "1.0"}]},
+        # the dep-fix install (a different package)
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "installed_packages": [{"name": "rlang", "version": "1.1"}]},
+        # the retried deseq2-deps install — different version, succeeded
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "installed_packages": [{"name": "deseq2-deps", "version": "1.2"}]},
+    ]}
+    specs = requested_conda_specs(draft)
+    # exactly one entry per name (move-to-end dedup)
+    assert specs == ["rlang=1.1", "deseq2-deps=1.2"]
+    # the retry sits AFTER rlang — the order matters for replay (retry deps
+    # must have landed first)
+    assert specs.index("rlang=1.1") < specs.index("deseq2-deps=1.2")
+
+
+def test_requested_conda_specs_rc_none_treated_as_passthrough():
+    """R6 — an install_step with no returncode field (older drafts, or
+    create-time records) passes through. The conditional only iterates
+    `tool=conda subcommand=install`, so create steps (no rc, no installed_
+    packages of interest) are no-ops; install steps without rc shouldn't be
+    treated as failed just because rc isn't recorded yet."""
+    from agent.skills.freeze import requested_conda_specs
+    draft = {"install_steps": [
+        # no returncode field at all — treated as success-by-default
+        {"tool": "conda", "subcommand": "install",
+         "installed_packages": [{"name": "samtools", "version": "1.21"}]},
+    ]}
+    specs = requested_conda_specs(draft)
+    assert specs == ["samtools=1.21"]
+
+
+def test_requested_conda_specs_unversioned_name_preserved():
+    """R6 — the unversioned form is preserved (the agent declared
+    `install_conda_packages(env, [{spec: 'samtools'}])` without pinning).
+    The engine resolves the version; the cache key picks up the install-
+    record-filled version at request_key time (B7 already handles that)."""
+    from agent.skills.freeze import requested_conda_specs
+    draft = {"install_steps": [
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "installed_packages": [{"name": "samtools"}]},
+    ]}
+    specs = requested_conda_specs(draft)
+    assert specs == ["samtools"]

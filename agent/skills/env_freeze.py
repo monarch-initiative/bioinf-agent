@@ -53,6 +53,26 @@ def _pip_presence_check(name: str) -> str:
     return f"python -c \"import importlib.metadata as _m; _m.version('{name}')\""
 
 
+def _r_presence_check(conda_name: str) -> str:
+    """In-image presence for an R conda package (bioconductor-* / r-*) via its
+    library name in R's installed.packages(). The conda channel lowercases the
+    name (`bioconductor-deseq2`) but the canonical R library preserves case
+    (`DESeq2`); case-sensitive requireNamespace would fail on a healthy install.
+    ignore.case=TRUE on installed.packages() rownames is the robust check — we
+    only care THAT the package is installed; the case-canonical form is the R
+    library's own. Evidence_shape's prefix-stripping (`bioconductor-` / `r-`)
+    means the shape rule sees `deseq2` as the tool token, which is exactly what
+    the grep references."""
+    lib = conda_name
+    for pre in ("bioconductor-", "r-"):
+        if conda_name.startswith(pre):
+            lib = conda_name[len(pre):]
+            break
+    expr = (f"q(status=as.integer(length(grep('^{lib}$', "
+            f"rownames(installed.packages()), ignore.case=TRUE)) == 0))")
+    return f'Rscript -e "{expr}"'
+
+
 def _conda_presence_check(name: str) -> str:
     """In-image presence for a conda tool: a CLI on PATH, ELSE the package's
     installed python dist-metadata. The second clause covers library-only packages
@@ -62,7 +82,16 @@ def _conda_presence_check(name: str) -> str:
     env_honesty.evidence_shape still anchors on the tool token (a `command -v X`
     / metadata probe on a clean image can only pass if X is genuinely installed —
     no anti-cheat weakening). CLI tools short-circuit on the first clause, so a
-    pure-CLI env with no python never reaches the fallback."""
+    pure-CLI env with no python never reaches the fallback.
+
+    R-conda-package detour (R5, batch-2 stress): `bioconductor-*` / `r-*` packages
+    are R libraries, not CLIs and not python distributions — the standard
+    `command -v X || python -c '_m.distribution(X)'` probe can't see them
+    (DESeq2 isn't on PATH, isn't a pip metadata entry, and conda's
+    package-record isn't queryable from python). Route those to the R-aware
+    check that asks R's installed.packages() directly."""
+    if name.startswith("bioconductor-") or name.startswith("r-"):
+        return _r_presence_check(name)
     return (f"command -v {name} || "
             f"python -c \"import importlib.metadata as _m; _m.distribution('{name}')\"")
 
