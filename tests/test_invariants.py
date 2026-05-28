@@ -5423,6 +5423,213 @@ def test_env_report_html_request_versions_alias_still_works():
     assert env_report_html._requested_versions is env_report.requested_versions
 
 
+# =============================================================================
+# Batch-2 stress-test fixes (2026-05-27) — Disk failsafe (A1 + A2)
+#
+# Apollo3 stress cascade: 4 parallel subagent freezes → docker buildkit's
+# intermediate layers piled up to 80 GB → host disk at 92% → builds entered
+# an infinite retry loop on 'no space left on device', wedging the
+# orchestrator. The failsafe is two layers: pre-flight refusal at freeze()
+# entry (A1), and post-failure buildkit prune when disk is already stressed
+# (A2). Together they make parallel freezes safe — racing freezes that hit
+# the threshold refuse cleanly instead of cascading.
+# =============================================================================
+
+
+def test_check_disk_failsafe_returns_none_when_disk_is_healthy(monkeypatch):
+    """A1 — a healthy disk passes through (returns None, meaning 'go ahead')."""
+    import agent.mcp_server as ms
+    import shutil
+    # 500 GB free, way above any sane threshold
+    fake = type("Usage", (), {"free": 500 * (1024 ** 3)})()
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: fake)
+    assert ms._check_disk_failsafe(min_gb=10) is None
+
+
+def test_check_disk_failsafe_refuses_with_diagnostic_when_disk_is_low(monkeypatch):
+    """A1 — a stressed disk produces a refusal dict naming the cleanup
+    commands. The whole point is to fail FAST with a diagnostic the agent
+    can act on — not to wedge waiting for the docker build to discover
+    the same fact 20 min later."""
+    import agent.mcp_server as ms
+    import shutil
+    # 3 GB free, well below the 10 GB default threshold
+    fake = type("Usage", (), {"free": 3 * (1024 ** 3)})()
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: fake)
+    result = ms._check_disk_failsafe(min_gb=10)
+    assert result is not None
+    assert result["success"] is False
+    assert result["stage"] == "disk_failsafe"
+    assert result["free_gb"] == 3.0
+    assert result["min_gb"] == 10
+    # the diagnostic names the cleanup commands
+    assert "docker builder prune" in result["message"]
+    assert "docker system prune" in result["message"]
+
+
+def test_check_disk_failsafe_honors_env_override(monkeypatch):
+    """A1 — BIOINF_FREEZE_MIN_DISK_GB env var overrides the default. Setting
+    it to 0 fully disables the check (escape hatch for CI mocks and tests
+    that explicitly bypass)."""
+    import agent.mcp_server as ms
+    import shutil
+    fake = type("Usage", (), {"free": 1 * (1024 ** 3)})()   # 1 GB — would normally refuse
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: fake)
+    # 0 disables
+    monkeypatch.setenv("BIOINF_FREEZE_MIN_DISK_GB", "0")
+    assert ms._check_disk_failsafe() is None
+    # higher threshold trips at 1 GB
+    monkeypatch.setenv("BIOINF_FREEZE_MIN_DISK_GB", "5")
+    assert ms._check_disk_failsafe() is not None
+
+
+def test_check_disk_failsafe_safe_on_disk_usage_failure(monkeypatch):
+    """A1 (defense-in-depth) — if shutil.disk_usage itself raises (exotic
+    FS, sandboxed env), the failsafe must NOT refuse. A failsafe that
+    blocks legitimate work because IT couldn't read disk is worse than no
+    failsafe."""
+    import agent.mcp_server as ms
+    import shutil
+    def boom(_):
+        raise OSError("can't read disk")
+    monkeypatch.setattr(shutil, "disk_usage", boom)
+    assert ms._check_disk_failsafe(min_gb=10) is None
+
+
+def test_freeze_refuses_at_entry_when_disk_failsafe_fires(monkeypatch):
+    """A1 end-to-end — freeze() returns the disk-failsafe refusal IMMEDIATELY,
+    before any cache lookup, biocontainer resolve, or docker work. Same shape
+    as the I13 early-gate refusal."""
+    import agent.mcp_server as ms
+
+    def fake_check(min_gb=None):
+        return {"success": False, "stage": "disk_failsafe",
+                "free_gb": 2.0, "min_gb": 10, "message": "no space"}
+
+    # boom every downstream surface — none should be reached
+    def boom(*a, **kw):
+        raise AssertionError("disk failsafe did not refuse fast enough")
+    monkeypatch.setattr(ms, "_check_disk_failsafe", fake_check)
+    monkeypatch.setattr(ms._freeze, "request_key", boom)
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", boom)
+
+    result = ms.freeze(env_name="t", tools=["samtools=1.21"])
+    assert result["stage"] == "disk_failsafe"
+    assert result["free_gb"] == 2.0
+
+
+def test_prune_buildkit_after_failure_reports_outcome(monkeypatch):
+    """A2 — the prune helper returns a structured outcome dict (attempted/ok/
+    reclaimed) the freeze() result can fold in. Never raises."""
+    import agent.mcp_server as ms
+    import subprocess
+
+    class FakeResult:
+        returncode = 0
+        stdout = "deleted: sha256:abc\nTotal reclaimed space: 14.2GB\n"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeResult())
+    r = ms._prune_buildkit_after_failure()
+    assert r["attempted"] is True
+    assert r["ok"] is True
+    assert "14.2GB" in r["reclaimed"]
+
+
+def test_prune_buildkit_swallows_exceptions(monkeypatch):
+    """A2 — a docker-not-running / timeout / sandbox-blocked prune must not
+    raise. We report the failure and let the caller decide; never compound
+    a build failure with a cleanup failure."""
+    import agent.mcp_server as ms
+    import subprocess
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired("docker", 120)
+    monkeypatch.setattr(subprocess, "run", boom)
+    r = ms._prune_buildkit_after_failure()
+    assert r["attempted"] is True
+    assert r["ok"] is False
+    assert "TimeoutExpired" in r["reason"]
+
+
+def test_freeze_invokes_post_failure_prune_only_when_disk_stressed(monkeypatch, tmp_path):
+    """A2 — the post-failure prune runs ONLY when free disk is below the
+    SOFT threshold (1.5x the hard one). On a healthy disk we keep buildkit
+    cache for fast iteration on the next retry."""
+    import agent.mcp_server as ms
+
+    # Force the freeze flow into the build branch with a deterministic failure
+    monkeypatch.setattr(ms, "_check_disk_failsafe", lambda min_gb=None: None)
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: None)
+    monkeypatch.setattr(ms._freeze, "request_key", lambda *a, **kw: "rk")
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present: None)
+    monkeypatch.setattr(ms._freeze, "compute_content_digest", lambda d: "cd")
+    monkeypatch.setattr(ms._biocontainers, "resolve_biocontainer",
+                        lambda parsed: {"found": False})
+    monkeypatch.setattr(ms._freeze, "non_conda_installs", lambda d: [])
+    monkeypatch.setattr(ms._freeze, "env_mutating_pipeline_steps", lambda d: [])
+    monkeypatch.setattr(ms._freeze, "requested_conda_specs", lambda d: ["x=1"])
+    monkeypatch.setattr(ms._env_freeze, "build_env_image",
+                        lambda *a, **kw: {"success": False, "stage": "install",
+                                          "reason": "ENOSPC during conda solve"})
+    prune_called = {"count": 0}
+    monkeypatch.setattr(ms, "_prune_buildkit_after_failure",
+                        lambda: (prune_called.__setitem__("count", prune_called["count"] + 1)
+                                 or {"attempted": True, "ok": True, "reclaimed": "1GB"}))
+
+    # CASE 1: healthy disk — prune NOT invoked
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage",
+                        lambda p: type("U", (), {"free": 200 * (1024 ** 3)})())
+    result = ms.freeze(env_name="t", tools=["x=1"])
+    assert result["stage"] == "container_build"
+    assert prune_called["count"] == 0, "healthy-disk failure must NOT prune"
+    assert "buildkit_prune" not in result
+
+    # CASE 2: stressed disk — prune IS invoked
+    monkeypatch.setattr(shutil, "disk_usage",
+                        lambda p: type("U", (), {"free": 5 * (1024 ** 3)})())
+    result = ms.freeze(env_name="t", tools=["x=1"])
+    assert prune_called["count"] == 1
+    assert "buildkit_prune" in result
+    assert result["buildkit_prune"]["ok"] is True
+
+
+def test_freeze_does_not_prune_on_pre_docker_failure(monkeypatch):
+    """A2 — refusals that happen BEFORE docker starts (resolve/route/
+    map_install / honesty-contract) leave no buildkit layers, so the prune
+    is skipped. Don't waste a `docker builder prune -af` on a no-op."""
+    import agent.mcp_server as ms
+
+    monkeypatch.setattr(ms, "_check_disk_failsafe", lambda min_gb=None: None)
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: None)
+    monkeypatch.setattr(ms._freeze, "request_key", lambda *a, **kw: "rk")
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present: None)
+    monkeypatch.setattr(ms._freeze, "compute_content_digest", lambda d: "cd")
+    monkeypatch.setattr(ms._biocontainers, "resolve_biocontainer",
+                        lambda parsed: {"found": False})
+    monkeypatch.setattr(ms._freeze, "non_conda_installs", lambda d: [])
+    monkeypatch.setattr(ms._freeze, "env_mutating_pipeline_steps", lambda d: [])
+    monkeypatch.setattr(ms._freeze, "requested_conda_specs", lambda d: ["x=1"])
+    # FAILURE before docker — stage is 'resolve', NOT one of the docker stages
+    monkeypatch.setattr(ms._env_freeze, "build_env_image",
+                        lambda *a, **kw: {"success": False, "stage": "resolve",
+                                          "tool": "x", "reason": "no tier"})
+    prune_called = {"count": 0}
+    monkeypatch.setattr(ms, "_prune_buildkit_after_failure",
+                        lambda: (prune_called.__setitem__("count", prune_called["count"] + 1)
+                                 or {"attempted": True, "ok": True}))
+    # even with stressed disk, a pre-docker failure should NOT prune
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage",
+                        lambda p: type("U", (), {"free": 1 * (1024 ** 3)})())
+    result = ms.freeze(env_name="t", tools=["x=1"])
+    assert result["stage"] == "container_build"
+    assert prune_called["count"] == 0, (
+        "pre-docker failure (stage=resolve) leaves no buildkit layers — "
+        "prune is a no-op and would mask the actual error in the response")
+    assert "buildkit_prune" not in result
+
+
 def test_requested_conda_specs_unversioned_name_preserved():
     """R6 — the unversioned form is preserved (the agent declared
     `install_conda_packages(env, [{spec: 'samtools'}])` without pinning).

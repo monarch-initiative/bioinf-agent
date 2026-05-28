@@ -2192,6 +2192,101 @@ def _synth_accelerator_from_request(accel: str, cuda_version: str,
     return out
 
 
+# ---------------------------------------------------------------------------
+# Disk failsafe — Apollo3 stress (2026-05-27) cascade mitigation.
+#
+# Apollo3 stress: 4 parallel subagent freezes → docker buildkit's intermediate
+# layers piled up to 80 GB → host disk at 92% → builds entered an infinite
+# retry loop on 'no space left on device', wedging the orchestrator. Two
+# defensive layers below:
+#
+#   A1 disk pre-check (_check_disk_failsafe): refuse fast at freeze() entry
+#       when free disk is below a configurable threshold. Names the cleanup
+#       command in the diagnostic.
+#
+#   A2 post-failure buildkit prune (_prune_buildkit_after_failure): when a
+#       container-native build returns success=False, attempt to reclaim the
+#       dangling layers it left behind so the NEXT freeze doesn't compound.
+#       Best-effort + reported in the result (never fails the call).
+#
+# The disk threshold IS the concurrency safety: if N parallel freezes race
+# for disk, the early ones succeed and the late ones hit the failsafe and
+# refuse cleanly — no cascade, no wedge, no lock file needed.
+# ---------------------------------------------------------------------------
+
+# Minimum free disk a freeze() needs to safely embark on a container-native build.
+# A typical CUDA/bio build's buildkit intermediates hit 5-15 GB; 10 GB is the
+# floor we want to keep the OS and other docker layers healthy. Overridable via
+# BIOINF_FREEZE_MIN_DISK_GB for test/dev (set to 0 to bypass, e.g. in CI mocks).
+_FREEZE_MIN_DISK_GB_DEFAULT = 10
+
+
+def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
+    """Returns a freeze() refusal dict if free disk is below threshold, else
+    None. We probe the partition holding the project root (Docker Desktop on
+    macOS stores its data under the same user-home filesystem; on Linux it's
+    usually the same root partition). A diagnostic in 'message' names the
+    exact cleanup commands so the agent can recover deterministically.
+
+    The env var BIOINF_FREEZE_MIN_DISK_GB overrides; 0 disables (used by
+    the test suite — see test_freeze_disk_failsafe_*). When shutil.disk_usage
+    fails (an exotic FS or sandbox), we DO NOT refuse: a failsafe that
+    blocks legitimate work because IT couldn't read disk is worse than no
+    failsafe."""
+    import shutil
+    if min_gb is None:
+        try:
+            min_gb = int(os.environ.get("BIOINF_FREEZE_MIN_DISK_GB",
+                                        str(_FREEZE_MIN_DISK_GB_DEFAULT)))
+        except (TypeError, ValueError):
+            min_gb = _FREEZE_MIN_DISK_GB_DEFAULT
+    if min_gb <= 0:
+        return None
+    try:
+        usage = shutil.disk_usage(str(PROJECT_ROOT))
+    except Exception:
+        return None
+    free_gb = usage.free / (1024 ** 3)
+    if free_gb >= min_gb:
+        return None
+    return {
+        "success": False, "stage": "disk_failsafe",
+        "free_gb": round(free_gb, 2), "min_gb": min_gb,
+        "message": (
+            f"refusing to start freeze() — only {free_gb:.1f} GB free on disk "
+            f"(threshold {min_gb} GB). A container-native build's buildkit "
+            f"intermediates can consume 10-30 GB per concurrent build; parallel "
+            f"freezes can cascade into a disk wedge that no individual build "
+            f"can escape. Recover with:\n"
+            f"  docker builder prune -af               # reclaim buildkit cache\n"
+            f"  docker system prune -af --volumes      # full reclaim (heavier)\n"
+            f"Override the threshold with BIOINF_FREEZE_MIN_DISK_GB=<gb> (0 to "
+            f"disable; not recommended in shared workspaces)."),
+    }
+
+
+def _prune_buildkit_after_failure() -> dict:
+    """Best-effort `docker builder prune -af` after a failed container-native
+    build. The build that failed leaves dangling intermediate layers; the next
+    freeze's buildkit cache compounds them. Run-and-report — never raise.
+    Returns a small dict the caller folds into the build result so the
+    operator sees what was cleaned (or why the prune itself failed)."""
+    try:
+        r = subprocess.run(["docker", "builder", "prune", "-af"],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        return {"attempted": True, "ok": False, "reason": repr(e)}
+    out = (r.stdout or "") + (r.stderr or "")
+    # `docker builder prune` prints e.g. "Total reclaimed space: 14.2GB" on success
+    reclaimed = ""
+    for line in out.splitlines():
+        if "reclaimed" in line.lower():
+            reclaimed = line.strip()
+            break
+    return {"attempted": True, "ok": r.returncode == 0,
+            "reclaimed": reclaimed, "rc": r.returncode}
+
+
 def _freeze_in_background(**args) -> dict:
     """Spawn freeze() in a detached subprocess via JobManager. Returns
     immediately with {job_id, result_path, log_path, state="running"}.
@@ -2342,6 +2437,14 @@ def freeze(
             gpu_required=gpu_required, cuda_version=cuda_version,
             pipeline_id=pipeline_id,
         )
+    # A1 failsafe (Apollo3 stress, batch-2): disk pre-check. 4 parallel freezes
+    # piled buildkit intermediates to 80 GB / 92% capacity → infinite retry loop.
+    # Refuse here with a diagnostic that names the cleanup command, BEFORE any
+    # cache lookup or docker work. The threshold IS the concurrency safety:
+    # parallel freezes that race for disk now refuse cleanly instead of wedging.
+    _disk_refusal = _check_disk_failsafe()
+    if _disk_refusal:
+        return _disk_refusal
     parsed = _freeze.parse_tools(tools)
     # F1 fix (Batch 2): the licenses surface has TWO entry points — the freeze()
     # `licenses=[...]` kwarg AND patch_pipeline({licenses, license_gated, …}) on
@@ -2552,8 +2655,32 @@ def freeze(
             # build_env_image refuses pip/r_install with no generator, a non-replayable
             # source, or any honesty-contract violation (incl. I13: a gated build needs
             # licenses[]). Surface it verbatim.
+            #
+            # A2 failsafe (Apollo3 stress, batch-2): when the failure happened INSIDE
+            # docker (stages: start/declare/install/freeze — pre-docker refusals like
+            # resolve/route/map_install leave no layers), it may have parked
+            # intermediate buildkit layers that compound across freezes. Best-effort
+            # prune ONLY when free disk is already approaching the failsafe threshold
+            # (1.5x the hard floor) — on a healthy disk we keep buildkit cache for
+            # fast iteration on the next retry. The prune outcome rides on the
+            # response so the operator can see what was cleaned (or why nothing was).
+            _DOCKER_STAGES = {"start", "declare", "declare_locked", "declare_pypi",
+                              "install", "freeze"}
+            extra = {}
+            if br.get("stage") in _DOCKER_STAGES:
+                try:
+                    import shutil as _sh
+                    free_gb = _sh.disk_usage(str(PROJECT_ROOT)).free / (1024 ** 3)
+                except Exception:
+                    free_gb = None
+                soft_threshold = _FREEZE_MIN_DISK_GB_DEFAULT * 1.5
+                if free_gb is not None and free_gb < soft_threshold:
+                    extra["buildkit_prune"] = _prune_buildkit_after_failure()
+                    extra["buildkit_prune"]["reason"] = (
+                        f"free disk {free_gb:.1f} GB below soft threshold "
+                        f"{soft_threshold:.0f} GB — pruning to avoid cascade")
             return {"success": False, "stage": "container_build", "request_key": rkey,
-                    "adopt_attempt": adopt, "build": br}
+                    "adopt_attempt": adopt, "build": br, **extra}
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
         build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor
