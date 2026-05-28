@@ -73,27 +73,77 @@ def _r_presence_check(conda_name: str) -> str:
     return f'Rscript -e "{expr}"'
 
 
-def _conda_presence_check(name: str) -> str:
-    """In-image presence for a conda tool: a CLI on PATH, ELSE the package's
-    installed python dist-metadata. The second clause covers library-only packages
-    (numpy, scipy, networkx, python-louvain) that have no CLI — and is dist-NAME
-    based, so an import name that differs from the package name (python-louvain ->
-    `import community`) doesn't matter. BOTH clauses name the package, so
-    env_honesty.evidence_shape still anchors on the tool token (a `command -v X`
-    / metadata probe on a clean image can only pass if X is genuinely installed —
-    no anti-cheat weakening). CLI tools short-circuit on the first clause, so a
-    pure-CLI env with no python never reaches the fallback.
+def _conda_pkg_bin_check_sh(name: str) -> str:
+    """sh -c expression that finds the FIRST `bin/*` file installed by the
+    conda package `name` (via its `conda-meta/{name}-*.json` record), tests
+    that the basename is on PATH, exits 0 on hit.
 
-    R-conda-package detour (R5, batch-2 stress): `bioconductor-*` / `r-*` packages
-    are R libraries, not CLIs and not python distributions — the standard
-    `command -v X || python -c '_m.distribution(X)'` probe can't see them
-    (DESeq2 isn't on PATH, isn't a pip metadata entry, and conda's
-    package-record isn't queryable from python). Route those to the R-aware
-    check that asks R's installed.packages() directly."""
+    The bug this fixes (N1, batch-3 Apollo3 stress): `conda install nodejs`
+    delivers a binary named `node` (not `nodejs`); `conda install mongodb`
+    delivers `mongod`; openjdk→java, mysql→mysqld, postgresql→postgres,
+    python→python3. The generic `command -v {pkg}` probe can't find these,
+    and most don't write python dist-metadata either, so the .ENV.html row
+    reported VALIDATED_IN_IMAGE.evidence_passed=False even though the
+    package was healthily installed.
+
+    The probe reads the conda-meta JSON's `files: [\"bin/X\", \"lib/Y\", …]`
+    list (which conda writes at install time and never removes) and asks
+    `command -v` on the first bin/ basename. shell-only — no python
+    dependency in the image (mongodb-/nodejs-only envs typically don't ship
+    one). The package's NAME appears as a word-boundary token in the
+    `conda-meta/{name}-*.json` glob, satisfying env_honesty.evidence_shape's
+    anchor rule.
+
+    Looks under both `/opt/conda/envs/*/conda-meta/` (pixi-managed envs)
+    and `/opt/conda/conda-meta/` (base-env installs) so it tolerates either
+    engine layout. The conda-meta JSON is well-formed enough that a
+    `sed -nE` over `\"bin/...\"` strings finds the bin entries reliably."""
+    # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
+    # interpolate directly inside the single-quoted sh -c body.
+    body = (
+        f'for f in /opt/conda/envs/*/conda-meta/{name}-*.json '
+        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'[ -e "$f" ] || continue; '
+        f'for b in $(sed -nE \'s|.*"bin/([^"/]+)".*|\\1|p\' "$f" | sort -u); do '
+        f'command -v "$b" >/dev/null 2>&1 && exit 0; '
+        f'done; '
+        f'done; '
+        f'exit 1'
+    )
+    return f"sh -c '{body}'"
+
+
+def _conda_presence_check(name: str) -> str:
+    """In-image presence for a conda tool — honesty-ordered:
+
+      1. `command -v {name}` — the trivial case (samtools→samtools, bwa→bwa).
+         Short-circuits on hit so a pure-CLI env doesn't need any of below.
+      2. conda-meta bin probe (N1, batch-3): for conda packages where the
+         binary name differs from the package name (mongodb→mongod,
+         nodejs→node, openjdk→java, mysql→mysqld, postgresql→postgres,
+         python→python3, …). Reads the package's conda-meta JSON `files:`
+         list and tests the first bin/* basename is on PATH. Shell-only,
+         no python in the env required.
+      3. `python -c '_m.distribution(name)'` — the python dist-metadata
+         fallback. Covers library-only conda packages that ship NO binary
+         (numpy, scipy, networkx, python-louvain): nothing on PATH, nothing
+         in conda-meta/bin, but importable as a python distribution.
+
+    All three clauses reference `{name}` as a word-boundary token (the
+    conda-meta glob `{name}-*.json` anchors clause 2), so env_honesty's
+    evidence_shape rule accepts the chain without weakening — a probe that
+    passes on a clean image can only pass if `name` is genuinely installed.
+
+    R-conda-package detour (R5, batch-2 stress): `bioconductor-*` / `r-*`
+    packages are R libraries — none of the three clauses can find them.
+    Route those to the R-aware Rscript installed.packages() check first."""
     if name.startswith("bioconductor-") or name.startswith("r-"):
         return _r_presence_check(name)
-    return (f"command -v {name} || "
-            f"python -c \"import importlib.metadata as _m; _m.distribution('{name}')\"")
+    return (
+        f"command -v {name} || "
+        f"{_conda_pkg_bin_check_sh(name)} || "
+        f"python -c \"import importlib.metadata as _m; _m.distribution('{name}')\""
+    )
 
 
 def _r_source_from_method(im: dict) -> str:

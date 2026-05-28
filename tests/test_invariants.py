@@ -5201,15 +5201,108 @@ def test_conda_presence_check_passes_evidence_shape_for_r_packages():
 
 
 def test_conda_presence_check_unchanged_for_non_R_packages():
-    """R5 — the new R routing is a strict ADD: ordinary conda CLI/python
-    packages still use the existing `command -v X || python ... importlib`
-    probe. This is what makes R5 a safe surgical change."""
+    """R5 — the R routing is a strict ADD on top of the generic conda chain:
+    ordinary conda CLI/python packages still start with `command -v X` (the
+    fast path) and still include the python dist-metadata fallback for the
+    library-only case (numpy, scipy)."""
     from agent.skills.env_freeze import _conda_presence_check
     chk = _conda_presence_check("samtools")
     assert chk.startswith("command -v samtools")
     chk_py = _conda_presence_check("numpy")
     assert chk_py.startswith("command -v numpy")
     assert "importlib.metadata" in chk_py
+
+
+# =============================================================================
+# Batch-3 Apollo3 followup (2026-05-27) — C4: N1, conda binary-name discovery
+#
+# Pre-fix the conda presence chain was `command -v {pkg} || python ...
+# importlib.metadata.distribution({pkg})`. Both clauses assume the binary
+# (clause 1) or the python dist (clause 2) is named after the package — but
+# many conda packages don't follow that: mongodb→mongod, nodejs→node,
+# openjdk→java, mysql→mysqld, postgresql→postgres, python→python3.
+# Apollo3 freeze failed VALIDATED_IN_IMAGE on the conda nodejs+mongodb
+# install with both clauses returning rc=127 even though the packages were
+# healthily installed. C4 inserts a middle clause that reads the package's
+# conda-meta `files:` list (which IS recorded under the package name) to
+# find the real bin/* entries and tests one is on PATH.
+# =============================================================================
+
+
+def test_conda_presence_check_inserts_conda_meta_bin_probe():
+    """N1 — the new clause sits BETWEEN `command -v` and the python fallback.
+    On `mongodb` (pkg name) the probe must reference the conda-meta path so
+    a healthy install where the binary is `mongod` (NOT `mongodb`) still
+    passes."""
+    from agent.skills.env_freeze import _conda_presence_check
+    chk = _conda_presence_check("mongodb")
+    # clause 1: command -v
+    assert chk.startswith("command -v mongodb || ")
+    # clause 2 (NEW): the conda-meta sh -c probe — must reference the
+    # conda-meta path AND the package name
+    assert "conda-meta/mongodb-" in chk
+    # the probe extracts "bin/X" entries from the conda-meta JSON
+    assert 'sed -nE' in chk and '"bin/' in chk
+    # and tests each basename via `command -v`
+    assert 'command -v "$b"' in chk
+    # clause 3: python importlib fallback still present
+    assert "importlib.metadata" in chk
+
+
+def test_conda_pkg_bin_check_sh_is_shell_only_no_python_dep():
+    """N1 — the conda-meta probe must NOT depend on python being in the env
+    (the bug is real for envs that DON'T have python: nodejs/mongodb-only).
+    Verify the shell expression uses pure shell tooling (sed, command, no
+    `python -c`)."""
+    from agent.skills.env_freeze import _conda_pkg_bin_check_sh
+    expr = _conda_pkg_bin_check_sh("nodejs")
+    # No python invocation in clause 2 — that's clause 3's job
+    assert "python " not in expr and "python\n" not in expr
+    # shell-only primitives
+    assert expr.startswith("sh -c '")
+    assert "sed -nE" in expr
+    assert "command -v" in expr
+
+
+def test_conda_pkg_bin_check_sh_references_both_layout_paths():
+    """N1 — the probe must look under BOTH `/opt/conda/envs/*/conda-meta/`
+    (pixi-managed envs, the typical layout) AND `/opt/conda/conda-meta/`
+    (base-env installs, legacy layout). A probe that misses one layout
+    would silently fail on a clean image and look like the original bug."""
+    from agent.skills.env_freeze import _conda_pkg_bin_check_sh
+    expr = _conda_pkg_bin_check_sh("nodejs")
+    assert "/opt/conda/envs/*/conda-meta/nodejs-" in expr
+    assert "/opt/conda/conda-meta/nodejs-" in expr
+
+
+def test_conda_presence_check_evidence_shape_passes_for_binary_mismatch():
+    """N1 — the new chain references {pkg} as a word-boundary token (in the
+    conda-meta glob `{pkg}-*.json`), so env_honesty.evidence_shape's
+    anchor rule accepts it. Critical: a probe that passed shape but didn't
+    reference the package would let a non-anchored cheat through. The
+    `{pkg}-*.json` filename glob IS the anchor."""
+    from agent.skills.env_freeze import _conda_presence_check
+    from agent.skills.env_honesty import evidence_shape_violation
+    chk = _conda_presence_check("mongodb")
+    assert evidence_shape_violation(chk, "mongodb") is None
+    chk2 = _conda_presence_check("nodejs")
+    assert evidence_shape_violation(chk2, "nodejs") is None
+    chk3 = _conda_presence_check("openjdk")
+    assert evidence_shape_violation(chk3, "openjdk") is None
+
+
+def test_conda_presence_check_clause_order_short_circuits_on_command_v_first():
+    """N1 — the fast path `command -v {pkg}` runs FIRST so trivial cases
+    (samtools, bwa, fastqc — pkg name == bin name) short-circuit without
+    needing to read any conda-meta file. The cost of the conda-meta probe
+    is only paid when the binary isn't named after the package."""
+    from agent.skills.env_freeze import _conda_presence_check
+    chk = _conda_presence_check("samtools")
+    cmd_v_idx = chk.find("command -v samtools")
+    cm_idx = chk.find("conda-meta/")
+    py_idx = chk.find("importlib.metadata")
+    # the order is command -v → conda-meta → python
+    assert 0 == cmd_v_idx < cm_idx < py_idx
 
 
 def test_r_presence_check_strips_known_prefixes():
