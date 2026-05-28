@@ -1820,6 +1820,43 @@ class EnvManager:
                 result.append(str(resolved))
         return result
 
+    @staticmethod
+    def hash_outputs(paths: list[str], max_bytes: int = 100 * 1024 * 1024 * 1024) -> dict[str, str]:
+        """Hash detected_outputs at run time so seal-time lineage can verify the
+        same path holds the same bytes from production through consumption (L11).
+
+        For each absolute path: returns {path: sha256_hex}. Missing files and
+        non-files are silently skipped (back-compat with steps that produce
+        directory outputs or generate temporary files cleaned up before this
+        call); the seal-time check treats absence as 'no recorded hash, skip
+        the lineage clause' rather than a violation.
+
+        `max_bytes` is a safety cap per file (default 100 GiB; effectively
+        infinite for real bioinformatics outputs, but bounds runaway hashing
+        on a stray petabyte tmp file). A file above the cap returns sha = '' —
+        the seal-time check treats that the same as 'missing'.
+        """
+        import hashlib as _h
+        out: dict[str, str] = {}
+        for p in paths or []:
+            try:
+                f = Path(p)
+                if not f.is_file():
+                    continue
+                if f.stat().st_size > max_bytes:
+                    continue
+                h = _h.sha256()
+                with f.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                out[p] = h.hexdigest()
+            except Exception:
+                # Any error (permission, symlink loop, …) → skip silently. The
+                # contract is "if hash recorded, lineage is checked"; we do not
+                # gate honesty on the hashing succeeding for every file.
+                continue
+        return out
+
     # -----------------------------------------------------------------------
     # Internal
     # -----------------------------------------------------------------------

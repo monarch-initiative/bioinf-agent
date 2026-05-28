@@ -934,6 +934,12 @@ class PipelineStep(BaseModel):
     output_size_bytes: Optional[int] = None
     validation:        Optional[Any] = None
     resource_usage:    Optional[ResourceUsage] = None   # I7 — observed wall/RSS/CPU from psutil monitor
+    # L11 universal-lineage anchor: sha256 of each detected_output at
+    # production time. Hash is computed by env_manager.hash_outputs after
+    # the step completes; seal-time _check_lineage_integrity uses it to
+    # verify same-path-same-bytes across consumer steps. Optional for
+    # back-compat with older recorded runs.
+    output_sha256:     Optional[dict[str, str]] = None
 
     @field_validator("inputs", mode="before")
     @classmethod

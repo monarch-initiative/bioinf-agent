@@ -133,29 +133,30 @@ install commands.
 | L10.a — AGENT_AUTHORED commands with no corpus references | `check_grounding` requires `external_refs` to be present in the fetched corpus — `tests/test_provenance.py` |
 | L10.b — EXTRACTED commands that aren't actually in the named file | `synth_build` re-checks verbatim presence against the runtime's fetched bytes — `tests/test_synthesis.py` |
 
-## L11 — Downstream-meaningful lineage (planned for Tier B / G3)
+## L11 — Universal file-type-agnostic lineage
 
-Universal (file-type-agnostic) lineage: every step input whose path matches a
-prior step's output must have the same `sha256` as that output. Catches an
-agent that rebuilds a file at the same path between steps without re-running
-the producing step.
+| Cheat | Guard |
+|---|---|
+| L11.a — agent silently mutates a file at the same path between Step N and Step N+1 (path-only I8 walk doesn't see it) | producer step records `output_sha256: {path: sha}` at run time (`EnvManager.hash_outputs`); seal-time `_check_lineage_integrity` re-hashes any consumer's input matching a prior output and compares — `I8.lineage_mutated` / `I8.lineage_missing` — `tests/integration/test_lineage_integrity.py` |
+| L11.b — overwrite semantics: which producer's hash wins when a path is written by two steps | LATER step in step-order wins (matches natural-overwrite semantics) — `test_path_reproduced_in_later_step_wins` |
 
-**Status:** scoped, not yet built.
+This is file-type-AGNOSTIC by design — works for BAM, VCF, parquet, .weird,
+anything. Per-file-type lineage (BAM @PG chain, VCF sample IDs) stays
+optional, opt-in per `OutputValidator`.
 
-## L12 — Apptainer/Singularity runtime (planned for Tier B / G4)
+## L12 — Apptainer/Singularity runtime
 
-The shipped `.sif` actually runs under `apptainer exec`. We currently
-exercise `docker run` only.
+| Cheat | Guard |
+|---|---|
+| L12.a — docker-run-pass / apptainer-exec-fail drift (the shipped `.sif` differs in behavior from the source docker image) | `tests/integration/test_apptainer_runtime_smoke.py` — converts an existing `docker_images/<name>/<name>.tar` via `apptainer build docker-archive` and execs the smoke chain. `skipif-no-apptainer` so dev hosts without it just skip; HPC consumers and CI runners with apptainer execute |
 
-**Status:** scoped, not yet built.
+## L13 — Recipe-replay determinism
 
-## L13 — Recipe-replay determinism (planned for Tier B / G5)
-
-Same recipe inputs (pixi.lock + apt_snapshot + base_image + commit_sha) →
-same `content_digest`, byte-for-byte. Pure-function variant cheap (Tier B);
-full-rebuild variant marked `integration_docker_slow` for pre-release.
-
-**Status:** scoped, not yet built.
+| Cheat | Guard |
+|---|---|
+| L13.a — `content_digest` shifts on the same recipe across processes (would silently invalidate EnvCache) | pure-function determinism: same parts → same digest (sort-keyed JSON); each recipe part shifts the digest when perturbed — `tests/integration/test_content_digest_determinism.py` |
+| L13.b — recipe part has no influence on identity (collision surface) | parametrized perturbation test covers lock / longtail / platform / engine / base / apt_snapshot |
+| L13.c — full-rebuild divergence (different bytes from same recipe) | DEFERRED to `integration_docker_slow` tier; the pure-function variant catches the contract bug; rebuild divergence is rarer and detectable via `lookup_anchored` on real runs |
 
 ---
 

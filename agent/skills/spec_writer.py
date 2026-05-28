@@ -552,6 +552,14 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_authored_artifact_integrity(spec))
 
+    # ------------------------------------------------------------------
+    # I8 (lineage integrity): file-type-agnostic universal lineage. When a
+    # step's input path matches a prior step's output, the on-disk bytes must
+    # match the producer's recorded sha256 from run time. Catches an agent
+    # silently mutating a file between steps; the path-only I8 walk would not.
+    # ------------------------------------------------------------------
+    violations.extend(_check_lineage_integrity(spec))
+
     return violations
 
 
@@ -637,6 +645,109 @@ def _check_authored_artifact_integrity(spec: dict) -> list[dict]:
                 "recorded_sha256": recorded,
                 "disk_sha256":     disk_sha,
             })
+    return violations
+
+
+def _check_lineage_integrity(spec: dict) -> list[dict]:
+    """Universal file-type-agnostic lineage (L11 cheat-guard level).
+
+    The workflow graph already declares each pipeline_step's inputs and
+    outputs as paths. A path that appears as both a producer step's output
+    AND a downstream step's input must hold the SAME bytes throughout the
+    workflow's lifetime — otherwise an agent could silently mutate the file
+    between steps and the I8 PATH-lineage check (composition_coherence)
+    would not catch it.
+
+    This is file-type-agnostic: it works for BAM, VCF, parquet, .weird, or
+    any extension the agent hasn't met before. The contract is just 'same
+    path → same bytes' at the workflow level. Per-file-type lineage (BAM
+    @PG chain, VCF sample IDs) stays optional, opt-in per validator.
+
+    The producer step must have `output_sha256: {path: hex}` recorded at run
+    time (env_manager.hash_outputs does this for run_pipeline_step /
+    run_step_in_container). If the producer has no output_sha256, the
+    lineage clause for paths it owns is SKIPPED — back-compat with older
+    recorded runs; the check is an honesty guard, not a coverage gate.
+
+    Returns I8.lineage_mutated / I8.lineage_missing / I8.lineage_unreadable
+    violations. Lives in the I8 tier (composition-coherence sibling) so
+    check_workflow_invariants picks it up without _WORKFLOW_INVARIANT_TIERS
+    edits."""
+    import hashlib as _h
+    violations: list[dict] = []
+    steps = sorted(
+        [s for s in spec.get("pipeline_steps", []) or [] if isinstance(s, dict)],
+        key=lambda s: s.get("step") or 0,
+    )
+
+    # Build {output_path → (producer_step_n, recorded_sha)} for paths whose
+    # producer recorded a hash. When a path appears in multiple producers
+    # (rare; e.g. step 3 overwrites step 1's reads.bam), the LAST in step
+    # order wins, matching the natural-overwrite semantics — step 4's
+    # input reads.bam IS what step 3 wrote, not what step 1 wrote.
+    producer_index: dict[str, tuple[int, str]] = {}
+    for s in steps:
+        sn = s.get("step") or 0
+        recorded = s.get("output_sha256") or {}
+        if not isinstance(recorded, dict):
+            continue
+        for path, sha in recorded.items():
+            if isinstance(path, str) and isinstance(sha, str) and sha:
+                producer_index[path] = (sn, sha)
+
+    # For each consumer step, check inputs against the producer index.
+    for s in steps:
+        consumer_n = s.get("step") or 0
+        for inp in s.get("inputs", []) or []:
+            ipath = inp.get("path") if isinstance(inp, dict) else inp
+            if not isinstance(ipath, str) or ipath not in producer_index:
+                continue
+            producer_n, recorded_sha = producer_index[ipath]
+            if producer_n >= consumer_n:
+                # Self-reference or backward edge — not a forward lineage clause.
+                continue
+            p = Path(ipath)
+            if not p.is_file():
+                violations.append({
+                    "invariant": "I8.lineage_missing",
+                    "message":   f"pipeline_step {consumer_n} consumes '{ipath}' as input "
+                                 f"(produced by step {producer_n}) but the file is no "
+                                 f"longer on disk at seal time — the consumer's input is "
+                                 f"a dangling reference",
+                    "where":     f"pipeline_steps[step={consumer_n}].inputs",
+                    "path":      ipath,
+                    "producer_step": producer_n,
+                })
+                continue
+            try:
+                h = _h.sha256()
+                with p.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                disk_sha = h.hexdigest()
+            except Exception as e:
+                violations.append({
+                    "invariant": "I8.lineage_unreadable",
+                    "message":   f"could not re-hash '{ipath}' for lineage check "
+                                 f"(producer step {producer_n}): {e!r}",
+                    "where":     f"pipeline_steps[step={consumer_n}].inputs",
+                    "path":      ipath,
+                })
+                continue
+            if disk_sha != recorded_sha:
+                violations.append({
+                    "invariant": "I8.lineage_mutated",
+                    "message":   f"pipeline_step {consumer_n} consumes '{ipath}' but its "
+                                 f"bytes changed since step {producer_n} produced it: "
+                                 f"producer recorded sha256={recorded_sha[:12]}..., "
+                                 f"on disk={disk_sha[:12]}... — the workflow's "
+                                 f"same-path-same-bytes contract is broken",
+                    "where":     f"pipeline_steps[step={consumer_n}].inputs",
+                    "path":      ipath,
+                    "producer_step":  producer_n,
+                    "producer_sha256": recorded_sha,
+                    "disk_sha256":     disk_sha,
+                })
     return violations
 
 

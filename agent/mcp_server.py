@@ -1459,6 +1459,11 @@ def run_pipeline_step(
         env_name, command, timeout=timeout_seconds, inputs=inputs,
         watch_dir=watch_dir or None,
     )
+    # L11 (universal lineage): hash each detected_output at production time
+    # so seal can verify the same path holds the same bytes through to its
+    # downstream consumer. Cheap (one sha256 per produced file), file-type-
+    # agnostic, and the producer's own bytes — agent can't substitute.
+    output_sha256 = _env_mgr.hash_outputs(result.get("detected_outputs", []))
     step_data = {
         "tool":            tool or (command.split() or [""])[0],
         "subcommand":      subcommand or None,
@@ -1469,6 +1474,7 @@ def run_pipeline_step(
         "resource_usage":  result.get("resource_usage"),
         "inputs":          result.get("inputs", []),
         "detected_outputs": result.get("detected_outputs", []),
+        "output_sha256":   output_sha256 or None,
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     idx = _pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
@@ -1647,6 +1653,9 @@ def run_step_in_container(
     detected = sorted(p for p, sig in after.items() if before.get(p) != sig)
 
     norm_inputs = [{"path": i, "references": []} if isinstance(i, str) else i for i in inputs]
+    # L11 (universal lineage): hash detected_outputs at production time so
+    # seal can verify same-path-same-bytes against downstream consumers.
+    output_sha256 = _env_mgr.hash_outputs(detected)
     step_data = {
         "tool":            tool or (command.split() or [""])[0],
         "subcommand":      subcommand or None,
@@ -1656,6 +1665,7 @@ def run_step_in_container(
         "resource_usage":  res.get("resource_usage"),
         "inputs":          norm_inputs,
         "detected_outputs": detected,
+        "output_sha256":   output_sha256 or None,
         "ran_in_container": True,
         "container_image":  image,
         "container_image_digest": rec.get("image_digest"),
