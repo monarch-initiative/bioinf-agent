@@ -2601,6 +2601,77 @@ def test_env_report_html_separates_declared_policy_from_verified():
     assert "proprietary-EULA" in h and "cuda" in h
 
 
+def test_env_report_html_install_commands_is_own_top_level_section():
+    """C3 (batch-3) — Install commands MUST be its own top-level section (its
+    own `<section class="bx">` panel + `<h2>` heading), not a subsection nested
+    under Along-for-the-Ride. The user's rule: 'all reports have the same set
+    of sections' — and 'how things were installed' is structurally separate
+    from 'what got pulled in' as a transitive dep."""
+    from agent.skills.env_report_html import render_env_report_html
+    rec = dict(_sample_record())
+    rec["shipped_binaries"] = [
+        {"name": "seqkit (release binary)",
+         "command": "curl -L -o /tmp/seqkit.tgz https://example.com/seqkit.tgz && tar xf /tmp/seqkit.tgz"},
+    ]
+    h = render_env_report_html(rec)
+    # The install commands header is now an <h2>, NOT an <h3 class="sub">
+    assert "<h2>Install commands" in h
+    assert '<h3 class="sub">Install commands' not in h, (
+        "Install commands must be a top-level section, not a sub-h3 inside "
+        "Along-for-the-Ride")
+    # The Along-for-the-Ride section no longer renders Install-commands inline
+    along_idx = h.find("Along for the ride")
+    install_idx = h.find("<h2>Install commands")
+    assert along_idx != -1 and install_idx != -1
+    assert install_idx > along_idx, (
+        "Install commands section should follow Along-for-the-Ride")
+    # The actual install command stays renderable
+    assert "seqkit (release binary)" in h
+    assert "curl -L -o" in h
+
+
+def test_env_report_html_sections_constant_across_modes():
+    """C3 / user rule — both adopt mode and build mode emit the SAME set of
+    `<h2>` section headings (zero rows is fine; the operator wants to see
+    that the section exists and is empty, not that the report 'looks different'
+    between modes)."""
+    from agent.skills.env_report_html import render_env_report_html
+    import re
+
+    def section_titles(html: str) -> list[str]:
+        # plain text inside <h2>...</h2>, stripping nested <span class="note">
+        # and <span class="pill">/etc. Take the title bytes that sit OUTSIDE
+        # any nested span (which carry the count/notes/badges, not the title).
+        out = []
+        for m in re.finditer(r"<h2[^>]*>(.+?)</h2>", html, re.S):
+            inner = m.group(1)
+            # drop any nested <span ...>...</span> (notes / pills / badges)
+            inner = re.sub(r"<span[^>]*>.*?</span>", "", inner, flags=re.S)
+            # drop any remaining tags (id markers etc.)
+            inner = re.sub(r"<[^>]+>", "", inner)
+            out.append(inner.strip())
+        return out
+
+    build = render_env_report_html(_sample_record())
+    adopt = render_env_report_html({
+        "name": "bt", "image": "biocontainers/x@sha256:d",
+        "image_digest": "sha256:d", "mode": "adopt", "validation_locus": "adopted",
+        "requested_tools": ["samtools"],
+        "request_key": "samtools=1.21|linux/amd64|none",
+    })
+    build_titles = [t for t in section_titles(build) if t]
+    adopt_titles = [t for t in section_titles(adopt) if t]
+    assert build_titles == adopt_titles, (
+        f"section titles differ between modes; build={build_titles!r}, "
+        f"adopt={adopt_titles!r}")
+    # Sanity: the six expected sections are present (in order). The trailing
+    # 'How this was verified' is also a section.
+    expected = ["Tools", "Along for the ride", "Install commands",
+                "System packages (apt)", "Artifacts", "Declared policy",
+                "How this was verified"]
+    assert build_titles == expected, build_titles
+
+
 def test_attestation_adopt_mode_does_not_claim_validated_in_image():
     """The SLSA attestation for an adopted image must assert ADOPTED_BY_DIGEST, not a
     VALIDATED_IN_IMAGE guarantee it never performed."""

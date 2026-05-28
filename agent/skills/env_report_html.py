@@ -320,11 +320,22 @@ def render_env_report_html(record: dict) -> str:
         P.append(_empty("(closure not captured in-locus — an adopted image is trusted "
                         "by its published digest, not introspected here)" if is_adopt else
                         "(none — every resolved package was directly requested)"))
-    # -- install commands as a sub-section of the same bordered panel -------
-    P.append(f'<h3 class="sub">Install commands · {len(shipped)} long-tail step(s) '
-             'baked verbatim into the image</h3>')
+    P.append('</div></section>')
+
+    # -- INSTALL COMMANDS (own top-level section — promoted from a sub-section
+    # of Along-for-the-Ride in batch-3, per the "all reports share the same
+    # set of sections" rule the user gave; this also matches the SBOM split
+    # everywhere else, where "what was installed" and "how it was installed"
+    # are separately enumerable). Long-tail commands are the binary/source/
+    # synthesized/perl/cargo/go install bodies baked verbatim into the
+    # shipped image — the command IS the provenance.
+    P.append('<section class="bx">')
+    P.append(f'<h2>Install commands <span class="note">({len(shipped)} long-tail '
+             'step(s) baked verbatim into the shipped image — the command IS '
+             'the provenance)</span></h2>')
+    P.append('<div class="bx-body">')
     if shipped:
-        P.append('<details open><summary>Verbatim long-tail commands — the command IS the provenance</summary>')
+        P.append('<details open><summary>Verbatim long-tail commands</summary>')
         for s in shipped:
             label = s.get("name") or s.get("purpose") or "tool"
             cmd = (s.get("command") or "").strip()
