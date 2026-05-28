@@ -4900,3 +4900,249 @@ def test_freeze_runner_force_overrides_background_arg(tmp_path):
         "freeze_runner.main passed background=True through to freeze() — "
         "this would recursively spawn another job and exit silently"
     )
+
+
+# =============================================================================
+# Batch-2 stress-test fixes (2026-05-27) — Licenses chain (F0 + F1 + F2 + F4)
+#
+# Stress findings from the batch-2 campaign: even after batch-1 wired licenses[]
+# into the request_key (D5), the MCP wire-stringified the list (F0), freeze()
+# ignored draft.licenses (F1), I13 only refused AFTER the docker build burned
+# 30 min (F2), and the attestation didn't carry licenses[] downstream (F4).
+# Each is a distinct break in the same chain — caller intent → cache key →
+# refusal → attestation. Tests below pin each break.
+# =============================================================================
+
+
+def test_mcp_coerce_str_list_accepts_real_list_and_passes_through():
+    """F0 — a real list[str] passes through unchanged. The coercer is a
+    boundary helper for malformed wire payloads, not a transformer of healthy
+    inputs."""
+    from agent.mcp_server import _coerce_str_list
+    assert _coerce_str_list(["--no-binary", ":all:"]) == ["--no-binary", ":all:"]
+    assert _coerce_str_list([]) == []
+    assert _coerce_str_list(None) is None       # Optional[list] passthrough
+
+
+def test_mcp_coerce_str_list_decodes_json_encoded_string_array():
+    """F0 — the bug we hit: some MCP clients wire-encode array args as JSON
+    strings. Pydantic refuses string-when-list-expected and the call drops.
+    The coercer recognizes the '[…]' shape and json.loads it."""
+    from agent.mcp_server import _coerce_str_list
+    assert _coerce_str_list('["--no-binary", ":all:"]') == ["--no-binary", ":all:"]
+    assert _coerce_str_list('["MIT", "Apache-2.0"]') == ["MIT", "Apache-2.0"]
+    # whitespace tolerated (real MCP payloads are minified but defense-in-depth)
+    assert _coerce_str_list('  ["a", "b"]  ') == ["a", "b"]
+
+
+def test_mcp_coerce_str_list_falls_back_to_single_item_on_bare_string():
+    """F0 (defense-in-depth) — a bare non-JSON string becomes [s] rather than
+    crashing. This is what an agent might send when they 'know' the field is
+    a list but only have one item ('MIT')."""
+    from agent.mcp_server import _coerce_str_list
+    assert _coerce_str_list("MIT") == ["MIT"]
+    assert _coerce_str_list("") == []
+    # malformed JSON falls back to single-item too rather than dropping the call
+    assert _coerce_str_list("[bad json") == ["[bad json"]
+
+
+def test_mcp_freeze_param_pydantic_validator_accepts_json_string():
+    """F0 end-to-end via the type alias: Pydantic on the freeze() boundary
+    accepts a JSON-encoded list AND a real list, transparently."""
+    from pydantic import TypeAdapter
+    from agent.mcp_server import OptStrList, StrList
+    ta_opt = TypeAdapter(OptStrList)
+    ta_req = TypeAdapter(StrList)
+    # OptStrList — used by `licenses`
+    assert ta_opt.validate_python(["MIT"]) == ["MIT"]
+    assert ta_opt.validate_python('["MIT", "Apache-2.0"]') == ["MIT", "Apache-2.0"]
+    assert ta_opt.validate_python(None) is None
+    # StrList — used by `tools`
+    assert ta_req.validate_python(["samtools=1.21"]) == ["samtools=1.21"]
+    assert ta_req.validate_python('["samtools=1.21", "bwa=0.7.17"]') == [
+        "samtools=1.21", "bwa=0.7.17",
+    ]
+
+
+def test_mcp_freeze_schema_still_advertises_licenses_array_or_null():
+    """F0 must not change the EXPORTED schema shape (D4 carries forward):
+    `licenses` stays an Optional[array] in the JSON schema agents introspect."""
+    import asyncio
+    from agent.mcp_server import mcp
+    tool = asyncio.run(mcp.get_tool("freeze"))
+    prop = tool.parameters["properties"]["licenses"]
+    types = {sub.get("type") for sub in prop.get("anyOf", [])}
+    assert "array" in types and "null" in types
+
+
+def test_freeze_merges_draft_licenses_when_caller_omits_them(monkeypatch, tmp_path):
+    """F1 — an agent that diligently `patch_pipeline({licenses, license_gated})`
+    on the draft must not be punished for forgetting to re-pass licenses on
+    freeze(). The merge takes the draft's licenses when the caller's are empty.
+
+    We stub the post-merge steps (cache lookup, build) so this test focuses
+    purely on the merge — the early-gate is what we'd hit without the merge.
+    """
+    import agent.mcp_server as ms
+
+    captured = {}
+
+    def fake_get_draft(pid):
+        return {
+            "licenses": ["proprietary-EULA"],
+            "license_gated": True,
+            "redistributable": False,
+        }
+
+    def fake_request_key(*args, **kwargs):
+        captured["licenses_at_rkey"] = list(kwargs.get("licenses") or [])
+        captured["gated_at_rkey"] = bool(kwargs.get("gated"))
+        # short-circuit by raising — we only want to observe the merge
+        raise RuntimeError("short_circuit")
+
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", fake_get_draft)
+    monkeypatch.setattr(ms._freeze, "request_key", fake_request_key)
+
+    # Caller does NOT pass licenses; draft has them. Pre-fix this would have
+    # hit the I13 early-gate (gated=False from caller → but draft promotes →
+    # licenses=[] from caller → refusal). With F1 the draft licenses merge in.
+    try:
+        ms.freeze(env_name="test", tools=["secret_tool=1.0"],
+                  pipeline_id="some_pipeline_id", gated=False, licenses=None)
+    except RuntimeError as e:
+        assert str(e) == "short_circuit"
+    assert captured["licenses_at_rkey"] == ["proprietary-EULA"], (
+        "freeze() must merge draft.licenses when caller passes licenses=None")
+    assert captured["gated_at_rkey"] is True, (
+        "freeze() must promote to gated when draft.license_gated=true")
+
+
+def test_freeze_caller_licenses_win_over_draft(monkeypatch, tmp_path):
+    """F1 — caller intent wins. A caller that explicitly passes
+    licenses=['MIT'] is NOT overridden by a different licenses[] on the draft.
+    (The merge is fallback-when-empty, not always-overlay.)"""
+    import agent.mcp_server as ms
+
+    captured = {}
+
+    def fake_get_draft(pid):
+        return {"licenses": ["proprietary-EULA"], "license_gated": True}
+
+    def fake_request_key(*args, **kwargs):
+        captured["licenses_at_rkey"] = list(kwargs.get("licenses") or [])
+        raise RuntimeError("short_circuit")
+
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", fake_get_draft)
+    monkeypatch.setattr(ms._freeze, "request_key", fake_request_key)
+
+    try:
+        ms.freeze(env_name="test", tools=["t=1"], pipeline_id="pid",
+                  gated=True, licenses=["MIT"])
+    except RuntimeError:
+        pass
+    assert captured["licenses_at_rkey"] == ["MIT"], (
+        "caller's explicit licenses[] must NOT be overlaid by draft.licenses")
+
+
+def test_freeze_i13_early_gate_refuses_before_docker_work(monkeypatch):
+    """F2 — a gated build with empty licenses[] must refuse IMMEDIATELY,
+    before request_key/cache-lookup/docker build. Pre-fix the same refusal
+    happened only AFTER the docker build finished (env_honesty.check_build),
+    so the user paid 10-30 min of build time for a known-doomed call.
+
+    We assert by monkeypatching every downstream surface that should NEVER
+    be hit and confirming none of them are touched.
+    """
+    import agent.mcp_server as ms
+
+    called = {"rkey": False, "lookup": False, "build": False}
+
+    def boom_rkey(*a, **kw):
+        called["rkey"] = True
+        raise AssertionError("request_key called — early gate did not fire")
+
+    def boom_lookup(*a, **kw):
+        called["lookup"] = True
+        raise AssertionError("cache lookup called — early gate did not fire")
+
+    def boom_build(*a, **kw):
+        called["build"] = True
+        raise AssertionError("build_env_image called — early gate did not fire")
+
+    monkeypatch.setattr(ms._freeze, "request_key", boom_rkey)
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", boom_lookup)
+    monkeypatch.setattr(ms._env_freeze, "build_env_image", boom_build)
+    # No draft to interfere
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: None)
+
+    result = ms.freeze(env_name="test", tools=["secret_tool=1.0"],
+                      gated=True, licenses=None)
+    assert result["success"] is False
+    assert result["stage"] == "i13_early_gate"
+    inv_ids = {v["invariant"] for v in result["honesty_violations"]}
+    assert "I13.gated_license_recorded" in inv_ids
+    assert not any(called.values()), "early-gate must short-circuit ALL downstream calls"
+
+
+def test_freeze_i13_early_gate_uses_same_invariant_id_as_envhonesty():
+    """F2 (consistency) — the early-gate's violation MUST be structurally
+    identical to the contract's (`I13.gated_license_recorded`). A downstream
+    handler that buckets honesty_violations by invariant id should treat the
+    two refusal paths as the same failure mode."""
+    import agent.mcp_server as ms
+    result = ms.freeze(env_name="t", tools=["x=1"], gated=True, licenses=None)
+    inv = result["honesty_violations"][0]
+    assert inv["invariant"] == "I13.gated_license_recorded"
+    assert inv["where"] == "licenses"
+
+
+def test_attestation_predicate_carries_licenses_and_accelerator():
+    """F4 — the SLSA attestation must propagate the declared licenses[] AND
+    the accelerator policy that POLICY_CLEAN was evaluated against. Without
+    these, the attestation says 'POLICY_CLEAN' without saying 'against what',
+    breaking downstream cosign-verify of a gated artifact."""
+    from agent.skills.attestation import build_attestation
+    record = {
+        "image": "ours:1.0", "image_digest": "sha256:" + "a" * 64,
+        "mode": "build",
+        "verifications": [{"tool": "t", "label": "t", "check": "command -v t",
+                           "passed": True, "rc": 0}],
+        "gated": True, "redistributable": False,
+        "licenses": ["proprietary-EULA", "noncommercial-use-only"],
+        "accelerator": {"type": "cuda", "toolkit_version": "12.4",
+                        "runtime": "build_only"},
+    }
+    att = build_attestation(record)
+    ip = att["predicate"]["buildDefinition"]["internalParameters"]
+    assert ip["licenses"] == ["proprietary-EULA", "noncommercial-use-only"]
+    assert ip["license_gated"] is True
+    assert ip["accelerator"] == {"type": "cuda", "toolkit_version": "12.4",
+                                 "runtime": "build_only"}
+
+
+def test_attestation_predicate_licenses_empty_when_unrestricted():
+    """F4 (defense-in-depth) — an ungated build still carries the licenses[]
+    key (empty list), so a verifier can rely on the field's presence rather
+    than guessing whether absence means 'no licenses' or 'no policy'."""
+    from agent.skills.attestation import build_attestation
+    record = {"image": "ours:1.0", "image_digest": "sha256:" + "b" * 64,
+              "mode": "build"}
+    att = build_attestation(record)
+    ip = att["predicate"]["buildDefinition"]["internalParameters"]
+    assert ip["licenses"] == []
+    assert ip["license_gated"] is False
+    assert ip["accelerator"] == {}
+
+
+def test_attestation_predicate_licenses_present_on_adopt_path():
+    """F4 — adopt mode carries policy too (the dorado-stress lesson: we
+    declare gated/licenses ON ourselves regardless of who built the bytes)."""
+    from agent.skills.attestation import build_attestation
+    record = {"image": "biocon:1.0", "image_digest": "sha256:" + "c" * 64,
+              "mode": "adopt", "gated": True, "licenses": ["EULA-X"]}
+    att = build_attestation(record)
+    ip = att["predicate"]["buildDefinition"]["internalParameters"]
+    assert ip["licenses"] == ["EULA-X"]
+    assert ip["license_gated"] is True
+    # mode-aware honesty preserved (the adopt contract)
+    assert ip["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]

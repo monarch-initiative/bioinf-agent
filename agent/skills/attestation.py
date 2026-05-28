@@ -97,6 +97,19 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "honesty_contract": guarantees,
                 "validated_in_image": validated,        # validated == shipped, per tool (build only)
                 "redistributable": r.get("redistributable", not r.get("gated")),
+                # F4 fix (Batch 2): the gated/license firewall (I13) is verified
+                # at build time; the attestation must CARRY the declared licenses
+                # forward so a downstream verifier / cosign-attest consumer can
+                # see WHICH license terms gated this artifact. Without this, the
+                # attestation says "POLICY_CLEAN" without saying "POLICY_CLEAN
+                # against what". Recorded alongside `redistributable` (the
+                # boolean firewall flag) since they're a unit — gated=True means
+                # redistributable=False AND licenses[] names the terms.
+                "license_gated": bool(r.get("license_gated", r.get("gated", False))),
+                "licenses": list(r.get("licenses") or []),
+                # The accelerator policy that gated POLICY_CLEAN (I12). Pure
+                # metadata pass-through — the contract already enforces shape.
+                "accelerator": r.get("accelerator") or {},
             },
             "resolvedDependencies": resolved,
         },

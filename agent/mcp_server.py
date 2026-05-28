@@ -21,10 +21,48 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 import yaml
 from fastmcp import FastMCP
+from pydantic import BeforeValidator
+
+
+# ---------------------------------------------------------------------------
+# MCP wire coercion — some MCP clients wire-encode array arguments as JSON
+# strings (e.g. pip_flags arrives as '["--no-binary", ":all:"]' instead of
+# ["--no-binary", ":all:"]). FastMCP's Pydantic validator refuses
+# string-when-list-expected, dropping the call. The Batch-2 stress campaign
+# hit this on `pip_flags` and `licenses`. We coerce at the parameter boundary
+# so the primitive's contract stays list[str] regardless of transport quirks.
+# (Symmetric with how Pydantic ships BeforeValidator for boundary coercion.)
+# ---------------------------------------------------------------------------
+
+def _coerce_str_list(v):
+    """list[str] coercer: list → list, JSON-string-of-list → list, None → None
+    (used with Optional). A bare non-empty string becomes [s] (single-item)."""
+    if v is None or isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        if s[0] == "[" and s[-1] == "]":
+            try:
+                import json as _json
+                parsed = _json.loads(s)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+        return [s]
+    return v
+
+
+# Annotated alias: `StrList` and `OptStrList` behave like list[str] / Optional[list[str]]
+# but quietly accept a JSON-encoded list when the wire transport hands us one.
+StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
+OptStrList = Annotated[Optional[list[str]], BeforeValidator(_coerce_str_list)]
 
 # ---------------------------------------------------------------------------
 # Config + skill singletons (initialised once at server startup)
@@ -1156,7 +1194,7 @@ def install_pip_package(
     env_name: str,
     name: str,
     version: str = "",
-    pip_flags: Optional[list[str]] = None,
+    pip_flags: OptStrList = None,
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -2239,14 +2277,14 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 @mcp.tool()
 def freeze(
     env_name: str,
-    tools: list[str],
+    tools: StrList,
     pipeline_name: str = "",
     pipeline_description: str = "",
     version: str = "",
     platform: str = "linux-64",
     accel: str = "none",
     gated: bool = False,
-    licenses: Optional[list[str]] = None,
+    licenses: OptStrList = None,
     push_target: str = "",
     gpu_required: bool = False,
     cuda_version: str = "",
@@ -2305,6 +2343,35 @@ def freeze(
             pipeline_id=pipeline_id,
         )
     parsed = _freeze.parse_tools(tools)
+    # F1 fix (Batch 2): the licenses surface has TWO entry points — the freeze()
+    # `licenses=[...]` kwarg AND patch_pipeline({licenses, license_gated, …}) on
+    # the draft. An agent that diligently called patch_pipeline but forgot to
+    # re-pass licenses on freeze() would land here with licenses=None, the I13
+    # gate would refuse the gated build, and the diligence would look like a
+    # bug. Merge: caller's licenses wins if non-empty; else fall back to the
+    # draft's. Same merge for `gated`: an explicit gated=True from the caller
+    # wins; absent caller intent, the draft's license_gated promotes us into
+    # gated mode (so I13 still fires, but with the licenses the agent recorded).
+    _draft_for_merge = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
+    if isinstance(_draft_for_merge, dict):
+        if not (licenses or []) and _draft_for_merge.get("licenses"):
+            licenses = list(_draft_for_merge.get("licenses") or [])
+        if not gated and bool(_draft_for_merge.get("license_gated")):
+            gated = True
+    # F2 fix (Batch 2): I13 EARLY GATE. The honesty contract already refuses a
+    # gated build with empty licenses[] (`I13.gated_license_recorded` in
+    # env_honesty), but only AFTER the docker build finishes — the user pays
+    # 10-30 min of build time to learn the artifact will be refused. Refuse
+    # here, before request_key/cache lookup/docker work, with the same shape
+    # the contract uses so the error is structurally indistinguishable.
+    if gated and not (licenses or []):
+        return {"success": False, "stage": "i13_early_gate",
+                "honesty_violations": [{
+                    "invariant": "I13.gated_license_recorded", "where": "licenses",
+                    "message": "license_gated=true requires at least one entry in licenses[] "
+                               "naming the license/terms the artifact is bound by. Pass "
+                               "licenses=[…] on freeze() (or patch_pipeline before freeze)."}],
+                "violation_count": 1}
     # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
     # the honesty contract (I12) can actually check it. A draft-supplied accelerator
     # wins (richer record); when absent and the caller passed accel="cuda" but no
@@ -2316,7 +2383,8 @@ def freeze(
     # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
     # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix)
     # AND the install-record version fill (B7 fix — see parsed_filled).
-    draft = _pipeline_state.get_draft(pipeline_id) if pipeline_id else None
+    # Reuses _draft_for_merge (read above for F1/F2 licenses merge) — same draft.
+    draft = _draft_for_merge
     _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
     effective_accel = _synth_accelerator_from_request(accel, cuda_version, _draft_accel)
     # B7 fix (verification-driven, 2026-05-27): fill version slots from the
