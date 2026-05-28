@@ -1,6 +1,16 @@
 paths:
   data_dir: ./data
+  # WorkflowSpec final deliverables AND Layer-1 freeze deliverables
+  # (ENV.html / attestation.json / recipe.yaml / _env_cache.json) live here.
+  # env_reports/ is the SHIPPABLE deliverables dir — nothing transient.
   pipelines_dir: ./env_reports
+  # In-progress pipeline drafts live in their own dir, NOT env_reports/, so
+  # listing env_reports/ shows only what shipped. A draft is workspace state,
+  # not a deliverable.
+  drafts_dir: ./data/pipeline_drafts
+  # W1 background-freeze job ephemera (args + result JSON) ride next to the
+  # JobManager log/status files already there.
+  jobs_dir: ./data/jobs
   conda_envs_prefix: ./envs
   docker_output_dir: ./docker_images
   # Core test data convention: {data_dir}/core_test_data_{genome_build}/

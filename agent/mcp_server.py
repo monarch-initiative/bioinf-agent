@@ -2300,7 +2300,7 @@ def _freeze_in_background(**args) -> dict:
 
     The background mode spawns a Python subprocess that calls freeze() in
     SYNCHRONOUS mode (with `background=False`), writes the result JSON to
-    env_reports/{name}.freeze_result.json, and exits. The parent agent polls
+    data/jobs/{job_id}.result.json, and exits. The parent agent polls
     check_job(job_id) at its own cadence; when state=='exited', it reads the
     result file for the full freeze record. Standard env_report/attestation/
     recipe artifacts are written by the subprocess too — pure pass-through.
@@ -2321,10 +2321,15 @@ def _freeze_in_background(**args) -> dict:
     # `freeze.{name}.{8-char-hex}` — readable in `list_jobs` AND unique across
     # repeated background freezes of the same env.
     job_id = f"freeze.{name}.{_uuid.uuid4().hex[:8]}"
-    reports_dir = _env_mgr.project_root / "env_reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    args_path = reports_dir / f"{name}.freeze_args.{job_id}.json"
-    result_path = reports_dir / f"{name}.freeze_result.json"
+    # W1 ephemera (args + result JSON) live in data/jobs/ next to the
+    # JobManager log/status files for the same job — env_reports/ stays
+    # clean as the Layer-1 deliverables dir (HTML / attestation / recipe).
+    # Configurable via paths.jobs_dir; back-compat falls back to env_reports.
+    jobs_rel = config.get("paths", {}).get("jobs_dir") or "data/jobs"
+    jobs_dir = _env_mgr.project_root / jobs_rel
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    args_path = jobs_dir / f"{job_id}.args.json"
+    result_path = jobs_dir / f"{job_id}.result.json"
     # erase any prior result so a stale file can't fool a polling caller
     if result_path.exists():
         result_path.unlink()
@@ -2424,7 +2429,7 @@ def freeze(
     for large builds (CUDA tools, ML/AI models, big release binaries) where the
     synchronous in-call time would exceed the MCP stream-watchdog window (~10 min).
     The subprocess writes the full freeze result JSON to
-    `env_reports/{name}.freeze_result.json` when it finishes; poll `check_job(job_id)`
+    `data/jobs/{job_id}.result.json` when it finishes; poll `check_job(job_id)`
     until state=='exited', then read that file. The standard env_report/attestation/
     recipe artifacts are written by the subprocess too, on success.
     """

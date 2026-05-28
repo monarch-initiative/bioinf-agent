@@ -46,6 +46,13 @@ docker_images/*/
 # Pipeline specs and HTML reports are generated artifacts — not tracked in git
 env_reports/
 
+# Workspace state (in-progress pipeline drafts; W1 background freeze job ephemera).
+# These used to live in env_reports/ but were split out in batch3 so env_reports/
+# stays deliverables-only. Both are runtime-generated; nothing in them belongs
+# in the repo.
+data/pipeline_drafts/
+data/jobs/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -54,3 +61,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Stress-test workspaces (data/{tool}_stress_test_data/, data/{tool}_test_data/
+# created by the agent during a stress campaign — not committed)
+data/*_stress_test_data/
+data/*_test_data/

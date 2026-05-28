@@ -4769,12 +4769,15 @@ def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
     assert out["state"] == "running"
     assert out["job_id"].startswith("freeze.bgsmoke.")
     assert out["job_id"] == started_jobs["job_id"]
-    assert out["result_path"].endswith("bgsmoke.freeze_result.json")
+    # W1 ephemera (args + result JSON) live in data/jobs/ (C1 relocation),
+    # keyed by job_id, NOT in env_reports/ (which is deliverables-only).
+    assert out["result_path"].endswith(f"{started_jobs['job_id']}.result.json")
+    assert "/data/jobs/" in out["result_path"]
     # the subprocess must be invoked via the dedicated runner script
     assert "agent.skills.freeze_runner" in started_jobs["command"]
     # and the args file must exist BEFORE spawn (the runner reads it)
-    args_files = list((tmp_path / "env_reports").glob("bgsmoke.freeze_args.*.json"))
-    assert args_files, "freeze_args file must be written BEFORE the subprocess spawns"
+    args_files = list((tmp_path / "data" / "jobs").glob(f"{started_jobs['job_id']}.args.json"))
+    assert args_files, "args file must be written BEFORE the subprocess spawns"
     import json
     args = json.loads(args_files[0].read_text())
     assert args["env_name"] == "bgsmoke"
@@ -4782,16 +4785,28 @@ def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
 
 
 def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
-    """W1 — a prior freeze_result.json from an earlier background run MUST
-    be deleted before the new subprocess spawns. Otherwise a polling caller
+    """W1 — a prior result JSON from an earlier background run MUST be
+    deleted before the new subprocess spawns. Otherwise a polling caller
     could read the OLD result while the new build is still running and
-    silently use a stale artifact's record."""
+    silently use a stale artifact's record.
+
+    Post-C1: the result path is keyed by job_id, not env-name, so two
+    consecutive `bgstale` freezes have DIFFERENT result paths and the stale-
+    file collision is structurally avoided. We still test the unlink-on-
+    spawn invariant by pre-placing a file at the expected new-run path
+    (using a deterministic job_id stub) and asserting it's unlinked.
+    """
     from agent import mcp_server as ms
 
     monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
-    reports = tmp_path / "env_reports"
-    reports.mkdir()
-    stale = reports / "bgstale.freeze_result.json"
+    # Force a deterministic job_id so we know which result path to pre-stale.
+    import uuid as _u
+    fake_uuid = type("FU", (), {"hex": "deadbeefdeadbeef"})()
+    monkeypatch.setattr(_u, "uuid4", lambda: fake_uuid)
+
+    jobs_dir = tmp_path / "data" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    stale = jobs_dir / "freeze.bgstale.deadbeef.result.json"
     stale.write_text('{"stale": true, "value": "from a prior run"}')
 
     def _stub_start(command, **kw):
@@ -4800,9 +4815,8 @@ def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
     ms.freeze(env_name="bgstale", tools=["x"], background=True)
     assert not stale.exists(), (
-        "stale freeze_result.json from a prior run was not cleared — the "
-        "next polling caller would read the stale record as if it were the "
-        "new run's"
+        "stale result.json from a prior run was not cleared — the next "
+        "polling caller would read the stale record as if it were the new run's"
     )
 
 
@@ -5592,6 +5606,103 @@ def test_freeze_invokes_post_failure_prune_only_when_disk_stressed(monkeypatch, 
     assert prune_called["count"] == 1
     assert "buildkit_prune" in result
     assert result["buildkit_prune"]["ok"] is True
+
+
+# =============================================================================
+# Batch-3 Apollo3 followups (2026-05-27) — C1: relocate workspace state
+#
+# Pre-fix: env_reports/ was a mix of SHIPPABLE deliverables (ENV.html, attestation
+# .json, recipe.yaml, _env_cache.json) AND workspace state (pipeline drafts, W1
+# background freeze args + result JSON). An operator listing env_reports/ could
+# not tell at a glance which envs had shipped from which were half-finished. C1
+# splits: drafts → data/pipeline_drafts/, W1 ephemera → data/jobs/ (keyed by
+# job_id, sibling of the existing JobManager log/status files for the SAME
+# job). env_reports/ becomes deliverables-only.
+# =============================================================================
+
+
+def test_pipeline_drafts_land_in_drafts_dir_not_env_reports(tmp_path):
+    """C1 — a new draft writes to drafts_dir, NOT pipelines_dir/. Listing
+    pipelines_dir (env_reports/ in prod) should show ONLY frozen envs'
+    deliverables; an in-progress draft must not pollute that view."""
+    from agent.skills.pipeline_state import PipelineState
+    drafts = tmp_path / "drafts"
+    reports = tmp_path / "reports"
+    cfg = {"paths": {
+        "pipelines_dir": str(reports),
+        "drafts_dir": str(drafts),
+    }}
+    ps = PipelineState(cfg)
+    ps.start("c1_test", "drafts-dir test")
+    ps.patch("c1_test", {"description": "a"})
+    draft_path = ps._draft_path("c1_test")
+    assert draft_path.parent == drafts, (
+        f"draft path was {draft_path}, expected parent dir {drafts}")
+    assert draft_path.exists()
+    # AND pipelines_dir (the deliverables dir) must NOT contain the draft
+    pipelines_drafts = list(reports.glob("*.draft.yaml"))
+    assert not pipelines_drafts, (
+        f"pipelines_dir should never contain *.draft.yaml; found: "
+        f"{pipelines_drafts}")
+
+
+def test_pipeline_state_back_compat_uses_pipelines_dir_when_drafts_dir_unset():
+    """C1 — an OLD config without `drafts_dir` falls back to pipelines_dir so a
+    pre-batch-3 deployment keeps working. The fallback is what makes this a
+    non-breaking change."""
+    from agent.skills.pipeline_state import PipelineState
+    cfg_old = {"paths": {"pipelines_dir": "env_reports"}}
+    ps = PipelineState(cfg_old)
+    # drafts_dir collapses to pipelines_dir
+    assert ps.drafts_dir == ps.pipelines_dir
+
+
+def test_pipeline_state_scans_both_dirs_for_existing_drafts(tmp_path):
+    """C1 — _load_existing_drafts must scan BOTH drafts_dir AND pipelines_dir
+    so an upgrade with drafts still in the old location finds them.
+    Same-id wins by drafts_dir-first scan order (new location authoritative)."""
+    from agent.skills.pipeline_state import PipelineState
+    drafts = tmp_path / "drafts"; drafts.mkdir()
+    reports = tmp_path / "reports"; reports.mkdir()
+    # An old-location draft (legacy) that should still be loaded
+    (reports / "legacy.draft.yaml").write_text("description: from legacy\n")
+    # A new-location draft (canonical)
+    (drafts / "modern.draft.yaml").write_text("description: from modern\n")
+    # PipelineState computes project_root from __file__ and prefixes the cfg
+    # paths to it. Absolute paths in the cfg short-circuit that prefix.
+    cfg = {"paths": {
+        "pipelines_dir": str(reports),
+        "drafts_dir": str(drafts),
+    }}
+    ps = PipelineState(cfg)
+    assert "legacy" in ps._drafts
+    assert "modern" in ps._drafts
+
+
+def test_freeze_background_writes_args_to_jobs_dir(monkeypatch, tmp_path):
+    """C1 — W1 background freeze writes its args.json + result.json under
+    data/jobs/ (keyed by job_id), NOT under env_reports/. Sibling of the
+    JobManager log/status files for the SAME job."""
+    from agent import mcp_server as ms
+
+    started = {}
+    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+        started["job_id"] = job_id
+        started["log_path"] = str(tmp_path / f"{job_id}.log")
+        return {"job_id": job_id, "log_path": started["log_path"], "state": "running"}
+
+    monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
+    out = ms.freeze(env_name="bgrelocation", tools=["samtools=1.21"], background=True)
+    assert out["background"] is True
+    # the args file lands in data/jobs/, NOT in env_reports/
+    args_files = list((tmp_path / "data" / "jobs").glob(f"{started['job_id']}.args.json"))
+    assert args_files, "args.json must be in data/jobs/, not env_reports/"
+    # env_reports/ must not have any W1 ephemera
+    bad_args = list((tmp_path / "env_reports").glob("*.freeze_args.*.json"))
+    bad_results = list((tmp_path / "env_reports").glob("*.freeze_result.json"))
+    assert not bad_args and not bad_results, (
+        f"env_reports/ should never see W1 ephemera; found {bad_args + bad_results}")
 
 
 def test_freeze_does_not_prune_on_pre_docker_failure(monkeypatch):

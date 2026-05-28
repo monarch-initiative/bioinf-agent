@@ -5,8 +5,16 @@ Each merging MCP tool can optionally pass `pipeline_id`; the accumulator
 appends or patches the right slot in a disk-backed draft so the LLM never
 has to hand-assemble the final spec.
 
-  Draft path  → env_reports/{pipeline_id}.draft.yaml      (during install)
-  Final path  → env_reports/{pipeline_name}_{version}.yaml (after finalize)
+  Draft path  → data/pipeline_drafts/{pipeline_id}.draft.yaml   (during install)
+  Final path  → env_reports/{pipeline_name}_{version}.yaml      (after finalize)
+
+The split keeps env_reports/ as the SHIPPABLE deliverables dir — a directory
+listing tells the operator exactly what env images exist on disk + their
+companion ENV.html/attestation/recipe. Drafts are workspace state and live
+under data/pipeline_drafts/ (sibling of data/jobs/), so a half-finished
+install isn't visually confused with a frozen artifact. Configurable via
+`paths.drafts_dir` (back-compat: falls back to `paths.pipelines_dir` if
+drafts_dir is unset, which preserves any caller still on the old layout).
 
 The accumulator is opt-in: every merging tool also works without a
 pipeline_id (no merge, original return value unchanged). This preserves
@@ -32,6 +40,12 @@ class PipelineState:
         project_root = Path(__file__).parent.parent.parent.resolve()
         self.pipelines_dir = project_root / config["paths"]["pipelines_dir"]
         self.pipelines_dir.mkdir(parents=True, exist_ok=True)
+        # Drafts live in their own dir (NOT env_reports/) — see module docstring.
+        # Back-compat: if drafts_dir isn't set, fall back to pipelines_dir so an
+        # older config keeps working without forcing a migration.
+        drafts_rel = config["paths"].get("drafts_dir") or config["paths"]["pipelines_dir"]
+        self.drafts_dir = project_root / drafts_rel
+        self.drafts_dir.mkdir(parents=True, exist_ok=True)
         self._drafts: dict[str, dict] = {}
         self._load_existing_drafts()
 
@@ -408,7 +422,7 @@ class PipelineState:
     # ------------------------------------------------------------------
 
     def _draft_path(self, pipeline_id: str) -> Path:
-        return self.pipelines_dir / f"{pipeline_id}.draft.yaml"
+        return self.drafts_dir / f"{pipeline_id}.draft.yaml"
 
     def _persist(self, pipeline_id: str) -> None:
         """Atomic write of the draft to disk."""
@@ -423,14 +437,26 @@ class PipelineState:
         os.replace(tmp, path)
 
     def _load_existing_drafts(self) -> None:
-        """Recover drafts from disk on server startup."""
-        for f in self.pipelines_dir.glob("*.draft.yaml"):
-            try:
-                pid = f.name.removesuffix(".draft.yaml")
-                with open(f) as fp:
-                    self._drafts[pid] = yaml.safe_load(fp) or {}
-            except Exception:
+        """Recover drafts from disk on server startup. Scans both the new
+        drafts_dir AND the legacy pipelines_dir location so an upgrade picks
+        up drafts that pre-date the split. New writes always go to drafts_dir."""
+        scan_dirs = [self.drafts_dir]
+        if self.pipelines_dir != self.drafts_dir:
+            scan_dirs.append(self.pipelines_dir)
+        seen: set[str] = set()
+        for d in scan_dirs:
+            if not d.exists():
                 continue
+            for f in d.glob("*.draft.yaml"):
+                pid = f.name.removesuffix(".draft.yaml")
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                try:
+                    with open(f) as fp:
+                        self._drafts[pid] = yaml.safe_load(fp) or {}
+                except Exception:
+                    continue
 
 
 # Lists whose elements are merged by their `step` field rather than replaced
