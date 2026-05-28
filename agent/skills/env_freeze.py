@@ -74,9 +74,11 @@ def _r_presence_check(conda_name: str) -> str:
 
 
 def _conda_pkg_bin_check_sh(name: str) -> str:
-    """sh -c expression that finds the FIRST `bin/*` file installed by the
-    conda package `name` (via its `conda-meta/{name}-*.json` record), tests
-    that the basename is on PATH, exits 0 on hit.
+    """A SUBSHELL expression that finds the FIRST `bin/*` file installed by
+    the conda package `name` (via its `conda-meta/{name}-*.json` record),
+    tests that the basename is on PATH, exits 0 on hit. Returned as a
+    `(...)` group so it composes via `||` inside an outer evidence chain
+    without bleeding `exit` to the parent.
 
     The bug this fixes (N1, batch-3 Apollo3 stress): `conda install nodejs`
     delivers a binary named `node` (not `nodejs`); `conda install mongodb`
@@ -86,9 +88,27 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     reported VALIDATED_IN_IMAGE.evidence_passed=False even though the
     package was healthily installed.
 
+    Re-parse-safety (the original sh -c wrap broke this):
+      Pre-fix the body was wrapped in `sh -c '<body>'`. Production invokes
+      evidence inside another `bash -c "...; <evidence>; ..."` (see
+      container_build.validate_in_image), so bash re-parsed the outer
+      string. The body's internal single-quoted sed pattern
+      (`'s|...|p'`) closed bash's outer single-quote mid-body, leaving
+      sed's `(`/`)`/`|`/`*` characters UNQUOTED → `syntax error near
+      unexpected token ')'`. The probe shipped in C4 but was DOA in
+      production until this fix. Found by tests/integration/
+      test_n1_conda_meta_probe_docker.py (Round 2, May 2026).
+
+      The fix drops the `sh -c '...'` wrap and uses a plain bash subshell
+      `(...)`. The body is fine bash code as-is — the sed pattern's inner
+      `'...'` works because there is no nesting; the outer bash is the
+      ONLY shell parsing the string. The subshell scopes `exit 0`/`exit 1`
+      so the probe still short-circuits the `||` chain without killing
+      the parent.
+
     The probe reads the conda-meta JSON's `files: [\"bin/X\", \"lib/Y\", …]`
     list (which conda writes at install time and never removes) and asks
-    `command -v` on the first bin/ basename. shell-only — no python
+    `command -v` on the first bin/ basename. Shell-only — no python
     dependency in the image (mongodb-/nodejs-only envs typically don't ship
     one). The package's NAME appears as a word-boundary token in the
     `conda-meta/{name}-*.json` glob, satisfying env_honesty.evidence_shape's
@@ -99,7 +119,7 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     engine layout. The conda-meta JSON is well-formed enough that a
     `sed -nE` over `\"bin/...\"` strings finds the bin entries reliably."""
     # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
-    # interpolate directly inside the single-quoted sh -c body.
+    # interpolate directly into the subshell body.
     body = (
         f'for f in /opt/conda/envs/*/conda-meta/{name}-*.json '
         f'/opt/conda/conda-meta/{name}-*.json; do '
@@ -110,7 +130,7 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
         f'done; '
         f'exit 1'
     )
-    return f"sh -c '{body}'"
+    return f"( {body} )"
 
 
 def _conda_presence_check(name: str) -> str:

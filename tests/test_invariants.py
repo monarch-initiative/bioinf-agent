@@ -5574,8 +5574,14 @@ def test_conda_pkg_bin_check_sh_is_shell_only_no_python_dep():
     expr = _conda_pkg_bin_check_sh("nodejs")
     # No python invocation in clause 2 — that's clause 3's job
     assert "python " not in expr and "python\n" not in expr
-    # shell-only primitives
-    assert expr.startswith("sh -c '")
+    # Subshell shape: the body composes via `||` without `exit` bleeding to
+    # the parent. (Pre-fix this was `sh -c '...'`; that broke when re-parsed
+    # inside an outer `bash -c "..."` because the inner sed expression's
+    # single quote closed the outer single-quote mid-body. The subshell
+    # `(...)` form has no nested quoting and is re-parse-safe — see
+    # tests/integration/test_n1_conda_meta_probe_docker.py for the live
+    # docker round-trip.)
+    assert expr.startswith("( ") and expr.endswith(" )")
     assert "sed -nE" in expr
     assert "command -v" in expr
 

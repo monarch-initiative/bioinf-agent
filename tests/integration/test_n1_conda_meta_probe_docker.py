@@ -9,44 +9,30 @@ meta JSON's `files: ["bin/X", ...]` list and tests the first bin/ basename
 via `command -v`. Shell-only — no python required.
 
 ----------------------------------------------------------------
-**REAL PRODUCTION BUG SURFACED BY THIS TEST FILE (2026-05-28):**
-----------------------------------------------------------------
+History: this test file surfaced a real production bug (2026-05-28). The
+ORIGINAL probe shape was `sh -c '<body>'` where the body contained an
+internal `'s|...|p'` sed expression. Production invokes evidence via
+`bash -c "...; <evidence>"` (container_build.validate_in_image), so bash
+re-parsed the outer string and the internal single quote closed bash's
+outer single-quote mid-body — leaving sed's `(`/`)` characters unquoted
+to bash → `syntax error near unexpected token ')'`. The C4 fix shipped
+without an end-to-end integration test; Apollo3 end-to-end was never re-
+run after C4 so the bug was live but unexercised. THIS test caught it.
 
-The probe shell as currently emitted by `_conda_pkg_bin_check_sh` IS
-syntactically well-formed when invoked as a single argv to `sh -c`. BUT
-production invokes it via the `bash -c "<evidence>"` wrapper from
-container_build.validate_in_image:
+The fix (chosen from three options surfaced by the test author): drop the
+`sh -c '...'` wrap entirely and use a plain bash subshell `(...)`. The
+body parses cleanly because the outer bash is the only shell parsing the
+string; the subshell scopes `exit 0/exit 1` so the probe still short-
+circuits the `||` chain without killing the parent.
 
-    docker run image bash -c "cd workdir; command -v nodejs || sh -c '<body>' || python -c '...'"
-
-When bash re-parses that outer argument, the probe's internal single-quote
-characters (`'s|...|p'` inside the sed expression) close the outer sh -c's
-single-quoted string mid-body, leaving the sed pattern's `(` and `)`
-characters UNQUOTED in bash's view → `syntax error near unexpected token ')'`.
-
-Net effect: every conda-meta probe invocation in production hits a bash
-syntax error and returns rc=2 (not the probe's intended 0/1). The fix
-shipped in batch-3 (C4) never executed in production because Apollo3
-end-to-end was never re-run after C4. Every existing N1 unit test only
-inspects the probe STRING, never executes it through the production
-invocation path.
-
-Tests below are marked `xfail(strict=True)` with a contract pointing at the
-real fix needed: re-quote `_conda_pkg_bin_check_sh` so it survives an
-outer `bash -c`. Two reasonable fix shapes:
-  (a) escape internal `'` as `'\\''` so segments don't break out
-  (b) emit the body as a heredoc-style script: `sh -c "$(cat <<'EOF' ... EOF)"`
-  (c) avoid `sh -c` entirely and inline the body directly into the evidence
-      string (the outer bash -c parses it fine because there's no nesting)
-
-When the fix lands, `xfail(strict=True)` will FAIL these tests (a passing
-xfail is treated as an error), prompting the marker to flip.
-
+Tests passed `xfail(strict=True)` before the fix — `xpass(strict)` failed
+the suite when the fix landed, prompting the markers to flip. They are
+ordinary `@pytest.mark.integration_docker` now.
 ----------------------------------------------------------------
 
 Why integration_docker, not unit: a unit test grepping the probe STRING
 proves it reads `/opt/conda/...` paths but cannot prove the probe ACTUALLY
-RESOLVES nodejs→node end-to-end. The bug class IS the shell-quoting
+RESOLVES nodejs→node end-to-end. The bug class WAS the shell-quoting
 semantics under nesting — exactly what only a real shell can exercise.
 """
 from __future__ import annotations
@@ -106,7 +92,6 @@ def _run_probe(tmp_path: Path, probe: str) -> int:
 
 
 @pytest.mark.integration_docker
-@pytest.mark.xfail(strict=True, reason="N1 probe shape breaks under outer bash -c; see module docstring")
 @_NEED_DOCKER
 def test_nodejs_probe_resolves_to_node_in_image(tmp_path):
     """The headline N1 case: `conda install nodejs` ships a binary named
@@ -123,7 +108,6 @@ def test_nodejs_probe_resolves_to_node_in_image(tmp_path):
 
 
 @pytest.mark.integration_docker
-@pytest.mark.xfail(strict=True, reason="N1 probe shape breaks under outer bash -c; see module docstring")
 @_NEED_DOCKER
 def test_mongodb_probe_resolves_to_mongod_in_image(tmp_path):
     """Same shape: `conda install mongodb` → binary `mongod`."""
@@ -141,12 +125,7 @@ def test_mongodb_probe_resolves_to_mongod_in_image(tmp_path):
 def test_probe_misses_when_no_listed_binary_is_on_path(tmp_path):
     """Honesty check: if the package's conda-meta lists `bin/node` but
     `node` isn't actually on PATH (broken install), the probe must REPORT
-    a miss (exit non-zero), not lie.
-
-    This case passes today EVEN WITH the bash-quoting bug above, because
-    the bash syntax error also returns non-zero — the contract 'no false
-    positive' holds either way. When the probe shape is fixed, the test
-    keeps passing for the right reason."""
+    a miss (exit non-zero), not lie."""
     probe = _conda_pkg_bin_check_sh("nodejs")
     _write_meta(tmp_path / "opt_conda", "conda-meta/nodejs-22.0.0-h0.json",
                 {"name": "nodejs", "version": "22.0.0",
@@ -161,8 +140,7 @@ def test_probe_misses_when_no_listed_binary_is_on_path(tmp_path):
 def test_probe_misses_when_conda_meta_does_not_exist(tmp_path):
     """If the package isn't installed at all (no conda-meta file), probe
     must miss. The probe silently skips the non-matching glob and exits
-    non-zero. (Today, the bash-quoting bug also lands here — same outcome
-    via different mechanism; the contract holds either way.)"""
+    non-zero."""
     probe = _conda_pkg_bin_check_sh("nodejs")
     # No conda-meta files at all. The binary IS on PATH — proves the probe
     # doesn't just check PATH (it also requires the package record).
@@ -172,7 +150,6 @@ def test_probe_misses_when_conda_meta_does_not_exist(tmp_path):
 
 
 @pytest.mark.integration_docker
-@pytest.mark.xfail(strict=True, reason="N1 probe shape breaks under outer bash -c; see module docstring")
 @_NEED_DOCKER
 def test_probe_works_in_pixi_layout_too(tmp_path):
     """The probe reads BOTH /opt/conda/conda-meta/ (legacy / base env) AND
