@@ -3168,6 +3168,33 @@ def list_installed_pipelines() -> dict:
     return _list_pipelines(config)
 
 
+@mcp.tool()
+def snapshot_project(project_name: str) -> dict:
+    """Walk a project's authorized directories on its declared compute env and
+    return a file-tree snapshot — path, size, mtime, type — for every entry.
+
+    This is the *only* primitive the agent has against a user's compute env
+    today. The shell that runs is fixed: `find <authorized_path> -printf '...'`
+    locally, or `ssh <user>@<host> "find <authorized_path> -printf '...'"`
+    remotely. No file contents are read; no other commands are reachable.
+
+    The project's `snapshot_paths` must appear under the compute env's
+    `directories` list with permission `file_name_only` in
+    `~/.bioinf/projects_access.yaml`. A path not in that allowlist (or
+    declared with the wrong permission) raises before any shell runs.
+
+    See `agent/skills/projects_access.yaml.example` for the schema; see
+    `tests/integration/honesty/L14_compute_env_safety/` for the contract
+    tests pinning what this primitive can and cannot do.
+    """
+    from agent.skills import snapshot
+    from agent.skills.compute_access import PermissionDenied, ConfigError
+    try:
+        return snapshot.snapshot_project(project_name)
+    except (PermissionDenied, ConfigError, FileNotFoundError, KeyError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 # ---------------------------------------------------------------------------
 # R package utilities
 # ---------------------------------------------------------------------------

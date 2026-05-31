@@ -158,6 +158,38 @@ optional, opt-in per `OutputValidator`.
 | L13.b — recipe part has no influence on identity (collision surface) | parametrized perturbation test covers lock / longtail / platform / engine / base / apt_snapshot |
 | L13.c — full-rebuild divergence (different bytes from same recipe) | DEFERRED to `integration_docker_slow` tier; the pure-function variant catches the contract bug; rebuild divergence is rarer and detectable via `lookup_anchored` on real runs |
 
+## L14 — Compute-env command surface
+
+The agent's interaction with a user's compute env (cluster / laptop) is
+mediated by a fixed, small set of primitives. Each primitive is gated by a
+per-directory permission declared in `~/.bioinf/projects_access.yaml`. Tests
+pin the LITERAL shape of every shell invocation; permission denials fire
+BEFORE any subprocess runs (fail-closed); no operation is reachable that
+isn't declared in the manifest.
+
+The v0 primitive surface is exactly one tool — `snapshot_project` — which
+requires `file_name_only` permission. The `upload` permission is declared
+in the schema but its primitive isn't wired yet; when it ships, it MUST
+fail-closed on overwriting existing files.
+
+| Cheat | Guard |
+|---|---|
+| L14.a — agent executes an unsanctioned shell command on the compute env | snapshot primitive emits exactly ONE shell shape (pure pathlib for local — zero subprocess; literal pinned remote-string for ssh); spy-on-subprocess tests assert only whitelisted invocations — `tests/integration/honesty/L14_compute_env_safety/test_snapshot_command_surface.py::test_local_snapshot_emits_no_subprocess`, `::test_ssh_snapshot_emits_only_ssh_subprocess` |
+| L14.b — agent walks a directory the user didn't authorize | `compute_access.check_permission` is called BEFORE any subprocess; refuses with `PermissionDenied` if the path isn't in the compute_env's `directories[]` list — `::test_unauthorized_path_refused_before_subprocess` |
+| L14.c — agent operates with the WRONG permission (e.g. `upload`-dir satisfies a `snapshot` request) | permission match is EXACT (discrete capabilities, not a lattice); `upload` does not satisfy `file_name_only` — `::test_wrong_permission_refused` |
+| L14.d — shell injection via adversarial path in the config (`;`, `&&`, `$()`, backticks, pipes) | `shlex.quote` on the path inside the remote-shell string; parametrized injection tests confirm metacharacters appear as literal characters to `find`, not shell — `::test_ssh_remote_cmd_neutralizes_path_injection` |
+| L14.e — silent permission misconfiguration (typo in `file_name_only` → default-none) | `compute_access.load_access` validates the schema at load time; unknown permission tokens raise `ConfigError` — `::test_unknown_permission_in_config_refused` |
+| L14.f — relative paths bypass the gate | gate refuses non-absolute paths; absolute paths have well-defined meaning at the compute_env boundary, relative paths don't — `::test_relative_path_refused` |
+| L14.g — ssh prompts for a password and hangs an agent with no stdin | ssh argv includes `-o BatchMode=yes` so missing ssh-agent fails fast — `::test_ssh_argv_includes_batch_mode_no_password_prompt` |
+| L14.h — MCP wrapper leaks a raw exception (would crash the transport) | wrapper catches `PermissionDenied`/`ConfigError`/`FileNotFoundError`/`KeyError` and returns `{error: ...}` — `::test_mcp_wrapper_translates_permission_denied_to_error_dict` |
+
+### Open backlog (L14)
+
+| ID | Cheat | Note |
+|---|---|---|
+| L14.i — `upload` primitive overwrites an existing file | DEFERRED: contract decided ("never overwrite"), primitive not yet wired. When implementing: pre-flight `test -e <target>` over ssh; refuse if exists; require explicit `--force` for overwrite |
+| L14.j — agent executes a new operation (download / hpc_run / etc.) | DEFERRED: each new operation MUST add an entry to `compute_access.OPERATION_REQUIRES`, a `check_permission` gate before its subprocess, and a cheat-guard test under L14_compute_env_safety/ |
+
 ---
 
 ## Open backlog

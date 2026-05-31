@@ -1,0 +1,54 @@
+# projects_access.yaml — the agent's access manifest for compute envs.
+#
+# Copy to ~/.bioinf/projects_access.yaml and edit. The agent reads this on
+# every call; never writes it.
+#
+# The trust model: the agent can ONLY interact with directories declared
+# here. Any path NOT in this file has permission `none` (= no access). The
+# agent cannot escape this manifest.
+#
+# Permission levels (v0):
+#   file_name_only  — agent may list path/size/mtime/type via the snapshot
+#                     primitive. Does NOT permit reading file contents.
+#   upload          — agent may copy NEW files INTO the directory. Will
+#                     never overwrite existing files (planned primitive).
+#   none            — default for unlisted paths. No access.
+
+compute_envs:
+
+  # ---- Example 1: a remote HPC cluster ------------------------------------
+  my_ohpc:
+    type: ssh
+    host: ohpc-login01.cluster.uni.edu
+    user: alice                  # ssh-agent handles auth; NO creds stored here
+    directories:
+      - path: /scratch/me/wgs_proj/
+        permission: file_name_only
+        description: "WGS project — inventory only, no content reads"
+
+      - path: /scratch/me/envs/
+        permission: upload
+        description: "Where the agent may upload .sif env images (NEW files only)"
+
+  # ---- Example 2: this laptop (or login node where the agent runs) --------
+  laptop:
+    type: local
+    directories:
+      - path: /Users/alice/data/wgs_proj/
+        permission: file_name_only
+        description: "Local copy of the project for offline work"
+
+# Projects bind a name to (compute_env + paths-of-interest). The agent's
+# `snapshot_project(<name>)` primitive walks the project's snapshot_paths
+# on its declared compute env.
+projects:
+
+  wgs_proj:
+    compute_env: my_ohpc
+    snapshot_paths:
+      - /scratch/me/wgs_proj/
+
+  wgs_proj_local:
+    compute_env: laptop
+    snapshot_paths:
+      - /Users/alice/data/wgs_proj/
