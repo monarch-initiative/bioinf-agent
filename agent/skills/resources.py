@@ -85,6 +85,15 @@ def list_resources(inputs: dict, config: dict) -> dict:
                                     "available": sinfo.get("available", False) and (r1.exists() if r1 else False),
                                     "r1": str(core_dir / sinfo["r1"]) if sinfo.get("r1") else None,
                                     "r2": str(core_dir / sinfo["r2"]) if sinfo.get("r2") else None,
+                                    # Pod5 / nanopore raw-signal metadata (defaults to "fastq" /
+                                    # None on conventional entries). Surfaced so select_test_data
+                                    # + downstream basecaller pipelines can route by file_format
+                                    # / chemistry / suggested_model.
+                                    "file_format":     smp.get("file_format", "fastq"),
+                                    "chemistry":       smp.get("chemistry"),
+                                    "flowcell":        smp.get("flowcell"),
+                                    "kit":             smp.get("kit"),
+                                    "suggested_model": smp.get("suggested_model"),
                                     "core_dir": str(core_dir),
                                 })
 

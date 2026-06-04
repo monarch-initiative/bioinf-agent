@@ -381,6 +381,188 @@ def add_core_test_data(
     return result
 
 
+def _sha256_file(path: Path) -> str:
+    """Streaming sha256 — single-pass, no whole-file slurp. Used to anchor
+    downloaded pod5 assets (whole-file integrity, since pod5 is binary
+    Arrow data and can't be partially-validated like a gzip stream)."""
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def add_core_pod5_data(
+    config: dict,
+    accession: str,
+    sample: str,
+    source_url: str,
+    assay_type: str = "ont_wgs",
+    platform: str = "ont",
+    chemistry: str = "",
+    flowcell: str = "",
+    kit: str = "",
+    suggested_model: str = "",
+    expected_sha256: str = "",
+    expected_size: int = 0,
+    genome_build: str = "hg38",
+) -> dict[str, Any]:
+    """Register a raw nanopore pod5 file as a core test dataset.
+
+    Pod5 is binary Apache Arrow — NOT subsettable on the fly the way gzipped
+    FASTQ is (no `gunzip | head -N | gzip` analog). We download the whole
+    file, sha256-anchor it, and record nanopore-specific metadata (chemistry,
+    flowcell, kit, suggested basecall model) on the SampleMeta sidecar so
+    downstream basecaller pipelines (dorado, bonito, remora) pick the right
+    model without re-probing.
+
+    Idempotent: skips download if the file already exists with matching size
+    (or matching sha256 when `expected_sha256` is supplied).
+
+    Methylation / base-mod future: the `chemistry` + `suggested_model` fields
+    are enough to route to a paired modbase model (e.g. 5mC/5hmC/6mA) at
+    pipeline-build time. No pre-declared modbase model list here — chemistry
+    is the anchor, the basecaller's registry is the source of truth."""
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    data_dir = project_root / config["paths"]["data_dir"]
+    core_dir = data_dir / f"core_test_data_{genome_build}"
+
+    # Long-read layout mirrors add_core_test_data's: long_read/<platform>/<assay_type>/
+    platform_family = PLATFORM_FAMILY.get(platform, "ont")
+    reads_dir = core_dir / "long_read" / platform_family / assay_type
+    reads_dir.mkdir(parents=True, exist_ok=True)
+
+    sample_key = f"{sample}_{accession}"
+    # Subset key "1" — one whole pod5 file = one subset. (Pod5 files often
+    # carry one read; even when they carry many, we don't subset.)
+    subset_key = "1"
+    dst = reads_dir / f"{sample_key}_{subset_key}.pod5"
+    log: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Idempotency check + download
+    # ------------------------------------------------------------------
+    needs_download = True
+    if dst.exists():
+        if expected_sha256:
+            current = _sha256_file(dst)
+            if current == expected_sha256:
+                log.append("File present with matching sha256 — skipping download.")
+                needs_download = False
+            else:
+                log.append(f"sha256 mismatch on existing file ({current[:12]}…), "
+                           f"re-downloading.")
+                dst.unlink()
+        elif expected_size and dst.stat().st_size == expected_size:
+            log.append("File present with matching size — skipping download.")
+            needs_download = False
+        elif not expected_size and not expected_sha256:
+            log.append("File present (no anchor declared) — skipping download.")
+            needs_download = False
+
+    if needs_download:
+        tmp = dst.with_suffix(".pod5.tmp")
+        log.append(f"Downloading {source_url}...")
+        try:
+            with urllib.request.urlopen(source_url, timeout=120) as resp, tmp.open("wb") as out:
+                while chunk := resp.read(1 << 20):
+                    out.write(chunk)
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            return {"success": False, "error": f"download failed: {e}"}
+
+        # Whole-file integrity check (asset sha256 — analogous to install_release_binary's I14)
+        actual_sha = _sha256_file(tmp)
+        if expected_sha256 and actual_sha != expected_sha256:
+            tmp.unlink(missing_ok=True)
+            return {"success": False,
+                    "error": (f"sha256 mismatch: expected {expected_sha256}, "
+                              f"got {actual_sha}")}
+
+        # Atomic rename
+        tmp.rename(dst)
+        log.append(f"sha256: {actual_sha}")
+
+    # ------------------------------------------------------------------
+    # SampleMeta sidecar (single subset "1" with the pod5 path)
+    # ------------------------------------------------------------------
+    rel_prefix = f"long_read/{platform_family}/{assay_type}"
+    subset_info = SubsetInfo(
+        r1=f"{rel_prefix}/{dst.name}",
+        r2=None,
+        num_reads=0,         # unknown without pod5-cli probe; downstream tools can fill
+        available=True,
+    )
+    meta_path = reads_dir / f"{sample_key}_sample_meta.yaml"
+
+    if meta_path.exists():
+        existing = SampleMeta.from_yaml(meta_path)
+        existing.subsets[subset_key] = subset_info
+        # Refresh nanopore metadata if newly supplied; preserve prior values otherwise.
+        if chemistry:       existing.chemistry = chemistry
+        if flowcell:        existing.flowcell = flowcell
+        if kit:             existing.kit = kit
+        if suggested_model: existing.suggested_model = suggested_model
+        if not existing.file_format: existing.file_format = "pod5"
+        if source_url:
+            existing.source_urls = {**(existing.source_urls or {}), "r1": source_url}
+        existing.write(meta_path)
+        log.append(f"SampleMeta updated: {meta_path.name}")
+    else:
+        SampleMeta(
+            sample=sample,
+            accession=accession,
+            read_type="long_read",
+            end_type="single_end",
+            assay_type=assay_type,
+            platform=platform,
+            database="local",
+            source_urls={"r1": source_url},
+            subsets={subset_key: subset_info},
+            file_format="pod5",
+            chemistry=chemistry or None,
+            flowcell=flowcell or None,
+            kit=kit or None,
+            suggested_model=suggested_model or None,
+        ).write(meta_path)
+        log.append(f"SampleMeta written: {meta_path.name}")
+
+    # ------------------------------------------------------------------
+    # Rebuild manifest
+    # ------------------------------------------------------------------
+    gen_manifest = project_root / "scripts" / "gen_manifest.py"
+    ret = subprocess.run(
+        ["python3", str(gen_manifest), "--core-dir", str(core_dir)],
+        capture_output=True, text=True,
+    )
+    if ret.returncode != 0:
+        log.append(f"WARNING: gen_manifest failed: {ret.stderr[:300]}")
+    else:
+        log.append("Manifest rebuilt.")
+
+    return {
+        "success":         True,
+        "accession":       accession,
+        "sample":          sample,
+        "sample_key":      sample_key,
+        "genome_build":    genome_build,
+        "assay_type":      assay_type,
+        "platform":        platform,
+        "file_format":     "pod5",
+        "chemistry":       chemistry,
+        "flowcell":        flowcell,
+        "kit":             kit,
+        "suggested_model": suggested_model,
+        "path":            str(dst),
+        "sha256":          _sha256_file(dst),
+        "size_bytes":      dst.stat().st_size,
+        "sample_meta":     str(meta_path),
+        "core_dir":        str(core_dir),
+        "log":             log,
+    }
+
+
 def add_phenopacket(
     config: dict,
     source_url: str,

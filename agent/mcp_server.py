@@ -96,6 +96,7 @@ from agent.skills import provenance as _prov
 from agent.skills import env_recipe as _env_recipe
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
+from agent.skills.core_test_data import add_core_pod5_data as _add_core_pod5_data
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
 from agent.validators.output_validator import OutputValidator
@@ -2075,6 +2076,51 @@ def add_core_test_data(
         source_url=source_url, source_url_r2=source_url_r2,
     )
 
+
+@mcp.tool()
+def add_core_pod5_data(
+    accession: str,
+    sample: str,
+    source_url: str,
+    assay_type: str = "ont_wgs",
+    platform: str = "ont",
+    chemistry: str = "",
+    flowcell: str = "",
+    kit: str = "",
+    suggested_model: str = "",
+    expected_sha256: str = "",
+    expected_size: int = 0,
+    genome_build: str = "hg38",
+) -> dict:
+    """Download a raw nanopore pod5 file into core_test_data and register it.
+
+    Pod5 files are binary Apache Arrow (not subsettable like gzipped FASTQ) —
+    the whole file is fetched, sha256-anchored against `expected_sha256`
+    when supplied, and recorded with nanopore-specific metadata
+    (chemistry, flowcell, kit, suggested_model) on the SampleMeta sidecar
+    so downstream basecaller pipelines (dorado, bonito, remora) pick the
+    right base + modbase models without re-probing.
+
+    Idempotent: skips download if the file is present and (sha256 OR size)
+    matches the declared anchor. Methylation/base-mod model selection
+    (5mC / 6mA / etc.) is derived from `chemistry` + the basecaller's
+    paired-model registry at pipeline-build time — no pre-declared list."""
+    return _add_core_pod5_data(
+        config,
+        accession=accession,
+        sample=sample,
+        source_url=source_url,
+        assay_type=assay_type,
+        platform=platform,
+        chemistry=chemistry,
+        flowcell=flowcell,
+        kit=kit,
+        suggested_model=suggested_model,
+        expected_sha256=expected_sha256,
+        expected_size=expected_size,
+        genome_build=genome_build,
+    )
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -3759,6 +3805,7 @@ def select_test_data(
     sample: str = "",
     accession: str = "",
     subset: str = "",
+    file_format: str = "",
     pipeline_id: str = "",
 ) -> dict:
     """Find a matching test dataset on disk and return a TestDataRef-shaped
@@ -3768,7 +3815,12 @@ def select_test_data(
     Match is best-effort: each criterion scores points; the highest-scoring
     AVAILABLE dataset wins. Returns {test_data, available, match_score}, or
     {error} if nothing on disk matches at all. Inspect the result and call
-    again with different criteria if the match is wrong."""
+    again with different criteria if the match is wrong.
+
+    `file_format` ("fastq" | "pod5" | "fast5" | …) lets a basecaller pipeline
+    pick the raw-signal entry deterministically when both pod5 and the same
+    project's basecalled FASTQ exist under the same assay_type. Defaults to
+    "" (don't filter on format)."""
     all_data = _list_resources({"resource_type": "test_data"}, config).get("test_data", [])
     sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
 
@@ -3776,6 +3828,7 @@ def select_test_data(
         s = 0
         if genome_build and d.get("genome_build") == genome_build: s += 32
         if assay_type   and d.get("assay_type")   == assay_type:   s += 16
+        if file_format  and d.get("file_format")  == file_format:  s += 12
         if end_type     and d.get("end_type")     == end_type:     s += 8
         if sample       and d.get("sample")       == sample:       s += 4
         if accession    and d.get("accession")    == accession:    s += 2
@@ -3794,21 +3847,27 @@ def select_test_data(
                 "genome_build": genome_build, "assay_type": assay_type,
                 "end_type": end_type, "sample": sample,
                 "accession": accession, "subset": subset,
+                "file_format": file_format,
             },
         }
 
     test_data_ref = {
-        "genome_build":  best.get("genome_build", ""),
-        "read_type":     best.get("read_type"),
-        "end_type":      best.get("end_type"),
-        "assay_type":    best.get("assay_type"),
-        "sample":        best.get("sample"),
-        "accession":     best.get("accession"),
-        "subset":        best.get("subset"),
-        "num_reads":     best.get("num_reads"),
-        "r1":            best.get("r1"),
-        "r2":            best.get("r2"),
-        "core_data_dir": best.get("core_dir"),
+        "genome_build":    best.get("genome_build", ""),
+        "read_type":       best.get("read_type"),
+        "end_type":        best.get("end_type"),
+        "assay_type":      best.get("assay_type"),
+        "sample":          best.get("sample"),
+        "accession":       best.get("accession"),
+        "subset":          best.get("subset"),
+        "num_reads":       best.get("num_reads"),
+        "r1":              best.get("r1"),
+        "r2":              best.get("r2"),
+        # Pod5 / nanopore extensions — None on conventional FASTQ entries; an
+        # empty string on file_format would be the same. Filtered below.
+        "file_format":     best.get("file_format") if best.get("file_format") != "fastq" else None,
+        "chemistry":       best.get("chemistry"),
+        "suggested_model": best.get("suggested_model"),
+        "core_data_dir":   best.get("core_dir"),
     }
     test_data_ref = {k: v for k, v in test_data_ref.items() if v is not None}
 

@@ -35,7 +35,11 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.skills.core_test_data import add_core_test_data, add_phenopacket
+from agent.skills.core_test_data import (
+    add_core_pod5_data,
+    add_core_test_data,
+    add_phenopacket,
+)
 from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.pipeline_state import PipelineState
@@ -264,7 +268,9 @@ def download_and_index_genome(config: dict, genome_build: str) -> dict[str, Any]
 def download_datasets(config: dict, datasets_cfg: dict, genome_build: str) -> dict[str, Any]:
     """Download every entry in core_datasets.yaml. Each result is recorded
     explicitly — no silent skips for long-read failures."""
-    results: dict[str, list] = {"short_read": [], "long_read": [], "phenopackets": []}
+    results: dict[str, list] = {
+        "short_read": [], "long_read": [], "pod5": [], "phenopackets": []
+    }
 
     for group_name, group in (("short_read", "Short-read"), ("long_read", "Long-read (best-effort)")):
         entries = datasets_cfg.get(group_name, [])
@@ -288,6 +294,41 @@ def download_datasets(config: dict, datasets_cfg: dict, genome_build: str) -> di
                 "accession": d["accession"],
                 "success":   ok,
                 "error":     res.get("error"),
+            })
+
+    pod5_entries = datasets_cfg.get("pod5", [])
+    if pod5_entries:
+        log(f"=== POD5 raw signal (best-effort): {len(pod5_entries)} dataset(s) ===")
+        for d in pod5_entries:
+            label = f"{d['accession']} ({d.get('chemistry') or d.get('assay_type','?')})"
+            log(f"Adding {label}...")
+            try:
+                res = add_core_pod5_data(
+                    config,
+                    accession=d["accession"],
+                    sample=d.get("sample", d["accession"]),
+                    source_url=d["source_url"],
+                    assay_type=d.get("assay_type", "ont_wgs"),
+                    platform=d.get("platform", "ont"),
+                    chemistry=d.get("chemistry", ""),
+                    flowcell=d.get("flowcell", ""),
+                    kit=d.get("kit", ""),
+                    suggested_model=d.get("suggested_model", ""),
+                    expected_sha256=d.get("expected_sha256", ""),
+                    expected_size=d.get("expected_size", 0),
+                    genome_build=genome_build,
+                )
+            except Exception as e:
+                res = {"success": False, "error": f"exception: {e}"}
+            ok = res.get("success", False)
+            log(f"  {'OK' if ok else 'SKIP'}: "
+                f"{res.get('error') or f'{res.get(\"size_bytes\", 0)} B  sha256={(res.get(\"sha256\") or \"\")[:12]}…'}")
+            results["pod5"].append({
+                "accession":  d["accession"],
+                "success":    ok,
+                "error":      res.get("error"),
+                "sha256":     res.get("sha256"),
+                "size_bytes": res.get("size_bytes"),
             })
 
     pk_entries = datasets_cfg.get("phenopackets", [])
@@ -431,6 +472,8 @@ def main() -> None:
     sr_tot = len(datasets["short_read"])
     lr_ok = sum(1 for r in datasets["long_read"] if r["success"])
     lr_tot = len(datasets["long_read"])
+    p5_ok = sum(1 for r in datasets.get("pod5", []) if r["success"])
+    p5_tot = len(datasets.get("pod5", []))
     pk_ok = sum(1 for r in datasets["phenopackets"] if r["success"])
     pk_tot = len(datasets["phenopackets"])
 
@@ -441,6 +484,7 @@ def main() -> None:
     log(f"  Reference:      {genome['fasta']}")
     log(f"  Short-read:     {sr_ok}/{sr_tot} OK")
     log(f"  Long-read:      {lr_ok}/{lr_tot} OK (best-effort)")
+    log(f"  POD5:           {p5_ok}/{p5_tot} OK (best-effort)")
     log(f"  Phenopackets:   {pk_ok}/{pk_tot} OK")
     log(f"  Smoke test:     {'PASSED' if smoke.get('passed') else 'SKIPPED' if smoke.get('skipped') else 'FAILED'}")
     log("")

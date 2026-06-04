@@ -620,6 +620,17 @@ class SampleMeta(BaseModel):
     read_length: Optional[int] = None
     source_urls: Optional[dict[str, str]] = None
     subsets:     dict[str, SubsetInfo]
+    # Pod5 / nanopore raw-signal metadata. All optional — populated by
+    # add_core_pod5_data; absent on FASTQ entries. Recorded so downstream
+    # basecaller pipelines (dorado, bonito, remora) know which model to use
+    # without re-probing the binary. Methylation/base-mod models (5mC, 6mA,
+    # etc.) are derived from `chemistry` + the basecaller's paired modbase
+    # model registry at run time — not pre-declared here.
+    file_format:     Optional[str] = None    # e.g. "pod5", "fast5"; omitted for fastq
+    chemistry:       Optional[str] = None    # e.g. "dna_r10.4.1_e8.2_400bps_5khz"
+    flowcell:        Optional[str] = None    # e.g. "FLO-PRO114M"
+    kit:             Optional[str] = None    # e.g. "SQK-LSK114"
+    suggested_model: Optional[str] = None    # e.g. "dna_r10.4.1_e8.2_400bps_hac@v5.0.0"
 
     def to_yaml(self) -> str:
         data = self.model_dump(exclude_none=True)
