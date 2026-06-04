@@ -172,6 +172,14 @@ requires `file_name_only` permission. The `upload` permission is declared
 in the schema but its primitive isn't wired yet; when it ships, it MUST
 fail-closed on overwriting existing files.
 
+**One-level visibility (the surface-minimization contract):**
+`file_name_only` grants visibility into a directory's IMMEDIATE contents
+only — subdirs are listed BY NAME, but their interiors are never walked.
+A single declaration cannot snowball into a multi-million-file walk. To
+inspect a subdir, the user must declare it as its own authorized entry.
+This is enforced by `_local_walk` (root + iterdir, no rglob) and the
+remote `find -maxdepth 1` flag.
+
 | Cheat | Guard |
 |---|---|
 | L14.a — agent executes an unsanctioned shell command on the compute env | snapshot primitive emits exactly ONE shell shape (pure pathlib for local — zero subprocess; literal pinned remote-string for ssh); spy-on-subprocess tests assert only whitelisted invocations — `tests/integration/honesty/L14_compute_env_safety/test_snapshot_command_surface.py::test_local_snapshot_emits_no_subprocess`, `::test_ssh_snapshot_emits_only_ssh_subprocess` |
@@ -182,6 +190,7 @@ fail-closed on overwriting existing files.
 | L14.f — relative paths bypass the gate | gate refuses non-absolute paths; absolute paths have well-defined meaning at the compute_env boundary, relative paths don't — `::test_relative_path_refused` |
 | L14.g — ssh prompts for a password and hangs an agent with no stdin | ssh argv includes `-o BatchMode=yes` so missing ssh-agent fails fast — `::test_ssh_argv_includes_batch_mode_no_password_prompt` |
 | L14.h — MCP wrapper leaks a raw exception (would crash the transport) | wrapper catches `PermissionDenied`/`ConfigError`/`FileNotFoundError`/`KeyError` and returns `{error: ...}` — `::test_mcp_wrapper_translates_permission_denied_to_error_dict` |
+| L14.k — one declaration grants subtree visibility (recursion bypasses surface minimization) | `_local_walk` uses `root.iterdir()` (no rglob); ssh `find -maxdepth 1`. Explicit pin: subdir contents not in the snapshot when only the parent is declared — `::test_snapshot_does_not_recurse_into_subdirs`, `::test_ssh_remote_cmd_carries_maxdepth_1`. End-to-end against this repo's envs/: `tests/integration/correctness/test_snapshot_local_envs_e2e.py::test_envs_root_snapshot_does_NOT_reveal_bin_contents` |
 
 ### Open backlog (L14)
 

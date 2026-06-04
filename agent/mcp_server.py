@@ -3170,18 +3170,21 @@ def list_installed_pipelines() -> dict:
 
 @mcp.tool()
 def snapshot_project(project_name: str) -> dict:
-    """Walk a project's authorized directories on its declared compute env and
-    return a file-tree snapshot — path, size, mtime, type — for every entry.
+    """Walk a project's authorized directories — across every compute env it
+    spans — and return a file-tree snapshot tagged by env. Each entry is
+    {compute_env, path, size, mtime, type}; one-level visibility per declared
+    directory (no recursion).
 
     This is the *only* primitive the agent has against a user's compute env
-    today. The shell that runs is fixed: `find <authorized_path> -printf '...'`
-    locally, or `ssh <user>@<host> "find <authorized_path> -printf '...'"`
-    remotely. No file contents are read; no other commands are reachable.
+    today. The shell that runs is fixed: `find <authorized_path> -maxdepth 1
+    -printf '...'` locally (or `ssh <user>@<host> "find …"` remotely). No
+    file contents are read; no other commands are reachable.
 
-    The project's `snapshot_paths` must appear under the compute env's
-    `directories` list with permission `file_name_only` in
-    `~/.bioinf/projects_access.yaml`. A path not in that allowlist (or
-    declared with the wrong permission) raises before any shell runs.
+    Authorization lives at the PROJECT level: each project's
+    `compute_env_access[].directories[]` block lists the dirs the agent may
+    walk on each env, with explicit `permissions:` (file_name_only / upload).
+    A dir not in that allowlist, or declared with permissions that don't
+    include `file_name_only`, raises PermissionDenied before any shell runs.
 
     See `agent/skills/projects_access.yaml.example` for the schema; see
     `tests/integration/honesty/L14_compute_env_safety/` for the contract

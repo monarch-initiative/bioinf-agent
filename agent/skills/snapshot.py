@@ -4,21 +4,43 @@ Snapshot the on-disk file structure of a project's authorized directories.
 Constrained operation contract
 ------------------------------
 The agent's ONLY shell invocation through this module is `find` with a
-fixed `-printf` template. The path is the only variable; it is `shlex.quote`'d
-before remote (SSH) invocation and passed as a single subprocess argv element
-for local invocation (no shell interpretation).
+fixed `-printf` template AND `-maxdepth 1`. The path is the only variable;
+it is `shlex.quote`'d before remote (SSH) invocation and passed as a single
+subprocess argv element for local invocation (no shell interpretation).
 
-Before any subprocess runs, every path is verified against the compute_env's
-authorized directories via `compute_access.check_permission(path, 'snapshot')`
-which requires permission `file_name_only`. A path not in the manifest, or in
-the manifest with the wrong permission, raises `PermissionDenied` — fail-
-closed, no shell, no leak.
+One-level visibility (the `file_name_only` contract)
+----------------------------------------------------
+A snapshot returns the root + its IMMEDIATE children — never deeper.
+Subdirectories are listed BY NAME (so the agent can see "there's a
+samples/ dir") but their CONTENTS are NOT walked. To inspect a subdir,
+the user must declare it as its own directory entry in the project's
+compute_env_access[].directories[].
 
-This module exposes a single function: `snapshot_project(project_name)`. There
-is no API for arbitrary path snapshots or arbitrary commands. Adding either
-would require adding a new operation in compute_access.OPERATION_REQUIRES,
-a new gate call, and a new cheat-guard test under
-tests/integration/honesty/L14_compute_env_safety/.
+This is intentional: every directory the agent peers into is an explicit
+user-declared concession. A single declaration cannot snowball into a
+multi-million-file walk. The agent can't go fishing in a sub-tree just
+because the parent was authorized.
+
+Permission gate
+---------------
+Before any subprocess runs, every directory we plan to walk is verified
+against the project's authorized directories via
+`compute_access.check_permission(project, env, path, 'snapshot')` which
+requires the directory's `permissions:` list to include `file_name_only`.
+A path not in the manifest, or with the wrong permissions, raises
+`PermissionDenied` — fail-closed, no shell, no leak.
+
+Multi-env projects
+------------------
+A project may declare `compute_env_access` blocks for multiple envs. The
+snapshot iterates each, walks each env's authorized directories, and
+aggregates the result with `compute_env` tagged on every entry so the
+downstream consumer can partition by env.
+
+This module exposes a single function: `snapshot_project(project_name)`.
+Adding a new operation (upload, download, hpc_run, …) requires a new
+entry in `compute_access.OPERATION_REQUIRES`, a new gate call, and a new
+cheat-guard test under tests/integration/honesty/L14_compute_env_safety/.
 """
 from __future__ import annotations
 
@@ -37,21 +59,33 @@ _FIND_PRINTF = r"%p\t%s\t%T@\t%y\n"
 
 
 def _local_walk(path: str) -> list[dict]:
-    """The local-mode walk. Uses pathlib directly — ZERO subprocess. This
-    eliminates the shell surface entirely for local snapshots; the only place
-    a shell can possibly be invoked is the ssh path below.
+    """The local-mode walk — root + IMMEDIATE children only, no recursion.
 
-    GNU find's `-printf` isn't portable to BSD find (macOS), and we don't want
-    to depend on `gfind` being installed. The local walk is a few `stat()`
-    calls in pure Python — bounded, cancelable, and platform-independent.
-    Same return shape as the SSH/find parser produces, so downstream code
-    treats both modes identically."""
+    Mirrors the SSH mode's `find -maxdepth 1`. The one-level contract is
+    deliberate (see module docstring): a single declaration buys the agent
+    visibility into exactly one directory's contents, not its subtree.
+    Subdirs are listed BY NAME (so the agent can SEE "there's a samples/
+    dir") but their interiors require a separate declaration.
+
+    Uses pathlib directly — ZERO subprocess. The shell surface for local
+    snapshots is empty. GNU find's `-printf` isn't portable to BSD find
+    (macOS), and we don't want to depend on `gfind` being installed; a
+    handful of `stat()` calls is bounded, cancelable, and platform-
+    independent. Same return shape as the SSH/find parser, so downstream
+    code treats both modes identically."""
     root = Path(path)
     if not root.exists():
         return []
+    targets: list[Path] = [root]
+    if root.is_dir():
+        try:
+            targets.extend(root.iterdir())
+        except (PermissionError, OSError):
+            # Read on the directory denied (rare for an authorized path,
+            # but a hostile mount could surface it). Return just the root.
+            pass
     out: list[dict] = []
-    # Include the root itself plus every descendant.
-    for p in [root, *root.rglob("*")]:
+    for p in targets:
         try:
             st = p.stat()
         except (OSError, FileNotFoundError):
@@ -73,9 +107,14 @@ def _ssh_remote_cmd(path: str) -> str:
     """The remote-mode command string passed as `ssh user@host '<this>'`.
     Path is the ONLY interpolated piece and is `shlex.quote`'d. Returns the
     literal string that the remote shell will execute. Pinned by a test
-    asserting this exact shape."""
+    asserting this exact shape.
+
+    `-maxdepth 1` enforces the one-level visibility contract on the remote
+    side, matching the local walk. The agent sees the root + its
+    immediate children; the subtree below is invisible until the user
+    declares it as a separate authorized directory."""
     q = shlex.quote(path)
-    return (f"find {q} '(' -type f -o -type d ')' "
+    return (f"find {q} -maxdepth 1 '(' -type f -o -type d ')' "
             f"-printf {shlex.quote(_FIND_PRINTF)}")
 
 
@@ -90,87 +129,180 @@ def _ssh_argv(env: dict, remote_cmd: str) -> list[str]:
     return ["ssh", "-o", "BatchMode=yes", target, remote_cmd]
 
 
+def _ssh_failure_hint(stderr: str, host: str) -> Optional[str]:
+    """Detect well-known ssh failure modes and return a user-facing hint.
+
+    The most common failure in our setup is "no open ControlMaster
+    connection" — the user hasn't run `ssh <host>` in their interactive
+    terminal yet (or has closed it). BatchMode then tries to authenticate
+    with no method available and dies with "Permission denied".
+
+    Returning a concrete next-step message in the snapshot result means the
+    user sees "run `ssh hpc-agent` to open a session" instead of an opaque
+    rc=255. Returns None if no known pattern matches."""
+    s = stderr or ""
+    if ("Permission denied" in s
+            or "Connection closed by remote host" in s
+            or "no matching host key" in s
+            or "Host key verification failed" in s):
+        return (
+            f"Looks like there's no open ssh session to '{host}'. "
+            f"Open a terminal and run `ssh {host}` to authenticate "
+            f"(you'll be prompted for your password by ssh itself; the "
+            f"agent never sees or stores it). Leave that terminal open, "
+            f"then retry the snapshot. The agent piggybacks on your open "
+            f"session — closing the terminal cleanly ends everything.")
+    if "Could not resolve hostname" in s or "Name or service not known" in s:
+        return (
+            f"ssh can't resolve hostname '{host}'. Check `~/.ssh/config` "
+            f"for the Host alias, or your network connection.")
+    if "Connection timed out" in s or "Network is unreachable" in s:
+        return (
+            f"ssh to '{host}' timed out / network unreachable. "
+            f"Are you on the right VPN / network?")
+    return None
+
+
+def _parse_find_output(stdout: str) -> list[dict]:
+    """Parse the tab-separated output of `find -printf '%p\\t%s\\t%T@\\t%y\\n'`
+    into the canonical entry-dict shape. A stray line (ssh banner, etc.)
+    fails parsing and is dropped silently — the captured returncode
+    would have caught a real find failure already."""
+    out: list[dict] = []
+    for line in stdout.splitlines():
+        try:
+            path, size, mtime, type_char = line.split("\t")
+            out.append({
+                "path":  path,
+                "size":  int(size),
+                "mtime": float(mtime),
+                "type":  {"f": "file", "d": "dir", "l": "link"}.get(type_char, "?"),
+            })
+        except ValueError:
+            continue
+    return out
+
+
+def _snapshot_paths_for_env(project: dict, env_name: str) -> list[str]:
+    """The list of directories the agent will walk on `env_name` for this
+    project: every dir-access block whose permissions include
+    `file_name_only`. Upload-only dirs are authorized for upload but
+    invisible to the snapshot — they don't appear here."""
+    out: list[str] = []
+    for d in compute_access.get_project_directories(project, env_name):
+        if "file_name_only" in (d.get("permissions") or []):
+            p = d.get("path")
+            if isinstance(p, str):
+                out.append(p)
+    return out
+
+
 def snapshot_project(project_name: str,
                      *, access_path: Optional[str] = None,
                      timeout: int = 120) -> dict:
-    """Return a directory snapshot for `project_name`'s configured paths.
+    """Return a directory snapshot for `project_name` across every compute
+    env it touches.
+
+    Walks every dir-access block in the project whose `permissions:`
+    include `file_name_only`, on every env declared in the project's
+    `compute_env_access[]`. Each entry in the result is tagged with the
+    `compute_env` it came from so downstream consumers can partition.
 
     Returns:
       {
         "project":        <name>,
-        "compute_env":    <env_name>,
-        "snapshot_paths": [<authorized paths walked>],
+        "compute_envs":   [<env_name>, ...],   # envs this project spans
         "captured_at":    <iso utc>,
-        "entries":        [{path, size, mtime, type}, ...],
+        "entries":        [{compute_env, path, size, mtime, type}, ...],
         "entry_count":    <int>,
+        "per_env_counts": {<env_name>: <int>, ...},
       }
 
     Raises:
       FileNotFoundError    — projects_access.yaml missing
       KeyError             — project / compute_env not found
-      PermissionDenied     — a snapshot_path isn't authorized (or wrong permission)
+      PermissionDenied     — a directory isn't authorized for `snapshot`
 
     Returns {"error": <str>} for:
-      - empty snapshot_paths
-      - find/ssh non-zero exit
+      - project has no compute_env_access blocks
+      - no directory grants `file_name_only` (so snapshot is a no-op)
+      - find/ssh non-zero exit (per-env, reported in `errors`)
       - unsupported compute_env type
-
-    The shell that runs is fixed by `_local_argv` / `_ssh_remote_cmd`; tests
-    pin both shapes.
     """
     access = compute_access.load_access(Path(access_path) if access_path else None)
-    proj = compute_access.get_project(project_name, access)
-    env_name = proj.get("compute_env")
-    if not env_name:
-        return {"error": f"project '{project_name}' has no compute_env reference"}
-    env = compute_access.get_compute_env(env_name, access)
+    project = compute_access.get_project(project_name, access)
 
-    snapshot_paths = proj.get("snapshot_paths") or []
-    if not snapshot_paths:
-        return {"error": f"project '{project_name}' has no snapshot_paths declared"}
+    access_blocks = project.get("compute_env_access") or []
+    if not access_blocks:
+        return {"error": f"project '{project_name}' has no compute_env_access blocks"}
 
-    # PERMISSION GATE — runs BEFORE any subprocess. Fail-closed.
-    for p in snapshot_paths:
-        compute_access.check_permission(env, p, "snapshot")  # raises on denial
+    # First pass: collect (env_name, env_dict, paths). Gate every path BEFORE
+    # any subprocess runs — defense-in-depth, even though every walked path
+    # is by construction in the project's authorized dir list.
+    plans: list[tuple[str, dict, list[str]]] = []
+    for block in access_blocks:
+        env_name = block.get("compute_env")
+        env = compute_access.get_compute_env(env_name, access)
+        paths = _snapshot_paths_for_env(project, env_name)
+        # PERMISSION GATE — runs BEFORE any subprocess. Fail-closed.
+        for p in paths:
+            compute_access.check_permission(project, env_name, p, "snapshot")
+        plans.append((env_name, env, paths))
 
-    env_type = env.get("type")
+    # If no env contributed any file_name_only directory, the snapshot is a
+    # no-op — surface that as a clean error rather than an empty record.
+    if not any(paths for _e, _env, paths in plans):
+        return {"error": (
+            f"project '{project_name}' has no directories with "
+            f"file_name_only permission — nothing to snapshot")}
+
     all_entries: list[dict] = []
-    for p in snapshot_paths:
-        if env_type == "local":
-            # Zero subprocess — pure Python walk. The smallest possible
-            # security surface for the local case.
-            all_entries.extend(_local_walk(p))
-            continue
-        if env_type == "ssh":
-            res = subprocess.run(_ssh_argv(env, _ssh_remote_cmd(p)),
-                                 capture_output=True, text=True, timeout=timeout)
-        else:
-            return {"error": f"unsupported compute_env type: {env_type!r}"}
+    per_env_counts: dict[str, int] = {}
+    errors: list[dict] = []
 
-        if res.returncode != 0:
-            return {"error": f"find failed for {p!r} (rc={res.returncode})",
-                    "stderr": (res.stderr or "")[-500:]}
-
-        for line in res.stdout.splitlines():
-            try:
-                path, size, mtime, type_char = line.split("\t")
-                all_entries.append({
-                    "path":  path,
-                    "size":  int(size),
-                    "mtime": float(mtime),
-                    "type":  {"f": "file", "d": "dir", "l": "link"}.get(type_char, "?"),
-                })
-            except ValueError:
-                # A stray line (e.g. an ssh banner that snuck through) is
-                # dropped silently. The captured returncode would have caught
-                # a real find failure already.
+    for env_name, env, paths in plans:
+        env_type = env.get("type")
+        env_entries: list[dict] = []
+        for p in paths:
+            if env_type == "local":
+                env_entries.extend(_local_walk(p))
                 continue
+            if env_type == "ssh":
+                res = subprocess.run(_ssh_argv(env, _ssh_remote_cmd(p)),
+                                     capture_output=True, text=True, timeout=timeout)
+                if res.returncode != 0:
+                    err: dict = {
+                        "compute_env": env_name,
+                        "path": p,
+                        "error": f"find failed (rc={res.returncode})",
+                        "stderr": (res.stderr or "")[-500:],
+                    }
+                    hint = _ssh_failure_hint(res.stderr or "", env.get("host", ""))
+                    if hint:
+                        err["hint"] = hint
+                    errors.append(err)
+                    continue
+                env_entries.extend(_parse_find_output(res.stdout))
+                continue
+            errors.append({
+                "compute_env": env_name,
+                "path": p,
+                "error": f"unsupported compute_env type: {env_type!r}",
+            })
+        # Tag every entry with its compute_env for the aggregated record.
+        for e in env_entries:
+            e["compute_env"] = env_name
+        all_entries.extend(env_entries)
+        per_env_counts[env_name] = len(env_entries)
 
-    return {
+    out = {
         "project":        project_name,
-        "compute_env":    env_name,
-        "snapshot_paths": list(snapshot_paths),
+        "compute_envs":   [env_name for env_name, _e, _p in plans],
         "captured_at":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "entries":        all_entries,
         "entry_count":    len(all_entries),
+        "per_env_counts": per_env_counts,
     }
+    if errors:
+        out["errors"] = errors
+    return out

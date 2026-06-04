@@ -73,3 +73,8 @@ data/_drivers/
 
 # Claude Code session lock — runtime sentinel, regenerated per session.
 .claude/scheduled_tasks.lock
+
+# The agent's command-and-control file — contains real cluster hostnames,
+# usernames, and paths. NEVER COMMIT. See agent/skills/projects_access.yaml.example
+# for the tracked template (generic placeholders only).
+/projects_access.yaml

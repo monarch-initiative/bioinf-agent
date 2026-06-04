@@ -1,54 +1,134 @@
-# projects_access.yaml — the agent's access manifest for compute envs.
+# ═══════════════════════════════════════════════════════════════════════════
+#   projects_access.yaml — the agent's COMMAND-AND-CONTROL file.
+# ═══════════════════════════════════════════════════════════════════════════
 #
-# Copy to ~/.bioinf/projects_access.yaml and edit. The agent reads this on
-# every call; never writes it.
+# The agent reads this on every call; never writes it.
 #
-# The trust model: the agent can ONLY interact with directories declared
-# here. Any path NOT in this file has permission `none` (= no access). The
-# agent cannot escape this manifest.
+# Convention used throughout this file:
+#   - Every key below is from the agent's SCHEMA LANGUAGE (fixed vocabulary).
+#   - Values you supply are YOUR strings (names, paths, descriptions).
+#   - You never have to guess which key is "mine" vs "yours" — all keys are
+#     mine; everything to the right of `:` is yours.
 #
-# Permission levels (v0):
-#   file_name_only  — agent may list path/size/mtime/type via the snapshot
-#                     primitive. Does NOT permit reading file contents.
-#   upload          — agent may copy NEW files INTO the directory. Will
-#                     never overwrite existing files (planned primitive).
-#   none            — default for unlisted paths. No access.
+# ─── Schema (the fixed vocabulary) ─────────────────────────────────────────
+#
+#   compute_envs[]:                     a list of compute environments
+#     - name                            YOUR label for this env (referenced by projects below)
+#       type                            one of: ssh | local
+#       host                            hostname                       (ssh only)
+#       user                            username                       (ssh only; ssh-agent auth, no creds stored)
+#       container_upload_target         a directory-access block, or null:
+#         path                          absolute path on the env
+#         permissions                   list of permission tokens — MUST include
+#                                       `upload`; may also include `file_name_only`
+#                                       (so the agent can see what's been uploaded)
+#         description                   free text
+#
+#   projects[]:                         a list of projects
+#     - name                            YOUR label for this project
+#       description                     free text
+#       compute_env_access[]:           one block per compute_env this project uses
+#         - compute_env                 references a compute_envs[].name above
+#           directories[]:              the dir-access blocks this project gets on that env
+#             - path                    absolute path on the env
+#               permissions             list of permission tokens
+#               description             free text
+#
+# ─── Permission tokens (v0) ────────────────────────────────────────────────
+#
+#   file_name_only    list a dir's IMMEDIATE contents (path/size/mtime/type).
+#                     ONE LEVEL ONLY — subdir interiors require their own entry.
+#
+#   upload            write NEW files. Never overwrites. (Primitive not yet
+#                     wired; declaring it today is a no-op.)
+#
+#   none              explicit deny (the default for any path not listed).
+#
+# A directory can carry MULTIPLE permissions — `permissions:` is a LIST.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
 
 compute_envs:
 
-  # ---- Example 1: a remote HPC cluster ------------------------------------
-  my_ohpc:
+  # ─────────────────────────────────────────────────────────────────────────
+  # SSH MODE — a remote cluster the agent reaches over ssh.
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: cluster                                # YOUR label
     type: ssh
-    host: ohpc-login01.cluster.uni.edu
-    user: alice                  # ssh-agent handles auth; NO creds stored here
-    directories:
-      - path: /scratch/me/wgs_proj/
-        permission: file_name_only
-        description: "WGS project — inventory only, no content reads"
+    host: hpc-login.example.edu
+    user: alice                                  # ssh-agent handles auth; NO creds stored
 
-      - path: /scratch/me/envs/
-        permission: upload
-        description: "Where the agent may upload .sif env images (NEW files only)"
+    container_upload_target:
+      path: /scratch/alice/containers/
+      permissions: [upload]
+      description: "where the agent uploads .sif container images for this env"
 
-  # ---- Example 2: this laptop (or login node where the agent runs) --------
-  laptop:
+  # ─────────────────────────────────────────────────────────────────────────
+  # LOCAL MODE — this laptop / wherever the agent process runs.
+  # `host` and `user` don't apply for local mode (omit them).
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: laptop
     type: local
-    directories:
-      - path: /Users/alice/data/wgs_proj/
-        permission: file_name_only
-        description: "Local copy of the project for offline work"
 
-# Projects bind a name to (compute_env + paths-of-interest). The agent's
-# `snapshot_project(<name>)` primitive walks the project's snapshot_paths
-# on its declared compute env.
+    container_upload_target: null                # set to null to disable container upload on this env
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#   projects — bind a project name to (compute env(s) + per-env dir access).
+# ═══════════════════════════════════════════════════════════════════════════
+
 projects:
 
-  wgs_proj:
-    compute_env: my_ohpc
-    snapshot_paths:
-      - /scratch/me/wgs_proj/
+  # ─── Single-env project on the cluster ───────────────────────────────────
+  - name: wgs_proj
+    description: "WGS analysis on the cluster"
+    compute_env_access:
 
-  wgs_proj_local:
-    compute_env: laptop
-    snapshot_paths:
-      - /Users/alice/data/wgs_proj/
+      - compute_env: cluster                     # references compute_envs[].name above
+        directories:
+
+          - path: /scratch/alice/wgs_proj/
+            permissions: [file_name_only]
+            description: "raw + processed reads, inventory only"
+
+          - path: /scratch/alice/wgs_proj_scratch/
+            permissions: [file_name_only, upload]    # MULTIPLE permissions on the same dir
+            description: "scratch space — list AND upload"
+
+          - path: /scratch/alice/wgs_proj_outputs/
+            permissions: [upload]                # upload-only — invisible to snapshot
+            description: "agent-staged outputs"
+
+  # ─── Single-env project on the laptop (the envs/ catalog you drove e2e) ──
+  - name: envs_catalog
+    description: "This repo's envs/ catalog + tool-discovery views"
+    compute_env_access:
+
+      - compute_env: laptop
+        directories:
+
+          - path: /Users/alice/code/bioinf_agent/envs/
+            permissions: [file_name_only]
+            description: "which envs are bootstrapped"
+
+          - path: /Users/alice/code/bioinf_agent/envs/bioinf_core_tools/bin/
+            permissions: [file_name_only]
+            description: "tool-discovery view: samtools, bcftools, ..."
+
+  # ─── Multi-env project — same project spans two envs ────────────────────
+  - name: wgs_with_mirror
+    description: "WGS project — cluster-of-record + local mirror"
+    compute_env_access:
+
+      - compute_env: cluster
+        directories:
+          - path: /scratch/alice/wgs_proj/
+            permissions: [file_name_only]
+            description: "data on the cluster"
+
+      - compute_env: laptop
+        directories:
+          - path: /Users/alice/code/bioinf_agent/data/wgs_local_mirror/
+            permissions: [file_name_only]
+            description: "local mirror for offline iteration"
