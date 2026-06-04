@@ -3500,6 +3500,41 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
 
 
 @mcp.tool()
+def agent_status() -> dict:
+    """Where am I in this workflow? A pure-read snapshot of every subsystem
+    the agent maintains state in — pipeline drafts in flight, frozen envs +
+    deliverables, sealed workflows, core test data counts, compute-env
+    bridge config + ssh tunnel state, background jobs, repo state.
+
+    Use this when:
+      - you (or the user) ask "what state am I in?"
+      - the user mentions a primitive but it's not clear if Layer 0/1/2 ran
+      - debugging why a pipeline isn't finding test data / a frozen env
+      - checking if the cluster ssh tunnel is still alive before a snapshot
+
+    No mutation, no LLM-tier work. Each subsystem query is fault-tolerant:
+    a corrupt manifest degrades to an `{"error": "..."}` in that slice
+    rather than crashing the whole call."""
+    from agent.skills.agent_status import agent_status as _agent_status
+    from agent.skills import compute_access as _compute_access
+    # Prefer the repo-root projects_access.yaml (the live file convention
+    # the user is using); fall back to the canonical homedir path.
+    repo_root = _env_mgr.project_root
+    candidate = repo_root / "projects_access.yaml"
+    access_path = candidate if candidate.exists() else _compute_access.default_access_path()
+    if not access_path.exists():
+        access_path = None
+    return _agent_status(
+        pipeline_state=_pipeline_state,
+        env_cache=_env_cache,
+        job_manager=_job_manager,
+        config=config,
+        access_path=access_path,
+        include_repo=True,
+    )
+
+
+@mcp.tool()
 def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     """Deep-merge agent-authored patches into the draft. Accepts only the
     keys no primitive produces directly: description, notes, final_summary,
