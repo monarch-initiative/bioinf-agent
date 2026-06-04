@@ -1,0 +1,529 @@
+"""freeze_tools — the Layer-1 deliverable surface.
+
+Three tools:
+  freeze              — build (or adopt) the content-addressed, HPC-shippable
+                        env image; emit ENV.html + attestation.json + recipe.yaml.
+  verify_env_recipe   — rebuild from a recipe alone, check the digest converges.
+  generate_user_guide — render the Layer-2 user guide from a validated run.
+
+freeze() is the biggest single tool in the codebase (~420 LOC) — it coordinates
+the adopt-or-build decision tree, honesty contract checks, Apptainer delivery,
+registry push, and three deliverable renderers. All its helpers live in
+mcp_server.py (read via `_ms.X`) so this submodule stays purely a tool surface.
+"""
+from __future__ import annotations
+
+import subprocess
+
+# IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
+# so test monkeypatching on mcp_server reaches us.
+from agent import mcp_server as _ms
+from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+
+
+@mcp.tool()
+def freeze(
+    env_name: str,
+    tools: StrList,
+    pipeline_name: str = "",
+    pipeline_description: str = "",
+    version: str = "",
+    platform: str = "linux-64",
+    accel: str = "none",
+    gated: bool = False,
+    licenses: OptStrList = None,
+    push_target: str = "",
+    gpu_required: bool = False,
+    cuda_version: str = "",
+    pipeline_id: str = "",
+    background: bool = False,
+) -> dict:
+    """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
+
+    The re-spine's env-artifact primitive — adopt a pre-built BioContainer by
+    digest when one exists, else build our own, and emit the Apptainer/HPC
+    delivery contract. Steps:
+
+      1. request_key (what was ASKED) → EnvCache lookup; a hit returns the
+         proven artifact by hash with NO re-solve (the scale unlock).
+      2. content_digest (what was GOT): lock + source/binary/artifact hashes +
+         platform + accel (from the draft when pipeline_id is given).
+      3. ADOPT-or-BUILD:
+         - pure conda + a published biocontainer → ADOPT it BY DIGEST (no build).
+         - everything else → CONTAINER-NATIVE BUILD via env_freeze: install +
+           validate IN the ship image (one generic bake, validated==shipped). Covers
+           hand-installed tools (binary/jar/source/cargo/go/perl), pure conda, and
+           pip/R — cross-arch too (built in-container; no host-arch conda-pack and no
+           cross-arch refusal). A biocontainer is NOT adopted when the env has non-
+           conda installs it can't represent (that would ship a different artifact).
+           Gated builds must pass `licenses` (I13).
+      4. HPC delivery: adopted → `apptainer pull docker://…@digest`. Built →
+         registry-free by DEFAULT (`docker save` tarball + `apptainer build
+         docker-archive://…`, zero _ms.config/auth). If a default registry is
+         configured (_ms.config docker.registry) OR a push_target is passed, the built
+         image is pushed and delivery becomes `apptainer pull docker://…`; a push
+         failure falls back to the tarball and is reported in push_status. Gated
+         images are NEVER pushed (I13 — tarball-only).
+      5. EnvCache.register(request_key → record).
+
+    `tools` are the PRIMARY requested tools (e.g. ['samtools=1.21',
+    'bwa=0.7.17']) — what biocontainer/mulled adoption matches on, NOT the full
+    dependency closure. Returns {mode, image, image_digest, content_digest,
+    request_key, hpc_delivery, cache_hit, …}.
+
+    `background` (W1 mitigation): when True, spawns freeze in a detached
+    subprocess via JobManager and returns IMMEDIATELY with a job_id. Use this
+    for large builds (CUDA tools, ML/AI models, big release binaries) where the
+    synchronous in-call time would exceed the MCP stream-watchdog window (~10 min).
+    The subprocess writes the full freeze result JSON to
+    `data/jobs/{job_id}.result.json` when it finishes; poll `check_job(job_id)`
+    until state=='exited', then read that file. The standard env_report/attestation/
+    recipe artifacts are written by the subprocess too, on success.
+    """
+    if background:
+        return _ms._freeze_in_background(
+            env_name=env_name, tools=tools, pipeline_name=pipeline_name,
+            pipeline_description=pipeline_description, version=version,
+            platform=platform, accel=accel, gated=gated,
+            licenses=list(licenses or []), push_target=push_target,
+            gpu_required=gpu_required, cuda_version=cuda_version,
+            pipeline_id=pipeline_id,
+        )
+    # A1 failsafe (Apollo3 stress, batch-2): disk pre-check. 4 parallel freezes
+    # piled buildkit intermediates to 80 GB / 92% capacity → infinite retry loop.
+    # Refuse here with a diagnostic that names the cleanup command, BEFORE any
+    # cache lookup or docker work. The threshold IS the concurrency safety:
+    # parallel freezes that race for disk now refuse cleanly instead of wedging.
+    _disk_refusal = _ms._check_disk_failsafe()
+    if _disk_refusal:
+        return _disk_refusal
+    parsed = _ms._freeze.parse_tools(tools)
+    # F1 fix (Batch 2): the licenses surface has TWO entry points — the freeze()
+    # `licenses=[...]` kwarg AND patch_pipeline({licenses, license_gated, …}) on
+    # the draft. An agent that diligently called patch_pipeline but forgot to
+    # re-pass licenses on freeze() would land here with licenses=None, the I13
+    # gate would refuse the gated build, and the diligence would look like a
+    # bug. Merge: caller's licenses wins if non-empty; else fall back to the
+    # draft's. Same merge for `gated`: an explicit gated=True from the caller
+    # wins; absent caller intent, the draft's license_gated promotes us into
+    # gated mode (so I13 still fires, but with the licenses the agent recorded).
+    _draft_for_merge = _ms._pipeline_state.get_draft(pipeline_id) if pipeline_id else None
+    if isinstance(_draft_for_merge, dict):
+        if not (licenses or []) and _draft_for_merge.get("licenses"):
+            licenses = list(_draft_for_merge.get("licenses") or [])
+        if not gated and bool(_draft_for_merge.get("license_gated")):
+            gated = True
+    # F2 fix (Batch 2): I13 EARLY GATE. The honesty contract already refuses a
+    # gated build with empty licenses[] (`I13.gated_license_recorded` in
+    # env_honesty), but only AFTER the docker build finishes — the user pays
+    # 10-30 min of build time to learn the artifact will be refused. Refuse
+    # here, before request_key/cache lookup/docker work, with the same shape
+    # the contract uses so the error is structurally indistinguishable.
+    if gated and not (licenses or []):
+        return {"success": False, "stage": "i13_early_gate",
+                "honesty_violations": [{
+                    "invariant": "I13.gated_license_recorded", "where": "licenses",
+                    "message": "license_gated=true requires at least one entry in licenses[] "
+                               "naming the license/terms the artifact is bound by. Pass "
+                               "licenses=[…] on freeze() (or patch_pipeline before freeze)."}],
+                "violation_count": 1}
+    # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
+    # the honesty contract (I12) can actually check it. A draft-supplied accelerator
+    # wins (richer record); when absent and the caller passed accel="cuda" but no
+    # patch_pipeline(accelerator=…), we synthesize the minimum and let I12 catch any
+    # missing required metadata (toolkit_version, runtime_probe, min_driver_version) —
+    # the right failure mode is REFUSE-WITH-DIAGNOSTIC, not a vacuous pass. This is
+    # the dorado-stress D3 fix: previously `accel` only fed the cache key and never
+    # reached _check_accelerator, so `accel="cuda"` on a draft with accelerator=None
+    # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
+    # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix)
+    # AND the install-record version fill (B7 fix — see parsed_filled).
+    # Reuses _draft_for_merge (read above for F1/F2 licenses merge) — same draft.
+    draft = _draft_for_merge
+    _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
+    effective_accel = _ms._synth_accelerator_from_request(accel, cuda_version, _draft_accel)
+    # B7 fix (verification-driven, 2026-05-27): fill version slots from the
+    # install record BEFORE computing the cache key. Pre-fix, parsed=[(busco,None)]
+    # fed request_key (yielding `busco|linux/amd64|none`) but the adopt lookup
+    # used the install-record-filled version separately. Two distinct envs
+    # (busco==6.0.0 vs busco==5.8.3) collided on ONE cache key, so the second
+    # freeze returned the FIRST's image — a wrong-version trust violation
+    # isomorphic to the original B1, surfaced at a higher layer. Filling here
+    # makes the cache key reflect what we'll actually adopt/build.
+    parsed_filled = _ms._resolve_versions_from_install_record(parsed, draft)
+    # D5 + D6 fix: request_key now folds in gated, accelerator-policy hash, and
+    # the licenses set hash so policy-distinct artifacts don't collide on the cache
+    # key. Platform is canonicalized inside request_key so conda-form ('linux-64')
+    # and Docker-form ('linux/amd64') callers share ONE slot (D6).
+    rkey = _ms._freeze.request_key(
+        [(n, v or "") for n, v in parsed_filled], platform, accel,
+        gated=gated, accel_policy=effective_accel, licenses=list(licenses or []),
+    )
+
+    # Re-anchor the cache against reality: a hit is a CLAIM until we confirm the
+    # image is still present in the docker daemon. An evicted image (or one a user
+    # `docker rmi`'d) was treated as a hit before — handing back a stale record,
+    # no rebuild, no report re-render. lookup_anchored turns that into a MISS so
+    # the build path runs, materializes a fresh image, and re-renders every
+    # deliverable. (The container-native analog of the I8/I11 anchoring the host
+    # path used to do for binaries / source clones.)
+    def _docker_image_present(ref: str) -> bool:
+        r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+    # cache lookup: lookup_anchored confirms the image is still in the docker
+    # daemon (an evicted image gets re-built rather than returning a dangling
+    # record). On hit we summarize the SBOM in the response only; the cached
+    # record on disk keeps the full lists for env_report/attestation rendering.
+    cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
+    if cached:
+        return _ms._summarize_sbom_in_response(
+            {"success": True, "cache_hit": True, "request_key": rkey, **cached}
+        )
+
+    # A request-based FALLBACK anchor only. The authoritative content_digest is the
+    # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
+    # for a build, the biocontainer manifest digest for an adopt) via
+    # _ms._freeze.record_content_digest. The old content_digest_from_spec(draft) read
+    # finalized-only fields (packages[]/lock_sha256) a live draft lacks, collapsing
+    # to one constant for every container-native build.
+    content_digest = _ms._freeze.compute_content_digest({
+        "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
+        "platform": platform, "accel": accel,
+    })
+
+    name = pipeline_name or env_name
+    sif = f"{name}.sif"
+    # B1 + B7 fix: adopt lookup consumes `parsed_filled` (versions resolved from
+    # install_steps[*].installed_packages above) — the same value that fed the
+    # cache key, so the adopt-decision and the cache slot agree on what env
+    # we're building. The install record is the trust anchor.
+    adopt = _ms._biocontainers.resolve_biocontainer(parsed_filled)
+    conda_lock_path = None
+    shipped_binaries: list[dict] = []
+    build_method = None
+    validation_locus = "unknown"   # native | emulated | adopted — where we validated
+    locus_advisory = ""
+    env_recipe_dict = None         # the self-contained rebuild recipe (build path only)
+    build_cd = ""                  # the EnvBuild content_digest (the authoritative build anchor)
+
+    non_conda = _ms._freeze.non_conda_installs(draft) if draft else []
+    # P3 fix: pipeline_steps that ran `pip install …` via run_in_env mutate the
+    # env outside install_steps' structured surface — non_conda_installs misses
+    # them, so the adopt gate would otherwise see "pure conda" and ship a
+    # BioContainer that omits the pip install. (pysam-stress: host-built
+    # pysam==0.24.0 via run_in_env → freeze adopted pysam==0.23.3 biocontainer.)
+    env_mutators = _ms._freeze.env_mutating_pipeline_steps(draft) if draft else []
+    has_env_mutations = bool(non_conda or env_mutators)
+    can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
+
+    # Registry push as a first-class delivery: an explicit push_target wins, else a
+    # configured default registry (_ms.config docker.registry) auto-derives the ref so a
+    # push happens with no per-call argument. Tarball→Apptainer stays the genuine
+    # zero-_ms.config default (no registry configured → no push, no auth needed). Gated
+    # artifacts are NEVER pushed (I13).
+    default_registry = (_ms.config.get("docker", {}).get("registry") or "").strip()
+    effective_push = _ms._effective_push_target(push_target, default_registry, name, version, gated)
+    push_status = "not-configured"   # surfaced honestly: pushed / push-failed / skipped
+
+    def _deliver_built(image):
+        """docker-save tarball + registry push (when a target is configured) →
+        Apptainer contract. Push failure falls back to the tarball but is reported,
+        never silently swallowed."""
+        nonlocal push_status
+        idg = _ms._docker.image_digest(image)
+        tar_path = _ms._env_mgr.project_root / "docker_images" / name / f"{name}.tar"
+        save = _ms._docker.save_archive(image, tar_path)
+        tball = save.get("tarball") if save.get("success") else None
+        pushed = None
+        if effective_push:
+            tagged = _ms._docker._run(["docker", "tag", image, effective_push])["returncode"] == 0
+            if tagged and _ms._docker._run(["docker", "push", effective_push], timeout=900)["returncode"] == 0:
+                pushed, push_status = effective_push, f"pushed: {effective_push}"
+            else:
+                push_status = f"push-failed: {effective_push} (tarball fallback)"
+        elif gated and (push_target or default_registry):
+            push_status = "skipped: gated artifacts are never pushed (I13)"
+        h = _ms._freeze.apptainer_delivery(mode="build", sif_name=sif, push_target=pushed,
+                                       tarball=tball, gated=gated)
+        return idg, tball, h
+
+    if can_adopt and not has_env_mutations:
+        # ADOPT — pure-conda env with a published biocontainer. The biocontainer
+        # IS the artifact (provenance = its digest), so no conda-lock of our env.
+        mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
+        # MODE-AWARE HONESTY (D2 fix): adopt skips VALIDATED_IN_IMAGE (BioContainers'
+        # bytes are trusted by their published digest, not validated in-locus) but
+        # POLICY_CLEAN STILL MUST PASS — accelerator honesty (I12) and the license
+        # firewall (I13) describe what WE declare on this artifact, not who built it.
+        # The previous freeze code path adopted+returned without ever calling the
+        # contract, so the report rendered "POLICY_CLEAN — I12 passed" without I12
+        # ever running. dorado-stress demonstrated this with a CPU-only samtools
+        # biocontainer happily emitted under `accel=cuda`. We now refuse here.
+        adopt_check_input = {
+            "image": image, "image_digest": image_digest,
+            "accelerator": effective_accel,
+            "license_gated": gated, "licenses": list(licenses or []),
+            "redistributable": not gated,
+        }
+        adopt_violations = _ms._env_honesty.check_adopt(adopt_check_input)
+        if adopt_violations:
+            return {"success": False, "stage": "adopt_honesty", "request_key": rkey,
+                    "adopt_attempt": adopt, "honesty_violations": adopt_violations,
+                    "violation_count": len(adopt_violations)}
+        hpc = _ms._freeze.apptainer_delivery(mode="adopt", sif_name=sif,
+                                         image_by_digest=adopt["image_by_digest"])
+        validation_locus = "adopted"   # we trust the published digest, not an in-locus run
+
+    else:
+        # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
+        # uses conda-pack at all). env_freeze installs + validates IN the ship image
+        # (one generic bake, validated==shipped), covering hand-installed tools
+        # (binary/jar/source/cargo/go/perl), pure conda, and pip/R — cross-arch too
+        # (build in-container, no host-arch conda-pack and no cross-arch refusal).
+        # A biocontainer is not adopted when the env has non-conda installs it can't
+        # represent (adopting would ship a different, unvalidated artifact).
+        if can_adopt:
+            if non_conda:
+                _skipped = ("env has non-conda installs a biocontainer cannot represent "
+                            f"({len(non_conda)} install_step(s))")
+            else:
+                _skipped = (f"env has {len(env_mutators)} pipeline_step(s) that mutated the env "
+                            "(e.g. `pip install …` via run_in_env) — a biocontainer cannot "
+                            "represent these")
+            adopt = {**adopt, "skipped": _skipped}
+        docker_platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
+        conda_deps = _ms._freeze.requested_conda_specs(draft) if draft else []
+        if not conda_deps and not non_conda:
+            # no draft (or no recorded conda installs): treat the requested tools as
+            # conda specs (the declarative pure-conda case).
+            conda_deps = [f"{n}={v}" if v else n for n, v in parsed]
+        br = _ms._env_freeze.build_env_image(
+            draft or {}, name=name, version=version, conda_deps=conda_deps,
+            primary_tools=[n for n, _ in parsed], platform=docker_platform,
+            accelerator=effective_accel,
+            license_gated=gated, licenses=licenses, redistributable=not gated)
+        if not br.get("success"):
+            # build_env_image refuses pip/r_install with no generator, a non-replayable
+            # source, or any honesty-contract violation (incl. I13: a gated build needs
+            # licenses[]). Surface it verbatim.
+            #
+            # A2 failsafe (Apollo3 stress, batch-2): when the failure happened INSIDE
+            # docker (stages: start/declare/install/freeze — pre-docker refusals like
+            # resolve/route/map_install leave no layers), it may have parked
+            # intermediate buildkit layers that compound across freezes. Best-effort
+            # prune ONLY when free disk is already approaching the failsafe threshold
+            # (1.5x the hard floor) — on a healthy disk we keep buildkit cache for
+            # fast iteration on the next retry. The prune outcome rides on the
+            # response so the operator can see what was cleaned (or why nothing was).
+            _DOCKER_STAGES = {"start", "declare", "declare_locked", "declare_pypi",
+                              "install", "freeze"}
+            extra = {}
+            if br.get("stage") in _DOCKER_STAGES:
+                try:
+                    import shutil as _sh
+                    free_gb = _sh.disk_usage(str(_ms.PROJECT_ROOT)).free / (1024 ** 3)
+                except Exception:
+                    free_gb = None
+                soft_threshold = _ms._FREEZE_MIN_DISK_GB_DEFAULT * 1.5
+                if free_gb is not None and free_gb < soft_threshold:
+                    extra["buildkit_prune"] = _ms._prune_buildkit_after_failure()
+                    extra["buildkit_prune"]["reason"] = (
+                        f"free disk {free_gb:.1f} GB below soft threshold "
+                        f"{soft_threshold:.0f} GB — pruning to avoid cascade")
+            return {"success": False, "stage": "container_build", "request_key": rkey,
+                    "adopt_attempt": adopt, "build": br, **extra}
+        mode, build_method, image = "build", "container-native", br["image"]
+        image_digest = br["image_digest"]
+        build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor
+        validation_locus = br.get("validation_locus", "unknown")
+        locus_advisory = br.get("locus_advisory", "")
+        _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
+        # record what shipped: each baked long-tail step (the command IS the provenance).
+        shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
+                            for s in br.get("longtail_steps", [])]
+        # the SELF-CONTAINED rebuild recipe — everything build_env_image needs to
+        # reproduce this env with no draft/agent (the verify-by-rebuild / CI artifact).
+        # content_digest is the EnvBuild one (what a rebuild via build_env_image yields).
+        env_recipe_dict = _ms._env_recipe.extract_recipe(
+            draft, name=name, version=version, conda_deps=conda_deps,
+            primary_tools=[n for n, _ in parsed], platform=docker_platform,
+            accelerator=effective_accel,
+            license_gated=gated, licenses=licenses, redistributable=not gated,
+            content_digest=br.get("content_digest", ""),
+            # ship the engine lock with the recipe — replay materializes the env
+            # from these exact bytes, no solve. Eliminates the conda drift hole.
+            conda_lock=br.get("lock_files") or None,
+            # snapshot.debian.org timestamp the BUILDER + RUNTIME stages pinned
+            # apt to — replay points at the same snapshot, same apt bytes.
+            apt_snapshot=br.get("apt_snapshot") or "")
+        if conda_deps:  # portable lock for the conda layer (image digest is the real anchor)
+            plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
+            cl = _ms._env_mgr.generate_lock(env_name, platforms=plats)
+            conda_lock_path = cl.get("lockfile") if cl.get("success") else None
+
+    # Authoritative 'what was GOT' anchor: EnvBuild digest for a build, biocontainer
+    # manifest digest for an adopt (request hash only as a last-resort fallback).
+    content_digest = _ms._freeze.record_content_digest(
+        mode, build_digest=build_cd, adopt_digest=adopt.get("digest", ""),
+        fallback=content_digest)
+    record = _ms._freeze.freeze_record(
+        request_key=rkey, content_digest=content_digest, mode=mode,
+        image=image, image_digest=image_digest, platform=platform, gated=gated,
+        conda_lock_path=conda_lock_path, tarball=tarball, hpc=hpc,
+    )
+    if build_method:
+        record["build_method"] = build_method
+    if shipped_binaries:
+        record["shipped_binaries"] = shipped_binaries
+    record["validation_locus"] = validation_locus
+    # report inputs — all runtime-captured (from the BuildResult), so the env
+    # report rendered from them can't be faked. Absent on the adopt path.
+    record["name"] = name
+    record["requested_tools"] = [n for n, _ in parsed]
+    # DECLARED POLICY (submitter-asserted, NOT runtime-verified — the contract only
+    # checks them for consistency, I12/I13). Recorded so the report can show them in
+    # a clearly-separated, honestly-labelled section.
+    record["licenses"] = list(licenses or [])
+    # The accelerator policy on the record is the SAME object the honesty contract
+    # was just evaluated against (effective_accel = draft.accelerator OR synthesized
+    # from the MCP scalar args). The record's accelerator MUST agree with the policy
+    # that gated the build/adopt, else the artifact and its claim diverge.
+    record["accelerator"] = effective_accel
+    if mode == "build":
+        record["engine"] = br.get("engine", "none")
+        record["conda_specs"] = br.get("conda_specs", [])
+        record["verifications"] = br.get("verifications", [])
+        record["resolved_packages"] = br.get("resolved_packages", [])
+        record["system_packages"] = br.get("system_packages", [])
+        record["push_status"] = push_status
+    _ms._env_cache.register(rkey, record)
+
+    # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):
+    # the human env report (HTML headline + Markdown for diff/parse) + a standard
+    # in-toto/SLSA provenance attestation. Views — never block a good freeze on a
+    # render error.
+    # The .md renderer was retired in batch-3 (the .html is the canonical Layer-1
+    # deliverable; .md was a redundant view that only existed during the AUDIT#2
+    # phase to ease grep-based diff). Two artifacts now: ENV.html + attestation.json.
+    report_html_path = attestation_path = None
+    reports_dir = _ms._env_mgr.project_root / "env_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (reports_dir / f"{name}.ENV.html").write_text(_ms._env_report_html.render_env_report_html(record))
+        report_html_path = str(reports_dir / f"{name}.ENV.html")
+    except Exception as e:
+        report_html_path = f"(html report render failed: {e!r})"
+    try:
+        import json as _json
+        att = _ms._attestation.build_attestation(record, base_image=_ms._BASE_IMAGE if mode == "build" else "")
+        (reports_dir / f"{name}.attestation.json").write_text(_json.dumps(att, indent=2))
+        attestation_path = str(reports_dir / f"{name}.attestation.json")
+    except Exception as e:
+        attestation_path = f"(attestation render failed: {e!r})"
+    # the SELF-CONTAINED rebuild recipe (build path only) — verify with verify_env_recipe.
+    recipe_path = None
+    if env_recipe_dict:
+        try:
+            import yaml as _yaml
+            (reports_dir / f"{name}.recipe.yaml").write_text(
+                _yaml.safe_dump(env_recipe_dict, sort_keys=False))
+            recipe_path = str(reports_dir / f"{name}.recipe.yaml")
+        except Exception as e:
+            recipe_path = f"(recipe render failed: {e!r})"
+
+    out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    out["env_report_html"] = report_html_path
+    out["attestation"] = attestation_path
+    out["env_recipe"] = recipe_path
+    if locus_advisory:
+        out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
+    # Summarize the bulky SBOM in the live response only. The full SBOM lives
+    # in the EnvCache record (registered above) and in env_reports/{name}.ENV.html
+    # / .attestation.json — both rendered from the full record before this
+    # summarization fires. ~10-15k tokens of SBOM rows eliminated per response
+    # with zero loss of accessible information (the agent Reads the HTML when
+    # it wants the full SBOM).
+    return _ms._summarize_sbom_in_response(out)
+
+
+@mcp.tool()
+def verify_env_recipe(recipe_path: str) -> dict:
+    """Rebuild an env FROM ITS RECIPE ALONE (env_reports/{name}.recipe.yaml, written by
+    freeze) and check it reproduces the recorded content_digest. The recipe is self-
+    contained — it carries the conda specs + every non-conda install_method (synthesized
+    commands + provenance + commit, jar/binary/source/...), so this rebuild uses NO
+    draft / agent / pipeline-state.
+
+    WHAT A MATCH PROVES (precisely — no overclaiming):
+      • COMPLETENESS — the recipe is self-contained (rebuild from it alone succeeds).
+      • LOCAL DETERMINISM / CONVERGENCE — replaying it here yields the same content_digest;
+        the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
+        solve converged — the strongest same-machine signal for 'two runs → same result'.
+    It does NOT prove cross-machine reproducibility (different base cache / network / docker)
+    or independent-party tamper-evidence — those are this SAME rebuild run ELSEWHERE (CI, a
+    colleague) + signing. The recipe ENABLES them; this verifies the necessary local
+    conditions. Requires Docker. Returns {success, content_digest_match, rebuilt/expected
+    content_digest, proves, honesty_violations}."""
+    import yaml as _yaml
+    try:
+        with open(recipe_path) as fh:
+            recipe = _yaml.safe_load(fh)
+    except Exception as e:
+        return {"success": False, "error": f"could not load recipe {recipe_path!r}: {e}"}
+    if not isinstance(recipe, dict) or not recipe.get("name"):
+        return {"success": False, "error": "not a valid env recipe (missing name)"}
+    res = _ms._env_recipe.rebuild_from_recipe(recipe)
+    return {
+        "success": res["success"],
+        "content_digest_match": res["content_digest_match"],
+        "rebuilt_content_digest": res["rebuilt_content_digest"],
+        "expected_content_digest": res["expected_content_digest"],
+        "proves": res["proves"],
+        "build_stage": res["build"].get("stage"),
+        "honesty_violations": res["build"].get("honesty_violations"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def generate_user_guide(
+    pipeline_id: str = "",
+    spec: dict = {},
+    freeze_request_key: str = "",
+    write: bool = True,
+) -> dict:
+    """Render the Layer-2 user guide for a pipeline (Markdown) from its PASSING,
+    validated run — every command shown was actually executed and its outputs
+    checked (drawn only from validated pipeline_steps + a self-tested
+    usage.command_template). A workflow consumes its env BY DIGEST: the
+    "Get the environment" section is the freeze() Apptainer delivery and
+    provenance pins the content/image digests.
+
+    Pass `pipeline_id` (uses its draft) or a `spec` dict. `freeze_request_key`
+    looks the frozen artifact up in the EnvCache (e.g. 'samtools=1.21|linux-64|
+    none') to source the HPC delivery + digests. Writes env_reports/{name}.GUIDE.md
+    when write=True.
+    """
+    s = spec or (_ms._pipeline_state.get_draft(pipeline_id) if pipeline_id else None)
+    if not s:
+        return {"success": False, "error": "provide pipeline_id (with a draft) or a spec dict"}
+    fr = _ms._env_cache.lookup(freeze_request_key) if freeze_request_key else None
+    md = _ms._user_guide.render_user_guide(s, freeze_record=fr)
+    result = {
+        "success": True,
+        "markdown": md,
+        "commands_shown": len(_ms._user_guide.executed_commands(s)),
+        "env_pinned": bool(fr),
+    }
+    if write:
+        out = _ms._env_mgr.project_root / "env_reports" / f"{s.get('pipeline_name','pipeline')}.GUIDE.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(md)
+        result["path"] = str(out)
+    return result
+
+

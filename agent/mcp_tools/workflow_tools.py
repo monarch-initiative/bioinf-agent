@@ -1,0 +1,693 @@
+"""workflow_tools — pipeline-draft lifecycle + Layer-2 seal + R-deps helper.
+
+The pipeline-draft surface (start / show / patch / discard / mark / stage),
+plus the Layer-2 deliverable producers (seal_workflow / write_pipeline_provenance
+/ list_installed_pipelines), plus the R-package DESCRIPTION/dep scanner used
+before installing CRAN/Bioconductor packages from GitHub.
+
+LATENT BUG NOTE — `_scan_r_runtime_installs` originally called `json.loads`
+without `import json` in scope; the bare-except returned `[]` silently, so
+`undeclared_runtime_installs` had been empty for every call. Adding the
+`import json` at the top of THIS module is the fix.
+"""
+from __future__ import annotations
+
+import hashlib
+import json   # <-- fix for _scan_r_runtime_installs latent bug (see module docstring)
+import re
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+# IMPORT-BINDING NOTE: singletons that tests monkeypatch (the L5 conftest
+# swaps `_pipeline_state` to a tmp-rooted instance per test) MUST be reached
+# through the mcp_server MODULE attribute, not captured as a bare name at
+# import time — otherwise `monkeypatch.setattr(mcp_server, "_pipeline_state",
+# ...)` only updates the module attr, not the bare ref this module would
+# have captured. The pattern below (`_ms._pipeline_state` inside each tool)
+# survives monkeypatching. `config` is included because tests can swap the
+# config too, and the cost of going through `_ms.` is one attribute lookup.
+from agent import mcp_server as _ms
+from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
+
+
+# ---------------------------------------------------------------------------
+# Layer-2 seal — workflow validation + WorkflowSpec write
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def seal_workflow(
+    pipeline_id: str,
+    freeze_request_key: str,
+    workflow_name: str = "",
+    description: str = "",
+    write: bool = True,
+) -> dict:
+    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, PIN the
+    frozen environment by digest, render the user guide, write the WorkflowSpec.
+
+    The two-layer split. Layer 1 (ENVIRONMENT) = finalize + freeze: a
+    content-addressed, reusable artifact. Layer 2 (WORKFLOW) CONSUMES it. Call
+    freeze() first to produce the env artifact, then seal_workflow with its
+    request_key to pin the env by digest — the wall that lets the workflow layer
+    ignore install concerns.
+
+    Refuses to write if any workflow invariant fails (I0 shape · I3 validated
+    outputs · I6 paths · I7 resources · I8 input provenance); the env-build
+    invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml +
+    {workflow_name}.GUIDE.md (the guide rendered from the passing run).
+    """
+    draft = _ms._pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"success": False, "error": f"unknown pipeline_id: {pipeline_id}"}
+    fr = _ms._env_cache.lookup(freeze_request_key)
+    if not fr:
+        return {"success": False,
+                "error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
+
+    from agent.skills.spec_writer import (check_workflow_invariants, self_test_usage,
+                                          write_workflow_spec)
+    violations = check_workflow_invariants(draft)
+    if violations:
+        return {"success": False, "stage": "workflow_invariants",
+                "violations": violations, "violation_count": len(violations)}
+
+    # The usage.command_template IS the workflow's run contract — establish
+    # usage_verified honestly by self-testing it (I4), since the draft doesn't
+    # persist the field (it's derived only at validate/finalize). A verified
+    # template is what the guide shows as the runnable form.
+    usage_ok = False
+    if draft.get("usage") and draft.get("conda_env"):
+        try:
+            usage_ok = bool(self_test_usage(draft, _ms._env_mgr, validator=_ms._validator).get("ok"))
+        except Exception:
+            usage_ok = False
+    render_spec = {**draft, "usage_verified": usage_ok}
+
+    # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
+    # frozen env (their own freeze). Validate every step's container digest against
+    # the set of ALL frozen env digests, not just the one we sealed from — so a
+    # multi-env workflow is still "validated == shipped" when every step ran in some
+    # shipped env. `fr` remains the PRIMARY env (the guide's get-the-image section).
+    all_envs = _ms._env_cache.all()
+    valid_digests = {r.get("image_digest") for r in all_envs.values() if r.get("image_digest")}
+    by_digest = {r.get("image_digest"): (k, r) for k, r in all_envs.items() if r.get("image_digest")}
+    envs_used: list[dict] = []
+    seen_dig: set = set()
+    for s in draft.get("pipeline_steps", []):
+        if not isinstance(s, dict):
+            continue
+        d = s.get("container_image_digest")
+        is_validated = s.get("validation") or s.get("validation_status") == "passed"
+        if d and is_validated and d not in seen_dig:
+            seen_dig.add(d)
+            rk, rr = by_digest.get(d, ("", {}))
+            envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
+                              "image_digest": d})
+
+    guide_md = _ms._user_guide.render_user_guide(render_spec, freeze_record=fr,
+                                             valid_digests=valid_digests)
+    key_packages = _ms._user_guide.key_packages(draft)
+
+    wname = workflow_name or f"{draft.get('pipeline_name', 'workflow')}_workflow"
+    wf = {
+        "workflow_name":      wname,
+        "description":        description or draft.get("description", ""),
+        "created_at":         datetime.now(timezone.utc).isoformat(),
+        "env_request_key":    fr.get("request_key", freeze_request_key),
+        "env_content_digest": fr.get("content_digest", ""),
+        "env_image":          fr.get("image", ""),
+        "env_hpc_delivery":   fr.get("hpc_delivery", {}),
+        # every frozen env this workflow chains (multi-env); the primary env above
+        # is for the guide's get-the-image step. Each step also carries its own
+        # container_image_digest, so a reader can map step → env.
+        "envs":               envs_used,
+        "pipeline_status":    draft.get("pipeline_status", "in_progress"),
+        "usage_verified":     usage_ok,
+        "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
+            draft, fr, valid_digests=valid_digests),
+        "usage":              draft.get("usage"),
+        "pipeline_steps":     draft.get("pipeline_steps", []),
+        # External sources carried so the artifact self-verifies (I8 standalone).
+        "test_data":            draft.get("test_data"),
+        "reference_databases":  draft.get("reference_databases", []),
+        "runtime_configs":      draft.get("runtime_configs", []),
+        "authored_artifacts":   draft.get("authored_artifacts", []),
+        "driver_env":         {"conda_env": draft.get("conda_env"),
+                               "python_version": draft.get("python_version"),
+                               "key_packages": key_packages},
+        "user_guide":         guide_md,
+    }
+    # The artifact must pass its OWN run-side invariants — validate what we WRITE,
+    # not just the draft we sealed from (the draft is richer; the artifact must
+    # stand on its own).
+    self_violations = check_workflow_invariants(wf)
+    if self_violations:
+        return {"success": False, "stage": "workflow_self_verify",
+                "reason": "constructed WorkflowSpec failed its own run-side invariants — "
+                          "it would not be re-verifiable standalone",
+                "violations": self_violations, "violation_count": len(self_violations)}
+    result = {
+        "success": True,
+        "workflow_name": wname,
+        "env_pinned_digest": fr.get("content_digest"),
+        "env_image": fr.get("image"),
+        "commands_shown": len(_ms._user_guide.executed_commands(draft)),
+    }
+    if write:
+        out = write_workflow_spec(wf, _ms.config)
+        if out.get("error"):
+            return {"success": False, **out}
+        result.update(out)
+    else:
+        result["workflow"] = wf
+    return result
+
+
+@mcp.tool()
+def write_pipeline_provenance(
+    pipeline: str,
+    conda_env_path: str,
+    pipeline_spec_path: str,
+    output_files: list[dict],
+    output_dir: str,
+    sample_key: str,
+    # genome reference — optional for tools that don't use a reference FASTA
+    genome_build: str = "",
+    chromosome: str = "",
+    reference_path: str = "",
+    # input types — at least one must be provided
+    reads: Optional[dict] = None,
+    bam_input: Optional[dict] = None,
+    vcf_input: Optional[dict] = None,
+    assembly_input: Optional[dict] = None,
+    phenotype: Optional[dict] = None,
+    pedigree: Optional[dict] = None,
+    genotype_array: Optional[dict] = None,
+    quantitative_traits: Optional[dict] = None,
+    upstream_pipelines: Optional[list[str]] = None,
+    parameters: Optional[dict] = None,
+) -> dict:
+    """Write a validated provenance YAML for a completed pipeline run.
+
+    output_files: list of {file: str, type: str, indexed: bool}
+
+    Input types (at least one required):
+      reads:               {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
+      bam_input:           {bam: str, bai: str}
+      vcf_input:           {vcf: str, tbi?: str, genome_build: str, upstream_pipeline?: str, sample_ids?: []}
+      assembly_input:      {assembly: str, upstream_pipeline?: str}
+      phenotype:           {ontology?: str, terms: [str], source?: str}
+      pedigree:            {ped: str, proband?: str}
+      genotype_array:      {file: str, format: hapmap|plink_bed|vcf|dosage|bgen,
+                            bim?: str, fam?: str, n_samples?: int, n_snps?: int,
+                            genome_build?: str, upstream_pipeline?: str}
+      quantitative_traits: {traits: [str], file: str, n_samples?: int,
+                            measurement_type?: continuous|binary|ordinal}
+
+    genome_build / chromosome / reference_path are optional for tools that do not
+    consume a reference FASTA (e.g. variant prioritizers, phenotype scorers, GWAS)."""
+    inputs: dict[str, Any] = {
+        "pipeline":           pipeline,
+        "conda_env_path":     conda_env_path,
+        "pipeline_spec_path": pipeline_spec_path,
+        "genome_build":       genome_build,
+        "chromosome":         chromosome,
+        "reference_path":     reference_path,
+        "output_files":       output_files,
+        "output_dir":         output_dir,
+        "sample_key":         sample_key,
+    }
+    if reads:                inputs["reads"]                = reads
+    if bam_input:            inputs["bam_input"]            = bam_input
+    if vcf_input:            inputs["vcf_input"]            = vcf_input
+    if assembly_input:       inputs["assembly_input"]       = assembly_input
+    if phenotype:            inputs["phenotype"]            = phenotype
+    if pedigree:             inputs["pedigree"]             = pedigree
+    if genotype_array:       inputs["genotype_array"]       = genotype_array
+    if quantitative_traits:  inputs["quantitative_traits"]  = quantitative_traits
+    if upstream_pipelines:   inputs["upstream_pipelines"]   = upstream_pipelines
+    if parameters:           inputs["parameters"]           = parameters
+    return _ms._write_provenance(inputs, _ms.config)
+
+
+@mcp.tool()
+def list_installed_pipelines() -> dict:
+    """List all pipelines installed and validated, with Docker tags and validation status."""
+    return _ms._list_pipelines(_ms.config)
+
+
+# ---------------------------------------------------------------------------
+# R package utilities
+# ---------------------------------------------------------------------------
+
+def _parse_dcf(text: str) -> dict[str, str]:
+    """Parse a Debian Control File (R DESCRIPTION format) into a flat dict."""
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    for line in text.splitlines():
+        if line.startswith((" ", "\t")):
+            if current_key:
+                fields[current_key] += " " + line.strip()
+        elif ":" in line:
+            key, _, val = line.partition(":")
+            current_key = key.strip()
+            fields[current_key] = val.strip()
+    return fields
+
+
+_R_RUNTIME_INSTALL_RE = re.compile(
+    r"""(?:BiocManager::install
+        |install\.packages
+        |requireNamespace            # if(!requireNamespace("X")) is the canonical lazy-install signal
+        |library
+        |require)
+        \s*\(
+    """,
+    re.VERBOSE,
+)
+
+_R_RUNTIME_QUOTED_RE = re.compile(r"""(['"])([A-Za-z0-9._]+)\1""")
+
+
+def _scan_r_runtime_installs(github_repo: str, ref: str) -> list[str]:
+    """Look for `BiocManager::install("X")` / `install.packages("X")` calls in the
+    R/ source directory of a GitHub R package. Returns a deduplicated list of
+    package names. Best-effort — failures are silent (we still want the
+    DESCRIPTION info to be returned)."""
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/R?ref={ref}"
+    try:
+        with urllib.request.urlopen(api_url, timeout=15) as resp:
+            listing = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    found: set[str] = set()
+    for entry in listing:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "")
+        if not name.endswith(".R") and not name.endswith(".r"):
+            continue
+        raw_url = entry.get("download_url")
+        if not raw_url:
+            continue
+        try:
+            with urllib.request.urlopen(raw_url, timeout=15) as f:
+                source = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        # Strip comment lines so we don't grab examples from comments.
+        cleaned = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        # Find each call site, then pluck every quoted name from the argument list.
+        for m in _R_RUNTIME_INSTALL_RE.finditer(cleaned):
+            # The regex captures only the first name; scan the substring containing
+            # the call's arg list for all quoted strings (handles c('a','b','c')).
+            start = m.start()
+            depth = 0
+            i = start
+            while i < len(cleaned) and cleaned[i] != "(":
+                i += 1
+            arglist_start = i + 1
+            depth = 1
+            i = arglist_start
+            while i < len(cleaned) and depth > 0:
+                if cleaned[i] == "(":
+                    depth += 1
+                elif cleaned[i] == ")":
+                    depth -= 1
+                i += 1
+            arglist = cleaned[arglist_start:i-1]
+            for q in _R_RUNTIME_QUOTED_RE.finditer(arglist):
+                pkg = q.group(2)
+                # Filter out obvious non-package strings (version numbers, paths, options)
+                if pkg and not pkg.startswith(("/", "./", "http", "https")) and "." not in pkg[:1]:
+                    if re.match(r"^[A-Za-z][A-Za-z0-9._]*$", pkg):
+                        found.add(pkg)
+    return sorted(found)
+
+
+def _parse_pkg_list(raw: str) -> list[str]:
+    """Extract bare package names from a comma-separated dep field, stripping version specs."""
+    names = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name = re.split(r"[\s(]", item)[0].strip()
+        if name and name != "R":
+            names.append(name)
+    return names
+
+
+@mcp.tool()
+def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
+    """Fetch the DESCRIPTION file from a GitHub R package and parse all dependencies.
+
+    Use this BEFORE installing any R package from GitHub so you can pre-install
+    all dependencies, then call remotes::install_github(..., dependencies=FALSE).
+
+    github_repo: owner/repo, e.g. "jiabowang/GAPIT3"
+    ref:         branch, tag, or commit SHA (default HEAD → main/master)
+
+    Returns:
+      package_name, version, r_version_required
+      imports, depends, suggests, linking_to — raw dep name lists
+      all_required  — union of imports + depends + linking_to (what must be installed)
+      install_strategy — ordered steps: conda first, then BiocManager for everything
+                         else (BiocManager resolves both CRAN and Bioconductor),
+                         GitHub last with dependencies=FALSE."""
+    url = f"https://raw.githubusercontent.com/{github_repo}/{ref}/DESCRIPTION"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            content = resp.read().decode("utf-8")
+    except Exception as e:
+        return {"success": False, "error": str(e), "url": url}
+
+    fields = _parse_dcf(content)
+
+    imports    = _parse_pkg_list(fields.get("Imports", ""))
+    depends    = _parse_pkg_list(fields.get("Depends", ""))
+    suggests   = _parse_pkg_list(fields.get("Suggests", ""))
+    linking_to = _parse_pkg_list(fields.get("LinkingTo", ""))
+
+    r_ver_match = re.search(r"R\s*\(>=[^)]*\)", fields.get("Depends", ""))
+    r_version_required = r_ver_match.group(0) if r_ver_match else ""
+
+    all_required = sorted(set(imports + depends + linking_to))
+
+    # Hunt for *undeclared* transitive deps — R packages whose .onLoad hooks or
+    # zzz.R do `BiocManager::install("X")` / `install.packages("X")` for things
+    # not listed in DESCRIPTION. GAPIT does this with snpStats; without this
+    # discovery the agent learns about it only by the install failing.
+    undeclared_runtime_installs = _scan_r_runtime_installs(github_repo, ref)
+    undeclared_set = sorted({
+        pkg for pkg in undeclared_runtime_installs
+        if pkg not in set(all_required + suggests) and pkg != fields.get("Package", "")
+    })
+
+    return {
+        "success": True,
+        "github_repo": github_repo,
+        "ref": ref,
+        "url": url,
+        "package_name": fields.get("Package", ""),
+        "version": fields.get("Version", ""),
+        "r_version_required": r_version_required,
+        "imports": imports,
+        "depends": depends,
+        "suggests": suggests,
+        "linking_to": linking_to,
+        "all_required": all_required,
+        "undeclared_runtime_installs": undeclared_set,
+        "install_strategy": [
+            "1. For each dep in all_required, call search_package to check conda-forge "
+            "(r-{lowercase}) and bioconda (bioconductor-{lowercase}) availability.",
+            "2. Install all conda-available deps in one install_conda_packages call.",
+            "3. For deps not found on conda, install via BiocManager — it resolves both "
+            "CRAN and Bioconductor packages without needing to know which is which: "
+            "Rscript -e \"lib<-file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'); "
+            "if(!requireNamespace('BiocManager',quietly=TRUE)) "
+            "install.packages('BiocManager',lib=lib); "
+            "BiocManager::install(c('pkg1','pkg2'), lib=lib, ask=FALSE, update=FALSE)\"",
+            f"4. Finally: remotes::install_github('{github_repo}', "
+            "lib=file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'), "
+            "dependencies=FALSE)",
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline state accumulator
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def start_pipeline(pipeline_name: str, description: str) -> dict:
+    """Start a new pipeline draft (or silently resume an existing one).
+
+    Returns pipeline_id (= pipeline_name). Pass pipeline_id to subsequent
+    tools (search_package, create_conda_env, verify_installation, run_in_env,
+    validate_output, run_pipeline_step, select_test_data) so their results
+    are auto-merged into a server-side draft. You don't hand-assemble the
+    final artifacts — freeze(pipeline_id) produces the Layer-1 env image and
+    seal_workflow(pipeline_id, freeze_request_key) writes the Layer-2
+    WorkflowSpec + guide from the validated run.
+
+    Resume semantics: if a draft for this pipeline_name already exists (e.g.
+    after an MCP restart mid-install), it is loaded and resumed silently;
+    `resumed: true` is set in the return so you know. On resume, a `summary`
+    block is included describing what's already in the draft so the agent can
+    decide whether to continue from where the prior run left off or call
+    discard_pipeline_draft and start fresh."""
+    r = _ms._pipeline_state.start(pipeline_name, description)
+    if r.get("resumed"):
+        draft = _ms._pipeline_state.get_draft(pipeline_name) or {}
+        install_steps = draft.get("install_steps", []) or []
+        pipeline_steps = draft.get("pipeline_steps", []) or []
+        last_install = install_steps[-1] if install_steps else None
+        last_pipeline = pipeline_steps[-1] if pipeline_steps else None
+        # Surface any pipeline step with no detected outputs and no validation —
+        # the silent-empty-success pattern that bit the prior Exomiser run.
+        suspect_steps = [
+            s.get("step")
+            for s in pipeline_steps
+            if not (s.get("detected_outputs") or s.get("outputs") or s.get("validation"))
+        ]
+        r["summary"] = {
+            "conda_env":              draft.get("conda_env"),
+            "env_status":             draft.get("env_status"),
+            "pipeline_status":        draft.get("pipeline_status"),
+            "install_steps_count":    len(install_steps),
+            "install_steps_failed":   sum(1 for s in install_steps if s.get("returncode") not in (None, 0)),
+            "pipeline_steps_count":   len(pipeline_steps),
+            "pipeline_steps_failed":  sum(1 for s in pipeline_steps if s.get("returncode") not in (None, 0)),
+            "packages_recorded":      len(draft.get("packages", []) or []),
+            "test_data":              draft.get("test_data") is not None,
+            "docker":                 draft.get("docker") is not None,
+            "usage":                  draft.get("usage") is not None,
+            "last_install_tool":      last_install.get("tool") if last_install else None,
+            "last_pipeline_tool":     last_pipeline.get("tool") if last_pipeline else None,
+            "suspect_unvalidated_steps": suspect_steps,
+        }
+    return r
+
+
+@mcp.tool()
+def discard_pipeline_draft(pipeline_id: str) -> dict:
+    """Delete a pipeline draft without finalizing. Use when you want to start
+    fresh with the same pipeline_name and don't want resume semantics."""
+    return _ms._pipeline_state.discard(pipeline_id)
+
+
+@mcp.tool()
+def show_pipeline_draft(pipeline_id: str) -> dict:
+    """Return the current accumulated draft for inspection. Does not modify
+    or finalize anything."""
+    draft = _ms._pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+    return {"pipeline_id": pipeline_id, "draft": draft}
+
+
+@mcp.tool()
+def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
+    """Deep-merge agent-authored patches into the draft. Accepts only the
+    keys no primitive produces directly: description, notes, final_summary,
+    conda_env, created_at, python_version, reference_free, runtime_environment,
+    runtime_configs, reference_databases, service_dependencies, usage.
+
+    Patches to runtime-captured or finalize-derived fields (pipeline_steps,
+    install_steps, packages, verifications, test_data, authored_artifacts,
+    docker, env_status, pipeline_status, docker_status, usage_verified,
+    lock_sha256) are rejected — use the dedicated primitive instead so the
+    spec stays anchored to observed reality.
+
+    Lists are replaced wholesale (pipeline_steps and install_steps are blocked
+    here anyway; they merge by step number through their own primitives).
+
+    Deletion: pass the literal string "__DELETE__" as a value inside a
+    patchable key's subtree to remove that nested key. e.g.
+    {"runtime_environment": {"min_ram_gb": "__DELETE__"}} drops the
+    min_ram_gb hint while leaving the rest of runtime_environment intact.
+    Use this rather than setting to None — None can trigger downstream
+    attribute errors."""
+    return _ms._pipeline_state.patch(pipeline_id, patches)
+
+
+@mcp.tool()
+def stage_authored_artifact(
+    pipeline_id: str,
+    path: str,
+    role: str,
+    description: str,
+    content: str = "",
+    generated_by: str = "",
+    language: str = "",
+    overwrite: bool = True,
+) -> dict:
+    """Stage an agent-authored artifact and record its provenance in the spec.
+
+    Use this whenever you write a file or perform a transformation OUTSIDE the
+    pipeline_step / install_step primitives — driver scripts, synthetic test
+    inputs, hand-staged BAM/VCF/FASTA, sed-massaged configs, generated CSV/TSV
+    fixtures. These artifacts are otherwise invisible to the spec; a step that
+    consumes them looks like an orphan to the I8 composition-coherence walk
+    and finalize fails.
+
+    Two modes:
+
+      content mode      — supply `content` (text). The runtime writes the file
+                          at `path`, computes sha256, and stores the contents
+                          (full if small, excerpt + full sha256 if large)
+                          inside the spec. Reviewers can audit exactly what
+                          the agent generated.
+
+      generated_by mode — supply `generated_by` (the shell command you ran),
+                          with the file already on disk at `path`. The runtime
+                          records the command as the genesis and sha256s the
+                          bytes. Use for binary outputs (BAM, FASTA, indexed
+                          DB, pickled models).
+
+    Honesty effect:
+      - Path is added to the I8 universe of external sources, so downstream
+        pipeline_steps can legally name it as an input.
+      - sha256 is re-verified at finalize (I9). If the on-disk content drifts
+        from the recorded sha256, the spec is refused — silent tampering is
+        impossible.
+      - `authored_artifacts` is blocked from patch_pipeline, so the only path
+        to record an artifact is this primitive (the sha256 anchor is
+        compulsory).
+
+    Returns: {success, path, sha256, size_bytes, role, mode}.
+    """
+    if bool(content) == bool(generated_by):
+        return {
+            "error": "exactly one of `content` (text content to write) "
+                     "or `generated_by` (genesis command for an existing file) must be supplied",
+        }
+    if not Path(path).is_absolute():
+        return {"error": f"path must be absolute, got: {path!r}"}
+
+    p = Path(path)
+    mode: str
+
+    if content:
+        if p.exists() and not overwrite:
+            return {"error": f"path already exists and overwrite=False: {path}"}
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        except Exception as e:
+            return {"error": f"could not write artifact: {e!r}", "path": path}
+        mode = "content"
+    else:
+        if not p.exists():
+            return {
+                "error": f"generated_by mode requires the file to already exist on disk: {path}",
+            }
+        mode = "generated_by"
+
+    try:
+        raw = p.read_bytes()
+    except Exception as e:
+        return {"error": f"could not read back artifact for sha256: {e!r}", "path": path}
+
+    sha256 = hashlib.sha256(raw).hexdigest()
+    size_bytes = len(raw)
+
+    # For content mode, embed the full text up to ~64 KiB; otherwise an excerpt.
+    # Binary-mode artifacts get a short hex preview so a reviewer can sanity-check.
+    SPEC_FULL_LIMIT = 65536
+    excerpt: Optional[str] = None
+    content_full_in_spec = False
+    if mode == "content":
+        if size_bytes <= SPEC_FULL_LIMIT:
+            excerpt = content
+            content_full_in_spec = True
+        else:
+            excerpt = content[:4096] + f"\n... [truncated, total {size_bytes} bytes]"
+    else:
+        # Show a short hex preview for binary artifacts so the spec isn't blind.
+        excerpt = f"<binary; first 64 bytes hex: {raw[:64].hex()}>"
+
+    artifact = {
+        "path":        str(p),
+        "role":        role,
+        "description": description,
+        "sha256":      sha256,
+        "size_bytes":  size_bytes,
+        "created_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if language:
+        artifact["language"] = language
+    if excerpt is not None:
+        artifact["content_excerpt"] = excerpt
+    artifact["content_full_in_spec"] = content_full_in_spec
+    if generated_by:
+        artifact["generated_by"] = generated_by
+
+    idx = _ms._pipeline_state.add_authored_artifact(pipeline_id, artifact)
+    if idx is None:
+        return {"error": f"unknown pipeline_id: {pipeline_id}", "path": path}
+
+    return {
+        "success":   True,
+        "path":      str(p),
+        "sha256":    sha256,
+        "size_bytes": size_bytes,
+        "role":      role,
+        "mode":      mode,
+        "pipeline_merge": {
+            "status":        "merged",
+            "pipeline_id":   pipeline_id,
+            "artifact_index": idx,
+        },
+    }
+
+
+@mcp.tool()
+def mark_step_validated(
+    pipeline_id: str,
+    step: int,
+    validation_status: str = "passed",
+) -> dict:
+    """Set the validation_status of a pipeline_step. The pipeline-level
+    pipeline_status derives from these at finalize time.
+
+    Use this when a step's outputs are known good but validate_output wasn't
+    called for them (e.g. the step's outputs were checked by the next step's
+    success, or the LLM verified them by other means). Operates only on
+    pipeline_steps — install_steps don't carry a validation_status field;
+    their success is captured by status (returncode==0)."""
+    if validation_status not in {"passed", "failed"}:
+        return {"error": "validation_status must be 'passed' or 'failed'",
+                "got": validation_status}
+    # Guard against the silent-empty-success trap: a step that exited 0 but
+    # produced no detected outputs and was never validated cannot be honestly
+    # called "passed". The agent should use "failed" or retry the step.
+    if validation_status == "passed":
+        draft = _ms._pipeline_state.get_draft(pipeline_id) or {}
+        steps = draft.get("pipeline_steps", [])
+        if 1 <= step <= len(steps):
+            s = steps[step - 1]
+            outs  = s.get("detected_outputs") or s.get("outputs") or []
+            vlds  = s.get("validation") or {}
+            if not outs and not vlds:
+                return {
+                    "error": "cannot mark step 'passed' with no detected outputs and no validation entries — "
+                             "this is the 'ran without error but produced nothing' pattern. Investigate the step "
+                             "or use validation_status='failed' if the run was actually broken.",
+                    "pipeline_id": pipeline_id, "step": step,
+                }
+    ok = _ms._pipeline_state.mark_pipeline_step_validated(pipeline_id, step, validation_status)
+    return (
+        {"status": "set", "pipeline_id": pipeline_id, "step": step,
+         "validation_status": validation_status}
+        if ok else
+        {"error": "unknown pipeline_id or step out of range",
+         "pipeline_id": pipeline_id, "step": step}
+    )
