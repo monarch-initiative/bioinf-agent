@@ -70,6 +70,12 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 | `verify_service_dependency(pipeline_id, service_name, env_name, health_check_command?)` | Append an additional health probe to a declared service's log (mid-pipeline checkpoint, recovery after a flap, manual re-verify). |
 | `stop_service(env_name, service_name, stop_command?, pipeline_id?)` | Stop a background service; marks status=stopped + stopped_at when pipeline_id is supplied. |
 | `phenopacket_to_vcf(phenopacket_id, output_vcf)` | Materialize a single-sample VCF from a phenopacket — eliminates hand-VCF synthesis |
+| `snapshot_project(project_name)` | **HPC bridge.** Walk a project's authorized directories on every compute env it touches (one-level `find`). Returns `entries[]` tagged by `compute_env`. Read-only; the agent's only window into the user's cluster filesystem. Auth: each project's `compute_env_access[].directories[]` lists dirs the agent may walk on each env, each with `permissions:` (`file_name_only` is the snapshot token). Phase 2.5 auto-extends the walk into the env's `agent_scratch_target` / `agent_common_data_target` subtrees for THIS project. |
+| `cluster_module_avail(project, env, pattern=)` | **HPC bridge.** Discover loadable Lmod/tmod modules on the cluster so the agent can pick the right `module load X/Y.Z` line. ONE ssh hop running `bash -lc 'module avail <pattern>'`. Output parsed: drops section headers + `(D)`/`(L)` annotations + footer legends. `pattern` must be a safe token (alnum + `_+.-/`); shell metacharacters refused. |
+| `upload_to_scratch / download_from_scratch / upload_to_common_data / download_from_common_data / upload_to_project_path / download_from_project_path` | **HPC bridge — three transfer auth families.** All do scp + sha256 round-trip + refuse-to-overwrite. **scratch** (env-implicit + auto-prefix by project — sandbox: per-run staging, logs); **common_data** (env-implicit + shared — reference data, staged `.sif`s; NO project prefix); **project_path** (Phase-1 explicit + literal abs_path — the user's real project layout; longest-prefix match against `directories[]`). Discrete capabilities per primitive: `upload` ≠ `download` ≠ `exec`. |
+| `cluster_job_status(project, env, job_id)` | **HPC bridge.** SLURM job-state query for polling. ONE ssh hop running `bash -lc 'sacct -j <id> -P --noheader -X -o JobID,State,Elapsed,ExitCode,NodeList,Reason,Start,End'`. `job_id` validated as `\d{1,12}(_\d{1,12})?` (digits + optional `_<task>` for array jobs) BEFORE any ssh — metacharacters refused. Empty sacct output → `jobs: []` (not an error); caller distinguishes "not yet in slurmdbd" from "never existed" with a short retry. |
+| `stage_apptainer_image(project, env, freeze_request_key, sif_subpath="")` | **HPC bridge.** Mode-aware HPC delivery from the EnvCache. **ADOPT** (pure-conda + public BioContainer): ONE ssh hop, `apptainer pull <sif> docker://<image_by_digest>`. **BUILD-with-push**: same shape via pushed ref. **BUILD-archive** (default for non-conda): transfer .tar via `env.bulk_transfer.type` (today only `scp_head_node` via `upload_to_common_data`; HPC `datamover` / `globus` add ONE branch + adapter), then ssh `apptainer build <sif> docker-archive://<tar>`. Default .sif location: `<agent_common_data_target>/apptainer/<env_name>_<short_digest>.sif`. Idempotent — re-stages skip if .sif exists. NOT a composite (caller still calls freeze + submit_workflow_job separately). |
+| `submit_workflow_job(project, env, workflow_dir, workflow_name, tool_name, command, inputs, outputs, apptainer_sif, apptainer_module, nextflow_module, slurm)` | **HPC bridge.** End-to-end submission: render via `workflow_render` (main.nf + nextflow.config + launcher.sh) → upload all 3 files to `workflow_dir` via `upload_to_project_path` → ssh `sbatch --parsable launcher.sh` → return SLURM `job_id`. Auth: `workflow_dir` must be authorized with BOTH `upload` (for the file pushes) AND `exec` (so the SLURM job may write outputs in-place). The renderer is generic + per-project ([[project-nextflow-module-principles]]): every `${name}` in `command` must be declared in `inputs ∪ outputs`; script blocks contain the literal shell command; main.nf is human-readable + re-runnable from copy-pasted shell. NOT a composite (caller still calls `freeze` + `stage_apptainer_image` + polls `cluster_job_status` + downloads outputs). |
 
 Below the primitives there are still lower-level tools (`run_in_env`, `validate_output`, `verify_installation`, `patch_pipeline`, etc.) — use them when a primitive doesn't fit. Prefer the primitive when it does.
 
@@ -94,6 +100,8 @@ The full flow, in order — two layers (env, then workflow):
 7. **`run_step_in_container(freeze_request_key, …)`** — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (`validated == shipped`; in-container `resource_usage`). Replaces the host `run_pipeline_step` runs once frozen.
 8. **`seal_workflow(pipeline_id, freeze_request_key)`** — **Layer 2.** Validate the run-side invariants (I0/I3/I6/I7/I8), self-test `usage.command_template` (I4), pin the env BY DIGEST, and write the `WorkflowSpec` + user guide rendered from the validated run. Refuses on any violation.
 9. **`write_pipeline_provenance(...)`** — record the specific run.
+
+That's the local-validation protocol. To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `stage_apptainer_image` → `submit_workflow_job` → `cluster_job_status` (poll) → `download_from_project_path`. See the **HPC bridge — Phase 2** section below for the full chain. The bridge does NOT yet produce a `WorkflowSpec` — that's an open architectural question (whether an HPC run becomes a sealed workflow).
 
 ---
 
@@ -140,12 +148,57 @@ Generated artifacts:
 
 ---
 
-## HPC / Singularity
+## HPC bridge — Phase 2
 
-Docker images are `--platform linux/amd64`, no `USER`, `WORKDIR=/data`.
-```bash
-singularity pull bioinf_samtools.sif docker://bioinf_samtools:1.21
-```
+Layer-1 produces an HPC-shippable container (per the freeze row above). The bridge is what the agent uses to **actually drive a job on a real cluster** — push inputs, stage the container, sbatch a Nextflow workflow, poll, pull outputs back. Same trust posture as the rest of the codebase: every primitive is gated by `projects_access.yaml`, every transfer is sha256-round-tripped, every shell line passes a safe-token validator BEFORE any ssh.
+
+### The command-and-control file: `projects_access.yaml`
+
+A single user-authored YAML at the repo root (gitignored — personal). Two top-level sections:
+
+- **`compute_envs[]`** — one block per environment (laptop, hpc_cluster, …). Each has `type: ssh|local`, ssh `host`/`user`, and optional Phase-2 target blocks: `agent_scratch_target` (sandbox), `agent_common_data_target` (shared reference / staged .sifs), `slurm` (closed-key block: `queue_default`, `account`, etc.), and `bulk_transfer` (today only `{type: scp_head_node}`; future hook for HPC `datamover` / `globus`).
+- **`projects[]`** — one block per logical project. Each lists `compute_env_access[]` — which envs this project may use, AND a project-specific `directories[]` per env with explicit `permissions:` per dir (`file_name_only`, `upload`, `download`, `exec`).
+
+Auth is **discrete**, not a lattice: `upload` ≠ `download` ≠ `exec`. A dir declared `[upload]` does NOT implicitly grant `download`. The primitive table above shows which token each primitive requires; mismatches raise `PermissionDenied` BEFORE any ssh.
+
+### Three transfer auth families (intentionally separate)
+
+| Family | Path syntax | Auth chain |
+|--------|-------------|------------|
+| **scratch** | relative `remote_subpath` | project on env + `env.agent_scratch_target.permissions` includes op; path auto-prefixed with `project_name` |
+| **common_data** | relative `remote_subpath` | project on env + `env.agent_common_data_target.permissions` includes op; NO project prefix (shared zone) |
+| **project_path** | absolute `abs_path` | Phase-1 explicit: `project.directories[]` longest-prefix-match contains `abs_path` AND has the right permission token |
+
+scratch is for per-run staging; common_data is for reference data + staged container images; project_path is for the user's real project layout. Each family is a separate primitive (so the agent can't accidentally mix authority).
+
+### The submission chain (in order)
+
+1. **`freeze(env, tools)`** — Layer 1. Builds (or adopts by digest) the HPC-shippable image; registers it in the EnvCache by `request_key`.
+2. **`stage_apptainer_image(project, env, freeze_request_key)`** — Mode-aware delivery. ADOPT (pure-conda) is a single `apptainer pull` ssh hop. BUILD-archive transfers the .tar + builds on-cluster. Returns the `sif_path` to use in step 4.
+3. **`upload_to_project_path(project, env, abs_path, local_path)`** (×N) — Get the input data (BAMs, FASTQs, reference files the user staged) into the project workspace.
+4. **`submit_workflow_job(project, env, workflow_dir, workflow_name, tool_name, command, inputs, outputs, apptainer_sif, apptainer_module, nextflow_module, slurm)`** — Renders main.nf + nextflow.config + launcher.sh, uploads all 3 to `workflow_dir`, runs `sbatch --parsable launcher.sh`. Returns the SLURM `job_id`.
+5. **`cluster_job_status(project, env, job_id)`** (loop with sleep) — Poll until `state in {COMPLETED, FAILED, …}`. sacct-backed; covers both running and completed jobs.
+6. **`download_from_project_path(project, env, abs_path, local_path)`** — Pull outputs back; sha256 round-trip on the fetch.
+
+For pre-submission exploration: **`snapshot_project(project_name)`** is a read-only `find -maxdepth 1` against the project's authorized dirs; **`cluster_module_avail(project, env, pattern=)`** lists Lmod modules so the agent picks the right `module load X/Y.Z` line.
+
+### The renderer's contract (per [[project-nextflow-module-principles]])
+
+Every workflow `workflow_render` produces is **human-readable + locally re-runnable**:
+
+- Inputs/outputs flow through top-level `params.x = '<value>'` declarations (dot notation — Groovy parses `params { ... }` as a method call, which Nextflow rejects).
+- Each process's `script:` block holds the LITERAL shell command with `${params.x}` substituted — no DSL magic. A human reads main.nf, copy-pastes the line with the params filled in, re-runs the step from a shell.
+- Tools come from a frozen apptainer .sif (`stage_apptainer_image`'s output). The process invokes `apptainer exec <sif> <cmd>` so swapping versions is a one-line .sif path change.
+- The launcher.sh sets `NXF_HOME=$PWD/.nextflow_home` and cd's via `${SLURM_SUBMIT_DIR:-…}` — both bake in fixes for real-world HPC traps surfaced during live-driving (HOME not writable from compute nodes; SLURM stages `$0` into `/var/spool/slurmd/job<id>/`).
+
+### ssh ControlMaster pattern (no password prompts)
+
+The user opens `ssh hpc-agent` in a separate terminal and leaves it open. Every bridge primitive uses ssh BatchMode (fails fast if no live session) and piggybacks on the ControlMaster socket the side terminal opened. The agent never sees a password or key.
+
+### Drive playbooks
+
+- [docs/hpc_bridge_phase_a_playbook.md](docs/hpc_bridge_phase_a_playbook.md) — the read + small-transfer surface (4-call MINIMUM PATH).
+- [docs/hpc_bridge_phase_b_playbook.md](docs/hpc_bridge_phase_b_playbook.md) — the full submit→poll→fetch chain (6-call MINIMUM PATH, samtools-view-on-a-BAM demo). Predates `stage_apptainer_image` — uses an explicit upload of the .sif instead; the principle is unchanged.
 
 ---
 
