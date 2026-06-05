@@ -402,7 +402,36 @@ def upload_to_scratch(project_name: str,
         local_sha = _compute_local_sha256(lp)
         size_bytes = lp.stat().st_size
 
-        # 8. Transfer.
+        # 8. Refuse to overwrite a pre-existing remote file. The `upload`
+        # permission contract is "write NEW files; never overwrites" —
+        # documented in projects_access.yaml.example. Pre-check the
+        # destination; surface a clear error if it exists so the agent
+        # knows to pick a fresh subpath rather than silently clobbering.
+        if env_type == "local":
+            if Path(abs_remote).exists():
+                return {"error":
+                    f"remote path already exists: {abs_remote!r}. The "
+                    f"upload contract refuses overwrites. Pick a fresh "
+                    f"remote_subpath (e.g. timestamp-stamped) or delete "
+                    f"the existing file first."}
+        else:  # ssh
+            exist_cmd = f"test -e {shlex.quote(abs_remote)} && echo EXISTS || echo OK"
+            ex_argv = _ssh_argv(env, exist_cmd)
+            ex = subprocess.run(ex_argv, capture_output=True, text=True,
+                                timeout=timeout)
+            if ex.returncode != 0:
+                hint = _ssh_failure_hint(ex.stderr, env.get("host", "?"))
+                return {"error":
+                    f"remote existence pre-check failed (rc={ex.returncode}): "
+                    f"{ex.stderr.strip()}",
+                    **({"hint": hint} if hint else {})}
+            if "EXISTS" in ex.stdout:
+                return {"error":
+                    f"remote path already exists: {abs_remote!r}. The "
+                    f"upload contract refuses overwrites. Pick a fresh "
+                    f"remote_subpath or delete the existing file first."}
+
+        # 9. Transfer.
         if env_type == "local":
             dest = Path(abs_remote)
             _local_mkdir_parent(dest)
@@ -431,7 +460,7 @@ def upload_to_scratch(project_name: str,
                     f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
                     **({"hint": hint} if hint else {})}
 
-        # 9. Verify round-trip sha256.
+        # 10. Verify round-trip sha256.
         if env_type == "local":
             remote_sha = _compute_local_sha256(Path(abs_remote))
         else:

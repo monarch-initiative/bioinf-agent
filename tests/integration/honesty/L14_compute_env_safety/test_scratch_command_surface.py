@@ -521,6 +521,36 @@ class TestUploadRejectionsNeverHitSubprocess:
 
 
 # ===========================================================================
+# 7b. Overwrite refusal — the `upload` contract is "never overwrites"
+# ===========================================================================
+
+class TestScratchOverwriteRefusal:
+    @pytest.mark.integration
+    def test_upload_refuses_overwrite_local_mode(self, _local_scratch):
+        # Two uploads to the SAME (project, remote_subpath) — second must
+        # refuse. Project auto-prefix makes the resolved paths identical.
+        access_path, scratch_root = _local_scratch
+        src1 = scratch_root.parent / "src1.txt"; src1.write_text("first")
+        src2 = scratch_root.parent / "src2.txt"; src2.write_text("second")
+
+        r1 = scratch.upload_to_scratch(
+            project_name="myproj", compute_env_name="laptop",
+            local_path=str(src1), remote_subpath="output.txt",
+            access_path=str(access_path))
+        assert r1.get("success") is True, r1
+
+        r2 = scratch.upload_to_scratch(
+            project_name="myproj", compute_env_name="laptop",
+            local_path=str(src2), remote_subpath="output.txt",
+            access_path=str(access_path))
+        assert "error" in r2, r2
+        assert "already exists" in r2["error"]
+        assert "refuses overwrites" in r2["error"]
+        # Original content untouched.
+        assert Path(r1["remote_path"]).read_text() == "first"
+
+
+# ===========================================================================
 # 8. Subprocess command-shape pinning (ssh-mode shapes — unchanged)
 # ===========================================================================
 

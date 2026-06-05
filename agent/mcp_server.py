@@ -635,6 +635,8 @@ from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level 
 from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     upload_to_scratch,
     download_from_scratch,
+    upload_to_common_data,
+    download_from_common_data,
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,

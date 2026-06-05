@@ -90,10 +90,10 @@ PERMISSIONS: frozenset[str] = frozenset({
 OPERATION_REQUIRES: dict[str, str] = {
     "snapshot": "file_name_only",
     # Phase 2 — wired as primitives land:
-    "upload_to_scratch":      "upload",
-    "download_from_scratch":  "download",
-    # "upload_to_common_data":    "upload",
-    # "download_from_common_data": "download",
+    "upload_to_scratch":         "upload",
+    "download_from_scratch":     "download",
+    "upload_to_common_data":     "upload",
+    "download_from_common_data": "download",
     # "job_workdir_scratch":     "exec",
     # "job_output_common_data":  "exec",
 }

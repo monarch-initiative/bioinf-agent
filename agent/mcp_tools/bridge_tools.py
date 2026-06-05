@@ -7,16 +7,16 @@ permission gate (`compute_access.check_permission`) and the same
 ControlMaster ssh pattern.
 
 Today the surface is:
-  upload_to_scratch / download_from_scratch  — Step 2 (paired, sha256
-                                                round-trip on every transfer)
+  upload_to_scratch / download_from_scratch          — Step 2 (paired,
+                                                       sha256 round-trip)
+  upload_to_common_data / download_from_common_data  — Step 3 (shared
+                                                       namespace; no
+                                                       project prefix)
 
 Coming as each step lands:
-  upload_to_common_data / download_from_common_data  — Step 3
-  submit_cluster_job                                 — Steps 4, 6, 7
-                                                       (diagnostic →
-                                                       data_acquisition →
-                                                       run modes)
   cluster_job_status                                 — Step 5
+  submit_data_acquisition_job                        — Step 6
+  submit_workflow_job                                — Step 8
 
 Authorization shape (env-implicit grant, Phase 2):
   - `project_name` + `compute_env_name` resolve to a project's
@@ -103,6 +103,72 @@ def upload_to_scratch(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_subpath=remote_subpath,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def upload_to_common_data(project_name: str,
+                         compute_env_name: str,
+                         local_path: str,
+                         remote_subpath: str) -> dict:
+    """Push a local file into the env's SHARED common-data zone.
+
+    Authorization (env-implicit): project has compute_env_access for the
+    env; env declares an `agent_common_data_target` block whose
+    `permissions` include `upload`. The project's directories[] is NOT
+    consulted.
+
+    No project auto-prefix — common_data is intentionally SHARED across
+    projects so reference data can be mixed and matched. The resolved
+    path is `<common_data.path>/<remote_subpath>` directly.
+
+    Overwrite refusal: if the resolved path already exists, the primitive
+    refuses to upload. Reference data is versioned (e.g.
+    `exomiser/v3.2.0/data.zip`), not silently replaced. Delete remotely
+    before uploading a fresh version.
+
+    Same path-safety + sha256-round-trip + 5 GiB head-node cap rules as
+    upload_to_scratch.
+
+    Returns {success, compute_env, remote_path, sha256, bytes, duration_s,
+    transferred_at} on success; {"error": "..."} on refusal/failure."""
+    from agent.skills import common_data
+    return common_data.upload_to_common_data(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        local_path=local_path,
+        remote_subpath=remote_subpath,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def download_from_common_data(project_name: str,
+                             compute_env_name: str,
+                             remote_subpath: str,
+                             local_path: str) -> dict:
+    """Pull a file from the env's SHARED common-data zone back to local.
+
+    Symmetric to `upload_to_common_data` — same env-implicit auth with
+    `download` (instead of `upload`) as the required capability on the
+    env's `agent_common_data_target.permissions`. Discrete capabilities,
+    not a lattice — `upload` alone does NOT satisfy `download`.
+
+    No project auto-prefix; any project with env access can read any
+    file in common_data.
+
+    `local_path`: must NOT exist (no overwrite); parent must be writable.
+
+    Returns {success, compute_env, remote_path, local_path, sha256,
+    bytes, duration_s, fetched_at} on success; {"error": "..."} on
+    refusal/failure."""
+    from agent.skills import common_data
+    return common_data.download_from_common_data(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        remote_subpath=remote_subpath,
+        local_path=local_path,
         access_path=_resolve_access_path(),
     )
 
