@@ -643,6 +643,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     cluster_job_status,
     submit_workflow_job,
     stage_apptainer_image,
+    run_step_on_cluster,
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,

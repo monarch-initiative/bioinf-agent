@@ -189,3 +189,171 @@ def cluster_job_status(project_name: str,
         return {"error": f"{type(e).__name__}: {e}"}
     except subprocess.TimeoutExpired as e:
         return {"error": f"sacct timed out after {e.timeout}s"}
+
+
+# ---------------------------------------------------------------------------
+# cluster_job_resources — I7 evidence (wall_seconds + peak_rss_mb)
+# ---------------------------------------------------------------------------
+#
+# The job-summary row (returned by cluster_job_status's `-X` query) is
+# correct for state + exit code, but SLURM doesn't populate MaxRSS at
+# the summary level — that lives on the batch step (`<job_id>.batch`).
+# We do a SECOND sacct query that omits `-X` and reads the batch row's
+# Elapsed + MaxRSS + AveCPU, then return them in the shape
+# (`wall_seconds`, `peak_rss_mb`, `max_cpu_percent`) that the I7
+# invariant in spec_writer expects — drop-in compatible with
+# run_pipeline_step's psutil-monitor output.
+
+
+_RES_FIELDS = ("JobID", "Elapsed", "MaxRSS", "AveCPU", "TotalCPU")
+
+
+def _build_sacct_resource_cmd(job_id: str) -> str:
+    fields = ",".join(_RES_FIELDS)
+    inner = f"sacct -j {shlex.quote(job_id)} -P --noheader -o {fields}"
+    return f"bash -lc {shlex.quote(inner)}"
+
+
+def _parse_hhmmss(t: str) -> float:
+    """Parse SLURM's Elapsed (`HH:MM:SS` or `D-HH:MM:SS`) into seconds."""
+    if not isinstance(t, str) or not t:
+        return 0.0
+    days = 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d)
+    parts = t.split(":")
+    if len(parts) != 3:
+        return 0.0
+    try:
+        h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
+        return days * 86400 + h * 3600 + m * 60 + s
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _parse_max_rss_mb(rss: str) -> float:
+    """Parse SLURM's MaxRSS (`123456K` / `1.5G` / `0`) into MB."""
+    if not isinstance(rss, str) or not rss or rss == "0":
+        return 0.0
+    rss = rss.strip()
+    suffix = rss[-1] if rss[-1].isalpha() else ""
+    num = rss[:-1] if suffix else rss
+    try:
+        v = float(num)
+    except (ValueError, TypeError):
+        return 0.0
+    mult = {"K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}.get(
+        suffix.upper(), 1 / 1024 if not suffix else 1)
+    return round(v * mult, 1)
+
+
+def cluster_job_resources(project_name: str,
+                          compute_env_name: str,
+                          job_id: str,
+                          *,
+                          access_path: Optional[str] = None,
+                          timeout: int = 60) -> dict:
+    """Fetch resource_usage for a completed SLURM job in the shape the
+    I7 invariant in spec_writer expects: {wall_seconds, peak_rss_mb,
+    max_cpu_percent, locus, sacct_rows}.
+
+    sacct without `-X` returns both the job-summary row (Elapsed,
+    nothing for MaxRSS) AND the `<job_id>.batch` row (Elapsed + MaxRSS
+    + AveCPU populated). We take the batch-row evidence — that's the
+    only place MaxRSS lives — and surface them in the standard shape.
+
+    `peak_rss_mb` is real (SLURM's cgroup accounting; same accuracy as
+    `time -v`'s "Maximum resident set size"). `max_cpu_percent` is a
+    derived estimate from AveCPU/Elapsed × 100 — coarser than psutil's
+    sampling but the only thing sacct offers; spec_writer accepts a
+    rough number. `locus: "cluster"` tags the evidence so a
+    sanity-check downstream knows this didn't come from a host psutil
+    monitor.
+
+    Auth: same gate as cluster_job_status (project on env, ssh-only,
+    job_id validated as `\\d{1,12}(_\\d{1,12})?`)."""
+    try:
+        norm_id = _validate_job_id(job_id)
+
+        access = compute_access.load_access(
+            Path(access_path) if access_path else None)
+        project = compute_access.get_project(project_name, access)
+        env = compute_access.get_compute_env(compute_env_name, access)
+
+        has_access = any(
+            isinstance(b, dict) and b.get("compute_env") == compute_env_name
+            for b in (project.get("compute_env_access") or []))
+        if not has_access:
+            return {"error":
+                f"PermissionDenied: project {project_name!r} has no "
+                f"compute_env_access entry for compute_env "
+                f"{compute_env_name!r}"}
+
+        env_type = env.get("type")
+        if env_type != "ssh":
+            return {"error":
+                f"cluster_job_resources only supports ssh compute envs; "
+                f"got type={env_type!r}"}
+
+        remote_cmd = _build_sacct_resource_cmd(norm_id)
+        argv = _ssh_argv(env, remote_cmd)
+        res = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
+        if res.returncode != 0:
+            hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+            return {"error":
+                f"ssh invocation failed (rc={res.returncode}): "
+                f"{(res.stderr or '').strip()[:500]}",
+                **({"hint": hint} if hint else {})}
+
+        rows = []
+        for line in (res.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) != len(_RES_FIELDS):
+                continue
+            rows.append({
+                "job_id":   parts[0],
+                "elapsed":  parts[1],
+                "max_rss":  parts[2],
+                "ave_cpu":  parts[3],
+                "total_cpu": parts[4],
+            })
+
+        if not rows:
+            return {"error":
+                f"sacct returned no rows for job_id={norm_id!r} — "
+                f"job may not yet be in slurmdbd, or never existed."}
+
+        # The batch row is the source of truth for MaxRSS. Some SLURM
+        # builds emit it as `<id>.batch`, others as `<id>.0`. Take the
+        # last row with MaxRSS != 0; if none, fall back to the
+        # job-summary row's Elapsed-only evidence.
+        batch = next((r for r in reversed(rows)
+                      if r["max_rss"] and r["max_rss"] != "0"), rows[-1])
+        summary = rows[0]
+
+        wall_seconds = _parse_hhmmss(batch["elapsed"] or summary["elapsed"])
+        peak_rss_mb = _parse_max_rss_mb(batch["max_rss"])
+        ave_cpu_seconds = _parse_hhmmss(batch["ave_cpu"])
+        max_cpu_percent = (
+            round((ave_cpu_seconds / wall_seconds) * 100.0, 1)
+            if wall_seconds > 0 else 0.0)
+
+        return {
+            "wall_seconds":    wall_seconds,
+            "peak_rss_mb":     peak_rss_mb,
+            "max_cpu_percent": max_cpu_percent,
+            "locus":           "cluster",
+            "sacct_job_id":    norm_id,
+            "sacct_rows":      rows,
+        }
+
+    except (ValueError, compute_access.PermissionDenied,
+            compute_access.ConfigError, FileNotFoundError, KeyError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    except subprocess.TimeoutExpired as e:
+        return {"error": f"sacct timed out after {e.timeout}s"}

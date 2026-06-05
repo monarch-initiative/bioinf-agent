@@ -461,3 +461,76 @@ def stage_apptainer_image(project_name: str,
         sif_subpath=sif_subpath or "",
         access_path=_resolve_access_path(),
     )
+
+
+@mcp.tool()
+def run_step_on_cluster(pipeline_id: str,
+                        freeze_request_key: str,
+                        project_name: str,
+                        compute_env_name: str,
+                        workflow_dir: str,
+                        workflow_name: str,
+                        tool_name: str,
+                        command: str,
+                        inputs: dict,
+                        outputs: dict,
+                        download_local_dir: str,
+                        apptainer_module: str,
+                        nextflow_module: str,
+                        slurm: dict,
+                        sif_subpath: str = "",
+                        poll_interval: int = 15,
+                        max_polls: int = 240,
+                        output_types: dict = {}) -> dict:
+    """Path-4 keystone — run a workflow step on cluster + record the
+    cluster-locus evidence as a pipeline_step in the draft.
+
+    Composes: `stage_apptainer_image` (idempotent) → `submit_workflow_job`
+    (render+upload+sbatch) → `cluster_job_status` (poll to terminal) →
+    `cluster_job_resources` (sacct's MaxRSS for I7) →
+    `download_from_project_path` (sha256 round-trip per output) →
+    type-aware validation. The pipeline_step records `validation_locus:
+    "cluster"` so a future reader sees the evidence came from sacct,
+    not host psutil.
+
+    After this returns successfully, three legitimate next moves:
+      (a) `seal_workflow(pipeline_id, freeze_request_key)` — produce
+          a sealed WorkflowSpec with cluster-locus evidence
+      (b) Call again with a different command — multi-step workflows
+      (c) `discard_pipeline_draft(pipeline_id)` — run-and-go
+
+    `outputs`: `{placeholder_name: bare_filename}` — the file the
+    process writes (Nextflow's publishDir lands it in workflow_dir).
+    `download_local_dir`: where to materialize the fetched outputs
+    locally (created if absent).
+    `output_types`: optional `{basename|ext: validator_type}` overrides
+    for type-aware validation (same shape as run_step_in_container).
+
+    Returns {success, returncode, job_id, sif_path, workflow_dir,
+    resource_usage, detected_outputs, output_sha256, validations,
+    validation_count, download_errors, pipeline_merge, final_status}
+    on success; {"error": ..., stage_result/submit_result/last_poll?}
+    on any phase's refusal/failure. The prior phases' results are
+    preserved on the error dict for diagnosis."""
+    from agent.skills import run_cluster_step
+    return run_cluster_step.run_step_on_cluster(
+        pipeline_id=pipeline_id,
+        freeze_request_key=freeze_request_key,
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        workflow_dir=workflow_dir,
+        workflow_name=workflow_name,
+        tool_name=tool_name,
+        command=command,
+        inputs=inputs,
+        outputs=outputs,
+        download_local_dir=download_local_dir,
+        apptainer_module=apptainer_module,
+        nextflow_module=nextflow_module,
+        slurm=slurm,
+        sif_subpath=sif_subpath or "",
+        poll_interval=poll_interval,
+        max_polls=max_polls,
+        output_types=output_types or {},
+        access_path=_resolve_access_path(),
+    )
