@@ -302,3 +302,37 @@ def download_from_scratch(project_name: str,
         local_path=local_path,
         access_path=_resolve_access_path(),
     )
+
+
+@mcp.tool()
+def cluster_job_status(project_name: str,
+                       compute_env_name: str,
+                       job_id: str) -> dict:
+    """Look up SLURM state for `job_id` on `compute_env_name` so the
+    agent can poll a submitted job to completion.
+
+    Pure-read: runs ONE ssh invocation of
+    `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`, parses
+    the pipe-delimited output, returns a list of row-dicts. Does not
+    submit, cancel, or modify anything.
+
+    Authorization: project must have a `compute_env_access` entry for
+    `compute_env_name`. No per-directory permission needed. SLURM's
+    own ACL keeps the visibility scoped to the user's own jobs.
+
+    `job_id` must be digits with an optional `_<task>` suffix for array
+    tasks (e.g. `12345`, `12345_3`). Anything else is refused BEFORE
+    any ssh — a smuggled `12345; rm -rf /` never reaches the cluster.
+
+    Returns {compute_env, job_id, jobs: [{job_id, state, elapsed,
+    exit_code, nodelist, reason, start, end}, ...], captured_at} on
+    success; {"error": "...", "hint": ...} on failure. Empty `jobs`
+    means sacct doesn't recognize the id — caller distinguishes "not
+    yet in slurmdbd" from "never existed" with a short retry."""
+    from agent.skills import cluster_jobs
+    return cluster_jobs.cluster_job_status(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        job_id=job_id,
+        access_path=_resolve_access_path(),
+    )
