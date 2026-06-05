@@ -620,9 +620,9 @@ def _watch_and_exit_on_change():
 # ---------------------------------------------------------------------------
 if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
-    for _sub in ("data_tools", "env_tools", "freeze_tools", "jobs_tools",
-                 "observability_tools", "run_tools", "service_tools",
-                 "workflow_tools"):
+    for _sub in ("bridge_tools", "data_tools", "env_tools", "freeze_tools",
+                 "jobs_tools", "observability_tools", "run_tools",
+                 "service_tools", "workflow_tools"):
         _full = f"agent.mcp_tools.{_sub}"
         if _full in sys.modules:
             _importlib.reload(sys.modules[_full])
@@ -632,6 +632,10 @@ from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level 
 # external caller continues to `from agent.mcp_server import <tool>`. This
 # list grows alongside the mcp_tools package; populated per phase as tools
 # move out.
+from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
+    upload_to_scratch,
+    fetch_from_scratch,
+)
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,
     list_available_resources,

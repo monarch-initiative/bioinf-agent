@@ -89,8 +89,8 @@ PERMISSIONS: frozenset[str] = frozenset({
 OPERATION_REQUIRES: dict[str, str] = {
     "snapshot": "file_name_only",
     # Phase 2 — wired as primitives land:
-    # "upload_to_scratch":    "upload",
-    # "fetch_from_scratch":   "fetch",
+    "upload_to_scratch":  "upload",   # single-shot push into scratch sandbox
+    "fetch_from_scratch": "fetch",    # pull from scratch back to local
     # "upload_to_refdata":    "upload",
     # "job_workdir_scratch":  "exec",
     # "job_output_refdata":   "exec",
