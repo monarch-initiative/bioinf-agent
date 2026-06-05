@@ -637,6 +637,9 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     download_from_scratch,
     upload_to_common_data,
     download_from_common_data,
+    upload_to_project_path,
+    download_from_project_path,
+    cluster_module_avail,
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,

@@ -7,16 +7,20 @@ permission gate (`compute_access.check_permission`) and the same
 ControlMaster ssh pattern.
 
 Today the surface is:
-  upload_to_scratch / download_from_scratch          — Step 2 (paired,
-                                                       sha256 round-trip)
-  upload_to_common_data / download_from_common_data  — Step 3 (shared
-                                                       namespace; no
-                                                       project prefix)
+  upload_to_scratch / download_from_scratch              — Step 2
+  upload_to_common_data / download_from_common_data      — Step 3
+  upload_to_project_path / download_from_project_path    — Step 4
+  cluster_module_avail                                   — Step 4
+
+Three transfer auth families coexist (intentional):
+  scratch        — env-implicit + auto-prefix by project (sandbox)
+  common_data    — env-implicit + shared namespace (reference data)
+  project_path   — Phase-1 explicit grant via directories[] (workspace)
 
 Coming as each step lands:
-  cluster_job_status                                 — Step 5
-  submit_data_acquisition_job                        — Step 6
-  submit_workflow_job                                — Step 8
+  cluster_job_status                                     — Step 5
+  submit_data_acquisition_job                            — Step 7
+  submit_workflow_job                                    — Step 9
 
 Authorization shape (env-implicit grant, Phase 2):
   - `project_name` + `compute_env_name` resolve to a project's
@@ -169,6 +173,98 @@ def download_from_common_data(project_name: str,
         compute_env_name=compute_env_name,
         remote_subpath=remote_subpath,
         local_path=local_path,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def upload_to_project_path(project_name: str,
+                          compute_env_name: str,
+                          abs_path: str,
+                          local_path: str) -> dict:
+    """Push a local file to an authorized project-workspace path.
+
+    Authorization (Phase-1 explicit): the project's `compute_env_access[]
+    .directories[]` MUST include an entry whose path contains the
+    requested abs_path (longest-prefix match), and that entry's
+    `permissions:` MUST include `upload`. The Phase-2 env-implicit grant
+    does NOT apply here — project_path is for the user's OWN data, which
+    the user authorizes path-by-path.
+
+    The abs_path is supplied LITERALLY (not as a relative subpath that
+    gets auto-prefixed). This is so the agent can write to the project's
+    real directory layout (e.g. `/work/.../PLANT_PROJECT/runs/...`)
+    without disturbing it.
+
+    Same upload contract as the other primitives: 5 GiB head-node cap,
+    sha256 round-trip, refuses overwrites.
+
+    Returns {success, compute_env, remote_path, sha256, bytes, duration_s,
+    transferred_at} on success; {"error": "..."} on refusal/failure."""
+    from agent.skills import project_path
+    return project_path.upload_to_project_path(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        abs_path=abs_path,
+        local_path=local_path,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def download_from_project_path(project_name: str,
+                              compute_env_name: str,
+                              abs_path: str,
+                              local_path: str) -> dict:
+    """Pull a file from an authorized project-workspace path back to local.
+
+    Symmetric to upload_to_project_path; required permission is
+    `download` on the matching directories[] entry. Discrete capability
+    — `upload` alone does NOT satisfy `download`.
+
+    `local_path`: must NOT exist; parent must be writable.
+
+    Returns {success, compute_env, remote_path, local_path, sha256,
+    bytes, duration_s, fetched_at} on success; {"error": "..."} on
+    refusal/failure."""
+    from agent.skills import project_path
+    return project_path.download_from_project_path(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        abs_path=abs_path,
+        local_path=local_path,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def cluster_module_avail(project_name: str,
+                        compute_env_name: str,
+                        pattern: str = "") -> dict:
+    """Discover what HPC modules are loadable on a compute env so the
+    agent can pick the right `module load X/Y.Z` line for a launcher.
+
+    Pure-read: runs ONE ssh invocation of `bash -lc 'module avail …'`,
+    parses the output, returns a flat list of `<name>/<version>`
+    strings. Does not load any module; does not submit any job; never
+    writes anything.
+
+    Authorization: project must have a `compute_env_access` entry for
+    `compute_env_name`. No per-directory permission needed — we're not
+    touching the filesystem.
+
+    `pattern` (optional): forwarded to `module avail <pattern>` AND
+    filtered client-side. Useful: `pattern='nextflow'` returns just
+    the nextflow versions. Must be a safe token (alnum + `_+.-/`).
+
+    Returns {compute_env, pattern, modules, module_count, captured_at}
+    on success; {"error": "...", "hint": ...} on failure (e.g. no
+    ControlMaster session)."""
+    from agent.skills import cluster_modules
+    return cluster_modules.cluster_module_avail(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        pattern=pattern or None,
         access_path=_resolve_access_path(),
     )
 

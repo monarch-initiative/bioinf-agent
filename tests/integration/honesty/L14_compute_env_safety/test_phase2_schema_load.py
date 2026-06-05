@@ -310,6 +310,106 @@ class TestSlurmBlock:
         assert "allowed_queues" in str(exc.value)
         assert "non-empty list" in str(exc.value)
 
+    # --- Optional keys: mail_user + module_loads -----------------------------
+
+    @pytest.mark.integration
+    def test_accepts_optional_mail_user(self, tmp_path):
+        good = self._good_slurm()
+        good["mail_user"] = "user@example.org"
+        env = _base_env(slurm=good)
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        cfg = compute_access.get_slurm_config(
+            compute_access.get_compute_env("cluster", access))
+        assert cfg["mail_user"] == "user@example.org"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_mail", [
+        "no-at-sign",
+        "user@with\nnewline.example.org",
+        "user@with\rcarriage.example.org",
+        "",
+    ])
+    def test_refuses_bad_mail_user(self, tmp_path, bad_mail):
+        bad = self._good_slurm()
+        bad["mail_user"] = bad_mail
+        env = _base_env(slurm=bad)
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        msg = str(exc.value)
+        assert "mail_user" in msg
+
+    @pytest.mark.integration
+    def test_accepts_optional_module_loads(self, tmp_path):
+        good = self._good_slurm()
+        good["module_loads"] = ["apptainer/1.4.1", "nextflow/25.04.7"]
+        env = _base_env(slurm=good)
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        cfg = compute_access.get_slurm_config(
+            compute_access.get_compute_env("cluster", access))
+        assert cfg["module_loads"] == ["apptainer/1.4.1", "nextflow/25.04.7"]
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_entry", [
+        "module with space",
+        "module;rm -rf /",
+        "module\ninjection",
+        "module|pipe",
+        "module$(id)",
+        "module`backtick`",
+        "",
+    ])
+    def test_refuses_module_load_entry_with_shell_metachars(
+            self, tmp_path, bad_entry):
+        bad = self._good_slurm()
+        bad["module_loads"] = ["apptainer/1.4.1", bad_entry]
+        env = _base_env(slurm=bad)
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        msg = str(exc.value)
+        assert "module_loads" in msg
+
+    @pytest.mark.integration
+    def test_refuses_module_loads_not_a_list(self, tmp_path):
+        bad = self._good_slurm()
+        bad["module_loads"] = "apptainer/1.4.1"  # string not list
+        env = _base_env(slurm=bad)
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        assert "module_loads" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_optional_keys_absent_loads_clean(self, tmp_path):
+        # The whole point of optional keys: they may be omitted without
+        # the loader complaining.
+        good = self._good_slurm()
+        # No mail_user, no module_loads.
+        env = _base_env(slurm=good)
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        cfg = compute_access.get_slurm_config(
+            compute_access.get_compute_env("cluster", access))
+        assert "mail_user" not in cfg
+        assert "module_loads" not in cfg
+
+    @pytest.mark.integration
+    def test_still_refuses_truly_unknown_key(self, tmp_path):
+        # The typo defense from Step 1 still works — adding optional
+        # mail_user/module_loads doesn't widen the closed-key set to
+        # accept arbitrary fields.
+        bad = self._good_slurm()
+        bad["typo_extra_field"] = "evil"
+        env = _base_env(slurm=bad)
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        assert "unknown keys" in str(exc.value)
+        assert "typo_extra_field" in str(exc.value)
+
 
 # ===========================================================================
 # 4. Disjoint-subtree check across all of an env's declared paths

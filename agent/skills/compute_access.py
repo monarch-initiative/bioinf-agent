@@ -94,6 +94,9 @@ OPERATION_REQUIRES: dict[str, str] = {
     "download_from_scratch":     "download",
     "upload_to_common_data":     "upload",
     "download_from_common_data": "download",
+    # Project workspaces — Phase-1 directories[] gate (project-explicit auth):
+    "upload_to_project_path":     "upload",
+    "download_from_project_path": "download",
     # "job_workdir_scratch":     "exec",
     # "job_output_common_data":  "exec",
 }
@@ -336,6 +339,14 @@ _SLURM_REQUIRED_KEYS: frozenset[str] = frozenset({
     "max_time_hours_per_job",
 })
 
+# Optional slurm keys — present, use them; absent, the launcher omits the
+# corresponding lines. Same closed-key discipline (typos rejected) — just
+# not required to declare.
+_SLURM_OPTIONAL_KEYS: frozenset[str] = frozenset({
+    "mail_user",     # str — what `#SBATCH --mail-user=` points at
+    "module_loads",  # list[str] — module-load lines the launcher emits
+})
+
 
 def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
     """Validate the closed `slurm:` block. Unknown keys rejected. Type-check
@@ -343,11 +354,12 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
     enforces — they must be positive ints."""
     if not isinstance(blk, dict):
         raise ConfigError(f"{path}: {where} must be a mapping")
-    extra = set(blk.keys()) - _SLURM_REQUIRED_KEYS
+    allowed = _SLURM_REQUIRED_KEYS | _SLURM_OPTIONAL_KEYS
+    extra = set(blk.keys()) - allowed
     if extra:
         raise ConfigError(
             f"{path}: {where} has unknown keys {sorted(extra)!r}. "
-            f"Allowed keys: {sorted(_SLURM_REQUIRED_KEYS)!r}")
+            f"Allowed keys: {sorted(allowed)!r}")
     missing = _SLURM_REQUIRED_KEYS - set(blk.keys())
     if missing:
         raise ConfigError(
@@ -377,6 +389,36 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
         if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
             raise ConfigError(
                 f"{path}: {where}.{k} must be a positive integer (got {v!r})")
+
+    # Optional keys — present? type-check. Absent? fine.
+    if "mail_user" in blk:
+        mu = blk["mail_user"]
+        if not isinstance(mu, str) or not mu or "@" not in mu:
+            raise ConfigError(
+                f"{path}: {where}.mail_user must be a non-empty email-like "
+                f"string (got {mu!r})")
+        # Newline injection defense — `--mail-user=<X>` would split a header
+        # if X contains a newline. Boring constraint, real defense.
+        if any(c in mu for c in "\n\r"):
+            raise ConfigError(
+                f"{path}: {where}.mail_user contains newline/CR "
+                f"(SBATCH header injection); refused")
+    if "module_loads" in blk:
+        ml = blk["module_loads"]
+        if not isinstance(ml, list) or not all(
+                isinstance(x, str) and x for x in ml):
+            raise ConfigError(
+                f"{path}: {where}.module_loads must be a list of non-empty "
+                f"strings (got {ml!r})")
+        # Each entry becomes `module load <X>` in the launcher. Refuse
+        # shell metacharacters that would break out of that line. Module
+        # names canonically match [A-Za-z0-9_+\-./], so anything outside
+        # that set is forbidden.
+        for item in ml:
+            if any(c in item for c in "\x00\n\r\t ;|&$`<>(){}[]*?\"'\\"):
+                raise ConfigError(
+                    f"{path}: {where}.module_loads entry {item!r} contains "
+                    f"forbidden character (newline/space/shell metachar)")
 
 
 def _is_safe_token(s: str) -> bool:
