@@ -416,3 +416,48 @@ def submit_workflow_job(project_name: str,
         slurm=slurm,
         access_path=_resolve_access_path(),
     )
+
+
+@mcp.tool()
+def stage_apptainer_image(project_name: str,
+                          compute_env_name: str,
+                          freeze_request_key: str,
+                          sif_subpath: str = "") -> dict:
+    """Get the apptainer .sif for a frozen env onto a compute env.
+
+    Mode-aware (auto-determined from the EnvCache record):
+      ADOPT (pure-conda + public BioContainer):
+        ONE ssh hop: `apptainer pull <sif> docker://<image_by_digest>`.
+        No bytes move through us. Idempotent — re-stages are a no-op
+        when the .sif already exists.
+      BUILD with push_target:
+        Same shape as adopt — pull from the configured registry.
+      BUILD registry-free (default for non-conda):
+        Two steps: (1) transfer .tar via the env's configured
+        `bulk_transfer.type` — today scp head node via
+        upload_to_common_data, future datamover/globus by ONE
+        internal branch; (2) ssh `apptainer build <sif>
+        docker-archive://<tar>` on the cluster.
+
+    Where the .sif lands:
+      `<env.agent_common_data_target>/apptainer/<env_name>_<digest>.sif`
+      by default. Override via `sif_subpath` (relative, under the
+      common_data zone).
+
+    Authorization: project must have a `compute_env_access` entry for
+    the env, AND the env must declare an `agent_common_data_target`
+    with `upload` perm. For BUILD-archive path,
+    upload_to_common_data's auth is re-checked at upload time.
+
+    Returns {success, mode, sif_path, image_digest, request_key,
+    skipped, staged_at} on success; {"error": ..., hint?, ...} on
+    failure. `skipped: true` means the .sif already existed —
+    re-stages are intentionally idempotent."""
+    from agent.skills import stage_apptainer
+    return stage_apptainer.stage_apptainer_image(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        freeze_request_key=freeze_request_key,
+        sif_subpath=sif_subpath or "",
+        access_path=_resolve_access_path(),
+    )

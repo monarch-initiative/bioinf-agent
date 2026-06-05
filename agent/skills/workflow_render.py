@@ -262,16 +262,17 @@ def render_workflow(*,
         script_body = script_body.replace(
             "${" + k + "}", "${params." + k + "}")
 
-    # params block — every input + output as a top-level param.
-    # Inputs carry the literal remote abs path; outputs carry the bare
-    # filename (written to the work dir).
+    # params declarations — dot notation per Nextflow DSL2. Groovy
+    # parses `params { ... }` as a method call (Nextflow rejects it
+    # with "Unknown method invocation `params`"). One-line-per-param
+    # avoids that and is universally supported.
     param_lines = []
     for k, v in inputs.items():
-        param_lines.append(f"    {k} = {_nf_quote(v)}")
+        param_lines.append(f"params.{k} = {_nf_quote(v)}")
     for k, v in outputs.items():
-        param_lines.append(f"    {k} = {_nf_quote(v)}")
-    param_lines.append(f"    apptainer_sif = {_nf_quote(apptainer_sif)}")
-    param_block = "params {\n" + "\n".join(param_lines) + "\n}"
+        param_lines.append(f"params.{k} = {_nf_quote(v)}")
+    param_lines.append(f"params.apptainer_sif = {_nf_quote(apptainer_sif)}")
+    param_block = "\n".join(param_lines)
 
     # Output channel: emit every output file so Nextflow tracks them.
     output_lines = "\n".join(
@@ -346,7 +347,24 @@ def render_workflow(*,
         f"module load {apptainer_module}\n"
         f"module load {nextflow_module}\n"
         f"\n"
-        f"cd \"$(dirname \"$(readlink -f \"$0\")\")\"\n"
+        f"# cd into the workflow dir. SLURM stages the script into\n"
+        f"# /var/spool/slurmd/job<id>/, so $0 / readlink -f point at\n"
+        f"# THAT dir (not writable). $SLURM_SUBMIT_DIR is set by SLURM\n"
+        f"# to the dir where `sbatch launcher.sh` was invoked — that's\n"
+        f"# the workflow_dir we uploaded everything into. Fall back to\n"
+        f"# $0's dir only for non-SLURM invocations (sanity).\n"
+        f"cd \"${{SLURM_SUBMIT_DIR:-$(dirname \"$(readlink -f \"$0\")\")}}\"\n"
+        f"\n"
+        f"# Redirect Nextflow's per-user cache + per-run state INTO the\n"
+        f"# workflow dir. On HPC, $HOME often isn't writable from compute\n"
+        f"# nodes (quota, NFS, allocation boundaries), so nextflow's\n"
+        f"# bootstrap of ~/.nextflow can fail silently and the run dies\n"
+        f"# with \".nextflow/history.lock: No such file or directory\".\n"
+        f"# Pinning NXF_HOME / NXF_WORK to $PWD keeps everything inside\n"
+        f"# the project workspace where `exec` perms already apply.\n"
+        f"export NXF_HOME=\"$PWD/.nextflow_home\"\n"
+        f"export NXF_WORK=\"$PWD/work\"\n"
+        f"mkdir -p \"$NXF_HOME\" \"$NXF_WORK\" .nextflow\n"
         f"\n"
         f"nextflow run {shlex.quote(nextflow_main_filename)} "
         f"-c {shlex.quote(nextflow_config_filename)} "

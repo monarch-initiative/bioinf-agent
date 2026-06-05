@@ -74,13 +74,18 @@ class TestHappyPath:
 
     @pytest.mark.integration
     def test_main_nf_has_params_block_with_every_io(self):
+        # Dot notation (params.x = 'y') — Groovy parses `params { ... }`
+        # as a method call, which Nextflow rejects ("Unknown method
+        # invocation `params`"). Pinned to dot notation per
+        # Nextflow DSL2 conventions.
         out = _demo_render()
         nf = out["main.nf"]
-        assert "params {" in nf
-        # Every input + every output appears verbatim in the params block.
-        assert "input_bam = '/work/users/u/s/user1/CLAUDE_TEST_PROJECTS/" in nf
-        assert "output_bam = 'filtered.bam'" in nf
-        assert f"apptainer_sif = '{_DEMO_SIF}'" in nf
+        assert ("params.input_bam = '/work/users/u/s/user1/"
+                "CLAUDE_TEST_PROJECTS/") in nf
+        assert "params.output_bam = 'filtered.bam'" in nf
+        assert f"params.apptainer_sif = '{_DEMO_SIF}'" in nf
+        # Block syntax is explicitly NOT used — would be a regression.
+        assert "params {" not in nf
 
     @pytest.mark.integration
     def test_main_nf_script_block_has_literal_command_with_substituted_params(self):
