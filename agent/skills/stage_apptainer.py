@@ -41,17 +41,21 @@ The EnvCache record's `mode` decides:
 
 Where the .sif lands
 --------------------
-Default: `<env.agent_common_data_target>/apptainer/<env_name>_<digest>.sif`
-- env_name is the freeze record's env name (so multiple frozen envs
-  coexist)
-- digest is the short content_digest so a re-freeze with a different
-  result doesn't clobber the old .sif
-- under `apptainer/` so the dir doesn't compete with reference data
-  for namespace
+Preference order:
+  1. `<env.container_upload_target>/<env_name>_<digest>.sif` — the
+     env's DEDICATED container zone (semantically what
+     `container_upload_target` is for; conventionally
+     `CLAUDE_CONTAINERS/`).
+  2. `<env.agent_common_data_target>/apptainer/<env_name>_<digest>.sif`
+     — fallback for envs that don't declare a container target.
+
+env_name is the freeze record's env name (so multiple frozen envs
+coexist); digest is the short content_digest so a re-freeze with a
+different result doesn't clobber the old .sif.
 
 Caller may override the subpath via `sif_subpath`; we still resolve
-against `agent_common_data_target.path` (so the file stays in the
-project-shared zone, not in scratch).
+against the chosen target's path (so the file stays in the
+designated zone).
 
 Authorization
 -------------
@@ -188,34 +192,45 @@ def stage_apptainer_image(
                 f"compute_env_access entry for compute_env "
                 f"{compute_env_name!r}"}
 
-        # The .sif will land under agent_common_data_target — verify
-        # the env declares one with `upload` perm.
+        # Pick the .sif landing zone — prefer the env's DEDICATED
+        # container_upload_target (semantically what it's for),
+        # fall back to agent_common_data_target/apptainer/. Both
+        # require `upload` perm to write the .sif there.
+        ct = env.get("container_upload_target") or {}
+        ct_path = (ct.get("path") or "").rstrip("/")
+        ct_perms = ct.get("permissions") or []
         cd = env.get("agent_common_data_target") or {}
-        cd_path = cd.get("path", "").rstrip("/")
-        if not cd_path:
-            return {"error":
-                f"env {compute_env_name!r} has no agent_common_data_target; "
-                f"add one with permissions including `upload` to use "
-                f"stage_apptainer_image."}
-        if "upload" not in (cd.get("permissions") or []):
-            return {"error":
-                f"env {compute_env_name!r}'s agent_common_data_target "
-                f"does not include `upload` in permissions."}
+        cd_path = (cd.get("path") or "").rstrip("/")
+        cd_perms = cd.get("permissions") or []
 
-        # Resolve sif path (under agent_common_data_target). Caller's
-        # sif_subpath overrides the default, but still resolves under
-        # cd_path — no escaping into project_path or scratch.
         env_name_for_sif = (record.get("name")
                             or freeze_request_key.split("|", 1)[0])
         content_digest = record.get("content_digest") or record.get(
             "image_digest", "")
-        subpath = sif_subpath or _default_sif_subpath(
-            env_name_for_sif, content_digest)
+        if ct_path and "upload" in ct_perms:
+            target_root = ct_path
+            # No `apptainer/` subdir — the whole target IS the container
+            # zone. Default subpath is just `<env_name>_<digest>.sif`.
+            subpath = (sif_subpath or
+                       f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
+            landing_zone = "container_upload_target"
+        elif cd_path and "upload" in cd_perms:
+            target_root = cd_path
+            subpath = sif_subpath or _default_sif_subpath(
+                env_name_for_sif, content_digest)
+            landing_zone = "agent_common_data_target"
+        else:
+            return {"error":
+                f"env {compute_env_name!r} has no upload-permitted "
+                f"target for .sif files. Declare a `container_upload_target` "
+                f"(semantically what .sifs go to) OR an "
+                f"`agent_common_data_target`, with permissions including "
+                f"`upload`."}
         # Refuse traversal in sif_subpath
         if ".." in subpath.split("/") or subpath.startswith("/"):
             return {"error":
                 f"sif_subpath {subpath!r} must be relative + no `..`"}
-        sif_remote_abs = f"{cd_path}/{subpath}"
+        sif_remote_abs = f"{target_root}/{subpath}"
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""

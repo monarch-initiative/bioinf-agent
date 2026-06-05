@@ -147,14 +147,16 @@ class TestRecordLookupFailures:
 
 class TestAuthGate:
     @pytest.mark.integration
-    def test_env_missing_common_data_target_refused(
+    def test_env_missing_both_targets_refused(
             self, tmp_path, monkeypatch):
+        # Neither container_upload_target nor agent_common_data_target
+        # declared with `upload` — nothing for the .sif to land on.
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
                 "name": "fakehpc", "type": "ssh",
                 "host": "fake.example.edu", "user": "u",
                 "container_upload_target": None,
-                # No agent_common_data_target.
+                # No agent_common_data_target either.
             }],
             "projects": [{
                 "name": "demo",
@@ -172,8 +174,81 @@ class TestAuthGate:
             project_name="demo", compute_env_name="fakehpc",
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
-        assert "error" in r and "no agent_common_data_target" in r["error"]
+        assert "error" in r
+        assert "container_upload_target" in r["error"]
+        assert "agent_common_data_target" in r["error"]
         assert called == []
+
+    @pytest.mark.integration
+    def test_container_upload_target_preferred_over_common_data(
+            self, tmp_path, monkeypatch):
+        # When both targets are declared, container_upload_target
+        # wins — that's semantically what .sifs are for, and it
+        # doesn't compete with reference data for namespace.
+        access_path = _write_access(tmp_path, {
+            "compute_envs": [{
+                "name": "fakehpc", "type": "ssh",
+                "host": "fake.example.edu", "user": "u",
+                "container_upload_target": {
+                    "path": "/work/u/CLAUDE_CONTAINERS",
+                    "permissions": ["file_name_only", "upload"],
+                },
+                "agent_common_data_target": {
+                    "path": "/work/u/COMMON_DATA",
+                    "permissions": ["file_name_only", "upload",
+                                     "download", "exec"],
+                },
+            }],
+            "projects": [{
+                "name": "demo",
+                "compute_env_access": [{
+                    "compute_env": "fakehpc", "directories": []}],
+            }],
+        })
+        cache = FakeEnvCache({"samtools|linux/amd64|none": {
+            "mode": "adopt",
+            "image": "quay.io/biocontainers/samtools@sha256:23cda",
+            "image_digest": "sha256:23cda33a3a4212587276",
+            "content_digest": "sha256:23cda33a3a4212587276"}})
+
+        def fake_run(*args, **kwargs):
+            mock = MagicMock(); mock.returncode = 0
+            mock.stdout = ""; mock.stderr = ""
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        r = stage_apptainer.stage_apptainer_image(
+            project_name="demo", compute_env_name="fakehpc",
+            freeze_request_key="samtools|linux/amd64|none",
+            env_cache=cache, access_path=str(access_path))
+        assert "error" not in r, r
+        # Lands under CLAUDE_CONTAINERS, NOT under COMMON_DATA/apptainer.
+        assert r["sif_path"] == "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
+
+    @pytest.mark.integration
+    def test_only_common_data_target_uses_apptainer_subdir(
+            self, tmp_path, monkeypatch):
+        # When container_upload_target isn't declared at all,
+        # fall back to agent_common_data_target with the apptainer/
+        # subdir prefix.
+        access_path = _good_access(tmp_path)  # common_data only
+        cache = FakeEnvCache({"samtools|linux/amd64|none": {
+            "mode": "adopt", "image": "quay.io/x@sha256:abc",
+            "image_digest": "sha256:23cda33a3a4212",
+            "content_digest": "sha256:23cda33a3a4212"}})
+
+        def fake_run(*a, **kw):
+            m = MagicMock(); m.returncode = 0; m.stdout = ""; m.stderr = ""
+            return m
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        r = stage_apptainer.stage_apptainer_image(
+            project_name="demo", compute_env_name="fakehpc",
+            freeze_request_key="samtools|linux/amd64|none",
+            env_cache=cache, access_path=str(access_path))
+        assert "error" not in r, r
+        # Falls back to common_data + the apptainer/ subdir.
+        assert "/COMMON_DATA/apptainer/samtools_23cda33a3a42.sif" in r["sif_path"]
 
     @pytest.mark.integration
     def test_env_common_data_missing_upload_perm_refused(
