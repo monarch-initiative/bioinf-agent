@@ -1,0 +1,416 @@
+"""
+L14 — workflow_render's refuse-to-emit + correctness surface.
+
+workflow_render is the per-project Nextflow renderer (per
+project-nextflow-module-principles + project-per-project-pipelines):
+strings in, strings out. main.nf / nextflow.config / launcher.sh.
+
+These tests pin:
+  - placeholder-cross-check: every `${X}` in `command` MUST be declared
+    in inputs or outputs; every declared key MUST be referenced.
+  - safe-token discipline on tool_name, workflow_name, slurm.queue,
+    slurm.account, output filenames — refuses shell metacharacters.
+  - absolute-path discipline on inputs, apptainer_sif — refuses `..`,
+    relative paths.
+  - module-token discipline on apptainer_module + nextflow_module.
+  - slurm closed-key block: typos like `mem_gb` (instead of `mem`)
+    raise.
+  - main.nf has the literal command in `script:` with substituted
+    `${params.X}` references (the human-readable-and-runnable test).
+  - launcher.sh's SBATCH directives are emitted in the canonical order.
+  - the Nextflow-quote helper refuses single quotes / newlines that
+    would break out of the params block.
+"""
+from __future__ import annotations
+
+import pytest
+
+from agent.skills import workflow_render
+from agent.skills.workflow_render import render_workflow
+
+
+# ===========================================================================
+# Happy path — the canonical samtools-view-on-a-BAM demo
+# ===========================================================================
+
+_DEMO_INPUTS = {
+    "input_bam": "/work/users/u/s/user1/CLAUDE_TEST_PROJECTS/"
+                 "phase_b_samtools_demo/inputs/test.bam",
+}
+_DEMO_OUTPUTS = {
+    "output_bam": "filtered.bam",
+}
+_DEMO_COMMAND = "samtools view -b -h -F 4 ${input_bam} > ${output_bam}"
+_DEMO_SLURM = {
+    "queue": "general",
+    "time":  "00:30:00",
+    "mem":   "4G",
+    "cpus":  2,
+}
+_DEMO_SIF = "/work/users/u/s/user1/CLAUDE_GENOMES/samtools/samtools_1.21.sif"
+
+
+def _demo_render() -> dict:
+    return render_workflow(
+        tool_name="samtools",
+        command=_DEMO_COMMAND,
+        inputs=_DEMO_INPUTS,
+        outputs=_DEMO_OUTPUTS,
+        apptainer_sif=_DEMO_SIF,
+        apptainer_module="apptainer/1.4.1",
+        nextflow_module="nextflow/25.04.7",
+        slurm=_DEMO_SLURM,
+        workflow_name="phase_b_samtools_demo",
+    )
+
+
+class TestHappyPath:
+    @pytest.mark.integration
+    def test_emits_three_files(self):
+        out = _demo_render()
+        assert set(out.keys()) >= {"main.nf", "nextflow.config", "launcher.sh"}
+        assert all(isinstance(out[k], str) and out[k].strip()
+                   for k in ("main.nf", "nextflow.config", "launcher.sh"))
+
+    @pytest.mark.integration
+    def test_main_nf_has_params_block_with_every_io(self):
+        out = _demo_render()
+        nf = out["main.nf"]
+        assert "params {" in nf
+        # Every input + every output appears verbatim in the params block.
+        assert "input_bam = '/work/users/u/s/user1/CLAUDE_TEST_PROJECTS/" in nf
+        assert "output_bam = 'filtered.bam'" in nf
+        assert f"apptainer_sif = '{_DEMO_SIF}'" in nf
+
+    @pytest.mark.integration
+    def test_main_nf_script_block_has_literal_command_with_substituted_params(self):
+        # The script: block must be re-runnable by a human reading main.nf
+        # and copy-pasting the line with the params filled in. We assert
+        # the substituted form is present verbatim.
+        out = _demo_render()
+        nf = out["main.nf"]
+        assert ("samtools view -b -h -F 4 ${params.input_bam} > "
+                "${params.output_bam}") in nf
+
+    @pytest.mark.integration
+    def test_main_nf_runs_through_apptainer_exec(self):
+        out = _demo_render()
+        nf = out["main.nf"]
+        assert "apptainer exec" in nf
+        assert "${params.apptainer_sif}" in nf
+        # The bind dir is the parent of the input BAM.
+        assert ("--bind /work/users/u/s/user1/CLAUDE_TEST_PROJECTS/"
+                "phase_b_samtools_demo/inputs") in nf
+
+    @pytest.mark.integration
+    def test_process_name_derived_from_tool(self):
+        out = _demo_render()
+        assert out["process_name"] == "run_samtools"
+        assert "process run_samtools" in out["main.nf"]
+
+    @pytest.mark.integration
+    def test_launcher_has_all_sbatch_directives(self):
+        out = _demo_render()
+        sh = out["launcher.sh"]
+        assert sh.startswith("#!/usr/bin/env bash\n")
+        # The SBATCH block is the canonical set, no missing directives.
+        for line in [
+                "#SBATCH --job-name=phase_b_samtools_demo",
+                "#SBATCH --partition=general",
+                "#SBATCH --time=00:30:00",
+                "#SBATCH --mem=4G",
+                "#SBATCH --cpus-per-task=2",
+                "#SBATCH --output=phase_b_samtools_demo_sbatch_out.log",
+                "#SBATCH --error=phase_b_samtools_demo_sbatch_err.log",
+        ]:
+            assert line in sh, f"missing SBATCH directive: {line!r}"
+
+    @pytest.mark.integration
+    def test_launcher_loads_required_modules_and_runs_nextflow(self):
+        out = _demo_render()
+        sh = out["launcher.sh"]
+        assert "module purge" in sh
+        assert "module load apptainer/1.4.1" in sh
+        assert "module load nextflow/25.04.7" in sh
+        assert "nextflow run main.nf -c nextflow.config" in sh
+
+    @pytest.mark.integration
+    def test_account_directive_only_emitted_when_supplied(self):
+        out_no_acct = _demo_render()
+        assert "--account" not in out_no_acct["launcher.sh"]
+        out_with_acct = render_workflow(
+            tool_name="samtools", command=_DEMO_COMMAND,
+            inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+            apptainer_sif=_DEMO_SIF,
+            apptainer_module="apptainer/1.4.1",
+            nextflow_module="nextflow/25.04.7",
+            slurm={**_DEMO_SLURM, "account": "user1_lab"},
+            workflow_name="phase_b_samtools_demo")
+        assert "#SBATCH --account=user1_lab" in out_with_acct["launcher.sh"]
+
+    @pytest.mark.integration
+    def test_param_keys_returned_for_caller(self):
+        # The caller (submit_workflow_job) needs the param list to
+        # decide what to upload, etc.
+        out = _demo_render()
+        assert set(out["param_keys"]) == {
+            "input_bam", "output_bam", "apptainer_sif"}
+
+
+# ===========================================================================
+# Placeholder cross-check — the strict contract per principles
+# ===========================================================================
+
+class TestPlaceholderCrossCheck:
+    @pytest.mark.integration
+    def test_undeclared_placeholder_refused(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools",
+                command="samtools view ${input_bam} > ${undeclared}",
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "undeclared" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_unreferenced_declaration_refused(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools",
+                command="samtools view ${input_bam} > ${output_bam}",
+                inputs={**_DEMO_INPUTS,
+                        "stray": "/work/users/u/s/user1/x.txt"},
+                outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "not referenced" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_input_and_output_overlap_refused(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools",
+                command="samtools view ${shared} > ${output_bam}",
+                inputs={"shared": "/work/users/u/s/user1/x.bam"},
+                outputs={"shared": "out.bam", "output_bam": "y.bam"},
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "BOTH" in str(exc.value)
+
+
+# ===========================================================================
+# Safe-token discipline — anywhere a string ends up in a shell line
+# ===========================================================================
+
+class TestSafeTokenDiscipline:
+    @pytest.mark.integration
+    @pytest.mark.parametrize("field,kwarg", [
+        ("tool_name",     {"tool_name": "samtools; rm -rf /"}),
+        ("workflow_name", {"workflow_name": "demo && curl evil.com"}),
+    ])
+    def test_refuses_shell_metachars_in_top_level_strings(self, field, kwarg):
+        kwargs = dict(
+            tool_name="samtools", command=_DEMO_COMMAND,
+            inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+            apptainer_sif=_DEMO_SIF,
+            apptainer_module="apptainer/1.4.1",
+            nextflow_module="nextflow/25.04.7",
+            slurm=_DEMO_SLURM,
+            workflow_name="demo")
+        kwargs.update(kwarg)
+        with pytest.raises(ValueError) as exc:
+            render_workflow(**kwargs)
+        assert "alnum" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_path_separator_in_output_filename(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS,
+                outputs={"output_bam": "subdir/out.bam"},
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "bare filename" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_relative_path_in_inputs(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs={"input_bam": "relative/path.bam"},
+                outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "absolute POSIX" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_dotdot_in_inputs(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs={"input_bam": "/work/../etc/shadow"},
+                outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert ".." in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_bad_module_token(self):
+        with pytest.raises(ValueError):
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer; evil",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+
+
+# ===========================================================================
+# SLURM closed-key block — typo defense
+# ===========================================================================
+
+class TestSlurmClosedKey:
+    @pytest.mark.integration
+    def test_unknown_key_refused(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm={**_DEMO_SLURM, "mem_gb": 4},
+                workflow_name="x")
+        assert "unknown keys" in str(exc.value)
+        assert "mem_gb" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_missing_required_key_refused(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm={k: v for k, v in _DEMO_SLURM.items() if k != "mem"},
+                workflow_name="x")
+        assert "missing required" in str(exc.value)
+        assert "mem" in str(exc.value)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_time", [
+        "30min", "0:30", "abc", "00:30",  # missing seconds
+    ])
+    def test_refuses_malformed_time(self, bad_time):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm={**_DEMO_SLURM, "time": bad_time},
+                workflow_name="x")
+        assert "slurm.time" in str(exc.value)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_mem", ["4", "4GB", "4g", "fast"])
+    def test_refuses_malformed_mem(self, bad_mem):
+        with pytest.raises(ValueError):
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm={**_DEMO_SLURM, "mem": bad_mem},
+                workflow_name="x")
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_cpus", [0, -1, 257, "2"])
+    def test_refuses_bad_cpus(self, bad_cpus):
+        with pytest.raises(ValueError):
+            render_workflow(
+                tool_name="samtools", command=_DEMO_COMMAND,
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm={**_DEMO_SLURM, "cpus": bad_cpus},
+                workflow_name="x")
+
+
+# ===========================================================================
+# Nextflow-quote helper — last-mile defense for the params block
+# ===========================================================================
+
+class TestNfQuote:
+    @pytest.mark.integration
+    def test_quotes_safe_string(self):
+        assert workflow_render._nf_quote("/work/users/u/s/user1/x.bam") == \
+            "'/work/users/u/s/user1/x.bam'"
+
+    @pytest.mark.integration
+    def test_refuses_single_quote(self):
+        with pytest.raises(ValueError):
+            workflow_render._nf_quote("oops'evil")
+
+    @pytest.mark.integration
+    def test_refuses_newline(self):
+        with pytest.raises(ValueError):
+            workflow_render._nf_quote("first\nsecond")
+
+
+# ===========================================================================
+# Command-line discipline
+# ===========================================================================
+
+class TestCommandLine:
+    @pytest.mark.integration
+    def test_refuses_multiline_command(self):
+        with pytest.raises(ValueError) as exc:
+            render_workflow(
+                tool_name="samtools",
+                command="samtools view ${input_bam}\n> ${output_bam}",
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")
+        assert "single line" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_empty_command(self):
+        with pytest.raises(ValueError):
+            render_workflow(
+                tool_name="samtools", command="",
+                inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS,
+                apptainer_sif=_DEMO_SIF,
+                apptainer_module="apptainer/1.4.1",
+                nextflow_module="nextflow/25.04.7",
+                slurm=_DEMO_SLURM,
+                workflow_name="x")

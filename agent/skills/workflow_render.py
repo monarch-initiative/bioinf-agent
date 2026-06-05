@@ -1,0 +1,376 @@
+"""
+workflow_render — render a one-process Nextflow workflow (main.nf +
+nextflow.config + launcher.sh) for a single-tool demo on HPC.
+
+This is the agent's per-project renderer per
+[[project-nextflow-module-principles]] and
+[[project-per-project-pipelines]]:
+
+  1. The module is generic + parameterized: inputs/outputs flow through
+     `params{}` at the top of main.nf so a human reader can see EVERY
+     path the pipeline touches in one place. No bespoke wiring.
+  2. The process's `script:` block is the LITERAL shell command — no
+     DSL magic. Acceptance test: a human reads main.nf, copies the
+     command, substitutes the params, and re-runs the step from a
+     terminal. If they can't, the renderer is wrong.
+  3. The tool comes from a frozen apptainer .sif (uploaded to
+     common_data). The process runs `apptainer exec <sif> <cmd>`. The
+     .sif path is a top-level param so swapping versions is a one-line
+     change to main.nf.
+
+The renderer is pure: strings in, strings out. Filesystem writes,
+ssh, and sbatch live in `submit_workflow_job` (Step 2 commit #2).
+
+Input shape — `WorkflowSpec` namedtuple-ish dict
+-------------------------------------------------
+
+  tool_name       short label, e.g. "samtools". Used in process name +
+                  sbatch --job-name. Safe-token (alnum + `_-`).
+  command         literal shell command with `${param}` placeholders.
+                  e.g. `samtools view -b -h -F 4 ${input_bam} > ${output_bam}`.
+                  Placeholders MUST match keys in `inputs` ∪ `outputs`.
+  inputs          {placeholder_name: remote_abs_path}. The remote path
+                  is what the running process will see — the renderer
+                  does NOT compute container paths; main.nf uses the
+                  remote path directly (apptainer's default bind makes
+                  the host's $PWD visible inside the container).
+  outputs         {placeholder_name: remote_filename}. Outputs are
+                  always written to the working dir (Nextflow's
+                  per-process workDir); the params carry just the
+                  filename, not an absolute path.
+  apptainer_sif   absolute remote path to the .sif image.
+  apptainer_module  Lmod module string, e.g. "apptainer/1.4.1".
+  nextflow_module   Lmod module string, e.g. "nextflow/25.04.7".
+  slurm           {queue, time, mem, cpus, account?}. account is
+                  optional; everything else required.
+  workflow_name   safe-token, ≤64 chars. Used for sbatch --job-name
+                  AND as the directory name on the remote side.
+"""
+from __future__ import annotations
+
+import re
+import shlex
+from typing import Mapping, Optional
+
+
+# Bare-bones safe-token check — alphanumeric, underscores, dashes,
+# dots. No path separators, no shell metacharacters. Used for any
+# value that ends up in a shell line via simple string interpolation.
+_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+# A nextflow param key — same as a Python identifier (snake_case).
+_PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# A Lmod module string — alnum + `_+./-` (e.g. "apptainer/1.4.1",
+# "GNU-parallel/20231022", "nextflow/25.04.7").
+_MODULE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_+./-]+$")
+# Absolute POSIX path — leading slash, no `..` segments.
+_ABS_POSIX_RE = re.compile(r"^/[^\0]*$")
+
+
+def _check_safe_token(name: str, value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if not _SAFE_TOKEN_RE.match(value):
+        raise ValueError(
+            f"{name}={value!r} must be alnum + `_.-` (no path separators "
+            f"or shell metacharacters)")
+
+
+def _check_abs_path(name: str, value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if not _ABS_POSIX_RE.match(value):
+        raise ValueError(f"{name}={value!r} must be an absolute POSIX path")
+    if ".." in value.split("/"):
+        raise ValueError(f"{name}={value!r} must not contain `..` segments")
+
+
+def _check_module(name: str, value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if not _MODULE_TOKEN_RE.match(value):
+        raise ValueError(
+            f"{name}={value!r} must be alnum + `_+./-` (Lmod module token)")
+
+
+def _check_param_name(label: str, value: str) -> None:
+    if not _PARAM_NAME_RE.match(value):
+        raise ValueError(
+            f"{label} key {value!r} must be a Python identifier "
+            f"(snake_case)")
+
+
+def _scan_placeholders(command: str) -> set[str]:
+    """Find every `${name}` placeholder in `command`. Returns the set
+    of names — the renderer cross-checks against `inputs ∪ outputs`."""
+    return set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", command))
+
+
+_SLURM_REQUIRED = ("queue", "time", "mem", "cpus")
+_SLURM_OPTIONAL = ("account",)
+_SLURM_ALL = _SLURM_REQUIRED + _SLURM_OPTIONAL
+
+
+def _check_slurm(slurm: Mapping) -> dict:
+    """Closed-key check + value typing. Same defense as
+    compute_access's slurm block — typos raise instead of silently
+    being ignored."""
+    if not isinstance(slurm, Mapping):
+        raise ValueError(f"slurm must be a mapping, got {type(slurm).__name__}")
+    unknown = set(slurm.keys()) - set(_SLURM_ALL)
+    if unknown:
+        raise ValueError(
+            f"slurm has unknown keys {sorted(unknown)} "
+            f"(allowed: {list(_SLURM_ALL)})")
+    missing = set(_SLURM_REQUIRED) - set(slurm.keys())
+    if missing:
+        raise ValueError(
+            f"slurm missing required keys {sorted(missing)} "
+            f"(required: {list(_SLURM_REQUIRED)})")
+    out: dict = {}
+    # queue: safe token (partition name)
+    _check_safe_token("slurm.queue", slurm["queue"])
+    out["queue"] = slurm["queue"]
+    # time: HH:MM:SS or D-HH:MM:SS
+    t = slurm["time"]
+    if not isinstance(t, str) or not re.match(
+            r"^(\d+-)?\d{1,2}:\d{2}:\d{2}$", t):
+        raise ValueError(
+            f"slurm.time={t!r} must look like HH:MM:SS or D-HH:MM:SS")
+    out["time"] = t
+    # mem: like "6G" or "12000M"
+    m = slurm["mem"]
+    if not isinstance(m, str) or not re.match(r"^\d+[KMGT]$", m):
+        raise ValueError(
+            f"slurm.mem={m!r} must look like 6G / 12000M / 1T")
+    out["mem"] = m
+    # cpus: positive int
+    c = slurm["cpus"]
+    if not isinstance(c, int) or c < 1 or c > 256:
+        raise ValueError(f"slurm.cpus={c!r} must be an int in [1, 256]")
+    out["cpus"] = c
+    # account (optional)
+    if "account" in slurm:
+        _check_safe_token("slurm.account", slurm["account"])
+        out["account"] = slurm["account"]
+    return out
+
+
+def render_workflow(*,
+                    tool_name: str,
+                    command: str,
+                    inputs: Mapping[str, str],
+                    outputs: Mapping[str, str],
+                    apptainer_sif: str,
+                    apptainer_module: str,
+                    nextflow_module: str,
+                    slurm: Mapping,
+                    workflow_name: str,
+                    nextflow_main_filename: str = "main.nf",
+                    nextflow_config_filename: str = "nextflow.config",
+                    ) -> dict:
+    """Render the three workflow files as strings.
+
+    Returns:
+      {
+        "main.nf":         <str>,
+        "nextflow.config": <str>,
+        "launcher.sh":     <str>,
+        "process_name":    <str>,   # derived from tool_name; sanity check
+        "param_keys":      [<str>],  # the full param set the launcher passes
+      }
+    Raises ValueError on any validation failure — the renderer is the
+    last line of defense before the strings hit the cluster, so it's
+    strict about every input.
+    """
+    # ─── Validate every input ────────────────────────────────────────────
+    _check_safe_token("tool_name", tool_name)
+    _check_safe_token("workflow_name", workflow_name)
+    if len(workflow_name) > 64:
+        raise ValueError(f"workflow_name length {len(workflow_name)} > 64")
+    _check_abs_path("apptainer_sif", apptainer_sif)
+    _check_module("apptainer_module", apptainer_module)
+    _check_module("nextflow_module", nextflow_module)
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("command must be a non-empty string")
+    if "\n" in command:
+        raise ValueError("command must be a single line (no newlines)")
+
+    if not isinstance(inputs, Mapping) or not isinstance(outputs, Mapping):
+        raise ValueError("inputs and outputs must both be mappings")
+    for k in inputs:
+        _check_param_name("inputs", k)
+    for k in outputs:
+        _check_param_name("outputs", k)
+    for k, v in inputs.items():
+        _check_abs_path(f"inputs[{k!r}]", v)
+    for k, v in outputs.items():
+        # Outputs are filenames, not abs paths. Same safe-token rule
+        # plus we allow `.` for extensions.
+        if not isinstance(v, str) or not v:
+            raise ValueError(f"outputs[{k!r}] must be a non-empty string")
+        if "/" in v or ".." in v:
+            raise ValueError(
+                f"outputs[{k!r}]={v!r} must be a bare filename "
+                f"(no path separators or `..`)")
+        if not _SAFE_TOKEN_RE.match(v):
+            raise ValueError(
+                f"outputs[{k!r}]={v!r} must be alnum + `_.-`")
+
+    declared = set(inputs.keys()) | set(outputs.keys())
+    referenced = _scan_placeholders(command)
+    undeclared = referenced - declared
+    unreferenced = declared - referenced
+    if undeclared:
+        raise ValueError(
+            f"command references undeclared placeholders {sorted(undeclared)} "
+            f"(declared: {sorted(declared)})")
+    if unreferenced:
+        raise ValueError(
+            f"declared placeholders {sorted(unreferenced)} are not "
+            f"referenced in the command")
+    # Reject overlap: a placeholder can't be in both inputs and outputs.
+    overlap = set(inputs.keys()) & set(outputs.keys())
+    if overlap:
+        raise ValueError(
+            f"placeholders {sorted(overlap)} appear in BOTH inputs and outputs")
+
+    slurm_v = _check_slurm(slurm)
+    _check_safe_token("nextflow_main_filename", nextflow_main_filename)
+    _check_safe_token("nextflow_config_filename", nextflow_config_filename)
+
+    # ─── Render main.nf ──────────────────────────────────────────────────
+    process_name = f"run_{tool_name}"
+
+    # The shell command Nextflow will execute. Apptainer is invoked
+    # explicitly so the .sif path can change per-run without rebuilding
+    # the workflow; the bind mounts of $PWD + the input dirs come for
+    # free from apptainer's defaults.
+    bind_dirs = sorted({
+        # The parent dir of each input file — apptainer auto-binds $PWD,
+        # but inputs live elsewhere on the host so we bind their parents
+        # explicitly to make them readable inside the container.
+        "/".join(p.split("/")[:-1]) or "/"
+        for p in inputs.values()
+    })
+    bind_flags = " ".join(
+        f"--bind {shlex.quote(d)}" for d in bind_dirs)
+
+    # Inside the script block, substitute ${param} → ${params.param}
+    # so Nextflow's process scope resolves them.
+    script_body = command
+    for k in declared:
+        script_body = script_body.replace(
+            "${" + k + "}", "${params." + k + "}")
+
+    # params block — every input + output as a top-level param.
+    # Inputs carry the literal remote abs path; outputs carry the bare
+    # filename (written to the work dir).
+    param_lines = []
+    for k, v in inputs.items():
+        param_lines.append(f"    {k} = {_nf_quote(v)}")
+    for k, v in outputs.items():
+        param_lines.append(f"    {k} = {_nf_quote(v)}")
+    param_lines.append(f"    apptainer_sif = {_nf_quote(apptainer_sif)}")
+    param_block = "params {\n" + "\n".join(param_lines) + "\n}"
+
+    # Output channel: emit every output file so Nextflow tracks them.
+    output_lines = "\n".join(
+        f"    path \"${{params.{k}}}\""
+        for k in outputs.keys())
+
+    main_nf = (
+        f"// Generated by workflow_render — DO NOT hand-edit.\n"
+        f"// Tool: {tool_name}. Workflow: {workflow_name}.\n"
+        f"\n"
+        f"nextflow.enable.dsl = 2\n"
+        f"\n"
+        f"{param_block}\n"
+        f"\n"
+        f"process {process_name} {{\n"
+        f"    publishDir \".\", mode: 'copy'\n"
+        f"\n"
+        f"    output:\n"
+        f"{output_lines}\n"
+        f"\n"
+        f"    script:\n"
+        f"    \"\"\"\n"
+        f"    apptainer exec {bind_flags} ${{params.apptainer_sif}} "
+        f"bash -c '{script_body}'\n"
+        f"    \"\"\"\n"
+        f"}}\n"
+        f"\n"
+        f"workflow {{\n"
+        f"    {process_name}()\n"
+        f"}}\n"
+    )
+
+    # ─── Render nextflow.config ──────────────────────────────────────────
+    # Minimal: enable apptainer, point at the .sif, set the work dir to
+    # a per-run subdir so re-runs don't collide. The user can override
+    # any of this via -c on the nextflow CLI; we ship the floor.
+    nextflow_config = (
+        f"// Generated by workflow_render — DO NOT hand-edit.\n"
+        f"apptainer {{\n"
+        f"    enabled = true\n"
+        f"    autoMounts = true\n"
+        f"}}\n"
+        f"\n"
+        f"process {{\n"
+        f"    cpus = {slurm_v['cpus']}\n"
+        f"    memory = '{slurm_v['mem']}B'\n"
+        f"    time = '{slurm_v['time']}'\n"
+        f"}}\n"
+    )
+
+    # ─── Render launcher.sh (the sbatch wrapper) ─────────────────────────
+    # The launcher is what `sbatch launcher.sh` consumes on the head
+    # node. SBATCH directives must be the first non-comment lines.
+    account_line = (
+        f"#SBATCH --account={slurm_v['account']}\n"
+        if "account" in slurm_v else "")
+    launcher_sh = (
+        f"#!/usr/bin/env bash\n"
+        f"#SBATCH --job-name={workflow_name}\n"
+        f"#SBATCH --partition={slurm_v['queue']}\n"
+        f"#SBATCH --time={slurm_v['time']}\n"
+        f"#SBATCH --mem={slurm_v['mem']}\n"
+        f"#SBATCH --cpus-per-task={slurm_v['cpus']}\n"
+        f"#SBATCH --output={workflow_name}_sbatch_out.log\n"
+        f"#SBATCH --error={workflow_name}_sbatch_err.log\n"
+        f"{account_line}"
+        f"\n"
+        f"set -euo pipefail\n"
+        f"\n"
+        f"# Generated by workflow_render — DO NOT hand-edit.\n"
+        f"module purge\n"
+        f"module load {apptainer_module}\n"
+        f"module load {nextflow_module}\n"
+        f"\n"
+        f"cd \"$(dirname \"$(readlink -f \"$0\")\")\"\n"
+        f"\n"
+        f"nextflow run {shlex.quote(nextflow_main_filename)} "
+        f"-c {shlex.quote(nextflow_config_filename)} "
+        f"-with-report {shlex.quote(workflow_name + '_report.html')} "
+        f"-with-trace {shlex.quote(workflow_name + '_trace.txt')}\n"
+    )
+
+    return {
+        "main.nf":         main_nf,
+        "nextflow.config": nextflow_config,
+        "launcher.sh":     launcher_sh,
+        "process_name":    process_name,
+        "param_keys":      sorted(declared) + ["apptainer_sif"],
+    }
+
+
+def _nf_quote(s: str) -> str:
+    """Quote a string for safe interpolation inside a Nextflow `params`
+    block. Nextflow's Groovy parser accepts single-quoted strings as
+    literal — no escape processing — so any string that doesn't contain
+    a single quote is safe. The validators upstream already refuse
+    every dangerous character, so this is the last-mile assert."""
+    if "'" in s or "\n" in s:
+        raise ValueError(
+            f"value {s!r} contains characters that cannot be safely "
+            f"quoted into a Nextflow params block (single quote or newline)")
+    return f"'{s}'"
