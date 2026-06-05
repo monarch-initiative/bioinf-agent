@@ -62,7 +62,7 @@ from typing import Optional
 import yaml
 
 
-# The permission tokens for v0. Adding a new one requires:
+# The permission tokens. Adding a new one requires:
 #   1. Adding it here
 #   2. Adding the operation that consumes it to OPERATION_REQUIRES
 #   3. Implementing the primitive in its own module
@@ -72,16 +72,28 @@ PERMISSIONS: frozenset[str] = frozenset({
     "file_name_only",    # list a dir's IMMEDIATE contents (one level only).
                          # See agent/skills/snapshot.py module docstring for the
                          # one-level visibility contract.
-    "upload",            # write NEW files (never overwrites); primitive not yet wired
+    "upload",            # write NEW files (never overwrites); single-shot agent push
+    "fetch",             # pull files FROM the env back to local (sha256 round-trip)
+    "exec",              # a SLURM job inside this dir may read+write its OWN
+                         # outputs (data_acquisition into refdata; workflow run
+                         # output into scratch). Distinct from `upload`, which is
+                         # the agent's single-shot push primitive — the cluster
+                         # job itself doesn't "upload"; it writes-in-place during
+                         # execution. Phase 2.
 })
 
 # Which permission an operation requires. Match is EXACT — a dir with `upload`
 # does NOT implicitly grant `file_name_only`. Discrete capabilities, not a
-# lattice. A dir can declare both via `permissions: [file_name_only, upload]`.
+# lattice. A dir can declare multiple tokens via
+# `permissions: [file_name_only, upload]`.
 OPERATION_REQUIRES: dict[str, str] = {
     "snapshot": "file_name_only",
-    # Future:
-    # "upload":   "upload",
+    # Phase 2 — wired as primitives land:
+    # "upload_to_scratch":    "upload",
+    # "fetch_from_scratch":   "fetch",
+    # "upload_to_refdata":    "upload",
+    # "job_workdir_scratch":  "exec",
+    # "job_output_refdata":   "exec",
 }
 
 
@@ -179,6 +191,30 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
                                  f".container_upload_target", path,
                             must_include=["upload"])
 
+    # --- Phase 2 env-level blocks (all optional) ---
+    where_env = f"compute_envs[{idx}] (name={name!r})"
+    scratch = env.get("agent_scratch_target")
+    if scratch is not None:
+        # The agent's sandbox: writable AND fetchable AND job-executable.
+        # All three permissions are intrinsic to what the sandbox is FOR —
+        # if you don't want one of them, don't declare the block.
+        _validate_dir_block(scratch, f"{where_env}.agent_scratch_target", path,
+                            must_include=["upload", "fetch", "exec"])
+
+    refs = env.get("reference_data_targets")
+    if refs is not None:
+        _validate_reference_data_targets(refs, where_env, path)
+
+    slurm = env.get("slurm")
+    if slurm is not None:
+        _validate_slurm_block(slurm, f"{where_env}.slurm", path)
+
+    # Disjoint-subtree check ACROSS all of this env's declared paths. No path
+    # may be a prefix of another (or equal). A breach of one target dir must
+    # never grant access to another. Cross-env disjointness is not checked —
+    # the security boundary is the env, not the manifest.
+    _check_env_paths_disjoint(env, where_env, path)
+
 
 def _validate_project(proj: object, idx: int, project_names: set[str],
                        env_names: set[str], path: Path) -> None:
@@ -268,6 +304,151 @@ def _validate_dir_block(block: object, where: str, path: Path,
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 — env-level block validators
+# ---------------------------------------------------------------------------
+
+# The closed key set for the slurm block. Unknown keys are rejected at load
+# time — silent typos (`max_corees_per_job: 9999`) would otherwise let the
+# agent submit jobs exceeding the user's intended cap. The values here are
+# the FENCEPOSTS — every submit_cluster_job call validates against them.
+_SLURM_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "queue_default",
+    "allowed_queues",
+    "account",
+    "max_cores_per_job",
+    "max_mem_gb_per_job",
+    "max_time_hours_per_job",
+})
+
+
+def _validate_reference_data_targets(refs: object, where: str, path: Path) -> None:
+    """Validate compute_envs[].reference_data_targets — a LIST of named dir-
+    access blocks. Each entry needs `name` + the dir-access fields, and
+    every entry must include `upload` AND `exec` in its permissions (the
+    intrinsic ops on a ref-data destination: agent pushes WITH upload, jobs
+    read/write WITH exec)."""
+    if not isinstance(refs, list):
+        raise ConfigError(
+            f"{path}: {where}.reference_data_targets must be a LIST of named "
+            f"dir-access blocks (got {type(refs).__name__})")
+    seen_names: set[str] = set()
+    seen_paths: set[str] = set()
+    for i, entry in enumerate(refs):
+        sub = f"{where}.reference_data_targets[{i}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{path}: {sub} must be a mapping")
+        nm = entry.get("name")
+        if not isinstance(nm, str) or not nm:
+            raise ConfigError(
+                f"{path}: {sub}.name must be a non-empty string")
+        # ref_name is a TOKEN used as a kwarg to upload_to_refdata; keep it
+        # boring (alnum + `_-`) so it can't smuggle traversal or shell.
+        if not _is_safe_token(nm):
+            raise ConfigError(
+                f"{path}: {sub}.name={nm!r} must be a safe token "
+                f"(alnum, '_', '-' only — no '/', '.', spaces, etc.)")
+        if nm in seen_names:
+            raise ConfigError(
+                f"{path}: {sub}.name={nm!r} is duplicated within this env's "
+                f"reference_data_targets — names must be unique per env")
+        seen_names.add(nm)
+        _validate_dir_block(entry, sub, path, must_include=["upload", "exec"])
+        # Cross-entry path collisions inside the SAME refs list are caught
+        # by the disjoint-subtree check below; equality is the simplest case
+        # of "prefix of another", so it falls out naturally.
+        seen_paths.add((entry.get("path") or "").rstrip("/"))
+
+
+def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
+    """Validate the closed `slurm:` block. Unknown keys rejected. Type-check
+    each field; the max_* values are the upper bound submit_cluster_job
+    enforces — they must be positive ints."""
+    if not isinstance(blk, dict):
+        raise ConfigError(f"{path}: {where} must be a mapping")
+    extra = set(blk.keys()) - _SLURM_REQUIRED_KEYS
+    if extra:
+        raise ConfigError(
+            f"{path}: {where} has unknown keys {sorted(extra)!r}. "
+            f"Allowed keys: {sorted(_SLURM_REQUIRED_KEYS)!r}")
+    missing = _SLURM_REQUIRED_KEYS - set(blk.keys())
+    if missing:
+        raise ConfigError(
+            f"{path}: {where} missing required keys {sorted(missing)!r}")
+
+    qd = blk["queue_default"]
+    if not isinstance(qd, str) or not qd:
+        raise ConfigError(
+            f"{path}: {where}.queue_default must be a non-empty string")
+    aq = blk["allowed_queues"]
+    if not isinstance(aq, list) or not aq or not all(
+            isinstance(x, str) and x for x in aq):
+        raise ConfigError(
+            f"{path}: {where}.allowed_queues must be a non-empty list of "
+            f"non-empty strings (got {aq!r})")
+    if qd not in aq:
+        raise ConfigError(
+            f"{path}: {where}.queue_default={qd!r} must appear in "
+            f".allowed_queues={aq!r}")
+    acct = blk["account"]
+    if not isinstance(acct, str) or not acct:
+        raise ConfigError(
+            f"{path}: {where}.account must be a non-empty string")
+    for k in ("max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job"):
+        v = blk[k]
+        # `bool` is a subclass of int in Python — exclude it explicitly.
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise ConfigError(
+                f"{path}: {where}.{k} must be a positive integer (got {v!r})")
+
+
+def _is_safe_token(s: str) -> bool:
+    """A token usable as a kwarg / SBATCH placeholder: alnum + `_-`, 1..64.
+    Rejects `..`, `/`, dots (path traversal), spaces, shell metacharacters,
+    and newlines (sbatch header injection)."""
+    if not s or len(s) > 64:
+        return False
+    return all(c.isalnum() or c in "_-" for c in s)
+
+
+def _check_env_paths_disjoint(env: dict, where: str, path: Path) -> None:
+    """No declared path on this env may be a prefix of (or equal to) another.
+    A breach of one target dir must never grant access to another. The check
+    is across container_upload_target, agent_scratch_target, and every
+    reference_data_targets[] entry — all of these are absolute paths on the
+    same filesystem and they're trust-isolated by being disjoint subtrees."""
+    paths: list[tuple[str, str]] = []  # (path_normalized, label)
+    cut = env.get("container_upload_target")
+    if cut is not None:
+        p = (cut.get("path") or "").rstrip("/")
+        if p:
+            paths.append((p, "container_upload_target"))
+    scratch = env.get("agent_scratch_target")
+    if scratch is not None:
+        p = (scratch.get("path") or "").rstrip("/")
+        if p:
+            paths.append((p, "agent_scratch_target"))
+    for entry in env.get("reference_data_targets") or []:
+        if isinstance(entry, dict):
+            p = (entry.get("path") or "").rstrip("/")
+            if p:
+                paths.append((p, f"reference_data_targets[name={entry.get('name')!r}]"))
+    for i, (pa, la) in enumerate(paths):
+        for pb, lb in paths[i + 1:]:
+            if pa == pb:
+                raise ConfigError(
+                    f"{path}: {where} declares the SAME path {pa!r} under "
+                    f"BOTH {la} and {lb} — target dirs must be disjoint "
+                    f"subtrees on the env")
+            if pa.startswith(pb + "/") or pb.startswith(pa + "/"):
+                a, b = sorted([(pa, la), (pb, lb)], key=lambda t: len(t[0]))
+                raise ConfigError(
+                    f"{path}: {where} target path {a[0]!r} ({a[1]}) is a "
+                    f"PARENT of {b[0]!r} ({b[1]}) — target dirs must be "
+                    f"disjoint subtrees on the env (a breach of one must "
+                    f"not grant access to another)")
+
+
+# ---------------------------------------------------------------------------
 # Lookups
 # ---------------------------------------------------------------------------
 
@@ -302,6 +483,48 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
         if block.get("compute_env") == compute_env_name:
             return list(block.get("directories") or [])
     return []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — env-level lookups
+#
+# These return the RAW yaml dicts after validation has passed. They do NOT
+# check per-project authorization; the consuming primitives (upload_to_*,
+# fetch_from_*, submit_cluster_job) layer project-level grants on top in
+# their own modules, in the same shape as Phase 1's check_permission.
+# ---------------------------------------------------------------------------
+
+def get_agent_scratch_target(env: dict) -> Optional[dict]:
+    """Return the agent_scratch_target dir-access block for this env, or
+    None if undeclared. The block carries `path`, `permissions` (always
+    ⊇ {upload, fetch, exec} by validator), and `description`."""
+    blk = env.get("agent_scratch_target")
+    return blk if isinstance(blk, dict) else None
+
+
+def get_reference_data_target(env: dict, name: str) -> dict:
+    """Look up a named reference_data_targets[] entry on this env. Raises
+    KeyError on miss — `name` MUST be one of the declared targets, else
+    upload_to_refdata / data_acquisition jobs would silently miss the
+    authorization layer."""
+    refs = env.get("reference_data_targets") or []
+    for entry in refs:
+        if isinstance(entry, dict) and entry.get("name") == name:
+            return entry
+    known = sorted(e.get("name") for e in refs
+                   if isinstance(e, dict) and isinstance(e.get("name"), str))
+    raise KeyError(
+        f"reference_data_target not found on compute_env "
+        f"{env.get('name', '?')!r}: {name!r}. Available: {known}")
+
+
+def get_slurm_config(env: dict) -> Optional[dict]:
+    """Return the closed slurm config block for this env, or None if
+    undeclared. The block carries queue_default, allowed_queues, account,
+    and the three max_* caps. submit_cluster_job refuses any submission
+    on an env without this block."""
+    blk = env.get("slurm")
+    return blk if isinstance(blk, dict) else None
 
 
 # ---------------------------------------------------------------------------
