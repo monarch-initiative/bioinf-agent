@@ -2,25 +2,26 @@
 L14 cheat-guards — Phase 2 schema extensions on compute_envs[].
 
 Phase 2 adds three optional env-level blocks: `agent_scratch_target`,
-`reference_data_targets`, and `slurm`. The validator MUST refuse every
-mis-shaped declaration BEFORE any primitive that would consume it gets
-wired. Otherwise a typo in the user's yaml ("max_corees_per_job: 9999")
-silently passes the cap, or a `reference_data_targets` with traversal
-in its `name` lets a primitive resolve `../../../etc/passwd`.
+`agent_common_data_target`, and `slurm`. The validator MUST refuse
+every mis-shaped declaration BEFORE any primitive that would consume
+it gets wired. Otherwise a typo in the user's yaml
+("max_corees_per_job: 9999") silently passes the cap, or a misshaped
+scratch target lets a primitive happily upload to a path with no
+download capability.
 
 These tests pin the rejection paths:
 
-  - agent_scratch_target: requires upload + fetch + exec in permissions;
-    otherwise the slot doesn't mean what it says (the sandbox must be
-    writable, fetchable, AND job-executable)
-  - reference_data_targets: a LIST of named dir-access blocks; names
-    safe-token (alnum + _- only); requires upload + exec; unique names
+  - agent_scratch_target: requires upload + download + exec in
+    permissions; otherwise the slot doesn't mean what it says (the
+    sandbox must be writable, downloadable, AND job-executable)
+  - agent_common_data_target: singular sibling of scratch; same
+    permission requirements
   - slurm: closed key set, positive-int caps, queue_default ∈
     allowed_queues, all non-empty
   - disjoint-subtree check: no declared path on the same env may be a
-    prefix of (or equal to) another (container_upload / scratch / each
-    refdata)
-  - new permission tokens (`fetch`, `exec`) accepted in PERMISSIONS;
+    prefix of (or equal to) another (container_upload / scratch /
+    common_data)
+  - new permission tokens (`download`, `exec`) accepted in PERMISSIONS;
     propagate through the dir-block validator
   - happy-path acceptance: a complete well-formed Phase 2 env loads,
     and the new lookup helpers return the right shape
@@ -78,7 +79,7 @@ class TestAgentScratchTarget:
     def test_happy_path_loads(self, tmp_path):
         env = _base_env(agent_scratch_target={
             "path": "/scratch/u/agent_workspace/",
-            "permissions": ["upload", "fetch", "exec"],
+            "permissions": ["upload", "download", "exec"],
             "description": "agent sandbox",
         })
         p = _write(tmp_path, _wrap(env))
@@ -86,7 +87,7 @@ class TestAgentScratchTarget:
         loaded = compute_access.get_agent_scratch_target(
             compute_access.get_compute_env("cluster", access))
         assert loaded["path"] == "/scratch/u/agent_workspace/"
-        assert set(loaded["permissions"]) == {"upload", "fetch", "exec"}
+        assert set(loaded["permissions"]) == {"upload", "download", "exec"}
 
     @pytest.mark.integration
     def test_lookup_returns_none_when_undeclared(self, tmp_path):
@@ -97,11 +98,11 @@ class TestAgentScratchTarget:
             compute_access.get_compute_env("cluster", access)) is None
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("missing", ["upload", "fetch", "exec"])
+    @pytest.mark.parametrize("missing", ["upload", "download", "exec"])
     def test_refuses_missing_required_permission(self, tmp_path, missing):
-        # The sandbox is for upload + fetch + exec; missing any of the three
-        # means the slot doesn't mean what its presence implies.
-        perms = [p for p in ["upload", "fetch", "exec"] if p != missing]
+        # The sandbox is for upload + download + exec; missing any of the
+        # three means the slot doesn't mean what its presence implies.
+        perms = [p for p in ["upload", "download", "exec"] if p != missing]
         env = _base_env(agent_scratch_target={
             "path": "/scratch/u/agent_workspace/",
             "permissions": perms,
@@ -117,7 +118,7 @@ class TestAgentScratchTarget:
     def test_refuses_relative_path(self, tmp_path):
         env = _base_env(agent_scratch_target={
             "path": "relative/agent_workspace/",
-            "permissions": ["upload", "fetch", "exec"],
+            "permissions": ["upload", "download", "exec"],
             "description": "x",
         })
         p = _write(tmp_path, _wrap(env))
@@ -135,104 +136,64 @@ class TestAgentScratchTarget:
 
 
 # ===========================================================================
-# 2. reference_data_targets — list of named dir-access blocks
+# 2. agent_common_data_target — singular sibling of agent_scratch_target
 # ===========================================================================
 
-class TestReferenceDataTargets:
+class TestAgentCommonDataTarget:
     @pytest.mark.integration
     def test_happy_path_loads(self, tmp_path):
-        env = _base_env(reference_data_targets=[
-            {"name": "exomiser_data",
-             "path": "/work/u/ref/exomiser/",
-             "permissions": ["upload", "exec"],
-             "description": "exomiser DB"},
-            {"name": "gnomad_v4",
-             "path": "/work/u/ref/gnomad_v4/",
-             "permissions": ["upload", "exec"],
-             "description": "gnomAD v4"},
-        ])
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
-        env_blk = compute_access.get_compute_env("cluster", access)
-        exo = compute_access.get_reference_data_target(env_blk, "exomiser_data")
-        assert exo["path"] == "/work/u/ref/exomiser/"
-        gnd = compute_access.get_reference_data_target(env_blk, "gnomad_v4")
-        assert gnd["path"] == "/work/u/ref/gnomad_v4/"
-
-    @pytest.mark.integration
-    def test_lookup_unknown_name_raises_keyerror(self, tmp_path):
-        env = _base_env(reference_data_targets=[
-            {"name": "exomiser_data",
-             "path": "/work/u/ref/exomiser/",
-             "permissions": ["upload", "exec"]},
-        ])
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
-        env_blk = compute_access.get_compute_env("cluster", access)
-        with pytest.raises(KeyError) as exc:
-            compute_access.get_reference_data_target(env_blk, "not_a_target")
-        assert "not_a_target" in str(exc.value)
-        assert "exomiser_data" in str(exc.value)  # surfaces available names
-
-    @pytest.mark.integration
-    def test_refuses_not_a_list(self, tmp_path):
-        # A common typo: nesting one block directly rather than under a list.
-        env = _base_env(reference_data_targets={
-            "name": "x", "path": "/work/u/x/",
-            "permissions": ["upload", "exec"],
+        env = _base_env(agent_common_data_target={
+            "path": "/work/u/ref/common/",
+            "permissions": ["upload", "download", "exec"],
+            "description": "shared reference data zone",
         })
         p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "must be a LIST" in str(exc.value)
+        access = compute_access.load_access(p)
+        loaded = compute_access.get_agent_common_data_target(
+            compute_access.get_compute_env("cluster", access))
+        assert loaded["path"] == "/work/u/ref/common/"
+        assert set(loaded["permissions"]) == {"upload", "download", "exec"}
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad_name", [
-        "",                       # empty
-        "name with space",        # space
-        "name/with/slash",        # path-like
-        "..",                     # traversal token
-        "name.with.dot",          # dot — disallowed because of traversal-adjacency
-        "x" * 65,                 # too long
-    ])
-    def test_refuses_unsafe_name_token(self, tmp_path, bad_name):
-        env = _base_env(reference_data_targets=[
-            {"name": bad_name,
-             "path": "/work/u/x/",
-             "permissions": ["upload", "exec"]},
-        ])
+    def test_lookup_returns_none_when_undeclared(self, tmp_path):
+        env = _base_env()  # no agent_common_data_target
         p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        msg = str(exc.value)
-        # Empty strings hit the "must be a non-empty string" branch first.
-        assert "name" in msg and ("safe token" in msg or "non-empty" in msg)
+        access = compute_access.load_access(p)
+        assert compute_access.get_agent_common_data_target(
+            compute_access.get_compute_env("cluster", access)) is None
 
     @pytest.mark.integration
-    def test_refuses_duplicate_names(self, tmp_path):
-        env = _base_env(reference_data_targets=[
-            {"name": "dup", "path": "/work/u/a/",
-             "permissions": ["upload", "exec"]},
-            {"name": "dup", "path": "/work/u/b/",
-             "permissions": ["upload", "exec"]},
-        ])
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "duplicated" in str(exc.value)
-
-    @pytest.mark.integration
-    @pytest.mark.parametrize("missing", ["upload", "exec"])
+    @pytest.mark.parametrize("missing", ["upload", "download", "exec"])
     def test_refuses_missing_required_permission(self, tmp_path, missing):
-        perms = [p for p in ["upload", "exec"] if p != missing]
-        env = _base_env(reference_data_targets=[
-            {"name": "x", "path": "/work/u/x/", "permissions": perms},
-        ])
+        perms = [p for p in ["upload", "download", "exec"] if p != missing]
+        env = _base_env(agent_common_data_target={
+            "path": "/work/u/ref/common/",
+            "permissions": perms,
+        })
         p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
             compute_access.load_access(p)
         assert "must include" in str(exc.value)
         assert missing in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_relative_path(self, tmp_path):
+        env = _base_env(agent_common_data_target={
+            "path": "ref/common/",
+            "permissions": ["upload", "download", "exec"],
+        })
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        assert "absolute path" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_non_mapping(self, tmp_path):
+        env = _base_env(agent_common_data_target=["wrong shape", "list"])
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(p)
+        assert "must be a mapping" in str(exc.value)
 
 
 # ===========================================================================
@@ -366,7 +327,7 @@ class TestDisjointSubtreeCheck:
                 "description": "x"},
             agent_scratch_target={
                 "path": "/scratch/u/agent_workspace/",
-                "permissions": ["upload", "fetch", "exec"],
+                "permissions": ["upload", "download", "exec"],
                 "description": "y"},
         )
         p = _write(tmp_path, _wrap(env))
@@ -375,30 +336,15 @@ class TestDisjointSubtreeCheck:
         assert "PARENT" in str(exc.value) or "disjoint" in str(exc.value)
 
     @pytest.mark.integration
-    def test_refuses_refdata_overlaps_scratch(self, tmp_path):
+    def test_refuses_common_data_overlaps_scratch(self, tmp_path):
         env = _base_env(
             agent_scratch_target={
                 "path": "/scratch/u/agent_workspace/",
-                "permissions": ["upload", "fetch", "exec"]},
-            reference_data_targets=[
-                {"name": "ref_inside_scratch",
-                 "path": "/scratch/u/agent_workspace/ref/",
-                 "permissions": ["upload", "exec"]},
-            ],
+                "permissions": ["upload", "download", "exec"]},
+            agent_common_data_target={
+                "path": "/scratch/u/agent_workspace/ref/",
+                "permissions": ["upload", "download", "exec"]},
         )
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "disjoint" in str(exc.value) or "PARENT" in str(exc.value)
-
-    @pytest.mark.integration
-    def test_refuses_refdata_entries_overlap_each_other(self, tmp_path):
-        env = _base_env(reference_data_targets=[
-            {"name": "outer", "path": "/work/u/ref/",
-             "permissions": ["upload", "exec"]},
-            {"name": "inner", "path": "/work/u/ref/exomiser/",
-             "permissions": ["upload", "exec"]},
-        ])
         p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
             compute_access.load_access(p)
@@ -409,11 +355,10 @@ class TestDisjointSubtreeCheck:
         env = _base_env(
             agent_scratch_target={
                 "path": "/scratch/u/shared/",
-                "permissions": ["upload", "fetch", "exec"]},
-            reference_data_targets=[
-                {"name": "same", "path": "/scratch/u/shared/",
-                 "permissions": ["upload", "exec"]},
-            ],
+                "permissions": ["upload", "download", "exec"]},
+            agent_common_data_target={
+                "path": "/scratch/u/shared/",
+                "permissions": ["upload", "download", "exec"]},
         )
         p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
@@ -427,11 +372,10 @@ class TestDisjointSubtreeCheck:
         env = _base_env(
             agent_scratch_target={
                 "path": "/scratch/u/a/",
-                "permissions": ["upload", "fetch", "exec"]},
-            reference_data_targets=[
-                {"name": "sibling", "path": "/scratch/u/ab/",
-                 "permissions": ["upload", "exec"]},
-            ],
+                "permissions": ["upload", "download", "exec"]},
+            agent_common_data_target={
+                "path": "/scratch/u/ab/",
+                "permissions": ["upload", "download", "exec"]},
         )
         p = _write(tmp_path, _wrap(env))
         # Should load clean.
@@ -448,10 +392,10 @@ class TestDisjointSubtreeCheck:
         manifest = {"compute_envs": [
             _base_env(name="env_a", agent_scratch_target={
                 "path": "/shared/scratch/",
-                "permissions": ["upload", "fetch", "exec"]}),
+                "permissions": ["upload", "download", "exec"]}),
             _base_env(name="env_b", agent_scratch_target={
                 "path": "/shared/scratch/",   # same path, different env
-                "permissions": ["upload", "fetch", "exec"]}),
+                "permissions": ["upload", "download", "exec"]}),
         ], "projects": []}
         p = _write(tmp_path, manifest)
         # Should load clean.
@@ -460,21 +404,20 @@ class TestDisjointSubtreeCheck:
 
 
 # ===========================================================================
-# 5. New permission tokens (`fetch`, `exec`) accepted in PERMISSIONS
+# 5. New permission tokens (`download`, `exec`) accepted in PERMISSIONS
 # ===========================================================================
 
 class TestNewPermissionTokens:
     @pytest.mark.integration
-    @pytest.mark.parametrize("tok", ["fetch", "exec"])
+    @pytest.mark.parametrize("tok", ["download", "exec"])
     def test_token_in_PERMISSIONS(self, tok):
         assert tok in compute_access.PERMISSIONS
 
     @pytest.mark.integration
     def test_dir_block_accepts_new_tokens_in_project_directories(self, tmp_path):
-        # The reusable dir-access block validator MUST accept `fetch` and
+        # The reusable dir-access block validator MUST accept `download` and
         # `exec` on a project's directories[] entries too — same vocabulary
-        # everywhere. (No project-level grant logic Phase-2-side yet; this
-        # just pins the token surface.)
+        # everywhere.
         manifest = {
             "compute_envs": [_base_env(name="laptop", type="local",
                                        host=None, user=None)],
@@ -484,12 +427,11 @@ class TestNewPermissionTokens:
                     "compute_env": "laptop",
                     "directories": [{
                         "path": "/tmp/scratch/", "description": "scratch",
-                        "permissions": ["fetch", "exec"]},
+                        "permissions": ["download", "exec"]},
                     ],
                 }],
             }],
         }
-        # Clean a few keys that don't apply to local.
         manifest["compute_envs"][0].pop("host", None)
         manifest["compute_envs"][0].pop("user", None)
         p = _write(tmp_path, manifest)
@@ -504,8 +446,7 @@ class TestNewPermissionTokens:
 @pytest.mark.integration
 def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
     """A complete Phase 2 compute_env with all three new blocks, paths
-    disjoint, loads clean, and every lookup helper returns the right thing.
-    The integration assertion — not just per-block."""
+    disjoint, loads clean, and every lookup helper returns the right thing."""
     env = _base_env(
         container_upload_target={
             "path": "/scratch/u/containers/",
@@ -513,18 +454,12 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
             "description": "sif tarballs"},
         agent_scratch_target={
             "path": "/scratch/u/agent_workspace/",
-            "permissions": ["upload", "fetch", "exec"],
+            "permissions": ["upload", "download", "exec"],
             "description": "agent sandbox"},
-        reference_data_targets=[
-            {"name": "exomiser_data",
-             "path": "/work/u/ref/exomiser/",
-             "permissions": ["upload", "exec"],
-             "description": "Exomiser DB (~15 GB)"},
-            {"name": "gnomad_v4",
-             "path": "/work/u/ref/gnomad_v4/",
-             "permissions": ["upload", "exec"],
-             "description": "gnomAD v4 VCFs (~50 GB)"},
-        ],
+        agent_common_data_target={
+            "path": "/work/u/ref/common/",
+            "permissions": ["upload", "download", "exec"],
+            "description": "shared reference data (Exomiser, gnomAD, etc.)"},
         slurm={
             "queue_default": "general",
             "allowed_queues": ["general", "interact"],
@@ -541,10 +476,11 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
     # Lookups all return their respective shapes.
     sc = compute_access.get_agent_scratch_target(env_blk)
     assert sc["path"] == "/scratch/u/agent_workspace/"
-    assert set(sc["permissions"]) >= {"upload", "fetch", "exec"}
+    assert set(sc["permissions"]) >= {"upload", "download", "exec"}
 
-    exo = compute_access.get_reference_data_target(env_blk, "exomiser_data")
-    assert exo["path"] == "/work/u/ref/exomiser/"
+    common = compute_access.get_agent_common_data_target(env_blk)
+    assert common["path"] == "/work/u/ref/common/"
+    assert set(common["permissions"]) >= {"upload", "download", "exec"}
 
     sl = compute_access.get_slurm_config(env_blk)
     assert sl["max_cores_per_job"] == 16

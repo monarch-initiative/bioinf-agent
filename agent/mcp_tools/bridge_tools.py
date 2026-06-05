@@ -7,25 +7,27 @@ permission gate (`compute_access.check_permission`) and the same
 ControlMaster ssh pattern.
 
 Today the surface is:
-  upload_to_scratch / fetch_from_scratch  — Step 2 (paired, sha256
-                                            round-trip on every transfer)
+  upload_to_scratch / download_from_scratch  — Step 2 (paired, sha256
+                                                round-trip on every transfer)
 
 Coming as each step lands:
-  upload_to_refdata                       — Step 3
-  submit_cluster_job                      — Steps 4, 6, 7 (diagnostic →
-                                            data_acquisition → run modes)
-  cluster_job_status                      — Step 5
+  upload_to_common_data / download_from_common_data  — Step 3
+  submit_cluster_job                                 — Steps 4, 6, 7
+                                                       (diagnostic →
+                                                       data_acquisition →
+                                                       run modes)
+  cluster_job_status                                 — Step 5
 
-Authorization shape (identical to Phase 1):
+Authorization shape (env-implicit grant, Phase 2):
   - `project_name` + `compute_env_name` resolve to a project's
-    compute_env_access entry
+    compute_env_access entry (the project must have ACCESS to the env)
+  - The env declares `agent_scratch_target` / `agent_common_data_target`
+    blocks at the env level; their `permissions:` lists the supported
+    capabilities — these are the GRANT (no per-project re-declaration)
+  - Multi-project isolation: the resolved path is auto-prefixed with
+    `project_name` (`<target>/<project>/<remote_subpath>`)
   - The agent-supplied path component (`remote_subpath`) is pure-string
-    validated BEFORE any I/O (no traversal, no shell metacharacters,
-    no absolute path leak)
-  - The resolved absolute path goes through
-    `compute_access.check_permission(project, env, abs_path, operation)`
-    which requires the project's `directories[]` to grant the operation's
-    permission token
+    validated BEFORE any I/O
 
 All cheat-guards live under
 `tests/integration/honesty/L14_compute_env_safety/`.
@@ -64,19 +66,26 @@ def upload_to_scratch(project_name: str,
                      compute_env_name: str,
                      local_path: str,
                      remote_subpath: str) -> dict:
-    """Push a local file into the project's authorized scratch sandbox on
-    a compute env. sha256 round-trip is verified; mismatch refuses.
+    """Push a local file into the agent's scratch sandbox on a compute env,
+    under THIS project's auto-prefixed namespace. sha256 round-trip is
+    verified; mismatch refuses.
 
-    Authorization: the project must declare a `directories[]` entry on
-    `compute_env_name` whose `permissions` include `upload` and whose
-    path contains the resolved destination (longest-prefix match). The
-    env must declare an `agent_scratch_target` block; `remote_subpath`
-    is RELATIVE to that scratch root.
+    Authorization (env-implicit): the project must have a `compute_env_access`
+    entry naming `compute_env_name`, AND the env must declare an
+    `agent_scratch_target` block whose `permissions` include `upload`.
+    The project's `directories[]` is NOT consulted — that list is for
+    project-specific paths only.
+
+    Multi-project isolation: the resolved path is auto-prefixed with
+    project_name. A call to upload_to_scratch('proj_a', ..., 'x.txt')
+    lands at `<scratch.path>/proj_a/x.txt`; 'proj_b' lands elsewhere.
 
     `remote_subpath` rules: non-empty, ≤255 chars, no leading '/', no
     '..' segments, no shell metacharacters (newline / `;` / `|` / `$` /
-    backticks / etc.), no whitespace. Resolved path must normalize
-    INSIDE the scratch root (defense-in-depth against symlink trickery).
+    backticks / etc.), no whitespace.
+
+    `project_name` rules: safe token (alnum + '_-', ≤64 chars) — used
+    as the auto-prefix path component.
 
     `local_path`: must exist, be a REGULAR file (symlinks refused —
     defense against user's home symlink redirecting to /etc/shadow),
@@ -86,8 +95,8 @@ def upload_to_scratch(project_name: str,
 
     Returns {success, compute_env, remote_path, sha256, bytes,
     duration_s, transferred_at} on success; {"error": "..."} on any
-    refusal or transfer failure (no exception escapes to the caller —
-    the MCP surface is dict-in-dict-out)."""
+    refusal or transfer failure (no exception escapes — the MCP surface
+    is dict-in-dict-out)."""
     from agent.skills import scratch
     return scratch.upload_to_scratch(
         project_name=project_name,
@@ -99,21 +108,22 @@ def upload_to_scratch(project_name: str,
 
 
 @mcp.tool()
-def fetch_from_scratch(project_name: str,
-                      compute_env_name: str,
-                      remote_subpath: str,
-                      local_path: str) -> dict:
-    """Pull a file from the project's authorized scratch sandbox back to
-    a local path. sha256 round-trip is verified BEFORE declaring success;
-    on mismatch the partial local file is removed and an error is
-    returned.
+def download_from_scratch(project_name: str,
+                         compute_env_name: str,
+                         remote_subpath: str,
+                         local_path: str) -> dict:
+    """Pull a file from THIS project's scratch namespace back to a local
+    path. sha256 round-trip is verified BEFORE declaring success; on
+    mismatch the partial local file is removed and an error is returned.
 
-    Symmetric to `upload_to_scratch` — same authorization shape with
-    `fetch` (instead of `upload`) as the required permission. The
-    project's `directories[]` entry for the scratch root must include
-    `fetch`. A permission for `upload` alone does NOT satisfy `fetch`
-    (discrete capabilities, not a lattice — see
-    `compute_access.OPERATION_REQUIRES`).
+    Symmetric to `upload_to_scratch` — same env-implicit authorization
+    with `download` (instead of `upload`) as the required capability on
+    the env's `agent_scratch_target.permissions`. Discrete capabilities,
+    not a lattice — `upload` alone does NOT satisfy `download`.
+
+    Multi-project isolation: the resolved path is auto-prefixed with
+    project_name. This project sees only its OWN namespace; cross-project
+    visibility requires another project.
 
     `local_path` rules: must NOT exist yet (no silent overwrites; the
     same never-overwrite contract upload uses on the remote side). Its
@@ -123,7 +133,7 @@ def fetch_from_scratch(project_name: str,
     bytes, duration_s, fetched_at} on success; {"error": "..."} on
     refusal/failure."""
     from agent.skills import scratch
-    return scratch.fetch_from_scratch(
+    return scratch.download_from_scratch(
         project_name=project_name,
         compute_env_name=compute_env_name,
         remote_subpath=remote_subpath,

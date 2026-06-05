@@ -183,17 +183,55 @@ def _parse_find_output(stdout: str) -> list[dict]:
     return out
 
 
-def _snapshot_paths_for_env(project: dict, env_name: str) -> list[str]:
+def _snapshot_paths_for_env(project: dict, env_name: str,
+                            env: dict) -> list[dict]:
     """The list of directories the agent will walk on `env_name` for this
-    project: every dir-access block whose permissions include
-    `file_name_only`. Upload-only dirs are authorized for upload but
-    invisible to the snapshot — they don't appear here."""
-    out: list[str] = []
+    project. Each entry is a tagged dict so the caller can apply the
+    right permission gate per source:
+
+      {"path": <abs>, "kind": "project_directory"}
+        — from project's compute_env_access[].directories[]; the path
+          must advertise `file_name_only` in its permissions[]. The
+          Phase-1 `check_permission` gate is applied.
+
+      {"path": <abs>, "kind": "env_target",
+       "target_kind": "agent_scratch_target" | "agent_common_data_target",
+       "target_block": <dict>}
+        — from the env-level Phase-2 target blocks. The path is the
+          target's path AUTO-PREFIXED with the project name (multi-
+          project isolation: this project sees only its own namespace).
+          The env-implicit `check_env_target_capability` gate is applied.
+
+    Upload-only dirs (no `file_name_only`) are authorized for upload
+    but invisible to the snapshot — they don't appear here."""
+    out: list[dict] = []
+    # Source 1: project's compute_env_access[].directories[] (Phase 1)
     for d in compute_access.get_project_directories(project, env_name):
         if "file_name_only" in (d.get("permissions") or []):
             p = d.get("path")
             if isinstance(p, str):
-                out.append(p)
+                out.append({"path": p, "kind": "project_directory"})
+    # Source 2: env-level Phase-2 target blocks — visible if the target's
+    # permissions include `file_name_only`. The walked path is auto-
+    # prefixed by project name so projects don't see each other.
+    proj_name = project.get("name", "")
+    for target_kind, getter in (
+            ("agent_scratch_target", compute_access.get_agent_scratch_target),
+            ("agent_common_data_target", compute_access.get_agent_common_data_target)):
+        blk = getter(env)
+        if blk is None:
+            continue
+        if "file_name_only" not in (blk.get("permissions") or []):
+            continue
+        root = (blk.get("path") or "").rstrip("/")
+        if not root:
+            continue
+        out.append({
+            "path": f"{root}/{proj_name}",
+            "kind": "env_target",
+            "target_kind": target_kind,
+            "target_block": blk,
+        })
     return out
 
 
@@ -236,22 +274,30 @@ def snapshot_project(project_name: str,
     if not access_blocks:
         return {"error": f"project '{project_name}' has no compute_env_access blocks"}
 
-    # First pass: collect (env_name, env_dict, paths). Gate every path BEFORE
-    # any subprocess runs — defense-in-depth, even though every walked path
-    # is by construction in the project's authorized dir list.
-    plans: list[tuple[str, dict, list[str]]] = []
+    # First pass: collect (env_name, env_dict, tagged_paths). Gate every
+    # path BEFORE any subprocess runs — defense-in-depth, even though every
+    # walked path is by construction in the project's authorized dir set.
+    # Tagged paths carry their source so the right gate fires:
+    #   project_directory → check_permission (Phase 1, project-level grant)
+    #   env_target        → check_env_target_capability (Phase 2, env grant)
+    plans: list[tuple[str, dict, list[dict]]] = []
     for block in access_blocks:
         env_name = block.get("compute_env")
         env = compute_access.get_compute_env(env_name, access)
-        paths = _snapshot_paths_for_env(project, env_name)
-        # PERMISSION GATE — runs BEFORE any subprocess. Fail-closed.
-        for p in paths:
-            compute_access.check_permission(project, env_name, p, "snapshot")
-        plans.append((env_name, env, paths))
+        tagged = _snapshot_paths_for_env(project, env_name, env)
+        for t in tagged:
+            if t["kind"] == "project_directory":
+                compute_access.check_permission(
+                    project, env_name, t["path"], "snapshot")
+            else:  # env_target
+                compute_access.check_env_target_capability(
+                    project, env_name, t["target_block"], "snapshot",
+                    t["target_kind"])
+        plans.append((env_name, env, tagged))
 
     # If no env contributed any file_name_only directory, the snapshot is a
     # no-op — surface that as a clean error rather than an empty record.
-    if not any(paths for _e, _env, paths in plans):
+    if not any(tagged for _e, _env, tagged in plans):
         return {"error": (
             f"project '{project_name}' has no directories with "
             f"file_name_only permission — nothing to snapshot")}
@@ -260,10 +306,12 @@ def snapshot_project(project_name: str,
     per_env_counts: dict[str, int] = {}
     errors: list[dict] = []
 
-    for env_name, env, paths in plans:
+    for env_name, env, tagged in plans:
         env_type = env.get("type")
         env_entries: list[dict] = []
-        for p in paths:
+        for t in tagged:
+            p = t["path"]
+            kind = t["kind"]
             if env_type == "local":
                 env_entries.extend(_local_walk(p))
                 continue
@@ -271,6 +319,15 @@ def snapshot_project(project_name: str,
                 res = subprocess.run(_ssh_argv(env, _ssh_remote_cmd(p)),
                                      capture_output=True, text=True, timeout=timeout)
                 if res.returncode != 0:
+                    # An env_target path may not exist yet (project hasn't
+                    # uploaded anything to its namespace) — that's not an
+                    # error condition, just an empty result. Detect via the
+                    # canonical find error and skip silently.
+                    is_missing = (
+                        kind == "env_target"
+                        and ("No such file or directory" in (res.stderr or "")))
+                    if is_missing:
+                        continue
                     err: dict = {
                         "compute_env": env_name,
                         "path": p,

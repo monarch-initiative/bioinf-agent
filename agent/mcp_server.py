@@ -634,7 +634,7 @@ from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level 
 # move out.
 from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     upload_to_scratch,
-    fetch_from_scratch,
+    download_from_scratch,
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,

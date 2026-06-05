@@ -26,22 +26,27 @@
 #         description                   free text
 #
 #       ─── Phase 2 (HPC actuators) — all optional ──────────────────────────
+#       The Phase-2 target blocks below are env-level CAPABILITY DECLARATIONS:
+#       any project that lists this env via `compute_env_access` inherits the
+#       declared targets en bloc — no per-project re-declaration of these
+#       paths in directories[]. Security posture: env-level target paths are
+#       PUBLIC-DATA ZONES (no PHI, no protected data). Anything sensitive
+#       goes in the project's directories[] where the agent can never list a
+#       dir it wasn't explicitly authorized for. Scratch / common_data
+#       primitives AUTO-PREFIX every transfer with the project name, so two
+#       projects on the same env cannot collide on a path.
+#
 #       agent_scratch_target            single dir-access block. The agent's
 #                                       sandbox on this env. MUST include
-#                                       permissions: [upload, fetch, exec].
-#                                       This is where job working dirs live,
-#                                       logs land, and small per-run staging
-#                                       happens.
+#                                       permissions: [upload, download, exec].
+#                                       Job working dirs, logs, per-run staging.
 #
-#       reference_data_targets[]        list of NAMED dir-access blocks:
-#         - name                        safe token (alnum + `_-`, ≤64 chars).
-#                                       The agent passes this name to
-#                                       upload_to_refdata / data_acquisition
-#                                       jobs as `ref_name`.
-#           path                        absolute path on the env
-#           permissions                 list of permission tokens — MUST
-#                                       include [upload, exec]
-#           description                 free text
+#       agent_common_data_target        singular sibling of scratch — the env's
+#                                       shared common-data zone (reference
+#                                       genomes, public DBs, anything the agent
+#                                       may need to push to and jobs may read/
+#                                       write). MUST include permissions:
+#                                       [upload, download, exec].
 #
 #       slurm                           a CLOSED-key block (unknown keys are
 #                                       rejected to catch typos like
@@ -62,11 +67,19 @@
 #       (the security boundary is the env).
 #
 #   projects[]:                         a list of projects
-#     - name                            YOUR label for this project
+#     - name                            YOUR label for this project. Used as
+#                                       the auto-prefix path component in
+#                                       scratch / common_data — MUST be a
+#                                       safe token (alnum + '_-', ≤64 chars).
 #       description                     free text
-#       compute_env_access[]:           one block per compute_env this project uses
+#       compute_env_access[]:           one block per compute_env this project
+#                                       uses. Listing an env grants this
+#                                       project ALL of that env's Phase-2
+#                                       target blocks (env-implicit grant).
 #         - compute_env                 references a compute_envs[].name above
-#           directories[]:              the dir-access blocks this project gets on that env
+#           directories[]:              PROJECT-SPECIFIC paths only (the
+#                                       project's own data; typically protected).
+#                                       Env-level targets do NOT belong here.
 #             - path                    absolute path on the env
 #               permissions             list of permission tokens
 #               description             free text
@@ -78,14 +91,14 @@
 #
 #   upload            write NEW files. Never overwrites. Single-shot agent push.
 #
-#   fetch             pull files FROM the env back to local. sha256 round-trip
-#                     verified by fetch_from_scratch.                  (Phase 2)
+#   download          pull files FROM the env back to local. sha256 round-trip
+#                     verified.                                        (Phase 2)
 #
 #   exec              a SLURM job inside this dir may read+write its OWN outputs
-#                     (data_acquisition into refdata; workflow run output into
-#                     scratch). Distinct from `upload` — the cluster job writes
-#                     in-place during execution rather than doing single-shot
-#                     pushes.                                          (Phase 2)
+#                     (data_acquisition into common_data; workflow run output
+#                     into scratch). Distinct from `upload` — the cluster job
+#                     writes in-place during execution rather than doing
+#                     single-shot pushes.                              (Phase 2)
 #
 #   none              explicit deny (the default for any path not listed).
 #
@@ -115,20 +128,14 @@ compute_envs:
     # All paths must be disjoint subtrees on this env.
 
     agent_scratch_target:                        # the agent's sandbox on this env
-      path: /scratch/alice/agent_workspace/
-      permissions: [upload, fetch, exec]         # upload = push files; fetch = pull back;
-                                                  # exec = a SLURM job inside may read+write
+      path: /scratch/alice/CLAUDE_SCRATCH/
+      permissions: [file_name_only, upload, download, exec]
       description: "agent sandbox — job working dirs, logs, per-run staging"
 
-    reference_data_targets:                      # named destinations for large ref data
-      - name: exomiser_data                      # safe token (alnum + _-, ≤64)
-        path: /work/users/a/alice/ref/exomiser/
-        permissions: [upload, exec]              # upload = agent push; exec = jobs may read/write
-        description: "Exomiser data bundle (~15 GB, Monarch Initiative)"
-      - name: gnomad_v4
-        path: /work/users/a/alice/ref/gnomad_v4/
-        permissions: [upload, exec]
-        description: "gnomAD v4 VCFs (~50 GB)"
+    agent_common_data_target:                    # shared common-data zone
+      path: /work/users/a/alice/CLAUDE_GENOMES/
+      permissions: [file_name_only, upload, download, exec]
+      description: "shared reference data — genomes, public DBs, etc."
 
     slurm:                                       # closed-key block (typos REFUSED at load)
       queue_default: general

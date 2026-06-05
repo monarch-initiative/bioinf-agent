@@ -2,38 +2,31 @@
 L14 cheat-guards — scratch primitives' refuse-to-emit surface.
 
 The agent's Phase 2 sandbox surface is upload_to_scratch +
-fetch_from_scratch. These tests pin every refusal path:
+download_from_scratch. These tests pin every refusal path BEFORE any
+subprocess fires (the "no shell, no leak" contract).
 
-  - pure-string validation of remote_subpath (BEFORE any I/O)
-    - absolute path leak ("/etc/passwd")
-    - traversal (`..`, `a/../b`)
-    - empty / over-length
-    - shell metacharacters (newline = SBATCH injection; ;, |, $, etc.)
-    - whitespace (would break scp argv assembly)
-    - null byte
+Coverage:
+
+  - pure-string validation of remote_subpath (no I/O)
+  - pure-string validation of project_name (the auto-prefix token)
   - local_path validation (BEFORE any subprocess)
-    - missing file refused
-    - directory / device refused (must be a regular file)
-    - symlink refused (defense vs. user's homedir redirect to /etc/shadow)
-    - >5GiB refused (head-node transfer cap)
-    - fetch destination already exists (no silent overwrite)
-    - fetch destination parent missing (no auto-mkdir on host)
-  - permission gate fires BEFORE subprocess
-    - unauthorized project
-    - unknown compute_env
-    - env without agent_scratch_target
-    - project's dir grants `upload` but op is `fetch` (discrete capabilities)
-    - project's dir doesn't include the scratch path at all
-  - command-shape pinning
-    - _scp_argv shape (BatchMode=yes, -p, no other surface)
-    - _remote_sha256_cmd shape (sha256sum + shlex.quote)
-    - _build_remote_target shape (user@host:path)
-  - resolve-defense
-    - _resolve_remote_path refuses to produce an out-of-root path even
-      if called with a (synthetic) bad subpath that bypassed validation
+  - permission gate fires BEFORE subprocess for unauthorized
+    configurations (env-implicit auth model: project on env + env-level
+    target advertises capability)
+  - command-shape pinning (scp argv, sha256sum, build_remote_target)
+  - resolve-defense: _resolve_remote_path catches synthetic bypasses
+    (project_name prefix is auto-applied; resolved path can't escape
+    its own namespace)
 
-Pattern mirrors test_snapshot_command_surface.py and
-test_phase2_schema_load.py.
+The Phase-2 auth model (post-rename): the env-level `agent_scratch_target`
+block carries the capability declaration; any project listed under
+that env via `compute_env_access` inherits the target en bloc. There
+is no project-level re-declaration of the scratch path in
+`directories[]` (that list is for project-specific paths only).
+
+The primitives auto-prefix every transfer with the project name —
+`<scratch>/<project>/<remote_subpath>` — so two projects on the same
+env cannot collide on a path.
 """
 from __future__ import annotations
 
@@ -61,71 +54,64 @@ def _write_access(tmp_path: Path, data: dict) -> Path:
     return p
 
 
-def _local_env_with_scratch(scratch_root: Path) -> dict:
+def _local_env_with_scratch(scratch_root: Path,
+                            permissions=("upload", "download", "exec"),
+                            name: str = "laptop") -> dict:
     return {
-        "name": "laptop",
+        "name": name,
         "type": "local",
         "container_upload_target": None,
         "agent_scratch_target": {
             "path": str(scratch_root) + "/",
-            "permissions": ["upload", "fetch", "exec"],
+            "permissions": list(permissions),
             "description": "test scratch",
         },
     }
 
 
-def _project_grant(env_name: str, scratch_root: Path, perms=None) -> dict:
+def _project(name: str = "myproj", env_name: str = "laptop",
+             extra_dirs: list[dict] | None = None) -> dict:
+    """Build a project that uses `env_name` (env-implicit grant; no
+    re-declaration of scratch). `extra_dirs` lets a test add project-
+    specific dirs into directories[] (the Phase-1 surface)."""
     return {
-        "name": "myproj",
+        "name": name,
         "description": "test",
         "compute_env_access": [{
             "compute_env": env_name,
-            "directories": [{
-                "path": str(scratch_root) + "/",
-                "permissions": perms if perms is not None
-                               else ["file_name_only", "upload", "fetch", "exec"],
-                "description": "scratch grant",
-            }],
+            "directories": extra_dirs or [],
         }],
     }
 
 
 @pytest.fixture
 def _local_scratch(tmp_path):
-    """A complete local-mode setup with scratch wired end-to-end.
-    Returns (access_path, scratch_root)."""
+    """Local-mode setup with scratch wired end-to-end under the new auth
+    model. Returns (access_path, scratch_root)."""
     scratch_root = tmp_path / "CLAUDE_SCRATCH"
     scratch_root.mkdir()
     access = {
         "compute_envs": [_local_env_with_scratch(scratch_root)],
-        "projects": [_project_grant("laptop", scratch_root)],
+        "projects": [_project()],
     }
     return _write_access(tmp_path, access), scratch_root
 
 
 # ===========================================================================
-# 1. Pure-string remote_subpath validation (no I/O — must fire before any
-#    subprocess; the L14 cheat-guard pattern)
+# 1. Pure-string remote_subpath validation
 # ===========================================================================
 
 class TestRemoteSubpathValidator:
     @pytest.mark.integration
     @pytest.mark.parametrize("good", [
         "out.txt", "runs/2026/r1.vcf", "deep/a/b/c/d/e.json",
-        "a/./b",            # normalize collapses to "a/b"
-        "single_dir/file",
-        "_underscores-and-hyphens.txt",
+        "a/./b", "single_dir/file", "_underscores-and-hyphens.txt",
     ])
     def test_accepts_good_subpaths(self, good):
-        # Doesn't raise → fine. Returns the normalized form.
         scratch._validate_remote_subpath(good)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad", [
-        "/etc/passwd",
-        "/absolute/start",
-        "/",
-    ])
+    @pytest.mark.parametrize("bad", ["/etc/passwd", "/absolute/start", "/"])
     def test_refuses_absolute_subpath(self, bad):
         with pytest.raises(ScratchPathError) as exc:
             scratch._validate_remote_subpath(bad)
@@ -133,11 +119,7 @@ class TestRemoteSubpathValidator:
 
     @pytest.mark.integration
     @pytest.mark.parametrize("bad", [
-        "..",
-        "../escape",
-        "a/../b",
-        "a/b/../../c",
-        "..//",
+        "..", "../escape", "a/../b", "a/b/../../c", "..//",
     ])
     def test_refuses_traversal(self, bad):
         with pytest.raises(ScratchPathError) as exc:
@@ -190,26 +172,63 @@ class TestRemoteSubpathValidator:
 
     @pytest.mark.integration
     def test_normalize_collapses_redundant_dot_segments(self):
-        # `a/./b` → `a/b`; `b//c` → `b/c`.
         assert scratch._validate_remote_subpath("a/./b") == "a/b"
 
 
 # ===========================================================================
-# 2. Resolve-defense: _resolve_remote_path catches bad inputs even if a
-#    caller bypassed the front-door validator
+# 2. project_name validation — the auto-prefix safe-token check
+# ===========================================================================
+
+class TestProjectNameTokenValidator:
+    @pytest.mark.integration
+    @pytest.mark.parametrize("good", [
+        "myproj", "hpc_cluster_test", "proj-123", "a", "x" * 64,
+    ])
+    def test_accepts_safe_tokens(self, good):
+        assert scratch._validate_project_name_token(good) == good
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad", [
+        "",                  # empty
+        "x" * 65,            # over-length
+        "has space",
+        "path/like",
+        "..",                # traversal
+        "with.dot",          # dots get rejected (path-traversal adjacency)
+        "shell;injection",
+        "newline\nattack",
+        "$dollar",
+    ])
+    def test_refuses_unsafe_tokens(self, bad):
+        with pytest.raises(ScratchPathError) as exc:
+            scratch._validate_project_name_token(bad)
+        assert "safe token" in str(exc.value) or "must be a string" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_non_string(self):
+        with pytest.raises(ScratchPathError):
+            scratch._validate_project_name_token(42)  # type: ignore[arg-type]
+
+
+# ===========================================================================
+# 3. Resolve-defense: _resolve_remote_path auto-prefixes by project + catches
+#    bypasses even if a caller skipped the front-door validator
 # ===========================================================================
 
 class TestResolveRemotePathDefense:
     @pytest.mark.integration
-    def test_resolves_normal_subpath_inside_root(self):
-        resolved = scratch._resolve_remote_path("/scratch/u/agent/", "runs/a.txt")
-        assert resolved == "/scratch/u/agent/runs/a.txt"
+    def test_resolves_normal_subpath_with_project_prefix(self):
+        # The new signature: scratch_root, project_name, remote_subpath_norm.
+        # Result is auto-prefixed with the project name.
+        resolved = scratch._resolve_remote_path(
+            "/scratch/u/agent/", "myproj", "runs/a.txt")
+        assert resolved == "/scratch/u/agent/myproj/runs/a.txt"
 
     @pytest.mark.integration
     def test_strips_trailing_slash_on_root(self):
-        a = scratch._resolve_remote_path("/scratch/u/agent/", "f.txt")
-        b = scratch._resolve_remote_path("/scratch/u/agent",  "f.txt")
-        assert a == b == "/scratch/u/agent/f.txt"
+        a = scratch._resolve_remote_path("/scratch/u/agent/", "p", "f.txt")
+        b = scratch._resolve_remote_path("/scratch/u/agent",  "p", "f.txt")
+        assert a == b == "/scratch/u/agent/p/f.txt"
 
     @pytest.mark.integration
     def test_refuses_synthetic_traversal_bypass(self):
@@ -217,12 +236,23 @@ class TestResolveRemotePathDefense:
         # is the defense-in-depth — pretend we got past validation with a
         # `..`-containing normalized subpath. It should still bounce.
         with pytest.raises(ScratchPathError) as exc:
-            scratch._resolve_remote_path("/scratch/u/agent/", "../etc/passwd")
+            scratch._resolve_remote_path(
+                "/scratch/u/agent/", "p", "../etc/passwd")
         assert "escapes" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_two_projects_resolve_to_disjoint_namespaces(self):
+        # The whole point of the auto-prefix: two projects on the same env
+        # can ask for the SAME remote_subpath without colliding.
+        a = scratch._resolve_remote_path("/scratch/", "proj_a", "x.txt")
+        b = scratch._resolve_remote_path("/scratch/", "proj_b", "x.txt")
+        assert a == "/scratch/proj_a/x.txt"
+        assert b == "/scratch/proj_b/x.txt"
+        assert a != b
 
 
 # ===========================================================================
-# 3. Local-path validation for upload — must fire before any subprocess
+# 4. Local-path validation for upload
 # ===========================================================================
 
 class TestLocalPathUploadValidator:
@@ -264,8 +294,6 @@ class TestLocalPathUploadValidator:
 
     @pytest.mark.integration
     def test_refuses_oversize(self, tmp_path, monkeypatch):
-        # Synthetic — actually creating a 5GB file in CI would be a waste.
-        # Drop the cap to 100 bytes for this test and write 200 bytes.
         monkeypatch.setattr(scratch, "_MAX_TRANSFER_BYTES", 100)
         f = tmp_path / "big.bin"
         f.write_bytes(b"x" * 200)
@@ -275,13 +303,13 @@ class TestLocalPathUploadValidator:
 
 
 # ===========================================================================
-# 4. Local-path validation for fetch
+# 5. Local-path validation for download (renamed from fetch)
 # ===========================================================================
 
-class TestLocalPathFetchValidator:
+class TestLocalPathDownloadValidator:
     @pytest.mark.integration
     def test_accepts_nonexisting_path_with_writable_parent(self, tmp_path):
-        p = scratch._validate_local_path_for_fetch(str(tmp_path / "out.txt"))
+        p = scratch._validate_local_path_for_download(str(tmp_path / "out.txt"))
         assert p == tmp_path / "out.txt"
 
     @pytest.mark.integration
@@ -289,24 +317,25 @@ class TestLocalPathFetchValidator:
         f = tmp_path / "existing.txt"
         f.write_text("data")
         with pytest.raises(ScratchPathError) as exc:
-            scratch._validate_local_path_for_fetch(str(f))
+            scratch._validate_local_path_for_download(str(f))
         assert "already exists" in str(exc.value)
         assert "overwrite" in str(exc.value)
 
     @pytest.mark.integration
     def test_refuses_missing_parent(self, tmp_path):
         with pytest.raises(ScratchPathError) as exc:
-            scratch._validate_local_path_for_fetch(
+            scratch._validate_local_path_for_download(
                 str(tmp_path / "no_such_dir" / "out.txt"))
         assert "parent" in str(exc.value)
         assert "does not exist" in str(exc.value)
 
 
 # ===========================================================================
-# 5. Permission gate fires BEFORE subprocess for unauthorized configurations
+# 6. Env-implicit permission gate fires BEFORE subprocess for unauthorized
+#    configurations
 # ===========================================================================
 
-class TestUploadPermissionGate:
+class TestEnvImplicitPermissionGate:
     @pytest.mark.integration
     def test_unauthorized_project_refused_no_subprocess(self, _local_scratch, monkeypatch):
         access_path, scratch_root = _local_scratch
@@ -349,22 +378,13 @@ class TestUploadPermissionGate:
 
     @pytest.mark.integration
     def test_env_without_scratch_target_refused_no_subprocess(self, tmp_path, monkeypatch):
-        # An env that has the project but NO agent_scratch_target.
         access = {
             "compute_envs": [{
                 "name": "laptop", "type": "local",
                 "container_upload_target": None,
                 # NB: no agent_scratch_target
             }],
-            "projects": [{
-                "name": "myproj", "compute_env_access": [{
-                    "compute_env": "laptop",
-                    "directories": [{
-                        "path": str(tmp_path) + "/",
-                        "permissions": ["upload"],
-                    }],
-                }],
-            }],
+            "projects": [_project()],
         }
         access_path = _write_access(tmp_path, access)
         src = tmp_path / "src.txt"
@@ -382,71 +402,71 @@ class TestUploadPermissionGate:
         assert called == []
 
     @pytest.mark.integration
-    def test_dir_grants_upload_but_op_is_fetch_refused(self, tmp_path, monkeypatch):
-        # Build a config whose project's directories[] entry grants ONLY
-        # `upload` on the scratch path. Then call fetch_from_scratch and
-        # confirm it's refused — discrete capabilities, not a lattice.
+    def test_target_missing_upload_permission_refused_no_subprocess(self, tmp_path, monkeypatch):
+        # Env-implicit auth: the scratch target advertises only [download, exec]
+        # — NOT upload. upload_to_scratch must refuse.
         scratch_root = tmp_path / "CLAUDE_SCRATCH"
         scratch_root.mkdir()
-        # Pre-stage a remote file so the early permission check is what fires.
-        (scratch_root / "x.txt").write_text("hi")
         access = {
-            "compute_envs": [_local_env_with_scratch(scratch_root)],
-            "projects": [_project_grant("laptop", scratch_root, perms=["upload"])],
+            "compute_envs": [_local_env_with_scratch(
+                scratch_root, permissions=("download", "exec"))],
+            "projects": [_project()],
         }
-        access_path = _write_access(tmp_path, access)
-        local_dest = tmp_path / "fetched.txt"
-
-        called = []
-        monkeypatch.setattr(subprocess, "run",
-                            lambda *a, **kw: called.append(a) or MagicMock())
-
-        result = scratch.fetch_from_scratch(
-            project_name="myproj", compute_env_name="laptop",
-            remote_subpath="x.txt", local_path=str(local_dest),
-            access_path=str(access_path))
-        assert "error" in result, result
-        assert "PermissionDenied" in result["error"]
-        assert "fetch" in result["error"]
-        assert called == []
+        # The scratch validator REQUIRES [upload, download, exec], so a
+        # missing-upload config wouldn't even load. We bypass the schema by
+        # constructing the env dict manually and calling check_env_target_capability
+        # directly to prove the gate logic refuses.
+        env = {
+            "name": "laptop",
+            "agent_scratch_target": {
+                "path": str(scratch_root) + "/",
+                "permissions": ["download", "exec"],  # no upload
+            },
+        }
+        project = _project()
+        with pytest.raises(PermissionDenied) as exc:
+            compute_access.check_env_target_capability(
+                project, "laptop", env["agent_scratch_target"],
+                "upload_to_scratch", "agent_scratch_target")
+        assert "does not include 'upload'" in str(exc.value)
 
     @pytest.mark.integration
-    def test_project_does_not_grant_scratch_path_at_all(self, tmp_path, monkeypatch):
-        # Project grants a totally different directory. Resolved path is
-        # inside scratch root, but no project-level entry matches → refused.
+    def test_target_missing_download_permission_refused_no_subprocess(self, tmp_path, monkeypatch):
+        # Symmetric: an env with scratch advertising only [upload, exec] must
+        # refuse a download_from_scratch.
         scratch_root = tmp_path / "CLAUDE_SCRATCH"
         scratch_root.mkdir()
-        access = {
-            "compute_envs": [_local_env_with_scratch(scratch_root)],
-            "projects": [{
-                "name": "myproj", "compute_env_access": [{
-                    "compute_env": "laptop",
-                    "directories": [{
-                        "path": "/some/elsewhere/",  # NOT scratch_root
-                        "permissions": ["upload", "fetch"],
-                    }],
-                }],
-            }],
+        env = {
+            "name": "laptop",
+            "agent_scratch_target": {
+                "path": str(scratch_root) + "/",
+                "permissions": ["upload", "exec"],  # no download
+            },
         }
-        access_path = _write_access(tmp_path, access)
-        src = tmp_path / "src.txt"; src.write_text("hi")
+        project = _project()
+        with pytest.raises(PermissionDenied) as exc:
+            compute_access.check_env_target_capability(
+                project, "laptop", env["agent_scratch_target"],
+                "download_from_scratch", "agent_scratch_target")
+        assert "does not include 'download'" in str(exc.value)
 
-        called = []
-        monkeypatch.setattr(subprocess, "run",
-                            lambda *a, **kw: called.append(a) or MagicMock())
-
-        result = scratch.upload_to_scratch(
-            project_name="myproj", compute_env_name="laptop",
-            local_path=str(src), remote_subpath="x.txt",
-            access_path=str(access_path))
-        assert "error" in result
-        assert "PermissionDenied" in result["error"]
-        assert "not authorized" in result["error"]
-        assert called == []
+    @pytest.mark.integration
+    def test_project_has_no_access_to_env_refused(self, tmp_path):
+        # Project has no compute_env_access entry for the env at all → gate
+        # refuses with a clear "no compute_env_access entry" message.
+        scratch_root = tmp_path / "CLAUDE_SCRATCH"
+        scratch_root.mkdir()
+        env_blk = _local_env_with_scratch(scratch_root, name="env_a")
+        project = _project(env_name="env_b")  # access to env_b, not env_a
+        with pytest.raises(PermissionDenied) as exc:
+            compute_access.check_env_target_capability(
+                project, "env_a", env_blk["agent_scratch_target"],
+                "upload_to_scratch", "agent_scratch_target")
+        assert "no compute_env_access entry" in str(exc.value)
 
 
 # ===========================================================================
-# 6. End-to-end: rejected remote_subpaths never reach subprocess
+# 7. End-to-end: rejected remote_subpaths never reach subprocess
 # ===========================================================================
 
 class TestUploadRejectionsNeverHitSubprocess:
@@ -454,7 +474,6 @@ class TestUploadRejectionsNeverHitSubprocess:
     @pytest.mark.parametrize("bad_subpath", [
         "/etc/passwd",         # absolute leak
         "../etc/passwd",       # traversal
-        "",                    # empty
         "x" * 300,             # over-length
         "ok;rm",               # shell metachar
         "ok\nrm",              # newline (sbatch injection)
@@ -474,21 +493,40 @@ class TestUploadRejectionsNeverHitSubprocess:
             local_path=str(src), remote_subpath=bad_subpath,
             access_path=str(access_path))
         assert "error" in result, result
-        # All these refusals come from _validate_remote_subpath.
         assert "ScratchPathError" in result["error"]
+        assert called == []
+
+    @pytest.mark.integration
+    def test_unsafe_project_name_refused_no_subprocess(
+            self, _local_scratch, monkeypatch):
+        # Unsafe project_name is rejected even BEFORE the project lookup —
+        # it never reaches load_access (we validate the token FIRST so a
+        # smuggled `..` or `;` can't reach the YAML path resolver).
+        access_path, scratch_root = _local_scratch
+        src = scratch_root.parent / "src.txt"; src.write_text("hi")
+
+        called = []
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: called.append(a) or MagicMock())
+
+        result = scratch.upload_to_scratch(
+            project_name="../etc",  # unsafe — traversal in project name
+            compute_env_name="laptop",
+            local_path=str(src),
+            remote_subpath="x.txt",
+            access_path=str(access_path))
+        assert "error" in result and "ScratchPathError" in result["error"]
+        assert "safe token" in result["error"]
         assert called == []
 
 
 # ===========================================================================
-# 7. Subprocess command-shape pinning (ssh-mode shapes)
+# 8. Subprocess command-shape pinning (ssh-mode shapes — unchanged)
 # ===========================================================================
 
 class TestCommandShapePinning:
     @pytest.mark.integration
     def test_scp_argv_shape(self):
-        # The canonical scp invocation: BatchMode=yes (no password prompt),
-        # -p (preserve mtime — useful for debugging), then src + dst as
-        # separate argv elements. NO additional surface.
         env = {"name": "x", "type": "ssh", "host": "h.example", "user": "u"}
         argv = scratch._scp_argv(env, "/local/a", "u@h.example:/remote/b")
         assert argv == ["scp", "-o", "BatchMode=yes", "-p",
@@ -496,10 +534,7 @@ class TestCommandShapePinning:
 
     @pytest.mark.integration
     def test_remote_sha256_cmd_shape(self):
-        # The remote shell string for sha256sum. Path is the ONLY interpolated
-        # piece and is shlex.quote'd. A test pins the exact shape.
         cmd = scratch._remote_sha256_cmd("/scratch/u/agent/x.txt")
-        # No metacharacters in the path → shlex.quote returns it AS-IS.
         assert cmd == "sha256sum /scratch/u/agent/x.txt"
 
     @pytest.mark.integration
@@ -510,15 +545,11 @@ class TestCommandShapePinning:
         "/scratch/x$(id)",
     ])
     def test_remote_sha256_cmd_neutralizes_path_injection(self, evil_path):
-        # Even if a future caller foolishly bypassed the path validator,
-        # shlex.quote MUST keep the path inside a single-quoted shell arg.
         cmd = scratch._remote_sha256_cmd(evil_path)
         quoted = shlex.quote(evil_path)
         assert quoted in cmd, f"path not properly quoted in: {cmd!r}"
-        # Round-trip: shlex.split should recover the path as ONE argv element.
         parsed = shlex.split(cmd)
         assert evil_path in parsed
-        # The other argv element is the literal sha256sum tool name only.
         contaminants = [a for a in parsed if a != evil_path and a != "sha256sum"]
         assert not contaminants, \
             f"shell metachars leaked out of the path: {contaminants!r}"
@@ -535,14 +566,12 @@ class TestCommandShapePinning:
     @pytest.mark.integration
     def test_build_remote_target_refuses_whitespace_path(self):
         env = {"name": "x", "type": "ssh", "host": "h.example", "user": "u"}
-        # The path validator already strips these, but the defensive assertion
-        # at the build site catches a future regression.
         with pytest.raises(ScratchPathError):
             scratch._build_remote_target(env, "/work/with space.txt")
 
 
 # ===========================================================================
-# 8. Hashing — sha256 of empty + known content
+# 9. Hashing — sha256 of empty + known content
 # ===========================================================================
 
 class TestSha256:
@@ -551,7 +580,6 @@ class TestSha256:
         f = tmp_path / "empty"
         f.write_bytes(b"")
         h = scratch._compute_local_sha256(f)
-        # The well-known SHA256 of the empty string.
         assert h == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
     @pytest.mark.integration

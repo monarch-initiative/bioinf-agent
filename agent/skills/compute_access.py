@@ -72,14 +72,15 @@ PERMISSIONS: frozenset[str] = frozenset({
     "file_name_only",    # list a dir's IMMEDIATE contents (one level only).
                          # See agent/skills/snapshot.py module docstring for the
                          # one-level visibility contract.
-    "upload",            # write NEW files (never overwrites); single-shot agent push
-    "fetch",             # pull files FROM the env back to local (sha256 round-trip)
+    "upload",            # write NEW files (never overwrites); single-shot push
+    "download",          # pull files FROM the env back to local (sha256
+                         # round-trip). Symmetric to `upload`.
     "exec",              # a SLURM job inside this dir may read+write its OWN
-                         # outputs (data_acquisition into refdata; workflow run
-                         # output into scratch). Distinct from `upload`, which is
-                         # the agent's single-shot push primitive — the cluster
-                         # job itself doesn't "upload"; it writes-in-place during
-                         # execution. Phase 2.
+                         # outputs (data_acquisition into common_data; workflow
+                         # run output into scratch). Distinct from `upload`,
+                         # which is the agent's single-shot push primitive —
+                         # the cluster job itself doesn't "upload"; it writes-
+                         # in-place during execution. Phase 2.
 })
 
 # Which permission an operation requires. Match is EXACT — a dir with `upload`
@@ -89,11 +90,12 @@ PERMISSIONS: frozenset[str] = frozenset({
 OPERATION_REQUIRES: dict[str, str] = {
     "snapshot": "file_name_only",
     # Phase 2 — wired as primitives land:
-    "upload_to_scratch":  "upload",   # single-shot push into scratch sandbox
-    "fetch_from_scratch": "fetch",    # pull from scratch back to local
-    # "upload_to_refdata":    "upload",
-    # "job_workdir_scratch":  "exec",
-    # "job_output_refdata":   "exec",
+    "upload_to_scratch":      "upload",
+    "download_from_scratch":  "download",
+    # "upload_to_common_data":    "upload",
+    # "download_from_common_data": "download",
+    # "job_workdir_scratch":     "exec",
+    # "job_output_common_data":  "exec",
 }
 
 
@@ -191,19 +193,33 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
                                  f".container_upload_target", path,
                             must_include=["upload"])
 
-    # --- Phase 2 env-level blocks (all optional) ---
+    # --- Phase 2 env-level target blocks (all optional) ---
+    #
+    # Authorization model: the env-level target blocks are CAPABILITY
+    # DECLARATIONS — they say "this path exists on the env and these ops
+    # are supported on it". Any project listed under this env via
+    # `compute_env_access` inherits ALL declared targets en bloc; there is
+    # no per-project re-declaration of these paths. The security posture:
+    # these paths are PUBLIC-DATA ZONES (no PHI, no protected datasets).
+    # Project-specific / protected paths go in `projects[].compute_env_access
+    # [].directories[]` where the project's `file_name_only` permission is
+    # explicit, and the agent can never list a dir it wasn't authorized for.
     where_env = f"compute_envs[{idx}] (name={name!r})"
     scratch = env.get("agent_scratch_target")
     if scratch is not None:
-        # The agent's sandbox: writable AND fetchable AND job-executable.
+        # The agent's sandbox: writable AND downloadable AND job-executable.
         # All three permissions are intrinsic to what the sandbox is FOR —
         # if you don't want one of them, don't declare the block.
         _validate_dir_block(scratch, f"{where_env}.agent_scratch_target", path,
-                            must_include=["upload", "fetch", "exec"])
+                            must_include=["upload", "download", "exec"])
 
-    refs = env.get("reference_data_targets")
-    if refs is not None:
-        _validate_reference_data_targets(refs, where_env, path)
+    common = env.get("agent_common_data_target")
+    if common is not None:
+        # Singular sibling of agent_scratch_target — the env's "common data"
+        # zone (reference genomes, public databases, anything the agent may
+        # need to push to and that jobs may read/write from). One per env.
+        _validate_dir_block(common, f"{where_env}.agent_common_data_target",
+                            path, must_include=["upload", "download", "exec"])
 
     slurm = env.get("slurm")
     if slurm is not None:
@@ -321,44 +337,6 @@ _SLURM_REQUIRED_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _validate_reference_data_targets(refs: object, where: str, path: Path) -> None:
-    """Validate compute_envs[].reference_data_targets — a LIST of named dir-
-    access blocks. Each entry needs `name` + the dir-access fields, and
-    every entry must include `upload` AND `exec` in its permissions (the
-    intrinsic ops on a ref-data destination: agent pushes WITH upload, jobs
-    read/write WITH exec)."""
-    if not isinstance(refs, list):
-        raise ConfigError(
-            f"{path}: {where}.reference_data_targets must be a LIST of named "
-            f"dir-access blocks (got {type(refs).__name__})")
-    seen_names: set[str] = set()
-    seen_paths: set[str] = set()
-    for i, entry in enumerate(refs):
-        sub = f"{where}.reference_data_targets[{i}]"
-        if not isinstance(entry, dict):
-            raise ConfigError(f"{path}: {sub} must be a mapping")
-        nm = entry.get("name")
-        if not isinstance(nm, str) or not nm:
-            raise ConfigError(
-                f"{path}: {sub}.name must be a non-empty string")
-        # ref_name is a TOKEN used as a kwarg to upload_to_refdata; keep it
-        # boring (alnum + `_-`) so it can't smuggle traversal or shell.
-        if not _is_safe_token(nm):
-            raise ConfigError(
-                f"{path}: {sub}.name={nm!r} must be a safe token "
-                f"(alnum, '_', '-' only — no '/', '.', spaces, etc.)")
-        if nm in seen_names:
-            raise ConfigError(
-                f"{path}: {sub}.name={nm!r} is duplicated within this env's "
-                f"reference_data_targets — names must be unique per env")
-        seen_names.add(nm)
-        _validate_dir_block(entry, sub, path, must_include=["upload", "exec"])
-        # Cross-entry path collisions inside the SAME refs list are caught
-        # by the disjoint-subtree check below; equality is the simplest case
-        # of "prefix of another", so it falls out naturally.
-        seen_paths.add((entry.get("path") or "").rstrip("/"))
-
-
 def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
     """Validate the closed `slurm:` block. Unknown keys rejected. Type-check
     each field; the max_* values are the upper bound submit_cluster_job
@@ -402,9 +380,10 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
 
 
 def _is_safe_token(s: str) -> bool:
-    """A token usable as a kwarg / SBATCH placeholder: alnum + `_-`, 1..64.
-    Rejects `..`, `/`, dots (path traversal), spaces, shell metacharacters,
-    and newlines (sbatch header injection)."""
+    """A token usable as a kwarg / SBATCH placeholder / path prefix: alnum
+    + `_-`, 1..64. Rejects `..`, `/`, dots (path traversal), spaces, shell
+    metacharacters, and newlines (sbatch header injection). Used for the
+    project-name prefix the scratch/common_data primitives auto-prepend."""
     if not s or len(s) > 64:
         return False
     return all(c.isalnum() or c in "_-" for c in s)
@@ -413,9 +392,9 @@ def _is_safe_token(s: str) -> bool:
 def _check_env_paths_disjoint(env: dict, where: str, path: Path) -> None:
     """No declared path on this env may be a prefix of (or equal to) another.
     A breach of one target dir must never grant access to another. The check
-    is across container_upload_target, agent_scratch_target, and every
-    reference_data_targets[] entry — all of these are absolute paths on the
-    same filesystem and they're trust-isolated by being disjoint subtrees."""
+    is across container_upload_target, agent_scratch_target, and
+    agent_common_data_target — all of these are absolute paths on the same
+    filesystem and they're trust-isolated by being disjoint subtrees."""
     paths: list[tuple[str, str]] = []  # (path_normalized, label)
     cut = env.get("container_upload_target")
     if cut is not None:
@@ -427,11 +406,11 @@ def _check_env_paths_disjoint(env: dict, where: str, path: Path) -> None:
         p = (scratch.get("path") or "").rstrip("/")
         if p:
             paths.append((p, "agent_scratch_target"))
-    for entry in env.get("reference_data_targets") or []:
-        if isinstance(entry, dict):
-            p = (entry.get("path") or "").rstrip("/")
-            if p:
-                paths.append((p, f"reference_data_targets[name={entry.get('name')!r}]"))
+    common = env.get("agent_common_data_target")
+    if common is not None:
+        p = (common.get("path") or "").rstrip("/")
+        if p:
+            paths.append((p, "agent_common_data_target"))
     for i, (pa, la) in enumerate(paths):
         for pb, lb in paths[i + 1:]:
             if pa == pb:
@@ -497,25 +476,19 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
 def get_agent_scratch_target(env: dict) -> Optional[dict]:
     """Return the agent_scratch_target dir-access block for this env, or
     None if undeclared. The block carries `path`, `permissions` (always
-    ⊇ {upload, fetch, exec} by validator), and `description`."""
+    ⊇ {upload, download, exec} by validator), and `description`."""
     blk = env.get("agent_scratch_target")
     return blk if isinstance(blk, dict) else None
 
 
-def get_reference_data_target(env: dict, name: str) -> dict:
-    """Look up a named reference_data_targets[] entry on this env. Raises
-    KeyError on miss — `name` MUST be one of the declared targets, else
-    upload_to_refdata / data_acquisition jobs would silently miss the
-    authorization layer."""
-    refs = env.get("reference_data_targets") or []
-    for entry in refs:
-        if isinstance(entry, dict) and entry.get("name") == name:
-            return entry
-    known = sorted(e.get("name") for e in refs
-                   if isinstance(e, dict) and isinstance(e.get("name"), str))
-    raise KeyError(
-        f"reference_data_target not found on compute_env "
-        f"{env.get('name', '?')!r}: {name!r}. Available: {known}")
+def get_agent_common_data_target(env: dict) -> Optional[dict]:
+    """Return the agent_common_data_target dir-access block for this env,
+    or None if undeclared. Singular sibling of agent_scratch_target — the
+    env's shared common-data zone (reference genomes, public DBs). Block
+    carries `path`, `permissions` (always ⊇ {upload, download, exec}),
+    and `description`."""
+    blk = env.get("agent_common_data_target")
+    return blk if isinstance(blk, dict) else None
 
 
 def get_slurm_config(env: dict) -> Optional[dict]:
@@ -525,6 +498,62 @@ def get_slurm_config(env: dict) -> Optional[dict]:
     on an env without this block."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — env-implicit grant helper
+#
+# The Phase-2 actuator primitives (upload_to_scratch, download_from_scratch,
+# upload_to_common_data, etc.) do NOT walk the project's `directories[]`
+# entries for env-level target paths. Instead the env declares the target
+# block ONCE; any project that lists the env in its `compute_env_access`
+# inherits the target en bloc. The required permission (`upload`,
+# `download`, `exec`) must appear in the env-level target's `permissions`.
+#
+# This helper centralizes that check so every Phase-2 primitive uses the
+# same shape.
+# ---------------------------------------------------------------------------
+
+def check_env_target_capability(project: dict, env_name: str,
+                                target: dict, operation: str,
+                                target_kind: str) -> None:
+    """Verify that `project` has access to compute env `env_name` (via its
+    `compute_env_access`) AND that `target` (an env-level dir-access block,
+    typically returned by `get_agent_scratch_target` / `get_agent_common_data_target`)
+    advertises the permission token required by `operation`. Raises
+    PermissionDenied on any failure.
+
+    `target_kind` is purely cosmetic — included in error messages so the
+    user knows WHICH env-level block failed validation (e.g.
+    'agent_scratch_target' vs 'agent_common_data_target').
+
+    The project's `directories[]` is NOT consulted here — those entries
+    are reserved for PROJECT-SPECIFIC paths and use the older Phase-1
+    `check_permission` path."""
+    if operation not in OPERATION_REQUIRES:
+        raise PermissionDenied(f"unknown operation: {operation!r}")
+    required = OPERATION_REQUIRES[operation]
+
+    proj_name = project.get("name", "?")
+    # 1. Project must have a compute_env_access entry for this env.
+    grants = [b for b in (project.get("compute_env_access") or [])
+              if isinstance(b, dict) and b.get("compute_env") == env_name]
+    if not grants:
+        raise PermissionDenied(
+            f"project {proj_name!r} has no compute_env_access entry for "
+            f"compute_env {env_name!r} — add one to use {target_kind} on it.")
+
+    # 2. The target block must advertise the required capability.
+    if not isinstance(target, dict):
+        raise PermissionDenied(
+            f"compute_env {env_name!r} has no {target_kind} declared — "
+            f"operation {operation!r} requires it.")
+    actual = list(target.get("permissions") or [])
+    if required not in actual:
+        raise PermissionDenied(
+            f"compute_env {env_name!r}.{target_kind}.permissions={actual!r} "
+            f"does not include {required!r} (operation {operation!r}). "
+            f"Either add it on the env or use a different primitive.")
 
 
 # ---------------------------------------------------------------------------

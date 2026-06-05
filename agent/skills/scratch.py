@@ -1,56 +1,61 @@
 """
-Scratch sandbox primitives — upload_to_scratch + fetch_from_scratch.
+Scratch sandbox primitives — upload_to_scratch + download_from_scratch.
 
 The agent's writable sandbox on a compute env. Sibling to `snapshot.py`
-(Phase 1's read-only primitive); same authorization shape, same
-permission gate, same ControlMaster ssh pattern. New surface: bytes
-move in both directions, sha256-anchored round-trip on every transfer.
+(Phase 1's read-only primitive); same ControlMaster ssh pattern, same
+sha256-anchored round-trip. New surface: bytes move in both directions
+under env-implicit authorization.
+
+Authorization model (env-implicit)
+----------------------------------
+The env-level `agent_scratch_target` block declares:
+  - the path that exists on the env
+  - the capabilities supported (`upload`, `download`, `exec` —
+    plus optionally `file_name_only` for snapshot visibility)
+
+Any project listed under this env via `compute_env_access` inherits
+the target en bloc. The project's `compute_env_access[].directories[]`
+list is reserved for PROJECT-SPECIFIC paths (the project's own data,
+typically protected). There is NO per-project re-declaration of env-
+level target paths.
+
+The security posture this enforces: env-level target paths are PUBLIC-
+DATA ZONES (no PHI, no protected data). Anything sensitive goes in a
+project's `directories[]` entry, where `file_name_only` is opt-in and
+the agent can never list a dir it wasn't explicitly authorized for.
+
+Multi-project isolation: every transfer is auto-prefixed with the
+project name (`<scratch>/<project>/<remote_subpath>`) so two projects
+on the same env cannot accidentally collide on the same scratch path.
 
 Constrained operation contract
 ------------------------------
-Two primitives — `upload_to_scratch` and `fetch_from_scratch` — each
-emits ONE subprocess invocation per phase, with a pinned shape:
+Two primitives emit ONE subprocess invocation per phase, with a pinned
+shape:
 
   local-mode:  shutil.copy + hashlib.sha256                (zero subprocess)
   ssh-mode:    `scp -o BatchMode=yes …` + `ssh … sha256sum`
                (BatchMode = fail fast, no password prompt; piggybacks on
                the user's open ssh ControlMaster the same way snapshot does)
 
-The `remote_subpath` is the ONLY agent-supplied path component (the
-scratch root comes from the env's validated `agent_scratch_target`),
-and it goes through `_validate_remote_subpath` (pure-string, no I/O)
-BEFORE any path resolution. Resolved paths are then re-checked to be
-inside the scratch root (defense-in-depth against symlink trickery
-that could redirect outside the sandbox).
-
-Permission gate
----------------
-Same as snapshot: every transfer goes through
-`compute_access.check_permission(project, env, path, op)` BEFORE any
-subprocess runs. Upload requires `upload`; fetch requires `fetch`.
-A breach of one direction does not grant the other.
+`remote_subpath` is the only agent-supplied path component (the scratch
+root + project prefix come from the validated config), and it goes
+through `_validate_remote_subpath` (pure-string, no I/O) BEFORE any
+path resolution. Resolved paths are re-checked to be inside the
+project's scratch root.
 
 Trust contract
 --------------
 Every transfer records a sha256 of the local bytes AND (ssh-mode) a
-sha256 computed remotely. Mismatch ⇒ refuse to declare success. This
-is the laptop/cluster trust anchor — the cluster never produces bytes
-that pass the round-trip without actually receiving/sending them.
+sha256 computed remotely. Mismatch ⇒ refuse to declare success. The
+laptop is the verifier; the cluster is the executor.
 
 Size cap
 --------
-`_MAX_TRANSFER_BYTES` (5 GB) is the practical limit for head-node
+`_MAX_TRANSFER_BYTES` (5 GiB) is the practical limit for head-node
 transfers. Larger payloads must go through `submit_cluster_job
 (job_type=data_acquisition)` (Phase 2, Step 6) which curl-resumes
-INSIDE a SLURM job, or eventually Globus (Phase 3). A 50 GB scp over
-the head node is a poor citizen; refuse rather than enable.
-
-Module surface
---------------
-This module exposes two functions: `upload_to_scratch(...)` and
-`fetch_from_scratch(...)`. The MCP wrappers live in
-`agent/mcp_tools/bridge_tools.py`. Cheat-guards live under
-`tests/integration/honesty/L14_compute_env_safety/`.
+INSIDE a SLURM job, or eventually Globus (Phase 3).
 """
 from __future__ import annotations
 
@@ -96,16 +101,16 @@ _FORBIDDEN_SUBPATH_CHARS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 class ScratchPathError(ValueError):
-    """A remote_subpath / local_path failed validation. Raised BEFORE any
-    subprocess runs. Surfaces as `{"error": "..."}` from the primitives."""
+    """A remote_subpath / local_path / project_name failed validation.
+    Raised BEFORE any subprocess runs. Surfaces as {"error": "..."} from
+    the primitives."""
 
 
 def _validate_remote_subpath(remote_subpath: str) -> str:
     """Return the normalized subpath if it passes every check, else raise
     ScratchPathError. The normalization is pure-string (no symlink resolve,
     no filesystem touch) — `os.path.normpath` collapses `a/./b` → `a/b`
-    and rejects `..` segments at the security boundary by inspecting the
-    output."""
+    and we then re-check for `..` segments at the security boundary."""
     if not isinstance(remote_subpath, str):
         raise ScratchPathError(
             f"remote_subpath must be a string, got {type(remote_subpath).__name__}")
@@ -119,24 +124,18 @@ def _validate_remote_subpath(remote_subpath: str) -> str:
         raise ScratchPathError(
             f"remote_subpath must be RELATIVE (no leading '/'), got "
             f"{remote_subpath!r} — the scratch root comes from the env's "
-            f"agent_scratch_target.path")
-    # Defense against shell-metachar smuggling. The scp/ssh argv pipeline
-    # quotes via shlex, but a leaked metachar in the remote_subpath would
-    # corrupt the audit-trail (logged verbatim) and may slip through if a
-    # future caller forgets to quote.
+            f"agent_scratch_target.path and the project-name prefix is auto-applied")
+    # Defense against shell-metachar smuggling.
     for c in remote_subpath:
         if c in _FORBIDDEN_SUBPATH_CHARS:
             raise ScratchPathError(
                 f"remote_subpath contains forbidden character "
                 f"{c!r} (codepoint {ord(c)}): {remote_subpath!r}")
-    # Reject the literal token `..` as ANY path component. `normpath` will
-    # collapse `a/b/../c` → `a/c`, which is fine, but `../escape` → `../escape`
-    # which we detect by re-splitting.
+    # Reject the literal token `..` as ANY path component.
     if any(part == ".." for part in remote_subpath.split("/")):
         raise ScratchPathError(
             f"remote_subpath has a '..' traversal component: {remote_subpath!r}")
-    # Normalize the path. After this, the only legal output is a relative
-    # path with no leading slash, no `..` components, no `.` components.
+    # Normalize the path.
     norm = os.path.normpath(remote_subpath)
     if norm.startswith("/") or norm.startswith(".."):
         raise ScratchPathError(
@@ -149,34 +148,50 @@ def _validate_remote_subpath(remote_subpath: str) -> str:
     return norm
 
 
-def _resolve_remote_path(scratch_root: str, remote_subpath_norm: str) -> str:
-    """Join the scratch root + validated normalized subpath, then re-verify
-    the result is inside the root. The pre-checks in
-    `_validate_remote_subpath` already guarantee this, but we re-check at
-    join time so a future refactor that bypasses validation surfaces here."""
-    root = scratch_root.rstrip("/")
-    joined = f"{root}/{remote_subpath_norm}"
-    # Final sanity: even after join, normpath must produce a string with
-    # the root as a strict prefix. This is the defense-in-depth layer.
-    joined_norm = os.path.normpath(joined)
-    if not (joined_norm == root or joined_norm.startswith(root + "/")):
+def _validate_project_name_token(project_name: str) -> str:
+    """The project name is auto-prepended to remote_subpath as the multi-
+    project isolation prefix; it MUST be a safe token (alnum + `_-`,
+    ≤64 chars) so it can't smuggle traversal or shell metacharacters into
+    the resolved path. Returns the unchanged name if it passes; raises
+    ScratchPathError otherwise."""
+    if not isinstance(project_name, str):
         raise ScratchPathError(
-            f"resolved remote path {joined_norm!r} escapes scratch root "
-            f"{root!r} — refusing")
+            f"project_name must be a string, got {type(project_name).__name__}")
+    if not compute_access._is_safe_token(project_name):
+        raise ScratchPathError(
+            f"project_name {project_name!r} is not a safe token (alnum + "
+            f"'_-' only, ≤64 chars). It's used as a path prefix; allowing "
+            f"unsafe chars would let a project name smuggle traversal or "
+            f"shell metacharacters into the resolved path.")
+    return project_name
+
+
+def _resolve_remote_path(scratch_root: str, project_name: str,
+                        remote_subpath_norm: str) -> str:
+    """Join `<scratch_root>/<project_name>/<remote_subpath_norm>` and
+    re-verify the result is inside the project's scratch namespace. The
+    project_name auto-prefix is the multi-project isolation knob: two
+    projects on the same env cannot collide on the same scratch path
+    because their resolved paths start with different project_name
+    components."""
+    root = scratch_root.rstrip("/")
+    proj_root = f"{root}/{project_name}"
+    joined = f"{proj_root}/{remote_subpath_norm}"
+    joined_norm = os.path.normpath(joined)
+    if not (joined_norm == proj_root or joined_norm.startswith(proj_root + "/")):
+        raise ScratchPathError(
+            f"resolved remote path {joined_norm!r} escapes project's scratch "
+            f"namespace {proj_root!r} — refusing")
     return joined_norm
 
 
 def _validate_local_path_for_upload(local_path: str) -> Path:
     """Check the local file we're uploading: must exist, be a REGULAR
     file (no symlinks — defense against a user's home symlink redirecting
-    to /etc/shadow), and be under the size cap.
-
-    Returns the resolved Path. Raises ScratchPathError on any failure.
-    Does NOT touch network; pure local stat."""
+    to /etc/shadow), and be under the size cap."""
     if not isinstance(local_path, str) or not local_path:
         raise ScratchPathError(f"local_path must be a non-empty string, got {local_path!r}")
     p = Path(local_path)
-    # is_symlink check uses lstat — must happen BEFORE exists() (which follows).
     if p.is_symlink():
         raise ScratchPathError(
             f"local_path {local_path!r} is a symlink; upload refuses symlinks "
@@ -200,24 +215,24 @@ def _validate_local_path_for_upload(local_path: str) -> Path:
     return p
 
 
-def _validate_local_path_for_fetch(local_path: str) -> Path:
-    """Check the local destination for a fetch: must be an absolute-or-
-    relative path string whose parent directory exists and is writable.
-    The path itself must NOT exist yet (no silent overwrites — same as
-    upload's never-overwrite contract on the remote side)."""
+def _validate_local_path_for_download(local_path: str) -> Path:
+    """Check the local destination for a download: must be a path string
+    whose parent directory exists and is writable; the path itself must
+    NOT exist (no silent overwrites — same as upload's never-overwrite
+    contract on the remote side)."""
     if not isinstance(local_path, str) or not local_path:
         raise ScratchPathError(f"local_path must be a non-empty string, got {local_path!r}")
     p = Path(local_path)
     if p.exists():
         raise ScratchPathError(
-            f"local_path {local_path!r} already exists; fetch refuses to "
+            f"local_path {local_path!r} already exists; download refuses to "
             f"overwrite. Remove the existing file (or pass a fresh path) "
             f"and retry.")
     parent = p.parent
     if not parent.exists():
         raise ScratchPathError(
             f"local_path's parent directory {str(parent)!r} does not exist; "
-            f"create it before fetching")
+            f"create it before downloading")
     if not os.access(parent, os.W_OK):
         raise ScratchPathError(
             f"local_path's parent directory {str(parent)!r} is not writable")
@@ -233,8 +248,7 @@ _HASH_CHUNK: int = 1024 * 1024   # 1 MiB; balances syscalls vs RSS
 
 def _compute_local_sha256(path: Path) -> str:
     """sha256 of a local file. Chunked read so a multi-GB file doesn't
-    spike RSS. Caller is responsible for not handing in a path that
-    failed `_validate_local_path_for_upload` (exists, regular, sized)."""
+    spike RSS."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
@@ -247,16 +261,14 @@ def _compute_local_sha256(path: Path) -> str:
 
 def _remote_sha256_cmd(remote_path: str) -> str:
     """The remote shell string for `sha256sum <path>`. Pinned by a test.
-    Path is the ONLY interpolated piece and is shlex.quote'd. Returns the
-    LITERAL string; the caller wraps it in ssh argv via `_ssh_argv`."""
+    Path is the ONLY interpolated piece and is shlex.quote'd."""
     return f"sha256sum {shlex.quote(remote_path)}"
 
 
 def _parse_sha256sum_output(stdout: str) -> Optional[str]:
     """Parse the `sha256sum` output: '<hex>  <path>\\n'. Returns the hex
-    or None on any malformation. sha256sum's output is stable across
-    coreutils versions but we tolerate trailing whitespace + multiple
-    lines (some sites' login shells emit MOTD banners)."""
+    or None on any malformation. Tolerates MOTD banners on login shells —
+    skip any line that doesn't start with a 64-hex digest."""
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
@@ -275,20 +287,7 @@ def _parse_sha256sum_output(stdout: str) -> Optional[str]:
 def _scp_argv(env: dict, src: str, dst: str) -> list[str]:
     """The scp argv for an ssh-mode env. BatchMode=yes (fail fast, no
     password prompt) and -p (preserve mtime, useful for debugging).
-    Piggybacks on the user's ControlMaster the same way ssh does — no
-    explicit -S socket arg needed; ssh_config / the open ControlMaster
-    take over.
-
-    `src` and `dst` are passed as separate argv elements; no shell
-    interpretation. One of them is of the form 'user@host:/abs/path' and
-    that ARGV element is the only thing that ever names the remote side.
-    """
-    host = env["host"]
-    user = env.get("user")
-    target_host = f"{user}@{host}" if user else host
-    # We don't string-format `target_host` into the src/dst here — the
-    # caller does, because direction (upload vs fetch) decides which side
-    # carries the prefix. We just emit the canonical scp argv.
+    Piggybacks on the user's ControlMaster the same way ssh does."""
     return ["scp", "-o", "BatchMode=yes", "-p", src, dst]
 
 
@@ -297,14 +296,8 @@ def _build_remote_target(env: dict, abs_remote_path: str) -> str:
     NOT shell-quoted — scp argv treats this as one argv element and the
     remote-side path is passed to the remote scp daemon which does its
     own minimal interpretation. We've already rejected shell metacharacters
-    in remote_subpath, so this is safe by construction.
-
-    However, paths containing whitespace would be a problem if we ever
-    allowed them — our forbidden-char set includes space-equivalents,
-    but to be defensive we ASSERT no space in the resolved path."""
+    + whitespace in remote_subpath."""
     if " " in abs_remote_path or "\t" in abs_remote_path:
-        # Should never happen — _validate_remote_subpath forbids these.
-        # Assertion-style raise: this is a bug, not a user error.
         raise ScratchPathError(
             f"resolved remote path contains whitespace: {abs_remote_path!r}")
     host = env["host"]
@@ -318,9 +311,7 @@ def _build_remote_target(env: dict, abs_remote_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _local_mkdir_parent(remote_abs_path: Path) -> None:
-    """Create parent dirs for a local-mode "remote" path. Idempotent.
-    We use 0o755 to keep things readable; on a real cluster the scp +
-    sftp daemon will likewise mkdir as needed via the user's umask."""
+    """Create parent dirs for a local-mode "remote" path. Idempotent."""
     remote_abs_path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -335,51 +326,47 @@ def upload_to_scratch(project_name: str,
                      *,
                      access_path: Optional[str] = None,
                      timeout: int = 600) -> dict:
-    """Push a local file into the project's authorized scratch sandbox on
-    `compute_env_name`.
+    """Push a local file into the agent's scratch sandbox on `compute_env_name`,
+    under this project's auto-prefixed namespace.
 
-    Authorization chain (every link must hold):
+    Authorization (env-implicit grant):
       1. Project exists in projects_access.yaml
-      2. compute_env_name is one of the project's compute_env_access entries
-      3. The env declares an `agent_scratch_target` (path + permissions)
-      4. The project's compute_env_access[].directories[] grants `upload`
-         on a path that contains the env's scratch root (check_permission
-         finds a matching entry via longest-prefix; here the resolved
-         absolute path inside scratch is checked)
+      2. Project has a `compute_env_access` entry naming `compute_env_name`
+      3. The env declares an `agent_scratch_target` block whose
+         `permissions:` includes `upload`
 
-    Path safety chain:
-      a. `local_path`: exists, is a REGULAR file (no symlinks), under the
-         5 GiB head-node cap
-      b. `remote_subpath`: non-empty, ≤255 chars, no leading '/',
-         no '..', no shell metacharacters, normalizes inside scratch root
-      c. The resolved absolute remote path is re-checked to be inside
-         the scratch root (defense-in-depth)
+    Multi-project isolation: the resolved path is auto-prefixed with
+    project_name. `upload_to_scratch('proj_a', ..., remote_subpath='x.txt')`
+    lands at `<scratch.path>/proj_a/x.txt` — proj_b cannot collide.
 
-    Trust chain:
+    Path safety:
+      a. `local_path`: exists, is a REGULAR file (no symlinks), under
+         the 5 GiB head-node cap
+      b. `remote_subpath`: non-empty, ≤255 chars, no leading '/', no '..',
+         no shell metacharacters, normalizes inside the project's
+         scratch namespace
+      c. `project_name`: safe token (alnum + '_-', ≤64 chars) — used as
+         the path-prefix component
+
+    Trust:
       i.  Compute local sha256 BEFORE transfer
       ii. Transfer via shutil.copy (local) OR `scp -o BatchMode=yes`
           (ssh) — pinned shape, no shell
-      iii. Compute remote sha256 via `sha256sum` (ssh-mode) or local read
+      iii. Compute remote sha256 via `sha256sum` (ssh) or local read
            (local-mode)
       iv. Mismatch ⇒ raise; success only on byte-perfect round-trip
 
-    Returns:
-      {
-        "success":     True,
-        "compute_env": "<env_name>",
-        "remote_path": "/abs/scratch/.../<remote_subpath>",
-        "sha256":      "<hex>",
-        "bytes":       <int>,
-        "duration_s":  <float>,
-        "transferred_at": "<iso utc>",
-      }
-
-    Returns {"error": "..."} on any validation/transfer/round-trip failure.
-    NEVER raises to the caller — the MCP surface is dict-in-dict-out.
+    Returns {success, compute_env, remote_path, sha256, bytes, duration_s,
+    transferred_at} on success; {"error": "..."} on any failure (no
+    exception escapes — MCP surface is dict-in-dict-out).
     """
     started = time.perf_counter()
     try:
-        # 1. Load + look up project + env.
+        # 1. Validate the project_name token BEFORE any I/O. It becomes part
+        # of every path we touch on the env, so it must be safe.
+        _validate_project_name_token(project_name)
+
+        # 2. Load + look up project + env.
         access = compute_access.load_access(
             Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
@@ -389,7 +376,7 @@ def upload_to_scratch(project_name: str,
         if env_type not in ("ssh", "local"):
             return {"error": f"unsupported compute_env type {env_type!r}"}
 
-        # 2. The env must declare a scratch target.
+        # 3. The env must declare a scratch target.
         scratch = compute_access.get_agent_scratch_target(env)
         if scratch is None:
             return {"error":
@@ -398,47 +385,43 @@ def upload_to_scratch(project_name: str,
                 f"compute_envs[] entry to enable upload_to_scratch."}
         scratch_root = scratch.get("path", "").rstrip("/")
 
-        # 3. Path safety (pure-string; no I/O).
-        norm_sub = _validate_remote_subpath(remote_subpath)
-        abs_remote = _resolve_remote_path(scratch_root, norm_sub)
+        # 4. Env-implicit grant check (project on env + env-target advertises
+        # the required capability). NO project-level directories[] walk.
+        compute_access.check_env_target_capability(
+            project, compute_env_name, scratch, "upload_to_scratch",
+            "agent_scratch_target")
 
-        # 4. Local-file safety + size cap.
+        # 5. Path safety (pure-string; no I/O).
+        norm_sub = _validate_remote_subpath(remote_subpath)
+        abs_remote = _resolve_remote_path(scratch_root, project_name, norm_sub)
+
+        # 6. Local-file safety + size cap.
         lp = _validate_local_path_for_upload(local_path)
 
-        # 5. Permission gate — the resolved abs path is project-authorized
-        # for the `upload_to_scratch` operation. Identical shape to Phase 1.
-        compute_access.check_permission(
-            project, compute_env_name, abs_remote, "upload_to_scratch")
-
-        # 6. Compute local sha256 (anchor before transfer).
+        # 7. Compute local sha256 (anchor before transfer).
         local_sha = _compute_local_sha256(lp)
         size_bytes = lp.stat().st_size
 
-        # 7. Transfer.
+        # 8. Transfer.
         if env_type == "local":
             dest = Path(abs_remote)
             _local_mkdir_parent(dest)
-            # shutil.copy preserves content; we don't need permissions (the
-            # daemon-equivalent for cluster mode wouldn't either).
             shutil.copy(str(lp), str(dest))
         else:  # ssh
             target = _build_remote_target(env, abs_remote)
-            # Best-effort remote-mkdir of the subpath's parent dir; some
-            # scp servers won't auto-create intermediate dirs. We do this
-            # via a small ssh call BEFORE the scp.
-            sub_parent_norm = os.path.dirname(norm_sub)
-            if sub_parent_norm:
-                parent_abs = _resolve_remote_path(scratch_root, sub_parent_norm)
-                mkdir_cmd = f"mkdir -p {shlex.quote(parent_abs)}"
-                mk_argv = _ssh_argv(env, mkdir_cmd)
-                mk = subprocess.run(mk_argv, capture_output=True,
-                                    text=True, timeout=timeout)
-                if mk.returncode != 0:
-                    hint = _ssh_failure_hint(mk.stderr, env.get("host", "?"))
-                    return {"error":
-                        f"remote mkdir -p failed (rc={mk.returncode}): "
-                        f"{mk.stderr.strip()}",
-                        **({"hint": hint} if hint else {})}
+            # Best-effort remote-mkdir of the parent (including the
+            # project-name prefix). scp servers don't auto-create
+            # intermediate dirs.
+            mkdir_cmd = f"mkdir -p {shlex.quote(os.path.dirname(abs_remote))}"
+            mk_argv = _ssh_argv(env, mkdir_cmd)
+            mk = subprocess.run(mk_argv, capture_output=True,
+                                text=True, timeout=timeout)
+            if mk.returncode != 0:
+                hint = _ssh_failure_hint(mk.stderr, env.get("host", "?"))
+                return {"error":
+                    f"remote mkdir -p failed (rc={mk.returncode}): "
+                    f"{mk.stderr.strip()}",
+                    **({"hint": hint} if hint else {})}
             argv = _scp_argv(env, str(lp), target)
             sc = subprocess.run(argv, capture_output=True, text=True,
                                 timeout=timeout)
@@ -448,7 +431,7 @@ def upload_to_scratch(project_name: str,
                     f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
                     **({"hint": hint} if hint else {})}
 
-        # 8. Verify round-trip sha256.
+        # 9. Verify round-trip sha256.
         if env_type == "local":
             remote_sha = _compute_local_sha256(Path(abs_remote))
         else:
@@ -485,41 +468,33 @@ def upload_to_scratch(project_name: str,
 
 
 # ---------------------------------------------------------------------------
-# fetch_from_scratch — the primitive
+# download_from_scratch — the primitive
 # ---------------------------------------------------------------------------
 
-def fetch_from_scratch(project_name: str,
-                      compute_env_name: str,
-                      remote_subpath: str,
-                      local_path: str,
-                      *,
-                      access_path: Optional[str] = None,
-                      timeout: int = 600) -> dict:
-    """Pull a file from the project's authorized scratch sandbox back to
-    a local path.
+def download_from_scratch(project_name: str,
+                         compute_env_name: str,
+                         remote_subpath: str,
+                         local_path: str,
+                         *,
+                         access_path: Optional[str] = None,
+                         timeout: int = 600) -> dict:
+    """Pull a file from this project's scratch namespace back to a local
+    path.
 
-    Symmetric to `upload_to_scratch` — same authorization chain (with
-    `fetch` instead of `upload` as the required permission), same
-    path safety chain, same round-trip sha256 verification.
+    Symmetric to `upload_to_scratch` — same env-implicit authorization,
+    same auto-prefix-by-project, same path-safety chain. The required
+    capability is `download` (discrete from `upload`; not a lattice).
 
     Local-path safety:
       - local_path must NOT exist yet (no silent overwrites)
       - its parent directory must exist and be writable
 
-    Returns:
-      {
-        "success":     True,
-        "compute_env": "<env_name>",
-        "remote_path": "/abs/scratch/.../<remote_subpath>",
-        "local_path":  "/abs/local/path",
-        "sha256":      "<hex>",
-        "bytes":       <int>,
-        "duration_s":  <float>,
-        "fetched_at":  "<iso utc>",
-      }
-    """
+    Returns {success, compute_env, remote_path, local_path, sha256,
+    bytes, duration_s, fetched_at} on success; {"error": "..."} on
+    refusal/failure."""
     started = time.perf_counter()
     try:
+        _validate_project_name_token(project_name)
         access = compute_access.load_access(
             Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
@@ -533,18 +508,18 @@ def fetch_from_scratch(project_name: str,
         if scratch is None:
             return {"error":
                 f"compute_env {compute_env_name!r} has no agent_scratch_target "
-                f"declared — fetch_from_scratch requires it."}
+                f"declared — download_from_scratch requires it."}
         scratch_root = scratch.get("path", "").rstrip("/")
 
+        # Env-implicit grant: project on env + target advertises `download`.
+        compute_access.check_env_target_capability(
+            project, compute_env_name, scratch, "download_from_scratch",
+            "agent_scratch_target")
+
         norm_sub = _validate_remote_subpath(remote_subpath)
-        abs_remote = _resolve_remote_path(scratch_root, norm_sub)
+        abs_remote = _resolve_remote_path(scratch_root, project_name, norm_sub)
 
-        # Permission gate (FETCH this time).
-        compute_access.check_permission(
-            project, compute_env_name, abs_remote, "fetch_from_scratch")
-
-        # Local destination: must not exist; parent must exist + be writable.
-        lp = _validate_local_path_for_fetch(local_path)
+        lp = _validate_local_path_for_download(local_path)
 
         # Compute remote sha256 BEFORE transfer — that's the anchor.
         if env_type == "local":
@@ -554,8 +529,8 @@ def fetch_from_scratch(project_name: str,
                     f"remote file does not exist: {abs_remote!r}"}
             if remote_p.is_symlink():
                 return {"error":
-                    f"refusing to fetch a symlink at {abs_remote!r} — "
-                    f"defense against the env redirecting fetch outside scratch"}
+                    f"refusing to download a symlink at {abs_remote!r} — "
+                    f"defense against the env redirecting download outside scratch"}
             if not remote_p.is_file():
                 return {"error":
                     f"remote path is not a regular file: {abs_remote!r}"}
@@ -563,11 +538,10 @@ def fetch_from_scratch(project_name: str,
             if size_bytes > _MAX_TRANSFER_BYTES:
                 return {"error":
                     f"remote file {abs_remote!r} is {size_bytes} bytes, "
-                    f"exceeds head-node fetch cap {_MAX_TRANSFER_BYTES}; "
+                    f"exceeds head-node download cap {_MAX_TRANSFER_BYTES}; "
                     f"use a SLURM data_acquisition job to stage instead."}
             remote_sha = _compute_local_sha256(remote_p)
         else:
-            # ssh-mode: stat (size + symlink check) then sha256.
             stat_cmd = (
                 f"stat -L -c '%F %s' {shlex.quote(abs_remote)} && "
                 f"test ! -L {shlex.quote(abs_remote)}")
@@ -593,7 +567,7 @@ def fetch_from_scratch(project_name: str,
             if size_bytes > _MAX_TRANSFER_BYTES:
                 return {"error":
                     f"remote file {abs_remote!r} is {size_bytes} bytes, "
-                    f"exceeds head-node fetch cap {_MAX_TRANSFER_BYTES}; "
+                    f"exceeds head-node download cap {_MAX_TRANSFER_BYTES}; "
                     f"use a SLURM data_acquisition job to stage instead."}
             sha_argv = _ssh_argv(env, _remote_sha256_cmd(abs_remote))
             sr = subprocess.run(sha_argv, capture_output=True, text=True,
@@ -622,11 +596,8 @@ def fetch_from_scratch(project_name: str,
                     f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
                     **({"hint": hint} if hint else {})}
 
-        # Verify round-trip sha256.
         local_sha = _compute_local_sha256(lp)
         if local_sha != remote_sha:
-            # Clean up partial file on mismatch — caller doesn't get a
-            # silently-corrupt artifact lingering on disk.
             try:
                 lp.unlink()
             except OSError:
