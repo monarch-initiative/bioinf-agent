@@ -641,6 +641,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     download_from_project_path,
     cluster_module_avail,
     cluster_job_status,
+    submit_workflow_job,
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,

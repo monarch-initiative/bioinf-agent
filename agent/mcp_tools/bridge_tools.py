@@ -336,3 +336,83 @@ def cluster_job_status(project_name: str,
         job_id=job_id,
         access_path=_resolve_access_path(),
     )
+
+
+@mcp.tool()
+def submit_workflow_job(project_name: str,
+                        compute_env_name: str,
+                        workflow_dir: str,
+                        workflow_name: str,
+                        tool_name: str,
+                        command: str,
+                        inputs: dict,
+                        outputs: dict,
+                        apptainer_sif: str,
+                        apptainer_module: str,
+                        nextflow_module: str,
+                        slurm: dict) -> dict:
+    """Render → upload → sbatch a one-process Nextflow workflow.
+
+    End-to-end submission primitive: takes a single-tool workflow spec,
+    renders main.nf/nextflow.config/launcher.sh via workflow_render,
+    uploads them to `workflow_dir` via upload_to_project_path, runs
+    `sbatch --parsable launcher.sh` over ssh, returns the SLURM job_id
+    the agent can poll with cluster_job_status.
+
+    Composition discipline: NOT a composite — the caller still calls
+    freeze() to build the env, upload_to_common_data to push the .sif,
+    cluster_job_status to poll, download_from_project_path to fetch
+    outputs. This primitive is the irreducible *submission* step.
+
+    Authorization (Phase-1 explicit, dir-by-dir):
+      - project must have a `compute_env_access` entry for the env
+      - the project's `directories[]` under that env must contain
+        `workflow_dir` (longest-prefix match) with `permissions:`
+        including BOTH `upload` (for the file pushes) AND `exec` (so
+        the SLURM job may write outputs in-place during execution)
+
+    Inputs:
+      workflow_dir       absolute remote path; the per-run dir on the
+                         compute env. No-overwrite contract means a
+                         second submit to the same dir fails — pick a
+                         fresh per-run subdir per submission.
+      workflow_name      safe-token, ≤64 chars. Used for `sbatch
+                         --job-name` AND in render_workflow's tag.
+      tool_name          safe-token; identifies the tool in
+                         process_name + comments.
+      command            single-line shell command with `${name}`
+                         placeholders bound to inputs/outputs.
+      inputs             {placeholder_name: remote_abs_path} — what
+                         the running process will read.
+      outputs            {placeholder_name: bare_filename} — what the
+                         process writes (to the working dir).
+      apptainer_sif      absolute remote path to the frozen .sif.
+                         Caller uploads via upload_to_common_data
+                         first; pass the remote path here.
+      apptainer_module   Lmod token, e.g. "apptainer/1.4.1".
+      nextflow_module    Lmod token, e.g. "nextflow/25.04.7".
+      slurm              {queue, time, mem, cpus, account?} —
+                         closed-key block (typos refused).
+
+    Returns on success:
+      {success: True, compute_env, job_id, workflow_dir,
+       files_uploaded: [...], submitted_at, upload_started}
+    Returns {"error": "...", ...} on any refusal/failure. If sbatch
+    fails after files have been uploaded, files_uploaded is
+    included so the caller can clean up."""
+    from agent.skills import submit_workflow
+    return submit_workflow.submit_workflow_job(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        workflow_dir=workflow_dir,
+        workflow_name=workflow_name,
+        tool_name=tool_name,
+        command=command,
+        inputs=inputs,
+        outputs=outputs,
+        apptainer_sif=apptainer_sif,
+        apptainer_module=apptainer_module,
+        nextflow_module=nextflow_module,
+        slurm=slurm,
+        access_path=_resolve_access_path(),
+    )

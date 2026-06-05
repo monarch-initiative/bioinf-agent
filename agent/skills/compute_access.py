@@ -97,6 +97,10 @@ OPERATION_REQUIRES: dict[str, str] = {
     # Project workspaces — Phase-1 directories[] gate (project-explicit auth):
     "upload_to_project_path":     "upload",
     "download_from_project_path": "download",
+    # The dir that an sbatched SLURM job runs in must declare `exec` so
+    # the job is allowed to write its own outputs in-place during
+    # execution (distinct from the agent's single-shot `upload`).
+    "submit_workflow_job":        "exec",
     # "job_workdir_scratch":     "exec",
     # "job_output_common_data":  "exec",
 }
