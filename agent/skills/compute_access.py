@@ -111,10 +111,20 @@ class ConfigError(Exception):
 
 
 def default_access_path() -> Path:
-    """The canonical location for projects_access.yaml. The MCP wrapper / agent
-    invocations may override via an explicit `access_path=` kwarg; this is the
-    default. (Auto-discovery from cwd/repo-root is a deferred design question —
-    today, pass `access_path=` if your file lives elsewhere.)"""
+    """Canonical location for projects_access.yaml.
+
+    Preference order:
+      1. ``<repo_root>/projects_access.yaml`` — the live-file convention this
+         repo uses (the user keeps it alongside the source tree).
+      2. ``~/.bioinf/projects_access.yaml`` — historical homedir location;
+         returned as a fallback even if it doesn't exist, so callers get a
+         deterministic path string to put in their FileNotFoundError.
+
+    Callers may override with an explicit ``access_path=`` kwarg.
+    """
+    repo_candidate = Path(__file__).resolve().parents[2] / "projects_access.yaml"
+    if repo_candidate.exists():
+        return repo_candidate
     return Path.home() / ".bioinf" / "projects_access.yaml"
 
 

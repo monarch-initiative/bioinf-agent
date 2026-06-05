@@ -719,11 +719,9 @@ from agent.mcp_tools.workflow_tools import (  # noqa: E402,F401
 )
 
 
-if __name__ == "__main__":
-    # The MCP-server process is the ONLY caller authorized to reap the service
-    # registry — see _reap_orphan_service_pids comment above (N5). Subprocesses
-    # that import this module (the W1 freeze_runner, tests) never reach here.
-    _reap_orphan_service_pids()
-    if os.environ.get("BIOINF_MCP_AUTO_RELOAD") == "1":
-        _watch_and_exit_on_change()
-    mcp.run()
+# Entry point lives in agent/__main__.py (`python -m agent`). Do NOT run this
+# file directly as `python -m agent.mcp_server` — that loads it twice (once as
+# __main__, once as agent.mcp_server via the submodule back-import) and the
+# `mcp` that gets `.run()`'d is the empty first instance. See agent/__main__.py
+# for the full explanation. The service-PID reaper + auto-reload watchdog are
+# triggered from there, on the canonical module's `mcp`.
