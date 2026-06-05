@@ -1,21 +1,63 @@
 # HPC Bridge — Phase A test-drive playbook
 
-**Goal:** drive the 7 live bridge tools against your real hpc_cluster
-account and surface any wiring bugs BEFORE we build the workflow
-submission layer (Phase B).
+**Goal:** drive the live bridge tools against real hpc_cluster and surface
+any wiring bugs BEFORE Phase B (cluster_job_status + minimum
+submit_workflow_job) lands.
 
-**Driver:** YOU, from your MCP session. The agent (me) never runs ssh
-directly against the cluster — head-node hygiene per
-[[feedback-no-cheeky-head-node-testing]]. I sit on the sidelines, you
-paste back the result, I fix anything that surfaces.
+**Driver:** the agent (me), when the user opens `ssh hpc-agent` and
+explicitly asks. Head-node hygiene per
+[[feedback-no-cheeky-head-node-testing]] — exception case applies.
 
-**Status reference:**
+---
+
+## 🎯 MINIMUM PATH (4 calls, ~7 ssh hops, ~3 sec cluster time)
+
+These 4 calls learn everything we need from real hpc_cluster. Local L14 +
+E2E tests already prove byte-and-validator logic; only the ssh wire and
+Lmod parser interactions are new.
+
+**Setup (user-side, one bash):**
+
+```bash
+echo "phase A - $(date)" > /tmp/phase_a_test.txt
+TS=$(date +%s)
+echo "$TS"  # remember this number
+```
+
+**The 4 MCP calls (agent-driven):**
+
+| # | Call | Validates |
+|---|---|---|
+| 1 | `snapshot_project("hpc_cluster_test")` | Phase-1 auth + Step 2.5 env-target walk |
+| 2 | `cluster_module_avail("hpc_cluster_test", "hpc_cluster", pattern="nextflow")` | Lmod parser on real output; gives Phase B's nextflow version |
+| 3 | `upload_to_scratch("hpc_cluster_test", "hpc_cluster", "/tmp/phase_a_test.txt", "phase_a/test_<TS>.txt")` | scp + sha256 round-trip + auto-prefix |
+| 4 | `upload_to_scratch(...same args as 3...)` | overwrite refusal's `test -e` ssh shape works |
+
+**Green-light shape per call:**
+
+| # | Expected |
+|---|---|
+| 1 | `entries: [...]`, `entry_count > 0`, `compute_envs: ["hpc_cluster"]`. Empty `errors[]` (or only "namespace dir missing" silent-skips). |
+| 2 | `modules: [...]`, no English-word contamination (no `Default`/`loaded`/etc), at least one `nextflow/<version>`. |
+| 3 | `success: True`, `remote_path` contains `/CLAUDE_SCRATCH/hpc_cluster_test/phase_a/test_<TS>.txt` (auto-prefix present), `sha256` populated. |
+| 4 | `error` containing `already exists` and `refuses overwrites`. NOT `success: True`. |
+
+Skipped from full playbook below (already covered by local tests +
+shares 90% of code with the 4 above): download_from_scratch,
+common_data round-trip, project_path tests.
+
+---
+
+## Status reference
+
 - 7 bridge tools live: `snapshot_project`, `cluster_module_avail`,
   `upload_to_scratch`, `download_from_scratch`,
   `upload_to_common_data`, `download_from_common_data`,
   `upload_to_project_path`, `download_from_project_path`
 - `projects_access.yaml` at the repo root, with `hpc_cluster_test` project
   pointing at the `hpc_cluster` env
+- Commits on `feature/hpc-bridge-phase2`: Steps 1, 2, 2.5, 3, 4 +
+  playbook = 6 commits total, none pushed
 
 ---
 
