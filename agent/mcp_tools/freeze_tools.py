@@ -397,6 +397,20 @@ def freeze(
         record["resolved_packages"] = br.get("resolved_packages", [])
         record["system_packages"] = br.get("system_packages", [])
         record["push_status"] = push_status
+    if mode == "adopt":
+        # adopt_source — the biocontainer-resolver's output, preserved on the
+        # record so the report can show the actual tag (human version, e.g.
+        # samtools `1.21--h50ea8bc_0`) instead of just the manifest digest, and
+        # so the install-commands section can render the `apptainer pull` that
+        # produced this artifact. The digest in `image` is the only trust
+        # anchor; the tag is provenance display.
+        record["adopt_source"] = {
+            "repo":            adopt.get("repo"),
+            "tag":             adopt.get("tag"),
+            "image_by_tag":    adopt.get("image"),
+            "image_by_digest": adopt.get("image_by_digest"),
+            "digest":          adopt.get("digest"),
+        }
     _ms._env_cache.register(rkey, record)
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):

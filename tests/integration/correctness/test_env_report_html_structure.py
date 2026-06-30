@@ -171,3 +171,114 @@ def test_renderer_is_pure_no_filesystem_side_effects(tmp_path, monkeypatch):
     _ = render_env_report_html(_build_record())
     created = list(tmp_path.iterdir())
     assert not created, f"renderer created files: {created}"
+
+
+# ===========================================================================
+# Adopt-mode provenance — installed_version + install_commands populated
+# from the EnvCache record. The earlier renderer left these cells empty
+# whenever the user requested 'any' version; that's the gap this pins.
+# ===========================================================================
+
+def _adopt_record_with_source() -> dict:
+    """Adopt record that carries the full biocontainer resolution metadata
+    (the going-forward shape captured by freeze_tools.py)."""
+    return {
+        **_adopt_record(),
+        "adopt_source": {
+            "repo":            "samtools",
+            "tag":             "1.21--h50ea8bc_0",
+            "image_by_tag":    "quay.io/biocontainers/samtools:1.21--h50ea8bc_0",
+            "image_by_digest": ("quay.io/biocontainers/samtools@sha256:"
+                                "23cda33a3a42125872766df9aaf1d2db67cdb8c8"
+                                "5314b793465188435af31ba6"),
+            "digest":          ("sha256:23cda33a3a42125872766df9aaf1d2db67"
+                                "cdb8c85314b793465188435af31ba6"),
+        },
+        "image": ("quay.io/biocontainers/samtools@sha256:23cda33a3a4212587"
+                  "2766df9aaf1d2db67cdb8c85314b793465188435af31ba6"),
+    }
+
+
+def _adopt_record_legacy_no_source() -> dict:
+    """Adopt record frozen BEFORE adopt_source capture landed — only `image`
+    + `image_digest` + `requested_tools` are present (the actual shape of
+    user-frozen samtools-as-of-2026-06-05 in EnvCache). No conda_specs and
+    no resolved_packages — so no version source other than image_digest.
+    Renderer must still surface useful info."""
+    return {
+        "name": "test_env_adopt_legacy",
+        "mode": "adopt",
+        "image": ("quay.io/biocontainers/samtools@sha256:23cda33a3a42125"
+                  "872766df9aaf1d2db67cdb8c85314b793465188435af31ba6"),
+        "image_digest": ("sha256:23cda33a3a42125872766df9aaf1d2db67cdb8c8"
+                         "5314b793465188435af31ba6"),
+        "content_digest": ("sha256:23cda33a3a42125872766df9aaf1d2db67cdb8c8"
+                           "5314b793465188435af31ba6"),
+        "platform": "linux/amd64",
+        "created_at": "2026-06-05T00:00:00Z",
+        "requested_tools": ["samtools"],
+        "validation_locus": "adopted",
+    }
+
+
+@pytest.mark.integration
+def test_adopt_installed_version_prefers_biocontainer_tag():
+    """When adopt_source.tag is present (the going-forward shape), the
+    Installed Version cell shows the tag (human-readable bioconda
+    version like `1.21--h50ea8bc_0`) — not just '—'."""
+    html = render_env_report_html(_adopt_record_with_source())
+    # The tag must appear in the rendered Tools table (the cell content).
+    assert "1.21--h50ea8bc_0" in html
+
+
+@pytest.mark.integration
+def test_adopt_installed_version_falls_back_to_digest_handle_for_legacy():
+    """Legacy adopt records (no adopt_source) still get something useful in
+    the Installed Version cell — a shortened digest handle — instead of
+    a blank dash. This pins the legacy-record graceful-degrade."""
+    html = render_env_report_html(_adopt_record_legacy_no_source())
+    # The first 19 chars of the digest must surface (the short handle).
+    assert "sha256:23cda33a3a42" in html
+    assert "digest only — tag not captured" in html
+
+
+@pytest.mark.integration
+def test_adopt_install_commands_section_renders_apptainer_pull():
+    """The Install Commands section must show the apptainer pull command
+    for adopt mode (the install command IS the digest-pinned pull),
+    whether or not adopt_source is populated."""
+    # With adopt_source — full provenance display
+    html_full = render_env_report_html(_adopt_record_with_source())
+    assert "apptainer pull docker://" in html_full
+    assert "quay.io/biocontainers/samtools@sha256:23cda33a3a42" in html_full
+    # The h2 note explains this is the install command for adopt mode.
+    assert ("adopt — pull the published biocontainer by manifest digest"
+            in html_full)
+
+    # Legacy record — same pull command, with a note that the tag was
+    # not captured at freeze time.
+    html_legacy = render_env_report_html(_adopt_record_legacy_no_source())
+    assert "apptainer pull docker://" in html_legacy
+    assert "tag not captured at freeze time" in html_legacy
+
+
+@pytest.mark.integration
+def test_adopt_install_commands_no_longer_says_no_long_tail_steps():
+    """Old behavior: adopt mode rendered '(no long-tail steps — pure
+    conda env or adopted biocontainer)' inside Install Commands, which
+    made the section look like dead space. New behavior: adopt mode
+    renders the actual pull command. Pin the dead-space message is gone."""
+    html = render_env_report_html(_adopt_record_with_source())
+    assert "no long-tail steps" not in html.lower()
+
+
+@pytest.mark.integration
+def test_adopt_html_escapes_image_ref():
+    """Defense-in-depth — the image ref is HTML-escaped before insertion.
+    Stuff a `<script>` tag into the digest field and confirm it doesn't
+    survive escape."""
+    rec = _adopt_record_with_source()
+    rec["image"] = "quay.io/foo@sha256:<script>alert('xss')</script>"
+    html = render_env_report_html(rec)
+    assert "<script>alert" not in html
+    assert "&lt;script&gt;" in html

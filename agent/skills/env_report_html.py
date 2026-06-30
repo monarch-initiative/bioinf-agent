@@ -188,13 +188,28 @@ def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str
 
 
 def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[dict],
-                       req_v: str, shipped: Optional[list] = None) -> str:
-    """ADOPT: the requested version (biocontainer manifest digest binds it to
-    exactly that bioconda build — 'installed == requested' is honest, no in-locus
-    probe). BUILD: defer to _resolved_version (conda/pip > banner > out > anchor)
-    — shared with the .md renderer so the two views stay aligned."""
+                       req_v: str, shipped: Optional[list] = None,
+                       adopt_source: Optional[dict] = None,
+                       image_digest: str = "") -> str:
+    """ADOPT: prefer the biocontainer tag (carries the human version, e.g.
+    `1.21--h50ea8bc_0` for samtools), fall back to the requested version, fall
+    back to a short manifest-digest handle. The biocontainer manifest digest
+    binds it to exactly that bioconda build — 'installed == requested' is honest,
+    no in-locus probe.
+
+    Legacy records (frozen before adopt_source was captured) only have the
+    digest; we surface the short form rather than leave the cell empty.
+
+    BUILD: defer to _resolved_version (conda/pip > banner > out > anchor) —
+    shared with the .md renderer so the two views stay aligned."""
     if is_adopt:
-        return req_v or ""
+        if adopt_source and adopt_source.get("tag"):
+            return adopt_source["tag"]
+        if req_v:
+            return req_v
+        if image_digest:
+            return f"{image_digest[:19]}… (digest only — tag not captured)"
+        return ""
     return _resolved_version(t, pkg, v, shipped)
 
 
@@ -211,6 +226,8 @@ def render_env_report_html(record: dict) -> str:
     verifs = list(r.get("verifications") or [])
     shipped = list(r.get("shipped_binaries") or [])
     conda_specs = list(r.get("conda_specs") or [])
+    adopt_source = r.get("adopt_source") if isinstance(r.get("adopt_source"), dict) else None
+    image_digest_raw = r.get("image_digest") or ""
     vidx, pidx = _verif_index(verifs), _pkg_index(resolved)
     req_versions = _requested_versions(r)
     requested_set = {t.lower() for t in requested}
@@ -279,7 +296,9 @@ def render_env_report_html(record: dict) -> str:
             v = vidx.get(t.lower())
             req_v = req_versions.get(t, "")
             req_cell = f"={_e(req_v)}" if req_v else '<span class="muted">(any)</span>'
-            inst_v = _installed_version(t, is_adopt, pkg, v, req_v, shipped)
+            inst_v = _installed_version(t, is_adopt, pkg, v, req_v, shipped,
+                                         adopt_source=adopt_source,
+                                         image_digest=image_digest_raw)
             anchor = _install_anchor(t, shipped)
             if inst_v and anchor and anchor != inst_v and _is_sha(anchor):
                 # full provenance: banner/conda version + the commit it was built
@@ -330,22 +349,48 @@ def render_env_report_html(record: dict) -> str:
     # synthesized/perl/cargo/go install bodies baked verbatim into the
     # shipped image — the command IS the provenance.
     P.append('<section class="bx">')
-    P.append(f'<h2>Install commands <span class="note">({len(shipped)} long-tail '
-             'step(s) baked verbatim into the shipped image — the command IS '
-             'the provenance)</span></h2>')
-    P.append('<div class="bx-body">')
-    if shipped:
-        P.append('<details open><summary>Verbatim long-tail commands</summary>')
-        for s in shipped:
-            label = s.get("name") or s.get("purpose") or "tool"
-            cmd = (s.get("command") or "").strip()
-            P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b></p>')
-            if cmd:
-                P.append(f"<pre>{_e(cmd)}</pre>")
-        P.append("</details>")
+    if is_adopt:
+        # For an ADOPT, the install command IS the apptainer/docker pull-by-digest
+        # against the published biocontainer. The bytes WE shipped == the bytes
+        # the BioContainer registry serves at that digest — pulling by digest is
+        # the install. We render it whether or not adopt_source is populated
+        # (legacy records have just `image`, which is enough to reconstruct).
+        image_ref = r.get("image", "")
+        pull_cmd = f"apptainer pull docker://{image_ref}" if image_ref else ""
+        P.append('<h2>Install commands '
+                 '<span class="note">(adopt — pull the published biocontainer '
+                 'by manifest digest; the digest IS the provenance)</span></h2>')
+        P.append('<div class="bx-body">')
+        if adopt_source and adopt_source.get("tag"):
+            P.append('<p style="margin:10px 0 2px"><b>'
+                     f'{_e(adopt_source.get("repo") or "biocontainer")} '
+                     f'@ tag <code>{_e(adopt_source["tag"])}</code></b></p>')
+        elif image_ref:
+            P.append('<p style="margin:10px 0 2px"><b>'
+                     'biocontainer (tag not captured at freeze time; '
+                     'manifest digest pins identity)</b></p>')
+        if pull_cmd:
+            P.append(f'<pre>{_e(pull_cmd)}</pre>')
+        else:
+            P.append(_empty("(no image ref recorded — cannot reconstruct command)"))
+        P.append('</div></section>')
     else:
-        P.append(_empty("(no long-tail steps — pure conda env or adopted biocontainer)"))
-    P.append('</div></section>')
+        P.append(f'<h2>Install commands <span class="note">({len(shipped)} long-tail '
+                 'step(s) baked verbatim into the shipped image — the command IS '
+                 'the provenance)</span></h2>')
+        P.append('<div class="bx-body">')
+        if shipped:
+            P.append('<details open><summary>Verbatim long-tail commands</summary>')
+            for s in shipped:
+                label = s.get("name") or s.get("purpose") or "tool"
+                cmd = (s.get("command") or "").strip()
+                P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b></p>')
+                if cmd:
+                    P.append(f"<pre>{_e(cmd)}</pre>")
+            P.append("</details>")
+        else:
+            P.append(_empty("(no long-tail steps — pure conda env)"))
+        P.append('</div></section>')
 
     # -- SYSTEM (apt) PACKAGES (always shown; foldable when present) --------
     P.append('<section class="bx">')
