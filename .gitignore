@@ -67,6 +67,10 @@ Thumbs.db
 data/*_stress_test_data/
 data/*_test_data/
 
+# Per-run cluster output dirs — created by run_step_on_cluster + production
+# fetches into data/{workflow}_outputs/. Local-only.
+data/*_outputs/
+
 # One-shot driver scripts (per-session validation drivers; the integration suite
 # is the durable surface — drivers are throwaway).
 data/_drivers/

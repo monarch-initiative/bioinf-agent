@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=phenologs_full
+#SBATCH --time=08:00:00
+#SBATCH --mem=6G
+#SBATCH --output=phenologs_sbatch_out.log
+#SBATCH --error=phenologs_sbatch_error.log
+#SBATCH --mail-type=END
+#SBATCH --mail-user=aaron@tislab.org
+
+
+#############################
+#############################
+### Enviornment and setup ###
+module purge
+module load apptainer/1.4.1
+module load nextflow/25.04.7
+###module load gcloud/502.0.0
+
+
+### Project directory and release setup ###
+PARENT_DIR="/work/users/u/s/user1/PHENOLOGS_RESEARCH/"
+RELEASE_DATE="$(date +%Y_%m_%d)"
+RELEASE_DIR="${RELEASE_DATE}_phenologs_release"
+
+### Path to nextflow scripts ###
+NEXTFLOW_MAIN="/work/users/u/s/user1/PHENOLOGS_RESEARCH/nextflow_scripts/main.nf"
+NEXTFLOW_UPLOAD="/work/users/u/s/user1/PHENOLOGS_RESEARCH/nextflow_scripts/upload.nf"
+NEXTFLOW_CONFIG="/work/users/u/s/user1/PHENOLOGS_RESEARCH/nextflow_scripts/nextflow.config"
+APPTAINER_ENV="/work/users/u/s/user1/CONTAINERS/monarch-phenologs.sif"
+
+
+### Change to and setup our release/working directory ### 
+cd "$PARENT_DIR"
+mkdir -p "$RELEASE_DIR"
+cd "$RELEASE_DIR"
+
+
+############################################################
+### Nextflow run command for disease portion of pipeline ###
+nextflow run "$NEXTFLOW_MAIN" \
+	  -c "$NEXTFLOW_CONFIG" \
+  	  -profile slurm_apptainer \
+  	  -with-dag "phenologs_disease_dag_${RELEASE_DATE}.html" \
+  	  -with-report "phenologs_disease_report_${RELEASE_DATE}.html" \
+	  -process.container "$APPTAINER_ENV" \
+	  --graph_version "latest" \
+	  --phenio_version "latest" \
+  	  --n_random_trials 1000 \
+  	  --taxon_id 9606 \
+  	  --prd "disease" \
+	  --rank_metric "nb" \
+	  --kneighbs 10 \
+	  --rank_type "gene" \
+  	  --xvalidate_calc true \
+  	  --xvalidate_rank true \
+	  -resume
+
+
+#####################
+### Clean up step ###
+###rm -rf work
+###nextflow clean -f
