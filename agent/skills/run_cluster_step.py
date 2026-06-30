@@ -75,9 +75,9 @@ from typing import Mapping, Optional
 from agent.skills import (
     cluster_jobs,
     compute_access,
-    scratch,
     stage_apptainer,
     submit_workflow,
+    transfer,
 )
 
 
@@ -250,14 +250,14 @@ def run_step_on_cluster(
 
         for fname in _RENDERED_FILES:
             local = str(tdp / fname)
-            # upload_to_scratch auto-prefixes by project_name, so
-            # `<workflow_name>/<fname>` lands at
-            # <scratch>/<project>/<workflow_name>/<fname>.
-            up = scratch.upload_to_scratch(
+            # workflow_dir already includes project_name; pass the full
+            # absolute path. transfer.upload routes via scratch zone
+            # because the path is under env.agent_scratch_target.
+            up = transfer.upload(
                 project_name=project_name,
                 compute_env_name=compute_env_name,
                 local_path=local,
-                remote_subpath=f"{workflow_name}/{fname}",
+                remote_abs_path=f"{workflow_dir}/{fname}",
                 access_path=str(Path(access_path)) if access_path else None,
                 timeout=300)
             if "error" in up:
@@ -265,7 +265,7 @@ def run_step_on_cluster(
                     f"upload of {fname} to scratch failed: {up['error']}",
                     "stage_result": stage,
                     "files_uploaded": files_uploaded}
-            files_uploaded.append(up["remote_path"])
+            files_uploaded.append(up["remote_abs_path"])
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
@@ -341,13 +341,12 @@ def run_step_on_cluster(
     download_errors: list[dict] = []
     for placeholder, filename in outputs.items():
         local = str(download_dir / filename)
-        # download_from_scratch auto-prefixes by project_name, so
-        # remote_subpath = "<workflow_name>/<filename>" maps to
-        # <scratch>/<project>/<workflow_name>/<filename>.
-        dl = scratch.download_from_scratch(
+        # workflow_dir is the scratch sandbox for this job; outputs
+        # live there with their declared filenames.
+        dl = transfer.download(
             project_name=project_name,
             compute_env_name=compute_env_name,
-            remote_subpath=f"{workflow_name}/{filename}",
+            remote_abs_path=f"{workflow_dir}/{filename}",
             local_path=local,
             access_path=access_path)
         if "error" in dl:

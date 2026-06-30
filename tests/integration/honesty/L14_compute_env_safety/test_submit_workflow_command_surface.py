@@ -330,19 +330,22 @@ class TestHappyPath:
         # upload_to_project_path directly to a thin stub — keeps this
         # test focused on submit_workflow_job, not on scp wire details
         # (those are already covered by L14's project_path tests).
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {
                 "success": True,
                 "compute_env": kw["compute_env_name"],
-                "remote_path": kw["abs_path"],
-                "sha256": "0" * 64,
+                "remote_abs_path": kw["remote_abs_path"],
+                "zone": "project_path",
+                "provider": "scp_head_node",
+                "local_sha256": "0" * 64,
                 "bytes": 1,
                 "duration_s": 0.001,
-                "transferred_at": "2026-06-05T00:00:00+00:00",
+                "verified_method": "sha256_round_trip",
+                "manifest": "/tmp/fake_manifest.json",
             }
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = submit_workflow.submit_workflow_job(
@@ -372,13 +375,17 @@ class TestSbatchFailures:
     def test_sbatch_nonzero_returns_error_with_files_uploaded(
             self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "local_sha256": "0"*64,
                     "bytes": 1, "duration_s": 0.001,
-                    "transferred_at": "2026-06-05T00:00:00+00:00"}
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json"}
 
         def fake_run(*a, **kw):
             mock = MagicMock()
@@ -387,7 +394,7 @@ class TestSbatchFailures:
             mock.stderr = "sbatch: error: invalid partition\n"
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = submit_workflow.submit_workflow_job(
@@ -401,13 +408,17 @@ class TestSbatchFailures:
     def test_sbatch_succeeds_but_stdout_unparseable(
             self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "local_sha256": "0"*64,
                     "bytes": 1, "duration_s": 0.001,
-                    "transferred_at": "2026-06-05T00:00:00+00:00"}
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json"}
 
         def fake_run(*a, **kw):
             mock = MagicMock()
@@ -416,7 +427,7 @@ class TestSbatchFailures:
             mock.stderr = ""
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = submit_workflow.submit_workflow_job(
@@ -430,7 +441,7 @@ class TestSbatchFailures:
     def test_upload_failure_returns_partial_progress(
             self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         # Succeed on the first upload, fail on the second.
         calls = {"n": 0}
@@ -439,7 +450,12 @@ class TestSbatchFailures:
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"success": True, "compute_env": kw["compute_env_name"],
-                        "remote_path": kw["abs_path"], "sha256": "0"*64,
+                        "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json",
+                    "local_sha256": "0"*64,
                         "bytes": 1, "duration_s": 0.001,
                         "transferred_at": "2026-06-05T00:00:00+00:00"}
             return {"error": "remote path already exists: ..."}
@@ -451,7 +467,7 @@ class TestSbatchFailures:
             mock.stderr = ""
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = submit_workflow.submit_workflow_job(
@@ -506,11 +522,16 @@ class TestSubmissionManifest:
         access_path = _good_access(tmp_path)
 
         # Stub upload + ssh subprocess.
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json",
+                    "local_sha256": "0"*64,
                     "bytes": 1, "duration_s": 0.001,
                     "transferred_at": "t"}
 
@@ -521,7 +542,7 @@ class TestSubmissionManifest:
             mock.stderr = ""
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.chdir(tmp_path)  # so the manifest lands in tmp_path
 
@@ -540,11 +561,16 @@ class TestSubmissionManifest:
             self, tmp_path, monkeypatch):
         import json
         access_path = _good_access(tmp_path)
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json",
+                    "local_sha256": "0"*64,
                     "bytes": 1, "duration_s": 0.001,
                     "transferred_at": "t"}
 
@@ -553,7 +579,7 @@ class TestSubmissionManifest:
             mock.stdout = "1234567\n"; mock.stderr = ""
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.chdir(tmp_path)
 
@@ -586,11 +612,16 @@ class TestSubmissionManifest:
         # didn't happen. Avoids polluting job_submissions/ with
         # phantom entries.
         access_path = _good_access(tmp_path)
-        from agent.skills import project_path as _pp
+        from agent.skills import transfer as _tr
 
         def fake_upload(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "project_path",
+                    "provider": "scp_head_node",
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json",
+                    "local_sha256": "0"*64,
                     "bytes": 1, "duration_s": 0.001, "transferred_at": "t"}
 
         def fake_run(*a, **kw):
@@ -598,7 +629,7 @@ class TestSubmissionManifest:
             mock.stderr = "sbatch: error: bad queue\n"
             return mock
 
-        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.chdir(tmp_path)
 

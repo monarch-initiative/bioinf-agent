@@ -633,12 +633,8 @@ from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level 
 # list grows alongside the mcp_tools package; populated per phase as tools
 # move out.
 from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
-    upload_to_scratch,
-    download_from_scratch,
-    upload_to_common_data,
-    download_from_common_data,
-    upload_to_project_path,
-    download_from_project_path,
+    upload,
+    download,
     cluster_module_avail,
     cluster_job_status,
     submit_workflow_job,

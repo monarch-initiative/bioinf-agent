@@ -66,186 +66,87 @@ def _resolve_access_path() -> str | None:
 
 
 @mcp.tool()
-def upload_to_scratch(project_name: str,
-                     compute_env_name: str,
-                     local_path: str,
-                     remote_subpath: str,
-                     async_globus: bool = False) -> dict:
-    """Push a local file into the agent's scratch sandbox on a compute env,
-    under THIS project's auto-prefixed namespace. sha256 round-trip is
-    verified; mismatch refuses.
+def upload(project_name: str,
+           compute_env_name: str,
+           local_path: str,
+           remote_abs_path: str,
+           async_globus: bool = False) -> dict:
+    """Push a local file to an ABSOLUTE path on a compute env. The auth
+    family is auto-routed by where the path falls — agent scratch
+    sandbox, env's shared common_data zone, or one of the project's
+    explicit `directories[]` workspaces.
+
+    For ONE-OFF transfers (debug downloads, ad-hoc data inspection,
+    quick uploads) pass `project_name="_ad_hoc"`. The _ad_hoc project
+    is synthesized on the fly with access to scratch + common_data on
+    every env. No YAML edit needed.
+
+    Authorization routing:
+      - path under env.agent_scratch_target.path     → scratch zone
+        (env-implicit grant; path must be under
+        `<scratch>/<project_name>/...` for multi-project isolation)
+      - path under env.agent_common_data_target.path → common_data zone
+        (env-implicit grant; shared across projects)
+      - anywhere else                                 → project_path zone
+        (longest-prefix match in project.directories[]; the matched
+        entry MUST include `upload` in its permissions)
 
     Wire protocol: dispatched by the env's `data_transfer.type` —
-    `scp_head_node` (legacy default) or `globus` (when configured).
-    `async_globus=True` returns immediately with a task_id instead of
+    `scp_head_node` (default) or `globus` (when configured). Pass
+    `async_globus=True` to return immediately with a task_id instead of
     waiting for SUCCEEDED; poll completion via `globus_task_status`.
 
-    Authorization (env-implicit): the project must have a `compute_env_access`
-    entry naming `compute_env_name`, AND the env must declare an
-    `agent_scratch_target` block whose `permissions` include `upload`.
-    The project's `directories[]` is NOT consulted — that list is for
-    project-specific paths only.
+    Manifest: every call (success OR failure) writes a JSON record under
+    `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
+    so the operation is replayable programmatically — no memory needed.
 
-    Multi-project isolation: the resolved path is auto-prefixed with
-    project_name. A call to upload_to_scratch('proj_a', ..., 'x.txt')
-    lands at `<scratch.path>/proj_a/x.txt`; 'proj_b' lands elsewhere.
+    Path safety: `remote_abs_path` must be absolute, ≤4096 chars, no
+    '..' traversal, no shell metacharacters, no whitespace.
 
-    `remote_subpath` rules: non-empty, ≤255 chars, no leading '/', no
-    '..' segments, no shell metacharacters (newline / `;` / `|` / `$` /
-    backticks / etc.), no whitespace.
+    `local_path`: must exist, be a regular file (symlinks refused), and
+    be under the 5 GiB head-node cap (no cap when data_transfer=globus).
 
-    `project_name` rules: safe token (alnum + '_-', ≤64 chars) — used
-    as the auto-prefix path component.
-
-    `local_path`: must exist, be a REGULAR file (symlinks refused —
-    defense against user's home symlink redirecting to /etc/shadow),
-    and be under the 5 GiB head-node cap. Anything larger should go
-    through `submit_cluster_job(job_type='data_acquisition')` (Step 6)
-    which curl-resumes inside a SLURM job, or eventually Globus.
-
-    Returns {success, compute_env, remote_path, sha256, bytes,
-    duration_s, transferred_at} on success; {"error": "..."} on any
-    refusal or transfer failure (no exception escapes — the MCP surface
-    is dict-in-dict-out)."""
-    from agent.skills import scratch
-    return scratch.upload_to_scratch(
+    Returns {success, project, compute_env, zone, direction:"upload",
+    local_path, remote_abs_path, provider, task_id?, bytes, duration_s,
+    local_sha256, remote_sha256?, verified_method, manifest} on success;
+    {"error": "...", "manifest": "..."} on any failure."""
+    from agent.skills import transfer
+    return transfer.upload(
         project_name=project_name,
         compute_env_name=compute_env_name,
         local_path=local_path,
-        remote_subpath=remote_subpath,
+        remote_abs_path=remote_abs_path,
         async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
 
 @mcp.tool()
-def upload_to_common_data(project_name: str,
-                         compute_env_name: str,
-                         local_path: str,
-                         remote_subpath: str,
-                         async_globus: bool = False) -> dict:
-    """Push a local file into the env's SHARED common-data zone.
+def download(project_name: str,
+             compute_env_name: str,
+             remote_abs_path: str,
+             local_path: str,
+             async_globus: bool = False) -> dict:
+    """Pull a file from an ABSOLUTE path on a compute env to this laptop.
+    Symmetric to `upload`: same zone routing (auto-classified by where
+    remote_abs_path falls), same auth (the matched zone must declare
+    `download` in its permissions; `upload` alone does NOT satisfy
+    `download` — discrete capabilities), same manifest.
 
-    Authorization (env-implicit): project has compute_env_access for the
-    env; env declares an `agent_common_data_target` block whose
-    `permissions` include `upload`. The project's directories[] is NOT
-    consulted.
+    For one-off downloads use `project_name="_ad_hoc"`.
 
-    No project auto-prefix — common_data is intentionally SHARED across
-    projects so reference data can be mixed and matched. The resolved
-    path is `<common_data.path>/<remote_subpath>` directly.
+    `local_path`: must NOT exist (no silent overwrite); parent dir must
+    exist + be writable.
 
-    Overwrite refusal: if the resolved path already exists, the primitive
-    refuses to upload. Reference data is versioned (e.g.
-    `exomiser/v3.2.0/data.zip`), not silently replaced. Delete remotely
-    before uploading a fresh version.
-
-    Same path-safety + sha256-round-trip + 5 GiB head-node cap rules as
-    upload_to_scratch.
-
-    Returns {success, compute_env, remote_path, sha256, bytes, duration_s,
-    transferred_at} on success; {"error": "..."} on refusal/failure."""
-    from agent.skills import common_data
-    return common_data.upload_to_common_data(
+    Returns {success, project, compute_env, zone, direction:"download",
+    local_path, remote_abs_path, provider, task_id?, bytes, duration_s,
+    local_sha256, remote_sha256?, verified_method, manifest} on success;
+    {"error": "...", "manifest": "..."} on any failure."""
+    from agent.skills import transfer
+    return transfer.download(
         project_name=project_name,
         compute_env_name=compute_env_name,
-        local_path=local_path,
-        remote_subpath=remote_subpath,
-        async_globus=async_globus,
-        access_path=_resolve_access_path(),
-    )
-
-
-@mcp.tool()
-def download_from_common_data(project_name: str,
-                             compute_env_name: str,
-                             remote_subpath: str,
-                             local_path: str,
-                             async_globus: bool = False) -> dict:
-    """Pull a file from the env's SHARED common-data zone back to local.
-
-    Symmetric to `upload_to_common_data` — same env-implicit auth with
-    `download` (instead of `upload`) as the required capability on the
-    env's `agent_common_data_target.permissions`. Discrete capabilities,
-    not a lattice — `upload` alone does NOT satisfy `download`.
-
-    No project auto-prefix; any project with env access can read any
-    file in common_data.
-
-    `local_path`: must NOT exist (no overwrite); parent must be writable.
-
-    Returns {success, compute_env, remote_path, local_path, sha256,
-    bytes, duration_s, fetched_at} on success; {"error": "..."} on
-    refusal/failure."""
-    from agent.skills import common_data
-    return common_data.download_from_common_data(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        remote_subpath=remote_subpath,
-        local_path=local_path,
-        async_globus=async_globus,
-        access_path=_resolve_access_path(),
-    )
-
-
-@mcp.tool()
-def upload_to_project_path(project_name: str,
-                          compute_env_name: str,
-                          abs_path: str,
-                          local_path: str,
-                          async_globus: bool = False) -> dict:
-    """Push a local file to an authorized project-workspace path.
-
-    Authorization (Phase-1 explicit): the project's `compute_env_access[]
-    .directories[]` MUST include an entry whose path contains the
-    requested abs_path (longest-prefix match), and that entry's
-    `permissions:` MUST include `upload`. The Phase-2 env-implicit grant
-    does NOT apply here — project_path is for the user's OWN data, which
-    the user authorizes path-by-path.
-
-    The abs_path is supplied LITERALLY (not as a relative subpath that
-    gets auto-prefixed). This is so the agent can write to the project's
-    real directory layout (e.g. `/work/.../PLANT_PROJECT/runs/...`)
-    without disturbing it.
-
-    Same upload contract as the other primitives: 5 GiB head-node cap,
-    sha256 round-trip, refuses overwrites.
-
-    Returns {success, compute_env, remote_path, sha256, bytes, duration_s,
-    transferred_at} on success; {"error": "..."} on refusal/failure."""
-    from agent.skills import project_path
-    return project_path.upload_to_project_path(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        abs_path=abs_path,
-        local_path=local_path,
-        async_globus=async_globus,
-        access_path=_resolve_access_path(),
-    )
-
-
-@mcp.tool()
-def download_from_project_path(project_name: str,
-                              compute_env_name: str,
-                              abs_path: str,
-                              local_path: str,
-                              async_globus: bool = False) -> dict:
-    """Pull a file from an authorized project-workspace path back to local.
-
-    Symmetric to upload_to_project_path; required permission is
-    `download` on the matching directories[] entry. Discrete capability
-    — `upload` alone does NOT satisfy `download`.
-
-    `local_path`: must NOT exist; parent must be writable.
-
-    Returns {success, compute_env, remote_path, local_path, sha256,
-    bytes, duration_s, fetched_at} on success; {"error": "..."} on
-    refusal/failure."""
-    from agent.skills import project_path
-    return project_path.download_from_project_path(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        abs_path=abs_path,
+        remote_abs_path=remote_abs_path,
         local_path=local_path,
         async_globus=async_globus,
         access_path=_resolve_access_path(),
@@ -280,43 +181,6 @@ def cluster_module_avail(project_name: str,
         project_name=project_name,
         compute_env_name=compute_env_name,
         pattern=pattern or None,
-        access_path=_resolve_access_path(),
-    )
-
-
-@mcp.tool()
-def download_from_scratch(project_name: str,
-                         compute_env_name: str,
-                         remote_subpath: str,
-                         local_path: str,
-                         async_globus: bool = False) -> dict:
-    """Pull a file from THIS project's scratch namespace back to a local
-    path. sha256 round-trip is verified BEFORE declaring success; on
-    mismatch the partial local file is removed and an error is returned.
-
-    Symmetric to `upload_to_scratch` — same env-implicit authorization
-    with `download` (instead of `upload`) as the required capability on
-    the env's `agent_scratch_target.permissions`. Discrete capabilities,
-    not a lattice — `upload` alone does NOT satisfy `download`.
-
-    Multi-project isolation: the resolved path is auto-prefixed with
-    project_name. This project sees only its OWN namespace; cross-project
-    visibility requires another project.
-
-    `local_path` rules: must NOT exist yet (no silent overwrites; the
-    same never-overwrite contract upload uses on the remote side). Its
-    parent directory must exist and be writable.
-
-    Returns {success, compute_env, remote_path, local_path, sha256,
-    bytes, duration_s, fetched_at} on success; {"error": "..."} on
-    refusal/failure."""
-    from agent.skills import scratch
-    return scratch.download_from_scratch(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        remote_subpath=remote_subpath,
-        local_path=local_path,
-        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 

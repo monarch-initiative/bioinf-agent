@@ -296,7 +296,7 @@ class TestHappyPath:
         access_path = _good_access(tmp_path)
 
         from agent.skills import (
-            cluster_jobs as _cj, scratch as _sc,
+            cluster_jobs as _cj, transfer as _tr,
             stage_apptainer as _sa, submit_workflow as _sw,
         )
 
@@ -310,18 +310,20 @@ class TestHappyPath:
                     "skipped": False, "staged_at": "t"}
         monkeypatch.setattr(_sa, "stage_apptainer_image", fake_stage)
 
-        # 2. upload_to_scratch — succeeds 3 times (main.nf / config /
-        # launcher.sh). Asserts the auto-prefixed path looks right.
+        # 2. transfer.upload — succeeds 3 times (main.nf / config /
+        # launcher.sh). The unified primitive routes to scratch zone
+        # because remote_abs_path is under env.agent_scratch_target.
         uploads: list = []
-        def fake_upload_to_scratch(**kw):
+        def fake_upload(**kw):
             uploads.append(kw)
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path":
-                        f"/work/u/CLAUDE_SCRATCH/{kw['project_name']}/"
-                        f"{kw['remote_subpath']}",
-                    "sha256": "0"*64, "bytes": 1, "duration_s": 0.001,
-                    "transferred_at": "t"}
-        monkeypatch.setattr(_sc, "upload_to_scratch", fake_upload_to_scratch)
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "scratch",
+                    "provider": "scp_head_node",
+                    "local_sha256": "0"*64, "bytes": 1, "duration_s": 0.001,
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json"}
+        monkeypatch.setattr(_tr, "upload", fake_upload)
 
         # 3. sbatch_via_ssh returns a job_id.
         def fake_sbatch(env, workflow_dir, *, timeout=300):
@@ -350,19 +352,21 @@ class TestHappyPath:
                     "sacct_rows": [{"job_id": kw["job_id"]}]}
         monkeypatch.setattr(_cj, "cluster_job_resources", fake_resources)
 
-        # 6. download_from_scratch writes a fake output file each call.
+        # 6. transfer.download writes a fake output file each call.
         def fake_download(**kw):
             local = kw["local_path"]
             Path(local).parent.mkdir(parents=True, exist_ok=True)
             Path(local).write_bytes(b"fake bam content")
             return {"success": True, "compute_env": kw["compute_env_name"],
-                    "remote_path":
-                        f"/work/u/CLAUDE_SCRATCH/{kw['project_name']}/"
-                        f"{kw['remote_subpath']}",
+                    "remote_abs_path": kw["remote_abs_path"],
+                    "zone": "scratch",
+                    "provider": "scp_head_node",
                     "local_path": local,
-                    "sha256": "deadbeef", "bytes": 16,
-                    "duration_s": 0.1, "fetched_at": "t"}
-        monkeypatch.setattr(_sc, "download_from_scratch", fake_download)
+                    "local_sha256": "deadbeef", "bytes": 16,
+                    "duration_s": 0.1,
+                    "verified_method": "sha256_round_trip",
+                    "manifest": "/tmp/fake_manifest.json"}
+        monkeypatch.setattr(_tr, "download", fake_download)
 
         state = _FakePipelineState()
         validator = _FakeValidator()
@@ -406,16 +410,15 @@ class TestHappyPath:
         assert r["resource_usage"]["peak_rss_mb"] == 12.3
         assert r["resource_usage"]["locus"] == "cluster"
 
-        # All 3 rendered files uploaded via upload_to_scratch (NOT
-        # upload_to_project_path); each via remote_subpath that's
-        # workflow_name-prefixed (so auto-prefix lands them in the
-        # scratch project zone under the workflow_name dir).
+        # All 3 rendered files uploaded via the unified transfer.upload
+        # primitive; each remote_abs_path lands inside the scratch
+        # workflow_dir (project-prefixed + workflow_name).
         assert len(uploads) == 3
-        sub_names = {u["remote_subpath"] for u in uploads}
+        sub_names = {u["remote_abs_path"] for u in uploads}
         assert sub_names == {
-            "samtools_view_run_001/main.nf",
-            "samtools_view_run_001/nextflow.config",
-            "samtools_view_run_001/launcher.sh"}
+            f"{expected_dir}/main.nf",
+            f"{expected_dir}/nextflow.config",
+            f"{expected_dir}/launcher.sh"}
         for u in uploads:
             assert u["project_name"] == "phase_b_samtools_demo"
 
@@ -475,19 +478,25 @@ class TestPhaseFailurePreservation:
     @pytest.mark.integration
     def test_sbatch_failure_keeps_stage_result(self, monkeypatch, tmp_path):
         access_path = _good_access(tmp_path)
-        from agent.skills import (scratch as _sc,
+        from agent.skills import (transfer as _tr,
                                    stage_apptainer as _sa,
                                    submit_workflow as _sw)
         monkeypatch.setattr(_sa, "stage_apptainer_image",
                             lambda **kw: {"success": True,
                                            "sif_path": "/x.sif",
                                            "image_digest": "sha256:x"})
-        monkeypatch.setattr(_sc, "upload_to_scratch",
+        monkeypatch.setattr(_tr, "upload",
                             lambda **kw: {"success": True,
-                                           "remote_path": "/x",
-                                           "sha256": "0"*64,
+                                           "remote_abs_path":
+                                               kw["remote_abs_path"],
+                                           "zone": "scratch",
+                                           "provider": "scp_head_node",
+                                           "local_sha256": "0"*64,
                                            "bytes": 1, "duration_s": 0.001,
-                                           "transferred_at": "t",
+                                           "verified_method":
+                                               "sha256_round_trip",
+                                           "manifest":
+                                               "/tmp/fake_manifest.json",
                                            "compute_env":
                                                kw["compute_env_name"]})
         monkeypatch.setattr(_sw, "sbatch_via_ssh",
@@ -517,19 +526,25 @@ class TestPhaseFailurePreservation:
     def test_poll_timeout_surfaces_clean(self, monkeypatch, tmp_path):
         access_path = _good_access(tmp_path)
         from agent.skills import (cluster_jobs as _cj,
-                                   scratch as _sc,
+                                   transfer as _tr,
                                    stage_apptainer as _sa,
                                    submit_workflow as _sw)
         monkeypatch.setattr(_sa, "stage_apptainer_image",
                             lambda **kw: {"success": True,
                                            "sif_path": "/x.sif",
                                            "image_digest": "sha256:x"})
-        monkeypatch.setattr(_sc, "upload_to_scratch",
+        monkeypatch.setattr(_tr, "upload",
                             lambda **kw: {"success": True,
-                                           "remote_path": "/x",
-                                           "sha256": "0"*64,
+                                           "remote_abs_path":
+                                               kw["remote_abs_path"],
+                                           "zone": "scratch",
+                                           "provider": "scp_head_node",
+                                           "local_sha256": "0"*64,
                                            "bytes": 1, "duration_s": 0.001,
-                                           "transferred_at": "t",
+                                           "verified_method":
+                                               "sha256_round_trip",
+                                           "manifest":
+                                               "/tmp/fake_manifest.json",
                                            "compute_env":
                                                kw["compute_env_name"]})
         monkeypatch.setattr(_sw, "sbatch_via_ssh",

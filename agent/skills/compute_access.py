@@ -89,14 +89,10 @@ PERMISSIONS: frozenset[str] = frozenset({
 # `permissions: [file_name_only, upload]`.
 OPERATION_REQUIRES: dict[str, str] = {
     "snapshot": "file_name_only",
-    # Phase 2 — wired as primitives land:
-    "upload_to_scratch":         "upload",
-    "download_from_scratch":     "download",
-    "upload_to_common_data":     "upload",
-    "download_from_common_data": "download",
-    # Project workspaces — Phase-1 directories[] gate (project-explicit auth):
-    "upload_to_project_path":     "upload",
-    "download_from_project_path": "download",
+    # Unified transfer surface — replaces the six zone-specific
+    # primitives. The operation name IS the required token.
+    "upload":   "upload",
+    "download": "download",
     # The dir that an sbatched SLURM job runs in must declare `exec` so
     # the job is allowed to write its own outputs in-place during
     # execution (distinct from the agent's single-shot `upload`).
@@ -105,8 +101,6 @@ OPERATION_REQUIRES: dict[str, str] = {
     # scratch sandbox. Goes through the env-level agent_scratch_target
     # (via check_env_target_capability), NOT project.directories[].
     "run_step_on_cluster":        "exec",
-    # "job_workdir_scratch":     "exec",
-    # "job_output_common_data":  "exec",
 }
 
 

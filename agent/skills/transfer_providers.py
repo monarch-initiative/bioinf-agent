@@ -116,9 +116,9 @@ class ScpHeadNodeProvider(TransferProvider):
         # scp is synchronous by nature; async_return + label are ignored.
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
-        from agent.skills.scratch import (
+        from agent.skills.transfer import (
             _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
-            ScratchPathError)
+            TransferError as ScratchPathError)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
         # Build the scp dst (user@host:abs_remote_path), with shell-safety
@@ -194,7 +194,7 @@ class ScpHeadNodeProvider(TransferProvider):
                      async_return: bool = False,
                      label: Optional[str] = None) -> dict:
         # async_return + label ignored — scp is sync-only.
-        from agent.skills.scratch import (
+        from agent.skills.transfer import (
             _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
             _compute_local_sha256)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
@@ -306,9 +306,54 @@ class ScpHeadNodeProvider(TransferProvider):
 # task_id; the caller polls later via the globus_task_status MCP tool.
 # This is the escape hatch for huge transfers that exceed the agent's
 # stream-watchdog (~10 min silent kill).
+#
+# PERMISSION_DENIED diagnosis — Globus surfaces this nice_status for
+# at least three root causes that demand DIFFERENT fixes:
+#
+#   1) local_path_not_allowed — Globus Connect Personal on the laptop
+#      refuses to scan a source path outside its Accessible Folders
+#      (default $HOME only). The fix is a GUI config change in GCP
+#      preferences. Common; especially trips up new users staging
+#      from /tmp or system dirs.
+#   2) remote_consent_missing — GCS v5's data_access scope hasn't
+#      been granted for the destination collection's host GCS. The
+#      fix is `globus login --gcs <UUID>`. The UUID is discovered via
+#      `globus gcs collection show <remote_ep>` (globus-cli prints it
+#      in a MissingLoginError when the scope is needed).
+#   3) remote_filesystem — POSIX permissions / quota / ACL on the
+#      cluster. The fix is on the cluster, not Globus.
+#
+# All three present identically as nice_status=PERMISSION_DENIED at the
+# task level; the ONLY way to tell them apart is to fetch the task's
+# event list and read which endpoint reported the error. The classifier
+# (_classify_permission_denied → _permission_denied_error) does exactly
+# that and routes the actionable hint by classification. Until we had
+# this, our error message always pointed at #2 — which would mislead
+# users hitting #1 or #3 into running a `--gcs` login that wouldn't
+# fix anything.
 # ---------------------------------------------------------------------------
 
 _GLOBUS_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
+
+# Globus surfaces this nice_status whenever ANY endpoint in the
+# transfer (local or remote) refuses an operation: GCP path not in
+# Accessible Folders, GCS data_access consent missing, remote POSIX
+# permissions, etc. We detect it in the poll loop and call
+# _classify_permission_denied to figure out WHICH endpoint reported
+# the error before building the user-facing hint.
+_PERMISSION_DENIED_TOKEN = "PERMISSION_DENIED"
+
+# When we detect PERMISSION_DENIED in the poll loop we fetch the task's
+# event list (one shellout) to surface the underlying error.endpoint +
+# context.path. The classifier uses these patterns to decide which
+# root cause to surface.
+import re as _re
+_UUID_RE = _re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    _re.IGNORECASE)
+# GCP refuses to scan paths outside its Accessible Folders config with
+# this exact FTP-style body. Distinctive enough to key off of.
+_GCP_PATH_BLOCK_BODY_RE = _re.compile(r"path not allowed", _re.IGNORECASE)
 
 
 class GlobusError(TransferError):
@@ -405,6 +450,12 @@ class GlobusProvider(TransferProvider):
             if "error" in status:
                 return {**status, "task_id": task_id}
             last_status = status
+            # PERMISSION_DENIED while ACTIVE — task will hang indefinitely
+            # (Globus keeps retrying the doomed operation). Classify the
+            # event-list immediately and surface the right fix rather
+            # than burning the sync-wait cap on a task that can't recover.
+            if self._is_permission_denied(status):
+                return self._permission_denied_error(task_id, status)
             if status.get("status") in _GLOBUS_TERMINAL_STATUSES:
                 break
             if status.get("status") == "INACTIVE":
@@ -439,6 +490,11 @@ class GlobusProvider(TransferProvider):
         # 3) Inspect the terminal status.
         if last_status.get("status") == "FAILED":
             fe = last_status.get("fatal_error") or {}
+            # FAILED with PERMISSION_DENIED → run the same classifier
+            # as the ACTIVE-detector to figure out which endpoint
+            # refused (local GCP path / remote consent / remote fs).
+            if self._is_permission_denied(last_status):
+                return self._permission_denied_error(task_id, last_status)
             return {
                 "error":
                     f"Globus task {task_id} FAILED: "
@@ -457,7 +513,7 @@ class GlobusProvider(TransferProvider):
         out_sha = ""
         if direction == "download":
             try:
-                from agent.skills.scratch import _compute_local_sha256
+                from agent.skills.transfer import _compute_local_sha256
                 out_sha = _compute_local_sha256(local_path)
             except (OSError, FileNotFoundError) as e:
                 return {
@@ -580,6 +636,227 @@ class GlobusProvider(TransferProvider):
                     f"{(res.stdout or '').strip()[:200]!r}",
                 "provider": self.name,
             }
+
+    @staticmethod
+    def _is_permission_denied(task: dict) -> bool:
+        """Does this task object carry a PERMISSION_DENIED signal? Globus
+        surfaces it in nice_status while the task is ACTIVE (the most
+        common case — task hangs forever), and again in fatal_error.code
+        if it later goes FAILED. Either is enough to short-circuit."""
+        nice = (task.get("nice_status") or "").upper()
+        if _PERMISSION_DENIED_TOKEN in nice:
+            return True
+        fe = task.get("fatal_error") or {}
+        code = (fe.get("code") or "").upper()
+        return _PERMISSION_DENIED_TOKEN in code
+
+    def _fetch_task_events(self, task_id: str, *, timeout: int) -> dict:
+        """`globus task event-list <id> --format json` → decoded payload.
+        Returns {'events': [{...}, ...]} on success or {'error': '...'}
+        on failure. Used by the PERMISSION_DENIED classifier to figure
+        out WHICH endpoint reported the error."""
+        import json as _json
+        argv = ["globus", "task", "event-list", task_id, "--format", "json"]
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=timeout)
+        except FileNotFoundError:
+            return {"error":
+                "globus CLI not on PATH (mid-classify — was it uninstalled?)"}
+        except subprocess.TimeoutExpired as e:
+            return {"error":
+                f"`globus task event-list {task_id}` timed out after "
+                f"{e.timeout}s"}
+        if res.returncode != 0:
+            return {"error":
+                f"`globus task event-list {task_id}` exited "
+                f"{res.returncode}: {(res.stderr or '').strip()[:300]}"}
+        try:
+            payload = _json.loads(res.stdout or "{}")
+        except _json.JSONDecodeError as e:
+            return {"error":
+                f"event-list stdout not valid JSON: {e}. raw: "
+                f"{(res.stdout or '').strip()[:200]!r}"}
+        return {"events": payload.get("DATA") or []}
+
+    def _classify_permission_denied(self, task_id: str,
+                                    *, timeout: int = 30) -> dict:
+        """Pull the task's event list and classify the root cause of the
+        PERMISSION_DENIED into one of four buckets. The event details
+        carry an `error.endpoint` field (display name + UUID) and a
+        `context[].path` — together they tell us WHICH endpoint refused
+        WHICH path, which is what determines the actionable hint.
+
+        Returns a dict with `classification`, `endpoint`, `endpoint_id`,
+        `endpoint_is_local`, `path`, `body`, `operation`. If event-list
+        is unavailable for any reason, classification is `'unknown'`
+        and the caller surfaces a generic-but-honest hint."""
+        import json as _json
+        evs = self._fetch_task_events(task_id, timeout=timeout)
+        if "error" in evs:
+            return {"classification": "unknown",
+                    "fetch_error": evs["error"]}
+        events = evs["events"]
+        # Walk the events newest-first looking for the first error event
+        # we can decode. Globus may emit multiple identical events (one
+        # per retry) — first decodable one is enough to classify.
+        for ev in events:
+            if not ev.get("is_error"):
+                continue
+            details_raw = ev.get("details") or ""
+            if not details_raw:
+                continue
+            try:
+                details = _json.loads(details_raw)
+            except _json.JSONDecodeError:
+                continue
+            err = details.get("error") or {}
+            ctx_list = details.get("context") or []
+            endpoint_str = err.get("endpoint") or ""
+            body = err.get("body") or ""
+            path = ""
+            operation = ""
+            if ctx_list:
+                first = ctx_list[0]
+                path = first.get("path") or ""
+                operation = first.get("operation") or ""
+            # Pull the UUID out of the "Display Name (uuid)" wrapper.
+            m = _UUID_RE.search(endpoint_str)
+            endpoint_id = m.group(0).lower() if m else ""
+            is_local = (endpoint_id == self._local_ep.lower())
+            is_remote = (endpoint_id == self._remote_ep.lower())
+            # Now classify:
+            if is_local and _GCP_PATH_BLOCK_BODY_RE.search(body):
+                classification = "local_path_not_allowed"
+            elif is_local:
+                classification = "local_other"
+            elif is_remote and "data_access" in body.lower():
+                classification = "remote_consent_missing"
+            elif is_remote:
+                # Generic remote PERMISSION_DENIED — POSIX perms, quota,
+                # filesystem ACL. We can't distinguish without a probe;
+                # surface the raw body so the user has the real reason.
+                classification = "remote_filesystem"
+            else:
+                classification = "unknown_endpoint"
+            return {
+                "classification": classification,
+                "endpoint":       endpoint_str,
+                "endpoint_id":    endpoint_id,
+                "endpoint_is_local":  is_local,
+                "endpoint_is_remote": is_remote,
+                "path":           path,
+                "body":           body.strip(),
+                "operation":      operation,
+            }
+        return {"classification": "unknown",
+                "fetch_error": "no decodable error event in task history"}
+
+    def _permission_denied_error(self, task_id: str, task: dict,
+                                 *, timeout: int = 30) -> dict:
+        """Build the structured error + actionable hint after detecting
+        PERMISSION_DENIED on a task. Fetches event-list, classifies the
+        root cause, and routes the hint accordingly. Three real fix-it
+        paths surface different actions:
+
+          local_path_not_allowed — GCP refuses to scan a local path
+            outside its Accessible Folders. Fix is GUI-side (GCP
+            Preferences → Access tab) or move the file under $HOME.
+          remote_consent_missing — the destination GCS endpoint needs
+            data_access consent. Fix is `globus login --gcs <UUID>`.
+            We don't claim to know the GCS UUID — point at the
+            discovery command.
+          remote_filesystem — POSIX perms / quota / ACL on the cluster.
+            Fix is cluster-side, not Globus-side.
+
+        The fourth case (unknown / event-list unavailable) returns an
+        honest 'we don't know' message that points at globus task
+        event-list for manual inspection."""
+        cls = self._classify_permission_denied(task_id, timeout=timeout)
+        classification = cls.get("classification", "unknown")
+        ep_display = cls.get("endpoint") or "(unknown endpoint)"
+        path = cls.get("path") or "(unknown path)"
+        body = cls.get("body") or ""
+        # Shared structured fields.
+        common: dict = {
+            "provider":             self.name,
+            "task_id":              task_id,
+            "remote_endpoint":      self._remote_ep,
+            "remote_endpoint_name": self._remote_name,
+            "globus_status":        task.get("status"),
+            "nice_status":          task.get("nice_status"),
+            "classification":       classification,
+            "denied_endpoint":      ep_display,
+            "denied_path":          path,
+            "raw_body":             body,
+        }
+        if classification == "local_path_not_allowed":
+            return {
+                **common,
+                "error": (
+                    f"Globus task {task_id} blocked: Globus Connect "
+                    f"Personal on your laptop refuses to scan {path!r} "
+                    f"({ep_display}) — that path is not in GCP's "
+                    f"Accessible Folders list. Fix: open Globus Connect "
+                    f"Personal → Preferences → Access tab, add the "
+                    f"folder containing {path!r}, then retry. Or stage "
+                    f"the file under $HOME (always accessible by "
+                    f"default). This is a local GCP config issue, NOT "
+                    f"a cluster permissions problem."),
+                "hint": "GCP Accessible Folders restriction on local source",
+            }
+        if classification == "remote_consent_missing":
+            return {
+                **common,
+                "error": (
+                    f"Globus task {task_id} blocked on remote "
+                    f"collection {self._remote_name!r} "
+                    f"({self._remote_ep}): {body or 'PERMISSION_DENIED'}. "
+                    f"This is GCS v5's data_access consent gate. Run "
+                    f"`globus gcs collection show {self._remote_ep}` — "
+                    f"globus-cli will print the exact `globus login "
+                    f"--gcs <UUID>` command for the GCS that hosts "
+                    f"this collection. Run that, then retry."),
+                "hint": "missing data_access consent on remote GCS",
+            }
+        if classification == "remote_filesystem":
+            return {
+                **common,
+                "error": (
+                    f"Globus task {task_id} blocked by remote-side "
+                    f"permissions on {ep_display}: path {path!r} is "
+                    f"not writable (or readable, for downloads) by "
+                    f"your user. Underlying error: {body!r}. This is a "
+                    f"cluster-side permissions issue (POSIX / ACL / "
+                    f"quota), not a Globus consent problem. Fix on "
+                    f"the cluster, then retry."),
+                "hint": "remote filesystem permission denied",
+            }
+        if classification == "local_other":
+            return {
+                **common,
+                "error": (
+                    f"Globus task {task_id} blocked on local endpoint "
+                    f"{ep_display}: {body!r}. Path: {path!r}. Inspect "
+                    f"GCP's state (running? Accessible Folders set?) "
+                    f"and check `globus task event-list {task_id}` for "
+                    f"more detail."),
+                "hint": "local Globus Connect Personal blocked the operation",
+            }
+        # 'unknown' or 'unknown_endpoint' — be honest about not knowing
+        fetch_err = cls.get("fetch_error", "")
+        suffix = (f" (event-list fetch failed: {fetch_err})"
+                  if fetch_err else "")
+        return {
+            **common,
+            "error": (
+                f"Globus task {task_id} reports PERMISSION_DENIED but "
+                f"the cause could not be auto-classified{suffix}. "
+                f"Inspect manually: `globus task event-list {task_id} "
+                f"--format json` will show which endpoint refused the "
+                f"operation and why."),
+            "hint": "PERMISSION_DENIED (unclassified — see event-list)",
+        }
 
     @staticmethod
     def _submit_hint(res: subprocess.CompletedProcess) -> Optional[str]:

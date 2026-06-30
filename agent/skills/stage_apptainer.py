@@ -89,7 +89,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from agent.skills import common_data, compute_access
+from agent.skills import compute_access, transfer
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -325,11 +325,12 @@ def stage_apptainer_image(
                 f"Re-run freeze() to regenerate."}
 
         tar_subpath = f"apptainer_sources/{tarball_path.name}"
-        up = common_data.upload_to_common_data(
+        tar_remote_abs = f"{cd_path}/{tar_subpath}"
+        up = transfer.upload(
             project_name=project_name,
             compute_env_name=compute_env_name,
             local_path=str(tarball_path),
-            remote_subpath=tar_subpath,
+            remote_abs_path=tar_remote_abs,
             access_path=str(Path(access_path)) if access_path else None,
             timeout=timeout,
         )
@@ -341,7 +342,6 @@ def stage_apptainer_image(
                         f"tar upload to common_data failed: {up['error']}",
                     "tar_upload_error": up.get("error"),
                 }
-        tar_remote_abs = f"{cd_path}/{tar_subpath}"
 
         # Step 2: apptainer build .sif docker-archive://<tar>
         build_cmd = (

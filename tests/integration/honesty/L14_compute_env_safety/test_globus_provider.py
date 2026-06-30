@@ -156,6 +156,9 @@ class TestSyncWait:
 
     @pytest.mark.integration
     def test_failed_task_returns_clear_error(self, monkeypatch, tmp_path):
+        # Generic FAILED — anything OTHER than the PERMISSION_DENIED
+        # data_access case (covered separately) should surface as a
+        # clear error with the fatal_error code + description.
         import json as _json
         def fake_run(argv, *a, **kw):
             mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
@@ -165,7 +168,7 @@ class TestSyncWait:
                 mock.stdout = _json.dumps({
                     "DATA_TYPE": "task", "task_id": _TASK_ID,
                     "status": "FAILED",
-                    "fatal_error": {"code": "PERMISSION_DENIED",
+                    "fatal_error": {"code": "ENDPOINT_ERROR",
                                     "description": "remote path readonly"},
                 })
             return mock
@@ -179,7 +182,7 @@ class TestSyncWait:
             local_sha256="0"*64, timeout=60)
         assert "error" in out
         assert "FAILED" in out["error"]
-        assert "PERMISSION_DENIED" in out["error"]
+        assert "ENDPOINT_ERROR" in out["error"]
         assert "remote path readonly" in out["error"]
         assert out["task_id"] == _TASK_ID
 
@@ -211,6 +214,264 @@ class TestSyncWait:
         assert "INACTIVE" in out["error"]
         assert "Creds Expired" in out["error"]
         assert out.get("hint")
+
+
+# ===========================================================================
+# data_access consent gap — the most common first-time-setup failure
+# ===========================================================================
+
+class TestPermissionDeniedClassifier:
+    """PERMISSION_DENIED has three real root causes: a local GCP path
+    restriction, a missing data_access consent on the remote, and
+    remote-side POSIX permissions. They present identically at the task
+    level (status=ACTIVE, nice_status=PERMISSION_DENIED); the classifier
+    fetches the task's event list and routes the hint by which endpoint
+    reported the error."""
+
+    @staticmethod
+    def _local_path_block_event() -> dict:
+        # The shape Globus emits when GCP refuses to scan a path that
+        # isn't in its Accessible Folders list.
+        import json as _json
+        return {
+            "DATA": [{
+                "DATA_TYPE": "event",
+                "code": "PERMISSION_DENIED",
+                "description": "permission denied",
+                "is_error": True,
+                "details": _json.dumps({
+                    "context": [{
+                        "operation": "Directory List / File Scan",
+                        "path": "/tmp/probe.txt",
+                    }],
+                    "error": {
+                        "body": "500 Command failed : Path not allowed.\n",
+                        "code": 500,
+                        "endpoint": f"my data ({_LOCAL_EP})",
+                        "server": "Globus Connect",
+                        "type": "FTPServerError",
+                    },
+                }),
+            }],
+        }
+
+    @staticmethod
+    def _remote_consent_event() -> dict:
+        import json as _json
+        return {
+            "DATA": [{
+                "DATA_TYPE": "event",
+                "code": "PERMISSION_DENIED",
+                "description": "permission denied",
+                "is_error": True,
+                "details": _json.dumps({
+                    "context": [{
+                        "operation": "FTP STOR",
+                        "path": "/work/u/dest.bam",
+                    }],
+                    "error": {
+                        "body": ("Missing data_access consent on the "
+                                 "destination GCS endpoint."),
+                        "code": 530,
+                        "endpoint": f"HPC, RC, DataMover ({_REMOTE_EP})",
+                        "type": "GCSError",
+                    },
+                }),
+            }],
+        }
+
+    @staticmethod
+    def _remote_fs_event() -> dict:
+        import json as _json
+        return {
+            "DATA": [{
+                "DATA_TYPE": "event",
+                "code": "PERMISSION_DENIED",
+                "description": "permission denied",
+                "is_error": True,
+                "details": _json.dumps({
+                    "context": [{
+                        "operation": "FTP STOR",
+                        "path": "/work/readonly/dest.bam",
+                    }],
+                    "error": {
+                        "body": ("Permission denied: cannot write to "
+                                 "/work/readonly (POSIX EACCES)."),
+                        "code": 550,
+                        "endpoint": f"HPC, RC, DataMover ({_REMOTE_EP})",
+                        "type": "FTPServerError",
+                    },
+                }),
+            }],
+        }
+
+    @pytest.mark.integration
+    def test_local_path_not_allowed(self, monkeypatch, tmp_path):
+        # GCP refuses to scan the source path → classifier surfaces the
+        # "add to Accessible Folders" hint, NOT a consent hint.
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                mock.stdout = _json.dumps(
+                    TestPermissionDeniedClassifier._local_path_block_event())
+            return mock
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert "error" in out
+        assert out["classification"] == "local_path_not_allowed"
+        assert "/tmp/probe.txt" in out["error"]
+        assert "Accessible Folders" in out["error"]
+        # MUST NOT recommend the consent fix — it'd mislead.
+        assert "globus login --gcs" not in out["error"]
+        assert out["hint"] == "GCP Accessible Folders restriction on local source"
+
+    @pytest.mark.integration
+    def test_remote_consent_missing(self, monkeypatch, tmp_path):
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                mock.stdout = _json.dumps(
+                    TestPermissionDeniedClassifier._remote_consent_event())
+            return mock
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert "error" in out
+        assert out["classification"] == "remote_consent_missing"
+        assert "globus login --gcs" in out["error"]
+        assert _REMOTE_EP in out["error"]
+        # MUST NOT mention GCP Accessible Folders — that's the wrong fix.
+        assert "Accessible Folders" not in out["error"]
+        assert out["hint"] == "missing data_access consent on remote GCS"
+
+    @pytest.mark.integration
+    def test_remote_filesystem(self, monkeypatch, tmp_path):
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                mock.stdout = _json.dumps(
+                    TestPermissionDeniedClassifier._remote_fs_event())
+            return mock
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert "error" in out
+        assert out["classification"] == "remote_filesystem"
+        assert "/work/readonly/dest.bam" in out["error"]
+        assert "POSIX EACCES" in out["error"]
+        # Don't suggest a Globus consent fix — that's not what's wrong.
+        assert "globus login --gcs" not in out["error"]
+        assert out["hint"] == "remote filesystem permission denied"
+
+    @pytest.mark.integration
+    def test_event_list_fetch_failure_falls_back_to_honest_unknown(
+            self, monkeypatch, tmp_path):
+        # If event-list itself errors (Globus API hiccup, CLI uninstalled
+        # mid-task), we MUST NOT lie about the cause — surface "unknown"
+        # with an honest pointer to the manual command.
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.returncode = 0
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.returncode = 0
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                mock.returncode = 1
+                mock.stderr = "API temporarily unavailable"
+                mock.stdout = ""
+            return mock
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert "error" in out
+        assert out["classification"] == "unknown"
+        assert "event-list" in out["error"]
+        assert f"globus task event-list {_TASK_ID}" in out["error"]
+        # Don't invent a fix we can't justify.
+        assert "globus login --gcs" not in out["error"]
+
+    @pytest.mark.integration
+    def test_active_without_permission_denied_keeps_polling(
+            self, monkeypatch, tmp_path):
+        # Benign nice_status values must NOT trip the classifier.
+        import json as _json
+        states = iter([
+            {"DATA_TYPE": "task", "task_id": _TASK_ID, "status": "ACTIVE",
+             "nice_status": "OK"},
+            {"DATA_TYPE": "task", "task_id": _TASK_ID, "status": "ACTIVE",
+             "nice_status": "Queued"},
+            {"DATA_TYPE": "task", "task_id": _TASK_ID, "status": "SUCCEEDED",
+             "bytes_transferred": 42, "files_transferred": 1,
+             "nice_status": None, "fatal_error": None},
+        ])
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            else:
+                mock.stdout = _json.dumps(next(states))
+            return mock
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert out["success"] is True
+        assert out["verified_method"] == "globus_end_to_end"
 
 
 # ===========================================================================

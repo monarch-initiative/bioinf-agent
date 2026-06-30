@@ -88,3 +88,6 @@ data/_drivers/
 # job after the agent has been cut off. Local-only by default; the user
 # can untrack a specific manifest if they want to commit it as audit trail.
 /job_submissions/
+
+# Transfer manifests (one per upload/download, replay-state)
+transfer_history/

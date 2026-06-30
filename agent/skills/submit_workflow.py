@@ -70,7 +70,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, project_path, workflow_render
+from agent.skills import compute_access, transfer, workflow_render
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -303,8 +303,7 @@ def submit_workflow_job(project_name: str,
         # paths are NOT authorized here — that's run_step_on_cluster's
         # job through the env-level scratch target.
         compute_access.check_permission(
-            project, compute_env_name, normed_dir,
-            "upload_to_project_path")
+            project, compute_env_name, normed_dir, "upload")
         compute_access.check_permission(
             project, compute_env_name, normed_dir,
             "submit_workflow_job")
@@ -333,11 +332,11 @@ def submit_workflow_job(project_name: str,
             for fname in _RENDERED_FILES:
                 local = str(tdp / fname)
                 remote = f"{normed_dir}/{fname}"
-                up = project_path.upload_to_project_path(
+                up = transfer.upload(
                     project_name=project_name,
                     compute_env_name=compute_env_name,
-                    abs_path=remote,
                     local_path=local,
+                    remote_abs_path=remote,
                     access_path=str(Path(access_path)) if access_path else None,
                     timeout=timeout)
                 if "error" in up:
@@ -348,7 +347,7 @@ def submit_workflow_job(project_name: str,
                         "files_uploaded": files_uploaded,
                         "rendered_locally": True,
                     }
-                files_uploaded.append(up["remote_path"])
+                files_uploaded.append(up["remote_abs_path"])
 
         # ─── sbatch launcher.sh, parse job_id ──────────────────────────
         sb = sbatch_via_ssh(env, normed_dir, timeout=timeout)
