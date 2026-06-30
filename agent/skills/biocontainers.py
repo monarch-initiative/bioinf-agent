@@ -118,6 +118,42 @@ def _quay_tags(repo: str, like: Optional[str] = None, limit: int = 50, timeout: 
         return []
 
 
+def lookup_tag_by_digest(repo: str, manifest_digest: str,
+                         timeout: int = 30) -> Optional[dict]:
+    """Reverse-resolve: given a manifest digest like 'sha256:23cda…', find a
+    BioContainer tag currently pointing at that digest and return its
+    metadata.
+
+    Use this to backfill adopt_source on a freeze record that was written
+    before the resolver's output was preserved — the record always has the
+    digest; this turns it back into a tag.
+
+    Returns {repo, tag, image_by_tag, image_by_digest, digest} on a hit;
+    None if no active tag references the digest (the upstream may have
+    deleted or re-pointed it — the artifact itself remains immutable via
+    its digest, but the human-readable tag is gone). Network failures
+    return None (caller surfaces a clear message)."""
+    if not repo or not manifest_digest:
+        return None
+    tags = _quay_tags(repo, limit=200, timeout=timeout)
+    if not tags:
+        return None
+    # Prefer the highest-version tag if multiple point at the same digest.
+    matches = [t for t in tags
+               if t.get("manifest_digest") == manifest_digest]
+    if not matches:
+        return None
+    best = max(matches, key=lambda t: _version_key(t.get("name", "")))
+    tag = best.get("name") or ""
+    return {
+        "repo":            repo,
+        "tag":             tag,
+        "image_by_tag":    f"quay.io/{QUAY_NS}/{repo}:{tag}",
+        "image_by_digest": f"quay.io/{QUAY_NS}/{repo}@{manifest_digest}",
+        "digest":          manifest_digest,
+    }
+
+
 def resolve_biocontainer(packages: list[tuple[str, Optional[str]]], timeout: int = 30) -> dict[str, Any]:
     """Look up an adoptable BioContainers image for `packages` (list of
     (name, version)) and return its immutable digest reference.

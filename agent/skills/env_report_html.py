@@ -192,13 +192,10 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
                        adopt_source: Optional[dict] = None,
                        image_digest: str = "") -> str:
     """ADOPT: prefer the biocontainer tag (carries the human version, e.g.
-    `1.21--h50ea8bc_0` for samtools), fall back to the requested version, fall
-    back to a short manifest-digest handle. The biocontainer manifest digest
-    binds it to exactly that bioconda build — 'installed == requested' is honest,
-    no in-locus probe.
-
-    Legacy records (frozen before adopt_source was captured) only have the
-    digest; we surface the short form rather than leave the cell empty.
+    `1.21--h50ea8bc_0` for samtools), fall back to the requested version. The
+    biocontainer manifest digest binds it to exactly that bioconda build —
+    'installed == requested' is honest, no in-locus probe. The digest lives
+    in the header KV table; we don't echo it here too.
 
     BUILD: defer to _resolved_version (conda/pip > banner > out > anchor) —
     shared with the .md renderer so the two views stay aligned."""
@@ -207,8 +204,6 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
             return adopt_source["tag"]
         if req_v:
             return req_v
-        if image_digest:
-            return f"{image_digest[:19]}… (digest only — tag not captured)"
         return ""
     return _resolved_version(t, pkg, v, shipped)
 

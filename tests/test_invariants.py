@@ -4694,6 +4694,66 @@ def test_biocontainer_resolves_to_highest_version_when_unpinned(monkeypatch):
     assert "6" * 64 in (out["image_by_digest"] or "")
 
 
+def test_lookup_tag_by_digest_returns_matching_tag(monkeypatch):
+    """Backfill helper: given a manifest digest, find the BioContainer tag
+    that currently points at it. Used to populate adopt_source on legacy
+    freeze records (where the resolver's output wasn't preserved)."""
+    from agent.skills import biocontainers
+    fake_tags = [
+        {"name": "1.21--h50ea8bc_0", "manifest_digest": "sha256:" + "a" * 64},
+        {"name": "1.23.1--ha83d96e_0", "manifest_digest": "sha256:" + "b" * 64},
+        {"name": "1.22--abcdef_0", "manifest_digest": "sha256:" + "c" * 64},
+    ]
+    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: fake_tags)
+    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "b" * 64)
+    assert out is not None
+    assert out["repo"] == "samtools"
+    assert out["tag"] == "1.23.1--ha83d96e_0"
+    assert out["image_by_tag"] == ("quay.io/biocontainers/samtools:"
+                                    "1.23.1--ha83d96e_0")
+    assert out["image_by_digest"].endswith("@sha256:" + "b" * 64)
+    assert out["digest"] == "sha256:" + "b" * 64
+
+
+def test_lookup_tag_by_digest_returns_none_when_no_match(monkeypatch):
+    """When the digest no longer matches any active tag (upstream deleted
+    or re-pointed it), return None so the caller surfaces a clear message
+    instead of silently producing wrong metadata."""
+    from agent.skills import biocontainers
+    monkeypatch.setattr(biocontainers, "_quay_tags",
+                        lambda *a, **k: [
+                            {"name": "9.9--x_0", "manifest_digest": "sha256:" + "9" * 64},
+                        ])
+    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "0" * 64)
+    assert out is None
+
+
+def test_lookup_tag_by_digest_handles_network_failure(monkeypatch):
+    """Quay API unreachable → lookup returns None, not a crash. Matches
+    resolve_biocontainer's swallow-failures posture."""
+    from agent.skills import biocontainers
+    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: [])
+    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "1" * 64)
+    assert out is None
+
+
+def test_lookup_tag_by_digest_picks_highest_version_on_collision(monkeypatch):
+    """If multiple tags share a manifest digest (rare but legal — quay
+    sometimes re-uses a layer set under different tags), the lookup picks
+    the highest semver-ish tag. Defensible default: matches what the
+    forward resolver does."""
+    from agent.skills import biocontainers
+    same_digest = "sha256:" + "d" * 64
+    fake_tags = [
+        {"name": "1.20--x_0", "manifest_digest": same_digest},
+        {"name": "1.22--x_0", "manifest_digest": same_digest},
+        {"name": "1.21--x_0", "manifest_digest": same_digest},
+    ]
+    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: fake_tags)
+    out = biocontainers.lookup_tag_by_digest("samtools", same_digest)
+    assert out["tag"] == "1.22--x_0"
+
+
 def test_env_mutating_pipeline_steps_detects_pip_install():
     """P3 — pip install via run_in_env lands in pipeline_steps (not
     install_steps). The adopt-vs-build decision needs to see these or the

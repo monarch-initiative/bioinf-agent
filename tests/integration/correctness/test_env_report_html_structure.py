@@ -232,14 +232,27 @@ def test_adopt_installed_version_prefers_biocontainer_tag():
 
 
 @pytest.mark.integration
-def test_adopt_installed_version_falls_back_to_digest_handle_for_legacy():
-    """Legacy adopt records (no adopt_source) still get something useful in
-    the Installed Version cell — a shortened digest handle — instead of
-    a blank dash. This pins the legacy-record graceful-degrade."""
+def test_adopt_installed_version_blank_for_legacy_no_tag():
+    """Legacy adopt records (no adopt_source, no requested version) show
+    the muted '—' in the Installed Version cell. The manifest digest
+    lives in the header KV table and in the Install Commands section —
+    we don't echo it in the Tools table too. Backfill the legacy record
+    via the Quay reverse-lookup helper to populate the actual tag."""
     html = render_env_report_html(_adopt_record_legacy_no_source())
-    # The first 19 chars of the digest must surface (the short handle).
-    assert "sha256:23cda33a3a42" in html
-    assert "digest only — tag not captured" in html
+    # Should NOT contain a duplicate-digest noisy fallback.
+    assert "digest only — tag not captured" not in html
+    assert "sha256:23cda33a3a42" not in _tools_table(html)
+    # Should still render the apptainer pull command in Install Commands.
+    assert "apptainer pull docker://" in html
+
+
+def _tools_table(html: str) -> str:
+    """Extract the contents of the Tools <section> for assertions that need
+    to be scoped (the digest appears legitimately in header + install
+    commands; we just don't want it in the Tools table)."""
+    import re
+    m = re.search(r"<h2>Tools.*?</section>", html, re.DOTALL)
+    return m.group(0) if m else ""
 
 
 @pytest.mark.integration
