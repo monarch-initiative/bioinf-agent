@@ -118,6 +118,18 @@ def submit_workflow_job(project_name: str,
     """Render the workflow, upload the files to `workflow_dir`, sbatch
     launcher.sh, return the SLURM job_id.
 
+    `workflow_dir` semantics:
+      - If empty / not provided: AUTO-DERIVED as
+        `<env.agent_scratch_target.path>/<project_name>/<workflow_name>`.
+        This is the canonical "per-run staging in scratch" path — uses
+        the env-implicit scratch grant (no per-project YAML declaration
+        needed); requires the scratch target to have `upload` + `exec`.
+      - If provided: literal absolute path. Must be authorized by
+        EITHER the env-implicit scratch grant for this project OR an
+        explicit `project.directories[]` entry with `upload` + `exec`.
+        Use this to land workflow files in a long-lived project_path
+        location instead of ephemeral scratch.
+
     Returns on success:
       {
         "success":         True,
@@ -134,10 +146,7 @@ def submit_workflow_job(project_name: str,
     forensics if sbatch fails post-upload.
     """
     try:
-        # ─── Validate the workflow_dir before doing anything else ──────
-        normed_dir = _validate_workflow_dir(workflow_dir)
-
-        # ─── Resolve access; gate project+env+permission ───────────────
+        # ─── Resolve access first; we may need env to auto-derive workflow_dir
         access = compute_access.load_access(
             Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
@@ -149,16 +158,32 @@ def submit_workflow_job(project_name: str,
                 f"submit_workflow_job only supports ssh compute envs; "
                 f"got type={env_type!r} on env {compute_env_name!r}"}
 
+        # ─── Auto-derive workflow_dir from scratch when not supplied ───
+        if not workflow_dir or not workflow_dir.strip():
+            scratch = env.get("agent_scratch_target") or {}
+            scratch_path = (scratch.get("path") or "").rstrip("/")
+            if not scratch_path:
+                return {"error":
+                    f"no workflow_dir supplied and env "
+                    f"{compute_env_name!r} has no agent_scratch_target "
+                    f"to auto-derive from; either declare a scratch "
+                    f"target on the env or pass workflow_dir explicitly."}
+            workflow_dir = f"{scratch_path}/{project_name}/{workflow_name}"
+
+        normed_dir = _validate_workflow_dir(workflow_dir)
+
         # The workflow_dir itself must be authorized with BOTH `upload`
         # (so we can put files there) AND `exec` (so the SLURM job may
         # write its own outputs). Two separate check_permission calls
-        # to get distinct error messages.
+        # to get distinct error messages. `env` passed so paths under
+        # <env.agent_scratch_target>/<project>/ pick up the env-implicit
+        # scratch grant — same auth posture as upload_to_scratch.
         compute_access.check_permission(
-            project, compute_env_name, normed_dir, "upload_to_project_path")
-        # `exec` is the permission token needed for a SLURM job to
-        # write its own outputs in-place inside the dir.
+            project, compute_env_name, normed_dir,
+            "upload_to_project_path", env=env)
         compute_access.check_permission(
-            project, compute_env_name, normed_dir, "submit_workflow_job")
+            project, compute_env_name, normed_dir,
+            "submit_workflow_job", env=env)
 
         # ─── Render the workflow files (strict, raises ValueError) ─────
         rendered = workflow_render.render_workflow(

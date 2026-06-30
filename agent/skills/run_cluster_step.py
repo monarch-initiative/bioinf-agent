@@ -80,8 +80,8 @@ def run_step_on_cluster(
         freeze_request_key: str,
         project_name: str,
         compute_env_name: str,
-        workflow_dir: str,
-        workflow_name: str,
+        workflow_dir: str = "",
+        workflow_name: str = "",
         tool_name: str,
         command: str,
         inputs: Mapping[str, str],
@@ -164,6 +164,10 @@ def run_step_on_cluster(
                 "stage_result": stage, "submit_result": sub}
 
     job_id = sub["job_id"]
+    # If workflow_dir was empty on entry, submit_workflow_job auto-derived
+    # it under the env's scratch zone. Use the resolved path from here
+    # for the download step + pipeline_step record.
+    workflow_dir = sub["workflow_dir"]
 
     # ─── 3. Poll cluster_job_status until terminal ────────────────────
     final_status = None

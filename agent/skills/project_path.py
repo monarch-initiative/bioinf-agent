@@ -149,10 +149,13 @@ def upload_to_project_path(project_name: str,
 
         normed = _validate_abs_remote_path(abs_path)
 
-        # Phase-1 gate: check_permission walks project.directories[] and
-        # confirms the path is under an authorized dir with the right token.
+        # Auth gate. `env` passed so paths under the env's scratch zone
+        # for this project pick up the env-implicit grant — submit_workflow_job's
+        # scratch-by-default flow pushes its rendered files via this primitive
+        # and we shouldn't force a YAML declaration for that.
         compute_access.check_permission(
-            project, compute_env_name, normed, "upload_to_project_path")
+            project, compute_env_name, normed,
+            "upload_to_project_path", env=env)
 
         lp = _validate_local_path_for_upload(local_path)
         local_sha = _compute_local_sha256(lp)
@@ -279,8 +282,11 @@ def download_from_project_path(project_name: str,
             return {"error": f"unsupported compute_env type {env_type!r}"}
 
         normed = _validate_abs_remote_path(abs_path)
+        # `env` passed so scratch-located workflow outputs can be fetched
+        # without per-project YAML declaration (symmetric with upload).
         compute_access.check_permission(
-            project, compute_env_name, normed, "download_from_project_path")
+            project, compute_env_name, normed,
+            "download_from_project_path", env=env)
 
         lp = _validate_local_path_for_download(local_path)
 
