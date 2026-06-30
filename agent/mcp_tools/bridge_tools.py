@@ -341,6 +341,7 @@ def cluster_job_status(project_name: str,
 @mcp.tool()
 def submit_workflow_job(project_name: str,
                         compute_env_name: str,
+                        workflow_dir: str,
                         workflow_name: str,
                         tool_name: str,
                         command: str,
@@ -349,20 +350,21 @@ def submit_workflow_job(project_name: str,
                         apptainer_sif: str,
                         apptainer_module: str,
                         nextflow_module: str,
-                        slurm: dict,
-                        workflow_dir: str = "") -> dict:
-    """Render → upload → sbatch a one-process Nextflow workflow.
+                        slurm: dict) -> dict:
+    """Production cluster submission — render → upload → sbatch → emit
+    a local manifest, return job_id. NO POLLING.
 
-    End-to-end submission primitive: takes a single-tool workflow spec,
-    renders main.nf/nextflow.config/launcher.sh via workflow_render,
-    uploads them to `workflow_dir` via upload_to_project_path, runs
-    `sbatch --parsable launcher.sh` over ssh, returns the SLURM job_id
-    the agent can poll with cluster_job_status.
+    For runs that land in user-declared project workspace paths. The
+    agent may be cut off long before a real production job finishes,
+    so this primitive returns immediately after sbatch and writes a
+    local manifest the user (or a future agent invocation) can use to
+    find the job. For validation/seal runs (short, in the agent's
+    scratch sandbox), use `run_step_on_cluster` instead.
 
     Composition discipline: NOT a composite — the caller still calls
-    freeze() to build the env, upload_to_common_data to push the .sif,
-    cluster_job_status to poll, download_from_project_path to fetch
-    outputs. This primitive is the irreducible *submission* step.
+    freeze() to build the env, stage_apptainer_image to push the .sif,
+    cluster_job_status to poll AT THEIR OWN PACE,
+    download_from_project_path to fetch outputs.
 
     Authorization (Phase-1 explicit, dir-by-dir):
       - project must have a `compute_env_access` entry for the env
@@ -372,12 +374,14 @@ def submit_workflow_job(project_name: str,
         the SLURM job may write outputs in-place during execution)
 
     Inputs:
-      workflow_dir       absolute remote path; the per-run dir on the
-                         compute env. No-overwrite contract means a
-                         second submit to the same dir fails — pick a
-                         fresh per-run subdir per submission.
+      workflow_dir       absolute remote path under a `directories[]`
+                         entry; the per-run dir on the compute env.
+                         No-overwrite contract means a second submit
+                         to the same dir fails — pick a fresh per-run
+                         subdir per submission.
       workflow_name      safe-token, ≤64 chars. Used for `sbatch
-                         --job-name` AND in render_workflow's tag.
+                         --job-name`, render_workflow's tag, AND the
+                         local manifest filename.
       tool_name          safe-token; identifies the tool in
                          process_name + comments.
       command            single-line shell command with `${name}`
@@ -387,8 +391,8 @@ def submit_workflow_job(project_name: str,
       outputs            {placeholder_name: bare_filename} — what the
                          process writes (to the working dir).
       apptainer_sif      absolute remote path to the frozen .sif.
-                         Caller uploads via upload_to_common_data
-                         first; pass the remote path here.
+                         Caller stages via stage_apptainer_image
+                         first; pass the resolved sif_path here.
       apptainer_module   Lmod token, e.g. "apptainer/1.4.1".
       nextflow_module    Lmod token, e.g. "nextflow/25.04.7".
       slurm              {queue, time, mem, cpus, account?} —
@@ -396,7 +400,9 @@ def submit_workflow_job(project_name: str,
 
     Returns on success:
       {success: True, compute_env, job_id, workflow_dir,
-       files_uploaded: [...], submitted_at, upload_started}
+       files_uploaded: [...], submitted_at, upload_started,
+       manifest_path:
+         "job_submissions/<project>/<workflow_name>_<job_id>.submission.json"}
     Returns {"error": "...", ...} on any refusal/failure. If sbatch
     fails after files have been uploaded, files_uploaded is
     included so the caller can clean up."""
@@ -477,21 +483,34 @@ def run_step_on_cluster(pipeline_id: str,
                         apptainer_module: str,
                         nextflow_module: str,
                         slurm: dict,
-                        workflow_dir: str = "",
                         sif_subpath: str = "",
                         poll_interval: int = 15,
                         max_polls: int = 240,
                         output_types: dict = {}) -> dict:
-    """Path-4 keystone — run a workflow step on cluster + record the
-    cluster-locus evidence as a pipeline_step in the draft.
+    """Path-4 keystone — run a workflow step ON CLUSTER IN SCRATCH and
+    record cluster-locus evidence as a pipeline_step in the draft.
 
-    Composes: `stage_apptainer_image` (idempotent) → `submit_workflow_job`
-    (render+upload+sbatch) → `cluster_job_status` (poll to terminal) →
-    `cluster_job_resources` (sacct's MaxRSS for I7) →
-    `download_from_project_path` (sha256 round-trip per output) →
-    type-aware validation. The pipeline_step records `validation_locus:
-    "cluster"` so a future reader sees the evidence came from sacct,
-    not host psutil.
+    The wall: scratch-only
+    ----------------------
+    workflow_dir is computed internally as
+      `<env.agent_scratch_target.path>/<project_name>/<workflow_name>/`
+    There is NO knob to point it elsewhere. The scratch sandbox is
+    what keeps the agent inside its own walls: it can mess around
+    freely in scratch to prove a build works on cluster. Production
+    runs (against user project workspaces) go through
+    `submit_workflow_job` with directories[] auth.
+
+    Auth: env must declare `agent_scratch_target` with `exec` perm
+    (the schema validator enforces this on every scratch target).
+    Hard-fails if no scratch target — no graceful fallback.
+
+    Composes: `stage_apptainer_image` (idempotent) → render +
+    `upload_to_scratch` × 3 → `sbatch --parsable` → `cluster_job_status`
+    (poll to terminal — viable here because validation jobs are
+    bounded) → `cluster_job_resources` (sacct MaxRSS for I7) →
+    `download_from_scratch` × N (sha256 round-trip) → type-aware
+    validation. The pipeline_step records `validation_locus: "cluster"`
+    so a future reader sees the evidence came from sacct.
 
     After this returns successfully, three legitimate next moves:
       (a) `seal_workflow(pipeline_id, freeze_request_key)` — produce
@@ -500,7 +519,8 @@ def run_step_on_cluster(pipeline_id: str,
       (c) `discard_pipeline_draft(pipeline_id)` — run-and-go
 
     `outputs`: `{placeholder_name: bare_filename}` — the file the
-    process writes (Nextflow's publishDir lands it in workflow_dir).
+    process writes (Nextflow's publishDir lands it in the scratch
+    workflow_dir).
     `download_local_dir`: where to materialize the fetched outputs
     locally (created if absent).
     `output_types`: optional `{basename|ext: validator_type}` overrides
@@ -509,7 +529,7 @@ def run_step_on_cluster(pipeline_id: str,
     Returns {success, returncode, job_id, sif_path, workflow_dir,
     resource_usage, detected_outputs, output_sha256, validations,
     validation_count, download_errors, pipeline_merge, final_status}
-    on success; {"error": ..., stage_result/submit_result/last_poll?}
+    on success; {"error": ..., stage_result/last_poll?}
     on any phase's refusal/failure. The prior phases' results are
     preserved on the error dict for diagnosis."""
     from agent.skills import run_cluster_step
@@ -518,7 +538,6 @@ def run_step_on_cluster(pipeline_id: str,
         freeze_request_key=freeze_request_key,
         project_name=project_name,
         compute_env_name=compute_env_name,
-        workflow_dir=workflow_dir,
         workflow_name=workflow_name,
         tool_name=tool_name,
         command=command,

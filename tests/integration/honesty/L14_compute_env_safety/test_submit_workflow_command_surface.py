@@ -462,3 +462,148 @@ class TestSbatchFailures:
         assert len(result["files_uploaded"]) == 1
         # And sbatch was never called.
         assert sbatch_called == []
+
+
+# ===========================================================================
+# 7. workflow_dir is REQUIRED — this is the production primitive
+# ===========================================================================
+
+class TestWorkflowDirRequired:
+    """submit_workflow_job is the production submission primitive and
+    runs against user-declared project workspace paths. It does NOT
+    auto-derive a scratch path on missing workflow_dir — that's
+    run_step_on_cluster's job. An empty workflow_dir is a clean refusal
+    (caller passed the wrong primitive)."""
+
+    @pytest.mark.integration
+    def test_empty_workflow_dir_refused_no_ssh(self, tmp_path, monkeypatch):
+        access_path = _good_access(tmp_path)
+        called = []
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: called.append(a) or MagicMock())
+        result = submit_workflow.submit_workflow_job(
+            **{**_DEMO_KW, "workflow_dir": "",
+               "access_path": str(access_path)})
+        assert "error" in result
+        assert "workflow_dir is required" in result["error"]
+        assert "run_step_on_cluster" in result["error"]
+        assert called == []
+
+
+# ===========================================================================
+# 8. Submission manifest — the user-visible deliverable for production runs
+# ===========================================================================
+
+class TestSubmissionManifest:
+    """The agent will be cut off long before a real production job
+    finishes, so submit_workflow_job writes a local manifest the user
+    can use to find the job later. Path:
+        job_submissions/<project>/<workflow_name>_<job_id>.submission.json
+    """
+
+    @pytest.mark.integration
+    def test_manifest_written_to_canonical_path(self, tmp_path, monkeypatch):
+        access_path = _good_access(tmp_path)
+
+        # Stub upload + ssh subprocess.
+        from agent.skills import project_path as _pp
+
+        def fake_upload(**kw):
+            return {"success": True, "compute_env": kw["compute_env_name"],
+                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "bytes": 1, "duration_s": 0.001,
+                    "transferred_at": "t"}
+
+        def fake_run(*a, **kw):
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = "555000\n"
+            mock.stderr = ""
+            return mock
+
+        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.chdir(tmp_path)  # so the manifest lands in tmp_path
+
+        result = submit_workflow.submit_workflow_job(
+            **{**_DEMO_KW, "access_path": str(access_path)})
+        assert "error" not in result, result
+
+        manifest_path = result["manifest_path"]
+        expected = ("job_submissions/demo/"
+                    "demo_run_555000.submission.json")
+        assert manifest_path == expected
+        assert (tmp_path / manifest_path).exists()
+
+    @pytest.mark.integration
+    def test_manifest_records_everything_user_needs(
+            self, tmp_path, monkeypatch):
+        import json
+        access_path = _good_access(tmp_path)
+        from agent.skills import project_path as _pp
+
+        def fake_upload(**kw):
+            return {"success": True, "compute_env": kw["compute_env_name"],
+                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "bytes": 1, "duration_s": 0.001,
+                    "transferred_at": "t"}
+
+        def fake_run(*a, **kw):
+            mock = MagicMock(); mock.returncode = 0
+            mock.stdout = "1234567\n"; mock.stderr = ""
+            return mock
+
+        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.chdir(tmp_path)
+
+        result = submit_workflow.submit_workflow_job(
+            **{**_DEMO_KW, "access_path": str(access_path)})
+        assert "error" not in result, result
+
+        manifest = json.loads((tmp_path / result["manifest_path"]).read_text())
+        # The manifest carries everything needed to re-find this job
+        # WITHOUT the agent: who, what, where, how to follow up.
+        assert manifest["project_name"] == "demo"
+        assert manifest["compute_env"] == "fakehpc"
+        assert manifest["job_id"] == "1234567"
+        assert manifest["workflow_name"] == "demo_run"
+        assert manifest["tool_name"] == "samtools"
+        assert manifest["workflow_dir"] == "/work/u/demo/run_001"
+        assert manifest["command"] == _DEMO_KW["command"]
+        assert manifest["inputs"] == _DEMO_KW["inputs"]
+        assert manifest["outputs"] == _DEMO_KW["outputs"]
+        assert manifest["apptainer_sif"] == _DEMO_KW["apptainer_sif"]
+        assert manifest["slurm"] == _DEMO_SLURM
+        assert len(manifest["files_uploaded"]) == 3
+        # Follow-up hints reference the job_id so a future agent
+        # invocation can pick up the trail.
+        assert "1234567" in manifest["follow_up"]["poll"]
+
+    @pytest.mark.integration
+    def test_manifest_not_written_on_failure(self, tmp_path, monkeypatch):
+        # If sbatch fails, NO manifest is written — the "submission"
+        # didn't happen. Avoids polluting job_submissions/ with
+        # phantom entries.
+        access_path = _good_access(tmp_path)
+        from agent.skills import project_path as _pp
+
+        def fake_upload(**kw):
+            return {"success": True, "compute_env": kw["compute_env_name"],
+                    "remote_path": kw["abs_path"], "sha256": "0"*64,
+                    "bytes": 1, "duration_s": 0.001, "transferred_at": "t"}
+
+        def fake_run(*a, **kw):
+            mock = MagicMock(); mock.returncode = 1; mock.stdout = ""
+            mock.stderr = "sbatch: error: bad queue\n"
+            return mock
+
+        monkeypatch.setattr(_pp, "upload_to_project_path", fake_upload)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.chdir(tmp_path)
+
+        result = submit_workflow.submit_workflow_job(
+            **{**_DEMO_KW, "access_path": str(access_path)})
+        assert "error" in result
+        # No manifest on failure.
+        assert not (tmp_path / "job_submissions").exists()

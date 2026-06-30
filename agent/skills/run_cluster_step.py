@@ -1,32 +1,55 @@
 """
 run_step_on_cluster — Layer-2 cluster-locus pipeline step.
 
-The Path-4 keystone. Runs a workflow step on a compute env, records
-the cluster-side evidence as a pipeline_step in the local draft, and
-validates each fetched output. The result is a pipeline_step that
-seal_workflow() can consume to produce a WorkflowSpec — the
-HPC analog of run_step_in_container.
+The Path-4 keystone. Runs a workflow step on a compute env IN THE
+AGENT'S SCRATCH SANDBOX, records the cluster-side evidence as a
+pipeline_step in the local draft, and validates each fetched output.
+The result is a pipeline_step that seal_workflow() can consume to
+produce a WorkflowSpec — the HPC analog of run_step_in_container.
 
-What this composes (no new logic, just orchestration)
------------------------------------------------------
-  1. stage_apptainer_image   — get the .sif onto the env (idempotent)
-  2. submit_workflow_job     — render + upload + sbatch, get job_id
-  3. cluster_job_status      — poll until terminal (PENDING -> ... ->
-                               COMPLETED / FAILED / CANCELLED / ...)
-  4. cluster_job_resources   — fetch wall_seconds + peak_rss_mb from
-                               sacct's batch row (I7 evidence)
-  5. download_from_project_path — fetch outputs back local (sha256
-                                  round-trip)
-  6. _validator.validate     — type-aware validation per output
-                               (same code path local steps use)
-  7. _pipeline_state.add_step+add_validation — record everything
+The wall: scratch-only
+----------------------
+This primitive runs validation/seal jobs — short, bounded, the
+agent's own work. It ALWAYS lands in:
+    <env.agent_scratch_target.path>/<project_name>/<workflow_name>/
+
+There is NO knob to point it elsewhere. The scratch sandbox is what
+keeps the agent inside its own walls: it can mess around freely
+inside scratch to prove a build works on the cluster; production
+runs (against the user's project workspace) go through the separate
+submit_workflow_job primitive with project.directories[] auth.
+
+Auth via the env-level agent_scratch_target (check_env_target_capability
++ exec permission). If the env has no scratch target, this primitive
+hard-fails — there's no graceful fallback because there's nowhere
+else the agent is allowed to do this work.
 
 Composition discipline
 ----------------------
-Not itself a composite primitive in the bad sense — it doesn't expose
-a flatter API than the underlying primitives. It exposes the SAME
-API a local step would (compatible with the pipeline draft model) so
-seal_workflow can treat cluster and local steps the same way.
+This IS a thin composite, justified by the new state it produces: the
+pipeline_step ledger entry that bridges Layer 1 (the frozen env) to
+Layer 2 (the workflow seal). Without it, the agent would have to
+manually thread the pipeline_id through ~6 calls just to seal a
+single cluster-run step.
+
+It composes:
+  1. stage_apptainer_image   — get the .sif onto the env (idempotent)
+  2. render_workflow_files   — produce main.nf / nextflow.config /
+                               launcher.sh into a local tempdir
+  3. upload_to_scratch       — push each rendered file into the
+                               agent's scratch sandbox (auto-prefixed
+                               by project)
+  4. sbatch_via_ssh          — kick off the SLURM job, get job_id
+  5. cluster_job_status      — poll until terminal (validation jobs
+                               are short; polling is viable here in a
+                               way it isn't for production)
+  6. cluster_job_resources   — fetch wall_seconds + peak_rss_mb from
+                               sacct's batch row (I7 evidence)
+  7. download_from_scratch   — fetch outputs back local (sha256
+                               round-trip)
+  8. _validator.validate     — type-aware validation per output
+                               (same code path local steps use)
+  9. _pipeline_state.add_step+add_validation — record everything
 
 The end state the caller chooses
 --------------------------------
@@ -43,16 +66,27 @@ came from sacct, not host psutil.
 """
 from __future__ import annotations
 
+import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills import (
     cluster_jobs,
-    project_path,
+    compute_access,
+    scratch,
     stage_apptainer,
     submit_workflow,
 )
+
+
+# workflow_name becomes a path component under scratch — keep it safe.
+# Same shape as the project_name token validator (alnum + _-, ≤64 chars).
+_WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+_RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
 # Terminal SLURM states — once we hit one of these the job is over.
@@ -80,8 +114,7 @@ def run_step_on_cluster(
         freeze_request_key: str,
         project_name: str,
         compute_env_name: str,
-        workflow_dir: str = "",
-        workflow_name: str = "",
+        workflow_name: str,
         tool_name: str,
         command: str,
         inputs: Mapping[str, str],
@@ -99,8 +132,15 @@ def run_step_on_cluster(
         _validator=None,                # injectable for tests
         _env_mgr=None,                  # injectable for tests (hash_outputs)
         ) -> dict:
-    """Run `command` inside the cluster-staged frozen env, record
-    evidence as a pipeline_step.
+    """Run `command` inside the cluster-staged frozen env IN SCRATCH,
+    record evidence as a pipeline_step.
+
+    The workflow_dir is computed internally as
+        <env.agent_scratch_target.path>/<project_name>/<workflow_name>/
+    No caller knob — validation/seal runs always land in the agent's
+    scratch sandbox. The schema validator enforces that the env's
+    scratch target has [upload, download, exec]; this primitive
+    hard-fails if no scratch target is declared.
 
     Returns on success:
       {success: True, returncode, job_id, sif_path, workflow_dir,
@@ -113,12 +153,16 @@ def run_step_on_cluster(
 
     Returns {"error": ..., ...} on any refusal/failure. When the
     submit / poll / fetch phases each fail, the prior phases'
-    results are kept on the dict (`stage_result`, `submit_result`,
-    `final_status`, `downloaded`) so the caller can diagnose
-    without re-running.
+    results are kept on the dict (`stage_result`, `final_status`,
+    `downloaded`) so the caller can diagnose without re-running.
     """
     if not pipeline_id:
         return {"error": "pipeline_id is required for run_step_on_cluster"}
+    if not workflow_name or not _WORKFLOW_NAME_RE.match(workflow_name):
+        return {"error":
+            f"workflow_name must match {_WORKFLOW_NAME_RE.pattern!r} "
+            f"(it becomes a path component under scratch); got "
+            f"{workflow_name!r}"}
 
     # Late-bind the singletons (preserves [[feedback-mcp-tools-conventions]]
     # monkeypatchability — tests inject overrides via the _* kwargs).
@@ -129,6 +173,43 @@ def run_step_on_cluster(
         _env_mgr = _env_mgr or _ms._env_mgr
 
     output_types = output_types or {}
+
+    # ─── 0. Resolve project + env; compute the scratch workflow_dir ────
+    try:
+        access = compute_access.load_access(
+            Path(access_path) if access_path else None)
+        project = compute_access.get_project(project_name, access)
+        env = compute_access.get_compute_env(compute_env_name, access)
+    except (compute_access.ConfigError, FileNotFoundError, KeyError,
+            ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+    env_type = env.get("type")
+    if env_type != "ssh":
+        return {"error":
+            f"run_step_on_cluster only supports ssh compute envs; "
+            f"got type={env_type!r} on env {compute_env_name!r}"}
+
+    scratch_target = compute_access.get_agent_scratch_target(env)
+    if scratch_target is None:
+        return {"error":
+            f"compute_env {compute_env_name!r} has no "
+            f"agent_scratch_target declared — run_step_on_cluster "
+            f"can only run inside the agent's scratch sandbox. Add an "
+            f"agent_scratch_target block on this env in "
+            f"projects_access.yaml."}
+
+    # Auth: project must have access to env; scratch target must advertise
+    # `exec` (required for the SLURM job to write its outputs in-place).
+    try:
+        compute_access.check_env_target_capability(
+            project, compute_env_name, scratch_target,
+            "run_step_on_cluster", "agent_scratch_target")
+    except compute_access.PermissionDenied as e:
+        return {"error": f"PermissionDenied: {e}"}
+
+    scratch_root = scratch_target.get("path", "").rstrip("/")
+    workflow_dir = f"{scratch_root}/{project_name}/{workflow_name}"
 
     # ─── 1. Stage the .sif ────────────────────────────────────────────
     stage = stage_apptainer.stage_apptainer_image(
@@ -144,30 +225,56 @@ def run_step_on_cluster(
     sif_path_remote = stage["sif_path"]
     image_digest = stage.get("image_digest", "")
 
-    # ─── 2. Submit the workflow job ───────────────────────────────────
-    sub = submit_workflow.submit_workflow_job(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        workflow_dir=workflow_dir,
-        workflow_name=workflow_name,
-        tool_name=tool_name,
-        command=command,
-        inputs=inputs,
-        outputs=outputs,
-        apptainer_sif=sif_path_remote,
-        apptainer_module=apptainer_module,
-        nextflow_module=nextflow_module,
-        slurm=slurm,
-        access_path=access_path)
-    if "error" in sub:
-        return {"error": f"submit_workflow_job failed: {sub['error']}",
-                "stage_result": stage, "submit_result": sub}
+    # ─── 2. Render + upload to scratch + sbatch ───────────────────────
+    try:
+        rendered = submit_workflow.render_workflow_files(
+            tool_name=tool_name,
+            command=command,
+            inputs=inputs,
+            outputs=outputs,
+            apptainer_sif=sif_path_remote,
+            apptainer_module=apptainer_module,
+            nextflow_module=nextflow_module,
+            slurm=slurm,
+            workflow_name=workflow_name,
+        )
+    except ValueError as e:
+        return {"error": f"workflow_render failed: {e}",
+                "stage_result": stage}
 
-    job_id = sub["job_id"]
-    # If workflow_dir was empty on entry, submit_workflow_job auto-derived
-    # it under the env's scratch zone. Use the resolved path from here
-    # for the download step + pipeline_step record.
-    workflow_dir = sub["workflow_dir"]
+    files_uploaded: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="bioinf_cluster_step_") as td:
+        tdp = Path(td)
+        for fname in _RENDERED_FILES:
+            (tdp / fname).write_text(rendered[fname])
+
+        for fname in _RENDERED_FILES:
+            local = str(tdp / fname)
+            # upload_to_scratch auto-prefixes by project_name, so
+            # `<workflow_name>/<fname>` lands at
+            # <scratch>/<project>/<workflow_name>/<fname>.
+            up = scratch.upload_to_scratch(
+                project_name=project_name,
+                compute_env_name=compute_env_name,
+                local_path=local,
+                remote_subpath=f"{workflow_name}/{fname}",
+                access_path=str(Path(access_path)) if access_path else None,
+                timeout=300)
+            if "error" in up:
+                return {"error":
+                    f"upload of {fname} to scratch failed: {up['error']}",
+                    "stage_result": stage,
+                    "files_uploaded": files_uploaded}
+            files_uploaded.append(up["remote_path"])
+
+    sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
+    if "error" in sb:
+        return {"error": f"sbatch failed: {sb['error']}",
+                "stage_result": stage,
+                "files_uploaded": files_uploaded,
+                "sbatch_result": sb}
+
+    job_id = sb["job_id"]
 
     # ─── 3. Poll cluster_job_status until terminal ────────────────────
     final_status = None
@@ -180,8 +287,8 @@ def run_step_on_cluster(
         if "error" in s:
             return {"error":
                 f"cluster_job_status failed during poll: {s['error']}",
-                "stage_result": stage, "submit_result": sub,
-                "last_poll": s}
+                "stage_result": stage, "job_id": job_id,
+                "workflow_dir": workflow_dir, "last_poll": s}
         if s.get("jobs"):
             row = s["jobs"][0]
             if row.get("state") in _TERMINAL_STATES:
@@ -194,7 +301,8 @@ def run_step_on_cluster(
             f"polling timed out after "
             f"{max_polls * poll_interval}s — job_id={job_id} did "
             f"not reach a terminal state.",
-            "stage_result": stage, "submit_result": sub}
+            "stage_result": stage, "job_id": job_id,
+            "workflow_dir": workflow_dir}
 
     rc = _parse_exit_code(final_status.get("exit_code", ""))
 
@@ -226,17 +334,20 @@ def run_step_on_cluster(
             "sacct_rows":      resources.get("sacct_rows", []),
         }
 
-    # ─── 5. Download outputs back local ──────────────────────────────
+    # ─── 5. Download outputs back local (from scratch) ────────────────
     download_dir = Path(download_local_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
     downloaded: list[str] = []
     download_errors: list[dict] = []
     for placeholder, filename in outputs.items():
         local = str(download_dir / filename)
-        dl = project_path.download_from_project_path(
+        # download_from_scratch auto-prefixes by project_name, so
+        # remote_subpath = "<workflow_name>/<filename>" maps to
+        # <scratch>/<project>/<workflow_name>/<filename>.
+        dl = scratch.download_from_scratch(
             project_name=project_name,
             compute_env_name=compute_env_name,
-            abs_path=f"{workflow_dir}/{filename}",
+            remote_subpath=f"{workflow_name}/{filename}",
             local_path=local,
             access_path=access_path)
         if "error" in dl:

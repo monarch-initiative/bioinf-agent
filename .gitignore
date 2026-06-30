@@ -78,3 +78,9 @@ data/_drivers/
 # usernames, and paths. NEVER COMMIT. See agent/skills/projects_access.yaml.example
 # for the tracked template (generic placeholders only).
 /projects_access.yaml
+
+# Local submission manifests written by submit_workflow_job — per-user,
+# per-run cluster job records. The user follows these to find a submitted
+# job after the agent has been cut off. Local-only by default; the user
+# can untrack a specific manifest if they want to commit it as audit trail.
+/job_submissions/

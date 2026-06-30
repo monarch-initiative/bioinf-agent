@@ -1,21 +1,30 @@
 """
 submit_workflow_job — render → upload → sbatch the workflow on a
-compute env. The end-to-end primitive that takes a single-tool spec
-and returns a SLURM job_id the agent can poll with
-cluster_job_status.
+compute env. The PRODUCTION submission primitive. Takes a single-tool
+spec and returns a SLURM job_id + a local submission manifest the
+user can consult later (the agent may be cut off before the job
+finishes — long-running jobs are not polled by this primitive).
 
 What this is (and isn't)
 ------------------------
 This is NOT a composite primitive. The caller still:
   - freezes the tool's env separately (`freeze`)
-  - uploads the .sif separately (`upload_to_common_data`)
-  - polls the job separately (`cluster_job_status`)
+  - stages the .sif separately (`stage_apptainer_image`)
+  - polls the job separately, AT THEIR OWN PACE (`cluster_job_status`)
   - downloads the outputs separately (`download_from_project_path`)
 
 submit_workflow_job is the *submission* step: the irreducible
 sequence of (render the per-project Nextflow files, upload them into
-the workspace, kick off sbatch). Splitting these out would force the
-caller into a brittle 3-call dance for one logical action.
+the workspace, kick off sbatch, document what was submitted).
+Splitting these out would force the caller into a brittle 3-call
+dance for one logical action.
+
+This primitive is for PRODUCTION RUNS — runs that land in user-
+declared project workspace paths. The wall: `workflow_dir` MUST be
+covered by a `directories[]` entry on the project with both `upload`
+and `exec`. Validation/seal runs do NOT use this primitive — they go
+through `run_step_on_cluster`, which uses the agent's scratch sandbox
+with env-level auth.
 
 Authorization
 -------------
@@ -30,6 +39,17 @@ auto-prefixed. The caller decides the per-run subdir (the no-overwrite
 contract on upload_to_project_path means a second submit to the same
 workflow_dir would fail — that's the desired behavior).
 
+Submission manifest
+-------------------
+On success, writes a local manifest:
+    job_submissions/<project_name>/<workflow_name>_<job_id>.submission.json
+
+The manifest records: job_id, workflow_dir, compute_env, tool_name,
+command, inputs/outputs maps, apptainer_sif (by path on cluster),
+slurm config, files_uploaded[], submitted_at. The user (or a later
+agent invocation) can grep job_submissions/ to find a job by name or
+by id without remembering the terminal output.
+
 sbatch parsing
 --------------
 We use `sbatch --parsable` which returns just the job_id (or
@@ -40,6 +60,7 @@ the caller can diagnose.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -55,6 +76,12 @@ from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 # A SLURM job_id as parsed from `sbatch --parsable`: digits, length-capped.
 _JOB_ID_RE = re.compile(r"^\d{1,12}$")
+
+
+# Local manifest root. submit_workflow_job writes one
+# job_submissions/<project>/<workflow_name>_<job_id>.submission.json per
+# successful submission so the user can find the job later by name or id.
+_MANIFEST_ROOT = "job_submissions"
 
 
 def _validate_workflow_dir(workflow_dir: str) -> str:
@@ -100,6 +127,105 @@ def _parse_sbatch_parsable(stdout: str) -> Optional[str]:
 _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
+def render_workflow_files(*, tool_name: str, command: str,
+                          inputs: Mapping[str, str],
+                          outputs: Mapping[str, str],
+                          apptainer_sif: str,
+                          apptainer_module: str,
+                          nextflow_module: str,
+                          slurm: Mapping,
+                          workflow_name: str) -> dict:
+    """Pure-function pass-through to workflow_render.render_workflow.
+
+    Centralizes the render call so submit_workflow_job and
+    run_step_on_cluster (each of which authorizes a DIFFERENT
+    workflow_dir family — directories[] vs scratch) can share the
+    same render shape without sharing the upload/auth logic."""
+    return workflow_render.render_workflow(
+        tool_name=tool_name,
+        command=command,
+        inputs=inputs,
+        outputs=outputs,
+        apptainer_sif=apptainer_sif,
+        apptainer_module=apptainer_module,
+        nextflow_module=nextflow_module,
+        slurm=slurm,
+        workflow_name=workflow_name,
+    )
+
+
+def sbatch_via_ssh(env: dict, workflow_dir: str, *,
+                   timeout: int = 300) -> dict:
+    """ssh into `env`, cd to `workflow_dir`, run `sbatch --parsable
+    launcher.sh`, parse and return the SLURM job_id.
+
+    Auth-agnostic: callers MUST have already authorized `workflow_dir`
+    for the operation they're performing. submit_workflow_job authorizes
+    via `directories[]`; run_step_on_cluster authorizes via the env's
+    scratch target. This helper only does the ssh-sbatch step.
+
+    Returns {"job_id": "<digits>", "launcher": "<abs path>"} on
+    success; {"error": "...", ...} on failure (the launcher key is
+    included so the caller can surface where the rendered files
+    landed for forensics)."""
+    launcher = f"{workflow_dir}/launcher.sh"
+    sbatch_cmd = (
+        f"bash -lc 'cd {shlex.quote(workflow_dir)} && "
+        f"sbatch --parsable launcher.sh'")
+    argv = _ssh_argv(env, sbatch_cmd)
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return {"error": f"sbatch timed out after {e.timeout}s",
+                "launcher": launcher}
+
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        out = {
+            "error": (
+                f"sbatch failed (rc={res.returncode}): "
+                f"{(res.stderr or '').strip()[:500]}"),
+            "launcher": launcher,
+        }
+        if hint:
+            out["hint"] = hint
+        return out
+
+    job_id = _parse_sbatch_parsable(res.stdout)
+    if job_id is None:
+        return {
+            "error": (
+                "sbatch returned 0 but stdout was not a parseable "
+                "job_id (--parsable expected <id> or <id>;<cluster>)"),
+            "sbatch_stdout":  (res.stdout or "").strip()[:500],
+            "sbatch_stderr":  (res.stderr or "").strip()[:500],
+            "launcher":       launcher,
+        }
+
+    return {"job_id": job_id, "launcher": launcher,
+            "sbatch_command": sbatch_cmd}
+
+
+def _write_submission_manifest(*, project_name: str, workflow_name: str,
+                               job_id: str, manifest: dict) -> str:
+    """Write the submission manifest to
+    job_submissions/<project_name>/<workflow_name>_<job_id>.submission.json.
+
+    Path is relative to the agent's working directory (the repo root in
+    normal use). Returns the manifest path as a string for the caller's
+    return payload.
+
+    The manifest is the production-side deliverable: the user (or a
+    future agent invocation) can find a submitted job by name or id
+    without remembering the terminal output."""
+    out_dir = Path(_MANIFEST_ROOT) / project_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{workflow_name}_{job_id}.submission.json"
+    out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    return str(out_path)
+
+
 def submit_workflow_job(project_name: str,
                         compute_env_name: str,
                         workflow_dir: str,
@@ -116,19 +242,22 @@ def submit_workflow_job(project_name: str,
                         access_path: Optional[str] = None,
                         timeout: int = 300) -> dict:
     """Render the workflow, upload the files to `workflow_dir`, sbatch
-    launcher.sh, return the SLURM job_id.
+    launcher.sh, return the SLURM job_id + a local submission manifest.
 
-    `workflow_dir` semantics:
-      - If empty / not provided: AUTO-DERIVED as
-        `<env.agent_scratch_target.path>/<project_name>/<workflow_name>`.
-        This is the canonical "per-run staging in scratch" path — uses
-        the env-implicit scratch grant (no per-project YAML declaration
-        needed); requires the scratch target to have `upload` + `exec`.
-      - If provided: literal absolute path. Must be authorized by
-        EITHER the env-implicit scratch grant for this project OR an
-        explicit `project.directories[]` entry with `upload` + `exec`.
-        Use this to land workflow files in a long-lived project_path
-        location instead of ephemeral scratch.
+    THE PRODUCTION SUBMISSION PRIMITIVE. For runs landing in user-
+    declared project workspace paths. Validation/seal flows use
+    `run_step_on_cluster` instead.
+
+    `workflow_dir` is REQUIRED — a literal absolute path covered by a
+    `directories[]` entry on the project with both `upload` and `exec`.
+    The caller decides the per-run subdir (the no-overwrite contract on
+    upload_to_project_path means a second submit to the same workflow_dir
+    would fail — that's the desired behavior).
+
+    No polling. submit-and-document semantics: the agent may be cut off
+    long before a real production job finishes, so this primitive
+    returns immediately after sbatch and writes a local manifest that
+    the user (or a later agent invocation) can use to find the job.
 
     Returns on success:
       {
@@ -136,8 +265,9 @@ def submit_workflow_job(project_name: str,
         "compute_env":     <env_name>,
         "job_id":          "<digits>",
         "workflow_dir":    <abs path on env>,
-        "files_uploaded":  [<remote_path>, ...],   # one per rendered file
+        "files_uploaded":  [<remote_path>, ...],
         "submitted_at":    "<iso utc>",
+        "manifest_path":   "job_submissions/<project>/<name>_<id>.submission.json",
       }
 
     Returns {"error": "...", ...} on any refusal/failure. The
@@ -146,7 +276,6 @@ def submit_workflow_job(project_name: str,
     forensics if sbatch fails post-upload.
     """
     try:
-        # ─── Resolve access first; we may need env to auto-derive workflow_dir
         access = compute_access.load_access(
             Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
@@ -158,35 +287,30 @@ def submit_workflow_job(project_name: str,
                 f"submit_workflow_job only supports ssh compute envs; "
                 f"got type={env_type!r} on env {compute_env_name!r}"}
 
-        # ─── Auto-derive workflow_dir from scratch when not supplied ───
         if not workflow_dir or not workflow_dir.strip():
-            scratch = env.get("agent_scratch_target") or {}
-            scratch_path = (scratch.get("path") or "").rstrip("/")
-            if not scratch_path:
-                return {"error":
-                    f"no workflow_dir supplied and env "
-                    f"{compute_env_name!r} has no agent_scratch_target "
-                    f"to auto-derive from; either declare a scratch "
-                    f"target on the env or pass workflow_dir explicitly."}
-            workflow_dir = f"{scratch_path}/{project_name}/{workflow_name}"
+            return {"error":
+                "workflow_dir is required for submit_workflow_job — "
+                "this is the production primitive that lands in a "
+                "user-declared `directories[]` path. For "
+                "validation/seal runs in the agent's scratch sandbox, "
+                "use run_step_on_cluster instead."}
 
         normed_dir = _validate_workflow_dir(workflow_dir)
 
         # The workflow_dir itself must be authorized with BOTH `upload`
         # (so we can put files there) AND `exec` (so the SLURM job may
-        # write its own outputs). Two separate check_permission calls
-        # to get distinct error messages. `env` passed so paths under
-        # <env.agent_scratch_target>/<project>/ pick up the env-implicit
-        # scratch grant — same auth posture as upload_to_scratch.
+        # write its own outputs). Phase-1 directories[] gate; scratch
+        # paths are NOT authorized here — that's run_step_on_cluster's
+        # job through the env-level scratch target.
         compute_access.check_permission(
             project, compute_env_name, normed_dir,
-            "upload_to_project_path", env=env)
+            "upload_to_project_path")
         compute_access.check_permission(
             project, compute_env_name, normed_dir,
-            "submit_workflow_job", env=env)
+            "submit_workflow_job")
 
         # ─── Render the workflow files (strict, raises ValueError) ─────
-        rendered = workflow_render.render_workflow(
+        rendered = render_workflow_files(
             tool_name=tool_name,
             command=command,
             inputs=inputs,
@@ -227,39 +351,43 @@ def submit_workflow_job(project_name: str,
                 files_uploaded.append(up["remote_path"])
 
         # ─── sbatch launcher.sh, parse job_id ──────────────────────────
-        launcher = f"{normed_dir}/launcher.sh"
-        # Use `--parsable` so stdout is just the job_id (or
-        # `id;cluster`). cd into the dir first so the SBATCH output
-        # log paths (relative in the launcher) land alongside the
-        # rendered files.
-        sbatch_cmd = (
-            f"bash -lc 'cd {shlex.quote(normed_dir)} && "
-            f"sbatch --parsable launcher.sh'")
-        argv = _ssh_argv(env, sbatch_cmd)
-        res = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=timeout)
-        if res.returncode != 0:
-            hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-            return {
-                "error":
-                    f"sbatch failed (rc={res.returncode}): "
-                    f"{(res.stderr or '').strip()[:500]}",
-                "files_uploaded": files_uploaded,
-                "launcher": launcher,
-                **({"hint": hint} if hint else {}),
-            }
+        sb = sbatch_via_ssh(env, normed_dir, timeout=timeout)
+        if "error" in sb:
+            return {**sb, "files_uploaded": files_uploaded}
 
-        job_id = _parse_sbatch_parsable(res.stdout)
-        if job_id is None:
-            return {
-                "error":
-                    "sbatch returned 0 but stdout was not a parseable "
-                    "job_id (--parsable expected <id> or <id>;<cluster>)",
-                "sbatch_stdout":  (res.stdout or "").strip()[:500],
-                "sbatch_stderr":  (res.stderr or "").strip()[:500],
-                "files_uploaded": files_uploaded,
-                "launcher":       launcher,
-            }
+        job_id = sb["job_id"]
+        submitted_at = datetime.now(timezone.utc).isoformat()
+
+        # ─── Write the local submission manifest ───────────────────────
+        manifest = {
+            "project_name":     project_name,
+            "compute_env":      compute_env_name,
+            "workflow_name":    workflow_name,
+            "tool_name":        tool_name,
+            "job_id":           job_id,
+            "workflow_dir":     normed_dir,
+            "command":          command,
+            "inputs":           dict(inputs),
+            "outputs":          dict(outputs),
+            "apptainer_sif":    apptainer_sif,
+            "apptainer_module": apptainer_module,
+            "nextflow_module":  nextflow_module,
+            "slurm":            dict(slurm),
+            "files_uploaded":   files_uploaded,
+            "sbatch_command":   sb.get("sbatch_command"),
+            "submitted_at":     submitted_at,
+            "upload_started":   upload_started,
+            "host":             env.get("host"),
+            "follow_up": {
+                "poll":     ("call cluster_job_status(project, env, "
+                             f"job_id={job_id!r})"),
+                "fetch":    ("call download_from_project_path for each "
+                             "expected output under workflow_dir"),
+            },
+        }
+        manifest_path = _write_submission_manifest(
+            project_name=project_name, workflow_name=workflow_name,
+            job_id=job_id, manifest=manifest)
 
         return {
             "success":        True,
@@ -267,8 +395,9 @@ def submit_workflow_job(project_name: str,
             "job_id":         job_id,
             "workflow_dir":   normed_dir,
             "files_uploaded": files_uploaded,
-            "submitted_at":   datetime.now(timezone.utc).isoformat(),
+            "submitted_at":   submitted_at,
             "upload_started": upload_started,
+            "manifest_path":  manifest_path,
         }
 
     except (ValueError, compute_access.PermissionDenied,

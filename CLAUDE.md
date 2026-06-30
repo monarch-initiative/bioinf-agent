@@ -75,7 +75,8 @@ Compose these. Each one absorbs the per-category knowledge that would otherwise 
 | `upload_to_scratch / download_from_scratch / upload_to_common_data / download_from_common_data / upload_to_project_path / download_from_project_path` | **HPC bridge — three transfer auth families.** All do scp + sha256 round-trip + refuse-to-overwrite. **scratch** (env-implicit + auto-prefix by project — sandbox: per-run staging, logs); **common_data** (env-implicit + shared — reference data, staged `.sif`s; NO project prefix); **project_path** (Phase-1 explicit + literal abs_path — the user's real project layout; longest-prefix match against `directories[]`). Discrete capabilities per primitive: `upload` ≠ `download` ≠ `exec`. |
 | `cluster_job_status(project, env, job_id)` | **HPC bridge.** SLURM job-state query for polling. ONE ssh hop running `bash -lc 'sacct -j <id> -P --noheader -X -o JobID,State,Elapsed,ExitCode,NodeList,Reason,Start,End'`. `job_id` validated as `\d{1,12}(_\d{1,12})?` (digits + optional `_<task>` for array jobs) BEFORE any ssh — metacharacters refused. Empty sacct output → `jobs: []` (not an error); caller distinguishes "not yet in slurmdbd" from "never existed" with a short retry. |
 | `stage_apptainer_image(project, env, freeze_request_key, sif_subpath="")` | **HPC bridge.** Mode-aware HPC delivery from the EnvCache. **ADOPT** (pure-conda + public BioContainer): ONE ssh hop, `apptainer pull <sif> docker://<image_by_digest>`. **BUILD-with-push**: same shape via pushed ref. **BUILD-archive** (default for non-conda): transfer .tar via `env.bulk_transfer.type` (today only `scp_head_node` via `upload_to_common_data`; HPC `datamover` / `globus` add ONE branch + adapter), then ssh `apptainer build <sif> docker-archive://<tar>`. Default .sif location: `<agent_common_data_target>/apptainer/<env_name>_<short_digest>.sif`. Idempotent — re-stages skip if .sif exists. NOT a composite (caller still calls freeze + submit_workflow_job separately). |
-| `submit_workflow_job(project, env, workflow_dir, workflow_name, tool_name, command, inputs, outputs, apptainer_sif, apptainer_module, nextflow_module, slurm)` | **HPC bridge.** End-to-end submission: render via `workflow_render` (main.nf + nextflow.config + launcher.sh) → upload all 3 files to `workflow_dir` via `upload_to_project_path` → ssh `sbatch --parsable launcher.sh` → return SLURM `job_id`. Auth: `workflow_dir` must be authorized with BOTH `upload` (for the file pushes) AND `exec` (so the SLURM job may write outputs in-place). The renderer is generic + per-project ([[project-nextflow-module-principles]]): every `${name}` in `command` must be declared in `inputs ∪ outputs`; script blocks contain the literal shell command; main.nf is human-readable + re-runnable from copy-pasted shell. NOT a composite (caller still calls `freeze` + `stage_apptainer_image` + polls `cluster_job_status` + downloads outputs). |
+| `submit_workflow_job(project, env, workflow_dir, workflow_name, tool_name, command, inputs, outputs, apptainer_sif, apptainer_module, nextflow_module, slurm)` | **HPC bridge — PRODUCTION submission.** Render via `workflow_render` (main.nf + nextflow.config + launcher.sh) → upload all 3 files to `workflow_dir` via `upload_to_project_path` → ssh `sbatch --parsable launcher.sh` → write LOCAL manifest → return SLURM `job_id`. No polling — the agent may be cut off long before a real production job finishes, so this primitive is **submit-and-document**: returns immediately + writes `job_submissions/<project>/<workflow_name>_<job_id>.submission.json` carrying everything the user (or a future agent invocation) needs to find the job later (job_id, workflow_dir, command, inputs/outputs, slurm config, apptainer_sif). Auth: `workflow_dir` is REQUIRED and must be authorized via `project.directories[]` with BOTH `upload` (for the file pushes) AND `exec` (so the SLURM job may write outputs in-place). Scratch paths are NOT auto-routed here — for validation/seal runs in the agent's scratch sandbox, use `run_step_on_cluster`. The renderer is generic + per-project ([[project-nextflow-module-principles]]): every `${name}` in `command` must be declared in `inputs ∪ outputs`; script blocks contain the literal shell command; main.nf is human-readable + re-runnable from copy-pasted shell. NOT a composite (caller still calls `freeze` + `stage_apptainer_image` + polls `cluster_job_status` themselves + downloads outputs via `download_from_project_path`). |
+| `run_step_on_cluster(pipeline_id, freeze_request_key, project, env, workflow_name, tool_name, command, inputs, outputs, download_local_dir, apptainer_module, nextflow_module, slurm)` | **HPC bridge — Path-4 keystone (VALIDATION/seal).** Run a workflow step ON CLUSTER **in the agent's scratch sandbox**, poll to completion, fetch outputs, validate, record a `pipeline_step` with `validation_locus="cluster"` for `seal_workflow` to consume. The wall: workflow_dir is ALWAYS `<env.agent_scratch_target.path>/<project>/<workflow_name>/` — no caller knob. Hard-fails if the env has no scratch target. Auth: `check_env_target_capability(scratch, "exec")` — schema enforces scratch has `exec`. Composes `stage_apptainer_image` + render + `upload_to_scratch`×3 + `sbatch_via_ssh` + `cluster_job_status` (polling viable here because validation jobs are bounded, unlike production) + `cluster_job_resources` (sacct MaxRSS for I7) + `download_from_scratch`×N (sha256 round-trip) + type-aware validation. The cluster analog of `run_step_in_container`. After it returns, three legitimate next moves: (a) `seal_workflow` to produce a `WorkflowSpec` with cluster-locus evidence, (b) call again with a different command for multi-step workflows, (c) `discard_pipeline_draft` to run-and-go. |
 
 Below the primitives there are still lower-level tools (`run_in_env`, `validate_output`, `verify_installation`, `patch_pipeline`, etc.) — use them when a primitive doesn't fit. Prefer the primitive when it does.
 
@@ -101,7 +102,7 @@ The full flow, in order — two layers (env, then workflow):
 8. **`seal_workflow(pipeline_id, freeze_request_key)`** — **Layer 2.** Validate the run-side invariants (I0/I3/I6/I7/I8), self-test `usage.command_template` (I4), pin the env BY DIGEST, and write the `WorkflowSpec` + user guide rendered from the validated run. Refuses on any violation.
 9. **`write_pipeline_provenance(...)`** — record the specific run.
 
-That's the local-validation protocol. To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `stage_apptainer_image` → `submit_workflow_job` → `cluster_job_status` (poll) → `download_from_project_path`. See the **HPC bridge — Phase 2** section below for the full chain. The bridge does NOT yet produce a `WorkflowSpec` — that's an open architectural question (whether an HPC run becomes a sealed workflow).
+That's the local-validation protocol. To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `run_step_on_cluster` (validation/seal — runs in the agent's scratch sandbox + records a sealed `pipeline_step`) for the validate-then-seal flow; `stage_apptainer_image` → `submit_workflow_job` → `cluster_job_status` → `download_from_project_path` for production runs against the user's project workspace. See the **HPC bridge — Phase 2** section below for the full split.
 
 ---
 
@@ -152,6 +153,15 @@ Generated artifacts:
 
 Layer-1 produces an HPC-shippable container (per the freeze row above). The bridge is what the agent uses to **actually drive a job on a real cluster** — push inputs, stage the container, sbatch a Nextflow workflow, poll, pull outputs back. Same trust posture as the rest of the codebase: every primitive is gated by `projects_access.yaml`, every transfer is sha256-round-tripped, every shell line passes a safe-token validator BEFORE any ssh.
 
+### Two walls, two operations
+
+The bridge is built around a deliberate split between WHERE the agent operates and HOW long it stays around to watch:
+
+- **Scratch — the agent's sandbox.** Cluster validation/seal runs live here. Always `<env.agent_scratch_target.path>/<project>/<workflow_name>/`. The agent owns this zone (env-implicit grant, project-prefix isolation). Validation jobs are short and bounded, so the synchronous "poll-to-completion + fetch + validate + record + seal" loop in `run_step_on_cluster` is viable.
+- **`directories[]` — the user's territory.** Production runs live here. The user explicitly declares each path in `project.directories[]` with the right permission tokens. Production jobs may run for hours-to-days; the agent's stream-watchdog kills tool calls that go silent for ~10 min. So `submit_workflow_job` is **submit-and-document**: returns the `job_id` + writes a local manifest to `job_submissions/<project>/<workflow_name>_<job_id>.submission.json`, and the user (or a future agent invocation) follows up at their own pace via `cluster_job_status` + `download_from_project_path`.
+
+The two operations share the same render+sbatch machinery (via `submit_workflow.render_workflow_files` + `submit_workflow.sbatch_via_ssh`) but each owns its own auth surface — scratch via `check_env_target_capability`, project_path via `check_permission` against `directories[]`. The walls don't get crossed inside one primitive.
+
 ### The command-and-control file: `projects_access.yaml`
 
 A single user-authored YAML at the repo root (gitignored — personal). Two top-level sections:
@@ -171,14 +181,25 @@ Auth is **discrete**, not a lattice: `upload` ≠ `download` ≠ `exec`. A dir d
 
 scratch is for per-run staging; common_data is for reference data + staged container images; project_path is for the user's real project layout. Each family is a separate primitive (so the agent can't accidentally mix authority).
 
-### The submission chain (in order)
+### The validation chain (scratch — short, synchronous, seal-ready)
 
-1. **`freeze(env, tools)`** — Layer 1. Builds (or adopts by digest) the HPC-shippable image; registers it in the EnvCache by `request_key`.
-2. **`stage_apptainer_image(project, env, freeze_request_key)`** — Mode-aware delivery. ADOPT (pure-conda) is a single `apptainer pull` ssh hop. BUILD-archive transfers the .tar + builds on-cluster. Returns the `sif_path` to use in step 4.
-3. **`upload_to_project_path(project, env, abs_path, local_path)`** (×N) — Get the input data (BAMs, FASTQs, reference files the user staged) into the project workspace.
-4. **`submit_workflow_job(project, env, workflow_dir, workflow_name, tool_name, command, inputs, outputs, apptainer_sif, apptainer_module, nextflow_module, slurm)`** — Renders main.nf + nextflow.config + launcher.sh, uploads all 3 to `workflow_dir`, runs `sbatch --parsable launcher.sh`. Returns the SLURM `job_id`.
-5. **`cluster_job_status(project, env, job_id)`** (loop with sleep) — Poll until `state in {COMPLETED, FAILED, …}`. sacct-backed; covers both running and completed jobs.
-6. **`download_from_project_path(project, env, abs_path, local_path)`** — Pull outputs back; sha256 round-trip on the fetch.
+Use this to prove a frozen env actually works on the cluster — the bytes the user runs on HPC are the bytes we validated:
+
+1. **`freeze(env, tools)`** — Layer 1. Builds (or adopts by digest) the HPC-shippable image.
+2. **`start_pipeline(name, description)`** — opens a draft.
+3. **`run_step_on_cluster(pipeline_id, freeze_request_key, project, env, workflow_name, …)`** — Path-4 keystone. Stages the .sif (idempotent), renders+uploads main.nf/nextflow.config/launcher.sh to `<scratch>/<project>/<workflow_name>/`, sbatches, polls to completion, fetches outputs back via `download_from_scratch`, validates each, records a cluster-locus `pipeline_step`. Workflow_dir is computed internally — no caller knob.
+4. **`patch_pipeline(pipeline_id, {usage: …})`** — fill the seal-required fields the runtime can't capture.
+5. **`seal_workflow(pipeline_id, freeze_request_key)`** — Layer 2. Validates I0/I3/I6/I7/I8, self-tests `usage.command_template`, writes `{name}.workflow.yaml` + `{name}.GUIDE.md`.
+
+### The production chain (`directories[]` — long-running, submit-and-document)
+
+Use this once an env is validated and the user wants to run their real pipeline:
+
+1. **`stage_apptainer_image(project, env, freeze_request_key)`** — Mode-aware delivery; idempotent (skips if .sif already exists).
+2. **`upload_to_project_path(project, env, abs_path, local_path)`** (×N) — Push input data into the project workspace.
+3. **`submit_workflow_job(project, env, workflow_dir, workflow_name, …)`** — Renders + uploads + sbatches. Returns immediately with `job_id`. Writes `job_submissions/<project>/<workflow_name>_<job_id>.submission.json` recording everything needed to find this job again. **No polling here — the agent doesn't sit around for hours.**
+4. **`cluster_job_status(project, env, job_id)`** — Query whenever the user (or a future agent invocation) wants to check. sacct-backed; covers both running and completed jobs. The manifest from step 3 carries the `job_id`.
+5. **`download_from_project_path(project, env, abs_path, local_path)`** — Pull outputs back when done; sha256 round-trip on the fetch.
 
 For pre-submission exploration: **`snapshot_project(project_name)`** is a read-only `find -maxdepth 1` against the project's authorized dirs; **`cluster_module_avail(project, env, pattern=)`** lists Lmod modules so the agent picks the right `module load X/Y.Z` line.
 

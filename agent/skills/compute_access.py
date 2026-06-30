@@ -101,6 +101,10 @@ OPERATION_REQUIRES: dict[str, str] = {
     # the job is allowed to write its own outputs in-place during
     # execution (distinct from the agent's single-shot `upload`).
     "submit_workflow_job":        "exec",
+    # run_step_on_cluster runs the validation/seal job inside the agent's
+    # scratch sandbox. Goes through the env-level agent_scratch_target
+    # (via check_env_target_capability), NOT project.directories[].
+    "run_step_on_cluster":        "exec",
     # "job_workdir_scratch":     "exec",
     # "job_output_common_data":  "exec",
 }
@@ -616,69 +620,18 @@ def check_env_target_capability(project: dict, env_name: str,
 # The core security gate
 # ---------------------------------------------------------------------------
 
-def _scratch_implicit_grant(project: dict, env: dict, req_norm: str,
-                            required_perm: str) -> Optional[dict]:
-    """If `req_norm` lands under `<env.agent_scratch_target>/<project>/`,
-    return a synthetic dir-access entry granting the scratch target's
-    permissions to this project. Otherwise None — caller falls through
-    to the Phase-1 directories[] check.
-
-    The project-name prefix is what isolates projects inside the shared
-    scratch zone (same logic as `upload_to_scratch`'s auto-prefix). A
-    path under another project's scratch namespace returns None here
-    and is denied unless the caller's project has an explicit
-    `directories[]` entry for it (extraordinary cross-project access).
-    """
-    project_name = project.get("name")
-    if not isinstance(project_name, str) or not project_name:
-        return None
-    scratch = env.get("agent_scratch_target")
-    if not isinstance(scratch, dict):
-        return None
-    scratch_path = (scratch.get("path") or "").rstrip("/")
-    if not scratch_path:
-        return None
-    project_zone = f"{scratch_path}/{project_name}"
-    if req_norm != project_zone and not req_norm.startswith(project_zone + "/"):
-        return None
-    perms = list(scratch.get("permissions") or [])
-    if required_perm not in perms:
-        raise PermissionDenied(
-            f"path {req_norm!r} is in the env-implicit scratch zone for "
-            f"project {project_name!r}, but the env's "
-            f"agent_scratch_target permissions {perms!r} don't include "
-            f"{required_perm!r} (required by this operation).")
-    return {
-        "path":          project_zone,
-        "permissions":   perms,
-        "description":   "env-implicit scratch grant (auto-prefixed by project)",
-        "_synthetic":    True,
-        "_source":       "agent_scratch_target",
-    }
-
-
 def check_permission(project: dict, compute_env_name: str, path: str,
-                     operation: str, env: Optional[dict] = None) -> dict:
+                     operation: str) -> dict:
     """Return the matching directory entry if `project` permits `operation`
     on `path` on `compute_env_name`; raises PermissionDenied otherwise.
 
     Every primitive in agent/skills/ that subprocesses anything against a
     compute_env MUST call this first.
 
-    Match semantics — TWO paths, checked in this order:
-
-      1. Env-implicit scratch grant (when `env` is supplied): if `path`
-         falls under `<env.agent_scratch_target.path>/<project_name>/`,
-         the project gets the scratch target's permissions automatically.
-         Symmetric with how `upload_to_scratch` already authorizes — no
-         explicit declaration in `project.directories[]` needed. The
-         project-name prefix isolates projects from each other inside
-         the shared scratch zone.
-
-      2. Phase-1 explicit grant: longest-prefix match against the
-         project's authorized `directories[]` for the given compute_env.
-         A request for `/scratch/x/sub/file` matches `/scratch/x/` (with
-         or without trailing slash). MORE SPECIFIC entry wins.
+    Match semantics: longest-prefix match against the project's authorized
+    `directories[]` for the given compute_env. A request for
+    `/scratch/x/sub/file` matches `/scratch/x/` (with or without trailing
+    slash). MORE SPECIFIC entry wins.
 
     Permission match: the operation's required permission token MUST appear
     in the matched directory's `permissions:` list. A dir declared
@@ -687,7 +640,14 @@ def check_permission(project: dict, compute_env_name: str, path: str,
     `permissions: [file_name_only, upload]` satisfies both.
 
     `path` MUST be an absolute path string; otherwise the match is rejected
-    immediately — relative paths have no meaning at the security boundary."""
+    immediately — relative paths have no meaning at the security boundary.
+
+    NOTE: scratch + common_data zones are env-level (declared on the
+    compute_env, not on the project). They do NOT route through this
+    function — use `check_env_target_capability` instead. Cluster
+    validation (the agent's own sandbox) goes through scratch auth;
+    `check_permission` is exclusively for project-declared
+    `directories[]` paths."""
     if operation not in OPERATION_REQUIRES:
         raise PermissionDenied(f"unknown operation: {operation!r}")
     required = OPERATION_REQUIRES[operation]
@@ -699,20 +659,6 @@ def check_permission(project: dict, compute_env_name: str, path: str,
     # Normalize for comparison (strip trailing slash so '/a/b' and '/a/b/'
     # match the same entry).
     req_norm = path.rstrip("/")
-
-    # ─── Env-implicit scratch grant ────────────────────────────────────
-    # If env is supplied and the request lands under <scratch>/<project>/,
-    # the project gets the env's scratch permissions for free. This
-    # mirrors upload_to_scratch's auth model — same physical zone, same
-    # trust posture — but exposes it through the Phase-1 check_permission
-    # gate so primitives like submit_workflow_job and project_path's
-    # upload/download accept scratch paths without a per-project
-    # `directories[]` declaration.
-    if env is not None:
-        implicit = _scratch_implicit_grant(
-            project, env, req_norm, required)
-        if implicit is not None:
-            return implicit
 
     dirs = get_project_directories(project, compute_env_name)
     best: Optional[dict] = None
