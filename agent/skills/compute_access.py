@@ -246,6 +246,10 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
     if slurm is not None:
         _validate_slurm_block(slurm, f"{where_env}.slurm", path)
 
+    dt = env.get("data_transfer")
+    if dt is not None:
+        _validate_data_transfer_block(dt, f"{where_env}.data_transfer", path)
+
     # Disjoint-subtree check ACROSS all of this env's declared paths. No path
     # may be a prefix of another (or equal). A breach of one target dir must
     # never grant access to another. Cross-env disjointness is not checked —
@@ -439,6 +443,98 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
                     f"forbidden character (newline/space/shell metachar)")
 
 
+# --- data_transfer block --------------------------------------------------
+#
+# Picks the wire protocol every upload_to_X / download_from_X primitive
+# uses on this env (also stage_apptainer_image's .tar transfer). Closed-key
+# at every level so a typo can't silently revert us to scp without notice.
+#
+# The two providers:
+#   scp_head_node  — the legacy default; scp + sha256 round-trip over ssh.
+#                    Fine for tiny files (workflow renders); pisses off the
+#                    cluster head node when used for GB-scale .sif images.
+#   globus         — encrypted, off-head-node, end-to-end checksummed by
+#                    Globus itself. Required for shipping containers and
+#                    anything else with real bytes. Hard-errors on failure;
+#                    no silent scp fallback (that would defeat the policy).
+
+_DATA_TRANSFER_TYPES: frozenset[str] = frozenset({"scp_head_node", "globus"})
+
+_DATA_TRANSFER_ALLOWED_KEYS: frozenset[str] = frozenset({"type", "globus"})
+
+_GLOBUS_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "local_endpoint_id",
+    "local_endpoint_name",
+    "remote_endpoint_id",
+    "remote_endpoint_name",
+})
+
+# Globus endpoint IDs are UUIDs. Accept canonical lowercase-hex form.
+import re as _re
+_UUID_RE = _re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _validate_data_transfer_block(blk: object, where: str, path: Path) -> None:
+    """Validate the closed `data_transfer:` block. Unknown keys rejected.
+    type ∈ {scp_head_node, globus}. When type=globus, the nested globus
+    block is required and its 4 endpoint fields must be valid UUIDs +
+    non-empty display names."""
+    if not isinstance(blk, dict):
+        raise ConfigError(f"{path}: {where} must be a mapping")
+    extra = set(blk.keys()) - _DATA_TRANSFER_ALLOWED_KEYS
+    if extra:
+        raise ConfigError(
+            f"{path}: {where} has unknown keys {sorted(extra)!r}. "
+            f"Allowed keys: {sorted(_DATA_TRANSFER_ALLOWED_KEYS)!r}")
+    if "type" not in blk:
+        raise ConfigError(
+            f"{path}: {where} missing required key 'type' "
+            f"(one of {sorted(_DATA_TRANSFER_TYPES)!r})")
+    t = blk["type"]
+    if t not in _DATA_TRANSFER_TYPES:
+        raise ConfigError(
+            f"{path}: {where}.type={t!r} must be one of "
+            f"{sorted(_DATA_TRANSFER_TYPES)!r}")
+    if t == "globus":
+        if "globus" not in blk:
+            raise ConfigError(
+                f"{path}: {where}.type=globus requires a 'globus:' "
+                f"sub-block with endpoint IDs and names")
+        g = blk["globus"]
+        if not isinstance(g, dict):
+            raise ConfigError(f"{path}: {where}.globus must be a mapping")
+        missing = _GLOBUS_REQUIRED_KEYS - set(g.keys())
+        if missing:
+            raise ConfigError(
+                f"{path}: {where}.globus missing required keys "
+                f"{sorted(missing)!r}")
+        extra_g = set(g.keys()) - _GLOBUS_REQUIRED_KEYS
+        if extra_g:
+            raise ConfigError(
+                f"{path}: {where}.globus has unknown keys {sorted(extra_g)!r}. "
+                f"Allowed: {sorted(_GLOBUS_REQUIRED_KEYS)!r}")
+        for k in ("local_endpoint_id", "remote_endpoint_id"):
+            v = g[k]
+            if not isinstance(v, str) or not _UUID_RE.match(v):
+                raise ConfigError(
+                    f"{path}: {where}.globus.{k}={v!r} must be a canonical "
+                    f"UUID (lowercase hex with dashes, e.g. "
+                    f"'11111111-1111-1111-1111-111111111111')")
+        for k in ("local_endpoint_name", "remote_endpoint_name"):
+            v = g[k]
+            if not isinstance(v, str) or not v.strip():
+                raise ConfigError(
+                    f"{path}: {where}.globus.{k} must be a non-empty string")
+    elif "globus" in blk:
+        # type=scp_head_node but globus block present — refuse rather than
+        # silently ignore. Either rename the type or delete the block.
+        raise ConfigError(
+            f"{path}: {where}.type=scp_head_node but a 'globus:' block "
+            f"is also present. Set type=globus to use it, or delete the "
+            f"globus block to keep scp.")
+
+
 def _is_safe_token(s: str) -> bool:
     """A token usable as a kwarg / SBATCH placeholder / path prefix: alnum
     + `_-`, 1..64. Rejects `..`, `/`, dots (path traversal), spaces, shell
@@ -558,6 +654,31 @@ def get_slurm_config(env: dict) -> Optional[dict]:
     on an env without this block."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None
+
+
+def get_data_transfer_kind(env: dict) -> str:
+    """Return the data_transfer.type for this env. Defaults to
+    'scp_head_node' when the block is absent (back-compat with envs that
+    haven't been migrated to Globus yet). For type=local envs this is
+    still callable but the value is ignored — local transfers don't go
+    through a wire-protocol provider."""
+    dt = env.get("data_transfer")
+    if not isinstance(dt, dict):
+        return "scp_head_node"
+    return dt.get("type") or "scp_head_node"
+
+
+def get_globus_endpoints(env: dict) -> Optional[dict]:
+    """Return the validated globus endpoint block for this env, or None
+    if data_transfer.type != globus. Block carries the four required
+    fields: local_endpoint_id, local_endpoint_name, remote_endpoint_id,
+    remote_endpoint_name. Validated at config-load time so a non-None
+    return guarantees the shape."""
+    dt = env.get("data_transfer")
+    if not isinstance(dt, dict) or dt.get("type") != "globus":
+        return None
+    g = dt.get("globus")
+    return g if isinstance(g, dict) else None
 
 
 # ---------------------------------------------------------------------------

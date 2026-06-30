@@ -540,7 +540,178 @@ class TestNewPermissionTokens:
 
 
 # ===========================================================================
-# 6. Full happy-path: all three Phase 2 blocks together, disjoint paths
+# 6. data_transfer block — wire protocol selector
+# ===========================================================================
+
+_GOOD_LOCAL_UUID = "11111111-1111-1111-1111-111111111111"
+_GOOD_REMOTE_UUID = "22222222-2222-2222-2222-222222222222"
+
+
+class TestDataTransferBlock:
+
+    # --- happy paths --------------------------------------------------------
+
+    @pytest.mark.integration
+    def test_absent_block_defaults_to_scp(self, tmp_path):
+        """Omitting data_transfer keeps the legacy scp_head_node behavior."""
+        env = _base_env()
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        e = compute_access.get_compute_env("cluster", access)
+        assert compute_access.get_data_transfer_kind(e) == "scp_head_node"
+        assert compute_access.get_globus_endpoints(e) is None
+
+    @pytest.mark.integration
+    def test_scp_head_node_explicit_loads(self, tmp_path):
+        env = _base_env(data_transfer={"type": "scp_head_node"})
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        e = compute_access.get_compute_env("cluster", access)
+        assert compute_access.get_data_transfer_kind(e) == "scp_head_node"
+        assert compute_access.get_globus_endpoints(e) is None
+
+    @pytest.mark.integration
+    def test_globus_with_all_fields_loads(self, tmp_path):
+        env = _base_env(data_transfer={
+            "type": "globus",
+            "globus": {
+                "local_endpoint_id":    _GOOD_LOCAL_UUID,
+                "local_endpoint_name":  "user1-laptop",
+                "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+                "remote_endpoint_name": "HPC RC DataMover",
+            },
+        })
+        p = _write(tmp_path, _wrap(env))
+        access = compute_access.load_access(p)
+        e = compute_access.get_compute_env("cluster", access)
+        assert compute_access.get_data_transfer_kind(e) == "globus"
+        g = compute_access.get_globus_endpoints(e)
+        assert g["local_endpoint_id"] == _GOOD_LOCAL_UUID
+        assert g["remote_endpoint_id"] == _GOOD_REMOTE_UUID
+
+    # --- rejection paths ----------------------------------------------------
+
+    @pytest.mark.integration
+    def test_unknown_type_refused(self, tmp_path):
+        env = _base_env(data_transfer={"type": "rsync"})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="rsync"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_unknown_top_level_key_refused(self, tmp_path):
+        env = _base_env(data_transfer={
+            "type": "scp_head_node",
+            "unknown_field": 1,
+        })
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="unknown keys"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_missing_type_refused(self, tmp_path):
+        env = _base_env(data_transfer={"globus": {
+            "local_endpoint_id":    _GOOD_LOCAL_UUID,
+            "local_endpoint_name":  "x",
+            "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+            "remote_endpoint_name": "y",
+        }})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="missing required key 'type'"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_globus_type_without_globus_block_refused(self, tmp_path):
+        env = _base_env(data_transfer={"type": "globus"})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="requires a 'globus:' sub-block"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("missing_key", [
+        "local_endpoint_id", "local_endpoint_name",
+        "remote_endpoint_id", "remote_endpoint_name",
+    ])
+    def test_globus_block_missing_required_field_refused(self, tmp_path,
+                                                        missing_key):
+        g = {
+            "local_endpoint_id":    _GOOD_LOCAL_UUID,
+            "local_endpoint_name":  "x",
+            "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+            "remote_endpoint_name": "y",
+        }
+        del g[missing_key]
+        env = _base_env(data_transfer={"type": "globus", "globus": g})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match=missing_key):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_uuid", [
+        "not-a-uuid",
+        "EACFD9EF-C4A5-11F0-80AC-0AFFCDD38B9D",   # uppercase rejected
+        "11111111-1111-1111-1111",                # too short
+        "",
+        "11111111_1111_1111_1111_111111111111",   # underscores not dashes
+    ])
+    def test_globus_block_bad_uuid_refused(self, tmp_path, bad_uuid):
+        env = _base_env(data_transfer={"type": "globus", "globus": {
+            "local_endpoint_id":    bad_uuid,
+            "local_endpoint_name":  "x",
+            "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+            "remote_endpoint_name": "y",
+        }})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="canonical UUID"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_globus_block_empty_name_refused(self, tmp_path):
+        env = _base_env(data_transfer={"type": "globus", "globus": {
+            "local_endpoint_id":    _GOOD_LOCAL_UUID,
+            "local_endpoint_name":  "",                 # empty
+            "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+            "remote_endpoint_name": "y",
+        }})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="non-empty string"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_globus_block_unknown_subkey_refused(self, tmp_path):
+        env = _base_env(data_transfer={"type": "globus", "globus": {
+            "local_endpoint_id":    _GOOD_LOCAL_UUID,
+            "local_endpoint_name":  "x",
+            "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+            "remote_endpoint_name": "y",
+            "fallback":             "scp_head_node",   # not allowed
+        }})
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError, match="unknown keys.*fallback"):
+            compute_access.load_access(p)
+
+    @pytest.mark.integration
+    def test_scp_with_globus_block_refused(self, tmp_path):
+        """Mixed signals — type=scp but a globus block is present. We
+        refuse rather than silently ignore (the user almost certainly
+        meant type=globus and typoed the type)."""
+        env = _base_env(data_transfer={
+            "type": "scp_head_node",
+            "globus": {
+                "local_endpoint_id":    _GOOD_LOCAL_UUID,
+                "local_endpoint_name":  "x",
+                "remote_endpoint_id":   _GOOD_REMOTE_UUID,
+                "remote_endpoint_name": "y",
+            },
+        })
+        p = _write(tmp_path, _wrap(env))
+        with pytest.raises(ConfigError,
+                           match="globus.*also present|Set type=globus"):
+            compute_access.load_access(p)
+
+
+# ===========================================================================
+# 7. Full happy-path: all three Phase 2 blocks together, disjoint paths
 # ===========================================================================
 
 @pytest.mark.integration

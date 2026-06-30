@@ -69,10 +69,16 @@ def _resolve_access_path() -> str | None:
 def upload_to_scratch(project_name: str,
                      compute_env_name: str,
                      local_path: str,
-                     remote_subpath: str) -> dict:
+                     remote_subpath: str,
+                     async_globus: bool = False) -> dict:
     """Push a local file into the agent's scratch sandbox on a compute env,
     under THIS project's auto-prefixed namespace. sha256 round-trip is
     verified; mismatch refuses.
+
+    Wire protocol: dispatched by the env's `data_transfer.type` —
+    `scp_head_node` (legacy default) or `globus` (when configured).
+    `async_globus=True` returns immediately with a task_id instead of
+    waiting for SUCCEEDED; poll completion via `globus_task_status`.
 
     Authorization (env-implicit): the project must have a `compute_env_access`
     entry naming `compute_env_name`, AND the env must declare an
@@ -107,6 +113,7 @@ def upload_to_scratch(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_subpath=remote_subpath,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -115,7 +122,8 @@ def upload_to_scratch(project_name: str,
 def upload_to_common_data(project_name: str,
                          compute_env_name: str,
                          local_path: str,
-                         remote_subpath: str) -> dict:
+                         remote_subpath: str,
+                         async_globus: bool = False) -> dict:
     """Push a local file into the env's SHARED common-data zone.
 
     Authorization (env-implicit): project has compute_env_access for the
@@ -143,6 +151,7 @@ def upload_to_common_data(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_subpath=remote_subpath,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -151,7 +160,8 @@ def upload_to_common_data(project_name: str,
 def download_from_common_data(project_name: str,
                              compute_env_name: str,
                              remote_subpath: str,
-                             local_path: str) -> dict:
+                             local_path: str,
+                             async_globus: bool = False) -> dict:
     """Pull a file from the env's SHARED common-data zone back to local.
 
     Symmetric to `upload_to_common_data` — same env-implicit auth with
@@ -173,6 +183,7 @@ def download_from_common_data(project_name: str,
         compute_env_name=compute_env_name,
         remote_subpath=remote_subpath,
         local_path=local_path,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -181,7 +192,8 @@ def download_from_common_data(project_name: str,
 def upload_to_project_path(project_name: str,
                           compute_env_name: str,
                           abs_path: str,
-                          local_path: str) -> dict:
+                          local_path: str,
+                          async_globus: bool = False) -> dict:
     """Push a local file to an authorized project-workspace path.
 
     Authorization (Phase-1 explicit): the project's `compute_env_access[]
@@ -207,6 +219,7 @@ def upload_to_project_path(project_name: str,
         compute_env_name=compute_env_name,
         abs_path=abs_path,
         local_path=local_path,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -215,7 +228,8 @@ def upload_to_project_path(project_name: str,
 def download_from_project_path(project_name: str,
                               compute_env_name: str,
                               abs_path: str,
-                              local_path: str) -> dict:
+                              local_path: str,
+                              async_globus: bool = False) -> dict:
     """Pull a file from an authorized project-workspace path back to local.
 
     Symmetric to upload_to_project_path; required permission is
@@ -233,6 +247,7 @@ def download_from_project_path(project_name: str,
         compute_env_name=compute_env_name,
         abs_path=abs_path,
         local_path=local_path,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -273,7 +288,8 @@ def cluster_module_avail(project_name: str,
 def download_from_scratch(project_name: str,
                          compute_env_name: str,
                          remote_subpath: str,
-                         local_path: str) -> dict:
+                         local_path: str,
+                         async_globus: bool = False) -> dict:
     """Pull a file from THIS project's scratch namespace back to a local
     path. sha256 round-trip is verified BEFORE declaring success; on
     mismatch the partial local file is removed and an error is returned.
@@ -300,8 +316,40 @@ def download_from_scratch(project_name: str,
         compute_env_name=compute_env_name,
         remote_subpath=remote_subpath,
         local_path=local_path,
+        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
+
+
+@mcp.tool()
+def globus_task_status(project_name: str,
+                       compute_env_name: str,
+                       task_id: str) -> dict:
+    """Query the current state of a Globus transfer task.
+
+    Pairs with `async_globus=True` on the upload/download primitives:
+    those return immediately with a `task_id`; this primitive polls
+    that task's status. Pure-read — runs ONE `globus task show <id>
+    --format json` invocation; no submission.
+
+    Authorization: project must have a `compute_env_access` entry for
+    the env, AND the env must declare `data_transfer.type: globus`.
+    Task IDs are scoped to the user's Globus tokens — the agent never
+    sees a task belonging to anyone else.
+
+    `task_id` must be a canonical UUID; refused before any shell-out
+    so a smuggled metacharacter can't reach the `globus` CLI.
+
+    Returns {success, task_id, status, nice_status, bytes_transferred,
+    files_transferred, files_skipped, fatal_error, type, captured_at}
+    on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
+    {"error": "..."} on failure (cli missing, auth, network)."""
+    from agent.skills import compute_access, transfer_providers
+    access = compute_access.load_access(None)
+    project = compute_access.get_project(project_name, access)  # auth check
+    _ = project
+    env = compute_access.get_compute_env(compute_env_name, access)
+    return transfer_providers.globus_task_status(env, task_id)
 
 
 @mcp.tool()

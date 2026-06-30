@@ -117,6 +117,7 @@ def upload_to_project_path(project_name: str,
                           abs_path: str,
                           local_path: str,
                           *,
+                          async_globus: bool = False,
                           access_path: Optional[str] = None,
                           timeout: int = 600) -> dict:
     """Push a local file to an authorized project-workspace path on the
@@ -187,13 +188,10 @@ def upload_to_project_path(project_name: str,
                     f"contract refuses overwrites. Pick a fresh abs_path "
                     f"or delete the existing file first."}
 
-        # Transfer.
+        # Mkdir parent — uniform across providers.
         if env_type == "local":
-            dest = Path(normed)
-            _local_mkdir_parent(dest)
-            shutil.copy(str(lp), str(dest))
+            _local_mkdir_parent(Path(normed))
         else:
-            target = _build_remote_target(env, normed)
             mkdir_cmd = f"mkdir -p {shlex.quote(os.path.dirname(normed))}"
             mk_argv = _ssh_argv(env, mkdir_cmd)
             mk = subprocess.run(mk_argv, capture_output=True,
@@ -204,32 +202,34 @@ def upload_to_project_path(project_name: str,
                     f"remote mkdir -p failed (rc={mk.returncode}): "
                     f"{mk.stderr.strip()}",
                     **({"hint": hint} if hint else {})}
-            argv = _scp_argv(env, str(lp), target)
-            sc = subprocess.run(argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sc.returncode != 0:
-                hint = _ssh_failure_hint(sc.stderr, env.get("host", "?"))
-                return {"error":
-                    f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
-                    **({"hint": hint} if hint else {})}
 
-        # Round-trip sha256.
+        # Transfer + verify (dispatched by data_transfer.type).
         if env_type == "local":
+            shutil.copy(str(lp), normed)
             remote_sha = _compute_local_sha256(Path(normed))
-        else:
-            sha_argv = _ssh_argv(env, _remote_sha256_cmd(normed))
-            sr = subprocess.run(sha_argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sr.returncode != 0:
+            if remote_sha != local_sha:
                 return {"error":
-                    f"remote sha256sum failed (rc={sr.returncode}): "
-                    f"{sr.stderr.strip()}"}
-            remote_sha = _parse_sha256sum_output(sr.stdout) or ""
-        if remote_sha != local_sha:
-            return {"error":
-                f"sha256 round-trip mismatch — local={local_sha} "
-                f"remote={remote_sha!r}. File at {normed!r} may be "
-                f"corrupt; investigate before relying on it."}
+                    f"sha256 round-trip mismatch — local={local_sha} "
+                    f"remote={remote_sha!r}. File at {normed!r} may be "
+                    f"corrupt; investigate before relying on it."}
+            provider_info = {"provider": "local_copy",
+                             "verified_method": "sha256_round_trip"}
+        else:
+            from agent.skills import transfer_providers
+            provider = transfer_providers.get_transfer_provider(env)
+            pr = provider.upload_one(
+                env=env, local_path=lp, abs_remote_path=normed,
+                local_sha256=local_sha, timeout=timeout,
+                async_return=async_globus,
+                label=f"upload_to_project_path {project_name} {Path(normed).name}")
+            if "error" in pr:
+                return pr
+            provider_info = {
+                "provider":        pr.get("provider"),
+                "verified_method": pr.get("verified_method"),
+            }
+            if pr.get("task_id"):
+                provider_info["task_id"] = pr["task_id"]
 
         return {
             "success":        True,
@@ -239,6 +239,7 @@ def upload_to_project_path(project_name: str,
             "bytes":          size_bytes,
             "duration_s":     round(time.perf_counter() - started, 3),
             "transferred_at": datetime.now(timezone.utc).isoformat(),
+            **provider_info,
         }
 
     except (ScratchPathError, compute_access.PermissionDenied,
@@ -257,6 +258,7 @@ def download_from_project_path(project_name: str,
                               abs_path: str,
                               local_path: str,
                               *,
+                              async_globus: bool = False,
                               access_path: Optional[str] = None,
                               timeout: int = 600) -> dict:
     """Pull a file from an authorized project-workspace path back to local.
@@ -350,40 +352,47 @@ def download_from_project_path(project_name: str,
                     f"could not parse sha256 from sha256sum output: "
                     f"{sr.stdout!r}"}
 
-        # Transfer.
+        # Transfer + verify (dispatched by data_transfer.type).
         if env_type == "local":
             shutil.copy(str(Path(normed)), str(lp))
-        else:
-            src_target = _build_remote_target(env, normed)
-            argv = _scp_argv(env, src_target, str(lp))
-            sc = subprocess.run(argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sc.returncode != 0:
-                hint = _ssh_failure_hint(sc.stderr, env.get("host", "?"))
+            local_sha = _compute_local_sha256(lp)
+            if local_sha != remote_sha:
+                try:
+                    lp.unlink()
+                except OSError:
+                    pass
                 return {"error":
-                    f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
-                    **({"hint": hint} if hint else {})}
-
-        local_sha = _compute_local_sha256(lp)
-        if local_sha != remote_sha:
-            try:
-                lp.unlink()
-            except OSError:
-                pass
-            return {"error":
-                f"sha256 round-trip mismatch — remote={remote_sha} "
-                f"local={local_sha}. Local file removed; the bytes that "
-                f"arrived didn't match the source."}
+                    f"sha256 round-trip mismatch — remote={remote_sha} "
+                    f"local={local_sha}. Local file removed."}
+            provider_info = {"provider": "local_copy",
+                             "verified_method": "sha256_round_trip"}
+        else:
+            from agent.skills import transfer_providers
+            provider = transfer_providers.get_transfer_provider(env)
+            pr = provider.download_one(
+                env=env, abs_remote_path=normed, local_path=lp,
+                timeout=timeout, async_return=async_globus,
+                label=f"download_from_project_path {project_name} {Path(normed).name}")
+            if "error" in pr:
+                return pr
+            local_sha = pr.get("local_sha256") or _compute_local_sha256(lp)
+            provider_info = {
+                "provider":        pr.get("provider"),
+                "verified_method": pr.get("verified_method"),
+            }
+            if pr.get("task_id"):
+                provider_info["task_id"] = pr["task_id"]
 
         return {
             "success":     True,
             "compute_env": compute_env_name,
             "remote_path": normed,
             "local_path":  str(lp),
-            "sha256":      remote_sha,
+            "sha256":      local_sha,
             "bytes":       size_bytes,
             "duration_s":  round(time.perf_counter() - started, 3),
             "fetched_at":  datetime.now(timezone.utc).isoformat(),
+            **provider_info,
         }
 
     except (ScratchPathError, compute_access.PermissionDenied,

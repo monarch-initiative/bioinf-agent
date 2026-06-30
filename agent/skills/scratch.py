@@ -324,6 +324,7 @@ def upload_to_scratch(project_name: str,
                      local_path: str,
                      remote_subpath: str,
                      *,
+                     async_globus: bool = False,
                      access_path: Optional[str] = None,
                      timeout: int = 600) -> dict:
     """Push a local file into the agent's scratch sandbox on `compute_env_name`,
@@ -431,16 +432,12 @@ def upload_to_scratch(project_name: str,
                     f"upload contract refuses overwrites. Pick a fresh "
                     f"remote_subpath or delete the existing file first."}
 
-        # 9. Transfer.
+        # 9. Mkdir parent — uniform across providers (uses ssh for ssh-mode
+        # envs regardless of data_transfer.type; for local-mode it's
+        # Path.mkdir). The wire-protocol provider only owns byte movement.
         if env_type == "local":
-            dest = Path(abs_remote)
-            _local_mkdir_parent(dest)
-            shutil.copy(str(lp), str(dest))
-        else:  # ssh
-            target = _build_remote_target(env, abs_remote)
-            # Best-effort remote-mkdir of the parent (including the
-            # project-name prefix). scp servers don't auto-create
-            # intermediate dirs.
+            _local_mkdir_parent(Path(abs_remote))
+        else:
             mkdir_cmd = f"mkdir -p {shlex.quote(os.path.dirname(abs_remote))}"
             mk_argv = _ssh_argv(env, mkdir_cmd)
             mk = subprocess.run(mk_argv, capture_output=True,
@@ -451,33 +448,35 @@ def upload_to_scratch(project_name: str,
                     f"remote mkdir -p failed (rc={mk.returncode}): "
                     f"{mk.stderr.strip()}",
                     **({"hint": hint} if hint else {})}
-            argv = _scp_argv(env, str(lp), target)
-            sc = subprocess.run(argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sc.returncode != 0:
-                hint = _ssh_failure_hint(sc.stderr, env.get("host", "?"))
-                return {"error":
-                    f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
-                    **({"hint": hint} if hint else {})}
 
-        # 10. Verify round-trip sha256.
+        # 10. Transfer + verify (dispatched by data_transfer.type).
         if env_type == "local":
+            # Inline local-copy + recompute sha both ends. No wire protocol.
+            shutil.copy(str(lp), abs_remote)
             remote_sha = _compute_local_sha256(Path(abs_remote))
-        else:
-            sha_cmd = _remote_sha256_cmd(abs_remote)
-            sha_argv = _ssh_argv(env, sha_cmd)
-            sr = subprocess.run(sha_argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sr.returncode != 0:
+            if remote_sha != local_sha:
                 return {"error":
-                    f"remote sha256sum failed (rc={sr.returncode}): "
-                    f"{sr.stderr.strip()}"}
-            remote_sha = _parse_sha256sum_output(sr.stdout) or ""
-        if remote_sha != local_sha:
-            return {"error":
-                f"sha256 round-trip mismatch — local={local_sha} "
-                f"remote={remote_sha!r}. File at {abs_remote!r} may be "
-                f"corrupt; investigate before relying on it."}
+                    f"sha256 round-trip mismatch — local={local_sha} "
+                    f"remote={remote_sha!r}. File at {abs_remote!r} may be "
+                    f"corrupt; investigate before relying on it."}
+            provider_info = {"provider": "local_copy",
+                             "verified_method": "sha256_round_trip"}
+        else:
+            from agent.skills import transfer_providers
+            provider = transfer_providers.get_transfer_provider(env)
+            pr = provider.upload_one(
+                env=env, local_path=lp, abs_remote_path=abs_remote,
+                local_sha256=local_sha, timeout=timeout,
+                async_return=async_globus,
+                label=f"upload_to_scratch {project_name}/{remote_subpath}")
+            if "error" in pr:
+                return pr
+            provider_info = {
+                "provider":        pr.get("provider"),
+                "verified_method": pr.get("verified_method"),
+            }
+            if pr.get("task_id"):
+                provider_info["task_id"] = pr["task_id"]
 
         return {
             "success":        True,
@@ -487,6 +486,7 @@ def upload_to_scratch(project_name: str,
             "bytes":          size_bytes,
             "duration_s":     round(time.perf_counter() - started, 3),
             "transferred_at": datetime.now(timezone.utc).isoformat(),
+            **provider_info,
         }
 
     except (ScratchPathError, compute_access.PermissionDenied,
@@ -505,6 +505,7 @@ def download_from_scratch(project_name: str,
                          remote_subpath: str,
                          local_path: str,
                          *,
+                         async_globus: bool = False,
                          access_path: Optional[str] = None,
                          timeout: int = 600) -> dict:
     """Pull a file from this project's scratch namespace back to a local
@@ -611,40 +612,47 @@ def download_from_scratch(project_name: str,
                     f"could not parse sha256 from sha256sum output: "
                     f"{sr.stdout!r}"}
 
-        # Transfer.
+        # Transfer + verify (dispatched by data_transfer.type).
         if env_type == "local":
             shutil.copy(str(Path(abs_remote)), str(lp))
-        else:
-            src_target = _build_remote_target(env, abs_remote)
-            argv = _scp_argv(env, src_target, str(lp))
-            sc = subprocess.run(argv, capture_output=True, text=True,
-                                timeout=timeout)
-            if sc.returncode != 0:
-                hint = _ssh_failure_hint(sc.stderr, env.get("host", "?"))
+            local_sha = _compute_local_sha256(lp)
+            if local_sha != remote_sha:
+                try:
+                    lp.unlink()
+                except OSError:
+                    pass
                 return {"error":
-                    f"scp failed (rc={sc.returncode}): {sc.stderr.strip()}",
-                    **({"hint": hint} if hint else {})}
-
-        local_sha = _compute_local_sha256(lp)
-        if local_sha != remote_sha:
-            try:
-                lp.unlink()
-            except OSError:
-                pass
-            return {"error":
-                f"sha256 round-trip mismatch — remote={remote_sha} "
-                f"local={local_sha}. Local file removed; the bytes that "
-                f"arrived didn't match the source."}
+                    f"sha256 round-trip mismatch — remote={remote_sha} "
+                    f"local={local_sha}. Local file removed."}
+            provider_info = {"provider": "local_copy",
+                             "verified_method": "sha256_round_trip"}
+        else:
+            from agent.skills import transfer_providers
+            provider = transfer_providers.get_transfer_provider(env)
+            pr = provider.download_one(
+                env=env, abs_remote_path=abs_remote, local_path=lp,
+                timeout=timeout, async_return=async_globus,
+                label=f"download_from_scratch {project_name}/{remote_subpath}")
+            if "error" in pr:
+                return pr
+            local_sha = pr.get("local_sha256") or _compute_local_sha256(lp)
+            provider_info = {
+                "provider":        pr.get("provider"),
+                "verified_method": pr.get("verified_method"),
+            }
+            if pr.get("task_id"):
+                provider_info["task_id"] = pr["task_id"]
 
         return {
             "success":     True,
             "compute_env": compute_env_name,
             "remote_path": abs_remote,
             "local_path":  str(lp),
-            "sha256":      remote_sha,
+            "sha256":      local_sha,
             "bytes":       size_bytes,
             "duration_s":  round(time.perf_counter() - started, 3),
             "fetched_at":  datetime.now(timezone.utc).isoformat(),
+            **provider_info,
         }
 
     except (ScratchPathError, compute_access.PermissionDenied,
