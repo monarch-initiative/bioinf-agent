@@ -11,23 +11,32 @@ out the auth.
 Zones (routed by where `remote_abs_path` lives on the env)
 ----------------------------------------------------------
 
-  scratch       — under env.agent_scratch_target.path
-                  Authorization: env-implicit grant. The target block's
-                  `permissions:` must include `upload` (or `download`).
-                  Multi-project isolation enforced: path must be under
-                  `<scratch_root>/<project_name>/...`
+  scratch          — under env.agent_scratch_target.path
+                     Authorization: env-implicit grant. The target
+                     block's `permissions:` must include `upload` (or
+                     `download`). Multi-project isolation enforced:
+                     path must be under
+                     `<scratch_root>/<project_name>/...`
 
-  common_data   — under env.agent_common_data_target.path
-                  Authorization: env-implicit grant (same shape as
-                  scratch). NO project-prefix isolation: this zone is
-                  shared by every project on the env. For reference
-                  databases and staged container images.
+  common_data      — under env.agent_common_data_target.path
+                     Authorization: env-implicit grant (same shape as
+                     scratch). NO project-prefix isolation: this zone
+                     is shared by every project on the env. For
+                     reference databases.
 
-  project_path  — anywhere else on the env
-                  Authorization: explicit. The path must longest-prefix
-                  match an entry in `project.compute_env_access[].
-                  directories[]` whose `permissions:` includes the
-                  required token.
+  container_upload — under env.container_upload_target.path
+                     Authorization: env-implicit grant. NO project
+                     prefix (a .sif filename is content-addressed by
+                     image digest; collisions are impossible). Distinct
+                     from common_data per the routing memo — .sif files
+                     and recipe artifacts go here, reference DBs go in
+                     common_data.
+
+  project_path     — anywhere else on the env
+                     Authorization: explicit. The path must longest-
+                     prefix match an entry in `project.
+                     compute_env_access[].directories[]` whose
+                     `permissions:` includes the required token.
 
 A path that matches no zone is refused with PermissionDenied. The same
 absolute path can land in different zones across different envs — the
@@ -47,11 +56,19 @@ Trust contract — same as the retired primitives
 -----------------------------------------------
 
   local-mode envs:  shutil.copy + sha256 both ends
-  ssh-mode envs:    via the configured TransferProvider:
-                      scp_head_node  — scp + ssh `sha256sum`
-                      globus         — `globus transfer` task,
-                                        Globus end-to-end checksum +
-                                        post-transfer local sha256
+  ssh-mode envs:    via the configured TransferProvider, which owns the
+                    WHOLE remote interaction for its transport — the
+                    no-overwrite check, parent-dir prep, and the byte
+                    movement:
+                      scp_head_node  — ssh `test -e` (no-overwrite) +
+                                        ssh `mkdir -p` (parent) + scp +
+                                        ssh `sha256sum` (verify)
+                      globus         — `globus ls` (no-overwrite) +
+                                        auto-mkdir (no-op) + `globus
+                                        transfer` (Globus end-to-end
+                                        checksum). ZERO ssh calls — the
+                                        whole point of the Globus path
+                                        being off the head node.
   paths validated BEFORE any subprocess (no metacharacter smuggling)
   remote overwrite refused (the `upload` token = "write NEW files only")
   local overwrite refused on download (no silent clobber)
@@ -378,6 +395,7 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
     env_name = env.get("name") or ""
     scratch = compute_access.get_agent_scratch_target(env)
     common = compute_access.get_agent_common_data_target(env)
+    container = compute_access.get_container_upload_target(env)
 
     # 1) scratch
     if scratch and _under(scratch.get("path") or "", remote_abs_path):
@@ -408,9 +426,23 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
                 "auth_target": "agent_common_data_target",
                 "common_root": (common.get("path") or "").rstrip("/")}
 
-    # 3) project_path
+    # 3) container_upload_target — env-implicit grant, same shape as
+    # scratch/common_data; no project-prefix isolation (the .sif filename
+    # is content-addressed by image digest, collisions are impossible).
+    # See [[project-container-artifacts-routing]] for why this is its own
+    # zone and not collapsed into common_data.
+    if container and _under(container.get("path") or "", remote_abs_path):
+        compute_access.check_env_target_capability(
+            project, env_name, container, primitive_name,
+            "container_upload_target")
+        return {"zone": "container_upload",
+                "auth_target": "container_upload_target",
+                "container_root": (container.get("path") or "").rstrip("/")}
+
+    # 4) project_path
     # _ad_hoc has empty directories[] so this WILL raise PermissionDenied
-    # for any abs path that isn't under scratch/common_data — by design.
+    # for any abs path that isn't under scratch / common_data /
+    # container_upload_target — by design.
     compute_access.check_permission(
         project, env_name, remote_abs_path, primitive_name)
     return {"zone": "project_path",
@@ -433,68 +465,273 @@ def _short_hash(*parts: str) -> str:
     return h[:10]
 
 
+# --- human-readable formatting helpers for the manifest ------------------
+
+def _human_size(n: Optional[int]) -> Optional[str]:
+    """Bytes → a compact human string (e.g. 68.9 MB). None passes through."""
+    if n is None:
+        return None
+    step = 1024.0
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < step or unit == "TB":
+            # No decimals for plain bytes; one decimal above that.
+            return f"{int(val)} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= step
+    return f"{n} B"
+
+
+def _human_duration(seconds: Optional[float]) -> Optional[str]:
+    """Seconds → a compact human string (e.g. 3.8s, 1m04s)."""
+    if seconds is None:
+        return None
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(round(seconds)), 60)
+    return f"{m}m{s:02d}s"
+
+
+def _clean_error(msg: Optional[str]) -> Optional[str]:
+    """Strip login-banner / MOTD noise (the box-drawing lines many
+    clusters print on every ssh) out of a captured error so the manifest
+    carries the actual cause, not a wall of decoration. Generic — keys
+    off the banner SHAPE (box-drawing / pipe-prefixed lines), not any
+    particular site's wording."""
+    if not msg:
+        return msg
+    keep: list[str] = []
+    for ln in msg.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        # Box-drawing banner lines: only pipes / dashes / spaces, or a
+        # line that opens the banner box with a leading pipe.
+        if set(s) <= set("-|+ ") or s.startswith("|"):
+            continue
+        keep.append(s)
+    cleaned = " ".join(keep).strip().rstrip(":").strip()
+    # If an ssh connection failed (rc=255) the meaningful remainder is
+    # often empty after stripping the banner — say something useful.
+    if "rc=255" in (cleaned or "") or not cleaned:
+        if "rc=255" in (msg or "") or not cleaned:
+            return ("could not reach the compute env over ssh "
+                    "(is `ssh hpc-agent` open in a terminal?)")
+    return cleaned
+
+
+# Maps the internal status + verified_method to human-facing strings.
+_OUTCOME_VERB = {
+    ("success",  "upload"):   "uploaded",
+    ("success",  "download"): "downloaded",
+    ("pending",  "upload"):   "submitted",
+    ("pending",  "download"): "submitted",
+    ("refused",  "upload"):   "refused",
+    ("refused",  "download"): "refused",
+    ("error",    "upload"):   "failed",
+    ("error",    "download"): "failed",
+}
+
+_VERIFIED_PHRASE = {
+    "sha256_round_trip": "sha256 matched on both ends",
+    "globus_end_to_end": "Globus end-to-end checksum (task SUCCEEDED)",
+    "globus_pending":    "pending — Globus verifies on completion",
+}
+
+
 def _write_transfer_manifest(*,
                               direction: str,
                               project_name: str,
                               compute_env_name: str,
                               zone: str,
+                              transport: Optional[str],
                               local_path: str,
                               remote_abs_path: str,
-                              provider: str,
-                              task_id: Optional[str],
+                              command: Optional[str],
                               result: str,
                               bytes_transferred: Optional[int],
                               duration_s: Optional[float],
-                              local_sha256: Optional[str],
-                              remote_sha256: Optional[str],
+                              sha256: Optional[str],
+                              task_id: Optional[str],
                               verified_method: Optional[str],
                               error_msg: Optional[str],
                               ) -> Path:
-    """Write a JSON record under
-    `transfer_history/<project_name>/<YYYY-MM-DD>/<stamp>_<direction>_
-    <short_hash>.json`. Includes a `replay_args` block holding the exact
-    parameters needed to re-call upload()/download() with the same intent.
+    """Write a human-readable JSON record of one transfer under
+    `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_<direction>_<hash>.json`.
 
-    Returns the manifest path. Manifest creation NEVER raises into the
-    primitive — a failed manifest write is logged but doesn't fail the
-    transfer (we don't want a disk-full repo to mask a successful upload).
+    The record leads with a plain-English `outcome` + `summary`, carries
+    the ACTUAL command that ran (`command`), and OMITS any field that
+    doesn't apply to this transfer (no wall of nulls). Returns the path.
+    Manifest creation never raises into the primitive — a write failure
+    is swallowed so it can't mask a real transfer result.
     """
     now = datetime.now(timezone.utc)
     day = now.strftime("%Y-%m-%d")
     stamp = now.strftime("%Y-%m-%dT%H-%M-%SZ")
-    record = {
-        "manifest_version":   1,
-        "direction":          direction,
-        "completed_at_iso":   now.isoformat(),
-        "project":            project_name,
-        "compute_env":        compute_env_name,
-        "zone":               zone,
-        "local_path":         str(local_path),
-        "remote_abs_path":    remote_abs_path,
-        "provider":           provider,
-        "task_id":            task_id,
-        "bytes":              bytes_transferred,
-        "duration_s":         duration_s,
-        "local_sha256":       local_sha256,
-        "remote_sha256":      remote_sha256,
-        "verified_method":    verified_method,
-        "result":             result,
-        "error":              error_msg,
-        "replay_args": {
-            "project_name":     project_name,
-            "compute_env_name": compute_env_name,
-            "local_path":       str(local_path),
-            "remote_abs_path":  remote_abs_path,
-            "direction":        direction,
-        },
+
+    outcome = _OUTCOME_VERB.get((result, direction), result)
+    fname = os.path.basename(remote_abs_path) or os.path.basename(local_path)
+    size_h = _human_size(bytes_transferred)
+    # `to`/`from` carry the env name on the remote side so a reader knows
+    # WHICH cluster without cross-referencing.
+    if direction == "upload":
+        src_disp = str(local_path)
+        dst_disp = f"{compute_env_name}:{remote_abs_path}"
+    else:
+        src_disp = f"{compute_env_name}:{remote_abs_path}"
+        dst_disp = str(local_path)
+
+    clean_err = _clean_error(error_msg)
+    summary = _summarize(
+        outcome=outcome, direction=direction, transport=transport,
+        fname=fname, size_h=size_h, compute_env=compute_env_name,
+        remote_abs_path=remote_abs_path, task_id=task_id, reason=clean_err)
+
+    # Build the record in a logical reading order, omitting empty fields.
+    record: dict = {
+        "outcome":      outcome,
+        "summary":      summary,
+        "when":         now.strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
+    if duration_s is not None:
+        record["took"] = _human_duration(duration_s)
+    record["direction"] = direction
+    if transport:
+        record["transport"] = transport
+    record["file"] = fname
+    if size_h:
+        record["size"] = size_h
+    record["from"] = src_disp
+    record["to"] = dst_disp
+    if command:
+        record["command"] = command
+    if task_id:
+        record["globus_task_id"] = task_id
+    verified = _VERIFIED_PHRASE.get(verified_method or "")
+    if verified:
+        record["verified"] = verified
+    if sha256:
+        record["sha256"] = sha256
+    if clean_err and outcome in ("failed", "refused"):
+        record["reason"] = clean_err
+    record["zone"] = zone
+    record["project"] = project_name
+    record["manifest_version"] = 2
+
     base = _repo_root() / "transfer_history" / project_name / day
     base.mkdir(parents=True, exist_ok=True)
     sh = _short_hash(direction, str(local_path), remote_abs_path,
                      now.isoformat())
     manifest_path = base / f"{stamp}_{direction}_{sh}.json"
-    manifest_path.write_text(json.dumps(record, indent=2, sort_keys=True))
+    manifest_path.write_text(json.dumps(record, indent=2))
     return manifest_path
+
+
+def _summarize(*, outcome: str, direction: str, transport: Optional[str],
+               fname: str, size_h: Optional[str], compute_env: str,
+               remote_abs_path: str, task_id: Optional[str],
+               reason: Optional[str]) -> str:
+    """One plain-English sentence describing what happened."""
+    size_part = f" ({size_h})" if size_h else ""
+    via = {"globus": "via Globus",
+           "scp_head_node": "via scp",
+           "local_copy": "via local copy"}.get(transport or "", "")
+    via_part = f" {via}" if via else ""
+    if outcome == "uploaded":
+        return (f"Uploaded {fname}{size_part} to {compute_env}"
+                f"{via_part}.")
+    if outcome == "downloaded":
+        return (f"Downloaded {fname}{size_part} from {compute_env}"
+                f"{via_part}.")
+    if outcome == "submitted":
+        tail = (f" Poll task {task_id[:8]}… to confirm it completed."
+                if task_id else "")
+        return (f"Submitted a Globus {direction} of {fname}{size_part} "
+                f"to {compute_env}.{tail}")
+    if outcome == "refused":
+        return (f"Refused: {reason or 'precondition not met'}. "
+                f"({direction} of {fname} to {compute_env})")
+    # failed
+    return (f"Failed to {direction} {fname} to {compute_env}: "
+            f"{reason or 'see logs'}.")
+
+
+# ---------------------------------------------------------------------------
+# Async confirmation — reconcile a `submitted` manifest to its real outcome
+# ---------------------------------------------------------------------------
+
+def _find_manifest_by_task_id(task_id: str) -> Optional[Path]:
+    """Locate the transfer manifest carrying `globus_task_id == task_id`.
+    Scans transfer_history newest-first (filenames are timestamped).
+    Returns the path or None."""
+    root = _repo_root() / "transfer_history"
+    if not root.exists():
+        return None
+    for p in sorted(root.rglob("*.json"), reverse=True):
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if rec.get("globus_task_id") == task_id:
+            return p
+    return None
+
+
+def finalize_manifest_for_task(task_id: str, *, status: str,
+                               bytes_transferred: Optional[int] = None,
+                               error: Optional[str] = None) -> Optional[Path]:
+    """Reconcile the async-submit manifest for `task_id` to the observed
+    terminal Globus state, so a `submitted` record durably becomes the
+    truth: `uploaded`/`downloaded` (SUCCEEDED — Globus end-to-end
+    checksum) or `failed` (FAILED). Idempotent — a no-op when there's no
+    matching manifest, it's already finalized, or the task isn't terminal.
+    Returns the manifest path (updated or not) or None.
+
+    THIS is what protects downstream steps from half-baked transfers:
+    after one poll observes SUCCEEDED, the manifest says `uploaded` and a
+    later consumer can trust the record instead of guessing whether a
+    `submitted` transfer ever landed."""
+    if status not in ("SUCCEEDED", "FAILED"):
+        return None
+    mpath = _find_manifest_by_task_id(task_id)
+    if mpath is None:
+        return None
+    try:
+        rec = json.loads(mpath.read_text())
+    except (OSError, ValueError):
+        return None
+    if rec.get("outcome") != "submitted":
+        return mpath  # already finalized, or not an async-submit record
+
+    direction = rec.get("direction", "upload")
+    side = rec.get("to") if direction == "upload" else rec.get("from")
+    env = side.split(":", 1)[0] if isinstance(side, str) and ":" in side else ""
+    env = env or "the compute env"
+
+    if status == "SUCCEEDED":
+        rec["outcome"] = "uploaded" if direction == "upload" else "downloaded"
+        if bytes_transferred:
+            rec["size"] = _human_size(bytes_transferred)
+        size_part = f" ({rec['size']})" if rec.get("size") else ""
+        verb = "Uploaded" if direction == "upload" else "Downloaded"
+        prep = "to" if direction == "upload" else "from"
+        rec["verified"] = "Globus end-to-end checksum (task SUCCEEDED)"
+        rec["summary"] = (f"{verb} {rec.get('file', 'file')}{size_part} "
+                          f"{prep} {env} via Globus — confirmed SUCCEEDED.")
+    else:  # FAILED
+        rec["outcome"] = "failed"
+        rec.pop("verified", None)
+        reason = _clean_error(error) or "Globus task FAILED"
+        rec["reason"] = reason
+        rec["summary"] = (f"Failed to {direction} {rec.get('file', 'file')} "
+                          f"{('to' if direction == 'upload' else 'from')} "
+                          f"{env}: {reason}.")
+    rec["confirmed_at"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC")
+    try:
+        mpath.write_text(json.dumps(rec, indent=2))
+    except OSError:
+        pass
+    return mpath
 
 
 # ---------------------------------------------------------------------------
@@ -643,11 +880,12 @@ def _do_transfer(*, direction: str,
     manifest_dir_hint = None
 
     def _journal(*, result: str, error_msg: Optional[str] = None,
-                 provider: str = "?", task_id: Optional[str] = None,
+                 transport: Optional[str] = None,
+                 command: Optional[str] = None,
+                 task_id: Optional[str] = None,
                  zone: str = "?",
                  bytes_transferred: Optional[int] = None,
-                 local_sha256: Optional[str] = None,
-                 remote_sha256: Optional[str] = None,
+                 sha256: Optional[str] = None,
                  verified_method: Optional[str] = None) -> Path:
         """Write the manifest and return its path. Best-effort — a write
         failure is swallowed so a successful transfer isn't masked."""
@@ -658,15 +896,15 @@ def _do_transfer(*, direction: str,
                 project_name=project_name,
                 compute_env_name=compute_env_name,
                 zone=zone,
+                transport=transport,
                 local_path=local_path,
                 remote_abs_path=remote_abs_path,
-                provider=provider,
-                task_id=task_id,
+                command=command,
                 result=result,
                 bytes_transferred=bytes_transferred,
                 duration_s=duration,
-                local_sha256=local_sha256,
-                remote_sha256=remote_sha256,
+                sha256=sha256,
+                task_id=task_id,
                 verified_method=verified_method,
                 error_msg=error_msg,
             )
@@ -709,43 +947,61 @@ def _do_transfer(*, direction: str,
             size_bytes = 0  # known post-transfer for downloads
             local_sha = None
 
-        # 5) Remote-existence pre-check (no-overwrite contract).
+        # Provider for ssh-mode envs. Created ONCE here and reused for the
+        # transport-specific no-overwrite check, parent-dir prep, AND the
+        # transfer itself — so the pre-checks don't assume ssh when the
+        # wire protocol is Globus (a Globus transfer makes zero ssh calls).
+        # local-mode envs handle byte movement inline (no provider).
+        provider = None
+        if env_type != "local":
+            from agent.skills import transfer_providers
+            provider = transfer_providers.get_transfer_provider(env)
+        transport_name = "local_copy" if env_type == "local" else provider.name
+
+        # 5) Remote-existence pre-check (no-overwrite contract). Routed
+        # through the provider so it's ssh `test -e` for scp but `globus
+        # ls` for Globus — no ssh on the Globus path. A hit is a REFUSAL
+        # (intended safety behavior), not a failure.
         if direction == "upload":
             if env_type == "local":
                 if Path(normed_remote).exists():
-                    mpath = _journal(result="error", zone=zone,
-                        error_msg=("remote path already exists; upload "
-                                   "refuses overwrites"))
+                    mpath = _journal(result="refused", zone=zone,
+                        transport=transport_name,
+                        error_msg="a file already exists at the destination")
                     return {"error":
                         f"remote path already exists: {normed_remote!r}. "
                         f"upload refuses overwrites. Pick a fresh "
                         f"remote_abs_path or remove the existing file.",
                         "manifest": str(mpath)}
             else:
-                ec = _remote_existence_check(env, normed_remote, timeout)
+                ec = provider.remote_exists(
+                    env=env, abs_remote_path=normed_remote, timeout=timeout)
                 if "error" in ec:
                     mpath = _journal(result="error", zone=zone,
-                        error_msg=ec["error"])
+                        transport=transport_name, error_msg=ec["error"])
                     return {**ec, "manifest": str(mpath)}
                 if ec["exists"]:
-                    mpath = _journal(result="error", zone=zone,
-                        error_msg=("remote path already exists; upload "
-                                   "refuses overwrites"))
+                    mpath = _journal(result="refused", zone=zone,
+                        transport=transport_name,
+                        error_msg="a file already exists at the destination")
                     return {"error":
                         f"remote path already exists: {normed_remote!r}. "
                         f"upload refuses overwrites. Pick a fresh "
                         f"remote_abs_path or remove the existing file.",
                         "manifest": str(mpath)}
 
-        # 6) Mkdir parent on the destination side.
+        # 6) Ensure the destination parent dir exists. Provider-routed:
+        # ssh `mkdir -p` for scp, a no-op for Globus (the Transfer
+        # service auto-creates the destination tree).
         if direction == "upload":
             if env_type == "local":
                 _local_mkdir_parent(Path(normed_remote))
             else:
-                mk = _remote_mkdir_parent_ssh(env, normed_remote, timeout)
+                mk = provider.ensure_parent_dir(
+                    env=env, abs_remote_path=normed_remote, timeout=timeout)
                 if mk is not None:
                     mpath = _journal(result="error", zone=zone,
-                        error_msg=mk["error"])
+                        transport=transport_name, error_msg=mk["error"])
                     return {**mk, "manifest": str(mpath)}
         # download: local parent existence is already validated by
         # _validate_local_path_for_download
@@ -760,9 +1016,7 @@ def _do_transfer(*, direction: str,
                 local_sha=local_sha, zone=zone, journal=_journal,
                 started=started)
 
-        # ssh-mode: through TransferProvider.
-        from agent.skills import transfer_providers
-        provider = transfer_providers.get_transfer_provider(env)
+        # ssh-mode: through the already-created provider.
         if direction == "upload":
             pr = provider.upload_one(
                 env=env, local_path=lp, abs_remote_path=normed_remote,
@@ -777,16 +1031,20 @@ def _do_transfer(*, direction: str,
                 label=f"download {project_name} {Path(normed_remote).name}")
         if "error" in pr:
             mpath = _journal(result="error", zone=zone,
-                provider=pr.get("provider", "?"),
+                transport=pr.get("provider") or transport_name,
+                command=pr.get("command"),
                 task_id=pr.get("task_id"),
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
             return out
 
-        # Async submit — no bytes yet; manifest reflects pending state.
+        # Async submit — no bytes yet; manifest reflects submitted state.
         if pr.get("verified_method") == "globus_pending":
             mpath = _journal(result="pending", zone=zone,
-                provider=pr["provider"], task_id=pr.get("task_id"),
+                transport=pr["provider"], command=pr.get("command"),
+                bytes_transferred=(size_bytes if direction == "upload"
+                                   else None),
+                task_id=pr.get("task_id"),
                 verified_method=pr["verified_method"])
             return {**pr, "manifest": str(mpath),
                     "project": project_name, "compute_env": compute_env_name,
@@ -796,18 +1054,20 @@ def _do_transfer(*, direction: str,
         # Sync success.
         bytes_done = pr.get("bytes", size_bytes if direction == "upload"
                             else (lp.stat().st_size if lp.exists() else 0))
-        remote_sha = (pr.get("remote_sha256") or
-                       pr.get("local_sha256") if direction == "download"
-                       else pr.get("remote_sha256"))
         # For downloads, the provider's "local_sha256" is the post-fetch
         # hash on the laptop; for uploads it's the pre-transfer local hash.
         if direction == "download":
             local_sha = pr.get("local_sha256") or _compute_local_sha256(lp)
+        # The single sha we record: scp/local verify via round-trip (both
+        # ends equal); Globus has none (it does its own end-to-end check).
+        sha_record = (pr.get("remote_sha256") or local_sha
+                      if pr.get("verified_method") == "sha256_round_trip"
+                      else None)
         mpath = _journal(result="success", zone=zone,
-            provider=pr["provider"], task_id=pr.get("task_id"),
+            transport=pr["provider"], command=pr.get("command"),
+            task_id=pr.get("task_id"),
             bytes_transferred=bytes_done,
-            local_sha256=local_sha,
-            remote_sha256=pr.get("remote_sha256"),
+            sha256=sha_record,
             verified_method=pr.get("verified_method"))
         return {
             "success":          True,
@@ -853,12 +1113,13 @@ def _do_local_mode(*, direction: str,
                     started: float) -> dict:
     """Inline shutil.copy path for local-mode envs. Same trust contract
     (sha256 both ends + size compare) but no wire-protocol provider."""
+    cp_cmd_up = f"cp {shlex.quote(str(lp))} {shlex.quote(normed_remote)}"
     if direction == "upload":
         shutil.copy(str(lp), normed_remote)
         remote_sha = _compute_local_sha256(Path(normed_remote))
         if remote_sha != local_sha:
             mpath = journal(result="error", zone=zone,
-                provider="local_copy",
+                transport="local_copy", command=cp_cmd_up,
                 error_msg=("sha256 round-trip mismatch on local-mode "
                            "upload"))
             return {"error":
@@ -868,9 +1129,9 @@ def _do_local_mode(*, direction: str,
                 "manifest": str(mpath)}
         bytes_done = lp.stat().st_size
         mpath = journal(result="success", zone=zone,
-            provider="local_copy",
+            transport="local_copy", command=cp_cmd_up,
             bytes_transferred=bytes_done,
-            local_sha256=local_sha, remote_sha256=remote_sha,
+            sha256=local_sha,
             verified_method="sha256_round_trip")
         return {
             "success":          True,
@@ -889,8 +1150,9 @@ def _do_local_mode(*, direction: str,
             "manifest":         str(mpath),
         }
     # download local-mode
+    cp_cmd_dn = f"cp {shlex.quote(normed_remote)} {shlex.quote(str(lp))}"
     if not Path(normed_remote).exists():
-        mpath = journal(result="error", zone=zone, provider="local_copy",
+        mpath = journal(result="error", zone=zone, transport="local_copy",
             error_msg=f"local-mode source does not exist")
         return {"error":
             f"local-mode download source does not exist: "
@@ -904,7 +1166,8 @@ def _do_local_mode(*, direction: str,
             lp.unlink()
         except OSError:
             pass
-        mpath = journal(result="error", zone=zone, provider="local_copy",
+        mpath = journal(result="error", zone=zone, transport="local_copy",
+            command=cp_cmd_dn,
             error_msg="sha256 mismatch on local-mode download")
         return {"error":
             f"sha256 mismatch on local-mode download: "
@@ -912,9 +1175,9 @@ def _do_local_mode(*, direction: str,
             "manifest": str(mpath)}
     bytes_done = lp.stat().st_size
     mpath = journal(result="success", zone=zone,
-        provider="local_copy",
+        transport="local_copy", command=cp_cmd_dn,
         bytes_transferred=bytes_done,
-        local_sha256=landed_sha, remote_sha256=remote_sha,
+        sha256=landed_sha,
         verified_method="sha256_round_trip")
     return {
         "success":          True,

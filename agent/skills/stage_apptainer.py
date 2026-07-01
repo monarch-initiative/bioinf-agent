@@ -26,60 +26,47 @@ The EnvCache record's `mode` decides:
 
   BUILD (registry-free)
     Local docker-save tarball. TWO steps:
-      1. transfer the tar to the cluster via the env's configured
-         `bulk_transfer.type` (today: scp head node via
-         upload_to_common_data; future: datamover/globus — see
-         comment below).
+      1. Upload the .tar to the cluster via `transfer.upload`.
+         Wire protocol (scp_head_node vs globus) is picked by the
+         env's `data_transfer.type` inside transfer.upload — this
+         primitive doesn't second-guess it.
       2. ssh apptainer build <sif_path> docker-archive://<tar_path>
     Idempotent on the .sif side; the .tar lands at its own
-    deterministic path.
+    deterministic path under the container zone.
 
   BUILD (with push_target)
     Pushed to a registry. ONE ssh hop:
       apptainer pull <sif_path> docker://<push_target>
     Same shape as adopt.
 
-Where the .sif lands
---------------------
-Preference order:
-  1. `<env.container_upload_target>/<env_name>_<digest>.sif` — the
-     env's DEDICATED container zone (semantically what
-     `container_upload_target` is for; conventionally
-     `CLAUDE_CONTAINERS/`).
-  2. `<env.agent_common_data_target>/apptainer/<env_name>_<digest>.sif`
-     — fallback for envs that don't declare a container target.
+Where the .sif (and .tar) land
+------------------------------
+Both container artifacts land in the env's `container_upload_target`:
+  .sif:  <env.container_upload_target>/<env_name>_<digest>.sif
+  .tar:  <env.container_upload_target>/apptainer_sources/<basename>.tar
+
+No fallback. If the env hasn't declared a `container_upload_target`
+with `upload` permission, the primitive refuses — per
+[[project-container-artifacts-routing]], container artifacts do NOT
+spill into `agent_common_data_target` (that zone is for reference
+data). The user defines the rails; we don't paper over a missing one.
 
 env_name is the freeze record's env name (so multiple frozen envs
 coexist); digest is the short content_digest so a re-freeze with a
 different result doesn't clobber the old .sif.
 
-Caller may override the subpath via `sif_subpath`; we still resolve
-against the chosen target's path (so the file stays in the
-designated zone).
+Caller may override the .sif subpath via `sif_subpath`; we still
+resolve it against `container_upload_target.path` (so the file stays
+in the designated zone).
 
 Authorization
 -------------
-Same env-implicit grant as `upload_to_common_data`: project on env +
-env.agent_common_data_target.permissions includes `upload`. For
-ADOPT mode we ALSO need apptainer + a network egress on the head
+Same env-implicit grant as every other env-target primitive:
+  - project must have a `compute_env_access` entry for this env
+  - env must declare `container_upload_target` with `upload` perm
+For ADOPT mode we ALSO need apptainer + network egress on the head
 node — that's a cluster property, not something this primitive can
 guarantee; failures surface in `apptainer_stderr`.
-
-Bulk-transfer extension point
------------------------------
-BUILD mode's step 1 currently always goes through scp on the head
-node (via upload_to_common_data). HPC's DataMover (and Globus) move
-the same bytes off the head node via a separate transfer node — the
-primitive's signature doesn't change to support them; only ONE
-internal branch:
-
-    if env.get("bulk_transfer", {}).get("type") == "datamover":
-        # route through datamover adapter (future)
-    else:
-        # scp head node via upload_to_common_data (today)
-
-ADOPT mode never goes through us, so it's already off the head-node
-critical path.
 """
 from __future__ import annotations
 
@@ -100,12 +87,6 @@ def _short_digest(content_digest: str) -> str:
         return "unknown"
     hexdigest = content_digest.split(":", 1)[1]
     return hexdigest[:12] if hexdigest else "unknown"
-
-
-def _default_sif_subpath(env_name: str, content_digest: str) -> str:
-    """Where the .sif lives under the env's agent_common_data_target.
-    Subdir 'apptainer/' keeps .sif files separate from reference data."""
-    return f"apptainer/{env_name}_{_short_digest(content_digest)}.sif"
 
 
 def _build_apptainer_pull_cmd(sif_remote_abs: str,
@@ -168,7 +149,7 @@ def stage_apptainer_image(
                 f"freeze_request_key {freeze_request_key!r} not in "
                 f"EnvCache. Call freeze() first."}
 
-        # Resolve env + project + auth (env-implicit common_data perm)
+        # Resolve env + project + auth (env-implicit container_upload perm)
         access = compute_access.load_access(
             Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
@@ -182,7 +163,8 @@ def stage_apptainer_image(
 
         # Project must have access to env (same shape as the other
         # env-implicit primitives — no per-directory perm needed for
-        # ADOPT; for BUILD upload, we re-check via upload_to_common_data).
+        # ADOPT; for BUILD upload, transfer.upload re-checks
+        # container_upload_target capability at upload time).
         has_access = any(
             isinstance(b, dict) and b.get("compute_env") == compute_env_name
             for b in (project.get("compute_env_access") or []))
@@ -192,45 +174,36 @@ def stage_apptainer_image(
                 f"compute_env_access entry for compute_env "
                 f"{compute_env_name!r}"}
 
-        # Pick the .sif landing zone — prefer the env's DEDICATED
-        # container_upload_target (semantically what it's for),
-        # fall back to agent_common_data_target/apptainer/. Both
-        # require `upload` perm to write the .sif there.
+        # Container artifacts (.sif + .tar) land ONLY in the env's
+        # container_upload_target — no fallback to agent_common_data_target
+        # (that zone is for reference data, per
+        # [[project-container-artifacts-routing]]). If the env doesn't
+        # declare a container target, this fails loud — the user defines
+        # the rails; we don't paper over an undeclared one.
         ct = env.get("container_upload_target") or {}
         ct_path = (ct.get("path") or "").rstrip("/")
         ct_perms = ct.get("permissions") or []
-        cd = env.get("agent_common_data_target") or {}
-        cd_path = (cd.get("path") or "").rstrip("/")
-        cd_perms = cd.get("permissions") or []
+        if not (ct_path and "upload" in ct_perms):
+            return {"error":
+                f"env {compute_env_name!r} has no `container_upload_target` "
+                f"with `upload` permission. Declare one in projects_access.yaml "
+                f"under compute_envs[name={compute_env_name!r}]; container "
+                f"artifacts (.sif + .tar) land there exclusively — they do NOT "
+                f"fall back to agent_common_data_target."}
 
         env_name_for_sif = (record.get("name")
                             or freeze_request_key.split("|", 1)[0])
         content_digest = record.get("content_digest") or record.get(
             "image_digest", "")
-        if ct_path and "upload" in ct_perms:
-            target_root = ct_path
-            # No `apptainer/` subdir — the whole target IS the container
-            # zone. Default subpath is just `<env_name>_<digest>.sif`.
-            subpath = (sif_subpath or
-                       f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
-            landing_zone = "container_upload_target"
-        elif cd_path and "upload" in cd_perms:
-            target_root = cd_path
-            subpath = sif_subpath or _default_sif_subpath(
-                env_name_for_sif, content_digest)
-            landing_zone = "agent_common_data_target"
-        else:
-            return {"error":
-                f"env {compute_env_name!r} has no upload-permitted "
-                f"target for .sif files. Declare a `container_upload_target` "
-                f"(semantically what .sifs go to) OR an "
-                f"`agent_common_data_target`, with permissions including "
-                f"`upload`."}
+        # The whole target IS the container zone — default subpath is
+        # just `<env_name>_<digest>.sif`, no extra `apptainer/` prefix.
+        subpath = (sif_subpath or
+                   f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
         # Refuse traversal in sif_subpath
         if ".." in subpath.split("/") or subpath.startswith("/"):
             return {"error":
                 f"sif_subpath {subpath!r} must be relative + no `..`"}
-        sif_remote_abs = f"{target_root}/{subpath}"
+        sif_remote_abs = f"{ct_path}/{subpath}"
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""
@@ -297,21 +270,9 @@ def stage_apptainer_image(
             }
 
         # ─── BUILD-registry-free path (.tar transfer + build) ────────
-        # CONFIG-LEVEL CHECK FIRST: bulk_transfer.type is a config
-        # decision the user makes in projects_access.yaml — surface
-        # config errors BEFORE deployment-state errors (e.g. missing
-        # tarball). Extension hook: future datamover/globus implementer
-        # adds ONE branch HERE.
-        bulk = env.get("bulk_transfer") or {}
-        transfer_type = bulk.get("type", "scp_head_node")
-        if transfer_type != "scp_head_node":
-            return {"error":
-                f"env {compute_env_name!r} declares "
-                f"bulk_transfer.type={transfer_type!r}, but only "
-                f"`scp_head_node` is implemented today. To wire "
-                f"`datamover` or `globus`, add a branch in "
-                f"stage_apptainer_image."}
-
+        # Wire-protocol routing (scp_head_node vs globus) is decided
+        # inside transfer.upload() by the env's `data_transfer.type` —
+        # this primitive doesn't second-guess it.
         tarball = record.get("tarball")
         if not tarball:
             return {"error":
@@ -324,8 +285,12 @@ def stage_apptainer_image(
                 f"freeze record tarball missing on disk: {tarball!r}. "
                 f"Re-run freeze() to regenerate."}
 
+        # The .tar is a container artifact — lands in the same
+        # container_upload_target as the .sif (resolved above). The
+        # `apptainer_sources/` subdir keeps build-input tarballs
+        # separate from the built .sif files inside the same zone.
         tar_subpath = f"apptainer_sources/{tarball_path.name}"
-        tar_remote_abs = f"{cd_path}/{tar_subpath}"
+        tar_remote_abs = f"{ct_path}/{tar_subpath}"
         up = transfer.upload(
             project_name=project_name,
             compute_env_name=compute_env_name,
@@ -339,7 +304,8 @@ def stage_apptainer_image(
             if "already exists" not in (up.get("error") or ""):
                 return {
                     "error":
-                        f"tar upload to common_data failed: {up['error']}",
+                        f"tar upload to container_upload_target failed: "
+                        f"{up['error']}",
                     "tar_upload_error": up.get("error"),
                 }
 

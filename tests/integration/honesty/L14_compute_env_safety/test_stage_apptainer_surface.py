@@ -1,16 +1,18 @@
-"""
-L14 cheat-guards — stage_apptainer_image's refuse-to-emit + branch surface.
+"""L14 cheat-guards — stage_apptainer_image's refuse-to-emit + branch surface.
 
 stage_apptainer_image picks the right HPC-delivery method from the
 EnvCache record's `mode`. These tests pin:
   - missing freeze_request_key → clean error, no ssh
-  - env without agent_common_data_target → clean error
+  - env without container_upload_target → fails LOUD (no fallback to
+    agent_common_data_target — that zone is for reference data, per
+    [[project-container-artifacts-routing]])
   - sif_subpath safety (no `..`, no absolute)
-  - mode=adopt → apptainer pull command shape
+  - mode=adopt → apptainer pull command shape + .sif lands under
+    container_upload_target
   - mode=adopt skip-if-exists branch detection
-  - mode=build (.tar) + bulk_transfer.type != scp_head_node → declines
-    cleanly so a future DataMover/Globus author has a single branch
-    to add
+  - mode=build_archive → .tar lands under
+    container_upload_target/apptainer_sources/ (same zone as the .sif,
+    no spillover to common_data)
 """
 from __future__ import annotations
 
@@ -31,14 +33,16 @@ def _write_access(tmp_path: Path, data: dict) -> Path:
 
 
 def _good_access(tmp_path: Path) -> Path:
+    """An access manifest with a properly-declared container_upload_target.
+    Use this for tests that need to reach beyond the env-auth gate (sif
+    safety, mode dispatch, happy paths)."""
     return _write_access(tmp_path, {
         "compute_envs": [{
             "name": "fakehpc", "type": "ssh",
             "host": "fake.example.edu", "user": "u",
-            "container_upload_target": None,
-            "agent_common_data_target": {
-                "path": "/work/u/COMMON_DATA",
-                "permissions": ["file_name_only", "upload", "download", "exec"],
+            "container_upload_target": {
+                "path": "/work/u/CLAUDE_CONTAINERS",
+                "permissions": ["file_name_only", "upload"],
             },
         }],
         "projects": [{
@@ -57,7 +61,7 @@ class FakeEnvCache:
 
 
 # ===========================================================================
-# Short-digest + default-subpath helpers
+# Short-digest helper
 # ===========================================================================
 
 class TestPathHelpers:
@@ -72,13 +76,6 @@ class TestPathHelpers:
         assert stage_apptainer._short_digest("") == "unknown"
         assert stage_apptainer._short_digest("nope") == "unknown"
 
-    @pytest.mark.integration
-    def test_default_sif_subpath_shape(self):
-        out = stage_apptainer._default_sif_subpath(
-            "samtools_view_demo",
-            "sha256:23cda33a3a42125872766df9aaf1d2db67")
-        assert out == "apptainer/samtools_view_demo_23cda33a3a42.sif"
-
 
 # ===========================================================================
 # apptainer-pull remote command shape
@@ -88,7 +85,7 @@ class TestApptainerPullCmd:
     @pytest.mark.integration
     def test_canonical_pull_shape(self):
         cmd = stage_apptainer._build_apptainer_pull_cmd(
-            "/work/u/COMMON_DATA/apptainer/samtools.sif",
+            "/work/u/CLAUDE_CONTAINERS/samtools.sif",
             "docker://quay.io/biocontainers/samtools@sha256:abc")
         # Login shell so `module load apptainer` works on Lmod systems.
         assert "bash -lc " in cmd
@@ -98,7 +95,7 @@ class TestApptainerPullCmd:
         assert "mkdir -p" in cmd
         # The pull line itself.
         assert "apptainer pull" in cmd
-        assert "/work/u/COMMON_DATA/apptainer/samtools.sif" in cmd
+        assert "/work/u/CLAUDE_CONTAINERS/samtools.sif" in cmd
         assert "docker://quay.io/biocontainers/samtools@sha256:abc" in cmd
 
 
@@ -142,21 +139,26 @@ class TestRecordLookupFailures:
 
 
 # ===========================================================================
-# Env-level auth gate
+# Env-level auth gate — container_upload_target is REQUIRED, no fallback
 # ===========================================================================
 
 class TestAuthGate:
     @pytest.mark.integration
-    def test_env_missing_both_targets_refused(
+    def test_env_without_container_upload_target_refused(
             self, tmp_path, monkeypatch):
-        # Neither container_upload_target nor agent_common_data_target
-        # declared with `upload` — nothing for the .sif to land on.
+        # No container_upload_target declared at all. Container
+        # artifacts (.sif + .tar) have nowhere legal to land; the
+        # primitive must refuse — NOT silently fall back to
+        # agent_common_data_target. The user defines the rails.
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
                 "name": "fakehpc", "type": "ssh",
                 "host": "fake.example.edu", "user": "u",
                 "container_upload_target": None,
-                # No agent_common_data_target either.
+                "agent_common_data_target": {
+                    "path": "/work/u/COMMON_DATA",
+                    "permissions": ["file_name_only", "upload",
+                                     "download", "exec"]},
             }],
             "projects": [{
                 "name": "demo",
@@ -176,27 +178,22 @@ class TestAuthGate:
             env_cache=cache, access_path=str(access_path))
         assert "error" in r
         assert "container_upload_target" in r["error"]
-        assert "agent_common_data_target" in r["error"]
+        # And the error EXPLICITLY says common_data is NOT a fallback —
+        # we don't want a future contributor to add one quietly.
+        assert "do NOT fall back" in r["error"]
         assert called == []
 
     @pytest.mark.integration
-    def test_container_upload_target_preferred_over_common_data(
+    def test_container_upload_target_missing_upload_perm_refused(
             self, tmp_path, monkeypatch):
-        # When both targets are declared, container_upload_target
-        # wins — that's semantically what .sifs are for, and it
-        # doesn't compete with reference data for namespace.
+        # Declared but no `upload` token — same refusal as missing.
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
                 "name": "fakehpc", "type": "ssh",
                 "host": "fake.example.edu", "user": "u",
                 "container_upload_target": {
                     "path": "/work/u/CLAUDE_CONTAINERS",
-                    "permissions": ["file_name_only", "upload"],
-                },
-                "agent_common_data_target": {
-                    "path": "/work/u/COMMON_DATA",
-                    "permissions": ["file_name_only", "upload",
-                                     "download", "exec"],
+                    "permissions": ["file_name_only"],  # no upload!
                 },
             }],
             "projects": [{
@@ -205,6 +202,21 @@ class TestAuthGate:
                     "compute_env": "fakehpc", "directories": []}],
             }],
         })
+        # The schema validator should reject this manifest at load time
+        # because `container_upload_target` requires `upload` per
+        # _validate_compute_env(must_include=["upload"]).
+        from agent.skills import compute_access
+        with pytest.raises(compute_access.ConfigError,
+                           match="container_upload_target.*upload"):
+            compute_access.load_access(access_path)
+
+    @pytest.mark.integration
+    def test_sif_lands_in_container_upload_target(
+            self, tmp_path, monkeypatch):
+        # Happy path: container_upload_target is declared, .sif lands
+        # there directly (no `apptainer/` subdir prefix — the whole zone
+        # IS the container zone).
+        access_path = _good_access(tmp_path)
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
             "mode": "adopt",
             "image": "quay.io/biocontainers/samtools@sha256:23cda",
@@ -222,77 +234,23 @@ class TestAuthGate:
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
         assert "error" not in r, r
-        # Lands under CLAUDE_CONTAINERS, NOT under COMMON_DATA/apptainer.
-        assert r["sif_path"] == "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
-
-    @pytest.mark.integration
-    def test_only_common_data_target_uses_apptainer_subdir(
-            self, tmp_path, monkeypatch):
-        # When container_upload_target isn't declared at all,
-        # fall back to agent_common_data_target with the apptainer/
-        # subdir prefix.
-        access_path = _good_access(tmp_path)  # common_data only
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt", "image": "quay.io/x@sha256:abc",
-            "image_digest": "sha256:23cda33a3a4212",
-            "content_digest": "sha256:23cda33a3a4212"}})
-
-        def fake_run(*a, **kw):
-            m = MagicMock(); m.returncode = 0; m.stdout = ""; m.stderr = ""
-            return m
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        r = stage_apptainer.stage_apptainer_image(
-            project_name="demo", compute_env_name="fakehpc",
-            freeze_request_key="samtools|linux/amd64|none",
-            env_cache=cache, access_path=str(access_path))
-        assert "error" not in r, r
-        # Falls back to common_data + the apptainer/ subdir.
-        assert "/COMMON_DATA/apptainer/samtools_23cda33a3a42.sif" in r["sif_path"]
-
-    @pytest.mark.integration
-    def test_env_common_data_missing_upload_perm_refused(
-            self, tmp_path, monkeypatch):
-        access_path = _write_access(tmp_path, {
-            "compute_envs": [{
-                "name": "fakehpc", "type": "ssh",
-                "host": "fake.example.edu", "user": "u",
-                "container_upload_target": None,
-                "agent_common_data_target": {
-                    "path": "/work/u/COMMON_DATA",
-                    "permissions": ["file_name_only"],  # no upload!
-                },
-            }],
-            "projects": [{
-                "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
-            }],
-        })
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt", "image": "quay.io/x@sha256:abc",
-            "image_digest": "sha256:abc"}})
-        called = []
-        monkeypatch.setattr(subprocess, "run",
-                            lambda *a, **kw: called.append(a) or MagicMock())
-        r = stage_apptainer.stage_apptainer_image(
-            project_name="demo", compute_env_name="fakehpc",
-            freeze_request_key="samtools|linux/amd64|none",
-            env_cache=cache, access_path=str(access_path))
-        assert "error" in r and "upload" in r["error"]
-        assert called == []
+        # Lands directly under CLAUDE_CONTAINERS (no apptainer/ prefix).
+        assert r["sif_path"] == \
+            "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
 
     @pytest.mark.integration
     def test_project_without_env_access_refused(
             self, tmp_path, monkeypatch):
+        # Container target is present, but the project has no
+        # compute_env_access entry for this env. PermissionDenied —
+        # the auth gate fires BEFORE the env-target zone gate.
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
                 "name": "fakehpc", "type": "ssh",
                 "host": "fake.example.edu", "user": "u",
-                "container_upload_target": None,
-                "agent_common_data_target": {
-                    "path": "/work/u/COMMON_DATA",
-                    "permissions": ["upload", "download", "exec"]},
+                "container_upload_target": {
+                    "path": "/work/u/CLAUDE_CONTAINERS",
+                    "permissions": ["upload"]},
             }],
             "projects": [{
                 "name": "outsider",
@@ -320,7 +278,7 @@ class TestAuthGate:
 class TestSifSubpathSafety:
     @pytest.mark.integration
     @pytest.mark.parametrize("bad", [
-        "/abs/path",            # absolute (must be relative under cd_path)
+        "/abs/path",            # absolute (must be relative under container target)
         "../escape",            # `..` traversal
         "x/../../etc/shadow",
     ])
@@ -368,8 +326,8 @@ class TestAdoptHappyPath:
             env_cache=cache, access_path=str(access_path))
         assert "error" not in r, r
         assert r["mode"] == "adopt"
-        assert r["sif_path"].endswith(
-            "apptainer/samtools_23cda33a3a42.sif")
+        assert r["sif_path"] == \
+            "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
         assert r["skipped"] is False
 
     @pytest.mark.integration
@@ -397,26 +355,30 @@ class TestAdoptHappyPath:
 
 
 # ===========================================================================
-# Build-archive: bulk-transfer extension hook
+# BUILD-archive — .tar lands in container_upload_target, NOT common_data
 # ===========================================================================
 
-class TestBulkTransferExtensionHook:
+class TestBuildArchiveTarRouting:
+    """The point of [[project-container-artifacts-routing]]: container
+    artifacts (.tar + .sif) live in the container zone exclusively. Pins
+    the .tar landing path so a future regression that quietly re-routes
+    to agent_common_data_target gets caught at CI."""
+
     @pytest.mark.integration
-    def test_unknown_bulk_transfer_type_declines_cleanly(
+    def test_tar_uploads_to_container_upload_target(
             self, tmp_path, monkeypatch):
-        # When env declares a not-yet-implemented bulk_transfer.type
-        # (e.g. datamover, globus), stage_apptainer_image refuses with
-        # a clear error pointing at the ONE branch to add. This is the
-        # extension hook contract.
+        # Build the manifest with BOTH container_upload_target AND
+        # agent_common_data_target declared on the env — to prove the
+        # .tar goes to container, NOT common_data, when both are present.
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
-                "name": "fakehpc", "type": "ssh",
-                "host": "fake.example.edu", "user": "u",
-                "container_upload_target": None,
+                "name": "fakehpc", "type": "local",
+                "container_upload_target": {
+                    "path": str(tmp_path / "CLAUDE_CONTAINERS"),
+                    "permissions": ["upload"]},
                 "agent_common_data_target": {
-                    "path": "/work/u/COMMON_DATA",
+                    "path": str(tmp_path / "COMMON_DATA"),
                     "permissions": ["upload", "download", "exec"]},
-                "bulk_transfer": {"type": "datamover"},
             }],
             "projects": [{
                 "name": "demo",
@@ -424,21 +386,74 @@ class TestBulkTransferExtensionHook:
                     "compute_env": "fakehpc", "directories": []}],
             }],
         })
-        # A non-adopt record so we hit the build-archive path.
+        # Pre-create the zone roots so transfer.upload's mkdir-parent
+        # has a real place to write into.
+        (tmp_path / "CLAUDE_CONTAINERS").mkdir()
+        (tmp_path / "COMMON_DATA").mkdir()
+
+        # Synthesize the tarball the freeze record claims to point at.
+        fake_tar = tmp_path / "bioinf_samtools.tar"
+        fake_tar.write_bytes(b"FAKE TAR BYTES FOR TEST")
+
+        # type=local skips the apptainer build ssh hop (env_type check
+        # at the top of stage_apptainer_image refuses non-ssh envs). So
+        # we can't test the FULL build path through a local env. Drive
+        # this via monkeypatching: track what transfer.upload was called
+        # with, then short-circuit.
+        captured = {}
+        def fake_upload(*, project_name, compute_env_name, local_path,
+                         remote_abs_path, access_path=None, timeout=600):
+            captured["remote_abs_path"] = remote_abs_path
+            captured["local_path"] = local_path
+            return {"success": True, "zone": "container_upload",
+                    "remote_abs_path": remote_abs_path,
+                    "manifest": "<test>"}
+        # The build path needs an ssh env to run the apptainer-build
+        # remote command. Switch the env type to ssh + intercept the
+        # build subprocess.
+        access_path = _write_access(tmp_path, {
+            "compute_envs": [{
+                "name": "fakehpc", "type": "ssh",
+                "host": "fake.example.edu", "user": "u",
+                "container_upload_target": {
+                    "path": "/work/u/CLAUDE_CONTAINERS",
+                    "permissions": ["upload"]},
+                "agent_common_data_target": {
+                    "path": "/work/u/COMMON_DATA",
+                    "permissions": ["upload", "download", "exec"]},
+            }],
+            "projects": [{
+                "name": "demo",
+                "compute_env_access": [{
+                    "compute_env": "fakehpc", "directories": []}],
+            }],
+        })
+
+        monkeypatch.setattr(stage_apptainer.transfer, "upload", fake_upload)
+        def fake_run(*a, **kw):
+            m = MagicMock(); m.returncode = 0
+            m.stdout = ""; m.stderr = ""
+            return m
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
             "mode": "build",
-            "tarball": "docker_images/x/x.tar",
-            "image_digest": "sha256:abc",
-            "content_digest": "sha256:abc"}})
-        called = []
-        monkeypatch.setattr(subprocess, "run",
-                            lambda *a, **kw: called.append(a) or MagicMock())
+            "tarball": str(fake_tar),
+            "image_digest": "sha256:23cda33a3a4212587276",
+            "content_digest": "sha256:23cda33a3a4212587276"}})
 
         r = stage_apptainer.stage_apptainer_image(
             project_name="demo", compute_env_name="fakehpc",
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
-        assert "error" in r
-        assert "datamover" in r["error"]
-        assert "scp_head_node" in r["error"]
-        assert called == []
+        assert "error" not in r, r
+        # The .tar lands under container_upload_target, in the
+        # `apptainer_sources/` subdir — NOT under COMMON_DATA.
+        assert captured["remote_abs_path"] == (
+            "/work/u/CLAUDE_CONTAINERS/apptainer_sources/bioinf_samtools.tar")
+        assert "COMMON_DATA" not in captured["remote_abs_path"]
+        # And the .sif itself lands under container_upload_target too.
+        assert r["sif_path"].startswith("/work/u/CLAUDE_CONTAINERS/")
+        assert "COMMON_DATA" not in r["sif_path"]
+        assert r["mode"] == "build_archive"
+        assert r["tar_remote_path"] == captured["remote_abs_path"]

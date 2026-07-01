@@ -11,7 +11,7 @@ This is NOT a composite primitive. The caller still:
   - freezes the tool's env separately (`freeze`)
   - stages the .sif separately (`stage_apptainer_image`)
   - polls the job separately, AT THEIR OWN PACE (`cluster_job_status`)
-  - downloads the outputs separately (`download_from_project_path`)
+  - downloads the outputs separately (`transfer.download`)
 
 submit_workflow_job is the *submission* step: the irreducible
 sequence of (render the per-project Nextflow files, upload them into
@@ -36,7 +36,7 @@ running SLURM job may write its own outputs alongside them).
 
 The workflow_dir is supplied as a LITERAL absolute path, not
 auto-prefixed. The caller decides the per-run subdir (the no-overwrite
-contract on upload_to_project_path means a second submit to the same
+contract on `transfer.upload` means a second submit to the same
 workflow_dir would fail — that's the desired behavior).
 
 Submission manifest
@@ -86,7 +86,7 @@ _MANIFEST_ROOT = "job_submissions"
 
 def _validate_workflow_dir(workflow_dir: str) -> str:
     """The workflow_dir is an absolute path. Same shape rules as
-    upload_to_project_path's abs_path — no `..`, no shell
+    `transfer.upload`'s remote_abs_path — no `..`, no shell
     metacharacters. Normalized via os.path.normpath."""
     if not isinstance(workflow_dir, str) or not workflow_dir:
         raise ValueError("workflow_dir must be a non-empty string")
@@ -251,7 +251,7 @@ def submit_workflow_job(project_name: str,
     `workflow_dir` is REQUIRED — a literal absolute path covered by a
     `directories[]` entry on the project with both `upload` and `exec`.
     The caller decides the per-run subdir (the no-overwrite contract on
-    upload_to_project_path means a second submit to the same workflow_dir
+    `transfer.upload` means a second submit to the same workflow_dir
     would fail — that's the desired behavior).
 
     No polling. submit-and-document semantics: the agent may be cut off
@@ -380,8 +380,9 @@ def submit_workflow_job(project_name: str,
             "follow_up": {
                 "poll":     ("call cluster_job_status(project, env, "
                              f"job_id={job_id!r})"),
-                "fetch":    ("call download_from_project_path for each "
-                             "expected output under workflow_dir"),
+                "fetch":    ("call download(project, env, remote_abs_path, "
+                             "local_path) for each expected output under "
+                             "workflow_dir"),
             },
         }
         manifest_path = _write_submission_manifest(

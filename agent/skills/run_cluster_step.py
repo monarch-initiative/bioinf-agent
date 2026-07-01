@@ -36,16 +36,17 @@ It composes:
   1. stage_apptainer_image   — get the .sif onto the env (idempotent)
   2. render_workflow_files   — produce main.nf / nextflow.config /
                                launcher.sh into a local tempdir
-  3. upload_to_scratch       — push each rendered file into the
-                               agent's scratch sandbox (auto-prefixed
-                               by project)
+  3. transfer.upload         — push each rendered file into the
+                               agent's scratch sandbox (the scratch
+                               zone is routed by the workflow_dir path,
+                               which is under agent_scratch_target)
   4. sbatch_via_ssh          — kick off the SLURM job, get job_id
   5. cluster_job_status      — poll until terminal (validation jobs
                                are short; polling is viable here in a
                                way it isn't for production)
   6. cluster_job_resources   — fetch wall_seconds + peak_rss_mb from
                                sacct's batch row (I7 evidence)
-  7. download_from_scratch   — fetch outputs back local (sha256
+  7. transfer.download       — fetch outputs back local (sha256
                                round-trip)
   8. _validator.validate     — type-aware validation per output
                                (same code path local steps use)

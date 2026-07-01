@@ -28,9 +28,11 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
                         (JobManager surface for >10-min tool calls)
   observability_tools — agent_status + snapshot_project
                         (pure-read snapshot surfaces — "where am I?" + cluster)
-  bridge_tools        — upload_to_scratch / fetch_from_scratch
-                        (Phase 2 HPC actuators — sibling to observability;
-                        same permission gate, same ControlMaster pattern,
+  bridge_tools        — upload / download (unified transfer surface) +
+                        stage_apptainer_image / submit_workflow_job /
+                        run_step_on_cluster / cluster_* (Phase 2 HPC
+                        actuators — sibling to observability; same
+                        permission gate, same ControlMaster pattern,
                         bytes move both directions with sha256 round-trip)
 
 ALL helpers, types (StrList/OptStrList), and skill singletons live in
@@ -52,7 +54,7 @@ from __future__ import annotations
 # Adding a new submodule = one line here + the submodule file + delete the
 # original tool(s) from mcp_server.py + the back-compat re-export at the
 # bottom of mcp_server.py.
-from . import bridge_tools         # noqa: F401  (upload_to_scratch, download_from_scratch)
+from . import bridge_tools         # noqa: F401  (upload, download, stage_apptainer_image, submit_workflow_job, run_step_on_cluster, cluster_job_status, cluster_module_avail, globus_task_status)
 from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, download_resource, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
 from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_spack_package, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)

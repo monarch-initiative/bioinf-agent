@@ -7,31 +7,35 @@ permission gate (`compute_access.check_permission`) and the same
 ControlMaster ssh pattern.
 
 Today the surface is:
-  upload_to_scratch / download_from_scratch              — Step 2
-  upload_to_common_data / download_from_common_data      — Step 3
-  upload_to_project_path / download_from_project_path    — Step 4
-  cluster_module_avail                                   — Step 4
+  upload / download              — unified transfer (zone auto-routed
+                                   by where the absolute remote path
+                                   falls); replaces the six retired
+                                   zone-specific primitives
+  stage_apptainer_image          — get a frozen env's .sif onto a env
+  submit_workflow_job            — production submit-and-document
+  run_step_on_cluster            — validation/seal run in scratch
+  cluster_job_status             — sacct job-state poll
+  cluster_module_avail           — Lmod discovery
+  globus_task_status             — async-Globus poll
 
-Three transfer auth families coexist (intentional):
-  scratch        — env-implicit + auto-prefix by project (sandbox)
-  common_data    — env-implicit + shared namespace (reference data)
-  project_path   — Phase-1 explicit grant via directories[] (workspace)
-
-Coming as each step lands:
-  cluster_job_status                                     — Step 5
-  submit_data_acquisition_job                            — Step 7
-  submit_workflow_job                                    — Step 9
+Four transfer auth zones coexist (intentional), routed by where the
+absolute remote path falls on the env:
+  scratch          — env-implicit + auto-prefix by project (sandbox)
+  common_data      — env-implicit + shared namespace (reference data)
+  container_upload — env-implicit + content-addressed (.sif / .tar)
+  project_path     — Phase-1 explicit grant via directories[] (workspace)
 
 Authorization shape (env-implicit grant, Phase 2):
   - `project_name` + `compute_env_name` resolve to a project's
     compute_env_access entry (the project must have ACCESS to the env)
   - The env declares `agent_scratch_target` / `agent_common_data_target`
-    blocks at the env level; their `permissions:` lists the supported
-    capabilities — these are the GRANT (no per-project re-declaration)
-  - Multi-project isolation: the resolved path is auto-prefixed with
-    `project_name` (`<target>/<project>/<remote_subpath>`)
-  - The agent-supplied path component (`remote_subpath`) is pure-string
-    validated BEFORE any I/O
+    / `container_upload_target` blocks at the env level; their
+    `permissions:` lists the supported capabilities — these are the
+    GRANT (no per-project re-declaration)
+  - Multi-project isolation: in the scratch zone the path must fall
+    under `<scratch_root>/<project_name>/...`
+  - The agent-supplied absolute remote path is pure-string validated
+    BEFORE any I/O
 
 All cheat-guards live under
 `tests/integration/honesty/L14_compute_env_safety/`.
@@ -201,6 +205,11 @@ def globus_task_status(project_name: str,
     Task IDs are scoped to the user's Globus tokens — the agent never
     sees a task belonging to anyone else.
 
+    Accepts `project_name="_ad_hoc"` — the same synthesized one-off
+    project the upload/download primitives accept — so a task submitted
+    via an `_ad_hoc` async upload can be polled with the same project
+    name (it has access to every env, so it can poll any env's task).
+
     `task_id` must be a canonical UUID; refused before any shell-out
     so a smuggled metacharacter can't reach the `globus` CLI.
 
@@ -208,9 +217,11 @@ def globus_task_status(project_name: str,
     files_transferred, files_skipped, fatal_error, type, captured_at}
     on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
     {"error": "..."} on failure (cli missing, auth, network)."""
-    from agent.skills import compute_access, transfer_providers
+    from agent.skills import compute_access, transfer, transfer_providers
     access = compute_access.load_access(None)
-    project = compute_access.get_project(project_name, access)  # auth check
+    # _ad_hoc-aware resolve so the poll companion accepts the same
+    # project name the async upload/download accepted.
+    project = transfer._get_project_or_ad_hoc(project_name, access)  # auth check
     _ = project
     env = compute_access.get_compute_env(compute_env_name, access)
     return transfer_providers.globus_task_status(env, task_id)
@@ -275,8 +286,8 @@ def submit_workflow_job(project_name: str,
 
     Composition discipline: NOT a composite — the caller still calls
     freeze() to build the env, stage_apptainer_image to push the .sif,
-    cluster_job_status to poll AT THEIR OWN PACE,
-    download_from_project_path to fetch outputs.
+    cluster_job_status to poll AT THEIR OWN PACE, and `download` to
+    fetch outputs.
 
     Authorization (Phase-1 explicit, dir-by-dir):
       - project must have a `compute_env_access` entry for the env
@@ -351,21 +362,22 @@ def stage_apptainer_image(project_name: str,
       BUILD with push_target:
         Same shape as adopt — pull from the configured registry.
       BUILD registry-free (default for non-conda):
-        Two steps: (1) transfer .tar via the env's configured
-        `bulk_transfer.type` — today scp head node via
-        upload_to_common_data, future datamover/globus by ONE
-        internal branch; (2) ssh `apptainer build <sif>
+        Two steps: (1) upload .tar via `transfer.upload` (wire protocol
+        scp_head_node vs globus is picked by the env's
+        `data_transfer.type`); (2) ssh `apptainer build <sif>
         docker-archive://<tar>` on the cluster.
 
-    Where the .sif lands:
-      `<env.agent_common_data_target>/apptainer/<env_name>_<digest>.sif`
-      by default. Override via `sif_subpath` (relative, under the
-      common_data zone).
+    Where container artifacts land:
+      .sif: `<env.container_upload_target>/<env_name>_<digest>.sif`
+      .tar: `<env.container_upload_target>/apptainer_sources/<basename>.tar`
+      Override the .sif subpath via `sif_subpath` (relative, no `..`).
 
     Authorization: project must have a `compute_env_access` entry for
-    the env, AND the env must declare an `agent_common_data_target`
-    with `upload` perm. For BUILD-archive path,
-    upload_to_common_data's auth is re-checked at upload time.
+    the env, AND the env must declare a `container_upload_target` with
+    `upload` perm. NO FALLBACK to agent_common_data_target — that zone
+    is for reference data; an undeclared container target is a clean
+    refusal, not a silent reroute (per
+    [[project-container-artifacts-routing]]).
 
     Returns {success, mode, sif_path, image_digest, request_key,
     skipped, staged_at} on success; {"error": ..., hint?, ...} on
@@ -417,10 +429,10 @@ def run_step_on_cluster(pipeline_id: str,
     Hard-fails if no scratch target — no graceful fallback.
 
     Composes: `stage_apptainer_image` (idempotent) → render +
-    `upload_to_scratch` × 3 → `sbatch --parsable` → `cluster_job_status`
-    (poll to terminal — viable here because validation jobs are
-    bounded) → `cluster_job_resources` (sacct MaxRSS for I7) →
-    `download_from_scratch` × N (sha256 round-trip) → type-aware
+    `upload` × 3 (scratch zone) → `sbatch --parsable` →
+    `cluster_job_status` (poll to terminal — viable here because
+    validation jobs are bounded) → `cluster_job_resources` (sacct
+    MaxRSS for I7) → `download` × N (sha256 round-trip) → type-aware
     validation. The pipeline_step records `validation_locus: "cluster"`
     so a future reader sees the evidence came from sacct.
 

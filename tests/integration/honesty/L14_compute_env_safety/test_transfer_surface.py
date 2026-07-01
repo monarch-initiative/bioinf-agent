@@ -40,13 +40,16 @@ from agent.skills import transfer, compute_access
 def _make_access(tmp_path: Path, *,
                  scratch_path: str = "",
                  common_path: str = "",
+                 container_path: str = "",
                  project_dirs: list[dict] | None = None) -> Path:
     """Write a projects_access.yaml stub for tests. The compute env is
     `type: local` so the primitives do shutil.copy + no ssh."""
     scratch_path = scratch_path or str(tmp_path / "fakescratch")
     common_path = common_path or str(tmp_path / "fakecommon")
+    container_path = container_path or str(tmp_path / "fakecontainers")
     Path(scratch_path).mkdir(parents=True, exist_ok=True)
     Path(common_path).mkdir(parents=True, exist_ok=True)
+    Path(container_path).mkdir(parents=True, exist_ok=True)
 
     env_block = {
         "name":        "fakehpc",
@@ -58,6 +61,10 @@ def _make_access(tmp_path: Path, *,
         "agent_common_data_target": {
             "path":        common_path,
             "permissions": ["file_name_only", "upload", "download", "exec"],
+        },
+        "container_upload_target": {
+            "path":        container_path,
+            "permissions": ["file_name_only", "upload", "download"],
         },
     }
 
@@ -188,6 +195,40 @@ class TestZoneRouting:
         assert out["zone"] == "common_data"
 
     @pytest.mark.integration
+    def test_container_upload_zone_routes_correctly(self, tmp_path):
+        # .sif under container_upload_target.path → container_upload zone.
+        # Env-implicit grant, no project prefix (.sif is content-addressed).
+        access_path = _make_access(tmp_path,
+                                    container_path=str(tmp_path / "containers"))
+        src = _src_file(tmp_path, "myimg.sif", b"fake .sif bytes")
+        remote = str(tmp_path / "containers" / "myimg_sha256-abc.sif")
+        out = transfer.upload(
+            project_name="demo_project",
+            compute_env_name="fakehpc",
+            local_path=str(src),
+            remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" not in out, out
+        assert out["zone"] == "container_upload"
+
+    @pytest.mark.integration
+    def test_ad_hoc_can_write_container_upload_zone(self, tmp_path):
+        # _ad_hoc gets env-implicit access to container_upload_target
+        # too, same as scratch / common_data.
+        access_path = _make_access(tmp_path,
+                                    container_path=str(tmp_path / "containers"))
+        src = _src_file(tmp_path, "myimg.sif")
+        remote = str(tmp_path / "containers" / "ad_hoc_drop.sif")
+        out = transfer.upload(
+            project_name="_ad_hoc",
+            compute_env_name="fakehpc",
+            local_path=str(src),
+            remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" not in out, out
+        assert out["zone"] == "container_upload"
+
+    @pytest.mark.integration
     def test_project_path_zone_directories_match(self, tmp_path):
         dirs_root = tmp_path / "project_workspace"
         dirs_root.mkdir(parents=True)
@@ -302,15 +343,19 @@ class TestManifest:
         mpath = Path(out["manifest"])
         assert mpath.exists()
         record = json.loads(mpath.read_text())
-        assert record["result"] == "success"
+        # Human-readable v2 schema: outcome verb + summary + actual command.
+        assert record["outcome"] == "uploaded"
+        assert record["summary"].startswith("Uploaded")
         assert record["direction"] == "upload"
         assert record["zone"] == "scratch"
         assert record["project"] == "demo_project"
-        assert record["replay_args"]["project_name"] == "demo_project"
-        assert record["replay_args"]["remote_abs_path"] == remote
-        assert record["replay_args"]["direction"] == "upload"
-        assert record["local_sha256"]
-        assert record["bytes"] > 0
+        # The ACTUAL command that ran (local-mode → a cp), not replay_args.
+        assert record["command"].startswith("cp ")
+        assert "replay_args" not in record   # retired in favor of `command`
+        assert record["transport"] == "local_copy"
+        assert record["sha256"]
+        assert record["to"].endswith(remote)
+        assert record["manifest_version"] == 2
 
     @pytest.mark.integration
     def test_manifest_written_on_failure(self, tmp_path):
@@ -329,8 +374,33 @@ class TestManifest:
         mpath = Path(out["manifest"])
         assert mpath.exists()
         record = json.loads(mpath.read_text())
-        assert record["result"] == "error"
-        assert record["error"]
+        assert record["outcome"] == "failed"
+        assert record["reason"]
+        assert record["summary"].startswith("Failed")
+
+    @pytest.mark.integration
+    def test_manifest_refused_on_overwrite(self, tmp_path):
+        # A no-overwrite hit is a REFUSAL (intended safety), distinct from
+        # a failure — the outcome verb must say so.
+        access_path = _make_access(tmp_path,
+                                    scratch_path=str(tmp_path / "scratch"))
+        src = _src_file(tmp_path)
+        remote = str(tmp_path / "scratch" / "demo_project" / "dup.txt")
+        first = transfer.upload(
+            project_name="demo_project", compute_env_name="fakehpc",
+            local_path=str(src), remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" not in first, first
+        # Second upload to the same path → refused.
+        second = transfer.upload(
+            project_name="demo_project", compute_env_name="fakehpc",
+            local_path=str(src), remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" in second
+        record = json.loads(Path(second["manifest"]).read_text())
+        assert record["outcome"] == "refused"
+        assert "already exists" in record["reason"]
+        assert record["summary"].startswith("Refused")
 
     @pytest.mark.integration
     def test_manifest_path_uses_date_bucket(self, tmp_path):

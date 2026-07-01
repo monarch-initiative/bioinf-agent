@@ -1,38 +1,48 @@
 """
 transfer_providers — the wire-protocol layer for ssh-mode compute envs.
 
-Every upload_to_X / download_from_X primitive (scratch, common_data,
-project_path) goes through a TransferProvider for the actual byte
-movement. The primitive owns: path validation, no-overwrite check on
-the remote, mkdir of parent dirs, local sha256 anchoring. The provider
-owns: the transfer itself + verification that the bytes arrived
-unchanged.
+The unified `transfer.upload` / `transfer.download` primitives go
+through a TransferProvider for everything that touches the remote:
+the no-overwrite pre-check, parent-dir preparation, AND the byte
+movement + verification. The primitive owns the POLICY (validate
+paths, refuse an overwrite, anchor the local sha256, journal the
+result); the provider owns the MECHANISM for its transport.
+
+This split is deliberate: an ssh-connected env can use Globus as its
+data plane, and the no-overwrite check / parent-dir mkdir must NOT
+assume ssh just because the control plane is ssh. Each provider
+answers `remote_exists` and `ensure_parent_dir` in its own transport,
+so a Globus transfer needs no ssh session at all.
 
 Two providers live here today:
 
   ScpHeadNodeProvider — the legacy default. scp over ssh + sha256sum
-    round-trip on the remote side; we compare hashes ourselves. Fine
-    for small files; pisses off head-node policy when used for the
-    GB-scale .sif images that stage_apptainer_image ships.
+    round-trip on the remote side; we compare hashes ourselves. Its
+    no-overwrite check is `ssh test -e`; its parent-dir prep is
+    `ssh mkdir -p`. Fine for small files; pisses off head-node policy
+    when used for the GB-scale .sif images that stage_apptainer_image
+    ships.
 
-  GlobusProvider — STUB. Phase 1 only registers it so the factory
-    can dispatch to it; Phase 2 builds out the actual `globus
-    transfer` shell-out, the activation precheck, the task poll, and
-    the async-task primitive. Calls into the stub raise
-    NotImplementedError with a clear "Phase 2 not implemented yet"
-    message so misconfigured envs surface immediately rather than
-    silently falling back.
+  GlobusProvider — `globus transfer` end-to-end, fully off the head
+    node. Its no-overwrite check is `globus ls` on the parent dir (a
+    read-only op that doesn't even need data_access consent); its
+    parent-dir prep is a NO-OP because the Globus Transfer service
+    auto-creates the destination directory tree. Net effect: a Globus
+    transfer makes ZERO ssh calls — submit, poll, verify, all via the
+    `globus` CLI.
 
 LOCAL-mode envs do NOT go through a provider. They use direct
 shutil.copy in the primitives; the provider abstraction is explicitly
 for ssh-mode wire-protocol selection.
 
-The interface is two methods:
+The interface is four methods:
 
+  remote_exists(env, abs_remote_path, timeout)        → {exists} | {error}
+  ensure_parent_dir(env, abs_remote_path, timeout)    → None | {error}
   upload_one(env, local_path, abs_remote_path, local_sha256, timeout)
   download_one(env, abs_remote_path, local_path, timeout)
 
-Both return a dict-in-dict-out shape: success path has
+The transfer methods return a dict-in-dict-out shape: success path has
 {success: True, bytes, duration_s, transferred_at, provider,
  remote_sha256?, task_id?, verified_method}; failure surfaces as
 {error: "...", hint?, ...}.
@@ -44,12 +54,20 @@ bytes arrived intact:
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+
+
+def _display_cmd(argv: list) -> str:
+    """Render an argv list as a single copy-pasteable shell command
+    string (each token shell-quoted). Used to record the ACTUAL command
+    a transfer ran in the manifest."""
+    return " ".join(shlex.quote(str(a)) for a in argv)
 
 
 class TransferError(Exception):
@@ -63,6 +81,23 @@ class TransferProvider:
     every call (so a single instance can serve many envs)."""
 
     name: str = ""
+
+    def remote_exists(self, *, env: dict, abs_remote_path: str,
+                      timeout: int) -> dict:
+        """No-overwrite pre-check: does `abs_remote_path` already exist
+        on the remote? Transport-specific (ssh `test -e` vs `globus
+        ls`). Returns {exists: bool} or {error: ...}. The PRIMITIVE owns
+        the policy (refuse when exists); the PROVIDER owns the mechanism
+        so the check doesn't assume ssh on a Globus data plane."""
+        raise NotImplementedError
+
+    def ensure_parent_dir(self, *, env: dict, abs_remote_path: str,
+                          timeout: int) -> Optional[dict]:
+        """Make sure the destination's parent directory exists before
+        the transfer. Transport-specific: ssh `mkdir -p`, or a no-op for
+        transports (Globus) that auto-create the destination tree.
+        Returns None on success, {error: ...} on failure."""
+        raise NotImplementedError
 
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
@@ -107,6 +142,21 @@ class ScpHeadNodeProvider(TransferProvider):
     no-overwrite check, and (for upload) parent-dir mkdir."""
 
     name = "scp_head_node"
+
+    def remote_exists(self, *, env: dict, abs_remote_path: str,
+                      timeout: int) -> dict:
+        """ssh `test -e` no-overwrite check. Delegates to the shared
+        helper in transfer.py (which carries the ControlMaster-aware
+        failure hint). Needs a live ssh session."""
+        from agent.skills.transfer import _remote_existence_check
+        return _remote_existence_check(env, abs_remote_path, timeout)
+
+    def ensure_parent_dir(self, *, env: dict, abs_remote_path: str,
+                          timeout: int) -> Optional[dict]:
+        """ssh `mkdir -p` on the parent dir. Delegates to the shared
+        helper; returns None on success or {error: ...}."""
+        from agent.skills.transfer import _remote_mkdir_parent_ssh
+        return _remote_mkdir_parent_ssh(env, abs_remote_path, timeout)
 
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
@@ -182,6 +232,7 @@ class ScpHeadNodeProvider(TransferProvider):
         return {
             "success":          True,
             "provider":         self.name,
+            "command":          _display_cmd(argv),
             "bytes":            local_path.stat().st_size,
             "duration_s":       round(duration, 3),
             "transferred_at":   _now_iso(),
@@ -274,6 +325,7 @@ class ScpHeadNodeProvider(TransferProvider):
         return {
             "success":          True,
             "provider":         self.name,
+            "command":          _display_cmd(argv),
             "bytes":            local_path.stat().st_size,
             "duration_s":       round(duration, 3),
             "transferred_at":   _now_iso(),
@@ -405,6 +457,73 @@ class GlobusProvider(TransferProvider):
             local_path=local_path, local_sha256="",
             timeout=timeout, async_return=async_return, label=label)
 
+    def remote_exists(self, *, env: dict, abs_remote_path: str,
+                      timeout: int) -> dict:
+        """Globus-native no-overwrite check — NO ssh. Lists the parent
+        directory via `globus ls` (read-only; doesn't even require
+        data_access consent) and checks whether the basename is present.
+
+        A missing parent dir means the target can't exist yet →
+        {exists: False} (Globus auto-creates the tree on transfer). Any
+        OTHER non-zero exit (auth, consent, perms) is surfaced as an
+        error rather than guessed-as-absent — we never silently treat a
+        real failure as "safe to write"."""
+        import json as _json
+        import posixpath
+        parent = posixpath.dirname(abs_remote_path)
+        base = posixpath.basename(abs_remote_path)
+        # Trailing slash makes the directory-listing intent explicit.
+        argv = ["globus", "ls", f"{self._remote_ep}:{parent}/",
+                "--format", "json"]
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=timeout)
+        except FileNotFoundError:
+            return {"error":
+                "globus CLI not on PATH for the no-overwrite check. "
+                "Install it (`pipx install globus-cli`) and `globus "
+                "login`, then retry.",
+                "provider": self.name}
+        except subprocess.TimeoutExpired as e:
+            return {"error":
+                f"`globus ls` (no-overwrite check) timed out after "
+                f"{e.timeout}s",
+                "provider": self.name}
+        if res.returncode != 0:
+            body = ((res.stderr or "") + " " + (res.stdout or "")).lower()
+            # Parent dir doesn't exist yet → target can't either → not an
+            # overwrite. Globus will create the tree during the transfer.
+            if any(tok in body for tok in (
+                    "not found", "notfound", "no such",
+                    "could not be found", "does not exist",
+                    "dirlistingfailed")):
+                return {"exists": False}
+            # Real failure (consent/auth/perms) — surface it; do NOT
+            # fall through to "safe to write".
+            return {"error":
+                f"`globus ls` no-overwrite check failed "
+                f"(rc={res.returncode}): "
+                f"{(res.stderr or '').strip()[:300]}",
+                "provider": self.name}
+        try:
+            payload = _json.loads(res.stdout or "{}")
+        except _json.JSONDecodeError as e:
+            return {"error":
+                f"`globus ls` returned 0 but stdout was not valid JSON: "
+                f"{e}. raw: {(res.stdout or '').strip()[:200]!r}",
+                "provider": self.name}
+        names = {entry.get("name")
+                 for entry in (payload.get("DATA") or [])}
+        return {"exists": base in names}
+
+    def ensure_parent_dir(self, *, env: dict, abs_remote_path: str,
+                          timeout: int) -> Optional[dict]:
+        """No-op for Globus. The Transfer service auto-creates the
+        destination's parent directory tree during the transfer, so
+        there's nothing to do here — and crucially, nothing that needs
+        an ssh hop. Returns None (success)."""
+        return None
+
     # ─── internals ─────────────────────────────────────────────────────
 
     def _run_transfer(self, *, src_ep: str, src_path: str,
@@ -423,12 +542,14 @@ class GlobusProvider(TransferProvider):
         if "error" in sub:
             return sub
         task_id = sub["task_id"]
+        command = sub.get("command")
 
         # 2) Either return immediately (async) or poll to terminal (sync).
         if async_return:
             return {
                 "success":          True,
                 "provider":         self.name,
+                "command":          command,
                 "task_id":          task_id,
                 "verified_method":  "globus_pending",
                 "direction":        direction,
@@ -528,6 +649,7 @@ class GlobusProvider(TransferProvider):
         result: dict = {
             "success":          True,
             "provider":         self.name,
+            "command":          command,
             "task_id":          task_id,
             "verified_method":  "globus_end_to_end",
             "direction":        direction,
@@ -601,7 +723,8 @@ class GlobusProvider(TransferProvider):
                     f"{(res.stdout or '').strip()[:200]!r}",
                 "provider": self.name,
             }
-        return {"task_id": task_id, "submit_payload": payload}
+        return {"task_id": task_id, "submit_payload": payload,
+                "command": _display_cmd(argv)}
 
     def _task_show(self, task_id: str, *, timeout: int) -> dict:
         """Run `globus task show <id> --format json`, return the
@@ -894,7 +1017,15 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     Returns the decoded `globus task show --format json` object —
     contains `status`, `nice_status`, `bytes_transferred`,
     `files_transferred`, `fatal_error`, etc. {"error": "..."} on
-    failure."""
+    failure.
+
+    Reconciliation: when the observed state is terminal (SUCCEEDED /
+    FAILED), this ALSO rewrites the async-submit manifest for `task_id`
+    from `submitted` to its true outcome (`uploaded`/`downloaded` or
+    `failed`). That's what lets a downstream consumer trust the
+    transfer record instead of guessing whether a `submitted` upload
+    ever landed — the defense against half-baked transfers. The
+    reconciled manifest path is returned in `manifest` when found."""
     if env.get("type") != "ssh":
         return {"error":
             "globus_task_status is only for ssh-mode envs; got "
@@ -918,10 +1049,11 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     obj = provider._task_show(task_id, timeout=timeout)
     if "error" in obj:
         return obj
-    return {
+    status = obj.get("status")
+    out = {
         "success":            True,
         "task_id":            task_id,
-        "status":             obj.get("status"),
+        "status":             status,
         "nice_status":        obj.get("nice_status"),
         "bytes_transferred":  obj.get("bytes_transferred", 0),
         "files_transferred":  obj.get("files_transferred", 0),
@@ -930,6 +1062,19 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
         "type":               obj.get("type"),
         "captured_at":        _now_iso(),
     }
+    # Terminal → reconcile the local `submitted` manifest to reality.
+    if status in ("SUCCEEDED", "FAILED"):
+        from agent.skills import transfer as _transfer
+        fe = obj.get("fatal_error") or {}
+        mp = _transfer.finalize_manifest_for_task(
+            task_id, status=status,
+            bytes_transferred=obj.get("bytes_transferred"),
+            error=(fe.get("description") or fe.get("code")) if fe else None)
+        if mp is not None:
+            out["manifest"] = str(mp)
+            out["manifest_outcome"] = ("uploaded/downloaded"
+                                       if status == "SUCCEEDED" else "failed")
+    return out
 
 
 # ---------------------------------------------------------------------------

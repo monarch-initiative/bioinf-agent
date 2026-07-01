@@ -514,7 +514,7 @@ def _validate_data_transfer_block(blk: object, where: str, path: Path) -> None:
                 raise ConfigError(
                     f"{path}: {where}.globus.{k}={v!r} must be a canonical "
                     f"UUID (lowercase hex with dashes, e.g. "
-                    f"'11111111-1111-1111-1111-111111111111')")
+                    f"'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')")
         for k in ("local_endpoint_name", "remote_endpoint_name"):
             v = g[k]
             if not isinstance(v, str) or not v.strip():
@@ -641,6 +641,18 @@ def get_agent_common_data_target(env: dict) -> Optional[dict]:
     return blk if isinstance(blk, dict) else None
 
 
+def get_container_upload_target(env: dict) -> Optional[dict]:
+    """Return the container_upload_target dir-access block for this env,
+    or None if undeclared. Third env-level zone — the agent's landing
+    pad for .sif container images (and Path-5 recipe.yaml + .def files
+    when those land). Block carries `path`, `permissions` (validator
+    enforces `upload`), and `description`. Per
+    [[project-container-artifacts-routing]] — distinct from
+    agent_common_data_target (which is for reference data only)."""
+    blk = env.get("container_upload_target")
+    return blk if isinstance(blk, dict) else None
+
+
 def get_slurm_config(env: dict) -> Optional[dict]:
     """Return the closed slurm config block for this env, or None if
     undeclared. The block carries queue_default, allowed_queues, account,
@@ -678,8 +690,9 @@ def get_globus_endpoints(env: dict) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Phase 2 — env-implicit grant helper
 #
-# The Phase-2 actuator primitives (upload_to_scratch, download_from_scratch,
-# upload_to_common_data, etc.) do NOT walk the project's `directories[]`
+# The Phase-2 actuator primitives (the unified `transfer.upload` /
+# `transfer.download`, routed to the scratch / common_data /
+# container_upload zones) do NOT walk the project's `directories[]`
 # entries for env-level target paths. Instead the env declares the target
 # block ONCE; any project that lists the env in its `compute_env_access`
 # inherits the target en bloc. The required permission (`upload`,

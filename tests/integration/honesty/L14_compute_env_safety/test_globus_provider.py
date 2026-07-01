@@ -41,15 +41,15 @@ _TASK_ID = "33333333-3333-3333-3333-333333333333"
 def _globus_block() -> dict:
     return {
         "local_endpoint_id":    _LOCAL_EP,
-        "local_endpoint_name":  "user1-laptop",
+        "local_endpoint_name":  "my-laptop",
         "remote_endpoint_id":   _REMOTE_EP,
-        "remote_endpoint_name": "HPC RC DataMover",
+        "remote_endpoint_name": "HPC DataMover",
     }
 
 
 def _env_ssh() -> dict:
-    return {"name": "hpc_cluster", "type": "ssh",
-            "host": "hpc_cluster.example.edu", "user": "user1"}
+    return {"name": "hpc", "type": "ssh",
+            "host": "hpc.example.edu", "user": "user1"}
 
 
 def _provider() -> transfer_providers.GlobusProvider:
@@ -273,7 +273,7 @@ class TestPermissionDeniedClassifier:
                         "body": ("Missing data_access consent on the "
                                  "destination GCS endpoint."),
                         "code": 530,
-                        "endpoint": f"HPC, RC, DataMover ({_REMOTE_EP})",
+                        "endpoint": f"HPC DataMover ({_REMOTE_EP})",
                         "type": "GCSError",
                     },
                 }),
@@ -298,7 +298,7 @@ class TestPermissionDeniedClassifier:
                         "body": ("Permission denied: cannot write to "
                                  "/work/readonly (POSIX EACCES)."),
                         "code": 550,
-                        "endpoint": f"HPC, RC, DataMover ({_REMOTE_EP})",
+                        "endpoint": f"HPC DataMover ({_REMOTE_EP})",
                         "type": "FTPServerError",
                     },
                 }),
@@ -475,6 +475,104 @@ class TestPermissionDeniedClassifier:
 
 
 # ===========================================================================
+# No-overwrite check + parent-dir prep — Globus is ssh-FREE
+# ===========================================================================
+
+class TestGlobusPreflightIsSshFree:
+    """The whole point of the clean fix: a Globus transfer makes ZERO
+    ssh calls. The no-overwrite check goes through `globus ls`, and the
+    parent-dir prep is a no-op (Globus auto-creates the tree). These
+    tests pin that the provider never shells `ssh` and that the `globus
+    ls` existence logic is correct."""
+
+    @pytest.mark.integration
+    def test_remote_exists_true_when_basename_in_listing(self, monkeypatch):
+        import json as _json
+        captured = []
+        def fake_run(argv, *a, **kw):
+            captured.append(argv)
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({"DATA": [
+                {"name": "other.tar", "type": "file"},
+                {"name": "hifiasm.tar", "type": "file"},
+            ]})
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        out = _provider().remote_exists(
+            env=_env_ssh(),
+            abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
+        assert out == {"exists": True}
+        # It used `globus ls` on the PARENT dir, never ssh.
+        argv = captured[0]
+        assert argv[0] == "globus" and argv[1] == "ls"
+        assert argv[2] == f"{_REMOTE_EP}:/work/u/CONTAINERS/"
+        assert all(a != "ssh" for call in captured for a in call)
+
+    @pytest.mark.integration
+    def test_remote_exists_false_when_basename_absent(self, monkeypatch):
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({"DATA": [
+                {"name": "something_else.tar", "type": "file"}]})
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        out = _provider().remote_exists(
+            env=_env_ssh(),
+            abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
+        assert out == {"exists": False}
+
+    @pytest.mark.integration
+    def test_remote_exists_false_when_parent_dir_missing(self, monkeypatch):
+        # globus ls errors with a NotFound — the parent dir doesn't exist
+        # yet, so the target can't either. Not an overwrite; Globus will
+        # create the tree on transfer.
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = ("GlobusAPIError: ClientError.NotFound: "
+                           "Directory not found")
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        out = _provider().remote_exists(
+            env=_env_ssh(),
+            abs_remote_path="/work/u/NEW_DIR/hifiasm.tar", timeout=30)
+        assert out == {"exists": False}
+
+    @pytest.mark.integration
+    def test_remote_exists_surfaces_real_error_not_absent(self, monkeypatch):
+        # A non-NotFound failure (consent/auth/perms) must NOT be
+        # silently treated as "absent / safe to write" — it surfaces as
+        # an error so the no-overwrite contract isn't bypassed by a
+        # transient ls failure.
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = ("GlobusAPIError: PermissionDenied: consent "
+                           "required for data_access")
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        out = _provider().remote_exists(
+            env=_env_ssh(),
+            abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
+        assert "error" in out
+        assert "exists" not in out
+
+    @pytest.mark.integration
+    def test_ensure_parent_dir_is_noop_no_subprocess(self, monkeypatch):
+        # Globus auto-creates the destination tree — ensure_parent_dir
+        # must do NOTHING (and crucially, never ssh).
+        called = []
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: called.append(a) or MagicMock())
+        out = _provider().ensure_parent_dir(
+            env=_env_ssh(),
+            abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
+        assert out is None
+        assert called == []
+
+
+# ===========================================================================
 # Async return — no polling, immediate task_id
 # ===========================================================================
 
@@ -539,6 +637,112 @@ class TestCliMissing:
         assert "error" in out
         assert "globus transfer" in out["error"]
         assert out.get("hint") == "run `globus login` to authenticate first"
+
+
+# ===========================================================================
+# Async confirmation — poll reconciles the `submitted` manifest to reality
+# ===========================================================================
+
+class TestManifestReconciliation:
+    """The half-baked-transfer defense: an async submit writes a
+    `submitted` manifest; when a later poll observes a terminal state,
+    globus_task_status rewrites that manifest to `uploaded`/`failed` so a
+    downstream consumer can trust the record."""
+
+    def _write_submitted(self, tmp_path):
+        from agent.skills import transfer
+        return transfer._write_transfer_manifest(
+            direction="upload", project_name="_ad_hoc",
+            compute_env_name="hpc", zone="container_upload",
+            transport="globus",
+            local_path="/local/x.tar",
+            remote_abs_path="/work/u/CONTAINERS/x.tar",
+            command="globus transfer a:/local/x.tar b:/work/u/CONTAINERS/x.tar",
+            result="pending", bytes_transferred=100,
+            duration_s=1.0, sha256=None, task_id=_TASK_ID,
+            verified_method="globus_pending", error_msg=None)
+
+    @pytest.mark.integration
+    def test_succeeded_finalizes_submitted_to_uploaded(
+            self, monkeypatch, tmp_path):
+        import json as _json
+        from agent.skills import transfer
+        mpath = self._write_submitted(tmp_path)
+        # Sanity: starts as submitted.
+        assert _json.loads(mpath.read_text())["outcome"] == "submitted"
+
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({
+                "DATA_TYPE": "task", "task_id": _TASK_ID,
+                "status": "SUCCEEDED", "bytes_transferred": 100,
+                "files_transferred": 1, "fatal_error": None,
+                "nice_status": None})
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        env = {**_env_ssh(),
+               "data_transfer": {"type": "globus", "globus": _globus_block()}}
+        out = transfer_providers.globus_task_status(env, _TASK_ID)
+        assert out["status"] == "SUCCEEDED"
+        assert out["manifest_outcome"] == "uploaded/downloaded"
+        # The manifest is now durably `uploaded`.
+        rec = _json.loads(transfer._find_manifest_by_task_id(
+            _TASK_ID).read_text())
+        assert rec["outcome"] == "uploaded"
+        assert "SUCCEEDED" in rec["verified"]
+        assert rec["confirmed_at"]
+
+    @pytest.mark.integration
+    def test_failed_finalizes_submitted_to_failed(
+            self, monkeypatch, tmp_path):
+        import json as _json
+        from agent.skills import transfer
+        self._write_submitted(tmp_path)
+
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({
+                "DATA_TYPE": "task", "task_id": _TASK_ID,
+                "status": "FAILED",
+                "fatal_error": {"code": "ENDPOINT_ERROR",
+                                "description": "destination quota exceeded"},
+                "nice_status": None})
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        env = {**_env_ssh(),
+               "data_transfer": {"type": "globus", "globus": _globus_block()}}
+        out = transfer_providers.globus_task_status(env, _TASK_ID)
+        assert out["status"] == "FAILED"
+        rec = _json.loads(transfer._find_manifest_by_task_id(
+            _TASK_ID).read_text())
+        assert rec["outcome"] == "failed"
+        assert "quota exceeded" in rec["reason"]
+        assert "verified" not in rec
+
+    @pytest.mark.integration
+    def test_active_poll_leaves_manifest_submitted(
+            self, monkeypatch, tmp_path):
+        # A non-terminal poll must NOT finalize — the transfer is still
+        # in flight, so the record honestly stays `submitted`.
+        import json as _json
+        from agent.skills import transfer
+        self._write_submitted(tmp_path)
+
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({
+                "DATA_TYPE": "task", "task_id": _TASK_ID,
+                "status": "ACTIVE", "nice_status": "OK"})
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        env = {**_env_ssh(),
+               "data_transfer": {"type": "globus", "globus": _globus_block()}}
+        out = transfer_providers.globus_task_status(env, _TASK_ID)
+        assert out["status"] == "ACTIVE"
+        assert "manifest" not in out
+        rec = _json.loads(transfer._find_manifest_by_task_id(
+            _TASK_ID).read_text())
+        assert rec["outcome"] == "submitted"
 
 
 # ===========================================================================

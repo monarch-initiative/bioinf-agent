@@ -1,6 +1,18 @@
 # HPC Bridge Phase 2 — Actuators
 
-**Status:** Design + plan. Not yet implemented.
+**Status:** HISTORICAL DESIGN DOC. Phase 2 has since shipped; the
+implemented surface differs from the primitive names sketched below.
+In particular, the six zone-specific transfer primitives proposed here
+(`upload_to_scratch`, `download_from_scratch`, `upload_to_common_data`,
+…) were collapsed into TWO unified primitives — `transfer.upload` /
+`transfer.download` — that auto-route authorization by which zone the
+absolute remote path falls in (scratch / common_data / container_upload
+/ project_path). Likewise `submit_cluster_job` shipped as the split
+pair `submit_workflow_job` (production) + `run_step_on_cluster`
+(validation/seal). **For the current contract, read the "HPC bridge —
+Phase 2" section of CLAUDE.md, not this file.** This doc is retained
+for the design rationale (the auth model, the cheat-guard posture, the
+walls) which still holds.
 **Date:** 2026-06-04
 **Prereq context:** Read CLAUDE.md (the two-layer architecture), `agent/skills/projects_access.yaml.example` (the bridge schema), and `agent/skills/snapshot.py` (Phase 1, the read-only bridge).
 
@@ -50,7 +62,7 @@ heavy JVM tool that cannot honestly be validated on a laptop.
   cases. Nextflow earns its keep when we have a real multi-step DAG
   (Phase 4+).
 - **Globus transfer integration this phase.** Curl-resume in a SLURM job
-  covers most "download a big DB" cases. Globus (HPC's recommended
+  covers most "download a big DB" cases. Globus (the center's recommended
   large-file path) gets its own phase — see [Open question Q1](#open-question-q1-globus--uncs-large-file-transfer-service) below.
 - **Cluster-side `seal_workflow` as a separate primitive.** We thought
   about it; turns out unnecessary. See [Trust model](#trust-model-cluster-is-an-executor-verifier-stays-local).
@@ -440,16 +452,16 @@ and refuses by the same rules.
 
 ---
 
-## Open question Q1: Globus / HPC's large file transfer service
+## Open question Q1: Globus / the center's large file transfer service
 
-This is the "complicated HPC service" — the answer is **Globus**, and
+This is the "complicated the HPC center service" — the answer is **Globus**, and
 the integration deserves its own phase. Here's what would be involved:
 
-**Why Globus matters at HPC:**
+**Why Globus matters at the HPC center:**
 - The recommended path for >50GB datasets on hpc_cluster
 - Real benefits: resumable transfers, parallel streams, network-aware
   retries, integrity verification baked in
-- HPC has registered hpc_cluster as a Globus collection; many public datasets
+- the HPC center has registered hpc_cluster as a Globus collection; many public datasets
   (Ensembl, EBI, UCSC, some NIH archives) live on Globus-connected endpoints
 - Doesn't help for arbitrary HTTPS URLs (Monarch Initiative's Exomiser
   data downloads are HTTPS — no Globus endpoint published)
@@ -491,7 +503,7 @@ the primitive when we hit a case it solves.
 
 **One non-obvious thing about Globus:** the destination endpoint
 (hpc_cluster) must have the file path it's writing to **already exist** as
-a Globus-shared collection. That's a one-time HPC setup per directory
+a Globus-shared collection. That's a one-time the HPC center setup per directory
 tree, not a per-transfer thing. We just have to remember the dest path
 must be inside the registered collection root.
 
