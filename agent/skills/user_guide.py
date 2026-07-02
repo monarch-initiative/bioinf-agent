@@ -104,8 +104,30 @@ def validated_in_shipped_image(spec: dict, freeze_record: Optional[dict] = None,
                  if s.get("validation") or s.get("validation_status") == "passed"]
     if not validated:
         return False
-    return all(s.get("ran_in_container") and s.get("container_image_digest") in valid_digests
-               for s in validated)
+    return all(_step_ran_in_shipped_image(s, valid_digests) for s in validated)
+
+
+def _step_ran_in_shipped_image(s: dict, valid_digests: set) -> bool:
+    """One validated step's shipped-image claim.
+
+    Base: it ran in a container whose digest is one of the frozen envs'.
+
+    Cluster caveat (C2): for a CLUSTER-locus step the recorded
+    container_image_digest is the EnvCache's NOMINAL digest — copied from the
+    freeze record, never observed on the cluster. Matching it against the
+    EnvCache set is circular. So a cluster step must ALSO carry
+    `cluster_image_verified` — proof run_step_on_cluster fingerprinted the
+    actual .sif that ran (sha256 + apptainer inspect). A local
+    run_step_in_container step captures its digest from `docker inspect` of the
+    image that really ran, so it needs no extra proof."""
+    if not (s.get("ran_in_container")
+            and s.get("container_image_digest") in valid_digests):
+        return False
+    is_cluster = (s.get("validation_locus") == "cluster"
+                  or (s.get("resource_usage") or {}).get("locus") == "cluster")
+    if is_cluster:
+        return bool(s.get("cluster_image_verified"))
+    return True
 
 
 def _fence(text: str) -> str:
@@ -210,6 +232,29 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
                  f"sha256 {str(sb.get('sha256', ''))[:12]}…)")
     L.append("")
 
+    # 3b. Reference databases — the biology-half reproducibility anchor. A DB
+    # named "vep_cache_111_hg38" is not self-verifying; surface the content
+    # sha256 (from the download sidecar, re-derived at seal) so a re-run pins
+    # the bytes, not just the name+URL.
+    rdbs = [r for r in (spec.get("reference_databases") or []) if isinstance(r, dict)]
+    if rdbs:
+        L += ["## Reference databases", ""]
+        for r in rdbs:
+            name = r.get("name", "database")
+            ver = f" v{r['version']}" if r.get("version") and r["version"] != "unknown" else ""
+            L.append(f"- **{name}**{ver}")
+            if r.get("source_url"):
+                L.append(f"  - source: {r['source_url']}")
+            if r.get("sha256"):
+                size = f" ({r['size_bytes']:,} bytes)" if r.get("size_bytes") else ""
+                L.append(f"  - sha256: `{r['sha256']}`{size}")
+            else:
+                L.append(f"  - sha256: _not captured — this DB is pinned by name/URL only, "
+                         f"not by content_")
+            if r.get("local_path"):
+                L.append(f"  - path: `{r['local_path']}`")
+        L.append("")
+
     # 4. Provenance — the machine-verified anchors. Run status is computed from
     # the steps (the draft's pipeline_status is only derived at finalize).
     L += ["## Provenance (machine-verified)", ""]
@@ -232,4 +277,31 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     ]
     L += [f"- {k}: `{v}`" for k, v in rows if v not in (None, "")]
     L.append("")
+
+    # 4b. Cluster run context — when a step's evidence came from a real SLURM
+    # job (validation_locus="cluster"), surface what a reader needs to
+    # reproduce it: the node, the loaded modules, the SLURM placement, and the
+    # sha256 of the .sif that actually ran (the C2 observed fingerprint).
+    cluster_steps = [s for s in steps
+                     if s.get("validation_locus") == "cluster"
+                     or (s.get("resource_usage") or {}).get("locus") == "cluster"]
+    if cluster_steps:
+        L += ["## Cluster run context", ""]
+        for s in cluster_steps:
+            tool = s.get("tool", "step")
+            L.append(f"- **{tool}** (SLURM job `{s.get('cluster_job_id', '?')}`"
+                     f" on `{s.get('cluster_node', '?')}`)")
+            if s.get("cluster_sif_sha256"):
+                verified = " ✓ verified on cluster" if s.get("cluster_image_verified") else ""
+                L.append(f"  - .sif sha256: `{s['cluster_sif_sha256']}`{verified}")
+            mods = [m for m in (s.get("cluster_apptainer_module"),
+                                s.get("cluster_nextflow_module")) if m]
+            if mods:
+                L.append(f"  - modules: {', '.join(f'`{m}`' for m in mods)}")
+            sc = s.get("cluster_slurm") or {}
+            if sc:
+                placement = ", ".join(f"{k}={v}" for k, v in sc.items())
+                L.append(f"  - slurm: {placement}")
+        L.append("")
+
     return "\n".join(L)

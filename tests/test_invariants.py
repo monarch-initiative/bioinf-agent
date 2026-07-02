@@ -5199,30 +5199,42 @@ def test_freeze_background_surfaces_spawn_failure(monkeypatch):
 
 
 def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
-    """W1 — the runner script's structural guarantee: ANY exception during
-    freeze() (including KeyboardInterrupt / SystemExit) is captured into the
-    result file. Without this, a crashed subprocess leaves NO record and the
-    polling caller is stuck (state=exited but no result file = ambiguous)."""
-    import json, signal, subprocess as sp, sys, time
+    """W1 — the runner script's structural guarantee: ANY exception raised out
+    of freeze() (including KeyboardInterrupt / SystemExit — the runner catches
+    BaseException) is captured into the result file. Without this, a crashed
+    subprocess leaves NO record and the polling caller is stuck (state=exited
+    but no result file = ambiguous).
+
+    We force a deterministic exception by passing a kwarg freeze() does not
+    accept, so `freeze(**args)` raises a TypeError inside the runner's try —
+    exercising the exact `except BaseException → _write_result` path. (The old
+    version raced a SIGINT against a real freeze() from a hardcoded absolute
+    cwd; that was both machine-specific and timing-flaky — a fast-failing
+    freeze would return its own handled result before the signal landed.)"""
+    import json, subprocess as sp, sys
+    from pathlib import Path
+    # Repo root = the dir containing the `agent` package, resolved from THIS
+    # test file (tests/…) — never a hardcoded absolute path (that broke once
+    # already when the username changed).
+    repo_root = Path(__file__).resolve().parent.parent
     args_path = tmp_path / "args.json"
     result_path = tmp_path / "result.json"
     args_path.write_text(json.dumps({
         "env_name": "runner_smoke", "tools": ["x"],
+        # Unknown kwarg → freeze(**args) raises TypeError deterministically.
+        "definitely_not_a_freeze_kwarg": True,
         # background=True in args: the runner MUST force-override to False,
-        # else it would recursively spawn another job and exit immediately
+        # else it would recursively spawn another job and exit immediately.
         "background": True,
     }))
     proc = sp.Popen(
         [sys.executable, "-m", "agent.skills.freeze_runner",
          str(args_path), str(result_path)],
-        cwd="/Users/user1/Desktop/GIT_PROJECTS/bioinf_agent",
+        cwd=str(repo_root),
         stdout=sp.PIPE, stderr=sp.STDOUT, text=True,
     )
-    # SIGINT shortly after start so the runner's except BaseException catches it
-    time.sleep(3)
-    proc.send_signal(signal.SIGINT)
     try:
-        proc.communicate(timeout=15)
+        proc.communicate(timeout=60)
     except sp.TimeoutExpired:
         proc.kill()
         proc.communicate()
@@ -5235,6 +5247,7 @@ def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
     assert result["success"] is False
     assert result["stage"] == "background_exception"
     assert "traceback" in result   # full stack for diagnosis
+    assert "definitely_not_a_freeze_kwarg" in (result.get("error", "") + result.get("traceback", ""))
 
 
 def test_freeze_runner_force_overrides_background_arg(tmp_path):

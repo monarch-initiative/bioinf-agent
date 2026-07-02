@@ -195,6 +195,12 @@ class ReferenceDatabase(BaseModel):
     available:          bool = False
     description:        Optional[str] = None
     coupled_to_version: Optional[str] = None   # tool version this data bundle is designed for
+    sha256:             Optional[str] = None   # content hash of the downloaded artifact —
+                                               # the reproducibility anchor: a bundle named
+                                               # "vep_cache_111_hg38" is not self-verifying
+                                               # (the URL can serve different bytes over time),
+                                               # so downstream re-runs pin the DB by this hash.
+    size_bytes:         Optional[int] = None   # exact byte size of the downloaded artifact
 
 
 # ---------------------------------------------------------------------------

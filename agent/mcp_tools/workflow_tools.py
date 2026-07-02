@@ -36,6 +36,62 @@ from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 # Layer-2 seal — workflow validation + WorkflowSpec write
 # ---------------------------------------------------------------------------
 
+def _refresh_reference_databases(rdbs: list) -> list:
+    """Re-derive available / sha256 / size_bytes from DISK for each declared
+    ReferenceDatabase at seal time (the draft's flags are stale — a download
+    is async and finalize was retired). The sha256 comes from the
+    `<local_path>.source.sha256` sidecar written during download (the hash of
+    the bytes the URL served — see download_reference_database), so the sealed
+    WorkflowSpec pins each DB by CONTENT, not merely by name+URL. Missing
+    sidecar ⇒ sha256 stays absent (honest: we never fabricate a hash)."""
+    out: list = []
+    for e in rdbs or []:
+        if not isinstance(e, dict):
+            out.append(e)
+            continue
+        e = dict(e)
+        lp = e.get("local_path")
+        if lp:
+            p = Path(lp)
+            e["available"] = p.exists()
+            sidecar = Path(f"{lp}.source.sha256")
+            if sidecar.is_file():
+                try:
+                    parts = sidecar.read_text().strip().split()
+                    if parts:
+                        e["sha256"] = parts[0]
+                except Exception:
+                    pass
+            if p.is_file():
+                try:
+                    e["size_bytes"] = p.stat().st_size
+                except Exception:
+                    pass
+        out.append(e)
+    return out
+
+
+def _render_run_dashboard(wf: dict, env_record: dict, out_dir: Path) -> Optional[str]:
+    """Render THIS workflow's Layer-2 run dashboard — `{workflow_name}.RUN.html`.
+
+    Two-artifact split (deliberately NOT the old accreting-env-report model): the
+    env's `{env}.ENV.html` is a Layer-1 artifact written ONCE at freeze and never
+    mutated by a seal; the run dashboard is the Layer-2 artifact, one per sealed
+    workflow, that accretes validated evidence per compute locus. Both render
+    purely from their machine-verified record. Returns the RUN.html path, or None
+    on a render hiccup (never fatal to a verified seal)."""
+    from agent.skills.run_dashboard_html import render_run_dashboard_html
+
+    name = wf.get("workflow_name") or "workflow"
+    try:
+        html = render_run_dashboard_html(wf, env_record=env_record)
+    except Exception:
+        return None
+    report_path = Path(out_dir) / f"{name}.RUN.html"
+    report_path.write_text(html)
+    return str(report_path)
+
+
 @mcp.tool()
 def seal_workflow(
     pipeline_id: str,
@@ -55,8 +111,11 @@ def seal_workflow(
 
     Refuses to write if any workflow invariant fails (I0 shape · I3 validated
     outputs · I6 paths · I7 resources · I8 input provenance); the env-build
-    invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml +
-    {workflow_name}.GUIDE.md (the guide rendered from the passing run).
+    invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml (the
+    machine-verified spec) + {workflow_name}.RUN.html (the Layer-2 run dashboard
+    rendered from the passing run — validated evidence per compute locus plus a
+    distinct how-to panel; the env's ENV.html is a separate, immutable Layer-1
+    artifact and is not touched here).
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
@@ -77,13 +136,32 @@ def seal_workflow(
     # usage_verified honestly by self-testing it (I4), since the draft doesn't
     # persist the field (it's derived only at validate/finalize). A verified
     # template is what the guide shows as the runnable form.
+    #
+    # I4 GATES THE SEAL (fix H2): if the draft declares a usage block, its
+    # command_template MUST self-test green against every declared trial —
+    # otherwise the guide would publish a runnable form that doesn't actually
+    # run. Previously `usage_verified` was computed then rendered cosmetically
+    # while the seal proceeded regardless; that let a broken usage template
+    # ship with a "verified" badge. A draft with NO usage block seals without
+    # the badge (usage is the run contract only when the agent authored one).
     usage_ok = False
+    usage_detail: dict | None = None
     if draft.get("usage") and draft.get("conda_env"):
         try:
-            usage_ok = bool(self_test_usage(draft, _ms._env_mgr, validator=_ms._validator).get("ok"))
-        except Exception:
+            usage_detail = self_test_usage(draft, _ms._env_mgr, validator=_ms._validator)
+            usage_ok = bool(usage_detail.get("ok"))
+        except Exception as e:
             usage_ok = False
-    render_spec = {**draft, "usage_verified": usage_ok}
+            usage_detail = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if not usage_ok:
+            return {
+                "success": False, "stage": "usage_self_test",
+                "error": "I4: usage.command_template failed its self-test — it did not "
+                         "execute green against every declared trial, so it cannot be "
+                         "sealed as the workflow's verified run contract. Fix the template "
+                         "(or the trials' substitutions) and re-seal.",
+                "usage_self_test": usage_detail,
+            }
 
     # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
     # frozen env (their own freeze). Validate every step's container digest against
@@ -106,8 +184,9 @@ def seal_workflow(
             envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
                               "image_digest": d})
 
-    guide_md = _ms._user_guide.render_user_guide(render_spec, freeze_record=fr,
-                                             valid_digests=valid_digests)
+    # The how-to is rendered from the verified `usage` block into the Layer-2 run
+    # dashboard (HTML) below — NOT a markdown guide (retired). We still pull
+    # key_packages for the spec's driver_env record.
     key_packages = _ms._user_guide.key_packages(draft)
 
     wname = workflow_name or f"{draft.get('pipeline_name', 'workflow')}_workflow"
@@ -131,13 +210,12 @@ def seal_workflow(
         "pipeline_steps":     draft.get("pipeline_steps", []),
         # External sources carried so the artifact self-verifies (I8 standalone).
         "test_data":            draft.get("test_data"),
-        "reference_databases":  draft.get("reference_databases", []),
+        "reference_databases":  _refresh_reference_databases(draft.get("reference_databases", [])),
         "runtime_configs":      draft.get("runtime_configs", []),
         "authored_artifacts":   draft.get("authored_artifacts", []),
         "driver_env":         {"conda_env": draft.get("conda_env"),
                                "python_version": draft.get("python_version"),
                                "key_packages": key_packages},
-        "user_guide":         guide_md,
     }
     # The artifact must pass its OWN run-side invariants — validate what we WRITE,
     # not just the draft we sealed from (the draft is richer; the artifact must
@@ -160,6 +238,17 @@ def seal_workflow(
         if out.get("error"):
             return {"success": False, **out}
         result.update(out)
+        # Layer-2 deliverable: render THIS workflow's run dashboard
+        # ({workflow_name}.RUN.html) from the verified spec — validated evidence
+        # per compute locus + a distinct how-to panel. The env's ENV.html (Layer 1)
+        # is left untouched: it is immutable post-freeze and never claims the
+        # cluster-worthiness this dashboard carries. Non-fatal — a render hiccup
+        # never fails a verified seal.
+        project_root = Path(__file__).resolve().parents[2]
+        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
+        report_path = _render_run_dashboard(wf, fr, out_dir)
+        if report_path:
+            result["run_report_path"] = report_path
     else:
         result["workflow"] = wf
     return result

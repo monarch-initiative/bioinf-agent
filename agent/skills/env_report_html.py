@@ -150,6 +150,21 @@ ul.foot li::marker{color:var(--yellow)}
 ul.foot b{color:var(--yellow);font-weight:700;letter-spacing:.04em}
 .gen{color:var(--muted);font-size:11.5px;margin-top:38px;border-top:1px solid var(--border);
 padding-top:14px;letter-spacing:.04em}
+/* RUN CARDS — per-locus validated-run cards. Shared into the Layer-2 run
+   dashboard (run_dashboard_html) via the same _CSS, so both artifacts are one
+   visual family; unused by the Layer-1 env report itself. */
+.run-card{border:1px solid var(--border);border-left:3px solid var(--cyan);
+background:var(--surface);padding:12px 16px 14px;margin:12px 0}
+.run-title{font-size:14px;font-weight:700;color:var(--ink);margin:2px 0 6px;
+display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.run-card .note{margin:4px 0 10px}
+.run-card details{margin:10px 0 2px}
+/* stale marker — a locus whose evidence ran against a DIFFERENT env digest than
+   the one this workflow is headlined by (accretion is honest only per-digest). */
+.stale{color:var(--yellow);font-weight:600}
+.how{border:1px solid var(--cyan);border-left:3px solid var(--cyan);
+background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 70%);
+padding:14px 18px 16px;margin:12px 0}
 """
 
 
@@ -173,6 +188,23 @@ def _kv_table(rows: list[tuple[str, str]]) -> str:
 
 def _empty(msg: str) -> str:
     return f'<p class="empty">{_e(msg)}</p>'
+
+
+def _header_banner(title_html: str, pill_html: str, rows: list[tuple[str, str]]) -> str:
+    """The cyberpunk header banner — the ONE shared page-header used by BOTH the
+    Layer-1 env report and the Layer-2 run dashboard, so the two artifacts read as
+    one family. `title_html` and every row VALUE are inserted verbatim (callers
+    escape); row KEYS are escaped here. Empty-value rows are dropped."""
+    body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>'
+                   for k, v in rows if v != "" and v is not None)
+    return (
+        '<div class="head">'
+        '<span class="cr cr-tl"></span><span class="cr cr-br"></span>'
+        '<span class="gap gap-tl"></span><span class="gap gap-br"></span>'
+        f'<h1>{title_html}{pill_html}</h1>'
+        f'<table class="head-kv">{body}</table>'
+        '</div>'
+    )
 
 
 # Re-exported under the historical private name so call sites here don't churn —
@@ -210,7 +242,14 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
 
 def render_env_report_html(record: dict) -> str:
     """Render the freeze record as a self-contained HTML page (see module docstring
-    for the honesty contract this upholds)."""
+    for the honesty contract this upholds).
+
+    This is a PURE Layer-1 artifact: it asserts only build-locus honesty (BUILT /
+    VALIDATED_IN_IMAGE / POLICY_CLEAN) and is written ONCE at freeze, immutable
+    thereafter. It never claims the env works on a cluster — that is a Layer-2
+    fact carried by a sealed workflow (see run_dashboard_html.render_run_dashboard_html).
+    Rebuilding an env yields a NEW freeze record with a NEW digest and its OWN
+    ENV.html; this one is never mutated by a downstream seal."""
     r = record or {}
     name = r.get("name") or (r.get("image") or "env").split(":")[0].split("/")[-1]
     mode = r.get("mode", "?")
@@ -266,16 +305,9 @@ def render_env_report_html(record: dict) -> str:
         ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
-    P.append('<div class="head">')
-    # only TL + BR corner accents — the diagonal-asymmetric reference look.
-    # Plus two small page-bg-colored masks that punch a parallelogram-shaped
-    # gap through the cyan border directly under each yellow diagonal.
-    P.append('<span class="cr cr-tl"></span><span class="cr cr-br"></span>'
-             '<span class="gap gap-tl"></span><span class="gap gap-br"></span>')
-    P.append(f"<h1>Bioinfo install report — {_e(name)}{pill}</h1>")
-    body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>' for k, v in head_rows)
-    P.append(f'<table class="head-kv">{body}</table>')
-    P.append('</div>')
+    # Shared header banner (the TL+BR corner-accent cyberpunk frame) — same
+    # helper the Layer-2 run dashboard uses, so the two reports are one family.
+    P.append(_header_banner(f"Bioinfo install report — {_e(name)}", pill, head_rows))
 
     # -- TOOLS (centerpiece — SAME columns for build & adopt) ---------------
     P.append('<section class="bx">')
@@ -507,7 +539,7 @@ def render_env_report_html(record: dict) -> str:
     P.append("</ul>")
     P.append('</div></section>')
 
-    P.append('<p class="gen">Generated deterministically from the freeze record — '
-             'no field on this page was authored by the agent.</p>')
+    P.append('<p class="gen">Generated deterministically from the freeze record'
+             ' — no field on this page was authored by the agent.</p>')
     P.append("</div></body></html>")
     return "\n".join(P)

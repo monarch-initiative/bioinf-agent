@@ -192,6 +192,68 @@ def cluster_job_status(project_name: str,
 
 
 # ---------------------------------------------------------------------------
+# remote_paths_exist — loud input precondition for run_step_on_cluster
+# ---------------------------------------------------------------------------
+#
+# run_step_on_cluster uploads only the 3 rendered workflow files; it does NOT
+# stage input DATA (unlike run_step_in_container, which bind-mounts local
+# paths). So a declared input that isn't already on the cluster fails DEEP
+# inside the Nextflow run — an opaque, wasted SLURM submission. This does a
+# single ssh `test -e` batch BEFORE sbatch so the caller gets the offending
+# path immediately instead. Fail-loud, no auto-staging (the user's rails say
+# where data may go; we don't invent an upload).
+
+# An absolute path made only of filesystem-safe chars. Anything else is
+# refused BEFORE it reaches the shell — no metacharacter can ride in.
+_ABS_SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9_./+\-]{1,4096}$")
+
+
+def remote_paths_exist(env: dict, paths: list[str], *,
+                       timeout: int = 120) -> dict:
+    """Check that every path in `paths` EXISTS on `env` (one ssh hop).
+
+    Returns {ok: True, checked: [...]} when all present; {error, missing_paths?}
+    otherwise. Paths must be absolute + safe-token (validated before any ssh).
+    Empty list ⇒ {ok: True} (nothing to check)."""
+    clean = [str(p) for p in (paths or []) if p]
+    if not clean:
+        return {"ok": True, "checked": []}
+    bad = [p for p in clean if not _ABS_SAFE_PATH_RE.match(p)]
+    if bad:
+        return {"error":
+            f"input path(s) are not absolute safe paths (refused before ssh): "
+            f"{bad[:5]}"}
+    checks = "; ".join(
+        f'[ -e {shlex.quote(p)} ] || echo MISSING:{shlex.quote(p)}'
+        for p in clean)
+    inner = f"bash -lc {shlex.quote(checks)}"
+    argv = _ssh_argv(env, inner)
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return {"error":
+            f"remote input existence check timed out after {e.timeout}s"}
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        return {"error":
+            f"remote input check ssh failed (rc={res.returncode}): "
+            f"{(res.stderr or '').strip()[:300]}",
+            **({"hint": hint} if hint else {})}
+    missing = [ln.split("MISSING:", 1)[1]
+               for ln in (res.stdout or "").splitlines()
+               if ln.startswith("MISSING:")]
+    if missing:
+        return {"error":
+            f"{len(missing)} declared input(s) do not exist on the cluster: "
+            f"{missing[:5]}. run_step_on_cluster does NOT stage input DATA — "
+            f"upload them into scratch (or point at data already on the "
+            f"cluster) before calling.",
+            "missing_paths": missing}
+    return {"ok": True, "checked": clean}
+
+
+# ---------------------------------------------------------------------------
 # cluster_job_resources — I7 evidence (wall_seconds + peak_rss_mb)
 # ---------------------------------------------------------------------------
 #

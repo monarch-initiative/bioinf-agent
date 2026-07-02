@@ -40,17 +40,33 @@ def download_reference_database(
 
     Returns immediately with a job_id — caller polls check_job(job_id) until
     state != "running", then sees success/failure via returncode. The
-    ReferenceDatabase entry's `available` is auto-derived at finalize from
-    whether local_path exists on disk.
+    ReferenceDatabase entry's `available`, `sha256`, and `size_bytes` are
+    re-derived from disk at seal (seal_workflow): a `<local_path>.source.sha256`
+    sidecar written during the download carries the hash of the bytes the URL
+    served (the reproducibility anchor), so the sealed WorkflowSpec pins the DB
+    by content, not just by name+URL.
     """
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    # sha256 anchor: hash the ARTIFACT THE URL SERVED (the archive, or the file
+    # itself when not extracting) into a sidecar next to local_path, BEFORE the
+    # archive is removed. This is the reproducibility anchor — a bundle named
+    # "vep_cache_111_hg38" is not self-verifying; the URL can serve different
+    # bytes over time. `available`/`sha256`/`size_bytes` are folded back into
+    # the ReferenceDatabase record from disk at seal (see workflow_tools). The
+    # portable hasher works on both Linux (sha256sum) and macOS (shasum -a256).
+    sidecar = f"{target}.source.sha256"
+    def _hash_into_sidecar(artifact: str) -> str:
+        return (f"( sha256sum {artifact} 2>/dev/null || shasum -a 256 {artifact} ) "
+                f"| awk '{{print $1}}' > {sidecar}")
 
     if extract and url.endswith(".zip"):
         # Download to a sibling .zip, unpack into local_path, remove the zip.
         zip_path = target.parent / Path(url).name
         cmd = (
             f"curl -L --progress-bar -C - -o {zip_path} '{url}' "
+            f"&& {_hash_into_sidecar(str(zip_path))} "
             f"&& mkdir -p {target} "
             f"&& unzip -o {zip_path} -d {target.parent} "
             f"&& rm {zip_path}"
@@ -59,6 +75,7 @@ def download_reference_database(
         tar_path = target.parent / Path(url).name
         cmd = (
             f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"&& {_hash_into_sidecar(str(tar_path))} "
             f"&& mkdir -p {target} "
             f"&& tar -xzf {tar_path} -C {target} "
             f"&& rm {tar_path}"
@@ -67,12 +84,16 @@ def download_reference_database(
         tar_path = target.parent / Path(url).name
         cmd = (
             f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"&& {_hash_into_sidecar(str(tar_path))} "
             f"&& mkdir -p {target} "
             f"&& tar -xf {tar_path} -C {target} "
             f"&& rm {tar_path}"
         )
     else:
-        cmd = f"curl -L --progress-bar -C - -o {target} '{url}'"
+        cmd = (
+            f"curl -L --progress-bar -C - -o {target} '{url}' "
+            f"&& {_hash_into_sidecar(str(target))}"
+        )
 
     job = _ms._job_manager.start(cmd, job_id=f"refdb_{name}_{int(time.time())}")
     if pipeline_id:

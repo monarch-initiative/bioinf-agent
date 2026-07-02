@@ -70,6 +70,7 @@ guarantee; failures surface in `apptainer_stderr`.
 """
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from datetime import datetime, timezone
@@ -109,6 +110,102 @@ def _build_apptainer_pull_cmd(sif_remote_abs: str,
         f"{shlex.quote(docker_uri)}; "
         f"fi'"
     )
+
+
+_SHA256_TOKEN_RE = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _extract_source_digests(inspect: Optional[dict]) -> set:
+    """Pull every `sha256:<64hex>` token out of the .sif's apptainer-inspect
+    labels. A biocontainer .sif built from a by-digest pull records its source
+    in `org.label-schema.usage.singularity.deffile.from` (e.g.
+    `quay.io/biocontainers/samtools@sha256:23cd…`) — confirmed against real
+    HPC-cluster output. When present, matching this against the EnvCache's pinned
+    image_digest is a CRYPTOGRAPHIC tie: the .sif on the cluster was built from
+    the exact image we froze — not merely 'a .sif exists here'. build_archive
+    .sifs (from a local docker-archive) carry no such digest, so the set is
+    empty and the caller falls back to the observed-fingerprint check."""
+    if not isinstance(inspect, dict):
+        return set()
+    labels = (((inspect.get("data") or {}).get("attributes") or {})
+              .get("labels") or {})
+    found: set = set()
+    for v in labels.values():
+        if isinstance(v, str):
+            found.update(_SHA256_TOKEN_RE.findall(v))
+    return found
+
+
+def _build_inspect_cmd(sif_remote_abs: str) -> str:
+    """ONE ssh hop that fingerprints the staged .sif: its on-disk sha256
+    (the bytes that will actually `apptainer exec`) plus `apptainer inspect`
+    provenance. A `---INSPECT---` marker separates the two so the parser
+    never confuses a hash line with the JSON body."""
+    q = shlex.quote(sif_remote_abs)
+    # `sha256sum` prints `<hash>  <file>`; we extract the first whitespace
+    # token in Python (below) rather than relying on a nested awk/cut inside
+    # the single-quoted `bash -lc` body — one less quoting hazard on the wire.
+    return (
+        f"bash -lc 'module load apptainer >/dev/null 2>&1 || true; "
+        f"if [ ! -f {q} ]; then echo SIF_MISSING; exit 3; fi; "
+        f"sha256sum {q} 2>/dev/null; "
+        f"echo ---INSPECT---; "
+        f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED'"
+    )
+
+
+def inspect_staged_sif(env: dict, sif_remote_abs: str,
+                       *, timeout: int = 300) -> dict:
+    """Fingerprint the .sif THAT WILL RUN, on the cluster — the C2 round-trip.
+
+    Before this, run_step_on_cluster recorded the EnvCache's *nominal* image
+    digest as the step's container_image_digest and the seal matched it back
+    against the EnvCache — circular: nothing was ever observed on the cluster.
+    This looks at the actual artifact: `sha256sum` of the .sif (the exact
+    bytes apptainer will exec) + `apptainer inspect --json` provenance.
+
+    Returns {sif_sha256, inspect (dict|None), apptainer_inspect_ok, raw} on
+    success, or {error} if the .sif is missing / ssh fails. The sha256 is the
+    durable anchor a reviewer can independently re-check; its presence is what
+    lets the shipped-image badge mean 'we observed the real image', not 'we
+    copied a digest'."""
+    argv = _ssh_argv(env, _build_inspect_cmd(sif_remote_abs))
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return {"error": f"apptainer inspect timed out after {e.timeout}s"}
+    out = res.stdout or ""
+    if "SIF_MISSING" in out:
+        return {"error": f"staged .sif not found on cluster at {sif_remote_abs!r} "
+                         f"— stage_apptainer_image must run first"}
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        return {"error": f"apptainer inspect ssh failed (rc={res.returncode}): "
+                         f"{(res.stderr or '').strip()[:300]}",
+                **({"hint": hint} if hint else {})}
+
+    head, _, tail = out.partition("---INSPECT---")
+    # First whitespace token of the first non-empty line = the hash (drops the
+    # trailing `  <filename>` sha256sum appends).
+    first_line = next((ln for ln in head.splitlines() if ln.strip()), "")
+    sif_sha256 = (first_line.split() or [""])[0]
+    inspect_body = tail.strip()
+    inspect: Optional[dict] = None
+    apptainer_inspect_ok = False
+    if inspect_body and "INSPECT_FAILED" not in inspect_body:
+        try:
+            import json as _json
+            inspect = _json.loads(inspect_body)
+            apptainer_inspect_ok = True
+        except Exception:
+            inspect = None
+    return {
+        "sif_sha256":           sif_sha256 or None,
+        "inspect":              inspect,
+        "apptainer_inspect_ok": apptainer_inspect_ok,
+        "raw":                  out[:2000],
+    }
 
 
 def stage_apptainer_image(

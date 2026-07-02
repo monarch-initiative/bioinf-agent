@@ -13,8 +13,8 @@ This is the agent's per-project renderer per
      DSL magic. Acceptance test: a human reads main.nf, copies the
      command, substitutes the params, and re-runs the step from a
      terminal. If they can't, the renderer is wrong.
-  3. The tool comes from a frozen apptainer .sif (uploaded to
-     common_data). The process runs `apptainer exec <sif> <cmd>`. The
+  3. The tool comes from a frozen apptainer .sif (staged to the env's
+     container_upload_target). The process runs `apptainer exec <sif> <cmd>`. The
      .sif path is a top-level param so swapping versions is a one-line
      change to main.nf.
 

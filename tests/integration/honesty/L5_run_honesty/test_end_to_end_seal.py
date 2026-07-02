@@ -143,10 +143,16 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
     out_dir = tmp_path / "env_reports"
     out_dir.mkdir(exist_ok=True)
 
+    # seal_workflow ALSO renders the Layer-2 {workflow}.RUN.html dashboard into
+    # config["paths"]["pipelines_dir"]. Point that at the tmp out_dir too so the
+    # test can't leak a RUN.html into the repo's env_reports/.
+    monkeypatch.setitem(m.config["paths"], "pipelines_dir", str(out_dir))
+
     from agent.skills import spec_writer
     real_write = spec_writer.write_workflow_spec
 
     def _shim_write(workflow: dict, _config: dict) -> dict:
+        # Mirror the real writer: YAML only, no markdown guide (retired).
         from agent.models.core_data import WorkflowSpec
         import yaml as _yaml
         try:
@@ -155,15 +161,11 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
             return {"error": f"WorkflowSpec validation failed: {e}"}
         name = wf.workflow_name
         yaml_path = out_dir / f"{name}.workflow.yaml"
-        guide_path = out_dir / f"{name}.GUIDE.md"
         data = wf.model_dump(exclude_none=True)
-        guide_md = data.pop("user_guide", None)
-        if guide_md:
-            guide_path.write_text(guide_md)
-            data["user_guide_path"] = str(guide_path)
+        data.pop("user_guide", None)
+        data.pop("user_guide_path", None)
         yaml_path.write_text(_yaml.dump(data, default_flow_style=False, sort_keys=False))
-        return {"workflow_spec_path": str(yaml_path),
-                "user_guide_path":    str(guide_path) if guide_md else None}
+        return {"workflow_spec_path": str(yaml_path)}
 
     # mcp_server imports write_workflow_spec inside seal_workflow's body,
     # so patching the module attr propagates to the next call.
@@ -213,9 +215,15 @@ def test_e2e_seal_valid_run_seals_honestly(_staged_pipeline, tmp_path):
     assert any(e.get("image_digest") == image_digest for e in envs), \
         f"envs[] should record the step's container_image_digest: {envs}"
 
-    # The HOWTO is rendered alongside the spec (Layer-2 deliverable).
-    guide_path = out_dir / "e2e_seal.GUIDE.md"
-    assert guide_path.is_file(), f"user guide not written at {guide_path}"
+    # The Layer-2 run dashboard is rendered alongside the spec (the how-to lives
+    # inside it as a distinct panel — no markdown guide is written).
+    run_report = out_dir / "e2e_seal.RUN.html"
+    assert run_report.is_file(), f"run dashboard not written at {run_report}"
+    assert not (out_dir / "e2e_seal.GUIDE.md").exists(), "markdown guide should be retired"
+    assert result.get("run_report_path") == str(run_report)
+    html = run_report.read_text()
+    assert "Workflow run report — e2e_seal" in html
+    assert "How to run it" in html
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +263,28 @@ def test_e2e_seal_refuses_step_without_resource_usage(_staged_pipeline):
     invs = [v.get("invariant", "") for v in result.get("violations") or []]
     assert any(i.startswith("I7") for i in invs), \
         f"expected I7 violation when resource_usage missing: {invs}"
+
+
+@pytest.mark.integration
+def test_e2e_seal_refuses_failed_usage_self_test(_staged_pipeline, monkeypatch):
+    """H2 — I4 now GATES the seal. The draft declares a usage block; if its
+    command_template fails the self-test (doesn't run green against every
+    declared trial), seal must REFUSE rather than write usage_verified=False
+    cosmetically. We override the fixture's short-circuit to simulate a
+    failing template."""
+    pipeline_id, request_key, *_ = _staged_pipeline
+    from agent.skills import spec_writer
+    monkeypatch.setattr(spec_writer, "self_test_usage",
+                        lambda *_a, **_kw: {"ok": False,
+                                            "reason": "command ran but expected outputs missing"})
+
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                              workflow_name="e2e_seal_bad_usage")
+    assert result.get("success") is False, \
+        f"a failing usage self-test must refuse the seal (H2): {result}"
+    assert result.get("stage") == "usage_self_test", \
+        f"refusal should be at the usage_self_test gate: {result}"
+    assert (result.get("usage_self_test") or {}).get("ok") is False
 
 
 @pytest.mark.integration

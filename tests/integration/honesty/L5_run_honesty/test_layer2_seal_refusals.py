@@ -93,6 +93,68 @@ def test_i3_expected_type_any_refused():
 
 
 @pytest.mark.integration
+def test_i3_failed_validation_refused():
+    """C1: a validate_output record EXISTING is not the same as it PASSING.
+    A step whose output validation recorded passed=False (malformed BAM,
+    empty VCF, bad JSON) must NOT seal — that would let the guide claim
+    'outputs checked' over a demonstrably failed check."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0]["validation"] = {
+        "out.txt": {"passed": False, "expected_type": "txt",
+                    "error": "type-aware validator rejected the file"},
+    }
+    v = _violations(spec, "I3.")
+    assert any(x["invariant"] == "I3.validation_passed" for x in v), \
+        f"a passed=False validation record was not refused: {v}"
+
+
+@pytest.mark.integration
+def test_i3_failed_validation_overridden_by_mark_validated():
+    """C1 sanctioned escape hatch: an explicit mark_step_validated=passed
+    (validation_status='passed') is the ONLY way a step with a failed
+    per-file record still seals — the agent asserts it verified the output
+    by other means. Without the override the same step is refused (above)."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0]["validation"] = {
+        "out.txt": {"passed": False, "expected_type": "txt"},
+    }
+    spec["pipeline_steps"][0]["validation_status"] = "passed"
+    v = _violations(spec, "I3.")
+    assert not any(x["invariant"] == "I3.validation_passed" for x in v), \
+        f"mark_step_validated=passed should override the failed record: {v}"
+
+
+@pytest.mark.integration
+def test_i7_zero_resources_refused():
+    """C3: keys existing is not enough — an all-zeros resource_usage means
+    the monitor captured NOTHING (a process that ran has nonzero peak RSS
+    and wall). Sealing zeros would fabricate the HPC job-sizing numbers the
+    guide publishes."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0]["resource_usage"] = {
+        "wall_seconds": 0.0, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0,
+    }
+    v = _violations(spec, "I7.")
+    assert any(x["invariant"] == "I7.resource_usage_captured" for x in v), \
+        f"all-zeros resource_usage was not refused: {v}"
+
+
+@pytest.mark.integration
+def test_i7_sacct_error_refused():
+    """C3: a cluster step whose sacct query hiccuped records a sacct_error
+    marker with placeholder zeros. That's no honest observation — refuse."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0]["resource_usage"] = {
+        "wall_seconds": 0.0, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0,
+        "locus": "cluster", "sacct_job_id": "123",
+        "sacct_error": "sacct returned no rows for job 123",
+    }
+    v = _violations(spec, "I7.")
+    assert any(x["invariant"] == "I7.resource_usage_captured" for x in v), \
+        f"sacct_error resource_usage was not refused: {v}"
+
+
+@pytest.mark.integration
 def test_i6_relative_input_path_refused():
     """Relative paths are reproducibility landmines (they depend on the
     agent's CWD at finalize time)."""

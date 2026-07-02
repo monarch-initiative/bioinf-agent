@@ -89,6 +89,16 @@ _WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
+# Where the rendered workflow files are staged locally before upload. This
+# MUST live under a Globus-accessible location for globus-transport envs:
+# Globus Connect Personal only scans its Accessible Folders (default $HOME)
+# and REFUSES a system temp dir like macOS's /var/folders or /tmp (surfaced
+# by the live acceptance run). The repo sits under $HOME, so a repo-local
+# staging dir works for BOTH transports (scp doesn't care where the source
+# is) and keeps everything self-contained in the project tree per the user's
+# rails. TemporaryDirectory still auto-cleans each run.
+_RENDER_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "cluster_render_staging"
+
 
 # Terminal SLURM states — once we hit one of these the job is over.
 _TERMINAL_STATES = {
@@ -107,6 +117,28 @@ def _parse_exit_code(s: str) -> int:
         return int(rc)
     except (ValueError, TypeError):
         return -1
+
+
+# The SLURM placement keys worth sealing for reproducibility — a reader needs
+# these to resubmit the job on the same queue with the same limits. We record a
+# whitelist (not the whole dict) so a stray/injected key can't ride into the
+# sealed WorkflowSpec.
+_SLURM_CONTEXT_KEYS = (
+    "account", "partition", "queue", "queue_default", "qos",
+    "time", "mem", "mem_per_cpu", "cpus", "cpus_per_task",
+    "nodes", "ntasks", "gres", "constraint",
+)
+
+
+def _seal_slurm_context(slurm: Optional[Mapping]) -> Optional[dict]:
+    """Filter the request's SLURM block to the reproducibility-relevant
+    placement keys. Returns None when nothing relevant is present (so the
+    field is omitted rather than sealing an empty dict)."""
+    if not isinstance(slurm, Mapping):
+        return None
+    ctx = {k: slurm[k] for k in _SLURM_CONTEXT_KEYS
+           if k in slurm and slurm[k] not in (None, "")}
+    return ctx or None
 
 
 def run_step_on_cluster(
@@ -212,6 +244,19 @@ def run_step_on_cluster(
     scratch_root = scratch_target.get("path", "").rstrip("/")
     workflow_dir = f"{scratch_root}/{project_name}/{workflow_name}"
 
+    # ─── 0b. Loud input precondition (Flow fix) ───────────────────────
+    # run_step_on_cluster uploads ONLY the 3 rendered workflow files — it
+    # does NOT stage input DATA (unlike run_step_in_container). A declared
+    # input that isn't already on the cluster would fail deep inside the
+    # Nextflow run after a wasted SLURM submission. Check existence up front
+    # (one ssh hop) and fail with the offending path BEFORE any cluster
+    # mutation. No auto-staging — the user's rails decide where data lives.
+    pre = cluster_jobs.remote_paths_exist(env, [str(p) for p in inputs.values()])
+    if "error" in pre:
+        return {"error": pre["error"],
+                **({"missing_paths": pre["missing_paths"]}
+                   if "missing_paths" in pre else {})}
+
     # ─── 1. Stage the .sif ────────────────────────────────────────────
     stage = stage_apptainer.stage_apptainer_image(
         project_name=project_name,
@@ -225,6 +270,37 @@ def run_step_on_cluster(
 
     sif_path_remote = stage["sif_path"]
     image_digest = stage.get("image_digest", "")
+
+    # ─── 1b. Fingerprint the .sif THAT WILL RUN (C2 round-trip) ───────
+    # The EnvCache image_digest above is NOMINAL — copied from the freeze
+    # record, never observed on the cluster. Look at the actual artifact:
+    # sha256 of the .sif (the exact bytes apptainer will exec) + inspect
+    # provenance. Two strengths of verification:
+    #   STRONG  — the .sif's apptainer-inspect labels carry a source digest
+    #             (`…deffile.from = repo@sha256:…`, as biocontainer/adopt .sifs
+    #             do). We match it against the EnvCache's pinned image_digest:
+    #             a cryptographic tie that the .sif on the cluster was built
+    #             from the exact image we froze. A MISMATCH withholds the badge.
+    #   OBSERVED— no comparable digest in the labels (build_archive from a
+    #             local docker-archive). Fall back to: we got a real sha256 AND
+    #             apptainer could inspect it as a valid image at the exec path.
+    # Either way the badge rests on a real cluster-side observation, never on a
+    # digest we merely echoed back to ourselves.
+    sif_probe = stage_apptainer.inspect_staged_sif(env, sif_path_remote)
+    cluster_sif_sha256 = None
+    cluster_image_verified = False
+    cluster_image_digest_match = None
+    if "error" not in sif_probe:
+        cluster_sif_sha256 = sif_probe.get("sif_sha256")
+        src_digests = stage_apptainer._extract_source_digests(
+            sif_probe.get("inspect"))
+        if src_digests and image_digest:
+            cluster_image_digest_match = image_digest in src_digests
+            cluster_image_verified = bool(
+                cluster_sif_sha256 and cluster_image_digest_match)
+        else:
+            cluster_image_verified = bool(
+                cluster_sif_sha256 and sif_probe.get("apptainer_inspect_ok"))
 
     # ─── 2. Render + upload to scratch + sbatch ───────────────────────
     try:
@@ -244,7 +320,9 @@ def run_step_on_cluster(
                 "stage_result": stage}
 
     files_uploaded: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="bioinf_cluster_step_") as td:
+    _RENDER_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="bioinf_cluster_step_",
+                                     dir=str(_RENDER_STAGE_DIR)) as td:
         tdp = Path(td)
         for fname in _RENDERED_FILES:
             (tdp / fname).write_text(rendered[fname])
@@ -379,6 +457,15 @@ def run_step_on_cluster(
         "ran_in_container":       True,
         "container_image":        sif_path_remote,
         "container_image_digest": image_digest or None,
+        # C2 — the REAL round-trip: the sha256 of the .sif that actually ran on
+        # the cluster (observed, not copied) + whether its inspect-label source
+        # digest matched the EnvCache's pinned image (cryptographic tie, when
+        # available). cluster_image_verified is what the shipped-image badge
+        # rests on. cluster_image_digest_match is None when the .sif carried no
+        # comparable digest (build_archive) — then verification is observed-only.
+        "cluster_sif_sha256":       cluster_sif_sha256,
+        "cluster_image_verified":   cluster_image_verified,
+        "cluster_image_digest_match": cluster_image_digest_match,
         # Layer-2 HPC-locus metadata (new fields, downstream-tolerant)
         "validation_locus":       "cluster",
         "cluster_job_id":         job_id,
@@ -386,6 +473,12 @@ def run_step_on_cluster(
         "cluster_node":           final_status.get("nodelist"),
         "cluster_state":          final_status.get("state"),
         "cluster_exit_code":      final_status.get("exit_code"),
+        # Repro (cluster context) — the run environment a reader needs to
+        # reproduce the job: the modules loaded + the SLURM placement. Recorded
+        # from the request (account/partition/qos) + the observed node above.
+        "cluster_apptainer_module": apptainer_module or None,
+        "cluster_nextflow_module":  nextflow_module or None,
+        "cluster_slurm":            _seal_slurm_context(slurm),
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     step_index = _pipeline_state.add_step(pipeline_id, step_data)
@@ -410,6 +503,9 @@ def run_step_on_cluster(
         "returncode":         rc,
         "job_id":             job_id,
         "sif_path":           sif_path_remote,
+        "cluster_sif_sha256": cluster_sif_sha256,
+        "cluster_image_verified": cluster_image_verified,
+        "cluster_image_digest_match": cluster_image_digest_match,
         "workflow_dir":       workflow_dir,
         "resource_usage":     resource_usage,
         "detected_outputs":   downloaded,

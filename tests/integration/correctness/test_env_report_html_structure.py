@@ -295,3 +295,29 @@ def test_adopt_html_escapes_image_ref():
     html = render_env_report_html(rec)
     assert "<script>alert" not in html
     assert "&lt;script&gt;" in html
+
+
+# ===========================================================================
+# TWO-ARTIFACT SPLIT — the env report is a PURE Layer-1 artifact. Validated
+# runs live in the Layer-2 run dashboard (test_run_dashboard_html_structure.py),
+# NOT accreted onto the env report. The env report must never carry run
+# evidence, and its public fn takes ONLY the record (no workflow_specs param).
+# ===========================================================================
+
+@pytest.mark.integration
+def test_env_report_is_env_only_no_runs_section():
+    """The env report never renders workflow run evidence — that is Layer 2's
+    RUN.html. A rebuild yields a new ENV.html; a seal never mutates this one."""
+    html = render_env_report_html(_build_record())
+    assert "Validated runs" not in html
+    assert "Does it run?" not in html
+    # the shared _CSS defines .run-card, but the env report never RENDERS one
+    assert 'class="run-card"' not in html
+
+
+@pytest.mark.integration
+def test_render_env_report_rejects_workflow_specs_kwarg():
+    """The accreting-onto-env model is retired: passing workflow_specs is an
+    error now, not a silently-ignored no-op (fail loud, don't launder)."""
+    with pytest.raises(TypeError):
+        render_env_report_html(_build_record(), workflow_specs=[{"workflow_name": "x"}])

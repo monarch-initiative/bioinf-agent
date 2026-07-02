@@ -457,3 +457,78 @@ class TestBuildArchiveTarRouting:
         assert "COMMON_DATA" not in r["sif_path"]
         assert r["mode"] == "build_archive"
         assert r["tar_remote_path"] == captured["remote_abs_path"]
+
+
+# ===========================================================================
+# C2 — inspect_staged_sif: fingerprint the .sif that will actually run.
+# Parses ONE ssh hop's output: sha256 line, ---INSPECT--- marker, JSON body.
+# ===========================================================================
+
+_ENV = {"type": "ssh", "host": "fake.example.edu", "user": "u"}
+
+
+def _cp(stdout: str, rc: int = 0):
+    return subprocess.CompletedProcess([], returncode=rc, stdout=stdout, stderr="")
+
+
+class TestInspectStagedSif:
+    @pytest.mark.integration
+    def test_parses_sha_and_inspect_json(self, monkeypatch):
+        # sha256sum's real output is `<hash>  <filename>` — the parser must
+        # extract just the hash token, not the whole line.
+        out = ("a"*64 + "  /work/u/CLAUDE_CONTAINERS/x.sif\n---INSPECT---\n"
+               '{"data": {"attributes": {"labels": {"org.opencontainers.image.title": "samtools"}}}}\n')
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp(out))
+        r = stage_apptainer.inspect_staged_sif(_ENV, "/work/u/CLAUDE_CONTAINERS/x.sif")
+        assert "error" not in r
+        assert r["sif_sha256"] == "a"*64
+        assert r["apptainer_inspect_ok"] is True
+        assert isinstance(r["inspect"], dict)
+
+    @pytest.mark.integration
+    def test_missing_sif_is_error(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp("SIF_MISSING\n", rc=3))
+        r = stage_apptainer.inspect_staged_sif(_ENV, "/work/u/CLAUDE_CONTAINERS/absent.sif")
+        assert "error" in r and "not found on cluster" in r["error"]
+
+    @pytest.mark.integration
+    def test_inspect_failed_still_returns_sha(self, monkeypatch):
+        """apptainer inspect can fail (old apptainer, odd .sif) while the file
+        is real. We still surface the sha256 — but apptainer_inspect_ok=False,
+        so run_step_on_cluster will NOT set cluster_image_verified."""
+        out = "b"*64 + "\n---INSPECT---\nINSPECT_FAILED\n"
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp(out))
+        r = stage_apptainer.inspect_staged_sif(_ENV, "/work/u/CLAUDE_CONTAINERS/x.sif")
+        assert r["sif_sha256"] == "b"*64
+        assert r["apptainer_inspect_ok"] is False
+
+
+class TestExtractSourceDigests:
+    """C2 strong tie: pull the source image digest out of a biocontainer .sif's
+    apptainer-inspect labels. Shape verified against real HPC-cluster output —
+    `org.label-schema.usage.singularity.deffile.from` carries `repo@sha256:…`."""
+
+    _REAL_DIGEST = "sha256:" + "23cda33a3a42125872766df9aaf1d2db67cdb8c85314b793465188435af31ba6"[:64]
+
+    @pytest.mark.integration
+    def test_extracts_deffile_from_digest(self):
+        inspect = {"data": {"attributes": {"labels": {
+            "org.label-schema.usage.singularity.deffile.from":
+                f"quay.io/biocontainers/samtools@{self._REAL_DIGEST}",
+            "org.label-schema.build-arch": "amd64",
+        }}}}
+        got = stage_apptainer._extract_source_digests(inspect)
+        assert self._REAL_DIGEST in got
+
+    @pytest.mark.integration
+    def test_no_digest_in_labels_returns_empty(self):
+        # build_archive .sif from a local docker-archive — no source digest.
+        inspect = {"data": {"attributes": {"labels": {
+            "org.label-schema.usage.singularity.deffile.bootstrap": "docker-archive",
+            "org.label-schema.build-arch": "amd64",
+        }}}}
+        assert stage_apptainer._extract_source_digests(inspect) == set()
+
+    @pytest.mark.integration
+    def test_none_inspect_is_safe(self):
+        assert stage_apptainer._extract_source_digests(None) == set()

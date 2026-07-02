@@ -1,0 +1,1356 @@
+{
+  "id": 0,
+  "label": "🧑‍🔬 Scientist — I have a tool + some data, I want a trustworthy artifact",
+  "detail": "🧑‍🔬 Scientist — I have a tool + some data, I want a trustworthy artifact",
+  "kind": "root",
+  "outcome": null,
+  "children": [
+    {
+      "id": 1,
+      "label": "STAGE 0 · resolve_tool — pick a tier",
+      "detail": "STAGE 0 · resolve_tool — pick a tier",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 2,
+          "label": "Where does this tool live?",
+          "detail": "Where does this tool live?",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 3,
+              "label": "found on conda (bioconda / conda-forge)",
+              "detail": "found on conda (bioconda / conda-forge) → tier=conda (preferred)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 4,
+              "label": "found on PyPI only",
+              "detail": "found on PyPI only → tier=pip",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 5,
+              "label": "found on CRAN / Bioconductor only",
+              "detail": "found on CRAN / Bioconductor only → tier=cran/bioc",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 6,
+              "label": "github_repo given",
+              "detail": "github_repo given → release asset → tier=binary",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 7,
+              "label": "github_repo given",
+              "detail": "github_repo given → buildable source → tier=source",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 8,
+              "label": "found on BOTH PyPI and CRAN, no language=",
+              "detail": "found on BOTH PyPI and CRAN, no language= → pass language='python'|'r'",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 9,
+              "label": "github_repo given but PyPI/CRAN name doesn't reference that repo",
+              "detail": "github_repo given but PyPI/CRAN name doesn't reference that repo → tier disqualified (cross-namespace collision, e.g. PyPI 'gab' ≠ baumannlab/Genome_Assembly_Booster)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 10,
+              "label": "nothing anywhere",
+              "detail": "nothing anywhere → manual / not found — scientist decides",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "label": "STAGE 1 · install into the env (per tier)",
+      "detail": "STAGE 1 · install into the env (per tier)",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 12,
+          "label": "Did the tier's install succeed AND verify?",
+          "detail": "Did the tier's install succeed AND verify?",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 13,
+              "label": "CONDA",
+              "detail": "CONDA",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 14,
+                  "label": "solver rc=0",
+                  "detail": "solver rc=0 → installed",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 15,
+                  "label": "solver rc≠0 (conflict / mirror down)",
+                  "detail": "solver rc≠0 (conflict / mirror down) → loop (relax pins / channel)",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 16,
+              "label": "PIP",
+              "detail": "PIP",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 17,
+                  "label": "install rc=0 AND import check passes",
+                  "detail": "install rc=0 AND import check passes → installed",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 18,
+                  "label": "install rc=0 BUT import fails",
+                  "detail": "install rc=0 BUT import fails → success=false (pip 'installs' broken dep silently)",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 19,
+              "label": "R (cran / bioc / github)",
+              "detail": "R (cran / bioc / github)",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 20,
+                  "label": "unknown source type",
+                  "detail": "unknown source type → error before Rscript runs",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 21,
+                  "label": "install rc=0 AND requireNamespace loads",
+                  "detail": "install rc=0 AND requireNamespace loads → installed",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 22,
+                  "label": "install rc≠0, stderr names missing deps",
+                  "detail": "install rc≠0, stderr names missing deps → missing_packages[] → install deps, retry",
+                  "kind": "branch",
+                  "outcome": "loop",
+                  "children": []
+                },
+                {
+                  "id": 23,
+                  "label": "install rc=0 BUT namespace won't load",
+                  "detail": "install rc=0 BUT namespace won't load → success=false (load-or-die)",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 24,
+              "label": "BINARY (release / vendor URL)",
+              "detail": "BINARY (release / vendor URL)",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 25,
+                  "label": "sha256 matches AND smoke verify runs",
+                  "detail": "sha256 matches AND smoke verify runs → installed",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 26,
+                  "label": "sha256 MISMATCH",
+                  "detail": "sha256 MISMATCH → HARD FAIL, step not merged (wrong bytes)",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                },
+                {
+                  "id": 27,
+                  "label": "sha256 ok BUT won't exec (wrong arch)",
+                  "detail": "sha256 ok BUT won't exec (wrong arch) → verify catches libc/CPU mismatch",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 28,
+              "label": "SOURCE (git clone + build)",
+              "detail": "SOURCE (git clone + build)",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 29,
+                  "label": "neither bin_path nor entrypoint (or both)",
+                  "detail": "neither bin_path nor entrypoint (or both) → ambiguous shape error",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 30,
+                  "label": "host_build=false",
+                  "detail": "host_build=false → build DEFERRED to freeze image (cross-arch)",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                },
+                {
+                  "id": 31,
+                  "label": "build + smoke verify ok",
+                  "detail": "build + smoke verify ok → installed (anchored by commit_sha)",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 32,
+              "label": "PERL (cpanm) — perl -M{module} -e1 loads",
+              "detail": "PERL (cpanm) — perl -M{module} -e1 loads → installed / else broke (cpanm exits 0 with broken XS)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 33,
+              "label": "CARGO / GO — build ok",
+              "detail": "CARGO / GO — build ok → cli_which anchor + toolchain version recorded → installed",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 34,
+              "label": "JAR — download+extract",
+              "detail": "JAR — download+extract → heuristic jar pick (name match, shortest) → installed",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 35,
+              "label": "SYNTHESIS (agent-authored long-tail)",
+              "detail": "SYNTHESIS (agent-authored long-tail)",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 36,
+                  "label": "fetch fails",
+                  "detail": "fetch fails → early error (no docker build wasted)",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 37,
+                  "label": "anchor drift (commit/sha256 moved)",
+                  "detail": "anchor drift (commit/sha256 moved) → refuse (provenance broke)",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 38,
+                  "label": "agent-authored URL not found in repo",
+                  "detail": "agent-authored URL not found in repo → validate_submission refuses",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "label": "STAGE 2 · freeze",
+      "detail": "STAGE 2 · freeze → Layer-1 env artifact",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 40,
+          "label": "Q0 — can we even start?",
+          "detail": "Q0 — can we even start?",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 41,
+              "label": "free disk < threshold",
+              "detail": "free disk < threshold → refuse early (A1) — 'docker buildx prune'",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 42,
+              "label": "gated=true AND licenses[] empty",
+              "detail": "gated=true AND licenses[] empty → refuse early (F2/I13) BEFORE build cost",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 43,
+          "label": "Q1 — EnvCache hit? (request_key = tools + versions + platform + accel policy)",
+          "detail": "Q1 — EnvCache hit? (request_key = tools + versions + platform + accel policy)",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 44,
+              "label": "hit AND image still in daemon",
+              "detail": "hit AND image still in daemon → return proven artifact by hash (no re-solve)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 45,
+              "label": "hit BUT image evicted from daemon",
+              "detail": "hit BUT image evicted from daemon → miss → rebuild (never serve a stale record)",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 46,
+          "label": "Q2 — ADOPT or BUILD?",
+          "detail": "Q2 — ADOPT or BUILD?",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 47,
+              "label": "pure conda + public biocontainer, not gated, no env-mutating steps",
+              "detail": "pure conda + public biocontainer, not gated, no env-mutating steps → ADOPT path",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 48,
+              "label": "has non-conda installs / pip-via-run_in_env",
+              "detail": "has non-conda installs / pip-via-run_in_env → BUILD path (biocontainer can't represent it)",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 49,
+              "label": "gated=true",
+              "detail": "gated=true → BUILD path (I13: gated is NEVER adopted)",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 50,
+              "label": "biocontainer lookup",
+              "detail": "biocontainer lookup",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 51,
+                  "label": "exact version tag found",
+                  "detail": "exact version tag found → adoptable",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                },
+                {
+                  "id": 52,
+                  "label": "version set never pre-built upstream",
+                  "detail": "version set never pre-built upstream → miss → BUILD",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                },
+                {
+                  "id": 53,
+                  "label": "quay.io API network error",
+                  "detail": "quay.io API network error → treated as miss → BUILD (no crash)",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 54,
+          "label": "Q3a — ADOPT honesty (check_adopt: POLICY_CLEAN only, trusted by digest)",
+          "detail": "Q3a — ADOPT honesty (check_adopt: POLICY_CLEAN only, trusted by digest)",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 55,
+              "label": "I12 accelerator + I13 license pass",
+              "detail": "I12 accelerator + I13 license pass → adopted by digest (no VALIDATED_IN_IMAGE — bytes trusted, not run)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 56,
+              "label": "violation",
+              "detail": "violation → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 57,
+          "label": "Q3b — BUILD honesty (build in-container, then check_build)",
+          "detail": "Q3b — BUILD honesty (build in-container, then check_build)",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 58,
+              "label": "a non-conda install is non-replayable (source w/o bin_path, binary w/o platform asset, unreachable sha256)",
+              "detail": "a non-conda install is non-replayable (source w/o bin_path, binary w/o platform asset, unreachable sha256) → error BEFORE docker build",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 59,
+              "label": "docker build stage fails",
+              "detail": "docker build stage fails",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 60,
+                  "label": "base image unpullable",
+                  "detail": "base image unpullable → BUILT fails (no image at all)",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                },
+                {
+                  "id": 61,
+                  "label": "conda solve conflict / package gone",
+                  "detail": "conda solve conflict / package gone → build fails",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                },
+                {
+                  "id": 62,
+                  "label": "long-tail cmd rc≠0 (wrong-arch, build err)",
+                  "detail": "long-tail cmd rc≠0 (wrong-arch, build err) → build fails",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 63,
+              "label": "image built",
+              "detail": "image built → check_build",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 64,
+                  "label": "BUILT: image + digest resolve in daemon (else BUILT.image_present)",
+                  "detail": "BUILT: image + digest resolve in daemon (else BUILT.image_present)",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                },
+                {
+                  "id": 65,
+                  "label": "VALIDATED_IN_IMAGE: every tool re-runs green in the shipped image",
+                  "detail": "VALIDATED_IN_IMAGE: every tool re-runs green in the shipped image",
+                  "kind": "q",
+                  "outcome": null,
+                  "children": [
+                    {
+                      "id": 66,
+                      "label": "no evidence collected",
+                      "detail": "no evidence collected → VALIDATED_IN_IMAGE.no_evidence",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    },
+                    {
+                      "id": 67,
+                      "label": "echo / true / : / [ 1=1 ] cheat shape",
+                      "detail": "echo / true / : / [ 1=1 ] cheat shape → evidence_shape violation",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    },
+                    {
+                      "id": 68,
+                      "label": "tool absent or rc≠0 in image",
+                      "detail": "tool absent or rc≠0 in image → evidence_passed violation",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    }
+                  ]
+                },
+                {
+                  "id": 69,
+                  "label": "POLICY_CLEAN",
+                  "detail": "POLICY_CLEAN",
+                  "kind": "q",
+                  "outcome": null,
+                  "children": [
+                    {
+                      "id": 70,
+                      "label": "I12 cuda/rocm w/o toolkit_version",
+                      "detail": "I12 cuda/rocm w/o toolkit_version → refuse",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    },
+                    {
+                      "id": 71,
+                      "label": "I12 runtime_verified w/o probe + min_driver_version",
+                      "detail": "I12 runtime_verified w/o probe + min_driver_version → refuse",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    },
+                    {
+                      "id": 72,
+                      "label": "I12 mps not dev_only",
+                      "detail": "I12 mps not dev_only → refuse",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    },
+                    {
+                      "id": 73,
+                      "label": "I13 gated but redistributable / no license",
+                      "detail": "I13 gated but redistributable / no license → refuse",
+                      "kind": "branch",
+                      "outcome": "refused",
+                      "children": []
+                    }
+                  ]
+                },
+                {
+                  "id": 74,
+                  "label": "PROVENANCE_CLEAN (synthesis): empty cmds or untagged source",
+                  "detail": "PROVENANCE_CLEAN (synthesis): empty cmds or untagged source → refuse",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 75,
+                  "label": "all pass",
+                  "detail": "all pass → Layer-1 env ✔",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 76,
+          "label": "Q4 — delivery",
+          "detail": "Q4 — delivery",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 77,
+              "label": "adopt",
+              "detail": "adopt → apptainer pull docker://…@digest",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 78,
+              "label": "build + registry/push_target, push ok",
+              "detail": "build + registry/push_target, push ok → apptainer pull docker://ref",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 79,
+              "label": "build + push FAILS",
+              "detail": "build + push FAILS → tarball fallback (reported, never silent)",
+              "kind": "branch",
+              "outcome": "degraded",
+              "children": []
+            },
+            {
+              "id": 80,
+              "label": "build + gated",
+              "detail": "build + gated → tarball only, NEVER pushed (I13)",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 81,
+              "label": "build + no registry (default)",
+              "detail": "build + no registry (default) → docker save → apptainer build (registry-free)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 82,
+              "label": "writes ENV.html (immutable) + attestation.json",
+              "detail": "→ writes ENV.html (immutable) + attestation.json",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 83,
+      "label": "STAGE 3A · validate LOCALLY (run_step_in_container)",
+      "detail": "STAGE 3A · validate LOCALLY (run_step_in_container)",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 84,
+          "label": "Run the step inside the frozen image",
+          "detail": "Run the step inside the frozen image",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 85,
+              "label": "no pipeline_id / no frozen env / record has no image",
+              "detail": "no pipeline_id / no frozen env / record has no image → refuse (call freeze first)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 86,
+              "label": "Docker daemon is REMOTE (DOCKER_HOST)",
+              "detail": "Docker daemon is REMOTE (DOCKER_HOST) → refuse (can't bind-mount local data)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 87,
+              "label": "adopted image not local AND pull fails",
+              "detail": "adopted image not local AND pull fails → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 88,
+              "label": "container runs, rc=0",
+              "detail": "container runs, rc=0",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 89,
+                  "label": "each output type-validated, all pass",
+                  "detail": "each output type-validated, all pass → validated step (feeds seal)",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 90,
+                  "label": "an output FAILS type validation (bad BAM/VCF/JSON)",
+                  "detail": "an output FAILS type validation (bad BAM/VCF/JSON) → recorded passed=False → seal will REFUSE (C1/I3)",
+                  "kind": "branch",
+                  "outcome": "degraded",
+                  "children": []
+                },
+                {
+                  "id": 91,
+                  "label": "measured under emulation (arm64",
+                  "detail": "measured under emulation (arm64→amd64) → I7 stamped not-authoritative (timings unreliable)",
+                  "kind": "branch",
+                  "outcome": "degraded",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 92,
+              "label": "container runs, rc≠0 (tool crash / missing lib / wrong flag)",
+              "detail": "container runs, rc≠0 (tool crash / missing lib / wrong flag) → step recorded, NO validation → loop (fix cmd) or REBUILD env (Stage 2)",
+              "kind": "branch",
+              "outcome": "broke",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 93,
+      "label": "STAGE 3B · validate ON CLUSTER (run_step_on_cluster + HPC bridge)",
+      "detail": "STAGE 3B · validate ON CLUSTER (run_step_on_cluster + HPC bridge)",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 94,
+          "label": "Q-auth — can the agent touch this cluster at all?",
+          "detail": "Q-auth — can the agent touch this cluster at all?",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 95,
+              "label": "projects_access.yaml missing / malformed",
+              "detail": "projects_access.yaml missing / malformed → ConfigError",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 96,
+              "label": "compute env not type=ssh",
+              "detail": "compute env not type=ssh → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 97,
+              "label": "env has no agent_scratch_target",
+              "detail": "env has no agent_scratch_target → hard-fail (no sandbox to work in)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 98,
+              "label": "project lacks env access / scratch lacks exec",
+              "detail": "project lacks env access / scratch lacks exec → PermissionDenied",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 99,
+              "label": "ssh session not open (no ControlMaster)",
+              "detail": "ssh session not open (no ControlMaster) → rc255 → hint 'open ssh hpc-agent' (actionable)",
+              "kind": "branch",
+              "outcome": "broke",
+              "children": []
+            },
+            {
+              "id": 100,
+              "label": "transfer zone breach (path not under <scratch>/<project>/…; wrong permission token)",
+              "detail": "transfer zone breach (path not under <scratch>/<project>/…; wrong permission token) → PermissionDenied (upload≠download≠exec)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 101,
+              "label": "unsafe token (job_id, path, module has metachar)",
+              "detail": "unsafe token (job_id, path, module has metachar) → refuse BEFORE any ssh",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "label": "Q-input — are declared inputs already on the cluster? (remote_paths_exist, loud precheck)",
+          "detail": "Q-input — are declared inputs already on the cluster? (remote_paths_exist, loud precheck)",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 103,
+              "label": "all inputs present",
+              "detail": "all inputs present → proceed",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 104,
+              "label": "any input missing",
+              "detail": "any input missing → refuse BEFORE sbatch (no auto-staging; user's rails own data)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 105,
+          "label": "Q-stage — get the .sif onto the cluster",
+          "detail": "Q-stage — get the .sif onto the cluster",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 106,
+              "label": "no container_upload_target (build-archive)",
+              "detail": "no container_upload_target (build-archive) → refuse (no fallback zone)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 107,
+              "label": "tar upload / apptainer pull|build fails",
+              "detail": "tar upload / apptainer pull|build fails → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 108,
+              "label": "already staged",
+              "detail": "already staged → idempotent skip",
+              "kind": "branch",
+              "outcome": null,
+              "children": []
+            },
+            {
+              "id": 109,
+              "label": "staged",
+              "detail": "staged → C2 fingerprint (inspect_staged_sif)",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 110,
+                  "label": "label source digest == pinned env digest",
+                  "detail": "label source digest == pinned env digest → cryptographically verified",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 111,
+                  "label": "no comparable digest (build_archive)",
+                  "detail": "no comparable digest (build_archive) → observed-only (sha256 + inspect-ok)",
+                  "kind": "branch",
+                  "outcome": "degraded",
+                  "children": []
+                },
+                {
+                  "id": 112,
+                  "label": "inspect fails / SIF_MISSING",
+                  "detail": "inspect fails / SIF_MISSING → cluster_image_verified=False",
+                  "kind": "branch",
+                  "outcome": "degraded",
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 113,
+          "label": "Q-transfer — wire protocol (per env.data_transfer)",
+          "detail": "Q-transfer — wire protocol (per env.data_transfer)",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 114,
+              "label": "scp_head_node, file > 5 GiB",
+              "detail": "scp_head_node, file > 5 GiB → refuse (use globus)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 115,
+              "label": "scp, sha256 round-trip MISMATCH",
+              "detail": "scp, sha256 round-trip MISMATCH → file unlinked, refuse (corrupt)",
+              "kind": "branch",
+              "outcome": "broke",
+              "children": []
+            },
+            {
+              "id": 116,
+              "label": "no-overwrite: remote file exists",
+              "detail": "no-overwrite: remote file exists → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 117,
+              "label": "globus sync",
+              "detail": "globus sync → SUCCEEDED (end-to-end checksum)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            },
+            {
+              "id": 118,
+              "label": "globus async",
+              "detail": "globus async → 'submitted' (task_id) → MUST confirm via globus_task_status",
+              "kind": "q",
+              "outcome": "loop",
+              "children": [
+                {
+                  "id": 119,
+                  "label": "later SUCCEEDED",
+                  "detail": "later SUCCEEDED → manifest → 'uploaded' (half-baked-transfer defense)",
+                  "kind": "branch",
+                  "outcome": "proven",
+                  "children": []
+                },
+                {
+                  "id": 120,
+                  "label": "later FAILED",
+                  "detail": "later FAILED → manifest → 'failed'",
+                  "kind": "branch",
+                  "outcome": "broke",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 121,
+              "label": "globus consent / accessible-folders misconfig",
+              "detail": "globus consent / accessible-folders misconfig → hard error (never silent scp fallback)",
+              "kind": "branch",
+              "outcome": "broke",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 122,
+          "label": "Q-run — submit + poll + fetch",
+          "detail": "Q-run — submit + poll + fetch",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 123,
+              "label": "render main.nf/config/launcher fails",
+              "detail": "render main.nf/config/launcher fails → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 124,
+              "label": "upload of a rendered file fails",
+              "detail": "upload of a rendered file fails → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 125,
+              "label": "sbatch fails (bad partition/account, sbatch gone)",
+              "detail": "sbatch fails (bad partition/account, sbatch gone) → refuse — NO step recorded, files leaked in scratch",
+              "kind": "branch",
+              "outcome": "vanished",
+              "children": []
+            },
+            {
+              "id": 126,
+              "label": "poll exceeds cap (default 60 min), no terminal",
+              "detail": "poll exceeds cap (default 60 min), no terminal → refuse — job may STILL be running, NO step recorded",
+              "kind": "branch",
+              "outcome": "vanished",
+              "children": []
+            },
+            {
+              "id": 127,
+              "label": "job terminal, rc≠0 (crash / OOM / missing lib)",
+              "detail": "job terminal, rc≠0 (crash / OOM / missing lib) → step recorded rc≠0, NO validation → loop / REBUILD",
+              "kind": "branch",
+              "outcome": "broke",
+              "children": []
+            },
+            {
+              "id": 128,
+              "label": "job terminal, rc=0 BUT sacct query errored",
+              "detail": "job terminal, rc=0 BUT sacct query errored → resource_usage all-zeros + sacct_error → seal REFUSES (C3/I7)",
+              "kind": "branch",
+              "outcome": "degraded",
+              "children": []
+            },
+            {
+              "id": 129,
+              "label": "output download fails",
+              "detail": "output download fails → download_errors[], partial outputs unvalidated",
+              "kind": "branch",
+              "outcome": "degraded",
+              "children": []
+            },
+            {
+              "id": 130,
+              "label": "job rc=0, outputs downloaded + type-validated",
+              "detail": "job rc=0, outputs downloaded + type-validated → cluster-locus validated step (feeds seal)",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 131,
+      "label": "STAGE 4 · seal",
+      "detail": "STAGE 4 · seal → Layer-2 workflow artifact (seal_workflow)",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 132,
+          "label": "Q-pre",
+          "detail": "Q-pre",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 133,
+              "label": "unknown pipeline_id / no frozen env",
+              "detail": "unknown pipeline_id / no frozen env → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 134,
+          "label": "Invariant gauntlet — refuse on ANY",
+          "detail": "Invariant gauntlet — refuse on ANY",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 135,
+              "label": "I0 shape — a list field holds a non-dict",
+              "detail": "I0 shape — a list field holds a non-dict → refuse",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 136,
+              "label": "I3 outputs",
+              "detail": "I3 outputs",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 137,
+                  "label": "rc=0 step produced NO outputs (not marked)",
+                  "detail": "rc=0 step produced NO outputs (not marked) → silent-empty-success",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 138,
+                  "label": "outputs exist but never validated",
+                  "detail": "outputs exist but never validated → refuse",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 139,
+                  "label": "an output's validation is passed=FALSE (C1)",
+                  "detail": "an output's validation is passed=FALSE (C1) → can't seal a proven-bad output",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 140,
+                  "label": "validation used expected_type='any'",
+                  "detail": "validation used expected_type='any' → lazy (touch foo.bar would pass)",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 141,
+              "label": "I6 paths",
+              "detail": "I6 paths",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 142,
+                  "label": "a relative input/output path",
+                  "detail": "a relative input/output path → repro landmine",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 143,
+                  "label": "usage template {PLACEHOLDER} not declared",
+                  "detail": "usage template {PLACEHOLDER} not declared → typo/undeclared slot",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 144,
+              "label": "I7 resources",
+              "detail": "I7 resources",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 145,
+                  "label": "rc=0 step has no resource_usage",
+                  "detail": "rc=0 step has no resource_usage → monitor never saw it run",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 146,
+                  "label": "resource_usage carries sacct_error",
+                  "detail": "resource_usage carries sacct_error → (C3) fabricated zeros",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 147,
+                  "label": "resource_usage all-zeros",
+                  "detail": "resource_usage all-zeros → (C3) no honest cost data",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 148,
+              "label": "I8 provenance",
+              "detail": "I8 provenance",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 149,
+                  "label": "a step input traces to no source",
+                  "detail": "a step input traces to no source → orphan (doesn't compose)",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 150,
+                  "label": "authored artifact missing / sha256 drifted",
+                  "detail": "authored artifact missing / sha256 drifted → spec claim ≠ disk",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 151,
+                  "label": "same-path bytes changed between steps",
+                  "detail": "same-path bytes changed between steps → lineage mutated",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 152,
+              "label": "I4 usage",
+              "detail": "I4 usage",
+              "kind": "q",
+              "outcome": null,
+              "children": [
+                {
+                  "id": 153,
+                  "label": "usage.command_template self-test FAILS (H2)",
+                  "detail": "usage.command_template self-test FAILS (H2) → won't ship a broken runnable form",
+                  "kind": "branch",
+                  "outcome": "refused",
+                  "children": []
+                },
+                {
+                  "id": 154,
+                  "label": "NO usage block",
+                  "detail": "NO usage block → skip (seals without usage_verified badge)",
+                  "kind": "branch",
+                  "outcome": null,
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": 155,
+              "label": "self-verify — constructed spec fails its OWN invariants",
+              "detail": "self-verify — constructed spec fails its OWN invariants → wouldn't re-verify standalone",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": 156,
+          "label": "ALL PASS",
+          "detail": "ALL PASS → write workflow.yaml + RUN.html; set validated_in_shipped_image (digest match) + usage_verified → SEALED",
+          "kind": "branch",
+          "outcome": "proven",
+          "children": []
+        },
+        {
+          "id": 157,
+          "label": "⚠️ KNOWN GAP — a workflow whose ONLY step FAILED (rc≠0) with NO usage block hits zero violations (failed steps are skipped by I3/I7/I8)",
+          "detail": "⚠️ KNOWN GAP — a workflow whose ONLY step FAILED (rc≠0) with NO usage block hits zero violations (failed steps are skipped by I3/I7/I8) → it SEALS. Badges are all False (not a lie), but it's a sealed artifact for a run that never worked, and RUN.html doesn't yet mark the step FAILED.",
+          "kind": "branch",
+          "outcome": "vanished",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": 158,
+      "label": "STAGE 5 · production run (submit_workflow_job)",
+      "detail": "STAGE 5 · production run (submit_workflow_job)",
+      "kind": "stage",
+      "outcome": null,
+      "children": [
+        {
+          "id": 159,
+          "label": "Submit the sealed workflow against the user's real workspace",
+          "detail": "Submit the sealed workflow against the user's real workspace",
+          "kind": "q",
+          "outcome": null,
+          "children": [
+            {
+              "id": 160,
+              "label": "workflow_dir empty",
+              "detail": "workflow_dir empty → refuse (must be explicit)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 161,
+              "label": "workflow_dir not in directories[] with upload+exec",
+              "detail": "workflow_dir not in directories[] with upload+exec → PermissionDenied",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 162,
+              "label": "render/upload/sbatch fails",
+              "detail": "render/upload/sbatch fails → refuse (with forensic launcher path)",
+              "kind": "branch",
+              "outcome": "refused",
+              "children": []
+            },
+            {
+              "id": 163,
+              "label": "sbatch ok",
+              "detail": "sbatch ok → submit-and-document: returns job_id + writes submission.json (NO polling — prod jobs run for hours). Later: cluster_job_status → download outputs",
+              "kind": "branch",
+              "outcome": "proven",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

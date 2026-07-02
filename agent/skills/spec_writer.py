@@ -7,7 +7,7 @@ env is now solved once by freeze() and verified IN the shipped image by
 env_honesty.check_build (install==ship). What survives here is the Layer-2
 surface that consumes a frozen env:
 
-    write_workflow_spec(workflow, config)   -> {workflow_spec_path, user_guide_path}
+    write_workflow_spec(workflow, config)   -> {workflow_spec_path}
     check_workflow_invariants(spec)         -> run-side violations (I0/I3/I6/I7/I8)
     self_test_usage(spec, env_manager, ...) -> executes usage.command_template (I4)
     write_provenance(inputs, config)        -> {written, sample_key}
@@ -38,9 +38,12 @@ from agent.models.core_data import (
 # ---------------------------------------------------------------------------
 
 def write_workflow_spec(workflow: dict, config: dict) -> dict:
-    """Validate + write a Layer-2 WorkflowSpec as YAML, plus its rendered user
-    guide alongside. The guide markdown is written to its own .GUIDE.md (not
-    inlined in the yaml) and its path recorded on the spec."""
+    """Validate + write a Layer-2 WorkflowSpec as YAML.
+
+    The human-facing how-to is rendered as HTML into {name}.RUN.html by the seal
+    (run_dashboard_html), NOT a markdown guide — the markdown GUIDE.md is retired.
+    Any legacy `user_guide` markdown on the workflow dict is dropped here (never
+    inlined in the YAML, never written to disk)."""
     from agent.models.core_data import WorkflowSpec
 
     project_root = Path(__file__).parent.parent.parent.resolve()
@@ -53,17 +56,11 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
 
     name = wf.workflow_name
     yaml_path = out_dir / f"{name}.workflow.yaml"
-    guide_path = out_dir / f"{name}.GUIDE.md"
     data = wf.model_dump(exclude_none=True)
-    guide_md = data.pop("user_guide", None)
-    if guide_md:
-        guide_path.write_text(guide_md)
-        data["user_guide_path"] = str(guide_path)
+    data.pop("user_guide", None)        # retired markdown guide — never persist it
+    data.pop("user_guide_path", None)
     yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
-    return {
-        "workflow_spec_path": str(yaml_path),
-        "user_guide_path": str(guide_path) if guide_md else None,
-    }
+    return {"workflow_spec_path": str(yaml_path)}
 
 
 def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None) -> dict:
@@ -420,6 +417,29 @@ def check_invariants(spec: dict) -> list[dict]:
                 "unvalidated_files": [Path(o).name for o in unvalidated[:5]],
             })
 
+        # I3 amendment (C1): a validate_output record existing is NOT the same
+        # as it PASSING. The runtime records passed:False for a malformed BAM /
+        # empty VCF / bad JSON — but seal used to accept any record. That let a
+        # spec claim "outputs checked" over a step whose outputs demonstrably
+        # failed their type-aware check. An explicit mark_step_validated=passed
+        # is the only sanctioned override (it re-anchors by other means and
+        # itself refuses to pass an outputs-empty step).
+        failed_validations = [
+            fn for fn, v in validation.items()
+            if isinstance(v, dict) and v.get("passed") is False
+        ]
+        if failed_validations and s.get("validation_status") != "passed":
+            violations.append({
+                "invariant": "I3.validation_passed",
+                "message":   f"pipeline_step {step_n} has {len(failed_validations)} output(s) "
+                             f"whose validate_output result is passed=False — the run recorded "
+                             f"that these outputs FAILED type-aware validation. A spec cannot seal "
+                             f"over a failed output check (use mark_step_validated only when the "
+                             f"output was genuinely verified by other means).",
+                "where":     f"pipeline_steps[step={step_n}].validation",
+                "failed_files": failed_validations[:5],
+            })
+
         # I3 amendment: expected_type="any" is the lazy fallback that only
         # checks file-exists-and-nonzero. For biomedical-grade specs, every
         # validation must declare a real type so OutputValidator dispatches
@@ -531,6 +551,36 @@ def check_invariants(spec: dict) -> list[dict]:
                              f"the runtime monitor never observed it run. "
                              f"Use run_pipeline_step or run_in_env (which populate this).",
                 "where":     f"pipeline_steps[step={step_n}]",
+            })
+            continue
+
+        # I7 amendment (C3): the KEYS existing is not enough — the VALUES must
+        # be a real observation. A cluster step whose sacct query hiccuped
+        # records an all-zeros sentinel with a `sacct_error` marker
+        # (run_cluster_step.py). Any process that actually ran has a nonzero
+        # peak RSS and nonzero wall — an all-zeros record means we have NO
+        # honest cost data, so the badge (and the HPC job-sizing numbers the
+        # guide publishes) would be fabricated. Reject rather than seal zeros.
+        if ru.get("sacct_error"):
+            violations.append({
+                "invariant": "I7.resource_usage_captured",
+                "message":   f"pipeline_step {step_n} resource_usage carries a sacct_error "
+                             f"({ru.get('sacct_error')!r}) — the cluster accounting query "
+                             f"failed, so wall/RSS/CPU are placeholder zeros, not a real "
+                             f"observation. Re-run the step so sacct returns MaxRSS/Elapsed, "
+                             f"or resolve the accounting delay before sealing.",
+                "where":     f"pipeline_steps[step={step_n}].resource_usage",
+            })
+        elif (float(ru.get("peak_rss_mb") or 0) <= 0
+              and float(ru.get("wall_seconds") or 0) <= 0):
+            violations.append({
+                "invariant": "I7.resource_usage_captured",
+                "message":   f"pipeline_step {step_n} resource_usage is all zeros "
+                             f"(wall={ru.get('wall_seconds')}, peak_rss_mb={ru.get('peak_rss_mb')}) "
+                             f"— a process that actually ran has a nonzero peak RSS and wall "
+                             f"time. Zeros mean the monitor captured nothing; the cost data "
+                             f"would be fabricated. Re-run so the monitor observes a real run.",
+                "where":     f"pipeline_steps[step={step_n}].resource_usage",
             })
 
     # ------------------------------------------------------------------

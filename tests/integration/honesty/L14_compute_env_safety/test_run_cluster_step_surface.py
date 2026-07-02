@@ -300,6 +300,10 @@ class TestHappyPath:
             stage_apptainer as _sa, submit_workflow as _sw,
         )
 
+        # 0. remote input precondition — declared inputs exist on cluster.
+        monkeypatch.setattr(_cj, "remote_paths_exist",
+                            lambda env, paths, **kw: {"ok": True, "checked": list(paths)})
+
         # 1. stage returns a sif path.
         def fake_stage(**kw):
             return {"success": True, "compute_env": kw["compute_env_name"],
@@ -309,6 +313,14 @@ class TestHappyPath:
                     "request_key": kw["freeze_request_key"],
                     "skipped": False, "staged_at": "t"}
         monkeypatch.setattr(_sa, "stage_apptainer_image", fake_stage)
+
+        # 1b. inspect_staged_sif — the C2 cluster-side fingerprint of the .sif
+        # that will actually run (sha256 + apptainer inspect ok).
+        monkeypatch.setattr(_sa, "inspect_staged_sif",
+                            lambda env, sif, **kw: {"sif_sha256": "f"*64,
+                                                    "inspect": {"data": {}},
+                                                    "apptainer_inspect_ok": True,
+                                                    "raw": ""})
 
         # 2. transfer.upload — succeeds 3 times (main.nf / config /
         # launcher.sh). The unified primitive routes to scratch zone
@@ -427,6 +439,18 @@ class TestHappyPath:
         assert r["detected_outputs"][0].endswith("filtered.bam")
         assert "filtered.bam" in r["validations"]
         assert validator.calls and validator.calls[0][1] == "bam"
+
+        # C2 — the recorded step carries the REAL cluster-side .sif fingerprint
+        # and the verified flag the shipped-image badge rests on.
+        assert state.steps, "step not recorded"
+        _pid, step = state.steps[-1]
+        assert step["cluster_sif_sha256"] == "f"*64
+        assert step["cluster_image_verified"] is True
+        # Repro (cluster context) — modules + SLURM placement sealed onto step.
+        assert step["cluster_apptainer_module"] == "apptainer/1.4.1"
+        assert step["cluster_nextflow_module"] == "nextflow/25.04.7"
+        assert step["cluster_slurm"] == {"queue": "general", "time": "00:30:00",
+                                          "mem": "4G", "cpus": 2}
 
         # Draft updated with cluster-locus pipeline_step
         assert len(state.steps) == 1
@@ -575,3 +599,120 @@ class TestPhaseFailurePreservation:
         assert "error" in r and "polling timed out" in r["error"]
         assert r["job_id"] == "1"
         assert r["workflow_dir"].endswith("/phase_b_samtools_demo/w1")
+
+
+# ===========================================================================
+# Flow — loud input precondition (Wave 2): a declared input that isn't on the
+# cluster fails BEFORE any staging/sbatch, with the offending path.
+# ===========================================================================
+
+class TestInputPrecondition:
+    @pytest.mark.integration
+    def test_missing_remote_input_refused_before_stage(self, tmp_path, monkeypatch):
+        from agent.skills import (
+            stage_apptainer as _sa, cluster_jobs as _cj,
+        )
+        access_path = _good_access(tmp_path)
+
+        staged = {"called": False}
+        def fake_stage(**kw):
+            staged["called"] = True
+            return {"success": True, "sif_path": "/x.sif", "image_digest": "sha256:a",
+                    "mode": "adopt", "compute_env": kw["compute_env_name"],
+                    "request_key": kw["freeze_request_key"], "skipped": False,
+                    "staged_at": "t"}
+        monkeypatch.setattr(_sa, "stage_apptainer_image", fake_stage)
+        # The precondition reports the input missing on the cluster.
+        monkeypatch.setattr(_cj, "remote_paths_exist",
+                            lambda env, paths, **kw: {
+                                "error": "1 declared input(s) do not exist on the cluster: "
+                                         "['/work/u/p/inputs/absent.bam']. run_step_on_cluster "
+                                         "does NOT stage input DATA — upload them into scratch "
+                                         "before calling.",
+                                "missing_paths": ["/work/u/p/inputs/absent.bam"]})
+
+        r = run_cluster_step.run_step_on_cluster(
+            pipeline_id="P1", freeze_request_key="x",
+            project_name="phase_b_samtools_demo",
+            compute_env_name="fakehpc", workflow_name="w1",
+            tool_name="t", command="t ${input_bam} > ${o}",
+            inputs={"input_bam": "/work/u/p/inputs/absent.bam"},
+            outputs={"o": "out.bam"},
+            download_local_dir=str(tmp_path / "downloads"),
+            apptainer_module="apptainer/1", nextflow_module="nextflow/2",
+            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            poll_interval=0, max_polls=3, access_path=str(access_path),
+            _pipeline_state=_FakePipelineState(),
+            _validator=_FakeValidator(), _env_mgr=_FakeEnvMgr())
+
+        assert "error" in r and "do not exist on the cluster" in r["error"]
+        assert r.get("missing_paths") == ["/work/u/p/inputs/absent.bam"]
+        assert staged["called"] is False, \
+            "must refuse BEFORE staging the .sif — no cluster mutation on a doomed run"
+
+
+# ===========================================================================
+# C2 — the shipped-image badge for a CLUSTER step requires a real on-cluster
+# .sif fingerprint (cluster_image_verified), not just a copied nominal digest.
+# ===========================================================================
+
+class TestClusterShippedImageBadge:
+    _DIG = "sha256:" + "ab"*32
+
+    def _cluster_step(self, *, verified: bool) -> dict:
+        return {
+            "step": 1, "tool": "samtools", "returncode": 0,
+            "ran_in_container": True, "container_image_digest": self._DIG,
+            "validation_locus": "cluster",
+            "cluster_image_verified": verified,
+            "validation": {"out.bam": {"passed": True, "expected_type": "bam"}},
+        }
+
+    @pytest.mark.integration
+    def test_cluster_step_without_fingerprint_is_not_shipped(self):
+        from agent.skills.user_guide import validated_in_shipped_image
+        spec = {"pipeline_steps": [self._cluster_step(verified=False)]}
+        assert validated_in_shipped_image(spec, valid_digests={self._DIG}) is False, \
+            "a cluster step whose .sif was never fingerprinted must NOT earn the badge"
+
+    @pytest.mark.integration
+    def test_cluster_step_with_fingerprint_is_shipped(self):
+        from agent.skills.user_guide import validated_in_shipped_image
+        spec = {"pipeline_steps": [self._cluster_step(verified=True)]}
+        assert validated_in_shipped_image(spec, valid_digests={self._DIG}) is True
+
+    @pytest.mark.integration
+    def test_local_container_step_needs_no_cluster_fingerprint(self):
+        """A local run_step_in_container step gets its digest from `docker
+        inspect` of the image that really ran — it must still earn the badge
+        with no cluster_image_verified field."""
+        from agent.skills.user_guide import validated_in_shipped_image
+        spec = {"pipeline_steps": [{
+            "step": 1, "tool": "samtools", "returncode": 0,
+            "ran_in_container": True, "container_image_digest": self._DIG,
+            "validation": {"out.bam": {"passed": True, "expected_type": "bam"}},
+        }]}
+        assert validated_in_shipped_image(spec, valid_digests={self._DIG}) is True
+
+
+# ===========================================================================
+# Globus staging (live-acceptance fix): rendered workflow files must stage
+# under the repo (which is under $HOME), never in a system temp dir — Globus
+# Connect Personal only scans its Accessible Folders and refuses /var/folders
+# or /tmp. Regression guard for the fix surfaced by the real HPC-cluster run.
+# ===========================================================================
+
+class TestRenderStagingLocation:
+    @pytest.mark.integration
+    def test_render_stage_dir_is_repo_local_not_system_temp(self):
+        import tempfile
+        import agent.skills.run_cluster_step as rcs
+        stage = rcs._RENDER_STAGE_DIR.resolve()
+        sys_tmp = Path(tempfile.gettempdir()).resolve()
+        assert sys_tmp not in stage.parents and stage != sys_tmp, \
+            f"render staging {stage} must NOT be under the system temp dir " \
+            f"{sys_tmp} — Globus refuses to scan it"
+        repo_root = Path(rcs.__file__).resolve().parents[2]
+        assert str(stage).startswith(str(repo_root)), \
+            f"render staging {stage} must live under the repo {repo_root} " \
+            f"(which is under $HOME, so Globus can access it)"

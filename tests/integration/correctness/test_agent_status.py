@@ -184,11 +184,11 @@ def test_frozen_envs_summary_attaches_deliverable_paths(tmp_path):
 
 @pytest.mark.integration
 def test_sealed_workflows_summary_walks_workflow_yamls(tmp_path):
-    """One row per workflow.yaml on disk, with the GUIDE.md sibling when
-    it exists, and `validated_in_shipped_image` surfaced from the spec."""
+    """One row per workflow.yaml on disk, with the RUN.html dashboard sibling
+    when it exists, and `validated_in_shipped_image` surfaced from the spec."""
     er = tmp_path / "env_reports"
     er.mkdir()
-    # A complete workflow (spec + guide)
+    # A complete workflow (spec + run dashboard)
     (er / "wgs.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "wgs",
         "description": "WGS alignment + variant calling",
@@ -196,8 +196,8 @@ def test_sealed_workflows_summary_walks_workflow_yamls(tmp_path):
         "envs": [{"image_digest": "sha256:aaa"}],
         "pipeline_steps": [{"step": 1}, {"step": 2}, {"step": 3}],
     }))
-    (er / "wgs.GUIDE.md").write_text("# WGS guide")
-    # An incomplete one (spec only, no guide)
+    (er / "wgs.RUN.html").write_text("<html>wgs run dashboard</html>")
+    # An incomplete one (spec only, no dashboard)
     (er / "rnaseq.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "rnaseq",
         "validated_in_shipped_image": False,
@@ -210,13 +210,15 @@ def test_sealed_workflows_summary_walks_workflow_yamls(tmp_path):
     assert "wgs" in by_name and "rnaseq" in by_name
 
     wgs = by_name["wgs"]
-    assert wgs["guide"] and wgs["guide"].endswith("wgs.GUIDE.md")
+    assert wgs["run_report"] and wgs["run_report"].endswith("wgs.RUN.html")
     assert wgs["validated_in_shipped_image"] is True
     assert wgs["pinned_env_digests"] == ["sha256:aaa"]
     assert wgs["pipeline_steps"] == 3
+    # the spec-only workflow reports no dashboard rather than inventing one
+    assert by_name["rnaseq"]["run_report"] is None
 
     rs = by_name["rnaseq"]
-    assert rs["guide"] is None
+    assert rs["run_report"] is None
     assert rs["validated_in_shipped_image"] is False
 
 

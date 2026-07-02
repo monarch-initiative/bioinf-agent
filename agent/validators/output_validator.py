@@ -16,6 +16,7 @@ Preferred validators per type:
 from __future__ import annotations
 
 import gzip
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,12 @@ class OutputValidator:
         """SAM and BAM — samtools quickcheck + flagstat."""
         ret = self._run_tool(["samtools", "quickcheck", str(path)], timeout=60)
         if ret.returncode != 0:
+            if getattr(ret, "tool_found", False):
+                # samtools RAN and rejected the file — a truncated/corrupt BAM.
+                # Falling back to the lenient text check here would launder a
+                # real rejection into a pass (H1). Fail loudly instead.
+                return {"passed": False, "validation_method": "tool",
+                        "error": f"samtools quickcheck rejected the file: {ret.stderr.strip()[:200]}"}
             return self._sam_text_fallback(path)
         stat = self._run_tool(["samtools", "flagstat", str(path)], timeout=120)
         if stat.returncode == 0:
@@ -130,6 +137,11 @@ class OutputValidator:
             result = self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
             result["validation_method"] = "tool"
             return result
+        if getattr(ret, "tool_found", False):
+            # seqkit RAN and rejected the file (malformed FASTQ) — don't launder
+            # a real rejection into a text-fallback pass (H1).
+            return {"passed": False, "validation_method": "tool",
+                    "error": f"seqkit stats rejected the file: {ret.stderr.strip()[:200]}"}
         # Fallback: manual 4-line check
         lines = self._head_lines(path, 8)
         if len(lines) < 4:
@@ -149,6 +161,11 @@ class OutputValidator:
             result = self._parse_seqkit_stats(ret.stdout) or {"passed": True, "note": "seqkit stats passed"}
             result["validation_method"] = "tool"
             return result
+        if getattr(ret, "tool_found", False):
+            # seqkit RAN and rejected the file (malformed FASTA) — don't launder
+            # a real rejection into a text-fallback pass (H1).
+            return {"passed": False, "validation_method": "tool",
+                    "error": f"seqkit stats rejected the file: {ret.stderr.strip()[:200]}"}
         lines = self._head_lines(path, 5)
         if not lines:
             return {"passed": False, "validation_method": "text_fallback", "error": "Empty FASTA"}
@@ -161,6 +178,11 @@ class OutputValidator:
         ret = self._run_tool(["bcftools", "stats", str(path)], timeout=60)
         if ret.returncode == 0:
             return {"passed": True, "validation_method": "tool", "bcftools_stats": self._parse_bcftools_sn(ret.stdout)}
+        if getattr(ret, "tool_found", False):
+            # bcftools RAN and rejected the file (malformed VCF/BCF) — don't
+            # launder a real rejection into a text-fallback pass (H1).
+            return {"passed": False, "validation_method": "tool",
+                    "error": f"bcftools stats rejected the file: {ret.stderr.strip()[:200]}"}
         # Fallback: text check (plain VCF, bcftools not available)
         lines = self._head_lines(path, 30)
         if not any(l.startswith("##") for l in lines):
@@ -347,19 +369,39 @@ class OutputValidator:
     # Helpers
     # -----------------------------------------------------------------------
 
-    def _run_tool(self, cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-        """Resolve binary: pipeline env → core_tools env → system PATH."""
-        tool = cmd[0]
+    def _resolve_binary(self, tool: str) -> str | None:
+        """Resolve a validator binary: pipeline env → core_tools env → system
+        PATH. Returns the resolved path, or None if the tool is absent
+        everywhere. The None case is what distinguishes "validator not
+        installed" from "validator ran and rejected the file" (see _run_tool)."""
         for env in [self._env_name, self._core_tools_env]:
             if env:
                 bin_path = self._envs_dir / env / "bin" / tool
                 if bin_path.exists():
-                    cmd = [str(bin_path)] + cmd[1:]
-                    break
+                    return str(bin_path)
+        return shutil.which(tool)
+
+    def _run_tool(self, cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+        """Resolve binary: pipeline env → core_tools env → system PATH.
+
+        The returned CompletedProcess carries a `tool_found` attribute (fix
+        H1): callers MUST distinguish a nonzero rc because the validator is
+        ABSENT (fall back to a structural text check) from a nonzero rc
+        because the validator RAN and REJECTED the file (a real failure — must
+        NOT be laundered into a pass by the lenient fallback)."""
+        tool = cmd[0]
+        resolved = self._resolve_binary(tool)
+        run_cmd = [resolved] + cmd[1:] if resolved else cmd
         try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            cp = subprocess.run(run_cmd, capture_output=True, text=True, timeout=timeout)
+            cp.tool_found = resolved is not None
+            return cp
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(e))
+            cp = subprocess.CompletedProcess(run_cmd, returncode=1, stdout="", stderr=str(e))
+            # FileNotFoundError ⇒ genuinely absent; TimeoutExpired ⇒ the tool
+            # exists but hung. Only the latter counts as "found".
+            cp.tool_found = resolved is not None and isinstance(e, subprocess.TimeoutExpired)
+            return cp
 
     def _max_fastq_read_length(self, path: Path, max_records: int = 1000) -> int:
         """Scan up to max_records FASTQ records and return the maximum sequence length."""

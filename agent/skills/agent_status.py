@@ -103,14 +103,14 @@ def _sealed_workflows_summary(env_reports_dir: Path) -> list[dict]:
             except Exception:
                 spec = {}
             name = spec.get("workflow_name") or spec_path.stem.replace(".workflow", "")
-            guide = env_reports_dir / f"{name}.GUIDE.md"
+            run_report = env_reports_dir / f"{name}.RUN.html"
             # Envs the spec pins (multi-env workflows record several).
             env_blocks = spec.get("envs") or []
             env_digests = [b.get("image_digest") for b in env_blocks if b.get("image_digest")]
             out.append({
                 "name":          name,
                 "spec":          str(spec_path),
-                "guide":         str(guide) if guide.exists() else None,
+                "run_report":    str(run_report) if run_report.exists() else None,
                 "description":   (spec.get("description") or "")[:120],
                 "validated_in_shipped_image": spec.get("validated_in_shipped_image"),
                 "pinned_env_digests": env_digests,

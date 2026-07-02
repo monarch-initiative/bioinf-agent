@@ -442,6 +442,18 @@ def run_step_on_cluster(pipeline_id: str,
       (b) Call again with a different command — multi-step workflows
       (c) `discard_pipeline_draft(pipeline_id)` — run-and-go
 
+    INPUT SEMANTICS — read this (differs from run_step_in_container):
+    `inputs` values are REMOTE absolute paths that must ALREADY EXIST on
+    the cluster (they become `${params.x}` in main.nf verbatim). This
+    primitive uploads ONLY the 3 rendered workflow files (main.nf /
+    nextflow.config / launcher.sh) to scratch — it does NOT stage input
+    DATA. Its local analog `run_step_in_container` bind-mounts LOCAL
+    paths; this one does not. So `upload(...)` your input data into
+    scratch (or point at data already on the cluster) BEFORE calling —
+    an input path that isn't present on the cluster makes the Nextflow
+    process fail at runtime, not here. (Auto-staging local inputs is a
+    planned Wave-2 improvement; today the precondition is on the caller.)
+
     `outputs`: `{placeholder_name: bare_filename}` — the file the
     process writes (Nextflow's publishDir lands it in the scratch
     workflow_dir).
