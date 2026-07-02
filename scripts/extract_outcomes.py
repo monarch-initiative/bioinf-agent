@@ -165,6 +165,18 @@ def main() -> int:
         print(f"      ✗ {e['code']:<34} {e['where']}")
 
     print(f"\n  wrote docs/outcomes_ledger.json")
+
+    # Re-render the health panel from the fresh ledger so the picture never
+    # lags the model. Best-effort: a render failure must not fail the harvest.
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "render_outcomes_dashboard", ROOT / "scripts" / "render_outcomes_dashboard.py")
+        rd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rd)
+        rd.main()
+    except Exception as e:   # pragma: no cover - convenience wiring only
+        print(f"  ! dashboard render skipped: {type(e).__name__}: {e}")
     return 0
 
 

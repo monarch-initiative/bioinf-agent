@@ -67,6 +67,38 @@ def _load_extractor():
     return mod
 
 
+def _load_dashboard():
+    spec = importlib.util.spec_from_file_location(
+        "render_outcomes_dashboard", ROOT / "scripts" / "render_outcomes_dashboard.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.integration
+def test_dashboard_renders_every_terminal_deterministically():
+    """The health panel (docs/outcomes_dashboard.html) must be a faithful,
+    self-contained projection of the ledger: every terminal present, no CDN, no
+    leftover format braces, and byte-identical on a re-render (deterministic)."""
+    import json, re
+    rd = _load_dashboard()
+    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
+    html1 = rd.render(ledger)
+    html2 = rd.render(ledger)
+    assert html1 == html2, "dashboard render is not deterministic"
+    assert "<li class=" in html1
+    assert html1.count("<li class=") == len(ledger), \
+        "dashboard dropped or duplicated terminals vs the ledger"
+    assert "src=" not in html1.lower() or "http" not in html1.lower(), \
+        "dashboard must be self-contained (no external/CDN resources)"
+    assert not re.search(r"\{[a-z_]+\}", html1), \
+        "unfilled Python format placeholder leaked into the HTML"
+    # every tagged code should appear somewhere in the page
+    for e in ledger:
+        if e.get("code"):
+            assert e["code"] in html1, f"terminal {e['code']} missing from dashboard"
+
+
 # Files where the outcome-tag rollout is COMPLETE — every dict-literal
 # error/success terminal is tagged. Add a file here once the extractor reports
 # zero untagged terminals for it; the ratchet below then keeps it that way.
