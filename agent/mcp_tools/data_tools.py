@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.outcomes import refused
 @mcp.tool()
 def download_reference_database(
     name: str,
@@ -301,19 +302,20 @@ def select_test_data(
 
     scored = [(d, _score(d), bool(d.get("available"))) for d in sequencing]
     if not scored:
-        return {"error": "no sequencing test data on disk"}
+        return refused("data.no_test_data_on_disk", error="no sequencing test data on disk")
     scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
     best, score, available = scored[0]
     if score == 0:
-        return {
-            "error": "no test data matches the requested criteria",
-            "criteria": {
+        return refused(
+            "data.no_test_data_match",
+            error="no test data matches the requested criteria",
+            criteria={
                 "genome_build": genome_build, "assay_type": assay_type,
                 "end_type": end_type, "sample": sample,
                 "accession": accession, "subset": subset,
                 "file_format": file_format,
             },
-        }
+        )
 
     test_data_ref = {
         "genome_build":    best.get("genome_build", ""),

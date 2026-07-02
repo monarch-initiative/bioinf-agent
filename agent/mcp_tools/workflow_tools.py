@@ -30,6 +30,7 @@ from typing import Any, Optional
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
+from agent.skills.outcomes import broke, proven, refused  # terminal outcome tags
 
 
 # ---------------------------------------------------------------------------
@@ -119,18 +120,20 @@ def seal_workflow(
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return {"success": False, "error": f"unknown pipeline_id: {pipeline_id}"}
+        return refused("seal.unknown_pipeline_id", success=False,
+                       error=f"unknown pipeline_id: {pipeline_id}")
     fr = _ms._env_cache.lookup(freeze_request_key)
     if not fr:
-        return {"success": False,
-                "error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
+        return refused("seal.no_frozen_env", success=False,
+                       error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
 
     from agent.skills.spec_writer import (check_workflow_invariants, self_test_usage,
                                           write_workflow_spec)
     violations = check_workflow_invariants(draft)
     if violations:
-        return {"success": False, "stage": "workflow_invariants",
-                "violations": violations, "violation_count": len(violations)}
+        return refused("seal.workflow_invariants", success=False,
+                       stage="workflow_invariants",
+                       violations=violations, violation_count=len(violations))
 
     # The usage.command_template IS the workflow's run contract — establish
     # usage_verified honestly by self-testing it (I4), since the draft doesn't
@@ -154,14 +157,14 @@ def seal_workflow(
             usage_ok = False
             usage_detail = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         if not usage_ok:
-            return {
-                "success": False, "stage": "usage_self_test",
-                "error": "I4: usage.command_template failed its self-test — it did not "
-                         "execute green against every declared trial, so it cannot be "
-                         "sealed as the workflow's verified run contract. Fix the template "
-                         "(or the trials' substitutions) and re-seal.",
-                "usage_self_test": usage_detail,
-            }
+            return refused(
+                "seal.usage_self_test_failed", success=False, stage="usage_self_test",
+                error="I4: usage.command_template failed its self-test — it did not "
+                      "execute green against every declared trial, so it cannot be "
+                      "sealed as the workflow's verified run contract. Fix the template "
+                      "(or the trials' substitutions) and re-seal.",
+                usage_self_test=usage_detail,
+            )
 
     # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
     # frozen env (their own freeze). Validate every step's container digest against
@@ -222,21 +225,20 @@ def seal_workflow(
     # stand on its own).
     self_violations = check_workflow_invariants(wf)
     if self_violations:
-        return {"success": False, "stage": "workflow_self_verify",
-                "reason": "constructed WorkflowSpec failed its own run-side invariants — "
-                          "it would not be re-verifiable standalone",
-                "violations": self_violations, "violation_count": len(self_violations)}
-    result = {
-        "success": True,
-        "workflow_name": wname,
-        "env_pinned_digest": fr.get("content_digest"),
-        "env_image": fr.get("image"),
-        "commands_shown": len(_ms._user_guide.executed_commands(draft)),
-    }
+        return refused("seal.self_verify_failed", success=False,
+                       stage="workflow_self_verify",
+                       reason="constructed WorkflowSpec failed its own run-side invariants — "
+                              "it would not be re-verifiable standalone",
+                       violations=self_violations, violation_count=len(self_violations))
+    result = proven(
+        "seal.sealed", success=True, workflow_name=wname,
+        env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
+        commands_shown=len(_ms._user_guide.executed_commands(draft)),
+    )
     if write:
         out = write_workflow_spec(wf, _ms.config)
         if out.get("error"):
-            return {"success": False, **out}
+            return broke("seal.spec_write_failed", success=False, **out)
         result.update(out)
         # Layer-2 deliverable: render THIS workflow's run dashboard
         # ({workflow_name}.RUN.html) from the verified spec — validated evidence

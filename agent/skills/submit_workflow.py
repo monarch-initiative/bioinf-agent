@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills import compute_access, transfer, workflow_render
+from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -177,8 +178,9 @@ def sbatch_via_ssh(env: dict, workflow_dir: str, *,
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        return {"error": f"sbatch timed out after {e.timeout}s",
-                "launcher": launcher}
+        return broke("submit.sbatch_timeout",
+                error=f"sbatch timed out after {e.timeout}s",
+                launcher=launcher)
 
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
@@ -190,18 +192,18 @@ def sbatch_via_ssh(env: dict, workflow_dir: str, *,
         }
         if hint:
             out["hint"] = hint
-        return out
+        return broke("submit.sbatch_failed", **out)
 
     job_id = _parse_sbatch_parsable(res.stdout)
     if job_id is None:
-        return {
-            "error": (
+        return broke("submit.sbatch_unparseable",
+            error=(
                 "sbatch returned 0 but stdout was not a parseable "
                 "job_id (--parsable expected <id> or <id>;<cluster>)"),
-            "sbatch_stdout":  (res.stdout or "").strip()[:500],
-            "sbatch_stderr":  (res.stderr or "").strip()[:500],
-            "launcher":       launcher,
-        }
+            sbatch_stdout=(res.stdout or "").strip()[:500],
+            sbatch_stderr=(res.stderr or "").strip()[:500],
+            launcher=launcher,
+        )
 
     return {"job_id": job_id, "launcher": launcher,
             "sbatch_command": sbatch_cmd}
@@ -283,17 +285,18 @@ def submit_workflow_job(project_name: str,
 
         env_type = env.get("type")
         if env_type != "ssh":
-            return {"error":
-                f"submit_workflow_job only supports ssh compute envs; "
-                f"got type={env_type!r} on env {compute_env_name!r}"}
+            return refused("submit.non_ssh_env",
+                error=f"submit_workflow_job only supports ssh compute envs; "
+                f"got type={env_type!r} on env {compute_env_name!r}")
 
         if not workflow_dir or not workflow_dir.strip():
-            return {"error":
+            return refused("submit.workflow_dir_required",
+                error=
                 "workflow_dir is required for submit_workflow_job — "
                 "this is the production primitive that lands in a "
                 "user-declared `directories[]` path. For "
                 "validation/seal runs in the agent's scratch sandbox, "
-                "use run_step_on_cluster instead."}
+                "use run_step_on_cluster instead.")
 
         normed_dir = _validate_workflow_dir(workflow_dir)
 
@@ -340,18 +343,22 @@ def submit_workflow_job(project_name: str,
                     access_path=str(Path(access_path)) if access_path else None,
                     timeout=timeout)
                 if "error" in up:
-                    return {
-                        "error":
+                    return broke("submit.upload_failed",
+                        error=
                             f"upload of {fname} failed before sbatch: "
                             f"{up['error']}",
-                        "files_uploaded": files_uploaded,
-                        "rendered_locally": True,
-                    }
+                        files_uploaded=files_uploaded,
+                        rendered_locally=True,
+                    )
                 files_uploaded.append(up["remote_abs_path"])
 
         # ─── sbatch launcher.sh, parse job_id ──────────────────────────
         sb = sbatch_via_ssh(env, normed_dir, timeout=timeout)
         if "error" in sb:
+            # sb is ALREADY a tagged terminal from sbatch_via_ssh (broke
+            # with a submit.sbatch_* code); pass it through verbatim, only
+            # merging the forensic files_uploaded list. Re-wrapping would
+            # clobber the inner code + duplicate the `code`/`outcome` kwargs.
             return {**sb, "files_uploaded": files_uploaded}
 
         job_id = sb["job_id"]

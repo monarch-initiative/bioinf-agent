@@ -30,6 +30,7 @@ from agent.skills import freeze as _freeze
 from agent.skills import install_commands as ic
 from agent.skills import resolver as _resolver
 from agent.skills.env_build import EnvBuild
+from agent.skills.outcomes import refused, broke
 
 # coupled tiers → the engine toolchain conda specs they need to BUILD in-container.
 # (pip is NOT here — it's declared through the engine directly via add_pip, not a
@@ -196,7 +197,7 @@ def _map_install(
     if t == "jar":
         jar_url = im.get("source") or im.get("jar_url")
         if not jar_url:
-            return {"error": f"jar tool '{name}' has no jar_url to replay"}
+            return refused("build.jar_no_url", error=f"jar tool '{name}' has no jar_url to replay")
         hh = sha256_of_url(jar_url)              # jars rarely publish a checksum; best-effort
         return {"spec": ic.jar(name, jar_url, sha256=hh.get("sha256", "") if hh.get("ok") else "",
                                java_flags=im.get("java_flags"), wrapper=name)}
@@ -218,11 +219,12 @@ def _map_install(
                 build_command=im.get("build_command") or "",   # N2: optional in-image build
                 wrapper=name)}
         if not im.get("build_command") or not im.get("bin_path"):
-            return {"error": f"source tool '{name}' is not replayable: install_method needs "
+            return refused("build.source_non_replayable",
+                           error=f"source tool '{name}' is not replayable: install_method needs "
                              f"build_command + bin_path (compiled tool) OR entrypoint "
                              f"(run-by-path script repo, optionally with build_command "
                              f"for projects that build assets but run as a script) — "
-                             f"re-run install_git_repo with one of those shapes."}
+                             f"re-run install_git_repo with one of those shapes.")
         return {"spec": ic.source(name, im.get("source") or "",
                                   ref=im.get("commit_sha") or im.get("ref") or "",
                                   build_command=im.get("build_command"),
@@ -234,7 +236,8 @@ def _map_install(
         # synthesis.validate_submission). Replayed verbatim; no per-tool generator.
         cmds = im.get("commands") or []
         if not cmds:
-            return {"error": f"synthesized tool '{name}' has no commands to replay"}
+            return refused("build.synthesized_no_commands",
+                           error=f"synthesized tool '{name}' has no commands to replay")
         return {"spec": ic.synthesized(name, cmds, tool=im.get("tool") or name,
                                        evidence=im.get("evidence") or "",
                                        engine_coupled=im.get("engine_coupled", False),
@@ -268,16 +271,19 @@ def _map_install(
     if t == "binary":
         la = resolve_linux_asset(im.get("binary_url") or "")
         if not la.get("found"):
-            return {"error": f"could not resolve a {platform} asset for binary '{name}': "
-                             f"{la.get('reason')}", "available": la.get("available")}
+            return broke("build.binary_asset_unresolved",
+                         error=f"could not resolve a {platform} asset for binary '{name}': "
+                             f"{la.get('reason')}", available=la.get("available"))
         hh = sha256_of_url(la["url"])
         if not hh.get("ok"):
-            return {"error": f"could not hash {platform} asset for '{name}': {hh.get('reason')}"}
+            return broke("build.binary_asset_hash_failed",
+                         error=f"could not hash {platform} asset for '{name}': {hh.get('reason')}")
         inner = PurePosixPath(im.get("local_path") or name).name
         return {"spec": ic.release_binary(name, la["url"], sha256=hh["sha256"],
                                           binary_in_archive=inner, wrapper=name)}
 
-    return {"error": f"install_method.type {t!r} for '{name}' has no container-native generator"}
+    return refused("build.unknown_install_type",
+                   error=f"install_method.type {t!r} for '{name}' has no container-native generator")
 
 
 def plan_conda(conda_deps: list[str], non_conda: list[dict]) -> list[str]:
@@ -396,8 +402,9 @@ def build_env_image(
     for x in tool_installs:
         m = _map_install(x, platform)
         if "error" in m:
-            return {"success": False, "stage": "map_install", "reason": m["error"],
-                    "available": m.get("available")}
+            return refused("build.map_install_non_replayable", success=False,
+                           stage="map_install", reason=m["error"],
+                           available=m.get("available"))
         tool_specs.append(m["spec"])
 
     # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).
@@ -500,7 +507,8 @@ def build_env_from_tools(
         d = resolve_fn(tool, version=ver, github_repo=github_repos.get(tool, ""),
                        language=languages.get(tool, ""), prefer=prefers.get(tool, ""))
         if d.get("ambiguous"):
-            return {"success": False, "stage": "resolve", "tool": tool, "reason": d.get("rationale")}
+            return refused("build.resolve_ambiguous", success=False,
+                           stage="resolve", tool=tool, reason=d.get("rationale"))
         action = _resolver.route(d, platform)
         kind = action.get("kind")
         if kind == "conda":
@@ -522,8 +530,9 @@ def build_env_from_tools(
             if action.get("tier") in _R_TIERS:
                 needs_r = True
         else:  # defer / no automatable tier
-            return {"success": False, "stage": "route", "tool": tool,
-                    "reason": action.get("reason"), "decision": d}
+            return refused("build.route_no_tier", success=False,
+                           stage="route", tool=tool,
+                           reason=action.get("reason"), decision=d)
 
     if needs_r:  # R toolchain for the engine (compiles source CRAN/Bioc pkgs)
         for s in _TOOLCHAIN_SPECS["r_install"]:

@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access, transfer
+from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -174,16 +175,19 @@ def inspect_staged_sif(env: dict, sif_remote_abs: str,
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        return {"error": f"apptainer inspect timed out after {e.timeout}s"}
+        return broke("stage.inspect_timeout",
+                     error=f"apptainer inspect timed out after {e.timeout}s")
     out = res.stdout or ""
     if "SIF_MISSING" in out:
-        return {"error": f"staged .sif not found on cluster at {sif_remote_abs!r} "
-                         f"— stage_apptainer_image must run first"}
+        return refused("stage.inspect_sif_missing",
+                error=f"staged .sif not found on cluster at {sif_remote_abs!r} "
+                      f"— stage_apptainer_image must run first")
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-        return {"error": f"apptainer inspect ssh failed (rc={res.returncode}): "
-                         f"{(res.stderr or '').strip()[:300]}",
-                **({"hint": hint} if hint else {})}
+        return broke("stage.inspect_ssh_failed",
+                error=f"apptainer inspect ssh failed (rc={res.returncode}): "
+                      f"{(res.stderr or '').strip()[:300]}",
+                **({"hint": hint} if hint else {}))
 
     head, _, tail = out.partition("---INSPECT---")
     # First whitespace token of the first non-empty line = the hash (drops the
@@ -242,9 +246,9 @@ def stage_apptainer_image(
             env_cache = _ms._env_cache
         record = env_cache.lookup(freeze_request_key)
         if not record:
-            return {"error":
-                f"freeze_request_key {freeze_request_key!r} not in "
-                f"EnvCache. Call freeze() first."}
+            return refused("stage.not_in_cache",
+                error=f"freeze_request_key {freeze_request_key!r} not in "
+                f"EnvCache. Call freeze() first.")
 
         # Resolve env + project + auth (env-implicit container_upload perm)
         access = compute_access.load_access(
@@ -254,9 +258,9 @@ def stage_apptainer_image(
 
         env_type = env.get("type")
         if env_type != "ssh":
-            return {"error":
-                f"stage_apptainer_image only supports ssh envs; "
-                f"got type={env_type!r} on env {compute_env_name!r}"}
+            return refused("stage.non_ssh_env",
+                error=f"stage_apptainer_image only supports ssh envs; "
+                f"got type={env_type!r} on env {compute_env_name!r}")
 
         # Project must have access to env (same shape as the other
         # env-implicit primitives — no per-directory perm needed for
@@ -266,10 +270,10 @@ def stage_apptainer_image(
             isinstance(b, dict) and b.get("compute_env") == compute_env_name
             for b in (project.get("compute_env_access") or []))
         if not has_access:
-            return {"error":
-                f"PermissionDenied: project {project_name!r} has no "
+            return refused("stage.no_env_access",
+                error=f"PermissionDenied: project {project_name!r} has no "
                 f"compute_env_access entry for compute_env "
-                f"{compute_env_name!r}"}
+                f"{compute_env_name!r}")
 
         # Container artifacts (.sif + .tar) land ONLY in the env's
         # container_upload_target — no fallback to agent_common_data_target
@@ -281,12 +285,12 @@ def stage_apptainer_image(
         ct_path = (ct.get("path") or "").rstrip("/")
         ct_perms = ct.get("permissions") or []
         if not (ct_path and "upload" in ct_perms):
-            return {"error":
-                f"env {compute_env_name!r} has no `container_upload_target` "
+            return refused("stage.no_upload_target",
+                error=f"env {compute_env_name!r} has no `container_upload_target` "
                 f"with `upload` permission. Declare one in projects_access.yaml "
                 f"under compute_envs[name={compute_env_name!r}]; container "
                 f"artifacts (.sif + .tar) land there exclusively — they do NOT "
-                f"fall back to agent_common_data_target."}
+                f"fall back to agent_common_data_target.")
 
         env_name_for_sif = (record.get("name")
                             or freeze_request_key.split("|", 1)[0])
@@ -298,8 +302,8 @@ def stage_apptainer_image(
                    f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
         # Refuse traversal in sif_subpath
         if ".." in subpath.split("/") or subpath.startswith("/"):
-            return {"error":
-                f"sif_subpath {subpath!r} must be relative + no `..`"}
+            return refused("stage.bad_subpath",
+                error=f"sif_subpath {subpath!r} must be relative + no `..`")
         sif_remote_abs = f"{ct_path}/{subpath}"
 
         mode = record.get("mode")
@@ -309,9 +313,9 @@ def stage_apptainer_image(
         if mode == "adopt":
             image = record.get("image")
             if not image:
-                return {"error":
-                    f"ADOPT record missing `image`; can't pull "
-                    f"(request_key={freeze_request_key!r})"}
+                return refused("stage.adopt_missing_image",
+                    error=f"ADOPT record missing `image`; can't pull "
+                    f"(request_key={freeze_request_key!r})")
             docker_uri = f"docker://{image}"
             remote_cmd = _build_apptainer_pull_cmd(sif_remote_abs, docker_uri)
             argv = _ssh_argv(env, remote_cmd)
@@ -320,25 +324,25 @@ def stage_apptainer_image(
             if res.returncode != 0:
                 hint = _ssh_failure_hint(res.stderr or "",
                                           env.get("host", "?"))
-                return {
-                    "error":
+                return broke("stage.pull_failed",
+                    error=
                         f"apptainer pull failed (rc={res.returncode}): "
                         f"{(res.stderr or '').strip()[:500]}",
-                    "apptainer_stderr": (res.stderr or "").strip()[:1000],
-                    "remote_cmd":       remote_cmd[:200],
+                    apptainer_stderr=(res.stderr or "").strip()[:1000],
+                    remote_cmd=remote_cmd[:200],
                     **({"hint": hint} if hint else {}),
-                }
+                )
             skipped = "SKIP_ALREADY_STAGED" in (res.stdout or "")
-            return {
-                "success":       True,
-                "compute_env":   compute_env_name,
-                "mode":          "adopt",
-                "sif_path":      sif_remote_abs,
-                "image_digest":  image_digest,
-                "request_key":   freeze_request_key,
-                "skipped":       skipped,
-                "staged_at":     datetime.now(timezone.utc).isoformat(),
-            }
+            return proven("stage.adopted",
+                success=True,
+                compute_env=compute_env_name,
+                mode="adopt",
+                sif_path=sif_remote_abs,
+                image_digest=image_digest,
+                request_key=freeze_request_key,
+                skipped=skipped,
+                staged_at=datetime.now(timezone.utc).isoformat(),
+            )
 
         # ─── BUILD-with-push_target path ─────────────────────────────
         push_target = record.get("push_target")
@@ -349,22 +353,22 @@ def stage_apptainer_image(
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
             if res.returncode != 0:
-                return {
-                    "error":
+                return broke("stage.push_pull_failed",
+                    error=
                         f"apptainer pull (push_target) failed (rc="
                         f"{res.returncode}): {(res.stderr or '').strip()[:500]}",
-                    "apptainer_stderr": (res.stderr or "").strip()[:1000],
-                }
-            return {
-                "success":       True,
-                "compute_env":   compute_env_name,
-                "mode":          "build_push",
-                "sif_path":      sif_remote_abs,
-                "image_digest":  image_digest,
-                "request_key":   freeze_request_key,
-                "skipped":       "SKIP_ALREADY_STAGED" in (res.stdout or ""),
-                "staged_at":     datetime.now(timezone.utc).isoformat(),
-            }
+                    apptainer_stderr=(res.stderr or "").strip()[:1000],
+                )
+            return proven("stage.pushed",
+                success=True,
+                compute_env=compute_env_name,
+                mode="build_push",
+                sif_path=sif_remote_abs,
+                image_digest=image_digest,
+                request_key=freeze_request_key,
+                skipped="SKIP_ALREADY_STAGED" in (res.stdout or ""),
+                staged_at=datetime.now(timezone.utc).isoformat(),
+            )
 
         # ─── BUILD-registry-free path (.tar transfer + build) ────────
         # Wire-protocol routing (scp_head_node vs globus) is decided
@@ -372,15 +376,15 @@ def stage_apptainer_image(
         # this primitive doesn't second-guess it.
         tarball = record.get("tarball")
         if not tarball:
-            return {"error":
-                f"freeze record has mode={mode!r} but no `tarball` or "
+            return refused("stage.no_tarball",
+                error=f"freeze record has mode={mode!r} but no `tarball` or "
                 f"`push_target` — can't stage. (request_key="
-                f"{freeze_request_key!r})"}
+                f"{freeze_request_key!r})")
         tarball_path = Path(tarball)
         if not tarball_path.exists():
-            return {"error":
-                f"freeze record tarball missing on disk: {tarball!r}. "
-                f"Re-run freeze() to regenerate."}
+            return refused("stage.tarball_missing",
+                error=f"freeze record tarball missing on disk: {tarball!r}. "
+                f"Re-run freeze() to regenerate.")
 
         # The .tar is a container artifact — lands in the same
         # container_upload_target as the .sif (resolved above). The
@@ -399,12 +403,12 @@ def stage_apptainer_image(
         if "error" in up:
             # Tolerate the upload-already-exists case as a no-op.
             if "already exists" not in (up.get("error") or ""):
-                return {
-                    "error":
+                return broke("stage.tar_upload_failed",
+                    error=
                         f"tar upload to container_upload_target failed: "
                         f"{up['error']}",
-                    "tar_upload_error": up.get("error"),
-                }
+                    tar_upload_error=up.get("error"),
+                )
 
         # Step 2: apptainer build .sif docker-archive://<tar>
         build_cmd = (
@@ -421,27 +425,28 @@ def stage_apptainer_image(
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
         if res.returncode != 0:
-            return {
-                "error":
+            return broke("stage.apptainer_build_failed",
+                error=
                     f"apptainer build failed (rc={res.returncode}): "
                     f"{(res.stderr or '').strip()[:500]}",
-                "apptainer_build_error": (res.stderr or "").strip()[:1000],
-                "tar_remote_path":       tar_remote_abs,
-            }
-        return {
-            "success":       True,
-            "compute_env":   compute_env_name,
-            "mode":          "build_archive",
-            "sif_path":      sif_remote_abs,
-            "tar_remote_path": tar_remote_abs,
-            "image_digest":  image_digest,
-            "request_key":   freeze_request_key,
-            "skipped":       "SKIP_ALREADY_STAGED" in (res.stdout or ""),
-            "staged_at":     datetime.now(timezone.utc).isoformat(),
-        }
+                apptainer_build_error=(res.stderr or "").strip()[:1000],
+                tar_remote_path=tar_remote_abs,
+            )
+        return proven("stage.built_archive",
+            success=True,
+            compute_env=compute_env_name,
+            mode="build_archive",
+            sif_path=sif_remote_abs,
+            tar_remote_path=tar_remote_abs,
+            image_digest=image_digest,
+            request_key=freeze_request_key,
+            skipped="SKIP_ALREADY_STAGED" in (res.stdout or ""),
+            staged_at=datetime.now(timezone.utc).isoformat(),
+        )
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("stage.exception", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return {"error": f"stage_apptainer_image timed out after {e.timeout}s"}
+        return broke("stage.timeout",
+                     error=f"stage_apptainer_image timed out after {e.timeout}s")

@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.outcomes import proven, refused, broke
 
 
 def _infer_validator_type(basename: str, ext: str) -> str:
@@ -90,7 +91,8 @@ def run_pipeline_step(
     pipeline_id is required (this primitive's purpose is the merged flow).
     """
     if not pipeline_id:
-        return {"error": "pipeline_id is required for run_pipeline_step"}
+        return refused("run_pipeline_step.pipeline_id_required",
+                       error="pipeline_id is required for run_pipeline_step")
 
     result = _ms._env_mgr.run_in_env(
         env_name, command, timeout=timeout_seconds, inputs=inputs,
@@ -201,28 +203,33 @@ def run_step_in_container(
     output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
     extra_mounts: ["host:container", …] for data outside data_dir."""
     if not pipeline_id:
-        return {"error": "pipeline_id is required for run_step_in_container"}
+        return refused("run_container.pipeline_id_required",
+                       error="pipeline_id is required for run_step_in_container")
     rec = _ms._env_cache.lookup(freeze_request_key)
     if not rec:
-        return {"error": f"no frozen env for '{freeze_request_key}' — run freeze() first"}
+        return refused("run_container.no_frozen_env",
+                       error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
     image = rec.get("image")
     if not image:
-        return {"error": f"freeze record for '{freeze_request_key}' has no image handle"}
+        return refused("run_container.no_image_handle",
+                       error=f"freeze record for '{freeze_request_key}' has no image handle")
     if _ms._locus.daemon_is_remote():
         # This step bind-mounts LOCAL test data; a remote daemon (DOCKER_HOST) can't
         # see local paths, so outputs would never land back here for validation.
         # (Layer-1 freeze() build+validation IS daemon-agnostic and runs natively on
         # a remote amd64 host — only these Layer-2 DATA steps need the daemon local.)
-        return {"error": "run_step_in_container bind-mounts local test data, but the active "
+        return refused("run_container.remote_daemon",
+                error="run_step_in_container bind-mounts local test data, but the active "
                 "Docker daemon is REMOTE (DOCKER_HOST). It cannot see local paths. Use a local "
                 "daemon for Layer-2 data steps, or stage the data on the remote host and pass "
                 "data_dir as its path there. Note: Layer-1 freeze() validation runs natively on "
-                "a remote amd64 host with no change."}
+                "a remote amd64 host with no change.")
     # An adopted biocontainer is referenced by digest — pull it local so it can run.
     if _ms._docker._run(["docker", "image", "inspect", image])["returncode"] != 0:
         pull = _ms._docker._run(["docker", "pull", "--platform", platform, image], timeout=900)
         if pull["returncode"] != 0:
-            return {"error": f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}"}
+            return broke("run_container.image_pull_failed",
+                         error=f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}")
 
     ddir = (Path(data_dir) if data_dir else (_ms._env_mgr.project_root / "data")).resolve()
     mounts = [(str(ddir), str(ddir))]   # same-path mount → host abs paths work verbatim

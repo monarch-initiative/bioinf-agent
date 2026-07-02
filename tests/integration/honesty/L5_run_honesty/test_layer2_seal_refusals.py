@@ -125,6 +125,20 @@ def test_i3_failed_validation_overridden_by_mark_validated():
 
 
 @pytest.mark.integration
+def test_i3_outputs_present_but_unvalidated_refused():
+    """Gap surfaced by scripts/extract_outcomes.py (I3.outputs_validated had no
+    test reference): a rc=0 step with detected_outputs but NO validate_output
+    record (and no mark_step_validated) claims outputs it never proved. This is
+    the sibling of the no-outputs trap (I3.pipeline_step_has_outputs) and the
+    failed-validation trap (I3.validation_passed) — outputs exist, proof doesn't."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0].pop("validation", None)   # keep the outputs, drop the proof
+    v = _violations(spec, "I3.")
+    assert any(x["invariant"] == "I3.outputs_validated" for x in v), \
+        f"outputs-present-but-unvalidated was not refused: {v}"
+
+
+@pytest.mark.integration
 def test_i7_zero_resources_refused():
     """C3: keys existing is not enough — an all-zeros resource_usage means
     the monitor captured NOTHING (a process that ran has nonzero peak RSS

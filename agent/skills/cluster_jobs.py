@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.outcomes import refused, broke, loop
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -154,16 +155,16 @@ def cluster_job_status(project_name: str,
             isinstance(b, dict) and b.get("compute_env") == compute_env_name
             for b in (project.get("compute_env_access") or []))
         if not has_access:
-            return {"error":
+            return refused("cluster.no_env_access", error=
                 f"PermissionDenied: project {project_name!r} has no "
                 f"compute_env_access entry for compute_env "
-                f"{compute_env_name!r}"}
+                f"{compute_env_name!r}")
 
         env_type = env.get("type")
         if env_type != "ssh":
-            return {"error":
+            return refused("cluster.not_ssh_env", error=
                 f"cluster_job_status only supports ssh compute envs; "
-                f"got type={env_type!r} on env {compute_env_name!r}"}
+                f"got type={env_type!r} on env {compute_env_name!r}")
 
         remote_cmd = _build_sacct_cmd(norm_id)
         argv = _ssh_argv(env, remote_cmd)
@@ -171,10 +172,10 @@ def cluster_job_status(project_name: str,
                              timeout=timeout)
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-            return {"error":
+            return broke("cluster.status_ssh_failed", error=
                 f"ssh invocation failed (rc={res.returncode}): "
                 f"{(res.stderr or '').strip()[:500]}",
-                **({"hint": hint} if hint else {})}
+                **({"hint": hint} if hint else {}))
 
         jobs = _parse_sacct_output(res.stdout)
         return {
@@ -186,9 +187,9 @@ def cluster_job_status(project_name: str,
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("cluster.status_bad_arg", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return {"error": f"sacct timed out after {e.timeout}s"}
+        return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +221,9 @@ def remote_paths_exist(env: dict, paths: list[str], *,
         return {"ok": True, "checked": []}
     bad = [p for p in clean if not _ABS_SAFE_PATH_RE.match(p)]
     if bad:
-        return {"error":
+        return refused("cluster.unsafe_input_path", error=
             f"input path(s) are not absolute safe paths (refused before ssh): "
-            f"{bad[:5]}"}
+            f"{bad[:5]}")
     checks = "; ".join(
         f'[ -e {shlex.quote(p)} ] || echo MISSING:{shlex.quote(p)}'
         for p in clean)
@@ -232,24 +233,24 @@ def remote_paths_exist(env: dict, paths: list[str], *,
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        return {"error":
-            f"remote input existence check timed out after {e.timeout}s"}
+        return broke("cluster.input_check_timeout", error=
+            f"remote input existence check timed out after {e.timeout}s")
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-        return {"error":
+        return broke("cluster.input_check_ssh_failed", error=
             f"remote input check ssh failed (rc={res.returncode}): "
             f"{(res.stderr or '').strip()[:300]}",
-            **({"hint": hint} if hint else {})}
+            **({"hint": hint} if hint else {}))
     missing = [ln.split("MISSING:", 1)[1]
                for ln in (res.stdout or "").splitlines()
                if ln.startswith("MISSING:")]
     if missing:
-        return {"error":
+        return refused("cluster.inputs_missing", error=
             f"{len(missing)} declared input(s) do not exist on the cluster: "
             f"{missing[:5]}. run_step_on_cluster does NOT stage input DATA — "
             f"upload them into scratch (or point at data already on the "
             f"cluster) before calling.",
-            "missing_paths": missing}
+            missing_paths=missing)
     return {"ok": True, "checked": clean}
 
 
@@ -347,16 +348,16 @@ def cluster_job_resources(project_name: str,
             isinstance(b, dict) and b.get("compute_env") == compute_env_name
             for b in (project.get("compute_env_access") or []))
         if not has_access:
-            return {"error":
+            return refused("cluster.res_no_env_access", error=
                 f"PermissionDenied: project {project_name!r} has no "
                 f"compute_env_access entry for compute_env "
-                f"{compute_env_name!r}"}
+                f"{compute_env_name!r}")
 
         env_type = env.get("type")
         if env_type != "ssh":
-            return {"error":
+            return refused("cluster.res_not_ssh_env", error=
                 f"cluster_job_resources only supports ssh compute envs; "
-                f"got type={env_type!r}"}
+                f"got type={env_type!r}")
 
         remote_cmd = _build_sacct_resource_cmd(norm_id)
         argv = _ssh_argv(env, remote_cmd)
@@ -364,10 +365,10 @@ def cluster_job_resources(project_name: str,
                              timeout=timeout)
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-            return {"error":
+            return broke("cluster.res_ssh_failed", error=
                 f"ssh invocation failed (rc={res.returncode}): "
                 f"{(res.stderr or '').strip()[:500]}",
-                **({"hint": hint} if hint else {})}
+                **({"hint": hint} if hint else {}))
 
         rows = []
         for line in (res.stdout or "").splitlines():
@@ -386,9 +387,9 @@ def cluster_job_resources(project_name: str,
             })
 
         if not rows:
-            return {"error":
+            return loop("cluster.res_no_rows_retry", error=
                 f"sacct returned no rows for job_id={norm_id!r} — "
-                f"job may not yet be in slurmdbd, or never existed."}
+                f"job may not yet be in slurmdbd, or never existed.")
 
         # The batch row is the source of truth for MaxRSS. Some SLURM
         # builds emit it as `<id>.batch`, others as `<id>.0`. Take the
@@ -416,6 +417,6 @@ def cluster_job_resources(project_name: str,
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("cluster.res_bad_arg", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return {"error": f"sacct timed out after {e.timeout}s"}
+        return broke("cluster.res_timeout", error=f"sacct timed out after {e.timeout}s")

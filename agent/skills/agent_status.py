@@ -30,6 +30,8 @@ from typing import Any, Optional
 
 import yaml
 
+from agent.skills.outcomes import broke
+
 
 # ---------------------------------------------------------------------------
 # Per-subsystem queries (private; each is fault-tolerant)
@@ -167,7 +169,7 @@ def _core_test_data_summary(data_dir: Path) -> dict:
             }
         return out
     except Exception as e:
-        return {"error": f"core_test_data query failed: {e}"}
+        return broke("status.core_test_data_query_failed", error=f"core_test_data query failed: {e}")
 
 
 def _envs_on_disk_summary(envs_root: Path) -> list[dict]:
@@ -213,7 +215,7 @@ def _compute_env_bridge_summary(access_path: Optional[Path]) -> dict:
             try:
                 cfg = yaml.safe_load(access_path.read_text()) or {}
             except Exception as e:
-                return {"error": f"failed to parse {access_path}: {e}"}
+                return broke("status.access_yaml_parse_failed", error=f"failed to parse {access_path}: {e}")
             out["config_path"] = str(access_path)
             out["envs"] = [e.get("name") for e in (cfg.get("compute_envs") or [])
                            if isinstance(e, dict) and e.get("name")]
@@ -239,7 +241,7 @@ def _compute_env_bridge_summary(access_path: Optional[Path]) -> dict:
         out["active_ssh_sessions"] = sockets
         return out
     except Exception as e:
-        return {"error": f"compute_env bridge query failed: {e}"}
+        return broke("status.compute_env_bridge_query_failed", error=f"compute_env bridge query failed: {e}")
 
 
 def _background_jobs_summary(job_manager) -> list[dict]:
@@ -283,7 +285,7 @@ def _repo_summary(project_root: Path) -> dict:
             "behind_origin":  behind,
         }
     except Exception as e:
-        return {"error": f"git probe failed: {e}"}
+        return broke("status.git_probe_failed", error=f"git probe failed: {e}")
 
 
 # ---------------------------------------------------------------------------

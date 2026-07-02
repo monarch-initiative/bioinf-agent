@@ -1,0 +1,3800 @@
+[
+  {
+    "code": "install.synth_refetch_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "synth_build",
+    "where": "agent/mcp_tools/env_tools.py:430",
+    "tested": false
+  },
+  {
+    "code": "freeze.container_build_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:339",
+    "tested": false
+  },
+  {
+    "code": "freeze.recipe_not_reproduced",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_env_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:518",
+    "tested": false
+  },
+  {
+    "code": "run_container.image_pull_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:231",
+    "tested": false
+  },
+  {
+    "code": "seal.spec_write_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:241",
+    "tested": false
+  },
+  {
+    "code": "status.core_test_data_query_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_core_test_data_summary",
+    "where": "agent/skills/agent_status.py:172",
+    "tested": false
+  },
+  {
+    "code": "status.access_yaml_parse_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_compute_env_bridge_summary",
+    "where": "agent/skills/agent_status.py:218",
+    "tested": false
+  },
+  {
+    "code": "status.compute_env_bridge_query_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_compute_env_bridge_summary",
+    "where": "agent/skills/agent_status.py:244",
+    "tested": false
+  },
+  {
+    "code": "status.git_probe_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_repo_summary",
+    "where": "agent/skills/agent_status.py:288",
+    "tested": false
+  },
+  {
+    "code": "cluster.status_ssh_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_status",
+    "where": "agent/skills/cluster_jobs.py:175",
+    "tested": false
+  },
+  {
+    "code": "cluster.status_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_status",
+    "where": "agent/skills/cluster_jobs.py:192",
+    "tested": false
+  },
+  {
+    "code": "cluster.input_check_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "remote_paths_exist",
+    "where": "agent/skills/cluster_jobs.py:236",
+    "tested": false
+  },
+  {
+    "code": "cluster.input_check_ssh_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "remote_paths_exist",
+    "where": "agent/skills/cluster_jobs.py:240",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_ssh_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:368",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:422",
+    "tested": false
+  },
+  {
+    "code": "modules.ssh_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_module_avail",
+    "where": "agent/skills/cluster_modules.py:210",
+    "tested": false
+  },
+  {
+    "code": "modules.timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_module_avail",
+    "where": "agent/skills/cluster_modules.py:231",
+    "tested": false
+  },
+  {
+    "code": "build.binary_asset_unresolved",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:274",
+    "tested": false
+  },
+  {
+    "code": "build.binary_asset_hash_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:279",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.stage_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:273",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.upload_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:350",
+    "tested": false
+  },
+  {
+    "code": "stage.inspect_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "inspect_staged_sif",
+    "where": "agent/skills/stage_apptainer.py:178",
+    "tested": false
+  },
+  {
+    "code": "stage.inspect_ssh_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "inspect_staged_sif",
+    "where": "agent/skills/stage_apptainer.py:187",
+    "tested": false
+  },
+  {
+    "code": "stage.pull_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:327",
+    "tested": false
+  },
+  {
+    "code": "stage.push_pull_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:356",
+    "tested": false
+  },
+  {
+    "code": "stage.tar_upload_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:406",
+    "tested": false
+  },
+  {
+    "code": "stage.apptainer_build_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:428",
+    "tested": false
+  },
+  {
+    "code": "stage.timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:451",
+    "tested": false
+  },
+  {
+    "code": "submit.sbatch_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "sbatch_via_ssh",
+    "where": "agent/skills/submit_workflow.py:181",
+    "tested": false
+  },
+  {
+    "code": "submit.sbatch_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "sbatch_via_ssh",
+    "where": "agent/skills/submit_workflow.py:195",
+    "tested": false
+  },
+  {
+    "code": "submit.sbatch_unparseable",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "sbatch_via_ssh",
+    "where": "agent/skills/submit_workflow.py:199",
+    "tested": false
+  },
+  {
+    "code": "submit.upload_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:346",
+    "tested": false
+  },
+  {
+    "code": "transfer.mkdir_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1010",
+    "tested": false
+  },
+  {
+    "code": "transfer.provider_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1045",
+    "tested": false
+  },
+  {
+    "code": "transfer.timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1116",
+    "tested": false
+  },
+  {
+    "code": "transfer.sha_mismatch_upload",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_local_mode",
+    "where": "agent/skills/transfer.py:1135",
+    "tested": false
+  },
+  {
+    "code": "transfer.local_source_missing",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_local_mode",
+    "where": "agent/skills/transfer.py:1168",
+    "tested": false
+  },
+  {
+    "code": "transfer.sha_mismatch_download",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_local_mode",
+    "where": "agent/skills/transfer.py:1184",
+    "tested": false
+  },
+  {
+    "code": "transfer.remote_exists_check_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:985",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_tool_rejected",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_sam",
+    "where": "agent/validators/output_validator.py:120",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_tool_rejected",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:151",
+    "tested": false
+  },
+  {
+    "code": "validate.fasta_tool_rejected",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fasta",
+    "where": "agent/validators/output_validator.py:175",
+    "tested": false
+  },
+  {
+    "code": "validate.vcf_tool_rejected",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_vcf",
+    "where": "agent/validators/output_validator.py:192",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_no_rows_retry",
+    "outcome": "loop",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:390",
+    "tested": false
+  },
+  {
+    "code": "transfer.submitted_async",
+    "outcome": "loop",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1055",
+    "tested": false
+  },
+  {
+    "code": "install.synth_recorded",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "synth_build",
+    "where": "agent/mcp_tools/env_tools.py:471",
+    "tested": false
+  },
+  {
+    "code": "install.spack_declared",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_spack_package",
+    "where": "agent/mcp_tools/env_tools.py:524",
+    "tested": false
+  },
+  {
+    "code": "freeze.cache_hit",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:184",
+    "tested": false
+  },
+  {
+    "code": "freeze.built",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:458",
+    "tested": false
+  },
+  {
+    "code": "freeze.recipe_verified",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_env_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:517",
+    "tested": false
+  },
+  {
+    "code": "freeze.guide_rendered",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "generate_user_guide",
+    "where": "agent/mcp_tools/freeze_tools.py:550",
+    "tested": false
+  },
+  {
+    "code": "service.probe_recorded",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_service_dependency",
+    "where": "agent/mcp_tools/service_tools.py:254",
+    "tested": false
+  },
+  {
+    "code": "seal.sealed",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:233",
+    "tested": true
+  },
+  {
+    "code": "run_cluster.step_recorded",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:519",
+    "tested": false
+  },
+  {
+    "code": "stage.adopted",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:336",
+    "tested": false
+  },
+  {
+    "code": "stage.pushed",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:362",
+    "tested": false
+  },
+  {
+    "code": "stage.built_archive",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:435",
+    "tested": false
+  },
+  {
+    "code": "transfer.transferred",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1079",
+    "tested": false
+  },
+  {
+    "code": "transfer.local_uploaded",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_local_mode",
+    "where": "agent/skills/transfer.py:1147",
+    "tested": false
+  },
+  {
+    "code": "transfer.local_downloaded",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_local_mode",
+    "where": "agent/skills/transfer.py:1195",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_sam",
+    "where": "agent/validators/output_validator.py:126",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_quickcheck_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_sam",
+    "where": "agent/validators/output_validator.py:128",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_text_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_text_fallback",
+    "where": "agent/validators/output_validator.py:139",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_text_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:163",
+    "tested": false
+  },
+  {
+    "code": "validate.fasta_text_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fasta",
+    "where": "agent/validators/output_validator.py:182",
+    "tested": false
+  },
+  {
+    "code": "validate.vcf_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_vcf",
+    "where": "agent/validators/output_validator.py:188",
+    "tested": false
+  },
+  {
+    "code": "validate.vcf_text_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_vcf",
+    "where": "agent/validators/output_validator.py:201",
+    "tested": false
+  },
+  {
+    "code": "validate.bed_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bed",
+    "where": "agent/validators/output_validator.py:222",
+    "tested": false
+  },
+  {
+    "code": "validate.bai_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bai",
+    "where": "agent/validators/output_validator.py:229",
+    "tested": false
+  },
+  {
+    "code": "validate.bigwig_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bigwig",
+    "where": "agent/validators/output_validator.py:236",
+    "tested": false
+  },
+  {
+    "code": "validate.counts_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_counts_matrix",
+    "where": "agent/validators/output_validator.py:247",
+    "tested": false
+  },
+  {
+    "code": "validate.gtf_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gtf",
+    "where": "agent/validators/output_validator.py:257",
+    "tested": false
+  },
+  {
+    "code": "validate.gfa_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gfa",
+    "where": "agent/validators/output_validator.py:274",
+    "tested": false
+  },
+  {
+    "code": "validate.log_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_log",
+    "where": "agent/validators/output_validator.py:284",
+    "tested": false
+  },
+  {
+    "code": "validate.json_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_json",
+    "where": "agent/validators/output_validator.py:300",
+    "tested": false
+  },
+  {
+    "code": "validate.jsonl_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_jsonl",
+    "where": "agent/validators/output_validator.py:331",
+    "tested": false
+  },
+  {
+    "code": "validate.html_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_html",
+    "where": "agent/validators/output_validator.py:345",
+    "tested": false
+  },
+  {
+    "code": "validate.tabular_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_tabular",
+    "where": "agent/validators/output_validator.py:362",
+    "tested": false
+  },
+  {
+    "code": "validate.txt_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_txt",
+    "where": "agent/validators/output_validator.py:383",
+    "tested": false
+  },
+  {
+    "code": "validate.any_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_any",
+    "where": "agent/validators/output_validator.py:386",
+    "tested": false
+  },
+  {
+    "code": "validate.seqkit_stats_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_parse_seqkit_stats",
+    "where": "agent/validators/output_validator.py:485",
+    "tested": false
+  },
+  {
+    "code": "validate.empty_allowed",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "validate",
+    "where": "agent/validators/output_validator.py:64",
+    "tested": false
+  },
+  {
+    "code": "data.no_test_data_on_disk",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "select_test_data",
+    "where": "agent/mcp_tools/data_tools.py:305",
+    "tested": false
+  },
+  {
+    "code": "data.no_test_data_match",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "select_test_data",
+    "where": "agent/mcp_tools/data_tools.py:309",
+    "tested": false
+  },
+  {
+    "code": "install.synth_commit_mismatch",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "synth_build",
+    "where": "agent/mcp_tools/env_tools.py:435",
+    "tested": false
+  },
+  {
+    "code": "install.synth_archive_sha_mismatch",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "synth_build",
+    "where": "agent/mcp_tools/env_tools.py:443",
+    "tested": false
+  },
+  {
+    "code": "install.synth_provenance_violation",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "synth_build",
+    "where": "agent/mcp_tools/env_tools.py:454",
+    "tested": false
+  },
+  {
+    "code": "install.r_unknown_source",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_r_package",
+    "where": "agent/mcp_tools/env_tools.py:894",
+    "tested": false
+  },
+  {
+    "code": "freeze.gated_no_license",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:124",
+    "tested": false
+  },
+  {
+    "code": "I13.gated_license_recorded",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:125",
+    "tested": true
+  },
+  {
+    "code": "freeze.adopt_honesty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:275",
+    "tested": false
+  },
+  {
+    "code": "freeze.recipe_load_failed",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_env_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:497",
+    "tested": false
+  },
+  {
+    "code": "freeze.recipe_invalid",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_env_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:500",
+    "tested": false
+  },
+  {
+    "code": "freeze.guide_no_source",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "generate_user_guide",
+    "where": "agent/mcp_tools/freeze_tools.py:546",
+    "tested": false
+  },
+  {
+    "code": "status.snapshot_gate_rejected",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "snapshot_project",
+    "where": "agent/mcp_tools/observability_tools.py:41",
+    "tested": false
+  },
+  {
+    "code": "run_container.pipeline_id_required",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:206",
+    "tested": false
+  },
+  {
+    "code": "run_container.no_frozen_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:210",
+    "tested": false
+  },
+  {
+    "code": "run_container.no_image_handle",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:214",
+    "tested": false
+  },
+  {
+    "code": "run_container.remote_daemon",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:221",
+    "tested": false
+  },
+  {
+    "code": "run_pipeline_step.pipeline_id_required",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_pipeline_step",
+    "where": "agent/mcp_tools/run_tools.py:94",
+    "tested": false
+  },
+  {
+    "code": "service.unknown_pipeline_id",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_service_dependency",
+    "where": "agent/mcp_tools/service_tools.py:223",
+    "tested": false
+  },
+  {
+    "code": "service.no_health_check_command",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_service_dependency",
+    "where": "agent/mcp_tools/service_tools.py:233",
+    "tested": false
+  },
+  {
+    "code": "seal.unknown_pipeline_id",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:123",
+    "tested": true
+  },
+  {
+    "code": "seal.no_frozen_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:127",
+    "tested": false
+  },
+  {
+    "code": "seal.workflow_invariants",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:134",
+    "tested": true
+  },
+  {
+    "code": "seal.usage_self_test_failed",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:160",
+    "tested": false
+  },
+  {
+    "code": "seal.self_verify_failed",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:228",
+    "tested": false
+  },
+  {
+    "code": "cluster.no_env_access",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_status",
+    "where": "agent/skills/cluster_jobs.py:158",
+    "tested": false
+  },
+  {
+    "code": "cluster.not_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_status",
+    "where": "agent/skills/cluster_jobs.py:165",
+    "tested": false
+  },
+  {
+    "code": "cluster.status_bad_arg",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_status",
+    "where": "agent/skills/cluster_jobs.py:190",
+    "tested": false
+  },
+  {
+    "code": "cluster.unsafe_input_path",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "remote_paths_exist",
+    "where": "agent/skills/cluster_jobs.py:224",
+    "tested": false
+  },
+  {
+    "code": "cluster.inputs_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "remote_paths_exist",
+    "where": "agent/skills/cluster_jobs.py:248",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_no_env_access",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:351",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_not_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:358",
+    "tested": false
+  },
+  {
+    "code": "cluster.res_bad_arg",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_job_resources",
+    "where": "agent/skills/cluster_jobs.py:420",
+    "tested": false
+  },
+  {
+    "code": "modules.no_env_access",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_module_avail",
+    "where": "agent/skills/cluster_modules.py:190",
+    "tested": false
+  },
+  {
+    "code": "modules.not_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_module_avail",
+    "where": "agent/skills/cluster_modules.py:197",
+    "tested": false
+  },
+  {
+    "code": "modules.bad_arg",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_module_avail",
+    "where": "agent/skills/cluster_modules.py:229",
+    "tested": false
+  },
+  {
+    "code": "build.jar_no_url",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:200",
+    "tested": false
+  },
+  {
+    "code": "build.source_non_replayable",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:222",
+    "tested": false
+  },
+  {
+    "code": "build.synthesized_no_commands",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:239",
+    "tested": false
+  },
+  {
+    "code": "build.unknown_install_type",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:285",
+    "tested": false
+  },
+  {
+    "code": "build.map_install_non_replayable",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_image",
+    "where": "agent/skills/env_freeze.py:405",
+    "tested": false
+  },
+  {
+    "code": "build.resolve_ambiguous",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_from_tools",
+    "where": "agent/skills/env_freeze.py:510",
+    "tested": false
+  },
+  {
+    "code": "build.route_no_tier",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_from_tools",
+    "where": "agent/skills/env_freeze.py:533",
+    "tested": false
+  },
+  {
+    "code": "I12.mps_dev_only",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_accelerator",
+    "where": "agent/skills/env_honesty.py:140",
+    "tested": true
+  },
+  {
+    "code": "I12.accel_toolkit_version_required",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_accelerator",
+    "where": "agent/skills/env_honesty.py:146",
+    "tested": true
+  },
+  {
+    "code": "I12.runtime_verified_needs_probe",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_accelerator",
+    "where": "agent/skills/env_honesty.py:151",
+    "tested": true
+  },
+  {
+    "code": "I12.runtime_verified_needs_driver",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_accelerator",
+    "where": "agent/skills/env_honesty.py:156",
+    "tested": true
+  },
+  {
+    "code": "PROVENANCE_CLEAN.synthesized_empty",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_provenance",
+    "where": "agent/skills/env_honesty.py:180",
+    "tested": true
+  },
+  {
+    "code": "PROVENANCE_CLEAN.untagged_command",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_provenance",
+    "where": "agent/skills/env_honesty.py:189",
+    "tested": true
+  },
+  {
+    "code": "PROVENANCE_CLEAN.extraction_unanchored",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_provenance",
+    "where": "agent/skills/env_honesty.py:194",
+    "tested": true
+  },
+  {
+    "code": "I13.gated_not_redistributable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_license",
+    "where": "agent/skills/env_honesty.py:210",
+    "tested": true
+  },
+  {
+    "code": "I13.gated_license_recorded",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_license",
+    "where": "agent/skills/env_honesty.py:214",
+    "tested": true
+  },
+  {
+    "code": "BUILT.image_present",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:243",
+    "tested": true
+  },
+  {
+    "code": "BUILT.image_digest_resolved",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:247",
+    "tested": true
+  },
+  {
+    "code": "VALIDATED_IN_IMAGE.no_evidence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:257",
+    "tested": true
+  },
+  {
+    "code": "VALIDATED_IN_IMAGE.evidence_shape",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:266",
+    "tested": true
+  },
+  {
+    "code": "VALIDATED_IN_IMAGE.evidence_passed",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:270",
+    "tested": true
+  },
+  {
+    "code": "ADOPTED_BY_DIGEST.image_present",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_adopt",
+    "where": "agent/skills/env_honesty.py:319",
+    "tested": true
+  },
+  {
+    "code": "ADOPTED_BY_DIGEST.digest_resolved",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_adopt",
+    "where": "agent/skills/env_honesty.py:323",
+    "tested": true
+  },
+  {
+    "code": "run_cluster.pipeline_id_required",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:194",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.bad_workflow_name",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:197",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.config_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:220",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.not_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:225",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.no_scratch_target",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:231",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.permission_denied",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:245",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.input_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:260",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.render_failed",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:325",
+    "tested": false
+  },
+  {
+    "code": "snapshot.no_env_access_blocks",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "snapshot_project",
+    "where": "agent/skills/snapshot.py:276",
+    "tested": false
+  },
+  {
+    "code": "snapshot.no_file_name_only_dirs",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "snapshot_project",
+    "where": "agent/skills/snapshot.py:302",
+    "tested": false
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:361",
+    "tested": true
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:369",
+    "tested": true
+  },
+  {
+    "code": "I3.pipeline_step_has_outputs",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:392",
+    "tested": true
+  },
+  {
+    "code": "I3.outputs_validated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:411",
+    "tested": true
+  },
+  {
+    "code": "I3.validation_passed",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:432",
+    "tested": true
+  },
+  {
+    "code": "I3.declared_output_type",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:455",
+    "tested": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:487",
+    "tested": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:494",
+    "tested": true
+  },
+  {
+    "code": "I6.template_placeholders_declared",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:522",
+    "tested": true
+  },
+  {
+    "code": "I7.resource_usage_recorded",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:548",
+    "tested": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:565",
+    "tested": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:576",
+    "tested": true
+  },
+  {
+    "code": "I8.authored_artifact_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:667",
+    "tested": true
+  },
+  {
+    "code": "I8.authored_artifact_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:679",
+    "tested": false
+  },
+  {
+    "code": "I8.authored_artifact_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:688",
+    "tested": true
+  },
+  {
+    "code": "I8.lineage_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:761",
+    "tested": true
+  },
+  {
+    "code": "I8.lineage_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:779",
+    "tested": false
+  },
+  {
+    "code": "I8.lineage_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:788",
+    "tested": true
+  },
+  {
+    "code": "I8.composition_coherence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_composition_coherence",
+    "where": "agent/skills/spec_writer.py:901",
+    "tested": true
+  },
+  {
+    "code": "stage.inspect_sif_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "inspect_staged_sif",
+    "where": "agent/skills/stage_apptainer.py:182",
+    "tested": false
+  },
+  {
+    "code": "stage.not_in_cache",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:249",
+    "tested": false
+  },
+  {
+    "code": "stage.non_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:261",
+    "tested": false
+  },
+  {
+    "code": "stage.no_env_access",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:273",
+    "tested": false
+  },
+  {
+    "code": "stage.no_upload_target",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:288",
+    "tested": false
+  },
+  {
+    "code": "stage.bad_subpath",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:305",
+    "tested": false
+  },
+  {
+    "code": "stage.adopt_missing_image",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:316",
+    "tested": false
+  },
+  {
+    "code": "stage.no_tarball",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:379",
+    "tested": false
+  },
+  {
+    "code": "stage.tarball_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:385",
+    "tested": false
+  },
+  {
+    "code": "stage.exception",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_apptainer_image",
+    "where": "agent/skills/stage_apptainer.py:449",
+    "tested": false
+  },
+  {
+    "code": "submit.non_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:288",
+    "tested": false
+  },
+  {
+    "code": "submit.workflow_dir_required",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:293",
+    "tested": false
+  },
+  {
+    "code": "transfer.validation_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1099",
+    "tested": false
+  },
+  {
+    "code": "transfer.permission_denied",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1104",
+    "tested": false
+  },
+  {
+    "code": "transfer.config_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1110",
+    "tested": false
+  },
+  {
+    "code": "transfer.unsupported_env_type",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:931",
+    "tested": false
+  },
+  {
+    "code": "transfer.remote_exists_local",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:973",
+    "tested": false
+  },
+  {
+    "code": "transfer.remote_exists",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:991",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_no_records",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_text_fallback",
+    "where": "agent/validators/output_validator.py:136",
+    "tested": false
+  },
+  {
+    "code": "validate.sam_bad_fields",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_text_fallback",
+    "where": "agent/validators/output_validator.py:138",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_too_few_lines",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:156",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_bad_header",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:158",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_bad_sep",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:160",
+    "tested": false
+  },
+  {
+    "code": "validate.fastq_len_mismatch",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fastq",
+    "where": "agent/validators/output_validator.py:162",
+    "tested": false
+  },
+  {
+    "code": "validate.fasta_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fasta",
+    "where": "agent/validators/output_validator.py:179",
+    "tested": false
+  },
+  {
+    "code": "validate.fasta_bad_header",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_fasta",
+    "where": "agent/validators/output_validator.py:181",
+    "tested": false
+  },
+  {
+    "code": "validate.vcf_no_meta",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_vcf",
+    "where": "agent/validators/output_validator.py:197",
+    "tested": false
+  },
+  {
+    "code": "validate.vcf_bad_fields",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_vcf",
+    "where": "agent/validators/output_validator.py:200",
+    "tested": false
+  },
+  {
+    "code": "validate.bed_no_data",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bed",
+    "where": "agent/validators/output_validator.py:214",
+    "tested": false
+  },
+  {
+    "code": "validate.bed_bad_fields",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bed",
+    "where": "agent/validators/output_validator.py:217",
+    "tested": false
+  },
+  {
+    "code": "validate.bed_non_int_coords",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bed",
+    "where": "agent/validators/output_validator.py:221",
+    "tested": false
+  },
+  {
+    "code": "validate.bai_bad_magic",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bai",
+    "where": "agent/validators/output_validator.py:230",
+    "tested": false
+  },
+  {
+    "code": "validate.bigwig_bad_magic",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_bigwig",
+    "where": "agent/validators/output_validator.py:237",
+    "tested": false
+  },
+  {
+    "code": "validate.counts_no_data",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_counts_matrix",
+    "where": "agent/validators/output_validator.py:243",
+    "tested": false
+  },
+  {
+    "code": "validate.counts_too_few_cols",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_counts_matrix",
+    "where": "agent/validators/output_validator.py:246",
+    "tested": false
+  },
+  {
+    "code": "validate.gtf_no_data",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gtf",
+    "where": "agent/validators/output_validator.py:253",
+    "tested": false
+  },
+  {
+    "code": "validate.gtf_bad_fields",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gtf",
+    "where": "agent/validators/output_validator.py:256",
+    "tested": false
+  },
+  {
+    "code": "validate.gfa_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gfa",
+    "where": "agent/validators/output_validator.py:263",
+    "tested": false
+  },
+  {
+    "code": "validate.gfa_bad_record",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_gfa",
+    "where": "agent/validators/output_validator.py:268",
+    "tested": false
+  },
+  {
+    "code": "validate.log_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_log",
+    "where": "agent/validators/output_validator.py:286",
+    "tested": false
+  },
+  {
+    "code": "validate.json_parse_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_json",
+    "where": "agent/validators/output_validator.py:296",
+    "tested": false
+  },
+  {
+    "code": "validate.json_read_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_json",
+    "where": "agent/validators/output_validator.py:298",
+    "tested": false
+  },
+  {
+    "code": "validate.jsonl_bad_lines",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_jsonl",
+    "where": "agent/validators/output_validator.py:328",
+    "tested": false
+  },
+  {
+    "code": "validate.jsonl_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_jsonl",
+    "where": "agent/validators/output_validator.py:333",
+    "tested": false
+  },
+  {
+    "code": "validate.html_read_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_html",
+    "where": "agent/validators/output_validator.py:343",
+    "tested": false
+  },
+  {
+    "code": "validate.html_no_prefix",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_html",
+    "where": "agent/validators/output_validator.py:346",
+    "tested": false
+  },
+  {
+    "code": "validate.tabular_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_tabular",
+    "where": "agent/validators/output_validator.py:354",
+    "tested": false
+  },
+  {
+    "code": "validate.tabular_no_rows",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_tabular",
+    "where": "agent/validators/output_validator.py:357",
+    "tested": false
+  },
+  {
+    "code": "validate.tabular_ragged",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_tabular",
+    "where": "agent/validators/output_validator.py:360",
+    "tested": false
+  },
+  {
+    "code": "validate.txt_read_error",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_txt",
+    "where": "agent/validators/output_validator.py:377",
+    "tested": false
+  },
+  {
+    "code": "validate.txt_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_txt",
+    "where": "agent/validators/output_validator.py:379",
+    "tested": false
+  },
+  {
+    "code": "validate.txt_binary",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_check_txt",
+    "where": "agent/validators/output_validator.py:381",
+    "tested": false
+  },
+  {
+    "code": "validate.file_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "validate",
+    "where": "agent/validators/output_validator.py:60",
+    "tested": false
+  },
+  {
+    "code": "validate.file_empty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "validate",
+    "where": "agent/validators/output_validator.py:73",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.sbatch_failed",
+    "outcome": "vanished",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:361",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.poll_status_failed",
+    "outcome": "vanished",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:381",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.poll_timeout",
+    "outcome": "vanished",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:397",
+    "tested": false
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "fetch_r_package_deps",
+    "where": "agent/mcp_tools/workflow_tools.py:460",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "fetch_r_package_deps",
+    "where": "agent/mcp_tools/workflow_tools.py:484",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "show_pipeline_draft",
+    "where": "agent/mcp_tools/workflow_tools.py:583",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:659",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:664",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:671",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:676",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:680",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:688",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:726",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:728",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "mark_step_validated",
+    "where": "agent/mcp_tools/workflow_tools.py:758",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "mark_step_validated",
+    "where": "agent/mcp_tools/workflow_tools.py:771",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_from_lock",
+    "where": "agent/skills/container_build.py:193",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "setup",
+    "where": "agent/skills/container_build.py:223",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add",
+    "where": "agent/skills/container_build.py:227",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_pypi",
+    "where": "agent/skills/container_build.py:233",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_from_lock",
+    "where": "agent/skills/container_build.py:275",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_from_lock",
+    "where": "agent/skills/container_build.py:278",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "setup",
+    "where": "agent/skills/container_build.py:300",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add",
+    "where": "agent/skills/container_build.py:309",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add",
+    "where": "agent/skills/container_build.py:312",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add",
+    "where": "agent/skills/container_build.py:314",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_pypi",
+    "where": "agent/skills/container_build.py:319",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start",
+    "where": "agent/skills/container_build.py:467",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start",
+    "where": "agent/skills/container_build.py:487",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start",
+    "where": "agent/skills/container_build.py:497",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare",
+    "where": "agent/skills/container_build.py:505",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare",
+    "where": "agent/skills/container_build.py:509",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare",
+    "where": "agent/skills/container_build.py:513",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare_locked",
+    "where": "agent/skills/container_build.py:529",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare_locked",
+    "where": "agent/skills/container_build.py:533",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare_pypi",
+    "where": "agent/skills/container_build.py:551",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare_pypi",
+    "where": "agent/skills/container_build.py:555",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "declare_pypi",
+    "where": "agent/skills/container_build.py:558",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "write_file",
+    "where": "agent/skills/container_build.py:583",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "write_file",
+    "where": "agent/skills/container_build.py:587",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "run",
+    "where": "agent/skills/container_build.py:605",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "run",
+    "where": "agent/skills/container_build.py:608",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "run",
+    "where": "agent/skills/container_build.py:615",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "freeze",
+    "where": "agent/skills/container_build.py:643",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "freeze",
+    "where": "agent/skills/container_build.py:652",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "freeze",
+    "where": "agent/skills/container_build.py:654",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "validate_in_image",
+    "where": "agent/skills/container_build.py:710",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "phenopacket_to_vcf",
+    "where": "agent/skills/core_test_data.py:123",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_core_test_data",
+    "where": "agent/skills/core_test_data.py:273",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_core_test_data",
+    "where": "agent/skills/core_test_data.py:293",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_core_pod5_data",
+    "where": "agent/skills/core_test_data.py:473",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_core_pod5_data",
+    "where": "agent/skills/core_test_data.py:479",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_core_pod5_data",
+    "where": "agent/skills/core_test_data.py:544",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_phenopacket",
+    "where": "agent/skills/core_test_data.py:598",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_phenopacket",
+    "where": "agent/skills/core_test_data.py:602",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "phenopacket_to_vcf",
+    "where": "agent/skills/core_test_data.py:61",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "add_phenopacket",
+    "where": "agent/skills/core_test_data.py:636",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "phenopacket_to_vcf",
+    "where": "agent/skills/core_test_data.py:66",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "phenopacket_to_vcf",
+    "where": "agent/skills/core_test_data.py:70",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "save_archive",
+    "where": "agent/skills/docker_builder.py:227",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:102",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:112",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:117",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:121",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:135",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build",
+    "where": "agent/skills/env_build.py:136",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "verify_in_image",
+    "where": "agent/skills/env_build.py:170",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "build_or_cached",
+    "where": "agent/skills/env_build.py:253",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "run",
+    "where": "agent/skills/env_build.py:271",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_stage_release_binary",
+    "where": "agent/skills/env_manager.py:1014",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_stage_release_binary",
+    "where": "agent/skills/env_manager.py:1018",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_stage_release_binary",
+    "where": "agent/skills/env_manager.py:1036",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_release_binary",
+    "where": "agent/skills/env_manager.py:1073",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_release_binary",
+    "where": "agent/skills/env_manager.py:1092",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_release_binary",
+    "where": "agent/skills/env_manager.py:1101",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_release_binary",
+    "where": "agent/skills/env_manager.py:1121",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_perl_package",
+    "where": "agent/skills/env_manager.py:1157",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_perl_package",
+    "where": "agent/skills/env_manager.py:1165",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_perl_package",
+    "where": "agent/skills/env_manager.py:1168",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_cargo_tool",
+    "where": "agent/skills/env_manager.py:1192",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_cargo_tool",
+    "where": "agent/skills/env_manager.py:1204",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_cargo_tool",
+    "where": "agent/skills/env_manager.py:1213",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_go_tool",
+    "where": "agent/skills/env_manager.py:1235",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_go_tool",
+    "where": "agent/skills/env_manager.py:1246",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_go_tool",
+    "where": "agent/skills/env_manager.py:1255",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "create",
+    "where": "agent/skills/env_manager.py:127",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "generate_conda_lock",
+    "where": "agent/skills/env_manager.py:1464",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "generate_conda_lock",
+    "where": "agent/skills/env_manager.py:1478",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "create",
+    "where": "agent/skills/env_manager.py:148",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "generate_lock",
+    "where": "agent/skills/env_manager.py:1519",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start_service",
+    "where": "agent/skills/env_manager.py:1590",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start_service",
+    "where": "agent/skills/env_manager.py:1597",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start_service",
+    "where": "agent/skills/env_manager.py:1608",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "create",
+    "where": "agent/skills/env_manager.py:163",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stop_service",
+    "where": "agent/skills/env_manager.py:1687",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stop_service",
+    "where": "agent/skills/env_manager.py:1691",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stop_service",
+    "where": "agent/skills/env_manager.py:1696",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "stop_service",
+    "where": "agent/skills/env_manager.py:1698",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install",
+    "where": "agent/skills/env_manager.py:188",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install",
+    "where": "agent/skills/env_manager.py:227",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_pip",
+    "where": "agent/skills/env_manager.py:246",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "apply",
+    "where": "agent/skills/env_manager.py:289",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "apply",
+    "where": "agent/skills/env_manager.py:303",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "verify",
+    "where": "agent/skills/env_manager.py:413",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "run_in_env",
+    "where": "agent/skills/env_manager.py:462",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_jar_tool",
+    "where": "agent/skills/env_manager.py:510",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_jar_tool",
+    "where": "agent/skills/env_manager.py:536",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_jar_tool",
+    "where": "agent/skills/env_manager.py:547",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_jar_tool",
+    "where": "agent/skills/env_manager.py:551",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_jar_tool",
+    "where": "agent/skills/env_manager.py:567",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:625",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:642",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:653",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:661",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:673",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:683",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:701",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:746",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:751",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:761",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "clone_and_read_build_files",
+    "where": "agent/skills/env_manager.py:806",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "clone_and_read_build_files",
+    "where": "agent/skills/env_manager.py:812",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "clone_and_read_build_files",
+    "where": "agent/skills/env_manager.py:833",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:867",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:880",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:883",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:900",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "rebuild_from_recipe",
+    "where": "agent/skills/env_recipe.py:98",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "materialize",
+    "where": "agent/skills/env_vendor.py:71",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start",
+    "where": "agent/skills/job_manager.py:119",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "check",
+    "where": "agent/skills/job_manager.py:155",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "cancel",
+    "where": "agent/skills/job_manager.py:209",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "cancel",
+    "where": "agent/skills/job_manager.py:215",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "cancel",
+    "where": "agent/skills/job_manager.py:224",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "start",
+    "where": "agent/skills/job_manager.py:82",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "search",
+    "where": "agent/skills/package_search.py:70",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_query_anaconda_api",
+    "where": "agent/skills/package_search.py:90",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:405",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:410",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:422",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "write_workflow_spec",
+    "where": "agent/skills/spec_writer.py:55",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:399",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:412",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:414",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_human_hg38",
+    "where": "agent/skills/test_runner.py:113",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_mouse_mm10",
+    "where": "agent/skills/test_runner.py:125",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_mouse_mm10",
+    "where": "agent/skills/test_runner.py:134",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_mouse_mm10",
+    "where": "agent/skills/test_runner.py:137",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ncbi_ecoli",
+    "where": "agent/skills/test_runner.py:149",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ncbi_ecoli",
+    "where": "agent/skills/test_runner.py:157",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ncbi_ecoli",
+    "where": "agent/skills/test_runner.py:172",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_resource",
+    "where": "agent/skills/test_runner.py:29",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_genome",
+    "where": "agent/skills/test_runner.py:46",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_genome",
+    "where": "agent/skills/test_runner.py:61",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_human_hg38",
+    "where": "agent/skills/test_runner.py:81",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_download_ucsc_human_hg38",
+    "where": "agent/skills/test_runner.py:91",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_remote_sha256_ssh",
+    "where": "agent/skills/transfer.py:800",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "globus_task_status",
+    "where": "agent/skills/transfer_providers.py:1030",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "globus_task_status",
+    "where": "agent/skills/transfer_providers.py:1035",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "globus_task_status",
+    "where": "agent/skills/transfer_providers.py:1045",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:189",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:210",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:214",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:221",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:226",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "upload_one",
+    "where": "agent/skills/transfer_providers.py:232",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_one",
+    "where": "agent/skills/transfer_providers.py:268",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_one",
+    "where": "agent/skills/transfer_providers.py:284",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_one",
+    "where": "agent/skills/transfer_providers.py:295",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_one",
+    "where": "agent/skills/transfer_providers.py:319",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "download_one",
+    "where": "agent/skills/transfer_providers.py:325",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "remote_exists",
+    "where": "agent/skills/transfer_providers.py:482",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "remote_exists",
+    "where": "agent/skills/transfer_providers.py:488",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "remote_exists",
+    "where": "agent/skills/transfer_providers.py:503",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "remote_exists",
+    "where": "agent/skills/transfer_providers.py:511",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_run_transfer",
+    "where": "agent/skills/transfer_providers.py:549",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_run_transfer",
+    "where": "agent/skills/transfer_providers.py:585",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_run_transfer",
+    "where": "agent/skills/transfer_providers.py:597",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_run_transfer",
+    "where": "agent/skills/transfer_providers.py:619",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_run_transfer",
+    "where": "agent/skills/transfer_providers.py:640",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_submit_transfer",
+    "where": "agent/skills/transfer_providers.py:685",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_submit_transfer",
+    "where": "agent/skills/transfer_providers.py:694",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_submit_transfer",
+    "where": "agent/skills/transfer_providers.py:700",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_submit_transfer",
+    "where": "agent/skills/transfer_providers.py:711",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_submit_transfer",
+    "where": "agent/skills/transfer_providers.py:720",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_task_show",
+    "where": "agent/skills/transfer_providers.py:738",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_task_show",
+    "where": "agent/skills/transfer_providers.py:742",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_task_show",
+    "where": "agent/skills/transfer_providers.py:746",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_task_show",
+    "where": "agent/skills/transfer_providers.py:755",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_fetch_task_events",
+    "where": "agent/skills/transfer_providers.py:787",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_fetch_task_events",
+    "where": "agent/skills/transfer_providers.py:790",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_fetch_task_events",
+    "where": "agent/skills/transfer_providers.py:794",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_fetch_task_events",
+    "where": "agent/skills/transfer_providers.py:800",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_permission_denied_error",
+    "where": "agent/skills/transfer_providers.py:917",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_permission_denied_error",
+    "where": "agent/skills/transfer_providers.py:932",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_permission_denied_error",
+    "where": "agent/skills/transfer_providers.py:946",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_permission_denied_error",
+    "where": "agent/skills/transfer_providers.py:959",
+    "tested": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_permission_denied_error",
+    "where": "agent/skills/transfer_providers.py:973",
+    "tested": null
+  }
+]

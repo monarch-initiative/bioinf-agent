@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.outcomes import refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
@@ -186,16 +187,16 @@ def cluster_module_avail(project_name: str,
             isinstance(b, dict) and b.get("compute_env") == compute_env_name
             for b in (project.get("compute_env_access") or []))
         if not has_access:
-            return {"error":
+            return refused("modules.no_env_access", error=
                 f"PermissionDenied: project {project_name!r} has no "
                 f"compute_env_access entry for compute_env "
-                f"{compute_env_name!r}"}
+                f"{compute_env_name!r}")
 
         env_type = env.get("type")
         if env_type != "ssh":
-            return {"error":
+            return refused("modules.not_ssh_env", error=
                 f"cluster_module_avail only supports ssh compute envs; "
-                f"got type={env_type!r} on env {compute_env_name!r}"}
+                f"got type={env_type!r} on env {compute_env_name!r}")
 
         remote_cmd = _build_module_avail_cmd(norm_pattern)
         argv = _ssh_argv(env, remote_cmd)
@@ -206,10 +207,10 @@ def cluster_module_avail(project_name: str,
         # tail in our remote_cmd.
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-            return {"error":
+            return broke("modules.ssh_failed", error=
                 f"ssh invocation failed (rc={res.returncode}): "
                 f"{(res.stderr or '').strip()[:500]}",
-                **({"hint": hint} if hint else {})}
+                **({"hint": hint} if hint else {}))
 
         modules = _parse_module_avail_output(res.stdout)
         # Client-side pattern re-filter — defense in depth.
@@ -225,6 +226,6 @@ def cluster_module_avail(project_name: str,
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("modules.bad_arg", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return {"error": f"module avail timed out after {e.timeout}s"}
+        return broke("modules.timeout", error=f"module avail timed out after {e.timeout}s")

@@ -18,6 +18,7 @@ from typing import Optional
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.outcomes import proven, refused
 
 
 @mcp.tool()
@@ -219,7 +220,7 @@ def verify_service_dependency(
 
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return {"error": f"unknown pipeline_id: {pipeline_id}"}
+        return refused("service.unknown_pipeline_id", error=f"unknown pipeline_id: {pipeline_id}")
 
     existing_cmd = ""
     for d in draft.get("service_dependencies", []) or []:
@@ -229,13 +230,14 @@ def verify_service_dependency(
 
     cmd = health_check_command or existing_cmd
     if not cmd:
-        return {
-            "error": (
+        return refused(
+            "service.no_health_check_command",
+            error=(
                 f"service '{service_name}' has no recorded health_check_command "
                 f"and none was supplied. Call start_service first, or pass "
                 f"health_check_command explicitly."
             ),
-        }
+        )
 
     probe_raw = _ms._env_mgr.check_service_health(env_name, cmd, working_dir=working_dir or None)
     probe = {
@@ -249,15 +251,16 @@ def verify_service_dependency(
         pipeline_id, service_name,
         {"health_check_log": [probe]},
     )
-    return {
-        "success":         True,
-        "healthy":         probe["healthy"],
-        "returncode":      probe["returncode"],
-        "output":          probe["output_excerpt"],
-        "probe_recorded":  True,
-        "pipeline_merge":  {
+    return proven(
+        "service.probe_recorded",
+        success=True,
+        healthy=probe["healthy"],
+        returncode=probe["returncode"],
+        output=probe["output_excerpt"],
+        probe_recorded=True,
+        pipeline_merge={
             "status":       "merged" if idx is not None else "no_op",
             "pipeline_id":  pipeline_id,
             "service_name": service_name,
         },
-    }
+    )

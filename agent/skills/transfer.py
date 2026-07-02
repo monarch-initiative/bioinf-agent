@@ -100,6 +100,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.outcomes import proven, refused, broke, loop
 
 
 # ---------------------------------------------------------------------------
@@ -927,8 +928,9 @@ def _do_transfer(*, direction: str,
         if env_type not in ("ssh", "local"):
             mpath = _journal(result="error", zone="?",
                 error_msg=f"unsupported compute_env type {env_type!r}")
-            return {"error": f"unsupported compute_env type {env_type!r}",
-                    "manifest": str(mpath)}
+            return refused("transfer.unsupported_env_type",
+                    error=f"unsupported compute_env type {env_type!r}",
+                    manifest=str(mpath))
 
         # 3) Zone classification + auth (raises PermissionDenied otherwise).
         zone_info = _classify_zone_and_authorize(
@@ -968,27 +970,30 @@ def _do_transfer(*, direction: str,
                     mpath = _journal(result="refused", zone=zone,
                         transport=transport_name,
                         error_msg="a file already exists at the destination")
-                    return {"error":
+                    return refused("transfer.remote_exists_local",
+                        error=(
                         f"remote path already exists: {normed_remote!r}. "
                         f"upload refuses overwrites. Pick a fresh "
-                        f"remote_abs_path or remove the existing file.",
-                        "manifest": str(mpath)}
+                        f"remote_abs_path or remove the existing file."),
+                        manifest=str(mpath))
             else:
                 ec = provider.remote_exists(
                     env=env, abs_remote_path=normed_remote, timeout=timeout)
                 if "error" in ec:
                     mpath = _journal(result="error", zone=zone,
                         transport=transport_name, error_msg=ec["error"])
-                    return {**ec, "manifest": str(mpath)}
+                    return broke("transfer.remote_exists_check_failed",
+                        **ec, manifest=str(mpath))
                 if ec["exists"]:
                     mpath = _journal(result="refused", zone=zone,
                         transport=transport_name,
                         error_msg="a file already exists at the destination")
-                    return {"error":
+                    return refused("transfer.remote_exists",
+                        error=(
                         f"remote path already exists: {normed_remote!r}. "
                         f"upload refuses overwrites. Pick a fresh "
-                        f"remote_abs_path or remove the existing file.",
-                        "manifest": str(mpath)}
+                        f"remote_abs_path or remove the existing file."),
+                        manifest=str(mpath))
 
         # 6) Ensure the destination parent dir exists. Provider-routed:
         # ssh `mkdir -p` for scp, a no-op for Globus (the Transfer
@@ -1002,7 +1007,8 @@ def _do_transfer(*, direction: str,
                 if mk is not None:
                     mpath = _journal(result="error", zone=zone,
                         transport=transport_name, error_msg=mk["error"])
-                    return {**mk, "manifest": str(mpath)}
+                    return broke("transfer.mkdir_failed",
+                        **mk, manifest=str(mpath))
         # download: local parent existence is already validated by
         # _validate_local_path_for_download
 
@@ -1036,7 +1042,7 @@ def _do_transfer(*, direction: str,
                 task_id=pr.get("task_id"),
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
-            return out
+            return broke("transfer.provider_failed", **out)
 
         # Async submit — no bytes yet; manifest reflects submitted state.
         if pr.get("verified_method") == "globus_pending":
@@ -1046,10 +1052,11 @@ def _do_transfer(*, direction: str,
                                    else None),
                 task_id=pr.get("task_id"),
                 verified_method=pr["verified_method"])
-            return {**pr, "manifest": str(mpath),
-                    "project": project_name, "compute_env": compute_env_name,
-                    "zone": zone, "remote_abs_path": normed_remote,
-                    "local_path": str(lp)}
+            return loop("transfer.submitted_async",
+                    **pr, manifest=str(mpath),
+                    project=project_name, compute_env=compute_env_name,
+                    zone=zone, remote_abs_path=normed_remote,
+                    local_path=str(lp))
 
         # Sync success.
         bytes_done = pr.get("bytes", size_bytes if direction == "upload"
@@ -1069,41 +1076,44 @@ def _do_transfer(*, direction: str,
             bytes_transferred=bytes_done,
             sha256=sha_record,
             verified_method=pr.get("verified_method"))
-        return {
-            "success":          True,
-            "project":          project_name,
-            "compute_env":      compute_env_name,
-            "zone":             zone,
-            "direction":        direction,
-            "local_path":       str(lp),
-            "remote_abs_path":  normed_remote,
-            "provider":         pr["provider"],
-            "task_id":          pr.get("task_id"),
-            "bytes":            bytes_done,
-            "duration_s":       round(time.perf_counter() - started, 3),
-            "local_sha256":     local_sha,
-            "remote_sha256":    pr.get("remote_sha256"),
-            "verified_method":  pr.get("verified_method"),
-            "manifest":         str(mpath),
-        }
+        return proven("transfer.transferred",
+            success=True,
+            project=project_name,
+            compute_env=compute_env_name,
+            zone=zone,
+            direction=direction,
+            local_path=str(lp),
+            remote_abs_path=normed_remote,
+            provider=pr["provider"],
+            task_id=pr.get("task_id"),
+            bytes=bytes_done,
+            duration_s=round(time.perf_counter() - started, 3),
+            local_sha256=local_sha,
+            remote_sha256=pr.get("remote_sha256"),
+            verified_method=pr.get("verified_method"),
+            manifest=str(mpath),
+        )
 
     except TransferError as e:
         mpath = _journal(result="error", zone="?", error_msg=str(e))
-        return {"error": str(e), "manifest": str(mpath)}
+        return refused("transfer.validation_error",
+                       error=str(e), manifest=str(mpath))
     except compute_access.PermissionDenied as e:
         mpath = _journal(result="error", zone="?",
                           error_msg=f"PermissionDenied: {e}")
-        return {"error": f"PermissionDenied: {e}",
-                "manifest": str(mpath)}
+        return refused("transfer.permission_denied",
+                error=f"PermissionDenied: {e}",
+                manifest=str(mpath))
     except compute_access.ConfigError as e:
         mpath = _journal(result="error", zone="?",
                           error_msg=f"ConfigError: {e}")
-        return {"error": f"ConfigError: {e}",
-                "manifest": str(mpath)}
+        return refused("transfer.config_error",
+                error=f"ConfigError: {e}",
+                manifest=str(mpath))
     except subprocess.TimeoutExpired as e:
         msg = f"subprocess timed out after {e.timeout}s"
         mpath = _journal(result="error", zone="?", error_msg=msg)
-        return {"error": msg, "manifest": str(mpath)}
+        return broke("transfer.timeout", error=msg, manifest=str(mpath))
 
 
 def _do_local_mode(*, direction: str,
@@ -1122,42 +1132,44 @@ def _do_local_mode(*, direction: str,
                 transport="local_copy", command=cp_cmd_up,
                 error_msg=("sha256 round-trip mismatch on local-mode "
                            "upload"))
-            return {"error":
+            return broke("transfer.sha_mismatch_upload",
+                error=(
                 f"sha256 round-trip mismatch — local={local_sha} "
                 f"remote={remote_sha!r}. File at {normed_remote!r} "
-                f"may be corrupt.",
-                "manifest": str(mpath)}
+                f"may be corrupt."),
+                manifest=str(mpath))
         bytes_done = lp.stat().st_size
         mpath = journal(result="success", zone=zone,
             transport="local_copy", command=cp_cmd_up,
             bytes_transferred=bytes_done,
             sha256=local_sha,
             verified_method="sha256_round_trip")
-        return {
-            "success":          True,
-            "project":          project_name,
-            "compute_env":      compute_env_name,
-            "direction":        direction,
-            "local_path":       str(lp),
-            "remote_abs_path":  normed_remote,
-            "zone":             zone,
-            "provider":         "local_copy",
-            "bytes":            bytes_done,
-            "duration_s":       round(time.perf_counter() - started, 3),
-            "local_sha256":     local_sha,
-            "remote_sha256":    remote_sha,
-            "verified_method":  "sha256_round_trip",
-            "manifest":         str(mpath),
-        }
+        return proven("transfer.local_uploaded",
+            success=True,
+            project=project_name,
+            compute_env=compute_env_name,
+            direction=direction,
+            local_path=str(lp),
+            remote_abs_path=normed_remote,
+            zone=zone,
+            provider="local_copy",
+            bytes=bytes_done,
+            duration_s=round(time.perf_counter() - started, 3),
+            local_sha256=local_sha,
+            remote_sha256=remote_sha,
+            verified_method="sha256_round_trip",
+            manifest=str(mpath),
+        )
     # download local-mode
     cp_cmd_dn = f"cp {shlex.quote(normed_remote)} {shlex.quote(str(lp))}"
     if not Path(normed_remote).exists():
         mpath = journal(result="error", zone=zone, transport="local_copy",
             error_msg=f"local-mode source does not exist")
-        return {"error":
+        return broke("transfer.local_source_missing",
+            error=(
             f"local-mode download source does not exist: "
-            f"{normed_remote!r}",
-            "manifest": str(mpath)}
+            f"{normed_remote!r}"),
+            manifest=str(mpath))
     remote_sha = _compute_local_sha256(Path(normed_remote))
     shutil.copy(normed_remote, str(lp))
     landed_sha = _compute_local_sha256(lp)
@@ -1169,29 +1181,30 @@ def _do_local_mode(*, direction: str,
         mpath = journal(result="error", zone=zone, transport="local_copy",
             command=cp_cmd_dn,
             error_msg="sha256 mismatch on local-mode download")
-        return {"error":
+        return broke("transfer.sha_mismatch_download",
+            error=(
             f"sha256 mismatch on local-mode download: "
-            f"source={remote_sha} landed={landed_sha}",
-            "manifest": str(mpath)}
+            f"source={remote_sha} landed={landed_sha}"),
+            manifest=str(mpath))
     bytes_done = lp.stat().st_size
     mpath = journal(result="success", zone=zone,
         transport="local_copy", command=cp_cmd_dn,
         bytes_transferred=bytes_done,
         sha256=landed_sha,
         verified_method="sha256_round_trip")
-    return {
-        "success":          True,
-        "project":          project_name,
-        "compute_env":      compute_env_name,
-        "direction":        direction,
-        "local_path":       str(lp),
-        "remote_abs_path":  normed_remote,
-        "zone":             zone,
-        "provider":         "local_copy",
-        "bytes":            bytes_done,
-        "duration_s":       round(time.perf_counter() - started, 3),
-        "local_sha256":     landed_sha,
-        "remote_sha256":    remote_sha,
-        "verified_method":  "sha256_round_trip",
-        "manifest":         str(mpath),
-    }
+    return proven("transfer.local_downloaded",
+        success=True,
+        project=project_name,
+        compute_env=compute_env_name,
+        direction=direction,
+        local_path=str(lp),
+        remote_abs_path=normed_remote,
+        zone=zone,
+        provider="local_copy",
+        bytes=bytes_done,
+        duration_s=round(time.perf_counter() - started, 3),
+        local_sha256=landed_sha,
+        remote_sha256=remote_sha,
+        verified_method="sha256_round_trip",
+        manifest=str(mpath),
+    )

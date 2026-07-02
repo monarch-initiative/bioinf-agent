@@ -27,6 +27,7 @@ from typing import Annotated, Any, Optional
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.skills.outcomes import proven, refused, broke
 
 
 @mcp.tool()
@@ -424,22 +425,24 @@ def synth_build(
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, commit or ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):
-        return {"success": False, "stage": "refetch", **fetch}
+        # merge (not kwargs) — `fetch` carries a `success` key (checked above) and
+        # may carry `stage`; a dict-literal merge avoids a kwarg collision.
+        return broke("install.synth_refetch_failed", **{**fetch, "stage": "refetch"})
     kind = fetch.get("source_kind", "git")
     # Anchor verification — the re-fetch must resolve the SAME immutable bytes.
     if kind == "git":
         if commit and fetch.get("commit") != commit:
-            return {"success": False, "stage": "refetch",
-                    "error": f"re-fetch resolved {fetch.get('commit')!r}, expected {commit!r} "
-                             f"— ref is not pinned to an immutable commit"}
+            return refused("install.synth_commit_mismatch", success=False, stage="refetch",
+                    error=f"re-fetch resolved {fetch.get('commit')!r}, expected {commit!r} "
+                             f"— ref is not pinned to an immutable commit")
         anchor = {"commit_sha": fetch.get("commit"), "ref": ref or commit or "HEAD"}
         ground_extra = repo_url
         anchor_val = fetch.get("commit")
     else:  # archive
         if archive_sha256 and fetch.get("archive_sha256") != archive_sha256:
-            return {"success": False, "stage": "refetch",
-                    "error": f"re-download sha256 {fetch.get('archive_sha256')!r} != expected "
-                             f"{archive_sha256!r} — the archive at that URL changed; re-run synth_fetch"}
+            return refused("install.synth_archive_sha_mismatch", success=False, stage="refetch",
+                    error=f"re-download sha256 {fetch.get('archive_sha256')!r} != expected "
+                             f"{archive_sha256!r} — the archive at that URL changed; re-run synth_fetch")
         anchor = {"archive_sha256": fetch.get("archive_sha256")}
         # the archive URL AND its sha256 are ground truth (we downloaded exactly it),
         # so a `curl {url}` + `sha256sum -c {sha}` grounds.
@@ -448,11 +451,12 @@ def synth_build(
     fetch["corpus"] = _ms._synth.build_corpus(fetch["files"]) + "\n" + ground_extra
     val = _ms._synth.validate_submission(fetch, list(commands))
     if not val["ok"]:
-        return {"success": False, "stage": "validate_submission",
-                "violations": val["violations"],
-                "hint": "an 'extracted' command must occur verbatim in its origin_file; "
+        return refused("install.synth_provenance_violation", success=False,
+                stage="validate_submission",
+                violations=val["violations"],
+                hint="an 'extracted' command must occur verbatim in its origin_file; "
                         "an 'agent_authored' command's URLs/remotes must appear in the repo "
-                        "(the source URL and an archive's sha256 are auto-grounded)"}
+                        "(the source URL and an archive's sha256 are auto-grounded)")
     records = val["records"]
     install_method = {
         "type":         "synthesized",
@@ -464,8 +468,8 @@ def synth_build(
         "file_hashes":  {f["path"]: f["sha256"] for f in fetch["files"]},
         **anchor,
     }
-    result: dict = {"success": True, "source_kind": kind, "anchor": anchor_val,
-                    "records": records, "install_method": install_method}
+    result: dict = proven("install.synth_recorded", success=True, source_kind=kind,
+                          anchor=anchor_val, records=records, install_method=install_method)
     if pipeline_id:
         ip_record = {"name": tool_name, "channel": kind, "source": repo_url,
                      "install_method": install_method,
@@ -517,9 +521,10 @@ def install_spack_package(
         "evidence":  evidence or f"command -v {tool_name}",
         "source":    f"spack:{package or tool_name}@{spack_ref}",
     }
-    result: dict = {"success": True, "tool_name": tool_name, "install_method": install_method,
-                    "note": "declared — Spack builds + validates at freeze() in the ship image "
-                            "(best on a native amd64 host; from-source is slow under emulation)"}
+    result: dict = proven("install.spack_declared", success=True, tool_name=tool_name,
+                    install_method=install_method,
+                    note="declared — Spack builds + validates at freeze() in the ship image "
+                            "(best on a native amd64 host; from-source is slow under emulation)")
     if pipeline_id:
         ip_record = {"name": tool_name, "channel": "spack",
                      "source": install_method["source"], "install_method": install_method}
@@ -886,7 +891,8 @@ def install_r_package(
         im_source = f"BiocManager::install('{name}')"
         check_name = name
     else:
-        return {"success": False, "error": f"unknown R source: {source!r} (use cran|bioconductor|github:owner/repo)"}
+        return refused("install.r_unknown_source", success=False,
+                       error=f"unknown R source: {source!r} (use cran|bioconductor|github:owner/repo)")
 
     # Wrap with library isolation + BiocManager bootstrap + load-or-die check.
     # The load-or-die is what makes this honest: rc != 0 if the install

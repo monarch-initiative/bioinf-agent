@@ -80,6 +80,7 @@ from agent.skills import (
     submit_workflow,
     transfer,
 )
+from agent.skills.outcomes import proven, refused, broke, vanished
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -190,12 +191,13 @@ def run_step_on_cluster(
     `downloaded`) so the caller can diagnose without re-running.
     """
     if not pipeline_id:
-        return {"error": "pipeline_id is required for run_step_on_cluster"}
+        return refused("run_cluster.pipeline_id_required",
+                       error="pipeline_id is required for run_step_on_cluster")
     if not workflow_name or not _WORKFLOW_NAME_RE.match(workflow_name):
-        return {"error":
-            f"workflow_name must match {_WORKFLOW_NAME_RE.pattern!r} "
+        return refused("run_cluster.bad_workflow_name",
+            error=f"workflow_name must match {_WORKFLOW_NAME_RE.pattern!r} "
             f"(it becomes a path component under scratch); got "
-            f"{workflow_name!r}"}
+            f"{workflow_name!r}")
 
     # Late-bind the singletons (preserves [[feedback-mcp-tools-conventions]]
     # monkeypatchability — tests inject overrides via the _* kwargs).
@@ -215,22 +217,23 @@ def run_step_on_cluster(
         env = compute_access.get_compute_env(compute_env_name, access)
     except (compute_access.ConfigError, FileNotFoundError, KeyError,
             ValueError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("run_cluster.config_error",
+                       error=f"{type(e).__name__}: {e}")
 
     env_type = env.get("type")
     if env_type != "ssh":
-        return {"error":
-            f"run_step_on_cluster only supports ssh compute envs; "
-            f"got type={env_type!r} on env {compute_env_name!r}"}
+        return refused("run_cluster.not_ssh_env",
+            error=f"run_step_on_cluster only supports ssh compute envs; "
+            f"got type={env_type!r} on env {compute_env_name!r}")
 
     scratch_target = compute_access.get_agent_scratch_target(env)
     if scratch_target is None:
-        return {"error":
-            f"compute_env {compute_env_name!r} has no "
+        return refused("run_cluster.no_scratch_target",
+            error=f"compute_env {compute_env_name!r} has no "
             f"agent_scratch_target declared — run_step_on_cluster "
             f"can only run inside the agent's scratch sandbox. Add an "
             f"agent_scratch_target block on this env in "
-            f"projects_access.yaml."}
+            f"projects_access.yaml.")
 
     # Auth: project must have access to env; scratch target must advertise
     # `exec` (required for the SLURM job to write its outputs in-place).
@@ -239,7 +242,8 @@ def run_step_on_cluster(
             project, compute_env_name, scratch_target,
             "run_step_on_cluster", "agent_scratch_target")
     except compute_access.PermissionDenied as e:
-        return {"error": f"PermissionDenied: {e}"}
+        return refused("run_cluster.permission_denied",
+                       error=f"PermissionDenied: {e}")
 
     scratch_root = scratch_target.get("path", "").rstrip("/")
     workflow_dir = f"{scratch_root}/{project_name}/{workflow_name}"
@@ -253,9 +257,10 @@ def run_step_on_cluster(
     # mutation. No auto-staging — the user's rails decide where data lives.
     pre = cluster_jobs.remote_paths_exist(env, [str(p) for p in inputs.values()])
     if "error" in pre:
-        return {"error": pre["error"],
+        return refused("run_cluster.input_missing",
+                error=pre["error"],
                 **({"missing_paths": pre["missing_paths"]}
-                   if "missing_paths" in pre else {})}
+                   if "missing_paths" in pre else {}))
 
     # ─── 1. Stage the .sif ────────────────────────────────────────────
     stage = stage_apptainer.stage_apptainer_image(
@@ -265,8 +270,9 @@ def run_step_on_cluster(
         sif_subpath=sif_subpath or "",
         access_path=access_path)
     if "error" in stage:
-        return {"error": f"stage_apptainer_image failed: {stage['error']}",
-                "stage_result": stage}
+        return broke("run_cluster.stage_failed",
+                error=f"stage_apptainer_image failed: {stage['error']}",
+                stage_result=stage)
 
     sif_path_remote = stage["sif_path"]
     image_digest = stage.get("image_digest", "")
@@ -316,8 +322,9 @@ def run_step_on_cluster(
             workflow_name=workflow_name,
         )
     except ValueError as e:
-        return {"error": f"workflow_render failed: {e}",
-                "stage_result": stage}
+        return refused("run_cluster.render_failed",
+                error=f"workflow_render failed: {e}",
+                stage_result=stage)
 
     files_uploaded: list[str] = []
     _RENDER_STAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -340,18 +347,22 @@ def run_step_on_cluster(
                 access_path=str(Path(access_path)) if access_path else None,
                 timeout=300)
             if "error" in up:
-                return {"error":
-                    f"upload of {fname} to scratch failed: {up['error']}",
-                    "stage_result": stage,
-                    "files_uploaded": files_uploaded}
+                return broke("run_cluster.upload_failed",
+                    error=f"upload of {fname} to scratch failed: {up['error']}",
+                    stage_result=stage,
+                    files_uploaded=files_uploaded)
             files_uploaded.append(up["remote_abs_path"])
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
-        return {"error": f"sbatch failed: {sb['error']}",
-                "stage_result": stage,
-                "files_uploaded": files_uploaded,
-                "sbatch_result": sb}
+        # VANISHED: the SLURM submission failed and we return WITHOUT having
+        # recorded a pipeline_step (add_step happens only after the poll).
+        # No durable trace of this attempt lands in the draft.
+        return vanished("run_cluster.sbatch_failed",
+                error=f"sbatch failed: {sb['error']}",
+                stage_result=stage,
+                files_uploaded=files_uploaded,
+                sbatch_result=sb)
 
     job_id = sb["job_id"]
 
@@ -364,10 +375,13 @@ def run_step_on_cluster(
             job_id=job_id,
             access_path=access_path)
         if "error" in s:
-            return {"error":
-                f"cluster_job_status failed during poll: {s['error']}",
-                "stage_result": stage, "job_id": job_id,
-                "workflow_dir": workflow_dir, "last_poll": s}
+            # VANISHED: the job was submitted (job_id in hand) but the poll
+            # query errored and we bail WITHOUT recording a pipeline_step —
+            # the submitted job leaves no durable trace in the draft.
+            return vanished("run_cluster.poll_status_failed",
+                error=f"cluster_job_status failed during poll: {s['error']}",
+                stage_result=stage, job_id=job_id,
+                workflow_dir=workflow_dir, last_poll=s)
         if s.get("jobs"):
             row = s["jobs"][0]
             if row.get("state") in _TERMINAL_STATES:
@@ -376,12 +390,16 @@ def run_step_on_cluster(
         time.sleep(poll_interval)
 
     if final_status is None:
-        return {"error":
-            f"polling timed out after "
+        # VANISHED: the job was submitted but never reached a terminal state
+        # within the poll cap; we return an error WITHOUT recording a
+        # pipeline_step, so the (possibly still-running) job leaves no
+        # durable trace in the draft.
+        return vanished("run_cluster.poll_timeout",
+            error=f"polling timed out after "
             f"{max_polls * poll_interval}s — job_id={job_id} did "
             f"not reach a terminal state.",
-            "stage_result": stage, "job_id": job_id,
-            "workflow_dir": workflow_dir}
+            stage_result=stage, job_id=job_id,
+            workflow_dir=workflow_dir)
 
     rc = _parse_exit_code(final_status.get("exit_code", ""))
 
@@ -498,28 +516,29 @@ def run_step_on_cluster(
             _pipeline_state.add_validation(
                 pipeline_id, step_index, basename, v)
 
-    return {
-        "success":            (rc == 0 and not download_errors),
-        "returncode":         rc,
-        "job_id":             job_id,
-        "sif_path":           sif_path_remote,
-        "cluster_sif_sha256": cluster_sif_sha256,
-        "cluster_image_verified": cluster_image_verified,
-        "cluster_image_digest_match": cluster_image_digest_match,
-        "workflow_dir":       workflow_dir,
-        "resource_usage":     resource_usage,
-        "detected_outputs":   downloaded,
-        "output_sha256":      output_sha256,
-        "validations":        validations,
-        "validation_count":   len(validations),
-        "download_errors":    download_errors,
-        "pipeline_merge":     {
+    return proven(
+        "run_cluster.step_recorded",
+        success=(rc == 0 and not download_errors),
+        returncode=rc,
+        job_id=job_id,
+        sif_path=sif_path_remote,
+        cluster_sif_sha256=cluster_sif_sha256,
+        cluster_image_verified=cluster_image_verified,
+        cluster_image_digest_match=cluster_image_digest_match,
+        workflow_dir=workflow_dir,
+        resource_usage=resource_usage,
+        detected_outputs=downloaded,
+        output_sha256=output_sha256,
+        validations=validations,
+        validation_count=len(validations),
+        download_errors=download_errors,
+        pipeline_merge={
             "status":      "merged",
             "pipeline_id": pipeline_id,
             "step_index":  step_index,
         },
-        "final_status":       final_status,
-    }
+        final_status=final_status,
+    )
 
 
 def _infer_etype(basename: str, ext: str) -> str:

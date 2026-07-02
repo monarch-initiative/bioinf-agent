@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.outcomes import refused
 
 
 # The single shell shape this module emits. Pinned by a test.
@@ -272,7 +273,7 @@ def snapshot_project(project_name: str,
 
     access_blocks = project.get("compute_env_access") or []
     if not access_blocks:
-        return {"error": f"project '{project_name}' has no compute_env_access blocks"}
+        return refused("snapshot.no_env_access_blocks", error=f"project '{project_name}' has no compute_env_access blocks")
 
     # First pass: collect (env_name, env_dict, tagged_paths). Gate every
     # path BEFORE any subprocess runs — defense-in-depth, even though every
@@ -298,9 +299,9 @@ def snapshot_project(project_name: str,
     # If no env contributed any file_name_only directory, the snapshot is a
     # no-op — surface that as a clean error rather than an empty record.
     if not any(tagged for _e, _env, tagged in plans):
-        return {"error": (
+        return refused("snapshot.no_file_name_only_dirs", error=(
             f"project '{project_name}' has no directories with "
-            f"file_name_only permission — nothing to snapshot")}
+            f"file_name_only permission — nothing to snapshot"))
 
     all_entries: list[dict] = []
     per_env_counts: dict[str, int] = {}

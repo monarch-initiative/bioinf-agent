@@ -10,6 +10,7 @@ from __future__ import annotations
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.outcomes import refused
 @mcp.tool()
 def snapshot_project(project_name: str) -> dict:
     """Walk a project's authorized directories — across every compute env it
@@ -37,7 +38,7 @@ def snapshot_project(project_name: str) -> dict:
     try:
         return snapshot.snapshot_project(project_name)
     except (PermissionDenied, ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return refused("status.snapshot_gate_rejected", error=f"{type(e).__name__}: {e}")
 
 
 @mcp.tool()

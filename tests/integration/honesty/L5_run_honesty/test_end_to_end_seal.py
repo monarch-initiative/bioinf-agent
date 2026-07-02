@@ -188,6 +188,9 @@ def test_e2e_seal_valid_run_seals_honestly(_staged_pipeline, tmp_path):
                               description="end-to-end seal")
 
     assert result.get("success"), f"valid run-through was refused: {result}"
+    # live outcome tag on the success response (the runtime affordance — the
+    # caller branches on `outcome`/`code`, not on prose)
+    assert result["outcome"] == "proven" and result["code"] == "seal.sealed"
 
     # The WorkflowSpec file on disk MUST exist + carry the honesty fields.
     spec_path = out_dir / "e2e_seal.workflow.yaml"
@@ -226,6 +229,18 @@ def test_e2e_seal_valid_run_seals_honestly(_staged_pipeline, tmp_path):
     assert "How to run it" in html
 
 
+@pytest.mark.integration
+def test_e2e_seal_unknown_pipeline_id_tagged():
+    """The cheapest terminal, exercised directly: an unknown pipeline_id returns
+    the machine-readable outcome class + code on the LIVE response (no fixtures —
+    get_draft returns None before any env lookup). This is the runtime affordance
+    that lets the agent branch on `code` instead of parsing the error string."""
+    result = m.seal_workflow("no_such_draft_xyz", freeze_request_key="whatever")
+    assert result["outcome"] == "refused"
+    assert result["code"] == "seal.unknown_pipeline_id"
+    assert result["success"] is False
+
+
 # ---------------------------------------------------------------------------
 # Mutation half: drop one honest field, re-seal, assert refusal at the gate.
 # Each sub-test proves the seal genuinely re-checks the cheat-surface, not just
@@ -244,6 +259,9 @@ def test_e2e_seal_refuses_mutated_authored_artifact(_staged_pipeline):
                               workflow_name="e2e_seal_mutated")
     assert result.get("success") is False, \
         f"mutated authored_artifact was not refused: {result}"
+    # the live refusal carries its class: a failed invariant surfaces as the
+    # seal.workflow_invariants terminal (the per-clause code is in violations[])
+    assert result["outcome"] == "refused" and result["code"] == "seal.workflow_invariants"
     invs = [v.get("invariant", "") for v in result.get("violations") or []]
     assert any("authored_artifact_mutated" in i for i in invs), \
         f"expected I8.authored_artifact_mutated in violations: {invs}"

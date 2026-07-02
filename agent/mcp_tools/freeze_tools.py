@@ -19,6 +19,7 @@ import subprocess
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.skills.outcomes import proven, refused, broke
 
 
 @mcp.tool()
@@ -120,13 +121,13 @@ def freeze(
     # here, before request_key/cache lookup/docker work, with the same shape
     # the contract uses so the error is structurally indistinguishable.
     if gated and not (licenses or []):
-        return {"success": False, "stage": "i13_early_gate",
-                "honesty_violations": [{
+        return refused("freeze.gated_no_license", success=False, stage="i13_early_gate",
+                honesty_violations=[{
                     "invariant": "I13.gated_license_recorded", "where": "licenses",
                     "message": "license_gated=true requires at least one entry in licenses[] "
                                "naming the license/terms the artifact is bound by. Pass "
                                "licenses=[…] on freeze() (or patch_pipeline before freeze)."}],
-                "violation_count": 1}
+                violation_count=1)
     # Bind the MCP scalar accel/cuda_version to a proper Accelerator policy dict so
     # the honesty contract (I12) can actually check it. A draft-supplied accelerator
     # wins (richer record); when absent and the caller passed accel="cuda" but no
@@ -178,7 +179,10 @@ def freeze(
     cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
     if cached:
         return _ms._summarize_sbom_in_response(
-            {"success": True, "cache_hit": True, "request_key": rkey, **cached}
+            # merge (not kwargs) so a business key already in `cached` (e.g.
+            # request_key) can't collide with an explicit kwarg → TypeError.
+            proven("freeze.cache_hit",
+                   **{**cached, "success": True, "cache_hit": True, "request_key": rkey})
         )
 
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
@@ -268,9 +272,10 @@ def freeze(
         }
         adopt_violations = _ms._env_honesty.check_adopt(adopt_check_input)
         if adopt_violations:
-            return {"success": False, "stage": "adopt_honesty", "request_key": rkey,
-                    "adopt_attempt": adopt, "honesty_violations": adopt_violations,
-                    "violation_count": len(adopt_violations)}
+            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
+                    request_key=rkey, adopt_attempt=adopt,
+                    honesty_violations=adopt_violations,
+                    violation_count=len(adopt_violations))
         hpc = _ms._freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
         validation_locus = "adopted"   # we trust the published digest, not an in-locus run
@@ -331,8 +336,9 @@ def freeze(
                     extra["buildkit_prune"]["reason"] = (
                         f"free disk {free_gb:.1f} GB below soft threshold "
                         f"{soft_threshold:.0f} GB — pruning to avoid cascade")
-            return {"success": False, "stage": "container_build", "request_key": rkey,
-                    "adopt_attempt": adopt, "build": br, **extra}
+            return broke("freeze.container_build_failed", success=False,
+                    stage="container_build", request_key=rkey,
+                    adopt_attempt=adopt, build=br, **extra)
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
         build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor
@@ -446,7 +452,11 @@ def freeze(
         except Exception as e:
             recipe_path = f"(recipe render failed: {e!r})"
 
-    out = {"success": True, "cache_hit": False, "adopt_attempt": adopt, **record}
+    # merge (not kwargs) — `record` is a build result that may already carry a
+    # `success` key; a dict-literal merge makes the explicit values last-wins
+    # instead of a kwarg collision.
+    out = proven("freeze.built", **{**record, "success": True, "cache_hit": False,
+                                    "adopt_attempt": adopt})
     out["env_report_html"] = report_html_path
     out["attestation"] = attestation_path
     out["env_recipe"] = recipe_path
@@ -484,19 +494,28 @@ def verify_env_recipe(recipe_path: str) -> dict:
         with open(recipe_path) as fh:
             recipe = _yaml.safe_load(fh)
     except Exception as e:
-        return {"success": False, "error": f"could not load recipe {recipe_path!r}: {e}"}
+        return refused("freeze.recipe_load_failed", success=False,
+                       error=f"could not load recipe {recipe_path!r}: {e}")
     if not isinstance(recipe, dict) or not recipe.get("name"):
-        return {"success": False, "error": "not a valid env recipe (missing name)"}
+        return refused("freeze.recipe_invalid", success=False,
+                       error="not a valid env recipe (missing name)")
     res = _ms._env_recipe.rebuild_from_recipe(recipe)
-    return {
-        "success": res["success"],
-        "content_digest_match": res["content_digest_match"],
-        "rebuilt_content_digest": res["rebuilt_content_digest"],
-        "expected_content_digest": res["expected_content_digest"],
-        "proves": res["proves"],
-        "build_stage": res["build"].get("stage"),
-        "honesty_violations": res["build"].get("honesty_violations"),
-    }
+    # Outcome is runtime-conditional: only a rebuild that SUCCEEDED and converged
+    # to the same content digest is `proven`. A failed build or a digest mismatch
+    # (local drift — the recipe didn't reproduce) is `broke`, not a green tag.
+    verified = bool(res.get("success") and res.get("content_digest_match"))
+    _rf = dict(
+        success=res["success"],
+        content_digest_match=res["content_digest_match"],
+        rebuilt_content_digest=res["rebuilt_content_digest"],
+        expected_content_digest=res["expected_content_digest"],
+        proves=res["proves"],
+        build_stage=res["build"].get("stage"),
+        honesty_violations=res["build"].get("honesty_violations"),
+    )
+    if verified:
+        return proven("freeze.recipe_verified", **_rf)
+    return broke("freeze.recipe_not_reproduced", **_rf)
 
 
 # ---------------------------------------------------------------------------
@@ -524,15 +543,17 @@ def generate_user_guide(
     """
     s = spec or (_ms._pipeline_state.get_draft(pipeline_id) if pipeline_id else None)
     if not s:
-        return {"success": False, "error": "provide pipeline_id (with a draft) or a spec dict"}
+        return refused("freeze.guide_no_source", success=False,
+                       error="provide pipeline_id (with a draft) or a spec dict")
     fr = _ms._env_cache.lookup(freeze_request_key) if freeze_request_key else None
     md = _ms._user_guide.render_user_guide(s, freeze_record=fr)
-    result = {
-        "success": True,
-        "markdown": md,
-        "commands_shown": len(_ms._user_guide.executed_commands(s)),
-        "env_pinned": bool(fr),
-    }
+    result = proven(
+        "freeze.guide_rendered",
+        success=True,
+        markdown=md,
+        commands_shown=len(_ms._user_guide.executed_commands(s)),
+        env_pinned=bool(fr),
+    )
     if write:
         out = _ms._env_mgr.project_root / "env_reports" / f"{s.get('pipeline_name','pipeline')}.GUIDE.md"
         out.parent.mkdir(parents=True, exist_ok=True)
