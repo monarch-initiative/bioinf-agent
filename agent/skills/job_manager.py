@@ -41,6 +41,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.skills.outcomes import broke, refused
+
 
 class JobManager:
     def __init__(self, config: dict):
@@ -79,7 +81,7 @@ class JobManager:
         """
         jid = job_id or self._auto_id()
         if self._is_active(jid):
-            return {"error": f"job_id '{jid}' is already running", "job_id": jid}
+            return refused("job_manager.already_running", error=f"job_id '{jid}' is already running", job_id=jid)
 
         status_path = self._status_path(jid)
         log_path    = self._log_path(jid)
@@ -116,7 +118,7 @@ class JobManager:
             )
         except Exception as e:
             log_fh.close()
-            return {"error": f"failed to spawn subprocess: {e}", "job_id": jid}
+            return broke("job_manager.spawn_failed", error=f"failed to spawn subprocess: {e}", job_id=jid)
         # Parent never writes to log_fh again — close our handle so the child
         # holds it exclusively. The child inherits an open file descriptor.
         log_fh.close()
@@ -152,7 +154,7 @@ class JobManager:
         """Return current status. Reads disk + polls the process; does NOT block."""
         status = self._read_status(job_id)
         if not status:
-            return {"error": f"unknown job_id: {job_id}", "job_id": job_id}
+            return refused("job_manager.unknown_job_check", error=f"unknown job_id: {job_id}", job_id=job_id)
 
         if status["state"] == "running":
             proc = self._procs.get(job_id)
@@ -206,13 +208,13 @@ class JobManager:
         self.check(job_id, log_tail_lines=0)
         status = self._read_status(job_id)
         if not status:
-            return {"error": f"unknown job_id: {job_id}", "job_id": job_id}
+            return refused("job_manager.unknown_job_cancel", error=f"unknown job_id: {job_id}", job_id=job_id)
         if status["state"] != "running":
             return {"state": status["state"], "job_id": job_id, "note": "not running, nothing to cancel"}
 
         pgid = status.get("pgid")
         if not pgid:
-            return {"error": "no pgid recorded — cannot cancel safely", "job_id": job_id}
+            return refused("job_manager.no_pgid", error="no pgid recorded — cannot cancel safely", job_id=job_id)
 
         proc = self._procs.get(job_id)
         sig = signal.SIGKILL if force else signal.SIGTERM
@@ -221,7 +223,7 @@ class JobManager:
         except ProcessLookupError:
             pass   # already dead; fall through to state update
         except PermissionError as e:
-            return {"error": f"could not signal pgid {pgid}: {e}", "job_id": job_id}
+            return broke("job_manager.signal_failed", error=f"could not signal pgid {pgid}: {e}", job_id=job_id)
 
         # If we sent SIGTERM, give the child 5s to clean up before promoting to SIGKILL.
         if not force:

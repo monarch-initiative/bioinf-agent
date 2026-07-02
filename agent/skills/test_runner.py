@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from agent.skills.outcomes import broke, proven, refused
+
 
 class TestRunner:
     def __init__(self, config: dict):
@@ -26,7 +28,7 @@ class TestRunner:
             return self._download_genome(resource_id)
         if resource_type == "test_data":
             return self._download_test_data(resource_id)
-        return {"success": False, "error": f"Unknown resource_type: {resource_type}"}
+        return refused("test_runner.unknown_resource_type", success=False, error=f"Unknown resource_type: {resource_type}")
 
     # -----------------------------------------------------------------------
     # Genome downloading
@@ -43,13 +45,14 @@ class TestRunner:
 
         fasta_path = out_dir / f"{chrom}.fa"
         if fasta_path.exists() and fasta_path.stat().st_size > 0:
-            return {
-                "success": True,
-                "genome_id": genome_id,
-                "path": str(out_dir),
-                "fasta": str(fasta_path),
-                "note": "Already on disk",
-            }
+            return proven(
+                "test_runner.genome_cached",
+                success=True,
+                genome_id=genome_id,
+                path=str(out_dir),
+                fasta=str(fasta_path),
+                note="Already on disk",
+            )
 
         if "hg38" in build:
             result = self._download_ucsc_human_hg38(out_dir, [chrom], {"files": {"fasta": f"{chrom}.fa", "gtf": "genes.gtf"}})
@@ -58,13 +61,14 @@ class TestRunner:
         elif "ecoli" in build or "k12" in build:
             result = self._download_ncbi_ecoli(out_dir, {"files": {"fasta": "genome.fa"}})
         else:
-            return {
-                "success": False,
-                "error": (
+            return refused(
+                "test_runner.no_download_handler",
+                success=False,
+                error=(
                     f"No automatic download handler for build '{build}'. "
                     "Download manually and place FASTA at: " + str(fasta_path)
                 ),
-            }
+            )
 
         return result
 
@@ -78,7 +82,7 @@ class TestRunner:
             gz_path = out_dir / f"{chrom}.fa.gz"
             ok = self._download_file(url, gz_path)
             if not ok:
-                return {"success": False, "error": f"Failed to download {url}"}
+                return broke("test_runner.hg38_download_failed", success=False, error=f"Failed to download {url}")
             parts.append(gz_path)
 
         # Decompress + cat into single fasta
@@ -88,7 +92,7 @@ class TestRunner:
             p.unlink(missing_ok=True)
 
         if ret.returncode != 0:
-            return {"success": False, "error": ret.stderr}
+            return broke("test_runner.hg38_cat_failed", success=False, error=ret.stderr)
 
         gtf_url = (
             "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_45/"
@@ -110,7 +114,7 @@ class TestRunner:
             gtf_gz.unlink(missing_ok=True)
 
         self._index_fasta(out_dir, fasta_path)
-        return {"success": True, "path": str(out_dir), "fasta": str(fasta_path)}
+        return proven("test_runner.hg38_built", success=True, path=str(out_dir), fasta=str(fasta_path))
 
     def _download_ucsc_mouse_mm10(
         self, out_dir: Path, chromosomes: list[str], genome: dict
@@ -122,7 +126,7 @@ class TestRunner:
             gz_path = out_dir / f"{chrom}.fa.gz"
             ok = self._download_file(url, gz_path)
             if not ok:
-                return {"success": False, "error": f"Failed to download {url}"}
+                return broke("test_runner.mm10_download_failed", success=False, error=f"Failed to download {url}")
             parts.append(gz_path)
 
         cat_cmd = f"zcat {' '.join(str(p) for p in parts)} > {fasta_path}"
@@ -131,10 +135,10 @@ class TestRunner:
             p.unlink(missing_ok=True)
 
         if ret.returncode != 0:
-            return {"success": False, "error": ret.stderr}
+            return broke("test_runner.mm10_cat_failed", success=False, error=ret.stderr)
 
         self._index_fasta(out_dir, fasta_path)
-        return {"success": True, "path": str(out_dir), "fasta": str(fasta_path)}
+        return proven("test_runner.mm10_built", success=True, path=str(out_dir), fasta=str(fasta_path))
 
     def _download_ncbi_ecoli(self, out_dir: Path, genome: dict) -> dict:
         fasta_path = out_dir / genome["files"]["fasta"]
@@ -146,7 +150,7 @@ class TestRunner:
         gz_path = out_dir / "ecoli.fa.gz"
         ok = self._download_file(url, gz_path)
         if not ok:
-            return {"success": False, "error": f"Failed to download {url}"}
+            return broke("test_runner.ecoli_download_failed", success=False, error=f"Failed to download {url}")
 
         ret = subprocess.run(
             f"zcat {gz_path} > {fasta_path}", shell=True, capture_output=True, text=True
@@ -154,7 +158,7 @@ class TestRunner:
         gz_path.unlink(missing_ok=True)
 
         if ret.returncode != 0:
-            return {"success": False, "error": ret.stderr}
+            return broke("test_runner.ecoli_cat_failed", success=False, error=ret.stderr)
 
         # GTF/GFF
         gff_url = (
@@ -169,7 +173,7 @@ class TestRunner:
             gff_gz.unlink(missing_ok=True)
 
         self._index_fasta(out_dir, fasta_path)
-        return {"success": True, "path": str(out_dir), "fasta": str(fasta_path)}
+        return proven("test_runner.ecoli_built", success=True, path=str(out_dir), fasta=str(fasta_path))
 
     def _find_available_genome_fasta(self, compatible_builds: list[str]) -> Path | None:
         """Find a FASTA in any core_test_data dir matching compatible builds."""

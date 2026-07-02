@@ -38,6 +38,8 @@ import shlex
 import subprocess
 from typing import Any, Optional
 
+from agent.skills.outcomes import proven, refused, broke
+
 # Base apt for the build/ship image: curl+certs for the engine installer and any
 # long-tail download; the common archive + C-build tools + bioinformatics dev libs
 # so a long-tail/half-baked source command (tar/zip extract, `make`, custom gcc)
@@ -190,8 +192,8 @@ class EnvEngine:
         # Install from PREBAKED lock files (recipe-replay path). Each engine writes
         # its own lock files to the workdir and runs its lock-aware install. Default:
         # not supported (return an error rather than silently re-solving).
-        return {"success": False, "stage": "install_from_lock",
-                "stderr": f"engine {self.name!r} does not implement install_from_lock"}
+        return refused("container_build.install_from_lock_unsupported", success=False, stage="install_from_lock",
+                stderr=f"engine {self.name!r} does not implement install_from_lock")
     def run(self, tool_cmd: str) -> str:            # wrap a conda-env tool invocation
         raise NotImplementedError
     def bootstrap_lines(self) -> list[str]:         # Dockerfile (builder): install the engine
@@ -220,17 +222,23 @@ class PixiEngine(EnvEngine):
     def setup(self, cb):
         chans = " ".join(f"-c {c}" for c in cb.channels)
         r = cb.exec(f"pixi init {self.workdir} {chans}", timeout=120)
-        return {"success": r["returncode"] == 0, "stderr": r["stderr"][-400:]}
+        if r["returncode"] == 0:
+            return proven("container_build.pixi_setup_ok", success=True, stderr=r["stderr"][-400:])
+        return broke("container_build.pixi_setup_failed", success=False, stderr=r["stderr"][-400:])
     def add(self, cb, specs, channels):
         quoted = " ".join(f'"{s}"' for s in specs)
         r = cb.exec(f"pixi add {quoted}", timeout=1800)
-        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
+        if r["returncode"] == 0:
+            return proven("container_build.pixi_add_ok", success=True, stderr=(r["stderr"] or "")[-800:])
+        return broke("container_build.pixi_add_failed", success=False, stderr=(r["stderr"] or "")[-800:])
     def add_pypi(self, cb, specs):
         # PyPI specs land in pixi.toml/pixi.lock and materialize via the SAME
         # `pixi install --locked` (no extra Dockerfile step) — in-lock, reproducible.
         quoted = " ".join(f'"{s}"' for s in specs)
         r = cb.exec(f"pixi add --pypi {quoted}", timeout=1800)
-        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
+        if r["returncode"] == 0:
+            return proven("container_build.pixi_add_pypi_ok", success=True, stderr=(r["stderr"] or "")[-800:])
+        return broke("container_build.pixi_add_pypi_failed", success=False, stderr=(r["stderr"] or "")[-800:])
     def run(self, tool_cmd):
         # wrap in a shell so builtins/pipes/env-prefixes in tool_cmd work (pixi run
         # execs directly otherwise — `pixi run command -v X` would fail).
@@ -272,10 +280,12 @@ class PixiEngine(EnvEngine):
             r = cb.exec(f"mkdir -p {self.workdir} && echo {b64} | base64 -d > {self.workdir}/{name}",
                         timeout=60)
             if r["returncode"] != 0:
-                return {"success": False, "stage": "write_lock", "file": name,
-                        "stderr": (r["stderr"] or "")[-400:]}
+                return broke("container_build.write_lock_failed", success=False, stage="write_lock", file=name,
+                        stderr=(r["stderr"] or "")[-400:])
         r = cb.exec(f"cd {self.workdir} && pixi install --locked", timeout=1800)
-        return {"success": r["returncode"] == 0, "stderr": (r["stderr"] or "")[-800:]}
+        if r["returncode"] == 0:
+            return proven("container_build.install_from_lock_ok", success=True, stderr=(r["stderr"] or "")[-800:])
+        return broke("container_build.install_from_lock_failed", success=False, stderr=(r["stderr"] or "")[-800:])
 
 
 class MicromambaEngine(EnvEngine):
@@ -297,7 +307,7 @@ class MicromambaEngine(EnvEngine):
         return (f"curl -Ls https://micro.mamba.pm/api/micromamba/{self.subdir}/latest "
                 f"| tar -xj -C /usr/local bin/micromamba")
     def setup(self, cb):
-        return {"success": True}                     # env.yml is written at add()
+        return proven("container_build.micromamba_setup_ok", success=True)  # env.yml is written at add()
     def add(self, cb, specs, channels):
         chans = "\n".join(f"  - {c}" for c in channels)
         deps = "\n".join(f"  - {s}" for s in specs)
@@ -306,19 +316,21 @@ class MicromambaEngine(EnvEngine):
         cb.exec(f"mkdir -p {self.workdir}", timeout=60)
         w = cb.exec(f"cat > {self.workdir}/environment.yml <<'YML'\n{yml}YML", timeout=60)
         if w["returncode"] != 0:
-            return {"success": False, "stage": "write_yml", "stderr": w["stderr"][-400:]}
+            return broke("container_build.micromamba_write_yml_failed", success=False, stage="write_yml", stderr=w["stderr"][-400:])
         s = cb.exec(f"micromamba create -y -n env -f {self.workdir}/environment.yml", timeout=1800)
         if s["returncode"] != 0:
-            return {"success": False, "stage": "solve", "stderr": (s["stderr"] or "")[-800:]}
+            return broke("container_build.micromamba_solve_failed", success=False, stage="solve", stderr=(s["stderr"] or "")[-800:])
         e = cb.exec(f"micromamba env export -n env --explicit > {self.workdir}/env.lock", timeout=120)
-        return {"success": e["returncode"] == 0, "stderr": (e["stderr"] or "")[-400:]}
+        if e["returncode"] == 0:
+            return proven("container_build.micromamba_add_ok", success=True, stderr=(e["stderr"] or "")[-400:])
+        return broke("container_build.micromamba_export_failed", success=False, stderr=(e["stderr"] or "")[-400:])
     def add_pypi(self, cb, specs):
         # micromamba's explicit lock (URLs+sha256) can't capture PyPI, so a pip
         # install here would NOT replay in the materialized image — refuse honestly
         # rather than silently drop it. PyPI specs ⇒ use the pixi engine (default).
-        return {"success": False, "reason": "PyPI specs are not supported by the micromamba "
+        return refused("container_build.micromamba_pypi_unsupported", success=False, reason="PyPI specs are not supported by the micromamba "
                 "engine (its explicit lock can't capture pip, so they wouldn't materialize in "
-                "the shipped image) — use the pixi engine (the default) for PyPI."}
+                "the shipped image) — use the pixi engine (the default) for PyPI.")
     def run(self, tool_cmd):
         return f"micromamba run -n env bash -c {shlex.quote(tool_cmd)}"
     def bootstrap_lines(self):
@@ -464,7 +476,7 @@ class ContainerBuild:
         r = self._sh(["docker", "run", "-d", "--platform", self.platform,
                       self.base, "sleep", "infinity"], timeout=300)
         if r["returncode"] != 0:
-            return {"success": False, "stage": "run", "stderr": r["stderr"][-800:]}
+            return broke("container_build.start_run_failed", success=False, stage="run", stderr=r["stderr"][-800:])
         self.cid = (r["stdout"] or "").strip()
         if self.apt_snapshot:
             # Pin apt to the captured snapshot.debian.org timestamp BEFORE update —
@@ -484,7 +496,7 @@ class ContainerBuild:
         s = self._sh(["docker", "exec", self.cid, "bash", "-c", setup], timeout=900)
         if s["returncode"] != 0:
             self.log.append(f"start rc={s['returncode']}")
-            return {"success": False, "container": self.cid, "stderr": s["stderr"][-800:]}
+            return broke("container_build.start_setup_failed", success=False, container=self.cid, stderr=s["stderr"][-800:])
         # Install the SWH-fallback helper for source-tier installs. Same script
         # also goes into the emitted Dockerfile's builder stage so the bytes that
         # ran here match the bytes that ship.
@@ -494,7 +506,7 @@ class ContainerBuild:
                        f"echo {b64} | base64 -d > /usr/local/bin/_swh_clone "
                        "&& chmod +x /usr/local/bin/_swh_clone"], timeout=60)
         self.log.append(f"start rc=0 swh_clone_install={sw['returncode']}")
-        return {"success": True, "container": self.cid, "stderr": ""}
+        return proven("container_build.started", success=True, container=self.cid, stderr="")
 
     # -- DECLARE: conda/pip (one co-solve via the engine) ------------------
     def declare(self, specs: list[str], timeout: int = 1800) -> dict[str, Any]:
@@ -502,15 +514,15 @@ class ContainerBuild:
         at a time — sequential solves are order-dependent and can downgrade.) The
         engine is installed lazily here on first use."""
         if not specs:
-            return {"success": True, "skipped": "no specs"}
+            return proven("container_build.declare_no_specs", success=True, skipped="no specs")
         if not self._engine_installed:
             inst = self.exec(self.engine.install_commands(), timeout=900)
             if inst["returncode"] != 0:
-                return {"success": False, "stage": "engine_install",
-                        "stderr": (inst["stderr"] or "")[-800:]}
+                return broke("container_build.declare_engine_install_failed", success=False, stage="engine_install",
+                        stderr=(inst["stderr"] or "")[-800:])
             es = self.engine.setup(self)
             if not es.get("success", True):
-                return {"success": False, "stage": "engine_setup", "stderr": es.get("stderr", "")}
+                return broke("container_build.declare_engine_setup_failed", success=False, stage="engine_setup", stderr=es.get("stderr", ""))
             self._engine_installed = True
         res = self.engine.add(self, specs, self.channels)
         self.log.append(f"declare {specs} -> {res.get('success')}")
@@ -526,12 +538,12 @@ class ContainerBuild:
         rebuild gets the IDENTICAL env, byte-for-byte, no consultation with the
         live conda channels. Same lazy-engine-install pattern as `declare`."""
         if not lock_files:
-            return {"success": True, "skipped": "no lock files"}
+            return proven("container_build.declare_locked_no_files", success=True, skipped="no lock files")
         if not self._engine_installed:
             inst = self.exec(self.engine.install_commands(), timeout=900)
             if inst["returncode"] != 0:
-                return {"success": False, "stage": "engine_install",
-                        "stderr": (inst["stderr"] or "")[-800:]}
+                return broke("container_build.declare_locked_engine_install_failed", success=False, stage="engine_install",
+                        stderr=(inst["stderr"] or "")[-800:])
             # NB: skip engine.setup() — it would `pixi init` and write a fresh
             # pixi.toml we'd immediately overwrite. install_from_lock writes the
             # prebaked pixi.toml + pixi.lock directly, no init needed.
@@ -548,14 +560,14 @@ class ContainerBuild:
         with the conda layer). The engine is installed lazily here on first use, so a
         pip-only env still gets one. Refused by engines whose lock can't hold pip."""
         if not specs:
-            return {"success": True, "skipped": "no specs"}
+            return proven("container_build.declare_pypi_no_specs", success=True, skipped="no specs")
         if not self._engine_installed:
             inst = self.exec(self.engine.install_commands(), timeout=900)
             if inst["returncode"] != 0:
-                return {"success": False, "stage": "engine_install", "stderr": (inst["stderr"] or "")[-800:]}
+                return broke("container_build.declare_pypi_engine_install_failed", success=False, stage="engine_install", stderr=(inst["stderr"] or "")[-800:])
             es = self.engine.setup(self)
             if not es.get("success", True):
-                return {"success": False, "stage": "engine_setup", "stderr": es.get("stderr", "")}
+                return broke("container_build.declare_pypi_engine_setup_failed", success=False, stage="engine_setup", stderr=es.get("stderr", ""))
             self._engine_installed = True
         res = self.engine.add_pypi(self, specs)
         self.log.append(f"declare_pypi {specs} -> {res.get('success')}")
@@ -580,11 +592,11 @@ class ContainerBuild:
             cmd += f"; chmod {mode} {q}"
         r = self.exec(cmd, timeout=120)
         if r["returncode"] != 0:
-            return {"success": False, "stderr": (r["stderr"] or "")[-400:]}
+            return broke("container_build.write_file_failed", success=False, stderr=(r["stderr"] or "")[-400:])
         self.longtail.append({"command": cmd, "purpose": purpose or f"authored file {path}",
                               "evidence": f"test -f {q}"})
         self.log.append(f"write_file {path} ({len(content)}B)")
-        return {"success": True, "path": path}
+        return proven("container_build.write_file_ok", success=True, path=path)
 
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "",
@@ -602,17 +614,17 @@ class ContainerBuild:
         ev_cmd = self.engine.run(evidence) if engine_coupled else evidence
         inst = self.exec(cmd, timeout=timeout)
         if inst["returncode"] != 0:
-            return {"success": False, "stage": "install", "stderr": (inst["stderr"] or "")[-800:]}
+            return broke("container_build.run_install_failed", success=False, stage="install", stderr=(inst["stderr"] or "")[-800:])
         ev = self.exec(ev_cmd, timeout=120)
         if ev["returncode"] != 0:
-            return {"success": False, "stage": "evidence", "evidence": ev_cmd,
-                    "stderr": (ev["stderr"] or "")[-800:]}
+            return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
+                    stderr=(ev["stderr"] or "")[-800:])
         rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd}
         if provenance:                       # synthesis tier: carry the per-command
             rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
         self.longtail.append(rec)
         self.log.append(f"run [{purpose}] rc=0 ev_ok coupled={engine_coupled}")
-        return {"success": True, "evidence_output": (ev["stdout"] or "").strip()[:200]}
+        return proven("container_build.run_ok", success=True, evidence_output=(ev["stdout"] or "").strip()[:200])
 
     def install(self, spec: dict, timeout: int = 1800) -> dict[str, Any]:
         """Run an install_commands generator's spec ({command, evidence, purpose,
@@ -640,7 +652,7 @@ class ContainerBuild:
             for f in self.engine.lock_artifacts():
                 cp = self._sh(["docker", "cp", f"{self.cid}:{self.workdir}/{f}", str(build_dir / f)])
                 if cp["returncode"] != 0:
-                    return {"success": False, "stage": "cp", "file": f, "stderr": cp["stderr"][-400:]}
+                    return broke("container_build.freeze_cp_failed", success=False, stage="cp", file=f, stderr=cp["stderr"][-400:])
         dockerfile = emit_dockerfile(self.base, engine=self.engine,
                                      has_env_layer=self.has_env_layer, longtail_steps=self.longtail,
                                      apt_snapshot=self.apt_snapshot)
@@ -649,11 +661,11 @@ class ContainerBuild:
         b = self._sh(["docker", "buildx", "build", "--platform", self.platform,
                       "--load", "-t", tag, str(build_dir)], timeout=2400)
         if b["returncode"] != 0:
-            return {"success": False, "stage": "build", "dockerfile": str(build_dir / "Dockerfile"),
-                    "stderr": (b["stderr"] or "")[-1200:]}
-        return {"success": True, "image": tag, "engine": self.engine.name,
-                "dockerfile": str(build_dir / "Dockerfile"),
-                "build_method": "container-native", "platform": self.platform}
+            return broke("container_build.freeze_build_failed", success=False, stage="build", dockerfile=str(build_dir / "Dockerfile"),
+                    stderr=(b["stderr"] or "")[-1200:])
+        return proven("container_build.frozen", success=True, image=tag, engine=self.engine.name,
+                dockerfile=str(build_dir / "Dockerfile"),
+                build_method="container-native", platform=self.platform)
 
     # Banner probe — non-fakeable version capture. The probe COMMAND is synthesized
     # in here from a tool token only; no agent text reaches the shell. A token that
@@ -707,7 +719,9 @@ class ContainerBuild:
                     if sum(len(x) for x in parts) > 1200:
                         break
             banners[tool] = "\n".join(parts)[:1200]
-        return {"success": ok, "checks": results, "banners": banners}
+        if ok:
+            return proven("container_build.validated_in_image", success=True, checks=results, banners=banners)
+        return broke("container_build.validation_in_image_failed", success=False, checks=results, banners=banners)
 
     def image_digest(self, image: str) -> str:
         """The built image's content id (sha256), the local shipping handle."""

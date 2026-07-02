@@ -27,6 +27,7 @@ from agent.skills import env_honesty as _honesty
 from agent.skills import freeze as _freeze
 from agent.skills import locus as _locus
 from agent.skills.container_build import BASE_IMAGE, ContainerBuild, EnvEngine
+from agent.skills.outcomes import proven, broke
 
 
 class EnvBuild:
@@ -99,7 +100,7 @@ class EnvBuild:
     def build(self) -> dict[str, Any]:
         s = self.cb.start()
         if not s.get("success"):
-            return {"success": False, "stage": "start", **s}
+            return broke("env_build.start_failed", **{**s, "success": False, "stage": "start"})
         # ENV LAYER — two paths:
         #   PREBAKED (recipe replay): write the captured lock files + materialize
         #     via `pixi install --locked` — NO solve. Identical env across time/
@@ -109,16 +110,16 @@ class EnvBuild:
         if self.prebaked_lock_files:
             d = self.cb.declare_locked(self.prebaked_lock_files)
             if not d.get("success"):
-                return {"success": False, "stage": "declare_locked", **d}
+                return broke("env_build.declare_locked_failed", **{**d, "success": False, "stage": "declare_locked"})
         else:
             if self.conda_specs:
                 d = self.cb.declare(self.conda_specs)
                 if not d.get("success"):
-                    return {"success": False, "stage": "declare", **d}
+                    return broke("env_build.declare_failed", **{**d, "success": False, "stage": "declare"})
             if self.pip_specs:
                 dp = self.cb.declare_pypi(self.pip_specs)
                 if not dp.get("success"):
-                    return {"success": False, "stage": "declare_pypi", **dp}
+                    return broke("env_build.declare_pypi_failed", **{**dp, "success": False, "stage": "declare_pypi"})
         if self.conda_specs or self.pip_specs or self.prebaked_lock_files:
             # capture lock per-file AFTER both layers — `lock_files` carries the
             # files individually so the recipe can ship them; `lock_text` is the
@@ -132,8 +133,8 @@ class EnvBuild:
         for spec in self.tools:
             r = self.cb.install(spec)
             if not r.get("success"):
-                return {"success": False, "stage": "install", "tool": spec.get("purpose"), **r}
-        return {"success": True}
+                return broke("env_build.install_failed", **{**r, "success": False, "stage": "install", "tool": spec.get("purpose")})
+        return proven("env_build.built", success=True)
 
     # -- FREEZE + the honesty gate ---------------------------------------
     def freeze(self) -> dict[str, Any]:
@@ -167,7 +168,9 @@ class EnvBuild:
                             "rc": r.get("rc"), "passed": r.get("rc") == 0,
                             "out": r.get("out", ""),
                             "banner": banners.get(tool, "")})
-        return {"success": res["success"], "verifications": records}
+        if res["success"]:
+            return proven("env_build.verified_in_image", success=True, verifications=records)
+        return broke("env_build.verification_in_image_failed", success=False, verifications=records)
 
     # -- the content address ---------------------------------------------
     def content_digest(self) -> str:
@@ -250,7 +253,7 @@ class EnvBuild:
         key = self.request_key()
         hit = cache.lookup_anchored(key, image_present)
         if hit:
-            return {"success": True, "cached": True, **hit}
+            return proven("env_build.cache_hit", **{**hit, "success": True, "cached": True})
         result = self.run()
         if result.get("success"):
             cache.register(key, self.to_cache_record(result))
@@ -268,7 +271,7 @@ class EnvBuild:
                 return b
             fr = self.freeze()
             if not fr.get("success"):
-                return {"success": False, "stage": "freeze", **fr}
+                return broke("env_build.freeze_failed", **{**fr, "success": False, "stage": "freeze"})
             digest = self.cb.image_digest(fr["image"])
             v = self.verify_in_image(fr["image"])
             # WHERE this build + its in-image validation ran. The VALIDATED_IN_IMAGE

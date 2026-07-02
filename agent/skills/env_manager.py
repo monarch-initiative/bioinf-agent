@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.skills import evidence
+from agent.skills.outcomes import proven, refused, broke
 
 
 # conda spec grammar: "{name}{op?}{version?}{=build?}".
@@ -124,13 +125,14 @@ class EnvManager:
         py_ver = python_version or self.config["conda"]["python_version"]
 
         if env_path.exists():
-            return {
-                "success": True,
-                "env_name": env_name,
-                "env_path": str(env_path),
-                "subdir": subdir or None,
-                "note": "Environment already exists — reusing it.",
-            }
+            return proven(
+                "env_manager.env_exists_reused",
+                success=True,
+                env_name=env_name,
+                env_path=str(env_path),
+                subdir=subdir or None,
+                note="Environment already exists — reusing it.",
+            )
 
         # CONDA_SUBDIR on the create solve selects the platform's packages.
         create_env = os.environ.copy()
@@ -145,7 +147,8 @@ class EnvManager:
         ]
         result = self._run(cmd, env=create_env)
         if result["returncode"] != 0:
-            return {"success": False, "env_name": env_name, "error": result["stderr"]}
+            return broke("env_manager.create_solve_failed",
+                         success=False, env_name=env_name, error=result["stderr"])
 
         if subdir:
             # Persist so subsequent `conda install` into this env keep the subdir.
@@ -160,13 +163,14 @@ class EnvManager:
                 if "subdir:" not in existing:
                     condarc.write_text(existing + f"subdir: {subdir}\n")
 
-        return {
-            "success": True,
-            "env_name": env_name,
-            "env_path": str(env_path),
-            "python_version": py_ver,
-            "subdir": subdir or None,
-        }
+        return proven(
+            "env_manager.created",
+            success=True,
+            env_name=env_name,
+            env_path=str(env_path),
+            python_version=py_ver,
+            subdir=subdir or None,
+        )
 
     def install(self, env_name: str, packages: list[dict]) -> dict[str, Any]:
         """
@@ -185,13 +189,14 @@ class EnvManager:
         if not env_path.exists():
             create_result = self.create(env_name)
             if not create_result.get("success"):
-                return {
-                    "success":  False,
-                    "env_name": env_name,
-                    "error":    f"env auto-create failed: {create_result.get('error','')}",
-                    "stderr":   create_result.get("error", "")[:500],
-                    "returncode": 1,
-                }
+                return broke(
+                    "env_manager.install_autocreate_failed",
+                    success=False,
+                    env_name=env_name,
+                    error=f"env auto-create failed: {create_result.get('error','')}",
+                    stderr=create_result.get("error", "")[:500],
+                    returncode=1,
+                )
         channels = []
         specs = []
 
@@ -224,14 +229,25 @@ class EnvManager:
             timeout=self.config["agent"]["install_timeout_seconds"],
         )
 
-        return {
-            "success": m["success"],
-            "env_name": env_name,
-            "packages_requested": [p["spec"] for p in packages],
-            "stdout": m["stdout"][-3000:],
-            "stderr": m["stderr"][-3000:],
-            "returncode": m["returncode"],
-        }
+        if m["success"]:
+            return proven(
+                "env_manager.conda_installed",
+                success=True,
+                env_name=env_name,
+                packages_requested=[p["spec"] for p in packages],
+                stdout=m["stdout"][-3000:],
+                stderr=m["stderr"][-3000:],
+                returncode=m["returncode"],
+            )
+        return broke(
+            "env_manager.conda_install_failed",
+            success=False,
+            env_name=env_name,
+            packages_requested=[p["spec"] for p in packages],
+            stdout=m["stdout"][-3000:],
+            stderr=m["stderr"][-3000:],
+            returncode=m["returncode"],
+        )
 
     def install_pip(self, env_name: str, pip_specs: list[str]) -> dict[str, Any]:
         env_path = self.envs_dir / env_name
@@ -243,13 +259,23 @@ class EnvManager:
             timeout=self.config["agent"]["install_timeout_seconds"],
         )
 
-        return {
-            "success": m["success"],
-            "env_name": env_name,
-            "packages_requested": pip_specs,
-            "stdout": m["stdout"][-2000:],
-            "stderr": m["stderr"][-2000:],
-        }
+        if m["success"]:
+            return proven(
+                "env_manager.pip_installed",
+                success=True,
+                env_name=env_name,
+                packages_requested=pip_specs,
+                stdout=m["stdout"][-2000:],
+                stderr=m["stderr"][-2000:],
+            )
+        return broke(
+            "env_manager.pip_install_failed",
+            success=False,
+            env_name=env_name,
+            packages_requested=pip_specs,
+            stdout=m["stdout"][-2000:],
+            stderr=m["stderr"][-2000:],
+        )
 
     def apply(
         self,
@@ -286,27 +312,50 @@ class EnvManager:
                 timeout=timeout if timeout is not None else 1800,
                 watch_dir=watch_dir,
             )
-            return {
-                "command":          command,
-                "returncode":       res["returncode"],
-                "success":          res["returncode"] == 0,
-                "stdout":           res["stdout"],
-                "stderr":           res["stderr"],
-                "runtime_seconds":  res.get("runtime_seconds"),
-                "resource_usage":   res.get("resource_usage"),
-                "detected_outputs": res.get("detected_outputs", []),
-            }
+            if res["returncode"] == 0:
+                return proven(
+                    "env_manager.apply_in_env_ok",
+                    command=command,
+                    returncode=res["returncode"],
+                    success=True,
+                    stdout=res["stdout"],
+                    stderr=res["stderr"],
+                    runtime_seconds=res.get("runtime_seconds"),
+                    resource_usage=res.get("resource_usage"),
+                    detected_outputs=res.get("detected_outputs", []),
+                )
+            return broke(
+                "env_manager.apply_in_env_failed",
+                command=command,
+                returncode=res["returncode"],
+                success=False,
+                stdout=res["stdout"],
+                stderr=res["stderr"],
+                runtime_seconds=res.get("runtime_seconds"),
+                resource_usage=res.get("resource_usage"),
+                detected_outputs=res.get("detected_outputs", []),
+            )
 
         if isinstance(command, str):
             raise TypeError("apply(in_env=False) expects a command list[str]")
         res = self._run(command, timeout=timeout if timeout is not None else 300)
-        return {
-            "command":    command,
-            "returncode": res["returncode"],
-            "success":    res["returncode"] == 0,
-            "stdout":     res["stdout"],
-            "stderr":     res["stderr"],
-        }
+        if res["returncode"] == 0:
+            return proven(
+                "env_manager.apply_raw_ok",
+                command=command,
+                returncode=res["returncode"],
+                success=True,
+                stdout=res["stdout"],
+                stderr=res["stderr"],
+            )
+        return broke(
+            "env_manager.apply_raw_failed",
+            command=command,
+            returncode=res["returncode"],
+            success=False,
+            stdout=res["stdout"],
+            stderr=res["stderr"],
+        )
 
     def _package_in_registry(self, env_name: str, package_name: str) -> bool:
         """Runtime-controlled presence anchor: is `package_name` actually
@@ -410,17 +459,25 @@ class EnvManager:
                 f"(which records its own provenance) instead of verify_installation."
             )
 
-        return {
-            "success":            success,
-            "package_name":       package_name,
-            "check_command":      check_command,
-            "output":             output[:500],
-            "returncode":         rc,
-            "installed_at":       installed_at,
-            "registry_present":   registry_present,
-            "name_token_present": token_present,
-            "rejection_reason":   rejection_reason,
-        }
+        verify_fields = dict(
+            success=success,
+            package_name=package_name,
+            check_command=check_command,
+            output=output[:500],
+            returncode=rc,
+            installed_at=installed_at,
+            registry_present=registry_present,
+            name_token_present=token_present,
+            rejection_reason=rejection_reason,
+        )
+        if success:
+            return proven("env_manager.verified", **verify_fields)
+        if rejection_reason is not None:
+            # A cheat-guard said no (missing name token / library-only echo cheat)
+            # BEFORE the tool proved itself — recoverable by fixing the check.
+            return refused("env_manager.verify_rejected", **verify_fields)
+        # check_command was attempted and returned nonzero — a real verify failure.
+        return broke("env_manager.verify_failed", **verify_fields)
 
     def run_in_env(
         self,
@@ -459,20 +516,23 @@ class EnvManager:
             cwd=working_dir or str(self.project_root),
             timeout=timeout,
         )
-        return {
-            "returncode": result["returncode"],
-            "stdout": result["stdout"],
-            "stderr": result["stderr"],
-            "success": result["returncode"] == 0,
-            "command": command,
-            "runtime_seconds":  result["resource_usage"]["wall_seconds"],
-            "resource_usage":   result["resource_usage"],
-            "inputs": inputs or [],
+        run_fields = dict(
+            returncode=result["returncode"],
+            stdout=result["stdout"],
+            stderr=result["stderr"],
+            success=result["returncode"] == 0,
+            command=command,
+            runtime_seconds=result["resource_usage"]["wall_seconds"],
+            resource_usage=result["resource_usage"],
+            inputs=inputs or [],
             # N7: pass project_root so a system-shared watch_dir (e.g. /tmp)
             # only reports project-resident files; harness transcripts and other
             # processes' droppings are filtered out.
-            "detected_outputs": self._diff_snapshot(before, watch, self.project_root),
-        }
+            detected_outputs=self._diff_snapshot(before, watch, self.project_root),
+        )
+        if result["returncode"] == 0:
+            return proven("env_manager.run_in_env_ok", **run_fields)
+        return broke("env_manager.run_in_env_failed", **run_fields)
 
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
@@ -507,7 +567,8 @@ class EnvManager:
         """
         env_path  = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.jar_env_missing",
+                           success=False, error=f"env not found: {env_path}")
 
         share_dir = env_path / "share" / tool_name
         bin_dir   = env_path / "bin"
@@ -533,8 +594,9 @@ class EnvManager:
             )
             log.append(f"curl rc={curl['returncode']}")
             if curl["returncode"] != 0:
-                return {"success": False, "error": "JAR download failed",
-                        "stderr": (curl.get("stderr") or "")[-500:], "log": log}
+                return broke("env_manager.jar_download_failed",
+                             success=False, error="JAR download failed",
+                             stderr=(curl.get("stderr") or "")[-500:], log=log)
 
             if is_zip:
                 unz = self.run_in_env(
@@ -544,12 +606,14 @@ class EnvManager:
                 )
                 log.append(f"unzip rc={unz['returncode']}")
                 if unz["returncode"] != 0:
-                    return {"success": False, "error": "unzip failed",
-                            "stderr": (unz.get("stderr") or "")[-500:], "log": log}
+                    return broke("env_manager.jar_unzip_failed",
+                                 success=False, error="unzip failed",
+                                 stderr=(unz.get("stderr") or "")[-500:], log=log)
                 jars = list(share_dir.rglob("*.jar"))
                 if not jars:
-                    return {"success": False, "error": "no *.jar found after unzip",
-                            "share_dir": str(share_dir), "log": log}
+                    return broke("env_manager.jar_none_after_unzip",
+                                 success=False, error="no *.jar found after unzip",
+                                 share_dir=str(share_dir), log=log)
                 jar_path = self._select_jar(jars, tool_name)
             else:
                 jar_path = download_target
@@ -564,16 +628,17 @@ class EnvManager:
         wrapper.chmod(0o755)
         log.append(f"wrapper written: {wrapper}")
 
-        return {
-            "success":      True,
-            "tool_name":    tool_name,
-            "wrapper_path": str(wrapper),
-            "jar_path":     str(jar_path),
-            "jar_url":      jar_url,
-            "share_dir":    str(share_dir),
-            "java_flags":   java_flags,
-            "log":          log,
-        }
+        return proven(
+            "env_manager.jar_installed",
+            success=True,
+            tool_name=tool_name,
+            wrapper_path=str(wrapper),
+            jar_path=str(jar_path),
+            jar_url=jar_url,
+            share_dir=str(share_dir),
+            java_flags=java_flags,
+            log=log,
+        )
 
     def install_git_repo(
         self,
@@ -622,7 +687,8 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.git_env_missing",
+                           success=False, error=f"env not found: {env_path}")
 
         share_dir = env_path / "share" / tool_name
         log: list[str] = []
@@ -639,8 +705,9 @@ class EnvManager:
         )
         log.append(f"git clone rc={clone['returncode']}")
         if clone["returncode"] != 0:
-            return {"success": False, "error": "git clone failed",
-                    "stderr": (clone.get("stderr") or "")[-500:], "log": log}
+            return broke("env_manager.git_clone_failed",
+                         success=False, error="git clone failed",
+                         stderr=(clone.get("stderr") or "")[-500:], log=log)
 
         if ref:
             co = self.run_in_env(
@@ -650,16 +717,18 @@ class EnvManager:
             )
             log.append(f"git checkout {ref} rc={co['returncode']}")
             if co["returncode"] != 0:
-                return {"success": False, "error": f"git checkout {ref} failed",
-                        "stderr": (co.get("stderr") or "")[-500:], "log": log}
+                return broke("env_manager.git_checkout_failed",
+                             success=False, error=f"git checkout {ref} failed",
+                             stderr=(co.get("stderr") or "")[-500:], log=log)
 
         rev = self.run_in_env(
             env_name, f"git -C {shlex.quote(str(share_dir))} rev-parse HEAD", timeout=30
         )
         commit_sha = (rev.get("stdout") or "").strip()
         if rev["returncode"] != 0 or not commit_sha:
-            return {"success": False, "error": "could not resolve commit SHA after clone",
-                    "stderr": (rev.get("stderr") or "")[-500:], "log": log}
+            return broke("env_manager.git_rev_parse_failed",
+                         success=False, error="could not resolve commit SHA after clone",
+                         stderr=(rev.get("stderr") or "")[-500:], log=log)
         log.append(f"commit_sha={commit_sha}")
 
         wrapper_path = ""
@@ -670,9 +739,10 @@ class EnvManager:
                 )
                 log.append(f"build_command rc={build['returncode']}")
                 if build["returncode"] != 0:
-                    return {"success": False, "error": "build_command failed",
-                            "stderr": (build.get("stderr") or "")[-500:],
-                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+                    return broke("env_manager.git_build_failed",
+                                 success=False, error="build_command failed",
+                                 stderr=(build.get("stderr") or "")[-500:],
+                                 commit_sha=commit_sha, clone_path=str(share_dir), log=log)
 
             # If the build produces an executable, expose it on PATH via a wrapper —
             # gives the source tool the same launch contract as binary/jar (and is
@@ -680,8 +750,9 @@ class EnvManager:
             if bin_path:
                 built = share_dir / bin_path
                 if not built.is_file():
-                    return {"success": False, "error": f"bin_path not found after build: {built}",
-                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+                    return broke("env_manager.git_bin_path_missing",
+                                 success=False, error=f"bin_path not found after build: {built}",
+                                 commit_sha=commit_sha, clone_path=str(share_dir), log=log)
                 import stat as _stat
                 built.chmod(built.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
                 bin_dir = env_path / "bin"
@@ -698,8 +769,9 @@ class EnvManager:
                 # and so freeze can REPLAY it in-image via install_commands.script_repo.
                 entry = share_dir / entrypoint
                 if not entry.is_file():
-                    return {"success": False, "error": f"entrypoint not found in clone: {entry}",
-                            "commit_sha": commit_sha, "clone_path": str(share_dir), "log": log}
+                    return broke("env_manager.git_entrypoint_missing",
+                                 success=False, error=f"entrypoint not found in clone: {entry}",
+                                 commit_sha=commit_sha, clone_path=str(share_dir), log=log)
                 bin_dir = env_path / "bin"
                 bin_dir.mkdir(parents=True, exist_ok=True)
                 wrapper = bin_dir / tool_name
@@ -743,38 +815,43 @@ class EnvManager:
                 # even in the host_build=False mode — the clone already happened.
                 entry = share_dir / entrypoint
                 if not entry.is_file():
-                    return {"success": False,
-                            "error": f"entrypoint not found in clone: {entry}",
-                            "commit_sha": commit_sha,
-                            "clone_path": str(share_dir), "log": log}
+                    return broke("env_manager.git_entrypoint_missing_nohostbuild",
+                                 success=False,
+                                 error=f"entrypoint not found in clone: {entry}",
+                                 commit_sha=commit_sha,
+                                 clone_path=str(share_dir), log=log)
             else:
-                return {"success": False,
-                        "error": "host_build=False requires bin_path (compiled tool) "
-                                 "or entrypoint (script repo) so freeze's source-replay "
-                                 "knows what to wrap in the image",
-                        "commit_sha": commit_sha,
-                        "clone_path": str(share_dir), "log": log}
+                return refused("env_manager.git_nohostbuild_needs_target",
+                               success=False,
+                               error="host_build=False requires bin_path (compiled tool) "
+                                     "or entrypoint (script repo) so freeze's source-replay "
+                                     "knows what to wrap in the image",
+                               commit_sha=commit_sha,
+                               clone_path=str(share_dir), log=log)
             verify_command = f"git -C {share_dir} rev-parse HEAD"
             verify_output  = commit_sha
             verify_ok      = True
 
-        return {
-            "success":        verify_ok,
-            "tool_name":      tool_name,
-            "clone_path":     str(share_dir),
-            "commit_sha":     commit_sha,
-            "repo_url":       repo_url,
-            "ref":            ref or "HEAD",
-            "build_command":  build_command,
-            "bin_path":       bin_path,
-            "entrypoint":     entrypoint,
-            "interpreter":    interpreter,
-            "wrapper_path":   wrapper_path,
-            "verify_command": verify_command,
-            "verify_output":  verify_output,
-            "host_build":     host_build,
-            "log":            log,
-        }
+        git_fields = dict(
+            success=verify_ok,
+            tool_name=tool_name,
+            clone_path=str(share_dir),
+            commit_sha=commit_sha,
+            repo_url=repo_url,
+            ref=ref or "HEAD",
+            build_command=build_command,
+            bin_path=bin_path,
+            entrypoint=entrypoint,
+            interpreter=interpreter,
+            wrapper_path=wrapper_path,
+            verify_command=verify_command,
+            verify_output=verify_output,
+            host_build=host_build,
+            log=log,
+        )
+        if verify_ok:
+            return proven("env_manager.git_installed", **git_fields)
+        return broke("env_manager.git_verify_failed", **git_fields)
 
     # conda is suffix-agnostic about archives; we recognize the common release
     # tarball/zip shapes so a single asset URL "just works".
@@ -803,14 +880,16 @@ class EnvManager:
             cl = subprocess.run(["git", "clone", "--quiet", repo_url, tmp],
                                 capture_output=True, text=True, timeout=600)
             if cl.returncode != 0:
-                return {"success": False, "error": "git clone failed",
-                        "stderr": (cl.stderr or "")[-400:]}
+                return broke("env_manager.fetch_clone_failed",
+                             success=False, error="git clone failed",
+                             stderr=(cl.stderr or "")[-400:])
             if ref:
                 co = subprocess.run(["git", "-C", tmp, "checkout", "--quiet", ref],
                                     capture_output=True, text=True, timeout=120)
                 if co.returncode != 0:
-                    return {"success": False, "error": f"git checkout {ref!r} failed",
-                            "stderr": (co.stderr or "")[-400:]}
+                    return broke("env_manager.fetch_checkout_failed",
+                                 success=False, error=f"git checkout {ref!r} failed",
+                                 stderr=(co.stderr or "")[-400:])
             rp = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"],
                                 capture_output=True, text=True, timeout=30)
             commit = (rp.stdout or "").strip()
@@ -830,7 +909,8 @@ class EnvManager:
                     continue
                 files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
                               "text": data.decode("utf-8", errors="replace")})
-            return {"success": True, "commit": commit, "ref": ref or "HEAD", "files": files}
+            return proven("env_manager.fetch_git_ok",
+                          success=True, commit=commit, ref=ref or "HEAD", files=files)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -864,7 +944,8 @@ class EnvManager:
                         h.update(chunk)
                         fh.write(chunk)
             except Exception as e:
-                return {"success": False, "error": f"download failed: {e}"}
+                return broke("env_manager.fetch_download_failed",
+                             success=False, error=f"download failed: {e}")
             archive_sha = h.hexdigest()
 
             ext = Path(tmp) / "extracted"
@@ -877,10 +958,12 @@ class EnvManager:
                     with tarfile.open(archive) as t:
                         EnvManager._safe_extract_tar(t, ext)
                 else:
-                    return {"success": False,
-                            "error": "downloaded file is neither a tar nor a zip archive"}
+                    return broke("env_manager.fetch_not_an_archive",
+                                 success=False,
+                                 error="downloaded file is neither a tar nor a zip archive")
             except Exception as e:
-                return {"success": False, "error": f"extract failed: {e}"}
+                return broke("env_manager.fetch_extract_failed",
+                             success=False, error=f"extract failed: {e}")
 
             files: list[dict[str, Any]] = []
             for p in sorted(ext.rglob("*")):
@@ -897,8 +980,9 @@ class EnvManager:
                     continue
                 files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
                               "text": data.decode("utf-8", errors="replace")})
-            return {"success": True, "source_kind": "archive", "archive_url": url,
-                    "archive_sha256": archive_sha, "files": files}
+            return proven("env_manager.fetch_archive_ok",
+                          success=True, source_kind="archive", archive_url=url,
+                          archive_sha256=archive_sha, files=files)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1011,14 +1095,16 @@ class EnvManager:
                     with tarfile.open(downloaded) as tf:
                         tf.extractall(share_dir)
             except Exception as e:
-                return {"success": False, "error": f"archive extraction failed: {e}"}
+                return broke("env_manager.binary_extract_failed",
+                             success=False, error=f"archive extraction failed: {e}")
             log.append(f"extracted {downloaded.name}")
             binary_path = self._locate_binary(share_dir, tool_name, binary_in_archive)
             if not binary_path:
-                return {"success": False,
-                        "error": f"could not locate an executable for '{tool_name}' in the "
-                                 f"archive — pass binary_in_archive=<path inside archive>",
-                        "extracted_to": str(share_dir)}
+                return broke("env_manager.binary_not_located",
+                             success=False,
+                             error=f"could not locate an executable for '{tool_name}' in the "
+                                   f"archive — pass binary_in_archive=<path inside archive>",
+                             extracted_to=str(share_dir))
         else:
             binary_path = downloaded
 
@@ -1033,7 +1119,8 @@ class EnvManager:
         )
         wrapper.chmod(0o755)
         log.append(f"wrapper written: {wrapper}")
-        return {"success": True, "binary_path": str(binary_path), "wrapper_path": str(wrapper)}
+        return proven("env_manager.binary_staged",
+                      success=True, binary_path=str(binary_path), wrapper_path=str(wrapper))
 
     def install_release_binary(
         self,
@@ -1070,7 +1157,8 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.binary_env_missing",
+                           success=False, error=f"env not found: {env_path}")
 
         from urllib.parse import urlparse
         share_dir = env_path / "share" / tool_name
@@ -1089,8 +1177,9 @@ class EnvManager:
         )
         log.append(f"curl rc={curl['returncode']}")
         if curl["returncode"] != 0 or not download_target.exists():
-            return {"success": False, "error": "binary download failed",
-                    "stderr": (curl.get("stderr") or "")[-500:], "log": log}
+            return broke("env_manager.binary_download_failed",
+                         success=False, error="binary download failed",
+                         stderr=(curl.get("stderr") or "")[-500:], log=log)
 
         # The download-time anchor is the ASSET (what the publisher checksums:
         # the .tar.gz / .zip / single binary as shipped). A user-supplied sha256
@@ -1098,9 +1187,10 @@ class EnvManager:
         asset_digest = self._sha256_file(download_target)
         log.append(f"asset sha256={asset_digest}")
         if sha256 and asset_digest.lower() != sha256.lower():
-            return {"success": False,
-                    "error": "sha256 mismatch — refusing to install a non-matching asset",
-                    "expected_sha256": sha256.lower(), "actual_sha256": asset_digest, "log": log}
+            return refused("env_manager.binary_sha256_mismatch",
+                           success=False,
+                           error="sha256 mismatch — refusing to install a non-matching asset",
+                           expected_sha256=sha256.lower(), actual_sha256=asset_digest, log=log)
         recorded_asset_sha = sha256.lower() if sha256 else asset_digest
 
         staged = self._stage_release_binary(
@@ -1118,23 +1208,24 @@ class EnvManager:
         binary_digest = self._sha256_file(staged["binary_path"])
         log.append(f"binary sha256={binary_digest}")
 
-        return {
-            "success":      True,
-            "tool_name":    tool_name,
-            "binary_path":  staged["binary_path"],
-            "wrapper_path": staged["wrapper_path"],
-            "url":          url,
-            "sha256":       binary_digest,
-            "asset_sha256": recorded_asset_sha,
-            "install_method": {
+        return proven(
+            "env_manager.binary_installed",
+            success=True,
+            tool_name=tool_name,
+            binary_path=staged["binary_path"],
+            wrapper_path=staged["wrapper_path"],
+            url=url,
+            sha256=binary_digest,
+            asset_sha256=recorded_asset_sha,
+            install_method={
                 "type":         "binary",
                 "binary_url":   url,
                 "sha256":       binary_digest,
                 "asset_sha256": recorded_asset_sha,
                 "local_path":   staged["binary_path"],
             },
-            "log": log,
-        }
+            log=log,
+        )
 
     def install_perl_package(
         self, env_name: str, module: str, distribution: str = "", cpanm_flags: str = "",
@@ -1154,7 +1245,8 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.perl_env_missing",
+                           success=False, error=f"env not found: {env_path}")
         target = distribution or module
         flags  = cpanm_flags or "--notest"
         prefix = f"{build_env} " if build_env.strip() else ""
@@ -1162,20 +1254,24 @@ class EnvManager:
         inst = self.run_in_env(env_name, f"{prefix}cpanm {flags} {shlex.quote(target)}", timeout=1800)
         log.append(f"cpanm rc={inst['returncode']}")
         if inst["returncode"] != 0:
-            return {"success": False, "error": "cpanm install failed",
-                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+            return broke("env_manager.perl_cpanm_failed",
+                         success=False, error="cpanm install failed",
+                         stderr=(inst.get("stderr") or "")[-800:], log=log)
         ev = evidence.perl_module_load(self, env_name, module)
-        return {
-            "success":        ev["anchored"],
-            "module":         module,
-            "distribution":   target,
-            "verify_command": f"perl -M{module} -e1",
-            "verify_output":  f"{module} loaded (perl -M{module} -e1 rc=0)" if ev["anchored"] else "",
-            "install_method": {"type": "perl", "source": f"cpanm {target}",
-                               "module": module, "distribution": target,
-                               "cpanm_flags": flags, "build_env": build_env},
-            "log":            log,
-        }
+        perl_fields = dict(
+            success=ev["anchored"],
+            module=module,
+            distribution=target,
+            verify_command=f"perl -M{module} -e1",
+            verify_output=f"{module} loaded (perl -M{module} -e1 rc=0)" if ev["anchored"] else "",
+            install_method={"type": "perl", "source": f"cpanm {target}",
+                            "module": module, "distribution": target,
+                            "cpanm_flags": flags, "build_env": build_env},
+            log=log,
+        )
+        if ev["anchored"]:
+            return proven("env_manager.perl_installed", **perl_fields)
+        return broke("env_manager.perl_load_failed", **perl_fields)
 
     def install_cargo_tool(
         self, env_name: str, crate: str, version: str = "",
@@ -1189,7 +1285,8 @@ class EnvManager:
         presence (cli_which) is the honest anchor here."""
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.cargo_env_missing",
+                           success=False, error=f"env not found: {env_path}")
         bin_name = binary_name or crate
         if git_url:
             src = f"--git {shlex.quote(git_url)}"
@@ -1201,8 +1298,9 @@ class EnvManager:
         )
         log.append(f"cargo install rc={inst['returncode']}")
         if inst["returncode"] != 0:
-            return {"success": False, "error": "cargo install failed",
-                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+            return broke("env_manager.cargo_install_failed",
+                         success=False, error="cargo install failed",
+                         stderr=(inst.get("stderr") or "")[-800:], log=log)
         ev = evidence.cli_which(self, env_name, bin_name)
         # Capture the EXACT host toolchain version so freeze can replay the build
         # with the identical rustc on the ship platform (reproducible cross-arch).
@@ -1210,18 +1308,21 @@ class EnvManager:
         m = re.search(r"rustc\s+(\d+\.\d+\.\d+)", (rv.get("stdout") or ""))
         rust_version = m.group(1) if m else ""
         log.append(f"rust_version={rust_version or '?'}")
-        return {
-            "success":        ev["anchored"],
-            "crate":          crate,
-            "binary_name":    bin_name,
-            "verify_command": f"which {bin_name}",
-            "verify_output":  ev["detail"] or "",
-            "install_method": {"type": "cargo",
-                               "source": git_url or f"crates.io:{crate}" + (f"@{version}" if version else ""),
-                               "crate": crate, "version": version, "git_url": git_url,
-                               "binary_name": bin_name, "rust_version": rust_version},
-            "log":            log,
-        }
+        cargo_fields = dict(
+            success=ev["anchored"],
+            crate=crate,
+            binary_name=bin_name,
+            verify_command=f"which {bin_name}",
+            verify_output=ev["detail"] or "",
+            install_method={"type": "cargo",
+                            "source": git_url or f"crates.io:{crate}" + (f"@{version}" if version else ""),
+                            "crate": crate, "version": version, "git_url": git_url,
+                            "binary_name": bin_name, "rust_version": rust_version},
+            log=log,
+        )
+        if ev["anchored"]:
+            return proven("env_manager.cargo_installed", **cargo_fields)
+        return broke("env_manager.cargo_not_anchored", **cargo_fields)
 
     def install_go_tool(
         self, env_name: str, package: str, version: str = "latest", binary_name: str = "",
@@ -1232,7 +1333,8 @@ class EnvManager:
         (cli_which) is the anchor (a locally-built binary can't be wrong-arch)."""
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return {"success": False, "error": f"env not found: {env_path}"}
+            return refused("env_manager.go_env_missing",
+                           success=False, error=f"env not found: {env_path}")
         bin_name = binary_name or package.rstrip("/").split("/")[-1]
         spec = f"{package}@{version}" if version else package
         log: list[str] = []
@@ -1243,8 +1345,9 @@ class EnvManager:
         )
         log.append(f"go install rc={inst['returncode']}")
         if inst["returncode"] != 0:
-            return {"success": False, "error": "go install failed",
-                    "stderr": (inst.get("stderr") or "")[-800:], "log": log}
+            return broke("env_manager.go_install_failed",
+                         success=False, error="go install failed",
+                         stderr=(inst.get("stderr") or "")[-800:], log=log)
         ev = evidence.cli_which(self, env_name, bin_name)
         # Capture the EXACT host Go toolchain so freeze replays with the identical
         # `go` (official pinned tarball for the ship arch) — reproducible cross-arch.
@@ -1252,17 +1355,20 @@ class EnvManager:
         m = re.search(r"go(\d+\.\d+(?:\.\d+)?)", (gv.get("stdout") or ""))
         go_version = m.group(1) if m else ""
         log.append(f"go_version={go_version or '?'}")
-        return {
-            "success":        ev["anchored"],
-            "package":        package,
-            "binary_name":    bin_name,
-            "verify_command": f"which {bin_name}",
-            "verify_output":  ev["detail"] or "",
-            "install_method": {"type": "go", "source": f"{package}@{version}",
-                               "package": package, "version": version,
-                               "binary_name": bin_name, "go_version": go_version},
-            "log":            log,
-        }
+        go_fields = dict(
+            success=ev["anchored"],
+            package=package,
+            binary_name=bin_name,
+            verify_command=f"which {bin_name}",
+            verify_output=ev["detail"] or "",
+            install_method={"type": "go", "source": f"{package}@{version}",
+                            "package": package, "version": version,
+                            "binary_name": bin_name, "go_version": go_version},
+            log=log,
+        )
+        if ev["anchored"]:
+            return proven("env_manager.go_installed", **go_fields)
+        return broke("env_manager.go_not_anchored", **go_fields)
 
     @staticmethod
     def _select_jar(jars: list[Path], tool_name: str) -> Path:
@@ -1461,7 +1567,8 @@ class EnvManager:
         import tempfile
 
         if not _shutil.which("conda-lock"):
-            return {"success": False, "error": "conda-lock not on PATH (pip install conda-lock)"}
+            return refused("env_manager.conda_lock_absent",
+                           success=False, error="conda-lock not on PATH (pip install conda-lock)")
         platforms = platforms or ["linux-64"]
         env_yml = self.export_environment_yml(env_name, from_history=True)
         out = Path(out_path) if out_path else (
@@ -1475,14 +1582,18 @@ class EnvManager:
             for p in platforms:
                 cmd += ["-p", p]
             res = self._run(cmd, timeout=self.config["agent"].get("install_timeout_seconds", 1800))
-        return {
-            "success":   res["returncode"] == 0 and out.exists(),
-            "lockfile":  str(out) if out.exists() else None,
-            "platforms": platforms,
-            "engine":    "conda-lock",
-            "returncode": res["returncode"],
-            "stderr":    res["stderr"][-800:],
-        }
+        lock_ok = res["returncode"] == 0 and out.exists()
+        lock_fields = dict(
+            success=lock_ok,
+            lockfile=str(out) if out.exists() else None,
+            platforms=platforms,
+            engine="conda-lock",
+            returncode=res["returncode"],
+            stderr=res["stderr"][-800:],
+        )
+        if lock_ok:
+            return proven("env_manager.conda_lock_generated", **lock_fields)
+        return broke("env_manager.conda_lock_failed", **lock_fields)
 
     @staticmethod
     def lock_engine() -> str:
@@ -1516,8 +1627,9 @@ class EnvManager:
             return r
         if eng == "conda-lock":
             return self.generate_conda_lock(env_name, platforms, out_path)
-        return {"success": False, "engine": "none", "lockfile": None,
-                "error": "no lock engine (pixi/conda-lock) on PATH"}
+        return refused("env_manager.no_lock_engine",
+                       success=False, engine="none", lockfile=None,
+                       error="no lock engine (pixi/conda-lock) on PATH")
 
     def r_package_version(self, env_name: str, package_name: str) -> str:
         """Return the version `packageVersion('X')` reports for an R package,
@@ -1587,14 +1699,16 @@ class EnvManager:
             start_new_session=True,
         )
         if launch.returncode != 0:
-            return {"success": False, "service_name": service_name, "error": launch.stderr[-500:]}
+            return broke("env_manager.service_launch_failed",
+                         success=False, service_name=service_name, error=launch.stderr[-500:])
 
         pid = pid_file.read_text().strip() if pid_file.exists() else ""
         deadline = time.monotonic() + health_check_timeout_seconds
         while time.monotonic() < deadline:
             health = self.check_service_health(env_name, health_check_command, working_dir)
             if health["healthy"]:
-                return {"success": True, "service_name": service_name, "pid": pid, "log": str(log_file)}
+                return proven("env_manager.service_healthy",
+                              success=True, service_name=service_name, pid=pid, log=str(log_file))
             time.sleep(2)
 
         # Health check timed out. The service is probably still alive in the
@@ -1605,12 +1719,13 @@ class EnvManager:
         if pid_file.exists():
             pid_file.unlink()
 
-        return {
-            "success": False, "service_name": service_name, "pid": pid,
-            "error": f"Service did not become healthy within {health_check_timeout_seconds}s",
-            "log": str(log_file),
-            "cleanup": cleanup_log,
-        }
+        return broke(
+            "env_manager.service_unhealthy_timeout",
+            success=False, service_name=service_name, pid=pid,
+            error=f"Service did not become healthy within {health_check_timeout_seconds}s",
+            log=str(log_file),
+            cleanup=cleanup_log,
+        )
 
     @staticmethod
     def _kill_service_pid(pid: str) -> list[str]:
@@ -1684,18 +1799,26 @@ class EnvManager:
         """Stop a background service by running stop_command or killing by PID file."""
         if stop_command:
             result = self.run_in_env(env_name, stop_command, working_dir=working_dir, timeout=30)
-            return {"success": result["returncode"] == 0, "service_name": service_name, "method": "stop_command"}
+            if result["returncode"] == 0:
+                return proven("env_manager.service_stopped_cmd",
+                              success=True, service_name=service_name, method="stop_command")
+            return broke("env_manager.service_stop_cmd_failed",
+                         success=False, service_name=service_name, method="stop_command")
 
         pid_file = Path("/tmp/bioinf_services") / f"{service_name}.pid"
         if not pid_file.exists():
-            return {"success": False, "service_name": service_name, "error": "No PID file and no stop_command"}
+            return refused("env_manager.service_no_pid_no_cmd",
+                           success=False, service_name=service_name,
+                           error="No PID file and no stop_command")
         pid = pid_file.read_text().strip()
         try:
             subprocess.run(["kill", pid], check=True, timeout=10)
             pid_file.unlink(missing_ok=True)
-            return {"success": True, "service_name": service_name, "pid": pid, "method": "kill"}
+            return proven("env_manager.service_stopped_kill",
+                          success=True, service_name=service_name, pid=pid, method="kill")
         except Exception as e:
-            return {"success": False, "service_name": service_name, "pid": pid, "error": str(e)}
+            return broke("env_manager.service_kill_failed",
+                         success=False, service_name=service_name, pid=pid, error=str(e))
 
     @staticmethod
     def cleanup_orphan_service_pids() -> dict[str, Any]:

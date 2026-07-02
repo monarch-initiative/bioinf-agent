@@ -33,6 +33,8 @@ from typing import Optional
 
 import yaml
 
+from agent.skills.outcomes import refused
+
 
 class PipelineState:
     def __init__(self, config: dict):
@@ -402,31 +404,33 @@ class PipelineState:
         """
         draft = self._drafts.get(pipeline_id)
         if draft is None:
-            return {"error": f"unknown pipeline_id: {pipeline_id}"}
+            return refused("pipeline_state.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}")
 
         rejected = [k for k in patches if k in self.BLOCKED_PATCH_KEYS]
         unknown  = [k for k in patches if k not in self.PATCHABLE_KEYS and k not in self.BLOCKED_PATCH_KEYS]
         if rejected:
-            return {
-                "error": (
+            return refused(
+                "pipeline_state.blocked_keys",
+                error=(
                     f"patch refused — these keys are runtime-captured or "
                     f"finalize-derived and cannot be hand-supplied: {rejected}. "
                     f"Use the dedicated primitive (run_pipeline_step, "
                     f"verify_installation, install_conda_packages, freeze) "
                     f"so the spec stays anchored to observed reality."
                 ),
-                "rejected_keys":  rejected,
-                "patchable_keys": sorted(self.PATCHABLE_KEYS),
-            }
+                rejected_keys=rejected,
+                patchable_keys=sorted(self.PATCHABLE_KEYS),
+            )
         if unknown:
-            return {
-                "error": (
+            return refused(
+                "pipeline_state.unknown_keys",
+                error=(
                     f"patch refused — unknown keys: {unknown}. "
                     f"Did you mean one of {sorted(self.PATCHABLE_KEYS)}?"
                 ),
-                "unknown_keys":   unknown,
-                "patchable_keys": sorted(self.PATCHABLE_KEYS),
-            }
+                unknown_keys=unknown,
+                patchable_keys=sorted(self.PATCHABLE_KEYS),
+            )
 
         _deep_merge(draft, patches)
         self._persist(pipeline_id)

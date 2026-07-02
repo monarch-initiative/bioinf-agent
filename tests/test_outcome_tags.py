@@ -85,6 +85,23 @@ FULLY_TAGGED = [
     "agent/skills/agent_status.py",
     "agent/skills/env_freeze.py",
     "agent/validators/output_validator.py",
+    # Wave 2 (2026-07-02) — the deferred plumbing, now fully tagged.
+    "agent/skills/env_manager.py",
+    "agent/skills/transfer_providers.py",
+    "agent/skills/transfer.py",
+    "agent/skills/container_build.py",
+    "agent/skills/env_build.py",
+    "agent/skills/docker_builder.py",
+    "agent/skills/env_recipe.py",
+    "agent/skills/env_vendor.py",
+    "agent/mcp_tools/workflow_tools.py",
+    "agent/skills/core_test_data.py",
+    "agent/skills/test_runner.py",
+    "agent/skills/job_manager.py",
+    "agent/skills/pipeline_state.py",
+    "agent/skills/submit_workflow.py",
+    "agent/skills/package_search.py",
+    "agent/skills/spec_writer.py",
 ]
 
 
@@ -100,6 +117,51 @@ def test_fully_tagged_files_stay_fully_tagged():
         if untagged:
             offenders[rel] = untagged
     assert not offenders, f"new untagged terminals in fully-tagged files: {offenders}"
+
+
+@pytest.mark.integration
+def test_rewrapping_a_tagged_result_does_not_double_tag():
+    """The systemic double-tag guard (2026-07-02 wave 2). A boundary function
+    routinely re-wraps an ALREADY-TAGGED inner result by spreading it —
+    `broke("outer.code", **provider_result)` where provider_result itself carries
+    `code`/`outcome`. `code` is POSITIONAL-ONLY in the helpers precisely so this
+    can't raise `TypeError: got multiple values for argument 'code'` at call
+    bind (a landmine that used to lurk on untested Docker/cluster paths). This
+    test fails if anyone drops the `/` from the helper signatures."""
+    from agent.skills.outcomes import broke, proven, loop
+    inner = broke("transfer.scp_upload_failed", success=False,
+                  error="boom", returncode=1)
+    # bare spread of a tagged dict — must NOT raise; OUTER code wins.
+    out = broke("transfer.provider_failed", **inner)
+    assert out["code"] == "transfer.provider_failed"
+    assert out["outcome"] == "broke"
+    assert out["error"] == "boom" and out["returncode"] == 1
+    # dict-literal merge form (env_build style) — also safe.
+    merged = broke("env_build.start_failed", **{**inner, "success": False,
+                                                 "stage": "start"})
+    assert merged["code"] == "env_build.start_failed"
+    assert merged["stage"] == "start"
+    # a proven re-wrap flips the class of a formerly-broke inner.
+    up = proven("run.ok", **broke("inner.fail", x=1))
+    assert up["outcome"] == "proven" and up["code"] == "run.ok" and up["x"] == 1
+    # loop too (async submit re-wrap path).
+    lp = loop("transfer.submitted_async", **inner, manifest="/m")
+    assert lp["outcome"] == "loop" and lp["manifest"] == "/m"
+
+
+@pytest.mark.integration
+def test_outcome_helpers_keep_code_positional_only():
+    """Guard the mechanism directly: every public helper must declare `code` as
+    positional-only. If the `/` is removed, the double-tag TypeError class comes
+    back — so assert the signature, not just the behavior above."""
+    import inspect
+    from agent.skills import outcomes
+    for name in outcomes.HELPER_NAMES:
+        sig = inspect.signature(getattr(outcomes, name))
+        kinds = [p.kind for p in sig.parameters.values()]
+        assert inspect.Parameter.POSITIONAL_ONLY in kinds, \
+            f"{name}(): `code` must be POSITIONAL-ONLY (keep the `/`) to avoid " \
+            f"the double-tag collision; got {kinds}"
 
 
 @pytest.mark.integration

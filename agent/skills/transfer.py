@@ -797,9 +797,9 @@ def _remote_sha256_ssh(env: dict, abs_remote: str,
         return out
     remote = _parse_sha256sum_output(sh.stdout or "")
     if not remote:
-        return {"error":
+        return broke("transfer.remote_sha256_unparseable", error=
             f"remote sha256sum stdout unparseable: "
-            f"{(sh.stdout or '').strip()[:300]!r}"}
+            f"{(sh.stdout or '').strip()[:300]!r}")
     return {"sha": remote}
 
 

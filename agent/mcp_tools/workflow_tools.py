@@ -457,7 +457,7 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
         with urllib.request.urlopen(url, timeout=15) as resp:
             content = resp.read().decode("utf-8")
     except Exception as e:
-        return {"success": False, "error": str(e), "url": url}
+        return broke("fetch_r_deps.fetch_failed", success=False, error=str(e), url=url)
 
     fields = _parse_dcf(content)
 
@@ -481,12 +481,14 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
         if pkg not in set(all_required + suggests) and pkg != fields.get("Package", "")
     })
 
-    return {
-        "success": True,
-        "github_repo": github_repo,
-        "ref": ref,
-        "url": url,
-        "package_name": fields.get("Package", ""),
+    return proven(
+        "fetch_r_deps.parsed",
+        success=True,
+        github_repo=github_repo,
+        ref=ref,
+        url=url,
+        package_name=fields.get("Package", ""),
+        **{
         "version": fields.get("Version", ""),
         "r_version_required": r_version_required,
         "imports": imports,
@@ -509,7 +511,7 @@ def fetch_r_package_deps(github_repo: str, ref: str = "HEAD") -> dict:
             "lib=file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'), "
             "dependencies=FALSE)",
         ],
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +582,8 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
     or finalize anything."""
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return {"error": f"unknown pipeline_id: {pipeline_id}"}
-    return {"pipeline_id": pipeline_id, "draft": draft}
+        return refused("show_draft.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}")
+    return proven("show_draft.ok", pipeline_id=pipeline_id, draft=draft)
 
 
 @mcp.tool()
@@ -656,36 +658,38 @@ def stage_authored_artifact(
     Returns: {success, path, sha256, size_bytes, role, mode}.
     """
     if bool(content) == bool(generated_by):
-        return {
-            "error": "exactly one of `content` (text content to write) "
-                     "or `generated_by` (genesis command for an existing file) must be supplied",
-        }
+        return refused(
+            "stage_artifact.mode_ambiguous",
+            error="exactly one of `content` (text content to write) "
+                  "or `generated_by` (genesis command for an existing file) must be supplied",
+        )
     if not Path(path).is_absolute():
-        return {"error": f"path must be absolute, got: {path!r}"}
+        return refused("stage_artifact.path_not_absolute", error=f"path must be absolute, got: {path!r}")
 
     p = Path(path)
     mode: str
 
     if content:
         if p.exists() and not overwrite:
-            return {"error": f"path already exists and overwrite=False: {path}"}
+            return refused("stage_artifact.exists_no_overwrite", error=f"path already exists and overwrite=False: {path}")
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
         except Exception as e:
-            return {"error": f"could not write artifact: {e!r}", "path": path}
+            return broke("stage_artifact.write_failed", error=f"could not write artifact: {e!r}", path=path)
         mode = "content"
     else:
         if not p.exists():
-            return {
-                "error": f"generated_by mode requires the file to already exist on disk: {path}",
-            }
+            return refused(
+                "stage_artifact.source_missing",
+                error=f"generated_by mode requires the file to already exist on disk: {path}",
+            )
         mode = "generated_by"
 
     try:
         raw = p.read_bytes()
     except Exception as e:
-        return {"error": f"could not read back artifact for sha256: {e!r}", "path": path}
+        return broke("stage_artifact.readback_failed", error=f"could not read back artifact for sha256: {e!r}", path=path)
 
     sha256 = hashlib.sha256(raw).hexdigest()
     size_bytes = len(raw)
@@ -723,21 +727,22 @@ def stage_authored_artifact(
 
     idx = _ms._pipeline_state.add_authored_artifact(pipeline_id, artifact)
     if idx is None:
-        return {"error": f"unknown pipeline_id: {pipeline_id}", "path": path}
+        return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
 
-    return {
-        "success":   True,
-        "path":      str(p),
-        "sha256":    sha256,
-        "size_bytes": size_bytes,
-        "role":      role,
-        "mode":      mode,
-        "pipeline_merge": {
+    return proven(
+        "stage_artifact.staged",
+        success=True,
+        path=str(p),
+        sha256=sha256,
+        size_bytes=size_bytes,
+        role=role,
+        mode=mode,
+        pipeline_merge={
             "status":        "merged",
             "pipeline_id":   pipeline_id,
             "artifact_index": idx,
         },
-    }
+    )
 
 
 @mcp.tool()
@@ -755,8 +760,9 @@ def mark_step_validated(
     pipeline_steps — install_steps don't carry a validation_status field;
     their success is captured by status (returncode==0)."""
     if validation_status not in {"passed", "failed"}:
-        return {"error": "validation_status must be 'passed' or 'failed'",
-                "got": validation_status}
+        return refused("mark_validated.bad_status",
+                       error="validation_status must be 'passed' or 'failed'",
+                       got=validation_status)
     # Guard against the silent-empty-success trap: a step that exited 0 but
     # produced no detected outputs and was never validated cannot be honestly
     # called "passed". The agent should use "failed" or retry the step.
@@ -768,17 +774,17 @@ def mark_step_validated(
             outs  = s.get("detected_outputs") or s.get("outputs") or []
             vlds  = s.get("validation") or {}
             if not outs and not vlds:
-                return {
-                    "error": "cannot mark step 'passed' with no detected outputs and no validation entries — "
-                             "this is the 'ran without error but produced nothing' pattern. Investigate the step "
-                             "or use validation_status='failed' if the run was actually broken.",
-                    "pipeline_id": pipeline_id, "step": step,
-                }
+                return refused(
+                    "mark_validated.empty_success_guard",
+                    error="cannot mark step 'passed' with no detected outputs and no validation entries — "
+                          "this is the 'ran without error but produced nothing' pattern. Investigate the step "
+                          "or use validation_status='failed' if the run was actually broken.",
+                    pipeline_id=pipeline_id, step=step,
+                )
     ok = _ms._pipeline_state.mark_pipeline_step_validated(pipeline_id, step, validation_status)
-    return (
-        {"status": "set", "pipeline_id": pipeline_id, "step": step,
-         "validation_status": validation_status}
-        if ok else
-        {"error": "unknown pipeline_id or step out of range",
-         "pipeline_id": pipeline_id, "step": step}
-    )
+    if ok:
+        return proven("mark_validated.set", status="set", pipeline_id=pipeline_id,
+                      step=step, validation_status=validation_status)
+    return refused("mark_validated.unknown_step",
+                   error="unknown pipeline_id or step out of range",
+                   pipeline_id=pipeline_id, step=step)

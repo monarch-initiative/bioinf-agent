@@ -396,19 +396,20 @@ def submit_workflow_job(project_name: str,
             project_name=project_name, workflow_name=workflow_name,
             job_id=job_id, manifest=manifest)
 
-        return {
-            "success":        True,
-            "compute_env":    compute_env_name,
-            "job_id":         job_id,
-            "workflow_dir":   normed_dir,
-            "files_uploaded": files_uploaded,
-            "submitted_at":   submitted_at,
-            "upload_started": upload_started,
-            "manifest_path":  manifest_path,
-        }
+        return proven(
+            "submit_workflow.submitted",
+            success=True,
+            compute_env=compute_env_name,
+            job_id=job_id,
+            workflow_dir=normed_dir,
+            files_uploaded=files_uploaded,
+            submitted_at=submitted_at,
+            upload_started=upload_started,
+            manifest_path=manifest_path,
+        )
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        return broke("submit_workflow.failed", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return {"error": f"sbatch timed out after {e.timeout}s"}
+        return broke("submit_workflow.sbatch_timeout", error=f"sbatch timed out after {e.timeout}s")

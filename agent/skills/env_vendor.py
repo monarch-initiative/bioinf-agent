@@ -65,11 +65,13 @@ CONTRACT THIS MODULE WOULD UPHOLD:
 
 from __future__ import annotations
 
+from agent.skills.outcomes import refused
+
 
 def materialize(install_steps: list[dict], dest_dir: str) -> dict:
     """STUB — not yet implemented. See module docstring for the contract."""
-    return {"success": False, "stage": "vendor_materialize",
-            "reason": "env_vendor.materialize is a future heavy-mode feature; "
+    return refused("env_vendor.not_implemented", success=False, stage="vendor_materialize",
+            reason="env_vendor.materialize is a future heavy-mode feature; "
                       "default freeze uses SWH fallback for git sources (see "
                       "container_build._SWH_CLONE_SCRIPT). Enable HEAVY mirror "
-                      "via mode='audit_proof' once this stub is implemented."}
+                      "via mode='audit_proof' once this stub is implemented.")

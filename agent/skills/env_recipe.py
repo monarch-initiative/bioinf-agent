@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from agent.skills.outcomes import proven, broke
+
 RECIPE_VERSION = 1
 
 
@@ -95,14 +97,27 @@ def rebuild_from_recipe(recipe: dict, *, engine=None,
     )
     expected = recipe.get("content_digest") or ""
     got = br.get("content_digest") or ""
-    return {
-        "success": bool(br.get("success")),
-        "rebuilt_content_digest": got,
-        "expected_content_digest": expected,
-        "content_digest_match": bool(expected) and got == expected,
-        "proves": "COMPLETENESS (rebuilt from the recipe alone) + LOCAL DETERMINISM "
-                  "(conda layer re-solved → same content_digest). NOT cross-machine or "
-                  "independent-party reproducibility — run this elsewhere (CI / a colleague) "
-                  "for that.",
-        "build": br,
-    }
+    match = bool(expected) and got == expected
+    proves = ("COMPLETENESS (rebuilt from the recipe alone) + LOCAL DETERMINISM "
+              "(conda layer re-solved → same content_digest). NOT cross-machine or "
+              "independent-party reproducibility — run this elsewhere (CI / a colleague) "
+              "for that.")
+    if bool(br.get("success")) and match:
+        return proven(
+            "env_recipe.reproduced",
+            success=True,
+            rebuilt_content_digest=got,
+            expected_content_digest=expected,
+            content_digest_match=match,
+            proves=proves,
+            build=br,
+        )
+    return broke(
+        "env_recipe.not_reproduced",
+        success=bool(br.get("success")),
+        rebuilt_content_digest=got,
+        expected_content_digest=expected,
+        content_digest_match=match,
+        proves=proves,
+        build=br,
+    )

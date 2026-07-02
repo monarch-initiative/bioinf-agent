@@ -68,9 +68,27 @@ def _tag(kind: str, code: str, fields: dict) -> dict:
     return d
 
 
-def proven(code, **fields):   return _tag(PROVEN,   code, fields)
-def refused(code, **fields):  return _tag(REFUSED,  code, fields)
-def broke(code, **fields):    return _tag(BROKE,    code, fields)
-def vanished(code, **fields): return _tag(VANISHED, code, fields)
-def degraded(code, **fields): return _tag(DEGRADED, code, fields)
-def loop(code, **fields):     return _tag(LOOP,     code, fields)
+# `code` is POSITIONAL-ONLY (the `/`). This is load-bearing: a boundary function
+# routinely re-wraps an ALREADY-TAGGED inner result by spreading it —
+#     return broke("transfer.provider_failed", **provider_result)
+# where `provider_result` is itself `{... "code": "transfer.scp_upload_failed",
+# "outcome": "broke"}`. With a normal `code` parameter, the spread `code` key
+# and the positional `code` argument collide → `TypeError: got multiple values
+# for argument 'code'` at CALL-BIND time (a landmine on untested paths). A
+# positional-only `code` lets the same name reappear in `**fields` WITHOUT
+# binding to it (PEP 570), so the spread is safe: the OUTER (boundary) code
+# wins, `_tag` overwrites `outcome`, and business fields are preserved. The
+# inner code is intentionally dropped at runtime — the model still sees it
+# statically (the extractor reads the inner terminal from source); if a caller
+# wants it in the response, it must pass `inner_code=...` explicitly.
+#
+# NOTE this does NOT cover an explicit business kwarg colliding with a same-named
+# key in a spread — `broke("x", success=False, **d)` where `d` also has
+# `success` still raises. Prefer the dict-literal merge there: `**{**d,
+# "success": False}` (the literal de-dups before unpacking).
+def proven(code, /, **fields):   return _tag(PROVEN,   code, fields)
+def refused(code, /, **fields):  return _tag(REFUSED,  code, fields)
+def broke(code, /, **fields):    return _tag(BROKE,    code, fields)
+def vanished(code, /, **fields): return _tag(VANISHED, code, fields)
+def degraded(code, /, **fields): return _tag(DEGRADED, code, fields)
+def loop(code, /, **fields):     return _tag(LOOP,     code, fields)

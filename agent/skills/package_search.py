@@ -15,6 +15,8 @@ from typing import Any
 
 import requests
 
+from agent.skills.outcomes import broke, refused
+
 
 CHANNEL_PRIORITY = ["bioconda", "conda-forge", "defaults"]
 ANACONDA_API = "https://api.anaconda.org/package/{channel}/{package}"
@@ -67,14 +69,15 @@ class PackageSearch:
         if result["found"]:
             return result
 
-        return {
-            "found": False,
-            "package_name": canonical,
-            "error": (
+        return refused(
+            "package_search.not_found",
+            found=False,
+            package_name=canonical,
+            error=(
                 f"Could not find '{canonical}' in bioconda, conda-forge, defaults, or PyPI. "
                 "Try an alternate spelling or check the tool's documentation for install instructions."
             ),
-        }
+        )
 
     # -----------------------------------------------------------------------
     # Anaconda.org REST API
@@ -87,7 +90,7 @@ class PackageSearch:
         try:
             resp = requests.get(url, timeout=10)
         except requests.RequestException as e:
-            return {"found": False, "error": str(e)}
+            return broke("package_search.anaconda_api_error", found=False, error=str(e))
 
         if resp.status_code != 200:
             return {"found": False}

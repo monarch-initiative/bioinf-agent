@@ -21,6 +21,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agent.skills.outcomes import proven, broke
+
 
 class DockerBuilder:
     def __init__(self, config: dict):
@@ -224,11 +226,19 @@ class DockerBuilder:
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         res = self._run(["docker", "save", "-o", str(out), image_tag], timeout=900)
-        return {
-            "success": res["returncode"] == 0 and out.exists(),
-            "tarball": str(out),
-            "stderr": res["stderr"][-500:],
-        }
+        if res["returncode"] == 0 and out.exists():
+            return proven(
+                "docker.save_archive_ok",
+                success=True,
+                tarball=str(out),
+                stderr=res["stderr"][-500:],
+            )
+        return broke(
+            "docker.save_archive_failed",
+            success=False,
+            tarball=str(out),
+            stderr=res["stderr"][-500:],
+        )
 
     def _run(self, cmd: list[str], timeout: int = 300) -> dict:
         try:

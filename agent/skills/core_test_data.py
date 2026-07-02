@@ -31,6 +31,7 @@ from agent.models.core_data import (
     SampleMeta,
     SubsetInfo,
 )
+from agent.skills.outcomes import broke, proven, refused
 
 
 def phenopacket_to_vcf(
@@ -58,21 +59,22 @@ def phenopacket_to_vcf(
     core_dir     = data_dir / f"core_test_data_{genome_build}"
     pk_meta_path = core_dir / "phenopackets" / f"{phenopacket_id}_meta.yaml"
     if not pk_meta_path.exists():
-        return {"success": False, "error": f"phenopacket meta not found: {pk_meta_path}"}
+        return refused("core_test_data.phenopacket_meta_missing", success=False, error=f"phenopacket meta not found: {pk_meta_path}")
 
     try:
         meta = PhenopacketMeta.from_yaml(pk_meta_path)
     except Exception as e:
-        return {"success": False, "error": f"failed to parse {pk_meta_path.name}: {e}"}
+        return broke("core_test_data.phenopacket_parse_failed", success=False, error=f"failed to parse {pk_meta_path.name}: {e}")
 
     variants = [v for v in (meta.variants or []) if v.get("chrom") and v.get("pos") and v.get("ref") and v.get("alt")]
     if not variants:
-        return {
-            "success": False,
-            "error": ("phenopacket has no variants with chrom/pos/ref/alt — "
-                      "phenotype-only phenopackets cannot be materialised as a VCF."),
-            "phenopacket_id": phenopacket_id,
-        }
+        return refused(
+            "core_test_data.no_variants",
+            success=False,
+            error=("phenopacket has no variants with chrom/pos/ref/alt — "
+                   "phenotype-only phenopackets cannot be materialised as a VCF."),
+            phenopacket_id=phenopacket_id,
+        )
 
     sample = meta.subject_id or "sample"
     # Sanitize sample for VCF (no whitespace).
@@ -120,15 +122,16 @@ def phenopacket_to_vcf(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(header_lines + body_lines) + "\n")
 
-    return {
-        "success":        True,
-        "phenopacket_id": meta.phenopacket_id,
-        "sample_id":      sample_id,
-        "output_vcf":     str(out_path),
-        "num_variants":   len(variants),
-        "contigs":        contigs,
-        "genome_assembly": meta.genome_assembly or genome_build,
-    }
+    return proven(
+        "core_test_data.vcf_written",
+        success=True,
+        phenopacket_id=meta.phenopacket_id,
+        sample_id=sample_id,
+        output_vcf=str(out_path),
+        num_variants=len(variants),
+        contigs=contigs,
+        genome_assembly=meta.genome_assembly or genome_build,
+    )
 
 
 def _normalize_github_url(url: str) -> str:
@@ -270,7 +273,7 @@ def add_core_test_data(
                 dst.unlink(missing_ok=True)
                 log.append(f"Streaming {label} ({subset_key} reads)...")
                 if not _stream_subset(url, dst, num_reads):
-                    return {"success": False, "error": f"Failed to download/subset {label} from {url}"}
+                    return broke("core_test_data.subset_download_failed", success=False, error=f"Failed to download/subset {label} from {url}")
 
         read_length = _measure_read_length(subset_r1)
         rel_prefix = (f"long_read/{platform_family}/{assay_type}" if read_type == "long_read"
@@ -290,7 +293,7 @@ def add_core_test_data(
             if not ok and not source_url:
                 ok = _stream_subset(ebi_urls["single"], subset_r1, num_reads)
             if not ok:
-                return {"success": False, "error": f"Failed to download/subset reads for {accession}"}
+                return broke("core_test_data.subset_download_failed_single", success=False, error=f"Failed to download/subset reads for {accession}")
 
         read_length = _measure_read_length(subset_r1)
         rel_prefix = (f"long_read/{platform_family}/{assay_type}" if read_type == "long_read"
@@ -470,15 +473,16 @@ def add_core_pod5_data(
                     out.write(chunk)
         except Exception as e:
             tmp.unlink(missing_ok=True)
-            return {"success": False, "error": f"download failed: {e}"}
+            return broke("core_test_data.pod5_download_failed", success=False, error=f"download failed: {e}")
 
         # Whole-file integrity check (asset sha256 — analogous to install_release_binary's I14)
         actual_sha = _sha256_file(tmp)
         if expected_sha256 and actual_sha != expected_sha256:
             tmp.unlink(missing_ok=True)
-            return {"success": False,
-                    "error": (f"sha256 mismatch: expected {expected_sha256}, "
-                              f"got {actual_sha}")}
+            return broke("core_test_data.pod5_sha256_mismatch",
+                         success=False,
+                         error=(f"sha256 mismatch: expected {expected_sha256}, "
+                                f"got {actual_sha}"))
 
         # Atomic rename
         tmp.rename(dst)
@@ -541,7 +545,7 @@ def add_core_pod5_data(
     else:
         log.append("Manifest rebuilt.")
 
-    return {
+    return proven("core_test_data.pod5_added", **{
         "success":         True,
         "accession":       accession,
         "sample":          sample,
@@ -560,7 +564,7 @@ def add_core_pod5_data(
         "sample_meta":     str(meta_path),
         "core_dir":        str(core_dir),
         "log":             log,
-    }
+    })
 
 
 def add_phenopacket(
@@ -595,11 +599,11 @@ def add_phenopacket(
             raw = resp.read().decode()
         data: dict[str, Any] = json.loads(raw)
     except Exception as e:
-        return {"success": False, "error": f"Failed to download phenopacket: {e}"}
+        return broke("core_test_data.phenopacket_download_failed", success=False, error=f"Failed to download phenopacket: {e}")
 
     pk_id    = data.get("id") or ""
     if not pk_id:
-        return {"success": False, "error": "Phenopacket JSON missing required 'id' field"}
+        return refused("core_test_data.phenopacket_missing_id", success=False, error="Phenopacket JSON missing required 'id' field")
 
     json_file = pk_dir / f"{pk_id}.json"
     log: list[str] = []
@@ -633,7 +637,7 @@ def add_phenopacket(
     else:
         log.append("Manifest rebuilt.")
 
-    return {
+    return proven("core_test_data.phenopacket_added", **{
         "success":        True,
         "phenopacket_id": pk_id,
         "file":           str(json_file),
@@ -646,4 +650,4 @@ def add_phenopacket(
         "variants":       meta.variants,
         "genome_assembly": meta.genome_assembly,
         "log":            log,
-    }
+    })

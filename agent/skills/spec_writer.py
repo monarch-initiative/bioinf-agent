@@ -31,6 +31,7 @@ from agent.models.core_data import (
     PedigreeInput, PhenotypeInput, Provenance, QuantitativeTraitInput,
     ReadInput, VcfInput,
 )
+from agent.skills.outcomes import refused
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     try:
         wf = WorkflowSpec.model_validate(workflow)
     except Exception as e:
-        return {"error": f"WorkflowSpec validation failed: {e}"}
+        return refused("spec_writer.validation_failed", error=f"WorkflowSpec validation failed: {e}")
 
     name = wf.workflow_name
     yaml_path = out_dir / f"{name}.workflow.yaml"

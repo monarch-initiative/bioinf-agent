@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.outcomes import proven, refused, broke, loop
 
 
 def _display_cmd(argv: list) -> str:
@@ -186,8 +187,9 @@ class ScpHeadNodeProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            return {"error": f"scp timed out after {e.timeout}s",
-                    "provider": self.name}
+            return broke("transfer.scp_upload_timeout",
+                    error=f"scp timed out after {e.timeout}s",
+                    provider=self.name)
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", host)
             out = {
@@ -198,7 +200,7 @@ class ScpHeadNodeProvider(TransferProvider):
             }
             if hint:
                 out["hint"] = hint
-            return out
+            return broke("transfer.scp_upload_failed", **out)
 
         # 2) Verify via remote sha256sum.
         sha_cmd = _remote_sha256_cmd(abs_remote_path)
@@ -207,38 +209,38 @@ class ScpHeadNodeProvider(TransferProvider):
             sh_res = subprocess.run(sh_argv, capture_output=True, text=True,
                                     timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.scp_upload_verify_timeout", error=
                 f"remote sha256sum timed out after {e.timeout}s",
-                "provider": self.name}
+                provider=self.name)
         if sh_res.returncode != 0:
-            return {"error":
+            return broke("transfer.scp_upload_verify_failed", error=
                 f"remote sha256sum failed (rc={sh_res.returncode}): "
                 f"{(sh_res.stderr or '').strip()[:500]}",
-                "provider": self.name}
+                provider=self.name)
 
         remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
         if not remote_sha:
-            return {"error":
+            return broke("transfer.scp_upload_verify_unparseable", error=
                 f"remote sha256sum stdout unparseable: "
                 f"{(sh_res.stdout or '').strip()[:500]!r}",
-                "provider": self.name}
+                provider=self.name)
         if remote_sha != local_sha256:
-            return {"error":
+            return broke("transfer.scp_upload_sha_mismatch", error=
                 f"sha256 mismatch on upload: local={local_sha256} "
                 f"remote={remote_sha}",
-                "provider": self.name}
+                provider=self.name)
 
         duration = time.perf_counter() - started
-        return {
-            "success":          True,
-            "provider":         self.name,
-            "command":          _display_cmd(argv),
-            "bytes":            local_path.stat().st_size,
-            "duration_s":       round(duration, 3),
-            "transferred_at":   _now_iso(),
-            "remote_sha256":    remote_sha,
-            "verified_method":  "sha256_round_trip",
-        }
+        return proven("transfer.scp_uploaded",
+            success=          True,
+            provider=         self.name,
+            command=          _display_cmd(argv),
+            bytes=            local_path.stat().st_size,
+            duration_s=       round(duration, 3),
+            transferred_at=   _now_iso(),
+            remote_sha256=    remote_sha,
+            verified_method=  "sha256_round_trip",
+        )
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
@@ -265,9 +267,9 @@ class ScpHeadNodeProvider(TransferProvider):
             sh_res = subprocess.run(sh_argv, capture_output=True, text=True,
                                     timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.scp_download_verify_timeout", error=
                 f"remote sha256sum timed out after {e.timeout}s",
-                "provider": self.name}
+                provider=self.name)
         if sh_res.returncode != 0:
             hint = _ssh_failure_hint(sh_res.stderr or "", host)
             out = {
@@ -278,13 +280,13 @@ class ScpHeadNodeProvider(TransferProvider):
             }
             if hint:
                 out["hint"] = hint
-            return out
+            return broke("transfer.scp_download_verify_failed", **out)
         remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
         if not remote_sha:
-            return {"error":
+            return broke("transfer.scp_download_verify_unparseable", error=
                 f"remote sha256sum stdout unparseable: "
                 f"{(sh_res.stdout or '').strip()[:500]!r}",
-                "provider": self.name}
+                provider=self.name)
 
         # 2) scp the file back.
         argv = _scp_argv(env, scp_src, str(local_path))
@@ -292,8 +294,9 @@ class ScpHeadNodeProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            return {"error": f"scp timed out after {e.timeout}s",
-                    "provider": self.name}
+            return broke("transfer.scp_download_timeout",
+                    error=f"scp timed out after {e.timeout}s",
+                    provider=self.name)
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", host)
             out = {
@@ -304,7 +307,7 @@ class ScpHeadNodeProvider(TransferProvider):
             }
             if hint:
                 out["hint"] = hint
-            return out
+            return broke("transfer.scp_download_failed", **out)
 
         # 3) Compute local sha + compare.
         local_sha = _compute_local_sha256(local_path)
@@ -316,23 +319,23 @@ class ScpHeadNodeProvider(TransferProvider):
                 local_path.unlink()
             except OSError:
                 pass
-            return {"error":
+            return broke("transfer.scp_download_sha_mismatch", error=
                 f"sha256 mismatch on download: remote={remote_sha} "
                 f"local={local_sha}",
-                "provider": self.name}
+                provider=self.name)
 
         duration = time.perf_counter() - started
-        return {
-            "success":          True,
-            "provider":         self.name,
-            "command":          _display_cmd(argv),
-            "bytes":            local_path.stat().st_size,
-            "duration_s":       round(duration, 3),
-            "transferred_at":   _now_iso(),
-            "remote_sha256":    remote_sha,
-            "local_sha256":     local_sha,
-            "verified_method":  "sha256_round_trip",
-        }
+        return proven("transfer.scp_downloaded",
+            success=          True,
+            provider=         self.name,
+            command=          _display_cmd(argv),
+            bytes=            local_path.stat().st_size,
+            duration_s=       round(duration, 3),
+            transferred_at=   _now_iso(),
+            remote_sha256=    remote_sha,
+            local_sha256=     local_sha,
+            verified_method=  "sha256_round_trip",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -479,16 +482,16 @@ class GlobusProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except FileNotFoundError:
-            return {"error":
+            return broke("transfer.globus_ls_cli_missing", error=
                 "globus CLI not on PATH for the no-overwrite check. "
                 "Install it (`pipx install globus-cli`) and `globus "
                 "login`, then retry.",
-                "provider": self.name}
+                provider=self.name)
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.globus_ls_timeout", error=
                 f"`globus ls` (no-overwrite check) timed out after "
                 f"{e.timeout}s",
-                "provider": self.name}
+                provider=self.name)
         if res.returncode != 0:
             body = ((res.stderr or "") + " " + (res.stdout or "")).lower()
             # Parent dir doesn't exist yet → target can't either → not an
@@ -500,18 +503,18 @@ class GlobusProvider(TransferProvider):
                 return {"exists": False}
             # Real failure (consent/auth/perms) — surface it; do NOT
             # fall through to "safe to write".
-            return {"error":
+            return broke("transfer.globus_ls_failed", error=
                 f"`globus ls` no-overwrite check failed "
                 f"(rc={res.returncode}): "
                 f"{(res.stderr or '').strip()[:300]}",
-                "provider": self.name}
+                provider=self.name)
         try:
             payload = _json.loads(res.stdout or "{}")
         except _json.JSONDecodeError as e:
-            return {"error":
+            return broke("transfer.globus_ls_bad_json", error=
                 f"`globus ls` returned 0 but stdout was not valid JSON: "
                 f"{e}. raw: {(res.stdout or '').strip()[:200]!r}",
-                "provider": self.name}
+                provider=self.name)
         names = {entry.get("name")
                  for entry in (payload.get("DATA") or [])}
         return {"exists": base in names}
@@ -546,21 +549,21 @@ class GlobusProvider(TransferProvider):
 
         # 2) Either return immediately (async) or poll to terminal (sync).
         if async_return:
-            return {
-                "success":          True,
-                "provider":         self.name,
-                "command":          command,
-                "task_id":          task_id,
-                "verified_method":  "globus_pending",
-                "direction":        direction,
-                "src":              f"{src_ep}:{src_path}",
-                "dst":              f"{dst_ep}:{dst_path}",
-                "submitted_at":     _now_iso(),
-                "note": (
+            return loop("transfer.globus_submitted_async",
+                success=          True,
+                provider=         self.name,
+                command=          command,
+                task_id=          task_id,
+                verified_method=  "globus_pending",
+                direction=        direction,
+                src=              f"{src_ep}:{src_path}",
+                dst=              f"{dst_ep}:{dst_path}",
+                submitted_at=     _now_iso(),
+                note= (
                     "Async submission — poll completion via "
                     f"globus_task_status(task_id='{task_id}') and "
                     "verify SUCCEEDED before relying on the destination."),
-            }
+            )
 
         # Sync — block until terminal or watchdog ceiling.
         wait_cap = min(timeout, self._SYNC_WAIT_S_DEFAULT)
@@ -582,30 +585,30 @@ class GlobusProvider(TransferProvider):
             if status.get("status") == "INACTIVE":
                 # Don't spin on a task that's stuck waiting for activation —
                 # surface with the nice_status (Creds Expired, etc.)
-                return {
-                    "error":
+                return broke("transfer.globus_task_inactive",
+                    error=
                         f"Globus task {task_id} is INACTIVE: "
                         f"{status.get('nice_status') or 'unknown reason'}. "
                         f"This usually means a credential or activation "
                         f"expired. Run `globus session update` (or "
                         f"`globus endpoint activate <UUID>`) and retry.",
-                    "provider": self.name,
-                    "task_id":  task_id,
-                    "hint":     "globus credential / activation expired",
-                }
+                    provider=self.name,
+                    task_id= task_id,
+                    hint=    "globus credential / activation expired",
+                )
             if (time.perf_counter() - wait_started) > wait_cap:
-                return {
-                    "error":
+                return broke("transfer.globus_sync_wait_exceeded",
+                    error=
                         f"Globus task {task_id} did not reach a terminal "
                         f"state within {wait_cap}s sync-wait cap. The "
                         f"task is still {status.get('status')!r}; pass "
                         f"async_return=True to submit-and-walk-away on "
                         f"transfers of this size, then poll via "
                         f"globus_task_status.",
-                    "provider": self.name,
-                    "task_id":  task_id,
-                    "hint":     "use async_return=True for big transfers",
-                }
+                    provider=self.name,
+                    task_id= task_id,
+                    hint=    "use async_return=True for big transfers",
+                )
             time.sleep(self._POLL_INTERVAL_S)
 
         # 3) Inspect the terminal status.
@@ -616,15 +619,15 @@ class GlobusProvider(TransferProvider):
             # refused (local GCP path / remote consent / remote fs).
             if self._is_permission_denied(last_status):
                 return self._permission_denied_error(task_id, last_status)
-            return {
-                "error":
+            return broke("transfer.globus_task_failed",
+                error=
                     f"Globus task {task_id} FAILED: "
                     f"{fe.get('code', '?')}: "
                     f"{fe.get('description', '(no description)')}",
-                "provider": self.name,
-                "task_id":  task_id,
-                "status":   last_status,
-            }
+                provider=self.name,
+                task_id= task_id,
+                status=  last_status,
+            )
 
         # SUCCEEDED. The Globus task object reports bytes_transferred +
         # in-flight checksum verification — that's our trust anchor here.
@@ -637,13 +640,13 @@ class GlobusProvider(TransferProvider):
                 from agent.skills.transfer import _compute_local_sha256
                 out_sha = _compute_local_sha256(local_path)
             except (OSError, FileNotFoundError) as e:
-                return {
-                    "error":
+                return broke("transfer.globus_local_unreadable",
+                    error=
                         f"Globus task {task_id} SUCCEEDED but local "
                         f"file is unreadable for sha256: {e}",
-                    "provider": self.name,
-                    "task_id":  task_id,
-                }
+                    provider=self.name,
+                    task_id= task_id,
+                )
 
         duration = time.perf_counter() - started
         result: dict = {
@@ -663,7 +666,7 @@ class GlobusProvider(TransferProvider):
             result["local_sha256_pre_transfer"] = local_sha256
         else:
             result["local_sha256"] = out_sha
-        return result
+        return proven("transfer.globus_transferred", **result)
 
     def _submit_transfer(self, *, src_ep: str, src_path: str,
                          dst_ep: str, dst_path: str, label: str,
@@ -682,47 +685,47 @@ class GlobusProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except FileNotFoundError:
-            return {
-                "error":
+            return broke("transfer.globus_submit_cli_missing",
+                error=
                     "globus CLI not on PATH. Install it (`pipx install "
                     "globus-cli`) and authenticate (`globus login`), "
                     "then retry.",
-                "provider": self.name,
-                "hint":     "globus CLI not installed",
-            }
+                provider=self.name,
+                hint=    "globus CLI not installed",
+            )
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.globus_submit_timeout", error=
                 f"`globus transfer` submission timed out after "
                 f"{e.timeout}s",
-                "provider": self.name}
+                provider=self.name)
 
         if res.returncode != 0:
-            return {
-                "error":
+            return broke("transfer.globus_submit_failed",
+                error=
                     f"`globus transfer` exited {res.returncode}: "
                     f"{(res.stderr or '').strip()[:500]}",
-                "provider": self.name,
-                "hint":     self._submit_hint(res),
-            }
+                provider=self.name,
+                hint=    self._submit_hint(res),
+            )
 
         try:
             payload = _json.loads(res.stdout or "{}")
         except _json.JSONDecodeError as e:
-            return {
-                "error":
+            return broke("transfer.globus_submit_bad_json",
+                error=
                     f"`globus transfer` returned 0 but stdout was not "
                     f"valid JSON: {e}. raw: "
                     f"{(res.stdout or '').strip()[:200]!r}",
-                "provider": self.name,
-            }
+                provider=self.name,
+            )
         task_id = payload.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            return {
-                "error":
+            return broke("transfer.globus_submit_no_task_id",
+                error=
                     "`globus transfer` JSON had no task_id. raw: "
                     f"{(res.stdout or '').strip()[:200]!r}",
-                "provider": self.name,
-            }
+                provider=self.name,
+            )
         return {"task_id": task_id, "submit_payload": payload,
                 "command": _display_cmd(argv)}
 
@@ -735,30 +738,30 @@ class GlobusProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except FileNotFoundError:
-            return {"error":
+            return broke("transfer.globus_show_cli_missing", error=
                 "globus CLI not on PATH (mid-task — was it uninstalled?)",
-                "provider": self.name}
+                provider=self.name)
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.globus_show_timeout", error=
                 f"`globus task show {task_id}` timed out after {e.timeout}s",
-                "provider": self.name}
+                provider=self.name)
         if res.returncode != 0:
-            return {
-                "error":
+            return broke("transfer.globus_show_failed",
+                error=
                     f"`globus task show {task_id}` exited {res.returncode}: "
                     f"{(res.stderr or '').strip()[:500]}",
-                "provider": self.name,
-            }
+                provider=self.name,
+            )
         try:
             return _json.loads(res.stdout or "{}")
         except _json.JSONDecodeError as e:
-            return {
-                "error":
+            return broke("transfer.globus_show_bad_json",
+                error=
                     f"`globus task show {task_id}` returned 0 but stdout "
                     f"was not valid JSON: {e}. raw: "
                     f"{(res.stdout or '').strip()[:200]!r}",
-                "provider": self.name,
-            }
+                provider=self.name,
+            )
 
     @staticmethod
     def _is_permission_denied(task: dict) -> bool:
@@ -784,22 +787,22 @@ class GlobusProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except FileNotFoundError:
-            return {"error":
-                "globus CLI not on PATH (mid-classify — was it uninstalled?)"}
+            return broke("transfer.globus_events_cli_missing", error=
+                "globus CLI not on PATH (mid-classify — was it uninstalled?)")
         except subprocess.TimeoutExpired as e:
-            return {"error":
+            return broke("transfer.globus_events_timeout", error=
                 f"`globus task event-list {task_id}` timed out after "
-                f"{e.timeout}s"}
+                f"{e.timeout}s")
         if res.returncode != 0:
-            return {"error":
+            return broke("transfer.globus_events_failed", error=
                 f"`globus task event-list {task_id}` exited "
-                f"{res.returncode}: {(res.stderr or '').strip()[:300]}"}
+                f"{res.returncode}: {(res.stderr or '').strip()[:300]}")
         try:
             payload = _json.loads(res.stdout or "{}")
         except _json.JSONDecodeError as e:
-            return {"error":
+            return broke("transfer.globus_events_bad_json", error=
                 f"event-list stdout not valid JSON: {e}. raw: "
-                f"{(res.stdout or '').strip()[:200]!r}"}
+                f"{(res.stdout or '').strip()[:200]!r}")
         return {"events": payload.get("DATA") or []}
 
     def _classify_permission_denied(self, task_id: str,
@@ -914,7 +917,7 @@ class GlobusProvider(TransferProvider):
             "raw_body":             body,
         }
         if classification == "local_path_not_allowed":
-            return {
+            return broke("transfer.globus_denied_local_path", **{
                 **common,
                 "error": (
                     f"Globus task {task_id} blocked: Globus Connect "
@@ -927,9 +930,9 @@ class GlobusProvider(TransferProvider):
                     f"default). This is a local GCP config issue, NOT "
                     f"a cluster permissions problem."),
                 "hint": "GCP Accessible Folders restriction on local source",
-            }
+            })
         if classification == "remote_consent_missing":
-            return {
+            return broke("transfer.globus_denied_remote_consent", **{
                 **common,
                 "error": (
                     f"Globus task {task_id} blocked on remote "
@@ -941,9 +944,9 @@ class GlobusProvider(TransferProvider):
                     f"--gcs <UUID>` command for the GCS that hosts "
                     f"this collection. Run that, then retry."),
                 "hint": "missing data_access consent on remote GCS",
-            }
+            })
         if classification == "remote_filesystem":
-            return {
+            return broke("transfer.globus_denied_remote_fs", **{
                 **common,
                 "error": (
                     f"Globus task {task_id} blocked by remote-side "
@@ -954,9 +957,9 @@ class GlobusProvider(TransferProvider):
                     f"quota), not a Globus consent problem. Fix on "
                     f"the cluster, then retry."),
                 "hint": "remote filesystem permission denied",
-            }
+            })
         if classification == "local_other":
-            return {
+            return broke("transfer.globus_denied_local_other", **{
                 **common,
                 "error": (
                     f"Globus task {task_id} blocked on local endpoint "
@@ -965,12 +968,12 @@ class GlobusProvider(TransferProvider):
                     f"and check `globus task event-list {task_id}` for "
                     f"more detail."),
                 "hint": "local Globus Connect Personal blocked the operation",
-            }
+            })
         # 'unknown' or 'unknown_endpoint' — be honest about not knowing
         fetch_err = cls.get("fetch_error", "")
         suffix = (f" (event-list fetch failed: {fetch_err})"
                   if fetch_err else "")
-        return {
+        return broke("transfer.globus_denied_unclassified", **{
             **common,
             "error": (
                 f"Globus task {task_id} reports PERMISSION_DENIED but "
@@ -979,7 +982,7 @@ class GlobusProvider(TransferProvider):
                 f"--format json` will show which endpoint refused the "
                 f"operation and why."),
             "hint": "PERMISSION_DENIED (unclassified — see event-list)",
-        }
+        })
 
     @staticmethod
     def _submit_hint(res: subprocess.CompletedProcess) -> Optional[str]:
@@ -1027,14 +1030,14 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     ever landed — the defense against half-baked transfers. The
     reconciled manifest path is returned in `manifest` when found."""
     if env.get("type") != "ssh":
-        return {"error":
+        return refused("transfer.task_status_not_ssh", error=
             "globus_task_status is only for ssh-mode envs; got "
-            f"type={env.get('type')!r}"}
+            f"type={env.get('type')!r}")
     g = compute_access.get_globus_endpoints(env)
     if g is None:
-        return {"error":
+        return refused("transfer.task_status_not_globus", error=
             "this env does not declare data_transfer.type=globus; "
-            "there's no Globus task on it to poll"}
+            "there's no Globus task on it to poll")
     # Validate the task_id shape BEFORE shelling out — Globus task IDs
     # are UUIDs. Defense against any caller smuggling a metacharacter
     # into the argv.
@@ -1042,9 +1045,9 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     if not _re.match(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             task_id):
-        return {"error":
+        return refused("transfer.task_status_bad_uuid", error=
             f"task_id {task_id!r} is not a canonical UUID — refused "
-            f"before any subprocess"}
+            f"before any subprocess")
     provider = GlobusProvider(g)
     obj = provider._task_show(task_id, timeout=timeout)
     if "error" in obj:
@@ -1074,7 +1077,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
             out["manifest"] = str(mp)
             out["manifest_outcome"] = ("uploaded/downloaded"
                                        if status == "SUCCEEDED" else "failed")
-    return out
+    return proven("transfer.task_status_ok", **out)
 
 
 # ---------------------------------------------------------------------------
