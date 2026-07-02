@@ -80,7 +80,7 @@ from agent.skills import (
     submit_workflow,
     transfer,
 )
-from agent.skills.outcomes import proven, refused, broke, vanished
+from agent.skills.outcomes import proven, refused, broke
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -140,6 +140,53 @@ def _seal_slurm_context(slurm: Optional[Mapping]) -> Optional[dict]:
     ctx = {k: slurm[k] for k in _SLURM_CONTEXT_KEYS
            if k in slurm and slurm[k] not in (None, "")}
     return ctx or None
+
+
+def _record_failed_cluster_step(
+        _pipeline_state, pipeline_id, *,
+        tool_name, command, inputs, failure_code, error,
+        job_id=None, workflow_dir=None, sif_path_remote=None,
+        image_digest=None, cluster_sif_sha256=None, extra=None) -> Optional[int]:
+    """Record a FAILED pipeline_step so a cluster attempt that dies mid-flight
+    (sbatch rejected, poll query errored, or poll timed out) leaves a durable
+    trace in the draft instead of VANISHING. This is the honesty fix for the
+    three former `vanished` terminals: a failure the system cannot see is worse
+    than one it records loudly.
+
+    Two deliberate shape choices:
+      - `returncode = -1` marks the step failed, so seal's rc=0-gated
+        invariants (I3 outputs, I7 resource_usage) correctly SKIP it — a step
+        that never ran can't be asked to have produced validated outputs.
+      - the attempted inputs are recorded under `attempted_inputs`, NOT
+        `inputs`. I8 (composition_coherence) walks `inputs` to build the
+        data-flow graph regardless of returncode; a step that never consumed
+        its inputs must NOT become a node in that graph (it would demand
+        provenance for a consumption that didn't happen and could block a later
+        seal of a retried run). `attempted_inputs` keeps the forensic record
+        without asserting graph membership.
+
+    Returns the step_index (or None if the draft is gone)."""
+    step_data = {
+        "tool":             tool_name or (command.split() or [""])[0],
+        "purpose":          f"cluster run of {tool_name or 'tool'} — FAILED "
+                            f"({failure_code})",
+        "command":          command,
+        "returncode":       -1,
+        "attempted_inputs": [{"path": p} for p in inputs.values()],
+        "detected_outputs": [],
+        "validation_locus": "cluster",
+        "failure_code":     failure_code,
+        "failure_error":    error,
+        "cluster_job_id":         job_id,
+        "cluster_workflow_dir":   workflow_dir,
+        "container_image":        sif_path_remote,
+        "container_image_digest": image_digest,
+        "cluster_sif_sha256":     cluster_sif_sha256,
+    }
+    if extra:
+        step_data.update(extra)
+    step_data = {k: v for k, v in step_data.items() if v is not None}
+    return _pipeline_state.add_step(pipeline_id, step_data)
 
 
 def run_step_on_cluster(
@@ -355,14 +402,25 @@ def run_step_on_cluster(
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
-        # VANISHED: the SLURM submission failed and we return WITHOUT having
-        # recorded a pipeline_step (add_step happens only after the poll).
-        # No durable trace of this attempt lands in the draft.
-        return vanished("run_cluster.sbatch_failed",
+        # RECORDED (was VANISHED): the SLURM submission failed. Record a failed
+        # pipeline_step BEFORE returning so this attempt leaves a durable trace
+        # in the draft — the files were uploaded but no job started.
+        step_index = _record_failed_cluster_step(
+            _pipeline_state, pipeline_id,
+            tool_name=tool_name, command=command, inputs=inputs,
+            failure_code="run_cluster.sbatch_failed",
+            error=f"sbatch failed: {sb['error']}",
+            workflow_dir=workflow_dir,
+            sif_path_remote=sif_path_remote, image_digest=image_digest,
+            cluster_sif_sha256=cluster_sif_sha256)
+        return broke("run_cluster.sbatch_failed",
                 error=f"sbatch failed: {sb['error']}",
                 stage_result=stage,
                 files_uploaded=files_uploaded,
-                sbatch_result=sb)
+                sbatch_result=sb,
+                pipeline_merge={"status": "recorded_failed",
+                                "pipeline_id": pipeline_id,
+                                "step_index": step_index})
 
     job_id = sb["job_id"]
 
@@ -375,13 +433,25 @@ def run_step_on_cluster(
             job_id=job_id,
             access_path=access_path)
         if "error" in s:
-            # VANISHED: the job was submitted (job_id in hand) but the poll
-            # query errored and we bail WITHOUT recording a pipeline_step —
-            # the submitted job leaves no durable trace in the draft.
-            return vanished("run_cluster.poll_status_failed",
+            # RECORDED (was VANISHED — the worst hole): the job was submitted
+            # (job_id in hand) but the poll query errored. Record a failed step
+            # carrying the job_id so the possibly-still-running SLURM job is
+            # traceable (a reader can sacct it) instead of leaving zero trace.
+            step_index = _record_failed_cluster_step(
+                _pipeline_state, pipeline_id,
+                tool_name=tool_name, command=command, inputs=inputs,
+                failure_code="run_cluster.poll_status_failed",
+                error=f"cluster_job_status failed during poll: {s['error']}",
+                job_id=job_id, workflow_dir=workflow_dir,
+                sif_path_remote=sif_path_remote, image_digest=image_digest,
+                cluster_sif_sha256=cluster_sif_sha256)
+            return broke("run_cluster.poll_status_failed",
                 error=f"cluster_job_status failed during poll: {s['error']}",
                 stage_result=stage, job_id=job_id,
-                workflow_dir=workflow_dir, last_poll=s)
+                workflow_dir=workflow_dir, last_poll=s,
+                pipeline_merge={"status": "recorded_failed",
+                                "pipeline_id": pipeline_id,
+                                "step_index": step_index})
         if s.get("jobs"):
             row = s["jobs"][0]
             if row.get("state") in _TERMINAL_STATES:
@@ -390,16 +460,28 @@ def run_step_on_cluster(
         time.sleep(poll_interval)
 
     if final_status is None:
-        # VANISHED: the job was submitted but never reached a terminal state
-        # within the poll cap; we return an error WITHOUT recording a
-        # pipeline_step, so the (possibly still-running) job leaves no
-        # durable trace in the draft.
-        return vanished("run_cluster.poll_timeout",
+        # RECORDED (was VANISHED): the job was submitted but never reached a
+        # terminal state within the poll cap. Record a failed step carrying the
+        # job_id so the (possibly still-running) job is traceable — the caller
+        # can sacct it or cancel it rather than losing the handle.
+        step_index = _record_failed_cluster_step(
+            _pipeline_state, pipeline_id,
+            tool_name=tool_name, command=command, inputs=inputs,
+            failure_code="run_cluster.poll_timeout",
+            error=f"polling timed out after {max_polls * poll_interval}s — "
+            f"job_id={job_id} did not reach a terminal state.",
+            job_id=job_id, workflow_dir=workflow_dir,
+            sif_path_remote=sif_path_remote, image_digest=image_digest,
+            cluster_sif_sha256=cluster_sif_sha256)
+        return broke("run_cluster.poll_timeout",
             error=f"polling timed out after "
             f"{max_polls * poll_interval}s — job_id={job_id} did "
             f"not reach a terminal state.",
             stage_result=stage, job_id=job_id,
-            workflow_dir=workflow_dir)
+            workflow_dir=workflow_dir,
+            pipeline_merge={"status": "recorded_failed",
+                            "pipeline_id": pipeline_id,
+                            "step_index": step_index})
 
     rc = _parse_exit_code(final_status.get("exit_code", ""))
 

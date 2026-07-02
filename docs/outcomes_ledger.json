@@ -176,7 +176,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:273",
+    "where": "agent/skills/run_cluster_step.py:320",
     "tested": false
   },
   {
@@ -185,7 +185,34 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:350",
+    "where": "agent/skills/run_cluster_step.py:397",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.sbatch_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:416",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.poll_status_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:448",
+    "tested": false
+  },
+  {
+    "code": "run_cluster.poll_timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:476",
     "tested": false
   },
   {
@@ -482,7 +509,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:519",
+    "where": "agent/skills/run_cluster_step.py:601",
     "tested": false
   },
   {
@@ -1274,7 +1301,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:194",
+    "where": "agent/skills/run_cluster_step.py:241",
     "tested": false
   },
   {
@@ -1283,7 +1310,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:197",
+    "where": "agent/skills/run_cluster_step.py:244",
     "tested": false
   },
   {
@@ -1292,7 +1319,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:220",
+    "where": "agent/skills/run_cluster_step.py:267",
     "tested": false
   },
   {
@@ -1301,7 +1328,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:225",
+    "where": "agent/skills/run_cluster_step.py:272",
     "tested": false
   },
   {
@@ -1310,7 +1337,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:231",
+    "where": "agent/skills/run_cluster_step.py:278",
     "tested": false
   },
   {
@@ -1319,7 +1346,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:245",
+    "where": "agent/skills/run_cluster_step.py:292",
     "tested": false
   },
   {
@@ -1328,7 +1355,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:260",
+    "where": "agent/skills/run_cluster_step.py:307",
     "tested": false
   },
   {
@@ -1337,7 +1364,7 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:325",
+    "where": "agent/skills/run_cluster_step.py:372",
     "tested": false
   },
   {
@@ -2013,33 +2040,6 @@
     "tagged": true,
     "func": "validate",
     "where": "agent/validators/output_validator.py:73",
-    "tested": false
-  },
-  {
-    "code": "run_cluster.sbatch_failed",
-    "outcome": "vanished",
-    "source": "helper",
-    "tagged": true,
-    "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:361",
-    "tested": false
-  },
-  {
-    "code": "run_cluster.poll_status_failed",
-    "outcome": "vanished",
-    "source": "helper",
-    "tagged": true,
-    "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:381",
-    "tested": false
-  },
-  {
-    "code": "run_cluster.poll_timeout",
-    "outcome": "vanished",
-    "source": "helper",
-    "tagged": true,
-    "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:397",
     "tested": false
   },
   {

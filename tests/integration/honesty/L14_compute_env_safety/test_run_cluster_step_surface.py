@@ -527,6 +527,7 @@ class TestPhaseFailurePreservation:
                             lambda env, dir, timeout=300:
                                 {"error": "sbatch refused"})
 
+        ps = _FakePipelineState()
         r = run_cluster_step.run_step_on_cluster(
             pipeline_id="P1", freeze_request_key="x",
             project_name="phase_b_samtools_demo",
@@ -539,12 +540,23 @@ class TestPhaseFailurePreservation:
             slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0,
             access_path=str(access_path),
-            _pipeline_state=_FakePipelineState(),
+            _pipeline_state=ps,
             _validator=_FakeValidator(),
             _env_mgr=_FakeEnvMgr())
         assert "error" in r and "sbatch failed" in r["error"]
         assert "stage_result" in r
         assert "sbatch_result" in r
+        # No-longer-vanished: a durable failed step MUST land in the draft.
+        assert r["outcome"] == "broke"
+        assert r["pipeline_merge"]["status"] == "recorded_failed"
+        assert len(ps.steps) == 1
+        _, step = ps.steps[0]
+        assert step["returncode"] == -1
+        assert step["failure_code"] == "run_cluster.sbatch_failed"
+        # The attempted inputs are forensic-only (attempted_inputs), NOT
+        # `inputs` — a step that never ran must stay out of the I8 graph.
+        assert "inputs" not in step
+        assert "attempted_inputs" in step
 
     @pytest.mark.integration
     def test_poll_timeout_surfaces_clean(self, monkeypatch, tmp_path):
@@ -581,6 +593,7 @@ class TestPhaseFailurePreservation:
                                 "state": "PENDING", "elapsed": "00:00:00",
                                 "exit_code": "0:0", "job_id": "1"}]})
 
+        ps = _FakePipelineState()
         r = run_cluster_step.run_step_on_cluster(
             pipeline_id="P1", freeze_request_key="x",
             project_name="phase_b_samtools_demo",
@@ -593,12 +606,81 @@ class TestPhaseFailurePreservation:
             slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0, max_polls=3,
             access_path=str(access_path),
-            _pipeline_state=_FakePipelineState(),
+            _pipeline_state=ps,
             _validator=_FakeValidator(),
             _env_mgr=_FakeEnvMgr())
         assert "error" in r and "polling timed out" in r["error"]
         assert r["job_id"] == "1"
         assert r["workflow_dir"].endswith("/phase_b_samtools_demo/w1")
+        # No-longer-vanished: the submitted job's handle MUST be recorded so a
+        # possibly-still-running job stays traceable.
+        assert r["outcome"] == "broke"
+        assert len(ps.steps) == 1
+        _, step = ps.steps[0]
+        assert step["returncode"] == -1
+        assert step["failure_code"] == "run_cluster.poll_timeout"
+        assert step["cluster_job_id"] == "1"
+
+    @pytest.mark.integration
+    def test_poll_status_failure_records_job_handle(self, monkeypatch, tmp_path):
+        """The worst former-vanished hole: the job was submitted (job_id in
+        hand) but the poll query errors. The submitted job MUST leave a durable
+        trace carrying its job_id — otherwise a live SLURM job is lost."""
+        access_path = _good_access(tmp_path)
+        from agent.skills import (cluster_jobs as _cj,
+                                   transfer as _tr,
+                                   stage_apptainer as _sa,
+                                   submit_workflow as _sw)
+        monkeypatch.setattr(_sa, "stage_apptainer_image",
+                            lambda **kw: {"success": True,
+                                           "sif_path": "/x.sif",
+                                           "image_digest": "sha256:x"})
+        monkeypatch.setattr(_tr, "upload",
+                            lambda **kw: {"success": True,
+                                           "remote_abs_path":
+                                               kw["remote_abs_path"],
+                                           "zone": "scratch",
+                                           "provider": "scp_head_node",
+                                           "local_sha256": "0"*64,
+                                           "bytes": 1, "duration_s": 0.001,
+                                           "verified_method":
+                                               "sha256_round_trip",
+                                           "manifest":
+                                               "/tmp/fake_manifest.json",
+                                           "compute_env":
+                                               kw["compute_env_name"]})
+        monkeypatch.setattr(_sw, "sbatch_via_ssh",
+                            lambda env, dir, timeout=300:
+                                {"job_id": "4242",
+                                 "launcher": f"{dir}/launcher.sh"})
+        # The poll query itself errors (ssh flap, sacct unreachable, …).
+        monkeypatch.setattr(_cj, "cluster_job_status",
+                            lambda **kw: {"error": "ssh poll failed"})
+
+        ps = _FakePipelineState()
+        r = run_cluster_step.run_step_on_cluster(
+            pipeline_id="P1", freeze_request_key="x",
+            project_name="phase_b_samtools_demo",
+            compute_env_name="fakehpc",
+            workflow_name="w1",
+            tool_name="t", command="t ${o}",
+            inputs={}, outputs={"o": "out.bam"},
+            download_local_dir=str(tmp_path / "downloads"),
+            apptainer_module="apptainer/1", nextflow_module="nextflow/2",
+            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            poll_interval=0, max_polls=3,
+            access_path=str(access_path),
+            _pipeline_state=ps,
+            _validator=_FakeValidator(),
+            _env_mgr=_FakeEnvMgr())
+        assert "error" in r and "cluster_job_status failed" in r["error"]
+        assert r["outcome"] == "broke"
+        assert r["job_id"] == "4242"
+        assert len(ps.steps) == 1
+        _, step = ps.steps[0]
+        assert step["returncode"] == -1
+        assert step["failure_code"] == "run_cluster.poll_status_failed"
+        assert step["cluster_job_id"] == "4242"
 
 
 # ===========================================================================
