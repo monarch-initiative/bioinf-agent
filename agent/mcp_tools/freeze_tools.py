@@ -436,6 +436,23 @@ def freeze(
             "image_by_digest": adopt.get("image_by_digest"),
             "digest":          adopt.get("digest"),
         }
+        # SBOM from the ADOPTED image (read via a throwaway container, same
+        # 'read-from-the-image, can't-be-faked' ground truth the build path
+        # captures from its build container). Without this, resolved_packages is
+        # empty and the env report has nothing to show per tool but the shared
+        # mulled image tag (`2d1a988…-0` on EVERY tool) — useless for citing a
+        # version in a publication. With it, each requested tool resolves to its
+        # HUMAN-READABLE conda version (samtools 1.21, bwa 0.7.17), consistent
+        # across tools, plus the biocontainer's transitive + OS layers. Best-effort:
+        # a docker/read failure leaves it empty and the report falls back to the tag.
+        from agent.skills.container_build import ContainerBuild as _CB
+        _adopt_platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
+        try:
+            record["resolved_packages"] = _CB.conda_sbom_from_image(image, _adopt_platform)
+            record["system_packages"] = _CB.apt_sbom_from_image(image, _adopt_platform)
+        except Exception:
+            record["resolved_packages"] = record.get("resolved_packages", [])
+            record["system_packages"] = record.get("system_packages", [])
     _ms._env_cache.register(rkey, record)
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):

@@ -269,6 +269,15 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
     BUILD: defer to _resolved_version (conda/pip > banner > out > anchor) —
     shared with the .md renderer so the two views stay aligned."""
     if is_adopt:
+        # Prefer the per-tool version from the SBOM (resolved_packages, read from
+        # the shipped image) — human-readable AND consistent across tools. The
+        # adopt tag is a shared mulled hash (`2d1a988…-0`) for a multi-tool
+        # biocontainer, identical on every tool and useless for citing a version.
+        # A single-tool biocontainer's tag (`1.21--h50ea8bc_0`) is human-readable
+        # but still noisier than the clean `1.21` the SBOM gives. Tag is the
+        # fallback only when the SBOM couldn't be read.
+        if pkg and pkg.get("version"):
+            return pkg["version"]
         if adopt_source and adopt_source.get("tag"):
             return adopt_source["tag"]
         if req_v:

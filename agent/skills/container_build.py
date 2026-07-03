@@ -750,19 +750,54 @@ class ContainerBuild:
                f'for d in {ep}/lib/python*/site-packages/*.dist-info; do [ -e "$d" ] && '
                f'echo "pypi $(basename "$d" .dist-info)"; done')
         r = self.exec(cmd, timeout=120)
+        return self._parse_prefix_scan(r.get("stdout") or "")
+
+    @staticmethod
+    def _parse_prefix_scan(stdout: str) -> list[dict]:
+        """Parse the `conda <name-version-build>` / `pypi <name-version>` lines a
+        conda-prefix scan emits into a deduped, sorted [{name, version, kind}].
+        Shared by resolved_packages (live build container) and conda_sbom_from_image
+        (adopted image) so the two SBOM sources parse identically."""
         pkgs: dict[str, dict] = {}
-        for line in (r.get("stdout") or "").splitlines():
+        for line in (stdout or "").splitlines():
             kind, _, stem = line.strip().partition(" ")
             if not stem:
                 continue
             if kind == "conda":           # name-version-build
                 parts = stem.rsplit("-", 2)
                 name, ver = (parts[0], parts[1]) if len(parts) == 3 else (stem, "")
-            else:                          # pypi: name-version
+            elif kind == "pypi":           # name-version
                 name, _, ver = stem.rpartition("-")
                 name = (name or stem).replace("_", "-")
+            else:
+                continue
             pkgs.setdefault(name.lower(), {"name": name, "version": ver, "kind": kind})
         return sorted(pkgs.values(), key=lambda p: p["name"].lower())
+
+    @staticmethod
+    def conda_sbom_from_image(image: str, platform: str) -> list[dict]:
+        """The image-based analog of resolved_packages() — read the conda/pip
+        closure from a SHIPPED image (via a throwaway container) rather than a live
+        build container. This is the ADOPT path's SBOM source: an adopted
+        biocontainer has no build container, but we still want the full per-tool
+        package closure so the env report can show HUMAN-READABLE per-tool versions
+        (samtools 1.21, bwa 0.7.17) instead of the shared mulled image tag.
+
+        BioContainers put the conda prefix at /usr/local (mulled / single-tool) or
+        /opt/conda; scan those plus any /opt/conda/envs/*. Best-effort: [] if none
+        exist or docker fails (the report then falls back to the tag)."""
+        scan = (
+            'for ep in /usr/local /opt/conda /opt/conda/envs/*; do '
+            '[ -d "$ep/conda-meta" ] || continue; '
+            'for f in "$ep"/conda-meta/*.json; do [ -e "$f" ] && echo "conda $(basename "$f" .json)"; done; '
+            'for d in "$ep"/lib/python*/site-packages/*.dist-info; do [ -e "$d" ] && echo "pypi $(basename "$d" .dist-info)"; done; '
+            'done'
+        )
+        r = ContainerBuild._sh(["docker", "run", "--rm", "--platform", platform, image,
+                                "bash", "-c", scan], timeout=120)
+        if r.get("returncode") != 0:
+            return []
+        return ContainerBuild._parse_prefix_scan(r.get("stdout") or "")
 
     def system_packages(self, image: str) -> list[dict]:
         """The apt/dpkg packages in the SHIPPED image — the system (OS) layer of the
@@ -772,12 +807,19 @@ class ContainerBuild:
         Completes the self-describing artifact (conda + pip + apt, all versioned) so
         it's auditable WITHOUT forcing byte-identical rebuilds. Best-effort: [] if
         the image has no dpkg (e.g. a non-debian adopted base)."""
-        r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
-                      "dpkg-query -W -f='${Package} ${Version}\\n' 2>/dev/null"], timeout=120)
-        if r["returncode"] != 0:
+        return ContainerBuild.apt_sbom_from_image(image, self.platform)
+
+    @staticmethod
+    def apt_sbom_from_image(image: str, platform: str) -> list[dict]:
+        """system_packages() as a static, image-only reader — used by the ADOPT
+        path (no build instance) to capture the biocontainer's OS layer too, so an
+        adopted artifact is as self-describing as a built one."""
+        r = ContainerBuild._sh(["docker", "run", "--rm", "--platform", platform, image, "bash", "-c",
+                                "dpkg-query -W -f='${Package} ${Version}\\n' 2>/dev/null"], timeout=120)
+        if r.get("returncode") != 0:
             return []
         pkgs = []
-        for line in (r["stdout"] or "").splitlines():
+        for line in (r.get("stdout") or "").splitlines():
             parts = line.split()
             if len(parts) >= 2:
                 pkgs.append({"name": parts[0], "version": parts[1], "kind": "apt"})

@@ -32,6 +32,81 @@ import pytest
 from agent.skills.env_report_html import render_env_report_html
 
 
+def _tool_row_installed_version(html: str, tool: str) -> str:
+    """Extract the rendered 'installed version' cell (3rd <td>) for a tool row."""
+    m = re.search(rf"<td>{tool}</td>.*?</tr>", html, re.S)
+    if not m:
+        return ""
+    cells = re.findall(r"<td>(.*?)</td>", m.group(0), re.S)
+    return re.sub(r"<[^>]+>", "", cells[2]).strip() if len(cells) > 2 else ""
+
+
+def _mulled_adopt_record() -> dict:
+    """A multi-tool ADOPT off a MULLED biocontainer — the bug the user hit: the
+    adopt tag is a shared mulled hash (same on every tool), so per-tool versions
+    must come from the SBOM (resolved_packages read from the shipped image)."""
+    return {
+        "name": "mulled_probe", "mode": "adopt",
+        "image": "quay.io/biocontainers/mulled-v2-abc@sha256:deadbeef",
+        "image_digest": "sha256:deadbeef", "content_digest": "sha256:c0ffee",
+        "platform": "linux/amd64", "created_at": "2026-07-03T00:00:00Z",
+        "requested_tools": ["bwa", "samtools", "bcftools"],
+        "adopt_source": {"repo": "mulled-v2-abc",
+                         "tag": "2d1a988d16fc0949a2975794b76548623407d297-0"},
+        "resolved_packages": [
+            {"name": "bwa", "version": "0.7.17", "kind": "conda"},
+            {"name": "samtools", "version": "1.9", "kind": "conda"},
+            {"name": "bcftools", "version": "1.9", "kind": "conda"},
+            {"name": "libgcc", "version": "13.2.0", "kind": "conda"},
+        ],
+        "verifications": [], "validation_locus": "adopted",
+    }
+
+
+@pytest.mark.integration
+def test_adopt_shows_human_per_tool_versions_not_the_mulled_tag():
+    """Each tool's installed-version cell must be its OWN human version from the
+    SBOM (bwa 0.7.17, samtools 1.9, bcftools 1.9), never the shared mulled tag."""
+    html = render_env_report_html(_mulled_adopt_record())
+    mulled_tag = "2d1a988d16fc0949a2975794b76548623407d297-0"
+    assert _tool_row_installed_version(html, "bwa") == "0.7.17"
+    assert _tool_row_installed_version(html, "samtools") == "1.9"
+    assert _tool_row_installed_version(html, "bcftools") == "1.9"
+    # the useless shared mulled hash must not appear as any tool's version
+    for tool in ("bwa", "samtools", "bcftools"):
+        assert _tool_row_installed_version(html, tool) != mulled_tag
+
+
+@pytest.mark.integration
+def test_adopt_falls_back_to_tag_when_sbom_missing():
+    """If the SBOM couldn't be read (empty resolved_packages), the tag is the
+    honest fallback rather than a blank cell — a single-tool biocontainer's tag
+    is itself human-readable (e.g. 1.21--h50ea8bc_0)."""
+    rec = _mulled_adopt_record()
+    rec["requested_tools"] = ["samtools"]
+    rec["adopt_source"]["tag"] = "1.21--h50ea8bc_0"
+    rec["resolved_packages"] = []          # SBOM read failed
+    html = render_env_report_html(rec)
+    assert _tool_row_installed_version(html, "samtools") == "1.21--h50ea8bc_0"
+
+
+def test_parse_prefix_scan_extracts_name_version():
+    """The shared conda/pip prefix-scan parser (used by both the live-build-container
+    and adopted-image SBOM readers) splits name-version-build correctly."""
+    from agent.skills.container_build import ContainerBuild
+    out = ContainerBuild._parse_prefix_scan(
+        "conda samtools-1.9-h50ea8bc_0\n"
+        "conda bwa-0.7.17-hed695b0_7\n"
+        "pypi pysam-0.22.1\n"
+        "garbage line with no kind\n"
+    )
+    by = {p["name"].lower(): p for p in out}
+    assert by["samtools"]["version"] == "1.9" and by["samtools"]["kind"] == "conda"
+    assert by["bwa"]["version"] == "0.7.17"
+    assert by["pysam"]["version"] == "0.22.1" and by["pysam"]["kind"] == "pypi"
+    assert "garbage" not in by  # a line with an unknown kind is dropped, not mis-parsed
+
+
 # The seven mandatory h2 sections, in the order they must appear.
 _REQUIRED_SECTIONS = (
     "Tools",
