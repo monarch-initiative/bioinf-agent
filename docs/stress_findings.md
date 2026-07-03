@@ -199,3 +199,24 @@ mutation-verified (reverting each fails its test). **Status: certified.**
 **PROCESS LESSON:** `git checkout -- <file>` during mutation testing reverts to
 HEAD and **silently clobbers uncommitted fixes**. It wiped two fixes mid-session
 (re-applied). Mutation-test with in-memory backup/restore, OR commit first.
+
+### CERT-7 — L15 real-build tier + a real UTF-8 crash mocks couldn't catch
+`tests/integration/honesty/L15_real_build/` is the FIRST test that drives an
+actual container-native Docker build end-to-end (pigz, ~52s). It asserts the
+honesty contract passes on the REAL record (`check_build() == []`, pigz
+validated IN the shipped image, digests resolved) — the literal validated==
+shipped guarantee on genuine bytes, and it exercises the docker-only build
+terminals (`container_build.started/frozen/pixi_*`, real
+`env_build.verified_in_image`) that every mocked build test can't reach.
+
+**FINDING (fixed):** writing it surfaced a crash no mock could — `pigz`'s
+banner probe emits gzip magic (0x1f **0x8b**) to stdout, and
+`subprocess.run(text=True)` raised `UnicodeDecodeError`, killing the whole build
+during validation. Any tool whose `--version`/banner emits non-UTF-8 bytes would
+have crashed a real build. Fixed `container_build._sh` AND
+`output_validator._run_tool` with `errors="replace"` (returncode is the verdict;
+the text is diagnostic). Regression-locked docker-free
+(`test_container_build_sh_survives_non_utf8_output`,
+`test_output_validator_run_tool_survives_non_utf8`). This is the payoff of the
+real-build tier: it exercises paths mocks stub out, where real-world tool
+behaviour lives. Meter 76 → **77/125**. **Status: certified.**

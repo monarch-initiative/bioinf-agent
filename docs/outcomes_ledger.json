@@ -285,8 +285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:479",
-    "end_line": 479,
+    "where": "agent/skills/container_build.py:485",
+    "end_line": 485,
     "named_in_test": false
   },
   {
@@ -295,8 +295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:499",
-    "end_line": 499,
+    "where": "agent/skills/container_build.py:505",
+    "end_line": 505,
     "named_in_test": false
   },
   {
@@ -305,8 +305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:521",
-    "end_line": 522,
+    "where": "agent/skills/container_build.py:527",
+    "end_line": 528,
     "named_in_test": false
   },
   {
@@ -315,8 +315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:525",
-    "end_line": 525,
+    "where": "agent/skills/container_build.py:531",
+    "end_line": 531,
     "named_in_test": false
   },
   {
@@ -325,8 +325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_locked",
-    "where": "agent/skills/container_build.py:545",
-    "end_line": 546,
+    "where": "agent/skills/container_build.py:551",
+    "end_line": 552,
     "named_in_test": false
   },
   {
@@ -335,8 +335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:567",
-    "end_line": 567,
+    "where": "agent/skills/container_build.py:573",
+    "end_line": 573,
     "named_in_test": false
   },
   {
@@ -345,8 +345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:570",
-    "end_line": 570,
+    "where": "agent/skills/container_build.py:576",
+    "end_line": 576,
     "named_in_test": false
   },
   {
@@ -355,8 +355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "write_file",
-    "where": "agent/skills/container_build.py:595",
-    "end_line": 595,
+    "where": "agent/skills/container_build.py:601",
+    "end_line": 601,
     "named_in_test": false
   },
   {
@@ -365,8 +365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:617",
-    "end_line": 617,
+    "where": "agent/skills/container_build.py:623",
+    "end_line": 623,
     "named_in_test": false
   },
   {
@@ -375,8 +375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:620",
-    "end_line": 621,
+    "where": "agent/skills/container_build.py:626",
+    "end_line": 627,
     "named_in_test": false
   },
   {
@@ -385,8 +385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:655",
-    "end_line": 655,
+    "where": "agent/skills/container_build.py:661",
+    "end_line": 661,
     "named_in_test": false
   },
   {
@@ -395,8 +395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:664",
-    "end_line": 665,
+    "where": "agent/skills/container_build.py:670",
+    "end_line": 671,
     "named_in_test": false
   },
   {
@@ -405,8 +405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_in_image",
-    "where": "agent/skills/container_build.py:724",
-    "end_line": 724,
+    "where": "agent/skills/container_build.py:730",
+    "end_line": 730,
     "named_in_test": true
   },
   {
@@ -1965,9 +1965,9 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:509",
-    "end_line": 509,
-    "named_in_test": false
+    "where": "agent/skills/container_build.py:515",
+    "end_line": 515,
+    "named_in_test": true
   },
   {
     "code": "container_build.declare_no_specs",
@@ -1975,8 +1975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:517",
-    "end_line": 517,
+    "where": "agent/skills/container_build.py:523",
+    "end_line": 523,
     "named_in_test": false
   },
   {
@@ -1985,8 +1985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_locked",
-    "where": "agent/skills/container_build.py:541",
-    "end_line": 541,
+    "where": "agent/skills/container_build.py:547",
+    "end_line": 547,
     "named_in_test": false
   },
   {
@@ -1995,8 +1995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:563",
-    "end_line": 563,
+    "where": "agent/skills/container_build.py:569",
+    "end_line": 569,
     "named_in_test": false
   },
   {
@@ -2005,8 +2005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "write_file",
-    "where": "agent/skills/container_build.py:599",
-    "end_line": 599,
+    "where": "agent/skills/container_build.py:605",
+    "end_line": 605,
     "named_in_test": false
   },
   {
@@ -2015,8 +2015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:627",
-    "end_line": 627,
+    "where": "agent/skills/container_build.py:633",
+    "end_line": 633,
     "named_in_test": true
   },
   {
@@ -2025,8 +2025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:666",
-    "end_line": 668,
+    "where": "agent/skills/container_build.py:672",
+    "end_line": 674,
     "named_in_test": false
   },
   {
@@ -2035,8 +2035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_in_image",
-    "where": "agent/skills/container_build.py:723",
-    "end_line": 723,
+    "where": "agent/skills/container_build.py:729",
+    "end_line": 729,
     "named_in_test": true
   },
   {
@@ -2695,8 +2695,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_parse_seqkit_stats",
-    "where": "agent/validators/output_validator.py:485",
-    "end_line": 493,
+    "where": "agent/validators/output_validator.py:491",
+    "end_line": 499,
     "named_in_test": true
   },
   {
