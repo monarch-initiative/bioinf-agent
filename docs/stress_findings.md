@@ -46,6 +46,32 @@ anchor freeze reads to tell authenticated from trust-on-first-use.
 
 ---
 
+### CERT-3 — C2 COMPLETE: all 8 named firewalls fire under adversarial test
+The remaining 6 named firewalls now each have an adversarial test triggering
+their reject branch (`tests/test_invariants.py`):
+- `freeze.recipe_load_failed` — unreadable recipe path → refused
+- `freeze.recipe_invalid` — YAML dict with no `name` → refused before rebuild
+- `freeze.recipe_not_reproduced` — rebuild succeeds but content_digest DRIFTS →
+  broke, not a green `recipe_verified` (rebuild mocked)
+- `container_build.validation_in_image_failed` — in-image evidence rc≠0 → broke
+  (validated==shipped; docker `_sh` mocked to fail every check)
+- `env_build.verification_in_image_failed` — EnvBuild-level in-image verify fails
+  → broke (cb.validate_in_image mocked to report failure)
+- `freeze.adopt_honesty` — adopt a pure-conda samtools while claiming accel=cuda
+  with no toolkit_version → refused at the adopt gate (I12), never a fake
+  POLICY_CLEAN badge (the dorado-stress D2 hole; biocontainer resolver + cache
+  mocked, no docker)
+
+**C2 (every firewall fires) is GREEN on the LOCAL surface: 8/8 firewalls
+certified.** Meter 35/125 → **41/125 (33%)**. Method that unlocked the deep
+freeze_tools terminals offline: the `@mcp.tool()`-decorated functions
+(`freeze`, `verify_env_recipe`) are plain callables, so they drive directly with
+the heavy deps (biocontainer resolve / recipe rebuild / docker `_sh`) mocked —
+reaching the specific reject LINE (what certification requires) without a real
+build. **Status: certified.**
+
+---
+
 ## FINDINGS (real gaps)
 
 ### F1 — `proven` conflates verified with unverified installs  ·  status: FIXED (subsumed by CERT-2)

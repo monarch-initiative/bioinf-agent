@@ -27,7 +27,7 @@
     "func": "verify_env_recipe",
     "where": "agent/mcp_tools/freeze_tools.py:528",
     "end_line": 528,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "run_container.image_pull_failed",
@@ -407,7 +407,7 @@
     "func": "validate_in_image",
     "where": "agent/skills/container_build.py:724",
     "end_line": 724,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "core_test_data.subset_download_failed",
@@ -537,7 +537,7 @@
     "func": "verify_in_image",
     "where": "agent/skills/env_build.py:173",
     "end_line": 173,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_build.freeze_failed",
@@ -2787,7 +2787,7 @@
     "func": "freeze",
     "where": "agent/mcp_tools/freeze_tools.py:275",
     "end_line": 278,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.recipe_load_failed",
@@ -2797,7 +2797,7 @@
     "func": "verify_env_recipe",
     "where": "agent/mcp_tools/freeze_tools.py:507",
     "end_line": 508,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.recipe_invalid",
@@ -2807,7 +2807,7 @@
     "func": "verify_env_recipe",
     "where": "agent/mcp_tools/freeze_tools.py:510",
     "end_line": 511,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.guide_no_source",

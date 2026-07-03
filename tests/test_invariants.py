@@ -1180,6 +1180,124 @@ def test_build_env_image_propagates_binary_integrity_firewall_code(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# C2 firewall certification — the honesty gates that catch a false-green must
+# each have an ADVERSARIAL test that triggers their REJECT branch (per
+# docs/seaworthiness.md). A firewall that never fires under test is an unproven
+# claim under full-auto. These attack the previously-dark reject terminals.
+# ---------------------------------------------------------------------------
+
+def test_verify_env_recipe_load_failed_is_refused_firewall():
+    """ADVERSARIAL (recipe reproduction gate). A recipe path that cannot be read
+    must REFUSE legibly (outcome=refused, code=recipe_load_failed) — never crash,
+    never silently 'reproduce nothing and pass'. Attacks freeze.recipe_load_failed."""
+    from agent.mcp_tools.freeze_tools import verify_env_recipe
+    out = verify_env_recipe("/nonexistent/does/not/exist.recipe.yaml")
+    assert out.get("outcome") == "refused", out
+    assert out.get("code") == "freeze.recipe_load_failed", out
+    assert out.get("success") is False
+
+
+def test_verify_env_recipe_invalid_is_refused_firewall(tmp_path):
+    """ADVERSARIAL (recipe reproduction gate). A file that loads as YAML but is
+    NOT a valid env recipe (no `name`) must refuse (recipe_invalid) BEFORE any
+    rebuild — a malformed recipe can't be allowed to reach the build."""
+    from agent.mcp_tools.freeze_tools import verify_env_recipe
+    bad = tmp_path / "bad.recipe.yaml"
+    bad.write_text("just_a_list:\n  - 1\n  - 2\n")   # a dict, but no `name`
+    out = verify_env_recipe(str(bad))
+    assert out.get("outcome") == "refused", out
+    assert out.get("code") == "freeze.recipe_invalid", out
+
+
+def test_verify_env_recipe_not_reproduced_is_broke_firewall(tmp_path, monkeypatch):
+    """ADVERSARIAL (reproducibility firewall / full-auto trust). When the recipe
+    rebuild SUCCEEDS but converges to a DIFFERENT content_digest than recorded
+    (local drift — the recipe didn't reproduce), it must be `broke`, NOT a green
+    `recipe_verified`. A false 'reproduced' would let an unreproducible artifact
+    claim reproducibility. Attacks freeze.recipe_not_reproduced (rebuild mocked)."""
+    from agent.mcp_tools import freeze_tools
+    from agent import mcp_server as _ms
+    recipe = tmp_path / "ok.recipe.yaml"
+    recipe.write_text("name: bioinf_x\nversion: '1.0'\n")
+    monkeypatch.setattr(_ms._env_recipe, "rebuild_from_recipe",
+                        lambda rec, **k: {
+                            "success": True, "content_digest_match": False,   # DRIFTED
+                            "rebuilt_content_digest": "sha256:" + "a" * 64,
+                            "expected_content_digest": "sha256:" + "b" * 64,
+                            "proves": [],
+                            "build": {"stage": "done", "honesty_violations": []}})
+    out = freeze_tools.verify_env_recipe(str(recipe))
+    assert out.get("outcome") == "broke", out
+    assert out.get("code") == "freeze.recipe_not_reproduced", out
+    assert out.get("content_digest_match") is False
+
+
+def test_container_build_validation_in_image_failure_is_broke_firewall(monkeypatch):
+    """ADVERSARIAL (validated==shipped firewall). When a tool's evidence does NOT
+    pass INSIDE the shipped image, validate_in_image must return `broke`
+    (validation_in_image_failed) — never a green. This is the gate that makes
+    'the bytes we validated ARE the bytes that ship' true; if it failed to fire, a
+    tool absent/broken in the ship image would ship as proven. Docker is mocked so
+    every in-image check returns rc=1."""
+    from agent.skills.container_build import ContainerBuild
+    cb = ContainerBuild()
+    monkeypatch.setattr(cb, "_sh",
+                        lambda args, timeout=1800: {"returncode": 1, "stdout": "", "stderr": "not found"})
+    out = cb.validate_in_image("img@sha256:deadbeef", ["samtools --version"], probe_tools=[])
+    assert out.get("outcome") == "broke", out
+    assert out.get("code") == "container_build.validation_in_image_failed", out
+    assert out.get("success") is False
+
+
+def test_env_build_verification_in_image_failure_is_broke_firewall(monkeypatch):
+    """ADVERSARIAL (validated==shipped firewall, EnvBuild level). verify_in_image
+    re-runs every declared tool's evidence in the shipped image; when the in-image
+    run fails it must return `broke` (verification_in_image_failed), never proven.
+    The underlying container validate_in_image is mocked to report failure."""
+    from agent.skills.env_build import EnvBuild
+    eb = EnvBuild(name="bioinf_x")
+    eb.verifications = [{"label": "samtools", "tool": "samtools",
+                         "check": "samtools --version", "engine_coupled": True}]
+    monkeypatch.setattr(eb.cb, "validate_in_image",
+                        lambda image, checks, probe_tools=None: {
+                            "success": False,
+                            "checks": {c: {"rc": 1, "out": "not found"} for c in checks},
+                            "banners": {}})
+    out = eb.verify_in_image("img@sha256:deadbeef")
+    assert out.get("outcome") == "broke", out
+    assert out.get("code") == "env_build.verification_in_image_failed", out
+    assert out.get("success") is False
+    # the per-tool record must honestly show the failed evidence (not swallowed).
+    assert out["verifications"][0]["passed"] is False
+
+
+def test_freeze_adopt_honesty_refuses_policy_violating_biocontainer(monkeypatch):
+    """ADVERSARIAL (adopt-path POLICY_CLEAN firewall). Adopting a published
+    BioContainer skips VALIDATED_IN_IMAGE (its bytes are trusted by digest) but
+    POLICY_CLEAN (I12 accelerator / I13 license) STILL must hold — those describe
+    what WE declare on the artifact. Attack: adopt a pure-conda samtools while
+    claiming accel='cuda' with NO toolkit_version. freeze must REFUSE at the adopt
+    gate (freeze.adopt_honesty), never emit a 'POLICY_CLEAN' badge it never checked
+    (the dorado-stress D2 hole). No docker: biocontainer resolver + cache mocked."""
+    from agent.mcp_tools import freeze_tools
+    from agent import mcp_server as _ms
+    digest = "sha256:" + "a" * 64
+    monkeypatch.setattr(_ms._biocontainers, "resolve_biocontainer",
+                        lambda parsed, **k: {"found": True, "digest": digest,
+                                             "image_by_digest": f"quay.io/biocontainers/samtools@{digest}"})
+    monkeypatch.setattr(_ms._env_cache, "lookup_anchored", lambda rkey, present: None)
+    monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+
+    out = freeze_tools.freeze(env_name="bioinf_st_adopt_unit",
+                              tools=["samtools=1.21"], accel="cuda")   # cuda, NO toolkit_version
+    assert out.get("outcome") == "refused", out
+    assert out.get("code") == "freeze.adopt_honesty", out
+    assert out.get("violation_count", 0) >= 1 and out.get("honesty_violations"), out
+    # the refusal must name the I12 accelerator invariant it fired on (legible).
+    assert any("I12" in (v.get("invariant", "")) for v in out["honesty_violations"]), out
+
+
+# ---------------------------------------------------------------------------
 # Re-spine Slice 2/3: Perl/CPAN + cargo/go tiers
 # ---------------------------------------------------------------------------
 
