@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:460",
-    "end_line": 460,
+    "where": "agent/mcp_tools/workflow_tools.py:467",
+    "end_line": 467,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:679",
-    "end_line": 679,
+    "where": "agent/mcp_tools/workflow_tools.py:686",
+    "end_line": 686,
     "named_in_test": false
   },
   {
@@ -75,8 +75,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:692",
-    "end_line": 692,
+    "where": "agent/mcp_tools/workflow_tools.py:699",
+    "end_line": 699,
     "named_in_test": false
   },
   {
@@ -975,8 +975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:121",
-    "end_line": 121,
+    "where": "agent/skills/job_manager.py:131",
+    "end_line": 131,
     "named_in_test": false
   },
   {
@@ -985,8 +985,18 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:226",
-    "end_line": 226,
+    "where": "agent/skills/job_manager.py:245",
+    "end_line": 245,
+    "named_in_test": false
+  },
+  {
+    "code": "package_search.anaconda_bad_json",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_query_anaconda_api",
+    "where": "agent/skills/package_search.py:103",
+    "end_line": 104,
     "named_in_test": false
   },
   {
@@ -1265,8 +1275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:1116",
-    "end_line": 1116,
+    "where": "agent/skills/transfer.py:1124",
+    "end_line": 1124,
     "named_in_test": false
   },
   {
@@ -1275,8 +1285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1135",
-    "end_line": 1140,
+    "where": "agent/skills/transfer.py:1143",
+    "end_line": 1148,
     "named_in_test": false
   },
   {
@@ -1285,8 +1295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1168",
-    "end_line": 1172,
+    "where": "agent/skills/transfer.py:1176",
+    "end_line": 1180,
     "named_in_test": false
   },
   {
@@ -1295,8 +1305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1184",
-    "end_line": 1188,
+    "where": "agent/skills/transfer.py:1192",
+    "end_line": 1196,
     "named_in_test": false
   },
   {
@@ -1855,8 +1865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:484",
-    "end_line": 514,
+    "where": "agent/mcp_tools/workflow_tools.py:491",
+    "end_line": 521,
     "named_in_test": false
   },
   {
@@ -1865,8 +1875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:586",
-    "end_line": 586,
+    "where": "agent/mcp_tools/workflow_tools.py:593",
+    "end_line": 593,
     "named_in_test": false
   },
   {
@@ -1875,8 +1885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:732",
-    "end_line": 745,
+    "where": "agent/mcp_tools/workflow_tools.py:739",
+    "end_line": 752,
     "named_in_test": false
   },
   {
@@ -1885,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:786",
-    "end_line": 787,
+    "where": "agent/mcp_tools/workflow_tools.py:793",
+    "end_line": 794,
     "named_in_test": false
   },
   {
@@ -2425,8 +2435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1147",
-    "end_line": 1162,
+    "where": "agent/skills/transfer.py:1155",
+    "end_line": 1170,
     "named_in_test": false
   },
   {
@@ -2435,8 +2445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1195",
-    "end_line": 1210,
+    "where": "agent/skills/transfer.py:1203",
+    "end_line": 1218,
     "named_in_test": false
   },
   {
@@ -2700,13 +2710,33 @@
     "named_in_test": true
   },
   {
+    "code": "globus_task_status.project_or_env_not_found",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "globus_task_status",
+    "where": "agent/mcp_tools/bridge_tools.py:231",
+    "end_line": 232,
+    "named_in_test": false
+  },
+  {
+    "code": "globus_task_status.access_denied",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "globus_task_status",
+    "where": "agent/mcp_tools/bridge_tools.py:235",
+    "end_line": 236,
+    "named_in_test": false
+  },
+  {
     "code": "data.no_test_data_on_disk",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "select_test_data",
-    "where": "agent/mcp_tools/data_tools.py:305",
-    "end_line": 305,
+    "where": "agent/mcp_tools/data_tools.py:312",
+    "end_line": 312,
     "named_in_test": false
   },
   {
@@ -2715,8 +2745,18 @@
     "source": "helper",
     "tagged": true,
     "func": "select_test_data",
-    "where": "agent/mcp_tools/data_tools.py:309",
-    "end_line": 318,
+    "where": "agent/mcp_tools/data_tools.py:316",
+    "end_line": 325,
+    "named_in_test": false
+  },
+  {
+    "code": "data.download_db_missing_args",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "download_reference_database",
+    "where": "agent/mcp_tools/data_tools.py:53",
+    "end_line": 55,
     "named_in_test": false
   },
   {
@@ -2950,13 +2990,23 @@
     "named_in_test": false
   },
   {
+    "code": "provenance.invalid_inputs",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "write_pipeline_provenance",
+    "where": "agent/mcp_tools/workflow_tools.py:329",
+    "end_line": 330,
+    "named_in_test": false
+  },
+  {
     "code": "show_draft.unknown_pipeline",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:585",
-    "end_line": 585,
+    "where": "agent/mcp_tools/workflow_tools.py:592",
+    "end_line": 592,
     "named_in_test": false
   },
   {
@@ -2965,22 +3015,12 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:661",
-    "end_line": 665,
+    "where": "agent/mcp_tools/workflow_tools.py:668",
+    "end_line": 672,
     "named_in_test": false
   },
   {
     "code": "stage_artifact.path_not_absolute",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:667",
-    "end_line": 667,
-    "named_in_test": false
-  },
-  {
-    "code": "stage_artifact.exists_no_overwrite",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
@@ -2990,13 +3030,23 @@
     "named_in_test": false
   },
   {
+    "code": "stage_artifact.exists_no_overwrite",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:681",
+    "end_line": 681,
+    "named_in_test": false
+  },
+  {
     "code": "stage_artifact.source_missing",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:683",
-    "end_line": 686,
+    "where": "agent/mcp_tools/workflow_tools.py:690",
+    "end_line": 693,
     "named_in_test": false
   },
   {
@@ -3005,8 +3055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:730",
-    "end_line": 730,
+    "where": "agent/mcp_tools/workflow_tools.py:737",
+    "end_line": 737,
     "named_in_test": false
   },
   {
@@ -3015,8 +3065,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:763",
-    "end_line": 765,
+    "where": "agent/mcp_tools/workflow_tools.py:770",
+    "end_line": 772,
     "named_in_test": false
   },
   {
@@ -3025,8 +3075,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:777",
-    "end_line": 783,
+    "where": "agent/mcp_tools/workflow_tools.py:784",
+    "end_line": 790,
     "named_in_test": false
   },
   {
@@ -3035,8 +3085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:788",
-    "end_line": 790,
+    "where": "agent/mcp_tools/workflow_tools.py:795",
+    "end_line": 797,
     "named_in_test": false
   },
   {
@@ -3575,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "check",
-    "where": "agent/skills/job_manager.py:157",
-    "end_line": 157,
+    "where": "agent/skills/job_manager.py:176",
+    "end_line": 176,
     "named_in_test": false
   },
   {
@@ -3585,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:211",
-    "end_line": 211,
+    "where": "agent/skills/job_manager.py:230",
+    "end_line": 230,
     "named_in_test": false
   },
   {
@@ -3595,8 +3645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:217",
-    "end_line": 217,
+    "where": "agent/skills/job_manager.py:236",
+    "end_line": 236,
     "named_in_test": false
   },
   {
@@ -3607,6 +3657,26 @@
     "func": "start",
     "where": "agent/skills/job_manager.py:84",
     "end_line": 84,
+    "named_in_test": false
+  },
+  {
+    "code": "job_manager.empty_command",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "start",
+    "where": "agent/skills/job_manager.py:87",
+    "end_line": 88,
+    "named_in_test": false
+  },
+  {
+    "code": "job_manager.env_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "start",
+    "where": "agent/skills/job_manager.py:92",
+    "end_line": 94,
     "named_in_test": false
   },
   {
@@ -4117,6 +4187,16 @@
     "func": "_do_transfer",
     "where": "agent/skills/transfer.py:1110",
     "end_line": 1112,
+    "named_in_test": false
+  },
+  {
+    "code": "transfer.project_or_env_not_found",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:1119",
+    "end_line": 1120,
     "named_in_test": false
   },
   {

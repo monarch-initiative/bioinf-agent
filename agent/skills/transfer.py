@@ -1110,6 +1110,14 @@ def _do_transfer(*, direction: str,
         return refused("transfer.config_error",
                 error=f"ConfigError: {e}",
                 manifest=str(mpath))
+    except KeyError as e:
+        # get_project / get_compute_env raise KeyError for an unknown name.
+        # A hostile/typo'd project or env is a clean auth failure, not a crash
+        # the agent can't interpret (C4).
+        msg = str(e).strip("'\"")
+        mpath = _journal(result="error", zone="?", error_msg=msg)
+        return refused("transfer.project_or_env_not_found",
+                error=msg, manifest=str(mpath))
     except subprocess.TimeoutExpired as e:
         msg = f"subprocess timed out after {e.timeout}s"
         mpath = _journal(result="error", zone="?", error_msg=msg)

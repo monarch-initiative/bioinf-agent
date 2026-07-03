@@ -95,7 +95,13 @@ class PackageSearch:
         if resp.status_code != 200:
             return {"found": False}
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as e:
+            # 200 but not JSON (rate-limit / proxy / captive-portal page) — a
+            # flaky registry must not crash an autonomous search (C4).
+            return broke("package_search.anaconda_bad_json", found=False,
+                         error=f"anaconda API returned non-JSON: {e}")
         versions = sorted(
             data.get("versions", []),
             key=lambda v: self._version_sort_key(v),
@@ -214,7 +220,12 @@ class PackageSearch:
         if resp.status_code != 200:
             return {"found": False}
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            # 200 but not JSON — treat as "not found" (the caller falls through
+            # to other tiers) rather than crashing the search (C4).
+            return {"found": False}
         info = data.get("info", {})
 
         if requested_version == "latest":

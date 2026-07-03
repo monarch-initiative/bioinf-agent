@@ -83,6 +83,16 @@ class JobManager:
         if self._is_active(jid):
             return refused("job_manager.already_running", error=f"job_id '{jid}' is already running", job_id=jid)
 
+        if not (command or "").strip():
+            return refused("job_manager.empty_command",
+                           error="command is empty — nothing to run", job_id=jid)
+        # Guard a nonexistent env BEFORE spawning: a doomed `conda run --prefix
+        # <missing>` would just fail in the background and cost a spawn + a log.
+        if env_name and not (self._env_mgr.envs_dir / env_name).exists():
+            return refused("job_manager.env_missing",
+                           error=f"env not found: {self._env_mgr.envs_dir / env_name}",
+                           job_id=jid, env_name=env_name)
+
         status_path = self._status_path(jid)
         log_path    = self._log_path(jid)
         # Wipe prior log on re-use of a non-running job_id.
@@ -125,6 +135,15 @@ class JobManager:
         # Keep the Popen so check() can poll().
         self._procs[jid] = proc
 
+        # A fast-failing command can exit before we read its process group —
+        # getpgid then raises ProcessLookupError. Best-effort: fall back to the
+        # pid so a doomed spawn is still RECORDED (check() reaps it) rather than
+        # crashing the caller (C4).
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = proc.pid
+
         status = {
             "job_id":          jid,
             "state":           "running",
@@ -132,7 +151,7 @@ class JobManager:
             "env_name":        env_name,
             "working_dir":     cwd,
             "pid":             proc.pid,
-            "pgid":            os.getpgid(proc.pid),
+            "pgid":            pgid,
             "returncode":      None,
             "start_time":      time.time(),
             "start_time_iso":  _iso(time.time()),

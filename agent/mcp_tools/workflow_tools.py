@@ -320,7 +320,14 @@ def write_pipeline_provenance(
     if quantitative_traits:  inputs["quantitative_traits"]  = quantitative_traits
     if upstream_pipelines:   inputs["upstream_pipelines"]   = upstream_pipelines
     if parameters:           inputs["parameters"]           = parameters
-    return _ms._write_provenance(inputs, _ms.config)
+    try:
+        return _ms._write_provenance(inputs, _ms.config)
+    except Exception as e:
+        # The provenance record is pydantic-validated; malformed/partial inputs
+        # raise ValidationError (and a bad output_dir raises OSError). Surface a
+        # tag the agent can act on instead of an uncaught exception (C4).
+        return refused("provenance.invalid_inputs", success=False,
+                       error=f"{type(e).__name__}: {str(e)[:400]}")
 
 
 @mcp.tool()

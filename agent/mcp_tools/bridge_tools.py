@@ -218,12 +218,22 @@ def globus_task_status(project_name: str,
     on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
     {"error": "..."} on failure (cli missing, auth, network)."""
     from agent.skills import compute_access, transfer, transfer_providers
-    access = compute_access.load_access(None)
-    # _ad_hoc-aware resolve so the poll companion accepts the same
-    # project name the async upload/download accepted.
-    project = transfer._get_project_or_ad_hoc(project_name, access)  # auth check
-    _ = project
-    env = compute_access.get_compute_env(compute_env_name, access)
+    from agent.skills.outcomes import refused
+    try:
+        access = compute_access.load_access(None)
+        # _ad_hoc-aware resolve so the poll companion accepts the same
+        # project name the async upload/download accepted.
+        project = transfer._get_project_or_ad_hoc(project_name, access)  # auth check
+        _ = project
+        env = compute_access.get_compute_env(compute_env_name, access)
+    except KeyError as e:
+        # unknown project / compute_env → a clean auth failure, not a crash (C4).
+        return refused("globus_task_status.project_or_env_not_found",
+                       error=str(e).strip("'\""), success=False)
+    except (compute_access.PermissionDenied, compute_access.ConfigError,
+            FileNotFoundError) as e:
+        return refused("globus_task_status.access_denied",
+                       error=f"{type(e).__name__}: {e}", success=False)
     return transfer_providers.globus_task_status(env, task_id)
 
 

@@ -47,6 +47,13 @@ def download_reference_database(
     served (the reproducibility anchor), so the sealed WorkflowSpec pins the DB
     by content, not just by name+URL.
     """
+    _missing = [n for n, v in (("name", name), ("url", url), ("local_path", local_path))
+                if not (v or "").strip()]
+    if _missing:
+        return refused("data.download_db_missing_args", success=False,
+                       error=f"required argument(s) empty: {_missing} — pass a name, "
+                             f"source url, and local_path")
+
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
