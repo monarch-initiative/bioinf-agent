@@ -656,6 +656,22 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_service_health(spec))
 
+    # ------------------------------------------------------------------
+    # I5 (reference-database availability, restored at Layer 2): every declared
+    # reference_database.local_path must exist on disk (and, when the record
+    # carries integrity anchors, still match them). The respine retired I5 as an
+    # env-build invariant claiming 'install==ship' subsumes it — but a reference
+    # DB is, by the model's own contract, "mounted at runtime rather than baked
+    # into the Docker image" (tens-to-hundreds of GB), so VALIDATED_IN_IMAGE
+    # provably says nothing about it. It fell through the exact crack I9/I10 did:
+    # a runtime-external artifact a workflow depends on. I8.composition_coherence
+    # even treats a ref-DB's local_path as a valid input source WITHOUT checking
+    # the file is there — so a step could seal green consuming a DB that is absent
+    # or truncated. This restores existence + strengthens it with the sha256 anchor
+    # the model already carries for downstream re-run pinning.
+    # ------------------------------------------------------------------
+    violations.extend(_check_reference_database_availability(spec))
+
     return violations
 
 
@@ -665,7 +681,7 @@ def check_invariants(spec: dict) -> list[dict]:
 # by env_honesty.check_build. check_invariants is now itself run-side-only, so
 # this filter is belt-and-suspenders (it stays the named Layer-2 entry point and
 # guards against a future non-run-side clause leaking into check_invariants).
-_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I6", "I7", "I8", "I10"}
+_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I5", "I6", "I7", "I8", "I10"}
 
 
 def check_workflow_invariants(spec: dict) -> list[dict]:
@@ -710,6 +726,128 @@ def _check_service_health(spec: dict) -> list[dict]:
                             f"sealed depending on a service that never came up. "
                             f"start_service must reach healthy, or drop the dependency."),
             })
+    return violations
+
+
+def _check_reference_database_availability(spec: dict) -> list[dict]:
+    """I5 (restored at Layer 2): every declared reference_database with a
+    local_path must actually be present — and, when the record carries integrity
+    anchors, still match them.
+
+    The retired host-writer I5 checked existence only ('reference DBs without
+    their data don't run'). The respine folded I5 into the env-build collapse on
+    the theory that VALIDATED_IN_IMAGE subsumes it — but the ReferenceDatabase
+    model itself says these are 'mounted at runtime rather than baked into the
+    Docker image' (they can be hundreds of GB), so the image validation cannot
+    speak to them at all. Same crack as the I9->I8 authored-artifact and I10
+    service restorations: a runtime-external dependency a workflow relies on.
+
+    Three tiers of check, each cheap-first so a 200 GB VEP cache never forces a
+    pathological seal-time hash:
+      - EXISTENCE (always): local_path missing on disk -> I5.reference_database_missing.
+        Works for a file OR a directory (VEP cache / exomiser bundle are trees).
+      - NON-EMPTY (always, cheap): a zero-byte file or empty directory is a
+        failed/partial download masquerading as present -> I5.reference_database_empty.
+      - SIZE match (cheap stat, when size_bytes recorded + local_path is a file):
+        a truncated or swapped artifact -> I5.reference_database_size_mismatch.
+        This is the always-affordable integrity signal for huge DBs we won't hash.
+      - SHA256 drift (only when sha256 recorded, local_path is a file, AND it is
+        under the hash cap): the model records sha256 explicitly so 'downstream
+        re-runs pin the DB by this hash' — enforce it -> I5.reference_database_mutated
+        / I5.reference_database_unreadable. Over the cap we rely on size + existence.
+
+    Entries without a local_path are skipped (a declared-but-not-downloaded DB
+    that no step consumes; if a step DID consume it, I8.composition_coherence
+    already fails because a None local_path is never added to the source universe)."""
+    import hashlib
+    HASH_CAP_BYTES = 2 * 1024 * 1024 * 1024   # 2 GiB — hash below, trust size+existence above
+    violations: list[dict] = []
+    for i, rdb in enumerate(spec.get("reference_databases", []) or []):
+        if not isinstance(rdb, dict):
+            continue
+        lp = rdb.get("local_path")
+        if not lp or not isinstance(lp, str):
+            continue   # not-yet-downloaded declaration; unused ones are harmless
+        name = rdb.get("name") or f"reference_databases[{i}]"
+        where = f"reference_databases[name={rdb.get('name')}]"
+        p = Path(lp)
+        if not p.exists():
+            violations.append({
+                "invariant": "I5.reference_database_missing",
+                "message":   f"reference_database '{name}' has local_path that does not "
+                             f"exist on disk: {lp} — a workflow cannot seal depending on "
+                             f"reference data that isn't there (mounted at runtime, so the "
+                             f"image validation cannot cover it)",
+                "where":     where, "path": lp,
+            })
+            continue
+
+        # Non-empty: a partial/failed download can leave a 0-byte file or empty dir.
+        try:
+            if p.is_dir():
+                empty = not any(p.iterdir())
+            else:
+                empty = p.stat().st_size == 0
+        except Exception:
+            empty = False
+        if empty:
+            violations.append({
+                "invariant": "I5.reference_database_empty",
+                "message":   f"reference_database '{name}' local_path exists but is empty "
+                             f"({'directory has no entries' if p.is_dir() else 'zero-byte file'}): "
+                             f"{lp} — an empty DB is as unusable as a missing one (partial download?)",
+                "where":     where, "path": lp,
+            })
+            continue
+
+        if p.is_dir():
+            continue   # size_bytes / sha256 anchor a single artifact, not a tree
+
+        recorded_size = rdb.get("size_bytes")
+        actual_size = None
+        try:
+            actual_size = p.stat().st_size
+        except Exception:
+            actual_size = None
+        if isinstance(recorded_size, int) and recorded_size > 0 and actual_size is not None \
+                and actual_size != recorded_size:
+            violations.append({
+                "invariant": "I5.reference_database_size_mismatch",
+                "message":   f"reference_database '{name}' size changed since it was recorded: "
+                             f"recorded {recorded_size} bytes, on disk {actual_size} bytes — "
+                             f"the artifact was truncated, replaced, or re-downloaded to "
+                             f"different content",
+                "where":     where, "path": lp,
+                "recorded_size_bytes": recorded_size, "disk_size_bytes": actual_size,
+            })
+            continue
+
+        recorded_sha = rdb.get("sha256")
+        if recorded_sha and (actual_size is None or actual_size <= HASH_CAP_BYTES):
+            try:
+                h = hashlib.sha256()
+                with p.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                disk_sha = h.hexdigest()
+            except Exception as e:
+                violations.append({
+                    "invariant": "I5.reference_database_unreadable",
+                    "message":   f"reference_database '{name}' could not be re-hashed at "
+                                 f"seal time: {e!r}",
+                    "where":     where, "path": lp,
+                })
+                continue
+            if disk_sha != recorded_sha:
+                violations.append({
+                    "invariant": "I5.reference_database_mutated",
+                    "message":   f"reference_database '{name}' bytes changed since download: "
+                                 f"recorded sha256={recorded_sha[:12]}..., on disk={disk_sha[:12]}... "
+                                 f"— downstream re-runs pin this DB by hash, so the spec's claim "
+                                 f"about it no longer matches reality",
+                    "where":     where, "path": lp,
+                    "recorded_sha256": recorded_sha, "disk_sha256": disk_sha,
+                })
     return violations
 
 

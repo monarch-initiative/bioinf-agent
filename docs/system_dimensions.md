@@ -23,6 +23,29 @@ Method: probe a real tool that exercises the row → fix what breaks → lock wi
 | 7 | Auxiliary services (redis/postgres/spark) | Redis | ✅ | full lifecycle proven (start→health-poll→I10 record→real round-trip→verify→stop, + failure path). **Fixed the headline: I10 (service health) was advertised but enforced NOWHERE → seal would bless a workflow whose service never came up. Restored as a Layer-2 invariant.** Also fixed a stop_command pid-file leak |
 | 8 | Multi-component pipelines (Nextflow) | Talos | ⬜ | renderer + per-project pipelines exist; untested for a real install |
 
+### Retired-invariant audit (closed) — the I5/I9/I10 runtime-external family
+
+The I10 restoration (row 7) raised the question: did any OTHER respine-retired
+invariant fall through the same crack? Audited the full retired set
+(I1/I2/I5/I9/I10/I11/I12/I13/I14). The rule that decides it: **is the artifact
+baked INTO the ship image, or mounted/run OUTSIDE it at runtime?**
+
+- Baked in → `VALIDATED_IN_IMAGE` genuinely covers it: **I1/I2** (tool presence/verify),
+  **I11** (source rebuilt at pinned commit), **I14** (binary re-fetched + sha-anchored
+  in the build). Correctly retired.
+- Policy metadata → relocated to `POLICY_CLEAN`: **I12** (accelerator), **I13** (license).
+  Still enforced.
+- **Runtime-external** (lives outside the image, so install==ship CANNOT cover it) →
+  must be restored at Layer 2: **I9** authored artifacts (restored earlier as
+  `I8.authored_artifact_*`), **I10** service health (row 7), and **I5** reference-DB
+  availability — **restored now**. `I8.composition_coherence` had been trusting a
+  ref-DB's `local_path` as an input source without checking the file was present;
+  `_check_reference_database_availability` now enforces existence + non-empty + size
+  match + capped sha256 drift (mirrors the authored-artifact re-anchor; respects that
+  ref-DBs can be 100s of GB / directories). 8 certification tests, mutation-verified.
+
+**Audit conclusion: all three runtime-external invariants are now restored; no others fell through.**
+
 ### VEP probe — findings NOT yet fixed (logged, judged not clean/generalizable)
 - **Silent-wrong GTF prep** (highest hazard): a mis-prepped GTF (`awk OFS` rewriting the attribute column, sort order, `chr22` vs `22`) → VEP emits **all-intergenic output, rc=0** = a silent false success. The honest fix is *functional* output validation (assert real annotations, not just a valid file) — domain-specific, NOT a new VEP-prep primitive (would be tool-specific scaffolding). Same principle as import≠works, at the output level.
 - **Apple-Silicon `perl-db_file` breaks VEP host-run** (`dyld: missing symbol`): a platform/env issue, not our code. Confirms the **container-native freeze (linux-amd64) is the reliable path** for Perl-XS-heavy tools — host validation is unreliable on arm64. Architectural confirmation, not a fix.

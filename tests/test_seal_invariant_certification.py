@@ -177,3 +177,115 @@ def test_i10_noop_without_services():
     """No service_dependencies → no I10 violation (the common case is untouched)."""
     violations = check_invariants(_base_spec())
     assert not any(v["invariant"].startswith("I10") for v in violations)
+
+
+# ---------------------------------------------------------------------------
+# I5 (reference-database availability) — restored at Layer 2. The audit that
+# followed the I10 restoration asked whether ANY other respine-retired invariant
+# was a runtime-external concern that fell through the same crack. I5 was: a
+# reference DB is "mounted at runtime rather than baked into the image" (the
+# model's own words), so VALIDATED_IN_IMAGE cannot cover it, yet
+# I8.composition_coherence trusts a ref-DB's local_path as an input source
+# WITHOUT checking the file is there. These certify the restored gate.
+# ---------------------------------------------------------------------------
+def test_i5_fires_on_missing_reference_database():
+    """A declared reference_database whose local_path does not exist on disk must
+    trip I5.reference_database_missing — a workflow cannot seal depending on
+    reference data that isn't there (the crack the audit found)."""
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "vep_cache_111", "version": "111", "source_url": "http://x",
+         "local_path": "/nonexistent/vep_cache_111"}]
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I5.reference_database_missing" for v in violations), violations
+
+
+def test_i5_fires_on_empty_reference_database(tmp_path):
+    """A local_path that exists but is a zero-byte file is a partial/failed
+    download masquerading as present → I5.reference_database_empty."""
+    db = tmp_path / "gnomad.vcf.gz"
+    db.write_bytes(b"")
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "gnomad", "version": "4", "source_url": "http://x", "local_path": str(db)}]
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I5.reference_database_empty" for v in violations), violations
+
+
+def test_i5_fires_on_size_mismatch(tmp_path):
+    """A recorded size_bytes that no longer matches disk (truncation / swap) trips
+    I5.reference_database_size_mismatch — the cheap always-on integrity signal for
+    DBs too large to re-hash."""
+    db = tmp_path / "kraken2.db"
+    db.write_bytes(b"abc")   # 3 bytes
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "kraken2", "version": "1", "source_url": "http://x",
+         "local_path": str(db), "size_bytes": 999999}]
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I5.reference_database_size_mismatch" for v in violations), violations
+
+
+def test_i5_fires_on_sha256_drift(tmp_path):
+    """A recorded sha256 that no longer matches the on-disk bytes (the model pins
+    downstream re-runs by this hash) trips I5.reference_database_mutated."""
+    db = tmp_path / "clinvar.vcf.gz"
+    db.write_bytes(b"real-bytes")
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "clinvar", "version": "2024", "source_url": "http://x",
+         "local_path": str(db), "sha256": "0" * 64}]   # wrong hash
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I5.reference_database_mutated" for v in violations), violations
+
+
+def test_i5_passes_present_and_anchored_database(tmp_path):
+    """A present, non-empty ref-DB whose size + sha256 match disk PASSES — the
+    honest happy path is untouched."""
+    import hashlib
+    db = tmp_path / "dbsnp.vcf.gz"
+    payload = b"a real reference database payload"
+    db.write_bytes(payload)
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "dbsnp", "version": "156", "source_url": "http://x", "local_path": str(db),
+         "size_bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}]
+    violations = check_invariants(spec)
+    assert not any(v["invariant"].startswith("I5") for v in violations), violations
+
+
+def test_i5_passes_directory_reference_database(tmp_path):
+    """A ref-DB that is a non-empty DIRECTORY (VEP cache / exomiser bundle are
+    trees) PASSES on existence alone — size/sha256 anchor a single artifact, not
+    a tree, so they're skipped for directories."""
+    cache = tmp_path / "vep_cache" / "homo_sapiens" / "111_GRCh38"
+    cache.mkdir(parents=True)
+    (cache / "1.gz").write_bytes(b"chunk")
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "vep_cache", "version": "111", "source_url": "http://x",
+         "local_path": str(tmp_path / "vep_cache")}]
+    violations = check_invariants(spec)
+    assert not any(v["invariant"].startswith("I5") for v in violations), violations
+
+
+def test_i5_flows_through_workflow_entry_point(tmp_path):
+    """The gate must fire via check_workflow_invariants (the actual seal path) —
+    i.e. I5 is in _WORKFLOW_INVARIANT_TIERS."""
+    from agent.skills.spec_writer import check_workflow_invariants
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "missing", "version": "1", "source_url": "http://x",
+         "local_path": "/nonexistent/db"}]
+    wv = check_workflow_invariants(spec)
+    assert any(v["invariant"] == "I5.reference_database_missing" for v in wv), wv
+
+
+def test_i5_noop_without_reference_databases():
+    """No reference_databases (or a declaration with no local_path) → no I5
+    violation (the common case is untouched)."""
+    assert not any(v["invariant"].startswith("I5") for v in check_invariants(_base_spec()))
+    spec = _base_spec()
+    spec["reference_databases"] = [
+        {"name": "declared_not_downloaded", "version": "1", "source_url": "http://x"}]
+    assert not any(v["invariant"].startswith("I5") for v in check_invariants(spec))
