@@ -242,6 +242,28 @@ def test_primitive_never_crashes_on_hostile_input(label, fn, kwargs, require_tag
             f"{label} returned a dict with no outcome tag on hostile input: keys={list(result)[:12]}"
 
 
+def test_search_package_survives_non_json_200(monkeypatch):
+    """Targeted C4: a registry that returns HTTP 200 with a NON-JSON body (a
+    rate-limit / captive-portal / proxy error page) must not crash the search.
+    The battery can't reach this line (it mocks requests to *raise*, i.e. a
+    failed request); here we make requests SUCCEED with junk so resp.json()
+    raises, and assert a tag comes back instead of a JSONDecodeError."""
+    import requests
+    from agent.mcp_tools import env_tools as E
+
+    class _JunkResp:
+        status_code = 200
+        text = "<html>rate limited</html>"
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _JunkResp())
+    res = E.search_package(package_name="samtools")
+    assert isinstance(res, dict), res           # no JSONDecodeError escaped
+    # the anaconda tier surfaces a broke tag; overall the tool returns a dict.
+    assert res.get("outcome") in OUTCOME_CLASSES or "found" in res, res
+
+
 def test_battery_covers_every_mcp_tool():
     """Ratchet: every @mcp.tool() primitive must have a battery entry, so a newly
     added tool can't silently escape crash-safety coverage."""
