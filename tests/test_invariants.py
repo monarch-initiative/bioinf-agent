@@ -1271,6 +1271,85 @@ def test_env_build_verification_in_image_failure_is_broke_firewall(monkeypatch):
     assert out["verifications"][0]["passed"] is False
 
 
+# The SUCCESS direction of the validated==shipped gates — completes the honesty
+# pair: `proven` must fire ONLY when the in-image evidence genuinely passes. The
+# failure-direction firewalls above prove it refuses a bad image; these prove a
+# clean pass is a real green (executed + named), not a rubber stamp.
+
+def test_container_build_validated_in_image_success_is_proven(monkeypatch):
+    """When every tool's evidence returns rc=0 INSIDE the image, validate_in_image
+    must return proven(container_build.validated_in_image) — the honest green the
+    whole validated==shipped contract rests on."""
+    from agent.skills.container_build import ContainerBuild
+    cb = ContainerBuild()
+    monkeypatch.setattr(cb, "_sh",
+                        lambda args, timeout=1800: {"returncode": 0, "stdout": "samtools 1.21", "stderr": ""})
+    out = cb.validate_in_image("img@sha256:cafe", ["samtools --version"], probe_tools=[])
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "container_build.validated_in_image", out
+    assert out.get("success") is True
+
+
+def test_env_build_verified_in_image_success_is_proven(monkeypatch):
+    """EnvBuild.verify_in_image returns proven(env_build.verified_in_image) when
+    the in-image run of every declared tool's evidence passes — the digest-matched
+    green seal_workflow reads to assert validated_in_shipped_image."""
+    from agent.skills.env_build import EnvBuild
+    eb = EnvBuild(name="bioinf_x")
+    eb.verifications = [{"label": "samtools", "tool": "samtools",
+                         "check": "samtools --version", "engine_coupled": True}]
+    monkeypatch.setattr(eb.cb, "validate_in_image",
+                        lambda image, checks, probe_tools=None: {
+                            "success": True,
+                            "checks": {c: {"rc": 0, "out": "samtools 1.21"} for c in checks},
+                            "banners": {"samtools": "samtools 1.21"}})
+    out = eb.verify_in_image("img@sha256:cafe")
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "env_build.verified_in_image", out
+    assert out.get("success") is True
+    assert out["verifications"][0]["passed"] is True
+
+
+def test_env_recipe_reproduced_is_proven_on_digest_match():
+    """env_recipe.reproduced: rebuilding from the recipe alone and converging to
+    the recorded content_digest is the honest reproducibility green. `build_fn` is
+    injected so the match-logic is proven without Docker; a match REQUIRES both a
+    successful build AND digest equality (the paired not_reproduced firewall is
+    certified separately)."""
+    from agent.skills import env_recipe
+    recipe = {"name": "bioinf_x", "version": "1.0",
+              "content_digest": "sha256:" + "a" * 64, "conda_deps": ["samtools"]}
+    out = env_recipe.rebuild_from_recipe(
+        recipe, build_fn=lambda spec, **k: {"success": True,
+                                            "content_digest": "sha256:" + "a" * 64})
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "env_recipe.reproduced", out
+    assert out.get("content_digest_match") is True
+    # and a DRIFTED digest must NOT be proven (the honest negative).
+    bad = env_recipe.rebuild_from_recipe(
+        recipe, build_fn=lambda spec, **k: {"success": True,
+                                            "content_digest": "sha256:" + "b" * 64})
+    assert bad.get("outcome") != "proven", bad
+
+
+def test_env_build_cache_hit_returns_proven():
+    """env_build.cache_hit: an ANCHORED cache hit (image still present) returns the
+    proven artifact by hash with no rebuild. Cache-hit honesty is load-bearing —
+    a wrong hit ships a wrong env (the B1 class) — so the green must reflect a real
+    anchored lookup."""
+    from agent.skills.env_build import EnvBuild
+    eb = EnvBuild(name="bioinf_x")
+
+    class _FakeCache:
+        def lookup_anchored(self, key, present):
+            return {"image": "img", "image_digest": "sha256:" + "a" * 64,
+                    "content_digest": "sha256:" + "a" * 64}
+    out = eb.build_or_cached(_FakeCache(), image_present=lambda ref: True)
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "env_build.cache_hit", out
+    assert out.get("cached") is True
+
+
 def test_freeze_adopt_honesty_refuses_policy_violating_biocontainer(monkeypatch):
     """ADVERSARIAL (adopt-path POLICY_CLEAN firewall). Adopting a published
     BioContainer skips VALIDATED_IN_IMAGE (its bytes are trusted by digest) but

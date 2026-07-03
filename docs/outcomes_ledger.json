@@ -2037,7 +2037,7 @@
     "func": "validate_in_image",
     "where": "agent/skills/container_build.py:723",
     "end_line": 723,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "core_test_data.vcf_written",
@@ -2097,7 +2097,7 @@
     "func": "verify_in_image",
     "where": "agent/skills/env_build.py:172",
     "end_line": 172,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_build.cache_hit",
@@ -2107,7 +2107,7 @@
     "func": "build_or_cached",
     "where": "agent/skills/env_build.py:256",
     "end_line": 256,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_manager.binary_staged",
@@ -2327,7 +2327,7 @@
     "func": "rebuild_from_recipe",
     "where": "agent/skills/env_recipe.py:106",
     "end_line": 114,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "run_cluster.step_recorded",

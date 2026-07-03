@@ -1,7 +1,7 @@
 {
   "measured_terminals": 464,
-  "verified": 77,
-  "exercised": 152,
+  "verified": 81,
+  "exercised": 148,
   "dark": 235,
   "by_where": {
     "agent/mcp_tools/env_tools.py:430": true,
