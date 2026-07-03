@@ -145,11 +145,12 @@
     {
       "tool": "GAPIT",
       "language": "r",
-      "bucket": "AUTO-DISCOVERED:jiabowang/GAPIT\u2192synthesis",
-      "chosen": "synthesis",
+      "bucket": "AUTO-DISCOVERED:jiabowang/GAPIT\u2192r_github",
+      "chosen": "r_github",
       "recommended_repo": "jiabowang/GAPIT",
       "auto_adoptable": true,
       "available": [
+        "r_github",
         "synthesis",
         "source"
       ],

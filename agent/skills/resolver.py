@@ -35,7 +35,7 @@ from typing import Any, Optional
 # contract) and so handles EVERY repo — half-baked, run-by-path, custom build — not
 # just the conventional make+binary case the `source` generator assumes. `source`
 # (and binary) survive as opt-in FAST-PATHS, not the boundary of installable.
-TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "binary", "spack",
+TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "r_github", "binary", "spack",
               "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
@@ -43,6 +43,9 @@ _TIER_RATIONALE = {
     "pip":          "on PyPI — language registry; chosen when not on conda",
     "cran":         "on CRAN — R language registry via install_r_package(source=cran)",
     "bioconductor": "on Bioconductor — R via install_r_package(source=bioconductor)",
+    "r_github":     "an R package on github — install_r_package(source=github:owner/repo), the "
+                    "purpose-built R path (remotes::install_github + load-or-die); beats generic "
+                    "synthesis for a known R package",
     "binary":       "precompiled release binary — exact bytes (sha256), but platform-specific",
     "spack":        "in the Spack HPC registry — a curated from-source recipe (community-maintained); "
                     "store baked under /opt/tools so RPATHs resolve in the slim image. Build is slow "
@@ -491,6 +494,8 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
         return f'install_r_package(env, "{tool}", source="cran")'
     if tier == "bioconductor":
         return f'install_r_package(env, "{tool}", source="bioconductor")'
+    if tier == "r_github":
+        return f'install_r_package(env, "{tool}", source="github:{github_repo}")'
     if tier == "binary":
         asset = (detail.get("assets") or ["<release-asset-url>"])[0]
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
@@ -539,6 +544,11 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
     if tier in ("cran", "bioconductor"):
         return {"kind": "tool", "tier": tier,
                 "spec": ic.r_package(tool, source="bioconductor" if tier == "bioconductor" else "cran")}
+
+    if tier == "r_github":
+        if not repo:
+            return {"kind": "defer", "tier": tier, "reason": "r_github tier needs github_repo"}
+        return {"kind": "tool", "tier": tier, "spec": ic.r_package(tool, source=f"github:{repo}")}
 
     if tier == "binary":
         os_tok, _, arch_tok = platform.partition("/")
@@ -629,6 +639,12 @@ def resolve(
         # the repo's real build, so it's the robust default; source is the fast-path.
         availability["synthesis"] = {"available": gh["repo_exists"], **gh}
         availability["source"]    = {"available": gh["repo_exists"], **gh}
+        # An R package on github → the PURPOSE-BUILT R path (remotes::install_github +
+        # BiocManager bootstrap + load-or-die), which is far more reliable than making
+        # synthesis improvise R CMD INSTALL. Only offered with a language='r' hint (a
+        # bare github repo could be anything); ranks above synthesis via TIER_ORDER.
+        if language == "r":
+            availability["r_github"] = {"available": gh["repo_exists"], **gh}
 
     # Spack is a real (curated, from-source) tier — ranks below precompiled binary
     # but above the agent-read synthesis fallback (a community recipe beats

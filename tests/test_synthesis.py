@@ -305,12 +305,13 @@ def test_resolve_auto_discovers_and_adopts_dominant_repo(monkeypatch):
     monkeypatch.setattr(resolver, "probe_github",
                         lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
     d = resolver.resolve("GAPIT", language="r")
-    assert d["chosen"] == "synthesis"                # a COMPLETE plan, not a dead-end
+    # an R package on github → the PURPOSE-BUILT r_github tier (not generic synthesis)
+    assert d["chosen"] == "r_github"                 # a COMPLETE plan, not a dead-end
     assert d["auto_discovered"] is True
     assert d["repo_auto_adoptable"] is True
     assert d["recommended_repo"] == "jiabowang/GAPIT"
     assert d["github_repo"] == "jiabowang/GAPIT"
-    assert d.get("install_call")                     # ready to execute, no re-run
+    assert 'install_r_package(env, "GAPIT", source="github:jiabowang/GAPIT")' == d["install_call"]
     assert "AUTO-DISCOVERED" in d["rationale"]
 
 
@@ -325,6 +326,30 @@ def test_resolve_discovery_weak_candidate_needs_confirmation(monkeypatch):
     d = resolver.resolve("GAPIT3", language="r")
     assert d["recommended_repo"] == "rando/GAPIT3"
     assert d["repo_auto_adoptable"] is False
+
+
+def test_r_github_tier_beats_synthesis_for_r_package(monkeypatch):
+    """An R package on github (language='r' + repo) → the purpose-built r_github tier,
+    NOT generic synthesis; install_call uses install_r_package(source=github:...)."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github",
+                        lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
+    d = resolver.resolve("GAPIT", language="r", github_repo="jiabowang/GAPIT")
+    assert d["chosen"] == "r_github"
+    assert 'source="github:jiabowang/GAPIT"' in d["install_call"]
+    # route() yields a real Rscript remotes::install_github spec
+    assert "install_github" in (resolver.route(d)["spec"]["command"])
+
+
+def test_r_github_tier_absent_without_r_hint(monkeypatch):
+    """A bare github repo (no language hint) is NOT assumed to be R — it falls to
+    synthesis/source, never r_github (which would run R on a non-R repo)."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github",
+                        lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
+    d = resolver.resolve("sometool", github_repo="owner/sometool")
+    assert d["chosen"] in ("synthesis", "source")
+    assert "r_github" not in (d.get("available") or [])
 
 
 def test_resolve_skips_discovery_when_repo_supplied(monkeypatch):
