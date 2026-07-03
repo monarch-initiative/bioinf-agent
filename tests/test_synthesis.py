@@ -264,6 +264,76 @@ def test_source_only_still_resolves_to_source_unit():
     assert resolver.rank_decision({"source": {"available": True}})["chosen"] == "source"
 
 
+# -- DISCOVERY: reach a repo-only tool beyond the package registries -------------
+# (the verified generality bottleneck — GAPIT3 lives on github, not on any registry,
+#  so a bare-name resolve dead-ended until a human hand-supplied the repo).
+def test_probe_github_search_sorts_exact_name_then_stars(monkeypatch):
+    payload = {"items": [
+        {"full_name": "other/foo-wrapper", "name": "foo-wrapper", "stargazers_count": 900, "description": "wraps foo"},
+        {"full_name": "canonical/foo", "name": "foo", "stargazers_count": 200, "description": "the foo tool"},
+        {"full_name": "misc/foo", "name": "foo", "stargazers_count": 50, "description": ""},
+    ]}
+    monkeypatch.setattr(resolver, "_get_json", lambda *a, **k: payload)
+    r = resolver.probe_github_search("foo")
+    assert r["found"] is True
+    # exact-name matches rank ABOVE a higher-starred non-exact repo — "most likely THE tool"
+    assert [c["repo"] for c in r["candidates"]] == ["canonical/foo", "misc/foo", "other/foo-wrapper"]
+    assert r["candidates"][0]["exact_name_match"] is True
+    assert r["candidates"][-1]["exact_name_match"] is False
+
+
+def test_probe_github_search_empty(monkeypatch):
+    monkeypatch.setattr(resolver, "_get_json", lambda *a, **k: {"items": []})
+    assert resolver.probe_github_search("nope")["found"] is False
+
+
+def _dead_registries(monkeypatch):
+    for fn in ("probe_conda", "probe_pypi", "probe_cran", "probe_bioconductor", "probe_spack"):
+        monkeypatch.setattr(resolver, fn, lambda *a, **k: {"available": False})
+
+
+def test_resolve_discovers_repo_when_registries_deadend(monkeypatch):
+    """A dominant exact-name repo → recommended + auto-adoptable (the GAPIT case)."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github_search", lambda *a, **k: {"found": True, "candidates": [
+        {"repo": "jiabowang/GAPIT", "stars": 236, "description": "GWAS", "language": "R", "exact_name_match": True},
+        {"repo": "other/gapit-panel", "stars": 82, "description": "", "language": "JS", "exact_name_match": False},
+    ]})
+    d = resolver.resolve("GAPIT", language="r")
+    assert d["chosen"] is None                       # still no registry tier — honest
+    assert d["recommended_repo"] == "jiabowang/GAPIT"
+    assert d["repo_auto_adoptable"] is True
+    assert "DISCOVERED" in d["rationale"]
+
+
+def test_resolve_discovery_weak_candidate_needs_confirmation(monkeypatch):
+    """A weak top candidate → recommended but NOT auto-adoptable → human confirms
+    (the GAB-collision guard: a same-name repo can be the wrong project)."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github_search", lambda *a, **k: {"found": True, "candidates": [
+        {"repo": "rando/GAPIT3", "stars": 1, "description": "", "language": "R", "exact_name_match": True},
+        {"repo": "other/gapit3-docs", "stars": 0, "description": "", "language": None, "exact_name_match": False},
+    ]})
+    d = resolver.resolve("GAPIT3", language="r")
+    assert d["recommended_repo"] == "rando/GAPIT3"
+    assert d["repo_auto_adoptable"] is False
+
+
+def test_resolve_skips_discovery_when_repo_supplied(monkeypatch):
+    """github_repo already given → don't burn a github search; the repo tiers resolve."""
+    calls = {"n": 0}
+    def _search(*a, **k):
+        calls["n"] += 1
+        return {"found": True, "candidates": []}
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github_search", _search)
+    monkeypatch.setattr(resolver, "probe_github",
+                        lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
+    d = resolver.resolve("foo", github_repo="o/foo")
+    assert calls["n"] == 0
+    assert d["chosen"] in ("synthesis", "source")    # repo tiers unlocked, not a dead-end
+
+
 # -- buildable Spack tier --------------------------------------------------------
 def test_spack_generator_store_under_opt_tools_and_relocation():
     spec = ic.spack("bzip2", evidence="bzip2 --help")

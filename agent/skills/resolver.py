@@ -242,6 +242,42 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     return out
 
 
+def probe_github_search(name: str, timeout: int = 12, limit: int = 5) -> dict[str, Any]:
+    """DISCOVERY (the router's reach beyond package registries). Search github for
+    repos matching a bare tool NAME — so a tool that lives only as a repo (no conda/
+    pip/cran/spack entry) can still reach the synthesis/source floor. This is the
+    missing link between 'has a synthesis engine' and 'installs arbitrary tools':
+    without it, an unregistered tool DEAD-ENDS until a human hand-supplies the repo
+    (verified: GAPIT3 lives at jiabowang/GAPIT3, not on any registry).
+
+    Rate-limited (unauthenticated github search = 10 req/min), so this is called
+    ONLY when the registries dead-end — never on every resolve. Ranks by stars and
+    flags exact name matches so the caller (or a human orchestrator) can confirm the
+    right repo rather than guess a URL. Candidate order: exact-name first, then stars."""
+    from urllib.parse import quote
+    q = quote(f"{name} in:name,description")
+    data = _get_json(
+        f"https://api.github.com/search/repositories?q={q}&sort=stars&order=desc"
+        f"&per_page={max(limit, 5)}", timeout)
+    if not isinstance(data, dict) or not data.get("items"):
+        return {"found": False, "candidates": []}
+    cands = []
+    for it in data["items"]:
+        full = it.get("full_name") or ""
+        if not full:
+            continue
+        cands.append({
+            "repo": full,
+            "stars": int(it.get("stargazers_count") or 0),
+            "description": (it.get("description") or "")[:140],
+            "language": it.get("language"),
+            "exact_name_match": (it.get("name") or "").lower() == name.lower(),
+        })
+    # exact name matches first, then by stars — the honest "most likely THE tool" order.
+    cands.sort(key=lambda c: (not c["exact_name_match"], -c["stars"]))
+    return {"found": bool(cands), "candidates": cands[:limit]}
+
+
 # ---------------------------------------------------------------------------
 # Ship-platform asset resolution — the release-binary tier's cross-arch bridge.
 #
@@ -639,6 +675,34 @@ def resolve(
                                         "cross_namespace_collision": True}
 
     decision = rank_decision(availability, prefer=prefer)
+
+    # DISCOVERY: the registries dead-ended and no repo was supplied. Instead of
+    # stopping at "pass a github_repo", SEARCH github for the tool by name so an
+    # unregistered tool still reaches the synthesis floor. Turns the human's job
+    # from "go find the repo + figure out its build" into "confirm this repo" —
+    # the orchestrator-in-the-loop model. Only here (dead-end) so github search
+    # rate limits never bite the common registry path.
+    if decision["chosen"] is None and not github_repo:
+        disc = probe_github_search(tool, timeout)
+        if disc["found"]:
+            cands = disc["candidates"]
+            rec = cands[0]   # exact-name-then-stars sorted; the most-likely THE tool
+            decision["discovered_repos"] = cands
+            decision["recommended_repo"] = rec["repo"]
+            # A confident auto-adopt candidate: an EXACT name match that clearly
+            # dominates. Else present candidates for a human/agent to confirm (the
+            # GAB-collision guard: a same-name repo can still be the wrong project).
+            decision["repo_auto_adoptable"] = bool(
+                rec["exact_name_match"] and rec["stars"] >= 10 and (
+                    len(cands) == 1 or not cands[1]["exact_name_match"]
+                    or rec["stars"] >= 5 * max(cands[1]["stars"], 1)))
+            decision["rationale"] = (
+                f"no registry hit — DISCOVERED {len(cands)} candidate repo(s) via github "
+                f"search. Recommended: {rec['repo']} ({rec['stars']}★"
+                f"{', exact-name' if rec['exact_name_match'] else ''}). Re-run with "
+                f"github_repo='{rec['repo']}' to install via synthesis (the agent reads "
+                f"its build files), or pick another from discovered_repos.")
+
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
     decision.update({

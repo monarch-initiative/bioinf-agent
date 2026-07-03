@@ -1,0 +1,189 @@
+{
+  "cases": [
+    {
+      "tool": "bwa",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "pip",
+        "spack"
+      ],
+      "note": "conda sanity"
+    },
+    {
+      "tool": "samtools",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "spack"
+      ],
+      "note": "conda sanity"
+    },
+    {
+      "tool": "cutadapt",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "pip"
+      ],
+      "note": "conda/pip"
+    },
+    {
+      "tool": "macs2",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "pip"
+      ],
+      "note": "peak calling"
+    },
+    {
+      "tool": "gatk4",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda"
+      ],
+      "note": "jar-class, on bioconda"
+    },
+    {
+      "tool": "miniprot",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda"
+      ],
+      "note": "aligner"
+    },
+    {
+      "tool": "nanoplot",
+      "language": null,
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "pip"
+      ],
+      "note": "long-read QC"
+    },
+    {
+      "tool": "DESeq2",
+      "language": "r",
+      "bucket": "ROUTED:bioconductor",
+      "chosen": "bioconductor",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "bioconductor"
+      ],
+      "note": "bioconductor"
+    },
+    {
+      "tool": "edgeR",
+      "language": "r",
+      "bucket": "ROUTED:bioconductor",
+      "chosen": "bioconductor",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "bioconductor"
+      ],
+      "note": "bioconductor"
+    },
+    {
+      "tool": "ape",
+      "language": null,
+      "bucket": "AMBIGUOUS",
+      "chosen": "pip",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "pip",
+        "cran",
+        "spack"
+      ],
+      "note": "name collision (PyPI ape != CRAN ape)"
+    },
+    {
+      "tool": "ape",
+      "language": "r",
+      "bucket": "ROUTED:conda",
+      "chosen": "conda",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "conda",
+        "cran",
+        "spack"
+      ],
+      "note": "disambiguated -> CRAN"
+    },
+    {
+      "tool": "GAPIT",
+      "language": "r",
+      "bucket": "DISCOVERED:jiabowang/GAPIT(AUTO)",
+      "chosen": null,
+      "recommended_repo": "jiabowang/GAPIT",
+      "auto_adoptable": true,
+      "available": [],
+      "note": "REPO-ONLY (plant GWAS) \u2014 discovery target"
+    },
+    {
+      "tool": "GAPIT3",
+      "language": "r",
+      "bucket": "DISCOVERED:Aria-Dolatabadian/GAPIT3(CONFIRM)",
+      "chosen": null,
+      "recommended_repo": "Aria-Dolatabadian/GAPIT3",
+      "auto_adoptable": false,
+      "available": [],
+      "note": "REPO-ONLY variant name"
+    },
+    {
+      "tool": "cellranger",
+      "language": null,
+      "bucket": "ROUTED:cran",
+      "chosen": "cran",
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [
+        "cran",
+        "spack"
+      ],
+      "note": "COLLISION: CRAN cellranger != 10x cellranger"
+    },
+    {
+      "tool": "zzz_no_such_tool_xyz",
+      "language": null,
+      "bucket": "DEAD-END",
+      "chosen": null,
+      "recommended_repo": null,
+      "auto_adoptable": null,
+      "available": [],
+      "note": "genuine dead-end"
+    }
+  ]
+}
