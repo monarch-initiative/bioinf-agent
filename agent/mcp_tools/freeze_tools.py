@@ -22,6 +22,22 @@ from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.skills.outcomes import proven, refused, broke
 
 
+def _shipped_binary_entry(step: dict) -> dict:
+    """One `shipped_binaries[]` record from a baked long-tail step. The baked
+    command IS the tool's provenance; C5 additionally surfaces the per-tool SHIP
+    assurance (verified/assurance/tier) whenever the tier disclosed one — so the
+    ENV report states HOW each shipped tool is anchored across ALL tiers, not just
+    binary. A step with no assurance (nothing to disclose) carries name+command
+    only, unchanged."""
+    entry = {"name": step.get("purpose", ""), "command": step.get("command", "")}
+    prov = step.get("provenance") or {}
+    if prov.get("assurance"):
+        entry["tier"]      = prov.get("tier", "")
+        entry["verified"]  = bool(prov.get("verified"))
+        entry["assurance"] = prov.get("assurance", "")
+    return entry
+
+
 @mcp.tool()
 def freeze(
     env_name: str,
@@ -350,14 +366,7 @@ def freeze(
         # step also carries its install→ship assurance (verified/assurance) from
         # the integrity chain — surfaced so the artifact discloses whether each
         # shipped binary was checksum-verified (F1/F2), never conflating them.
-        shipped_binaries = []
-        for s in br.get("longtail_steps", []):
-            entry = {"name": s.get("purpose", ""), "command": s.get("command", "")}
-            prov = s.get("provenance") or {}
-            if prov.get("tier") == "binary":
-                entry["verified"]  = bool(prov.get("verified"))
-                entry["assurance"] = prov.get("assurance", "")
-            shipped_binaries.append(entry)
+        shipped_binaries = [_shipped_binary_entry(s) for s in br.get("longtail_steps", [])]
         # the SELF-CONTAINED rebuild recipe — everything build_env_image needs to
         # reproduce this env with no draft/agent (the verify-by-rebuild / CI artifact).
         # content_digest is the EnvBuild one (what a rebuild via build_env_image yields).

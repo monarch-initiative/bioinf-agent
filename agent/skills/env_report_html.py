@@ -219,22 +219,36 @@ def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str
     return _install_method(t, pkg, shipped)
 
 
-# Supply-chain assurance of a shipped binary — the install→ship integrity chain
-# verdict (env_freeze binary branch). Rendered ONLY for binary-tier steps that
-# carry an `assurance`; conflating verified with unverified is exactly what F1/F2
-# forbid, so the badge states the level plainly.
+# Per-tool SHIP assurance — HOW each shipped long-tail tool is anchored. Binary
+# carries the install→ship integrity-chain verdict (F1/F2); C5 extends the SAME
+# disclosure to every other tier (env_freeze._replay_assurance) so the report can
+# never imply uniform trust — a source tool on a floating branch (drifts) must not
+# look like a digest-pinned one. `ok` = an immutable anchor a rebuild reproduces;
+# `na` = ships valid but disclosed-unverified. Conflating the two is what F1/F2 forbid.
 _ASSURANCE_BADGE = {
+    # binary tier (install→ship checksum chain)
     "authenticated":            ("ok",  "✓ checksum-verified"),
     "pinned_tofu":              ("na",  "⚠ pinned (unverified, TOFU)"),
     "unanchored_cross_platform":("na",  "⚠ cross-platform ship (unverified)"),
     "unanchored":               ("na",  "⚠ unverified"),
+    # C5 — other tiers. verified (immutable, rebuild-reproducible):
+    "commit_pinned":            ("ok",  "✓ pinned @ commit (rebuilt in-image)"),
+    "built_pinned":             ("ok",  "✓ built from pinned source"),
+    "lock_pinned":              ("ok",  "✓ lock-pinned"),
+    # disclosed-unverified (moves / not content-anchored):
+    "ref_pinned_tofu":          ("na",  "⚠ pinned to a movable ref (TOFU)"),
+    "built_unpinned":           ("na",  "⚠ unpinned version (drifts)"),
+    "cpan_tofu":                ("na",  "⚠ CPAN (unverified, TOFU)"),
+    "repo_tofu":                ("na",  "⚠ repo version (unverified, TOFU)"),
+    "spec_pinned_tofu":         ("na",  "⚠ spack spec (unverified, TOFU)"),
+    "command_pinned":           ("na",  "⚠ literal command (unverified)"),
+    "unpinned":                 ("na",  "⚠ unpinned (floating branch — drifts)"),
 }
 
 
 def _assurance_badge(s: dict) -> str:
-    """A pill disclosing a shipped binary's install→ship assurance. Empty for
-    non-binary steps (no `assurance` key), so the run of pip/source/jar steps is
-    unaffected."""
+    """A pill disclosing a shipped tool's ship assurance. Empty for steps with no
+    `assurance` key (nothing to disclose), so unaffected steps render unchanged."""
     a = (s or {}).get("assurance")
     if not a:
         return ""

@@ -15,8 +15,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:339",
-    "end_line": 341,
+    "where": "agent/mcp_tools/freeze_tools.py:355",
+    "end_line": 357,
     "named_in_test": false
   },
   {
@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:528",
-    "end_line": 528,
+    "where": "agent/mcp_tools/freeze_tools.py:537",
+    "end_line": 537,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:231",
-    "end_line": 232,
+    "where": "agent/mcp_tools/run_tools.py:245",
+    "end_line": 246,
     "named_in_test": false
   },
   {
@@ -554,9 +554,9 @@
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:274",
-    "end_line": 276,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:353",
+    "end_line": 355,
     "named_in_test": false
   },
   {
@@ -564,9 +564,9 @@
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:279",
-    "end_line": 280,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:358",
+    "end_line": 359,
     "named_in_test": false
   },
   {
@@ -575,8 +575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:463",
-    "end_line": 463,
+    "where": "agent/skills/env_freeze.py:542",
+    "end_line": 542,
     "named_in_test": false
   },
   {
@@ -1805,8 +1805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:184",
-    "end_line": 185,
+    "where": "agent/mcp_tools/freeze_tools.py:200",
+    "end_line": 201,
     "named_in_test": true
   },
   {
@@ -1815,8 +1815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:468",
-    "end_line": 469,
+    "where": "agent/mcp_tools/freeze_tools.py:477",
+    "end_line": 478,
     "named_in_test": false
   },
   {
@@ -1825,8 +1825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:527",
-    "end_line": 527,
+    "where": "agent/mcp_tools/freeze_tools.py:536",
+    "end_line": 536,
     "named_in_test": true
   },
   {
@@ -1835,8 +1835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:560",
-    "end_line": 566,
+    "where": "agent/mcp_tools/freeze_tools.py:569",
+    "end_line": 575,
     "named_in_test": false
   },
   {
@@ -2805,8 +2805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:124",
-    "end_line": 130,
+    "where": "agent/mcp_tools/freeze_tools.py:140",
+    "end_line": 146,
     "named_in_test": true
   },
   {
@@ -2815,8 +2815,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:125",
-    "end_line": 129,
+    "where": "agent/mcp_tools/freeze_tools.py:141",
+    "end_line": 145,
     "named_in_test": true
   },
   {
@@ -2825,8 +2825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:275",
-    "end_line": 278,
+    "where": "agent/mcp_tools/freeze_tools.py:291",
+    "end_line": 294,
     "named_in_test": true
   },
   {
@@ -2835,8 +2835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:507",
-    "end_line": 508,
+    "where": "agent/mcp_tools/freeze_tools.py:516",
+    "end_line": 517,
     "named_in_test": true
   },
   {
@@ -2845,8 +2845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:510",
-    "end_line": 511,
+    "where": "agent/mcp_tools/freeze_tools.py:519",
+    "end_line": 520,
     "named_in_test": true
   },
   {
@@ -2855,8 +2855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:556",
-    "end_line": 557,
+    "where": "agent/mcp_tools/freeze_tools.py:565",
+    "end_line": 566,
     "named_in_test": false
   },
   {
@@ -2875,8 +2875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:206",
-    "end_line": 207,
+    "where": "agent/mcp_tools/run_tools.py:220",
+    "end_line": 221,
     "named_in_test": false
   },
   {
@@ -2885,8 +2885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:210",
-    "end_line": 211,
+    "where": "agent/mcp_tools/run_tools.py:224",
+    "end_line": 225,
     "named_in_test": false
   },
   {
@@ -2895,8 +2895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:214",
-    "end_line": 215,
+    "where": "agent/mcp_tools/run_tools.py:228",
+    "end_line": 229,
     "named_in_test": false
   },
   {
@@ -2905,8 +2905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:221",
-    "end_line": 226,
+    "where": "agent/mcp_tools/run_tools.py:235",
+    "end_line": 240,
     "named_in_test": false
   },
   {
@@ -2915,8 +2915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:443",
-    "end_line": 446,
+    "where": "agent/mcp_tools/run_tools.py:457",
+    "end_line": 460,
     "named_in_test": false
   },
   {
@@ -3274,9 +3274,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:200",
-    "end_line": 200,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:272",
+    "end_line": 272,
     "named_in_test": false
   },
   {
@@ -3284,9 +3284,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:222",
-    "end_line": 227,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:301",
+    "end_line": 306,
     "named_in_test": false
   },
   {
@@ -3294,9 +3294,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:239",
-    "end_line": 240,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:318",
+    "end_line": 319,
     "named_in_test": false
   },
   {
@@ -3304,9 +3304,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:296",
-    "end_line": 302,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:375",
+    "end_line": 381,
     "named_in_test": true
   },
   {
@@ -3314,9 +3314,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:332",
-    "end_line": 333,
+    "func": "_map_install_spec",
+    "where": "agent/skills/env_freeze.py:411",
+    "end_line": 412,
     "named_in_test": false
   },
   {
@@ -3325,8 +3325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:462",
-    "end_line": 462,
+    "where": "agent/skills/env_freeze.py:541",
+    "end_line": 541,
     "named_in_test": true
   },
   {
@@ -3335,8 +3335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:566",
-    "end_line": 567,
+    "where": "agent/skills/env_freeze.py:648",
+    "end_line": 649,
     "named_in_test": false
   },
   {
@@ -3345,8 +3345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:589",
-    "end_line": 591,
+    "where": "agent/skills/env_freeze.py:671",
+    "end_line": 673,
     "named_in_test": false
   },
   {
@@ -3845,8 +3845,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:362",
-    "end_line": 366,
+    "where": "agent/skills/spec_writer.py:396",
+    "end_line": 400,
     "named_in_test": true
   },
   {
@@ -3855,8 +3855,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:370",
-    "end_line": 375,
+    "where": "agent/skills/spec_writer.py:404",
+    "end_line": 409,
     "named_in_test": true
   },
   {
@@ -3865,8 +3865,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:393",
-    "end_line": 399,
+    "where": "agent/skills/spec_writer.py:427",
+    "end_line": 433,
     "named_in_test": true
   },
   {
@@ -3875,8 +3875,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:412",
-    "end_line": 419,
+    "where": "agent/skills/spec_writer.py:446",
+    "end_line": 453,
     "named_in_test": true
   },
   {
@@ -3885,8 +3885,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:433",
-    "end_line": 442,
+    "where": "agent/skills/spec_writer.py:467",
+    "end_line": 476,
     "named_in_test": true
   },
   {
@@ -3895,28 +3895,28 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:456",
-    "end_line": 465,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:488",
-    "end_line": 492,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:495",
+    "where": "agent/skills/spec_writer.py:490",
     "end_line": 499,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:522",
+    "end_line": 526,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:529",
+    "end_line": 533,
     "named_in_test": true
   },
   {
@@ -3925,18 +3925,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:523",
-    "end_line": 532,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_recorded",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:549",
-    "end_line": 555,
+    "where": "agent/skills/spec_writer.py:557",
+    "end_line": 566,
     "named_in_test": true
   },
   {
@@ -3950,13 +3940,13 @@
     "named_in_test": false
   },
   {
-    "code": "I7.resource_usage_captured",
+    "code": "I7.resource_usage_recorded",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:566",
-    "end_line": 574,
+    "where": "agent/skills/spec_writer.py:583",
+    "end_line": 589,
     "named_in_test": true
   },
   {
@@ -3965,8 +3955,18 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:577",
-    "end_line": 585,
+    "where": "agent/skills/spec_writer.py:600",
+    "end_line": 608,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:611",
+    "end_line": 619,
     "named_in_test": true
   },
   {
@@ -3975,8 +3975,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:668",
-    "end_line": 675,
+    "where": "agent/skills/spec_writer.py:702",
+    "end_line": 709,
     "named_in_test": true
   },
   {
@@ -3985,8 +3985,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:680",
-    "end_line": 686,
+    "where": "agent/skills/spec_writer.py:714",
+    "end_line": 720,
     "named_in_test": true
   },
   {
@@ -3995,8 +3995,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:689",
-    "end_line": 698,
+    "where": "agent/skills/spec_writer.py:723",
+    "end_line": 732,
     "named_in_test": true
   },
   {
@@ -4005,8 +4005,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:762",
-    "end_line": 771,
+    "where": "agent/skills/spec_writer.py:796",
+    "end_line": 805,
     "named_in_test": true
   },
   {
@@ -4015,8 +4015,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:780",
-    "end_line": 786,
+    "where": "agent/skills/spec_writer.py:814",
+    "end_line": 820,
     "named_in_test": true
   },
   {
@@ -4025,8 +4025,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:789",
-    "end_line": 801,
+    "where": "agent/skills/spec_writer.py:823",
+    "end_line": 835,
     "named_in_test": true
   },
   {
@@ -4035,8 +4035,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:902",
-    "end_line": 909,
+    "where": "agent/skills/spec_writer.py:936",
+    "end_line": 943,
     "named_in_test": true
   },
   {

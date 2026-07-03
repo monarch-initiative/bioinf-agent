@@ -179,7 +179,79 @@ def _r_source_from_method(im: dict) -> str:
     return "cran"
 
 
+def _is_commit_sha(s: str) -> bool:
+    """A full 40-hex git commit — an immutable content address (a rebuild at this
+    ref reproduces the exact source tree). Tags/branches are NOT (they move)."""
+    s = (s or "").strip().lower()
+    return len(s) == 40 and all(c in "0123456789abcdef" for c in s)
+
+
+def _replay_assurance(tier: str, im: dict) -> tuple[str, bool]:
+    """The honest per-tier SHIP assurance (C5) → `(assurance, verified)`.
+
+    HOW is each shipped non-conda tool anchored? `verified=True` ONLY for an
+    IMMUTABLE content anchor a rebuild reproduces (a pinned git commit, an immutable
+    registry version compiled in-image, a hash-locked package). Everything else
+    ships VALID but DISCLOSED-unverified with its reason — so the ENV report can
+    never imply uniform trust across tiers (a source tool on a floating branch,
+    which DRIFTS, must not look like a digest-pinned one).
+
+    binary + jar set their own provenance inline in `_map_install` (they carry a
+    runtime-fetched sha the F1/F2 chain reasons over); this helper is the single
+    source of truth for the purely-static tiers. Conda (adopt/build) and flagless
+    pip are IMAGE-level anchors (manifest digest / engine lock) disclosed at the
+    image, not per-tool, so they are not routed here."""
+    im = im or {}
+    if tier == "source":
+        ref = im.get("commit_sha") or im.get("ref") or ""
+        if _is_commit_sha(ref):
+            return "commit_pinned", True
+        return ("ref_pinned_tofu", False) if ref.strip() else ("unpinned", False)
+    if tier == "synthesized":
+        return ("commit_pinned", True) if _is_commit_sha(im.get("commit_sha") or "") \
+            else ("unpinned", False)
+    if tier in ("cargo", "go"):
+        ver = (im.get("version") or "").strip().lower()
+        return ("built_pinned", True) if (ver and ver != "latest") \
+            else ("built_unpinned", False)
+    if tier == "perl":
+        return "cpan_tofu", False
+    if tier == "r_install":
+        src = im.get("source") or ""
+        ref = im.get("commit_sha") or im.get("ref") or ""
+        if src.startswith("github:") and _is_commit_sha(ref):
+            return "commit_pinned", True
+        return "repo_tofu", False
+    if tier == "spack":
+        return "spec_pinned_tofu", False
+    if tier == "pip":   # only flag-bearing pip reaches a longtail step (flagless → engine lock)
+        return "command_pinned", False
+    return "unanchored", False
+
+
 def _map_install(
+    x: dict,
+    platform: str = "linux/amd64",
+    *,
+    resolve_linux_asset: Callable[..., dict] = _resolver.resolve_linux_asset,
+    sha256_of_url: Callable[..., dict] = _resolver.sha256_of_url,
+) -> dict[str, Any]:
+    """Map a non-conda install to a generator spec AND attach its per-tool SHIP
+    assurance (C5). binary + jar set provenance inline (they carry a runtime sha);
+    this wrapper fills every other tier via `_replay_assurance` so the shipped
+    record — and the ENV report rendered from it — discloses HOW each tool is
+    anchored across ALL tiers, never implying uniform trust. Delegates the actual
+    mapping to `_map_install_spec`."""
+    m = _map_install_spec(x, platform, resolve_linux_asset=resolve_linux_asset,
+                          sha256_of_url=sha256_of_url)
+    spec = m.get("spec")
+    if isinstance(spec, dict) and "provenance" not in spec:
+        a, v = _replay_assurance(x.get("type", ""), x.get("install_method") or {})
+        spec["provenance"] = {"tier": x.get("type", ""), "verified": v, "assurance": a}
+    return m
+
+
+def _map_install_spec(
     x: dict,
     platform: str = "linux/amd64",
     *,
@@ -199,8 +271,15 @@ def _map_install(
         if not jar_url:
             return refused("build.jar_no_url", error=f"jar tool '{name}' has no jar_url to replay")
         hh = sha256_of_url(jar_url)              # jars rarely publish a checksum; best-effort
-        return {"spec": ic.jar(name, jar_url, sha256=hh.get("sha256", "") if hh.get("ok") else "",
-                               java_flags=im.get("java_flags"), wrapper=name)}
+        jar_sha = hh.get("sha256", "") if hh.get("ok") else ""
+        gen = ic.jar(name, jar_url, sha256=jar_sha,
+                     java_flags=im.get("java_flags"), wrapper=name)
+        # C5: a jar is TOFU at best — no publisher auth. We pin the bytes we ship
+        # (pinned_tofu) when the freeze re-fetch hashed, else unanchored. Never verified.
+        gen["provenance"] = {"tier": "jar", "verified": False,
+                             "assurance": "pinned_tofu" if jar_sha else "unanchored",
+                             "asset_url": jar_url, "asset_sha256": jar_sha or None}
+        return {"spec": gen}
 
     if t == "source":
         # Three replay shapes (mutually exclusive, all routed through this branch):
@@ -461,7 +540,7 @@ def build_env_image(
             if m["outcome"] == "refused":
                 return refused("build.map_install_refused", **fields)
             return broke("build.map_install_failed", **fields)
-        tool_specs.append(m["spec"])
+        tool_specs.append(m["spec"])   # provenance (C5 ship assurance) attached by _map_install
 
     # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).
     # Their versions come from the same installed_packages view as the engine pip
@@ -473,9 +552,12 @@ def build_env_image(
     for x in pip_with_flags:
         nm = x.get("name", "")
         ver = _versions.get(nm) or ""
-        tool_specs.append(ic.pip_install_with_flags(
-            nm, version=ver, flags=_pip_flags(x),
-        ))
+        gen = ic.pip_install_with_flags(nm, version=ver, flags=_pip_flags(x))
+        # C5: flag-bearing pip is a literal command (the flags aren't lock-representable
+        # — the command IS the provenance), so it ships disclosed-unverified.
+        a, v = _replay_assurance("pip", x.get("install_method") or {})
+        gen["provenance"] = {"tier": "pip", "verified": v, "assurance": a}
+        tool_specs.append(gen)
 
     eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
                   accelerator=accelerator, license_gated=license_gated,
