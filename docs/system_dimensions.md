@@ -17,11 +17,11 @@ Method: probe a real tool that exercises the row → fix what breaks → lock wi
 | 2 | Discovery + routing (repo-only, auto-chain) | GAPIT | ✅ | github discovery + auto-adopt + r_github tier |
 | 3 | Validation honesty — R (import ≠ works) | GAPIT | ✅ | `functional_check` → freeze proves RAN (e5bbbe9) |
 | 3b | Validation honesty — pip/Python | (generalized) | ✅ | install_pip_package gained `functional_check` → freeze proves RAN (mirrors R); Talos will use it |
-| 4 | Name collisions (same-name, different tool) | talos/cellranger | ⬜ | guard fires only w/ github_repo; bare-name silent. Fuzzy. |
+| 4 | Name collisions (same-name, different tool) | talos/cellranger | 🟨 | **Repo-supplied case PROVEN**: `talos`+repo+`language=python` → cross-namespace guard rejects the wrong PyPI `talos` (Keras tuner) and routes to synthesis, correct+legible. Bare-name silent (fuzzy, deliberately not rabbit-holed). |
 | 5 | Reference data / caches (big DB, indexed) | VEP | ✅ | `download_reference_database` (GTF) + bgzip/tabix + VEP `--gtf`/`--fasta` custom mode → real annotations verified. Fixed validator false-negative on long comment headers (VEP `--tab` 30 `##` lines) |
 | 6 | Perl plugins / CPAN tier | VEP plugins | ✅ | `install_perl_package` (Text::CSV) + VEP `--plugin` load proven. Fixed: legible error when cpanm prerequisite missing |
 | 7 | Auxiliary services (redis/postgres/spark) | Redis | ✅ | full lifecycle proven (start→health-poll→I10 record→real round-trip→verify→stop, + failure path). **Fixed the headline: I10 (service health) was advertised but enforced NOWHERE → seal would bless a workflow whose service never came up. Restored as a Layer-2 invariant.** Also fixed a stop_command pid-file leak |
-| 8 | Multi-component pipelines (Nextflow) | Talos | ⬜ | renderer + per-project pipelines exist; untested for a real install |
+| 8 | Multi-component pipelines (chained steps) | bwa→samtools→bcftools | ✅ | **Multi-step chaining PROVEN**: freeze once → 2 chained container steps (step2's BAM input IS step1's output) → seal green. I8 composition-coherence + lineage held across the chain (first seal correctly REFUSED for undeclared externals, then passed); `validated_in_shipped_image: true` (both steps digest-matched). Fixed: `depends_on` never materialized (finalize retired) + freeze-runner lingered ~9.5 min after result written. Talos itself is a cloud-native Hail pipeline (GCP) — its collision+routing are proven (row 4); a full host Hail install is a tool yak-shave, not a system dimension. |
 
 ### Retired-invariant audit (closed) — the I5/I9/I10 runtime-external family
 
@@ -64,6 +64,18 @@ these split into (a) bridge-primitive hardening I CAN do via adversarial tests, 
 | 11 | Production pipeline run on cluster | ⬜ | user-driven (submit_workflow_job → poll → fetch) |
 
 Legend: ✅ green · 🔄 in progress · ⬜ untested. Update as rows burn down.
+
+### Multi-step chaining probe (row 8) — findings
+
+**Fixed:**
+- **`depends_on` never materialized** (MEDIUM): the PipelineStep model documents `depends_on` as "derived at finalize from input/output overlap" but finalize was retired in the respine and seal never picked it up — so every sealed spec had `depends_on: []`, even for a step consuming a prior step's output. The self-verifying WorkflowSpec wasn't self-DOCUMENTING. Fixed: `_derive_step_dependencies` stamps the edge seal already computes for I8 (exact input↔output overlap, last-writer-wins, honors an explicit value). 8 tests. Same orphaned-respine-promise pattern as I5/I10.
+- **freeze-runner lingered ~9.5 min after result written** (MEDIUM): a freeze that returned in 0.3s (adopt-by-digest) left its runner subprocess alive ~567s; the parent JobManager keys job state off `proc.poll()`, so `check_job` read "running" the whole time and `.done` never appeared (parent writes it on the terminal transition). Import leaves zero non-daemon threads (verified), so the linger comes from handles the adopt path creates during its run. Fixed: `freeze_runner` now `os._exit()`s once the result JSON is durably written (freeze writes all deliverables before returning; delivery jobs are independently tracked, so nothing is orphaned). Note: couldn't reproduce the exact adopt-then-linger locally (a nonexistent-env freeze hung INSIDE freeze instead — see below); fix targets the reported symptom.
+
+**Logged (not fixed — LOW/INFO):**
+- **`source_url` + `usage.description` are seal-required but surface only as a raw pydantic error** after all invariants pass. Documented both in the CLAUDE.md schema cheatsheet. Candidate: make `ReferenceDatabase.source_url` optional when `local_path` is set (a locally-staged reference has no download URL; forcing `file://` is a small fabrication) — low-ripple (all other `source_url` readers are read-data, not ref-DB), deferred.
+- **`run_pipeline_step` `output_types` `.bam` key reported unmatched** while the BAM still validated via extension inference — the explicit `{".bam": "bam"}` mapping wasn't honored by the `.ext` lookup path; inference saved it. INFO.
+- **Host/adopted-image tool-version drift not surfaced**: host bwa 0.7.19 vs adopted mulled-image bwa 0.7.17 → different VCFs (80 vs 65 records). Expected for adopt-mode (shipped bytes win = the point of validated==shipped), but nothing flags the drift between pre-freeze host iteration and the sealed in-container run. INFO.
+- **`freeze()` on a nonexistent env HANGS instead of failing fast** (NEW, from local testing — not the probe): a bad env name blocks inside freeze for >120s with no structured refusal. Separate robustness gap (input validation before expensive work); needs a docker/conda-path dive, deferred to avoid a rabbit hole.
 
 ### Services probe — minor findings (logged, not fixed)
 - **GAP 3 (ergonomic):** the conda daemon is `redis-server`, not `redis` (`redis` is the PyPI client). A naive install of `redis` fails `PackagesNotFoundError`; `resolve_tool` doesn't disambiguate a server-vs-client name collision. Doc/hint candidate.

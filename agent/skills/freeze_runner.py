@@ -25,6 +25,7 @@ streaming there is a separate piece of work.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -101,4 +102,18 @@ def _write_result(path: str, result: dict) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # Force-terminate rather than fall through to a clean interpreter shutdown.
+    # `from agent.mcp_server import freeze` pulls in the FastMCP server + its
+    # providers, which spawn NON-DAEMON threads (Docker SDK connection pools,
+    # component watchers). Once the result JSON is written and stdout flushed,
+    # those threads keep the interpreter alive — and the parent JobManager keys
+    # a job's state off `proc.poll()`, so the job reads 'running' until the
+    # process actually exits. The multi-step chaining probe observed a freeze
+    # whose work finished in 0.3s (adopt-by-digest) linger ~9.5 min before the
+    # process was reaped, stranding `check_job` on 'running' the whole time.
+    # The result file is already durably written by _write_result (closed) and
+    # both streams are flushed here, so os._exit loses nothing.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

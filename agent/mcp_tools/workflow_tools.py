@@ -72,6 +72,59 @@ def _refresh_reference_databases(rdbs: list) -> list:
     return out
 
 
+def _derive_step_dependencies(pipeline_steps: list) -> list:
+    """Materialize each step's `depends_on` (prior step numbers it consumes an
+    output of) into the sealed spec.
+
+    The StepInput/PipelineStep model documents depends_on as 'derived at finalize
+    from input/output overlap if absent' — but finalize_pipeline was retired in
+    the respine and seal never picked the derivation up, so depends_on was ALWAYS
+    empty. The multi-step chaining probe surfaced it: a 2-step pipeline sealed with
+    step2 recording depends_on=[] even though its BAM input IS step1's output. The
+    seal already re-computes this exact edge to CHECK I8 (composition-coherence /
+    lineage), but never wrote it back — so the self-verifying WorkflowSpec was not
+    self-DOCUMENTING: a reader couldn't tell step2's input came from step1 vs an
+    external source without re-deriving it. This closes that gap by stamping the
+    edge the seal already knows.
+
+    Derivation is exact-path input↔output overlap (the byte-identical lineage
+    edge), last-writer-wins in step order (matches _check_lineage_integrity). Only
+    fills depends_on when currently absent/empty (honors the 'if absent' contract);
+    an explicit value is left untouched. Returns NEW step dicts (no draft mutation)."""
+    # Walk in step-number order to build the producer index (last writer wins),
+    # deriving depends_on into a per-step-number map; then emit in the caller's
+    # original list order so the sealed YAML keeps its shape.
+    ordered = sorted(
+        [s for s in (pipeline_steps or []) if isinstance(s, dict)],
+        key=lambda s: s.get("step") or 0,
+    )
+    producer: dict[str, int] = {}          # output path -> latest producing step
+    enriched: dict[int, dict] = {}         # step number -> enriched dict
+    for s in ordered:
+        sn = s.get("step") or 0
+        s2 = dict(s)
+        if not s2.get("depends_on"):                       # absent/empty -> derive
+            deps: set[int] = set()
+            for inp in s2.get("inputs", []) or []:
+                ipath = inp.get("path") if isinstance(inp, dict) else inp
+                if isinstance(ipath, str) and producer.get(ipath, sn) < sn:
+                    deps.add(producer[ipath])
+            s2["depends_on"] = sorted(deps)
+        enriched[sn] = s2
+        # Register outputs AFTER deriving deps so a step can't depend on itself.
+        for o in (s2.get("detected_outputs") or []) + (s2.get("outputs") or []):
+            if isinstance(o, str) and o:
+                producer[o] = sn
+
+    out: list = []
+    for s in (pipeline_steps or []):
+        if isinstance(s, dict) and (s.get("step") or 0) in enriched:
+            out.append(enriched[s.get("step") or 0])
+        else:
+            out.append(s)
+    return out
+
+
 def _render_run_dashboard(wf: dict, env_record: dict, out_dir: Path) -> Optional[str]:
     """Render THIS workflow's Layer-2 run dashboard — `{workflow_name}.RUN.html`.
 
@@ -210,7 +263,10 @@ def seal_workflow(
         "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),
-        "pipeline_steps":     draft.get("pipeline_steps", []),
+        # Stamp each step's depends_on (input↔prior-output overlap) — the edge the
+        # seal already computes to CHECK I8 — so the sealed spec is self-documenting,
+        # not just self-verifying (finalize used to derive this; it was retired).
+        "pipeline_steps":     _derive_step_dependencies(draft.get("pipeline_steps", [])),
         # External sources carried so the artifact self-verifies (I8 standalone).
         "test_data":            draft.get("test_data"),
         "reference_databases":  _refresh_reference_databases(draft.get("reference_databases", [])),
