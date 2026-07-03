@@ -787,7 +787,7 @@
     "func": "verify",
     "where": "agent/skills/env_manager.py:480",
     "end_line": 480,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_manager.run_in_env_failed",
@@ -2257,7 +2257,7 @@
     "func": "verify",
     "where": "agent/skills/env_manager.py:474",
     "end_line": 474,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_manager.run_in_env_ok",
@@ -3527,7 +3527,7 @@
     "func": "verify",
     "where": "agent/skills/env_manager.py:478",
     "end_line": 478,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_manager.jar_env_missing",

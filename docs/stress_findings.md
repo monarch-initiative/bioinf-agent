@@ -149,3 +149,16 @@ mocked deterministic), and the opt-in `empty_allowed`. Notable false-green
 attacks blocked: `touch foo.html` (html_no_prefix), a binary blob renamed .txt
 (txt_binary), ragged tabular, non-int BED coords, seq/qual length mismatch.
 Meter 41/125 → **63/125 (50%)**. **Status: certified.**
+
+### CERT-5 — C1 (verify anti-cheat gate): env_manager.verified certified
+`EnvManager.verify` is the honesty gate deciding whether an install actually
+happened. Its green (`env_manager.verified`) now has a valid-case test (all
+three gates hold → proven) plus two FALSE-GREEN attacks that must NOT reach
+proven (`tests/test_verify_installation_cheatguards.py`): the **echo cheat**
+(`echo '1.21'` exits 0 but names no token → verify_rejected) and the
+**library-only cheat** (names the tool + exits 0 but nothing installed, no
+`which`/registry anchor → verify_rejected). Plus a real-failure case
+(tool present, check rc≠0 → verify_failed, not a green). The three runtime
+truth-sources (run_in_env / evidence.cli_which / _package_in_registry) are
+mocked so every branch is deterministic. Meter 63/125 → **64/125 (51%)**.
+**Status: certified.**
