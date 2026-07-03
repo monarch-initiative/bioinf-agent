@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-render_outcomes_dashboard — the system health panel (the "digital twin" view).
+render_outcomes_dashboard — the system health panel (the "battleship" view).
 
-Renders docs/outcomes_ledger.json (produced by scripts/extract_outcomes.py) into
-a single self-contained HTML page: docs/outcomes_dashboard.html.
+Renders docs/outcomes_ledger.json (what the code's decision surface IS, harvested
+by scripts/extract_outcomes.py) FUSED with docs/terminal_coverage.json (what the
+test suite actually EXECUTES, measured by scripts/measure_terminal_coverage.py)
+into one self-contained page: docs/outcomes_dashboard.html.
 
-It is a PROJECTION OF THE CODE, not a hand-drawn diagram — every terminal shown
-was harvested from source by the extractor, so the picture can't lie or rot. The
-panel makes the honesty holes visible at a glance:
+Every terminal is classified on two orthogonal axes:
 
-  - vanished terminals  — a failure with NO durable trace (should be zero)
-  - untagged terminals  — a terminal the model can't classify yet (should be zero)
-  - untested terminals  — a terminal no test references: CLASSIFIED but UNPROVEN.
-                          This is the live hardening worklist.
+  outcome  — proven / refused / broke / degraded / loop / vanished  (what it IS)
+  coverage — verified   executed AND named in a test  (triggered + asserted)
+             exercised  executed but not named        (runs, no code-specific check)
+             dark       never executed by any test    (the real hardening worklist)
 
-Deterministic (sorted), fully escaped, no network/CDN. Regenerate with:
+It is a PROJECTION OF THE CODE + THE TEST RUN, not a hand-drawn diagram — so it
+can't rot or flatter us. If the coverage overlay is absent, the panel says so
+loudly and falls back to the weak grep signal.
 
-    python scripts/extract_outcomes.py            # refresh the ledger
-    python scripts/render_outcomes_dashboard.py   # re-render this panel
+Deterministic, fully escaped, no network/CDN. Regenerate:
+
+    python scripts/extract_outcomes.py            # refresh the ledger (fast/static)
+    python scripts/measure_terminal_coverage.py   # measure real coverage + re-render
 """
 from __future__ import annotations
 
@@ -28,16 +32,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "docs" / "outcomes_ledger.json"
+OVERLAY = ROOT / "docs" / "terminal_coverage.json"
 OUT = ROOT / "docs" / "outcomes_dashboard.html"
 
-# Outcome class → (glyph, colour var, one-line meaning). Order = display order.
+# outcome class → (glyph, css, meaning). Order = display order.
 OUTCOMES = {
-    "proven":   ("✅", "ok",   "validated success"),
-    "refused":  ("⛔", "cyan", "clean gate, before any side-effect"),
-    "broke":    ("💥", "bad",  "hard failure, recorded"),
-    "degraded": ("⚠️", "warn", "proceeded with reduced assurance"),
-    "loop":     ("🔁", "loop", "recoverable, feeds a retry"),
+    "proven":   ("✅", "ok",    "validated success"),
+    "refused":  ("⛔", "cyan",  "clean gate, before any side-effect"),
+    "broke":    ("💥", "bad",   "hard failure, recorded"),
+    "degraded": ("⚠️", "warn",  "proceeded with reduced assurance"),
+    "loop":     ("🔁", "loop",  "recoverable, feeds a retry"),
     "vanished": ("👻", "ghost", "failure with NO durable trace — an honesty hole"),
+}
+# coverage state → (glyph, css, meaning)
+COVER = {
+    "verified":  ("✓", "cov-v", "executed by a test AND named — triggered + asserted"),
+    "exercised": ("~", "cov-e", "executed, but no test names it — runs, unasserted"),
+    "dark":      ("✗", "cov-d", "never executed by any test — the hardening worklist"),
+    "unknown":   ("?", "cov-u", "coverage not measured"),
 }
 
 
@@ -45,161 +57,158 @@ def _e(s) -> str:
     return html.escape(str(s if s is not None else ""), quote=True)
 
 
-def _load() -> list[dict]:
-    return json.loads(LEDGER.read_text())
-
-
-def _subsystem(code: str | None) -> str:
+def _subsystem(code) -> str:
     return code.split(".", 1)[0] if code else "«untagged»"
 
 
-def _counts(entries: list[dict]) -> dict[str, int]:
-    c: dict[str, int] = {}
+def _cover_state(entry: dict, overlay: dict | None) -> str:
+    if overlay is None:
+        return "unknown"
+    ex = overlay.get(entry["where"])
+    if ex is None:
+        # measured run existed but this exact line wasn't in it → treat as dark
+        # (it did not execute); only a wholly-absent overlay is "unknown".
+        return "dark"
+    if ex is False:
+        return "dark"
+    return "verified" if entry.get("named_in_test") else "exercised"
+
+
+def _counts(entries, key):
+    c = {}
     for e in entries:
-        c[e["outcome"]] = c.get(e["outcome"], 0) + 1
+        c[e[key]] = c.get(e[key], 0) + 1
     return c
 
 
-def _bar(counts: dict[str, int], total: int) -> str:
-    """A stacked outcome bar, widths proportional to counts."""
-    if total == 0:
-        return '<div class="bar"></div>'
+def _outcome_bar(entries) -> str:
+    total = len(entries) or 1
     segs = []
+    cc = _counts(entries, "outcome")
     for oc in OUTCOMES:
-        n = counts.get(oc, 0)
-        if not n:
-            continue
-        pct = 100.0 * n / total
-        segs.append(f'<span class="seg {oc}" style="width:{pct:.3f}%" '
-                    f'title="{oc}: {n}"></span>')
+        n = cc.get(oc, 0)
+        if n:
+            segs.append(f'<span class="seg {oc}" style="width:{100*n/total:.3f}%" '
+                        f'title="{oc}: {n}"></span>')
     return f'<div class="bar">{"".join(segs)}</div>'
 
 
-def _chips(counts: dict[str, int]) -> str:
-    out = []
-    for oc, (glyph, _cls, _m) in OUTCOMES.items():
-        n = counts.get(oc, 0)
-        if not n:
-            continue
-        out.append(f'<span class="chip {oc}">{glyph} {n}</span>')
-    return "".join(out)
-
-
-def _cov_class(tested: int, total: int) -> str:
-    if total == 0:
-        return "cov-none"
-    r = tested / total
-    return "cov-good" if r >= 0.66 else "cov-mid" if r >= 0.33 else "cov-low"
-
-
-def render(entries: list[dict]) -> str:
+def render(entries: list[dict], overlay: dict | None) -> str:
     total = len(entries)
-    tally = _counts(entries)
-    tested = sum(1 for e in entries if e.get("tested"))
-    untested = [e for e in entries if e.get("tested") is False]
+    for e in entries:
+        e["_cov"] = _cover_state(e, overlay)
+
+    tally = _counts(entries, "outcome")
+    cov = _counts(entries, "_cov")
+    verified = cov.get("verified", 0)
+    exercised = cov.get("exercised", 0)
+    dark = cov.get("dark", 0)
+    covered = verified + exercised
+    covered_pct = round(100 * covered / total) if total else 0
+
     untagged = [e for e in entries if not e.get("tagged")]
-    vanished = [e for e in entries if e.get("outcome") == "vanished"]
+    vanished = [e for e in entries if e["outcome"] == "vanished"]
     subs = sorted({_subsystem(e.get("code")) for e in entries})
 
-    # group by subsystem
     by_sub: dict[str, list[dict]] = {}
     for e in entries:
         by_sub.setdefault(_subsystem(e.get("code")), []).append(e)
 
-    # Subsystem order: worst-hardened first — most untested FAILURE paths
-    # (broke/vanished with no test) at the top, so the panel reads as a
-    # prioritised hardening worklist, then by size, then name.
-    def risk(name: str) -> tuple:
-        rows = by_sub[name]
-        unproven_fail = sum(
-            1 for e in rows
-            if e.get("tested") is False and e["outcome"] in ("broke", "vanished"))
-        return (-unproven_fail, -len(rows), name)
+    def darkfail(rows):
+        return sum(1 for e in rows
+                   if e["_cov"] == "dark" and e["outcome"] in ("broke", "vanished"))
 
-    order = sorted(by_sub, key=risk)
+    # hardening priority: most DARK failure paths first, then most dark, then size.
+    order = sorted(by_sub, key=lambda n: (-darkfail(by_sub[n]),
+                                          -sum(1 for e in by_sub[n] if e["_cov"] == "dark"),
+                                          -len(by_sub[n]), n))
 
-    # ---- header stat tiles -------------------------------------------------
-    cov_pct = round(100 * tested / total) if total else 0
-    hole_tiles = [
-        ("VANISHED", len(vanished), "ghost",
-         "failures with no durable trace"),
-        ("UNTAGGED", len(untagged), "bad",
-         "terminals the model can't classify"),
-        ("UNTESTED", len(untested), "warn",
-         "classified but no test proves the branch fires"),
+    measured = overlay is not None
+    banner = "" if measured else (
+        '<div class="nocov">⚠ coverage NOT measured — showing the weak grep signal '
+        'only. Run <code>python scripts/measure_terminal_coverage.py</code> for the '
+        'real verified / exercised / dark picture.</div>')
+
+    # ---- coverage headline bar (verified | exercised | dark) --------------
+    def seg(pct, cls):
+        return f'<span class="cseg {cls}" style="width:{pct:.3f}%"></span>' if pct else ""
+    cbar = (seg(100*verified/total if total else 0, "cov-v")
+            + seg(100*exercised/total if total else 0, "cov-e")
+            + seg(100*dark/total if total else 0, "cov-d"))
+
+    # ---- hole tiles -------------------------------------------------------
+    tiles = [
+        ("VANISHED", len(vanished), "ghost", "failures with no durable trace"),
+        ("UNTAGGED", len(untagged), "bad", "terminals the model can't classify"),
+        ("DARK", dark, "warn", "never executed by any test — hardening worklist"),
     ]
     tiles_html = "".join(
         f'<div class="tile {"tile-zero" if n == 0 else cls}">'
         f'<div class="tn">{n}</div><div class="tl">{_e(label)}</div>'
         f'<div class="td">{_e(desc)}</div></div>'
-        for label, n, cls, desc in hole_tiles
-    )
+        for label, n, cls, desc in tiles)
 
     tally_html = "".join(
-        f'<span class="chip {oc}">{glyph} {_e(oc)} {tally.get(oc, 0)}</span>'
-        for oc, (glyph, _c, _m) in OUTCOMES.items()
-    )
+        f'<span class="chip {oc}">{g} {_e(oc)} {tally.get(oc, 0)}</span>'
+        for oc, (g, _c, _m) in OUTCOMES.items())
 
-    # ---- subsystem cards ---------------------------------------------------
+    # ---- subsystem cards --------------------------------------------------
     cards = []
     for name in order:
         rows = by_sub[name]
         n = len(rows)
-        cc = _counts(rows)
-        t_tested = sum(1 for e in rows if e.get("tested"))
-        covcls = _cov_class(t_tested, n)
+        cs = _counts(rows, "_cov")
+        v, x, dk = cs.get("verified", 0), cs.get("exercised", 0), cs.get("dark", 0)
+        covcls = "cov-good" if (v + x) / n >= 0.66 else "cov-mid" if (v + x) / n >= 0.33 else "cov-low"
         rows_sorted = sorted(
-            rows, key=lambda e: (list(OUTCOMES).index(e["outcome"])
-                                 if e["outcome"] in OUTCOMES else 99,
-                                 not (e.get("tested") is False),  # untested first
+            rows, key=lambda e: (["dark", "exercised", "verified", "unknown"].index(e["_cov"]),
+                                 list(OUTCOMES).index(e["outcome"]) if e["outcome"] in OUTCOMES else 99,
                                  e.get("code") or e.get("where")))
         lis = []
         for e in rows_sorted:
             oc = e["outcome"]
-            glyph = OUTCOMES.get(oc, ("•",))[0]
-            tst = e.get("tested")
-            tcls = "t-yes" if tst else "t-no" if tst is False else "t-na"
-            tlab = "tested" if tst else "UNTESTED" if tst is False else "—"
+            og = OUTCOMES.get(oc, ("•",))[0]
+            st = e["_cov"]
+            cg, ccls, _m = COVER[st]
             code = e.get("code") or "«untagged raw terminal»"
             lis.append(
-                f'<li class="{oc}">'
-                f'<span class="g">{glyph}</span>'
+                f'<li class="{st}">'
+                f'<span class="g">{og}</span>'
                 f'<code class="cd">{_e(code)}</code>'
-                f'<span class="td2 {tcls}">{tlab}</span>'
-                f'<span class="wh">{_e(e.get("where"))}</span>'
-                f'</li>')
+                f'<span class="cbadge {ccls}">{cg} {_e(st)}</span>'
+                f'<span class="wh">{_e(e.get("where"))}</span></li>')
+        df = darkfail(rows)
         cards.append(
-            f'<details class="card" data-untested="{sum(1 for e in rows if e.get("tested") is False)}">'
+            f'<details class="card" data-dark="{dk}">'
             f'<summary>'
             f'<span class="sname">{_e(name)}</span>'
             f'<span class="scount">{n}</span>'
-            f'{_bar(cc, n)}'
-            f'<span class="schips">{_chips(cc)}</span>'
-            f'<span class="scov {covcls}">{t_tested}/{n} tested</span>'
+            f'{_outcome_bar(rows)}'
+            f'<span class="cov3"><b class="cov-v">{v}</b>·<b class="cov-e">{x}</b>·'
+            f'<b class="cov-d">{dk}</b></span>'
+            f'<span class="scov {covcls}">{v+x}/{n} run</span>'
+            f'{f"<span class=df>{df} dark ✗</span>" if df else "<span class=df0>0 dark fails</span>"}'
             f'</summary>'
-            f'<ul class="terms">{"".join(lis)}</ul>'
-            f'</details>')
+            f'<ul class="terms">{"".join(lis)}</ul></details>')
 
-    legend = "".join(
-        f'<span class="lg"><span class="chip {oc}">{glyph}</span>'
-        f'<b>{_e(oc)}</b> — {_e(meaning)}</span>'
-        for oc, (glyph, _c, meaning) in OUTCOMES.items())
+    legend_out = "".join(
+        f'<span class="lg"><span class="chip {oc}">{g}</span><b>{_e(oc)}</b> — {_e(m)}</span>'
+        for oc, (g, _c, m) in OUTCOMES.items())
+    legend_cov = "".join(
+        f'<span class="lg"><span class="cbadge {c}">{g} {_e(k)}</span> {_e(m)}</span>'
+        for k, (g, c, m) in COVER.items() if k != "unknown")
 
     return _PAGE.format(
-        total=total,
-        subs=len(subs),
-        cov_pct=cov_pct,
-        tested=tested,
-        tiles=tiles_html,
-        tally=tally_html,
-        cards="".join(cards),
-        legend=legend,
-    )
+        total=total, subs=len(subs), covered=covered, covered_pct=covered_pct,
+        verified=verified, exercised=exercised, dark=dark,
+        cbar=cbar, banner=banner, tiles=tiles_html, tally=tally_html,
+        legend_out=legend_out, legend_cov=legend_cov, cards="".join(cards),
+        measured=("measured" if measured else "NOT measured"))
 
 
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>System Decision Surface — Outcome Health Panel</title>
+<title>System Decision Surface — Outcome + Coverage Health Panel</title>
 <style>
 :root{{
   --bg:#0a0c14;--surface:#13151f;--surface-2:#1a1d29;--border:#262a3a;
@@ -208,122 +217,109 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }}
 *{{box-sizing:border-box}}
-body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);
-  padding:26px 24px 60px}}
+body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);padding:26px 24px 60px}}
 h1{{font-size:22px;font-weight:800;color:var(--yellow);letter-spacing:.02em;margin:0 0 4px}}
-.sub{{color:var(--muted);font-size:12px;margin:0 0 22px}}
-.sub b{{color:var(--cyan)}}
-/* stat row */
+.sub{{color:var(--muted);font-size:12px;margin:0 0 18px}} .sub b{{color:var(--cyan)}}
+.nocov{{border:1px solid var(--warn);color:var(--warn);background:rgba(255,169,64,.08);
+  padding:10px 14px;margin:0 0 18px;font-size:12px}} .nocov code{{color:var(--ink)}}
 .stats{{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 20px}}
-.big{{border:1px solid var(--border);background:var(--surface);padding:14px 18px;min-width:120px}}
+.big{{border:1px solid var(--border);background:var(--surface);padding:14px 18px;min-width:110px}}
 .big .n{{font-size:30px;font-weight:800;color:var(--cyan);line-height:1}}
 .big .l{{font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);margin-top:6px}}
-.covwrap{{flex:1;min-width:220px;border:1px solid var(--border);background:var(--surface);padding:14px 18px}}
+.covwrap{{flex:1;min-width:280px;border:1px solid var(--border);background:var(--surface);padding:14px 18px}}
 .covwrap .l{{font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;color:var(--muted)}}
-.covbar{{height:12px;background:var(--surface-2);margin-top:8px;position:relative;overflow:hidden}}
-.covbar>span{{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ok),var(--cyan))}}
-.covnum{{font-size:20px;font-weight:800;color:var(--ink);margin-top:8px}}
-/* hole tiles */
-.tiles{{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 26px}}
-.tile{{flex:1;min-width:180px;border:1px solid var(--border);border-left-width:4px;
-  background:var(--surface);padding:14px 18px}}
-.tile .tn{{font-size:30px;font-weight:800;line-height:1}}
-.tile .tl{{font-size:11px;text-transform:uppercase;letter-spacing:.14em;margin-top:6px}}
+.covnum{{font-size:20px;font-weight:800;margin:6px 0}}
+.cbar{{height:14px;background:var(--surface-2);display:flex;overflow:hidden}}
+.cseg{{height:100%}} .cseg.cov-v{{background:var(--ok)}} .cseg.cov-e{{background:var(--warn)}}
+.cseg.cov-d{{background:var(--bad)}}
+.ckey{{font-size:11px;color:var(--muted);margin-top:7px}}
+.ckey b.cov-v{{color:var(--ok)}} .ckey b.cov-e{{color:var(--warn)}} .ckey b.cov-d{{color:var(--bad)}}
+.tiles{{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 24px}}
+.tile{{flex:1;min-width:180px;border:1px solid var(--border);border-left-width:4px;background:var(--surface);padding:14px 18px}}
+.tile .tn{{font-size:30px;font-weight:800;line-height:1}} .tile .tl{{font-size:11px;text-transform:uppercase;letter-spacing:.14em;margin-top:6px}}
 .tile .td{{font-size:11px;color:var(--muted);margin-top:5px}}
 .tile.ghost{{border-left-color:var(--ghost)}} .tile.ghost .tn{{color:var(--ghost)}}
 .tile.bad{{border-left-color:var(--bad)}} .tile.bad .tn{{color:var(--bad)}}
 .tile.warn{{border-left-color:var(--warn)}} .tile.warn .tn{{color:var(--warn)}}
 .tile.tile-zero{{border-left-color:var(--ok)}} .tile.tile-zero .tn{{color:var(--ok)}}
-/* tally + legend */
-.tally{{margin:0 0 8px}}
-.chip{{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:2px;margin:0 6px 6px 0;
-  border:1px solid var(--border);background:var(--surface-2)}}
-.chip.proven{{color:var(--ok)}} .chip.refused{{color:var(--cyan)}}
-.chip.broke{{color:var(--bad)}} .chip.degraded{{color:var(--warn)}}
-.chip.loop{{color:var(--loop)}} .chip.vanished{{color:var(--ghost)}}
-.legend{{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 22px;font-size:11.5px;color:var(--muted)}}
-.legend b{{color:var(--ink)}}
+.chip{{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:2px;margin:0 6px 6px 0;border:1px solid var(--border);background:var(--surface-2)}}
+.chip.proven{{color:var(--ok)}} .chip.refused{{color:var(--cyan)}} .chip.broke{{color:var(--bad)}}
+.chip.degraded{{color:var(--warn)}} .chip.loop{{color:var(--loop)}} .chip.vanished{{color:var(--ghost)}}
+.legend{{display:flex;gap:16px;flex-wrap:wrap;margin:4px 0 8px;font-size:11.5px;color:var(--muted)}}
+.legend b{{color:var(--ink)}} .legend.cov{{margin-bottom:20px}}
+.cbadge{{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:2px;border:1px solid var(--border)}}
+.cbadge.cov-v{{color:var(--ok);border-color:rgba(60,224,134,.4)}}
+.cbadge.cov-e{{color:var(--warn);border-color:rgba(255,169,64,.4)}}
+.cbadge.cov-d{{color:var(--bad);border-color:rgba(255,75,110,.45);background:rgba(255,75,110,.08)}}
+.cbadge.cov-u{{color:var(--muted)}}
 .toolbar{{margin:0 0 14px}}
-.toolbar button{{font:inherit;font-size:11px;color:var(--ink);background:var(--surface-2);
-  border:1px solid var(--border);padding:6px 12px;cursor:pointer;margin-right:8px}}
+.toolbar button{{font:inherit;font-size:11px;color:var(--ink);background:var(--surface-2);border:1px solid var(--border);padding:6px 12px;cursor:pointer;margin-right:8px}}
 .toolbar button:hover{{border-color:var(--cyan);color:var(--cyan)}}
 .toolbar button.on{{border-color:var(--yellow);color:var(--yellow)}}
-/* subsystem cards */
 .card{{border:1px solid var(--border);background:var(--surface);margin:0 0 8px}}
-.card>summary{{list-style:none;cursor:pointer;display:grid;
-  grid-template-columns:180px 44px 1fr auto auto;gap:14px;align-items:center;padding:11px 16px}}
+.card>summary{{list-style:none;cursor:pointer;display:grid;grid-template-columns:170px 40px 1fr 78px 74px 96px;gap:12px;align-items:center;padding:11px 16px}}
 .card>summary::-webkit-details-marker{{display:none}}
 .card>summary:hover{{background:var(--surface-2)}}
-.sname{{font-weight:700;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.sname{{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .scount{{color:var(--muted);text-align:right;font-size:12px}}
-.bar{{height:12px;background:var(--surface-2);display:flex;overflow:hidden;min-width:120px}}
-.seg{{height:100%}}
-.seg.proven{{background:var(--ok)}} .seg.refused{{background:var(--cyan)}}
-.seg.broke{{background:var(--bad)}} .seg.degraded{{background:var(--warn)}}
-.seg.loop{{background:var(--loop)}} .seg.vanished{{background:var(--ghost)}}
-.schips{{white-space:nowrap}}
-.scov{{font-size:11px;white-space:nowrap;padding:2px 8px;border:1px solid var(--border)}}
-.cov-good{{color:var(--ok)}} .cov-mid{{color:var(--warn)}}
-.cov-low{{color:var(--bad)}} .cov-none{{color:var(--muted)}}
-/* terminal list */
+.bar{{height:12px;background:var(--surface-2);display:flex;overflow:hidden;min-width:100px}}
+.seg{{height:100%}} .seg.proven{{background:var(--ok)}} .seg.refused{{background:var(--cyan)}}
+.seg.broke{{background:var(--bad)}} .seg.degraded{{background:var(--warn)}} .seg.loop{{background:var(--loop)}} .seg.vanished{{background:var(--ghost)}}
+.cov3{{font-size:12px;white-space:nowrap;text-align:right}} .cov3 b{{font-weight:800}}
+.cov3 b.cov-v{{color:var(--ok)}} .cov3 b.cov-e{{color:var(--warn)}} .cov3 b.cov-d{{color:var(--bad)}}
+.scov{{font-size:11px;white-space:nowrap;padding:2px 8px;border:1px solid var(--border);text-align:center}}
+.cov-good{{color:var(--ok)}} .cov-mid{{color:var(--warn)}} .cov-low{{color:var(--bad)}}
+.df{{font-size:11px;color:var(--bad);white-space:nowrap;text-align:right}}
+.df0{{font-size:11px;color:var(--muted);white-space:nowrap;text-align:right}}
 ul.terms{{list-style:none;margin:0;padding:4px 0 10px;border-top:1px solid var(--border)}}
-ul.terms li{{display:grid;grid-template-columns:22px 1fr 88px auto;gap:12px;align-items:center;
-  padding:4px 16px}}
+ul.terms li{{display:grid;grid-template-columns:22px 1fr 116px auto;gap:12px;align-items:center;padding:4px 16px}}
 ul.terms li:hover{{background:var(--surface-2)}}
+ul.terms li.dark{{background:rgba(255,75,110,.05)}}
 .g{{text-align:center}}
-.cd{{color:var(--ink);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-li.broke .cd,li.vanished .cd{{color:#ffd7de}}
-.td2{{font-size:10px;text-transform:uppercase;letter-spacing:.1em;text-align:center;
-  padding:1px 0;border-radius:2px}}
-.t-yes{{color:var(--ok)}} .t-no{{color:var(--bg);background:var(--warn);font-weight:700}}
-.t-na{{color:var(--muted)}}
-.wh{{color:var(--muted);font-size:11px;text-align:right;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}}
-body.only-untested li:not(.u){{display:none}}
-body.only-untested details[data-untested="0"]{{display:none}}
+.cd{{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+li.dark .cd{{color:#ffd7de}}
+.wh{{color:var(--muted);font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+body.only-dark li:not(.dark){{display:none}}
+body.only-dark details[data-dark="0"]{{display:none}}
 .foot{{color:var(--muted);font-size:11px;margin-top:26px;border-top:1px solid var(--border);padding-top:14px}}
 </style></head><body>
 <h1>System Decision Surface</h1>
-<p class="sub">The outcome health panel — a <b>projection of the code</b>, harvested
-straight from source by <b>scripts/extract_outcomes.py</b>. Every terminal shown is a
-place the system succeeds, refuses, or fails. Nothing here is hand-drawn.</p>
-
+<p class="sub">Outcome + coverage health panel — a <b>projection of the code</b>
+(harvested by extract_outcomes.py) fused with <b>real test execution</b> ({measured}
+by measure_terminal_coverage.py). Every terminal is a place the system succeeds,
+refuses, or fails. Nothing is hand-drawn.</p>
+{banner}
 <div class="stats">
   <div class="big"><div class="n">{total}</div><div class="l">terminals</div></div>
   <div class="big"><div class="n">{subs}</div><div class="l">subsystems</div></div>
-  <div class="covwrap"><div class="l">test coverage</div>
-    <div class="covnum">{tested} / {total} &nbsp;·&nbsp; {cov_pct}%</div>
-    <div class="covbar"><span style="width:{cov_pct}%"></span></div>
+  <div class="covwrap"><div class="l">real test coverage (executed)</div>
+    <div class="covnum">{covered} / {total} &nbsp;·&nbsp; {covered_pct}% run by tests</div>
+    <div class="cbar">{cbar}</div>
+    <div class="ckey"><b class="cov-v">{verified}</b> verified &nbsp;·&nbsp;
+      <b class="cov-e">{exercised}</b> exercised &nbsp;·&nbsp;
+      <b class="cov-d">{dark}</b> dark</div>
   </div>
 </div>
-
 <div class="tiles">{tiles}</div>
-
-<div class="tally">{tally}</div>
-<div class="legend">{legend}</div>
-
+<div class="legend">{tally}</div>
+<div class="legend">{legend_out}</div>
+<div class="legend cov">{legend_cov}</div>
 <div class="toolbar">
   <button onclick="document.querySelectorAll('details.card').forEach(d=>d.open=true)">expand all</button>
   <button onclick="document.querySelectorAll('details.card').forEach(d=>d.open=false)">collapse all</button>
-  <button id="ut" onclick="toggleUntested(this)">show only untested</button>
+  <button id="ud" onclick="toggleDark(this)">show only dark (worklist)</button>
 </div>
-
 {cards}
-
-<p class="foot">Subsystems are ordered by <b>hardening priority</b>: those with the most
-untested failure paths (broke/vanished with no test) first. Regenerate:
-<code>python scripts/extract_outcomes.py &amp;&amp; python scripts/render_outcomes_dashboard.py</code></p>
-
+<p class="foot">Cards are ordered by <b>hardening priority</b>: most DARK failure
+paths (broke/vanished never executed) first. The <b>v·e·d</b> column is
+verified·exercised·dark per subsystem. Regenerate:
+<code>python scripts/extract_outcomes.py &amp;&amp; python scripts/measure_terminal_coverage.py</code></p>
 <script>
-// mark untested <li> so the filter can hide the rest
-document.querySelectorAll('ul.terms li').forEach(li=>{{
-  if(li.querySelector('.t-no')) li.classList.add('u');
-}});
-function toggleUntested(btn){{
-  document.body.classList.toggle('only-untested');
+function toggleDark(btn){{
+  document.body.classList.toggle('only-dark');
   btn.classList.toggle('on');
-  if(document.body.classList.contains('only-untested'))
-    document.querySelectorAll('details.card').forEach(d=>{{if(d.dataset.untested!=='0')d.open=true;}});
+  if(document.body.classList.contains('only-dark'))
+    document.querySelectorAll('details.card').forEach(d=>{{if(d.dataset.dark!=='0')d.open=true;}});
 }}
 </script>
 </body></html>"""
@@ -334,14 +330,22 @@ def main() -> int:
         print(f"  ! {LEDGER} not found — run scripts/extract_outcomes.py first",
               file=sys.stderr)
         return 1
-    entries = _load()
-    OUT.write_text(render(entries))
-    tested = sum(1 for e in entries if e.get("tested"))
-    untested = sum(1 for e in entries if e.get("tested") is False)
-    vanished = sum(1 for e in entries if e.get("outcome") == "vanished")
-    print(f"  wrote {OUT.relative_to(ROOT)}  "
-          f"({len(entries)} terminals · {tested} tested · {untested} untested · "
-          f"{vanished} vanished)")
+    entries = json.loads(LEDGER.read_text())
+    overlay = None
+    if OVERLAY.exists():
+        overlay = json.loads(OVERLAY.read_text()).get("by_where")
+    OUT.write_text(render(entries, overlay))
+    if overlay is None:
+        print(f"  wrote {OUT.relative_to(ROOT)}  (coverage NOT measured — grep only; "
+              f"run measure_terminal_coverage.py)")
+    else:
+        cov = {}
+        for e in entries:
+            e["_cov"] = _cover_state(e, overlay)
+            cov[e["_cov"]] = cov.get(e["_cov"], 0) + 1
+        print(f"  wrote {OUT.relative_to(ROOT)}  ({len(entries)} terminals · "
+              f"{cov.get('verified',0)} verified · {cov.get('exercised',0)} exercised · "
+              f"{cov.get('dark',0)} dark)")
     return 0
 
 

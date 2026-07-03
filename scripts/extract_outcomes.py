@@ -15,13 +15,15 @@ It sweeps every primitive module and finds three kinds of terminal:
      yet: model blind spots. The rollout burns this count down to zero, and
      tests/test_outcome_tags.py keeps already-tagged functions from regressing.
 
-For each TAGGED code it grep-checks the test suite for a reference (`tested`) —
-a refusal nothing tests is a coverage blind spot.
+For each TAGGED code it grep-checks the test suite for a reference
+(`named_in_test`) — a WEAK proxy (mentions != triggers). Real execution
+coverage is measured by scripts/measure_terminal_coverage.py (runs the suite
+under coverage.py); the dashboard fuses the two into verified / exercised / dark.
 
 Writes docs/outcomes_ledger.json and prints:
   - the per-outcome tally,
   - the UNTAGGED terminals (the rollout worklist),
-  - the tagged-but-UNTESTED terminals (the coverage holes).
+  - the tagged-but-not-NAMED terminals (the weak grep proxy).
 """
 from __future__ import annotations
 
@@ -76,7 +78,8 @@ def harvest(path: Path) -> list[dict]:
             if code:
                 found.append({"code": code, "outcome": node.func.id, "source": "helper",
                               "tagged": True, "func": _enclosing_func(stack),
-                              "where": f"{rel}:{node.lineno}"})
+                              "where": f"{rel}:{node.lineno}",
+                              "end_line": node.end_lineno or node.lineno})
         # (2) invariant violation records (tagged refusals)
         elif isinstance(node, ast.Dict):
             if "invariant" in _dict_keys(node):
@@ -85,14 +88,16 @@ def harvest(path: Path) -> list[dict]:
                         found.append({"code": _str(v), "outcome": "refused",
                                       "source": "invariant", "tagged": True,
                                       "func": _enclosing_func(stack),
-                                      "where": f"{rel}:{node.lineno}"})
+                                      "where": f"{rel}:{node.lineno}",
+                                      "end_line": node.end_lineno or node.lineno})
                         break
         # (3) untagged raw terminal returns
         elif isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
             if _dict_keys(node.value) & TERMINAL_KEYS:
                 found.append({"code": None, "outcome": "untagged", "source": "raw",
                               "tagged": False, "func": _enclosing_func(stack),
-                              "where": f"{rel}:{node.lineno}"})
+                              "where": f"{rel}:{node.lineno}",
+                              "end_line": node.end_lineno or node.lineno})
         for child in ast.iter_child_nodes(node):
             visit(child)
         stack.pop()
@@ -131,14 +136,21 @@ def main() -> int:
     corpus = test_corpus()
     entries = sweep()
     for e in entries:
-        e["tested"] = (e["code"] in corpus) if e["code"] else None
+        # `named_in_test` = a test file mentions the code STRING. This is a weak
+        # proxy (mentions != triggers) — it tends to mark terminals a test
+        # ASSERTS on by code. REAL execution coverage is measured separately by
+        # scripts/measure_terminal_coverage.py (runs the suite under coverage and
+        # checks whether each terminal's line actually ran). The dashboard fuses
+        # the two into verified / exercised / dark. Do NOT read this field as
+        # "tested" — it undercounts real coverage ~6x on its own.
+        e["named_in_test"] = (e["code"] in corpus) if e["code"] else None
 
     ledger = sorted(entries, key=lambda e: (not e["tagged"], e["outcome"], e["where"]))
     (ROOT / "docs" / "outcomes_ledger.json").write_text(json.dumps(ledger, indent=2))
 
     tagged = [e for e in entries if e["tagged"]]
     untagged = [e for e in entries if not e["tagged"]]
-    untested = [e for e in tagged if e["tested"] is False]
+    unnamed = [e for e in tagged if e["named_in_test"] is False]
 
     by_outcome: dict[str, int] = {}
     for e in tagged:
@@ -159,9 +171,11 @@ def main() -> int:
         lines = ", ".join(by_file[f])
         print(f"      {f}  (lines {lines})")
 
-    # --- coverage holes: tagged terminals no test references -------------------
-    print(f"\n  TAGGED but UNTESTED (coverage holes) — {len(untested)}:")
-    for e in sorted(untested, key=lambda e: e["code"]):
+    # --- weak coverage proxy: tagged terminals no test NAMES -------------------
+    # (this is only the code-string grep; run measure_terminal_coverage.py for
+    #  the real executed/dark picture the dashboard shows.)
+    print(f"\n  TAGGED but NOT NAMED in any test (weak grep proxy) — {len(unnamed)}:")
+    for e in sorted(unnamed, key=lambda e: e["code"]):
         print(f"      ✗ {e['code']:<34} {e['where']}")
 
     print(f"\n  wrote docs/outcomes_ledger.json")

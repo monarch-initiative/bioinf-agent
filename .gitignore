@@ -91,3 +91,8 @@ data/_drivers/
 
 # Transfer manifests (one per upload/download, replay-state)
 transfer_history/
+
+# outcome-model coverage artifacts (transient; measured, not authored)
+.coverage
+.coverage.*
+coverage.json

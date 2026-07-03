@@ -79,24 +79,50 @@ def _load_dashboard():
 def test_dashboard_renders_every_terminal_deterministically():
     """The health panel (docs/outcomes_dashboard.html) must be a faithful,
     self-contained projection of the ledger: every terminal present, no CDN, no
-    leftover format braces, and byte-identical on a re-render (deterministic)."""
+    leftover format braces, byte-identical on a re-render, in BOTH the
+    coverage-measured and grep-fallback modes."""
     import json, re
     rd = _load_dashboard()
     ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-    html1 = rd.render(ledger)
-    html2 = rd.render(ledger)
-    assert html1 == html2, "dashboard render is not deterministic"
-    assert "<li class=" in html1
-    assert html1.count("<li class=") == len(ledger), \
-        "dashboard dropped or duplicated terminals vs the ledger"
-    assert "src=" not in html1.lower() or "http" not in html1.lower(), \
-        "dashboard must be self-contained (no external/CDN resources)"
-    assert not re.search(r"\{[a-z_]+\}", html1), \
-        "unfilled Python format placeholder leaked into the HTML"
-    # every tagged code should appear somewhere in the page
-    for e in ledger:
-        if e.get("code"):
-            assert e["code"] in html1, f"terminal {e['code']} missing from dashboard"
+    for overlay in (None, {e["where"]: (i % 3 != 0) for i, e in enumerate(ledger)}):
+        html1 = rd.render(ledger, overlay)
+        html2 = rd.render(ledger, overlay)
+        assert html1 == html2, "dashboard render is not deterministic"
+        assert html1.count("<li class=") == len(ledger), \
+            "dashboard dropped or duplicated terminals vs the ledger"
+        assert "src=" not in html1.lower() or "http" not in html1.lower(), \
+            "dashboard must be self-contained (no external/CDN resources)"
+        assert not re.search(r"\{[a-z_]+\}", html1), \
+            "unfilled Python format placeholder leaked into the HTML"
+        for e in ledger:
+            if e.get("code"):
+                assert e["code"] in html1, f"terminal {e['code']} missing from dashboard"
+    # grep-fallback mode must SAY it's unmeasured; measured mode must not.
+    assert "NOT measured" in rd.render(ledger, None)
+    assert "NOT measured" not in rd.render(ledger, {e["where"]: True for e in ledger})
+
+
+@pytest.mark.integration
+def test_coverage_state_is_exact_span_not_fuzzy():
+    """The coverage classifier must use EXACT [line, end_line] span matching —
+    the fuzz variant we rejected marked error branches 'covered' by their
+    adjacent happy-path lines. Assert verified/exercised/dark are computed from
+    the overlay's executed flag + named_in_test, with no line fuzzing."""
+    rd = _load_dashboard()
+    e_named_run = {"where": "f.py:10", "code": "x.a", "outcome": "broke",
+                   "tagged": True, "named_in_test": True}
+    e_run_only = {"where": "f.py:20", "code": "x.b", "outcome": "broke",
+                  "tagged": True, "named_in_test": False}
+    e_dark = {"where": "f.py:30", "code": "x.c", "outcome": "broke",
+              "tagged": True, "named_in_test": True}
+    overlay = {"f.py:10": True, "f.py:20": True, "f.py:30": False}
+    assert rd._cover_state(e_named_run, overlay) == "verified"
+    assert rd._cover_state(e_run_only, overlay) == "exercised"
+    assert rd._cover_state(e_dark, overlay) == "dark"       # executed False → dark
+    assert rd._cover_state(e_dark, None) == "unknown"        # no overlay at all
+    # a terminal absent from a measured overlay counts as dark, not covered.
+    assert rd._cover_state({"where": "f.py:99", "code": "x.d", "named_in_test": True},
+                           overlay) == "dark"
 
 
 # Files where the outcome-tag rollout is COMPLETE — every dict-literal
