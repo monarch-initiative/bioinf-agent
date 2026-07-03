@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:537",
-    "end_line": 537,
+    "where": "agent/mcp_tools/freeze_tools.py:554",
+    "end_line": 554,
     "named_in_test": true
   },
   {
@@ -45,8 +45,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:241",
-    "end_line": 241,
+    "where": "agent/mcp_tools/workflow_tools.py:297",
+    "end_line": 297,
     "named_in_test": false
   },
   {
@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:467",
-    "end_line": 467,
+    "where": "agent/mcp_tools/workflow_tools.py:523",
+    "end_line": 523,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:686",
-    "end_line": 686,
+    "where": "agent/mcp_tools/workflow_tools.py:742",
+    "end_line": 742,
     "named_in_test": false
   },
   {
@@ -75,8 +75,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:699",
-    "end_line": 699,
+    "where": "agent/mcp_tools/workflow_tools.py:755",
+    "end_line": 755,
     "named_in_test": false
   },
   {
@@ -1815,8 +1815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:477",
-    "end_line": 478,
+    "where": "agent/mcp_tools/freeze_tools.py:494",
+    "end_line": 495,
     "named_in_test": false
   },
   {
@@ -1825,8 +1825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:536",
-    "end_line": 536,
+    "where": "agent/mcp_tools/freeze_tools.py:553",
+    "end_line": 553,
     "named_in_test": true
   },
   {
@@ -1835,8 +1835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:569",
-    "end_line": 575,
+    "where": "agent/mcp_tools/freeze_tools.py:586",
+    "end_line": 592,
     "named_in_test": false
   },
   {
@@ -1855,8 +1855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:233",
-    "end_line": 237,
+    "where": "agent/mcp_tools/workflow_tools.py:289",
+    "end_line": 293,
     "named_in_test": true
   },
   {
@@ -1865,8 +1865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:491",
-    "end_line": 521,
+    "where": "agent/mcp_tools/workflow_tools.py:547",
+    "end_line": 577,
     "named_in_test": false
   },
   {
@@ -1875,8 +1875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:593",
-    "end_line": 593,
+    "where": "agent/mcp_tools/workflow_tools.py:649",
+    "end_line": 649,
     "named_in_test": false
   },
   {
@@ -1885,8 +1885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:739",
-    "end_line": 752,
+    "where": "agent/mcp_tools/workflow_tools.py:795",
+    "end_line": 808,
     "named_in_test": false
   },
   {
@@ -1895,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:801",
-    "end_line": 802,
+    "where": "agent/mcp_tools/workflow_tools.py:857",
+    "end_line": 858,
     "named_in_test": false
   },
   {
@@ -2835,8 +2835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:516",
-    "end_line": 517,
+    "where": "agent/mcp_tools/freeze_tools.py:533",
+    "end_line": 534,
     "named_in_test": true
   },
   {
@@ -2845,8 +2845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:519",
-    "end_line": 520,
+    "where": "agent/mcp_tools/freeze_tools.py:536",
+    "end_line": 537,
     "named_in_test": true
   },
   {
@@ -2855,8 +2855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:565",
-    "end_line": 566,
+    "where": "agent/mcp_tools/freeze_tools.py:582",
+    "end_line": 583,
     "named_in_test": false
   },
   {
@@ -2955,8 +2955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:123",
-    "end_line": 124,
+    "where": "agent/mcp_tools/workflow_tools.py:176",
+    "end_line": 177,
     "named_in_test": true
   },
   {
@@ -2965,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:127",
-    "end_line": 128,
+    "where": "agent/mcp_tools/workflow_tools.py:180",
+    "end_line": 181,
     "named_in_test": false
   },
   {
@@ -2975,8 +2975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:134",
-    "end_line": 136,
+    "where": "agent/mcp_tools/workflow_tools.py:187",
+    "end_line": 189,
     "named_in_test": true
   },
   {
@@ -2985,8 +2985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:160",
-    "end_line": 167,
+    "where": "agent/mcp_tools/workflow_tools.py:213",
+    "end_line": 220,
     "named_in_test": false
   },
   {
@@ -2995,8 +2995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:228",
-    "end_line": 232,
+    "where": "agent/mcp_tools/workflow_tools.py:284",
+    "end_line": 288,
     "named_in_test": false
   },
   {
@@ -3005,8 +3005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "write_pipeline_provenance",
-    "where": "agent/mcp_tools/workflow_tools.py:329",
-    "end_line": 330,
+    "where": "agent/mcp_tools/workflow_tools.py:385",
+    "end_line": 386,
     "named_in_test": false
   },
   {
@@ -3015,8 +3015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:592",
-    "end_line": 592,
+    "where": "agent/mcp_tools/workflow_tools.py:648",
+    "end_line": 648,
     "named_in_test": false
   },
   {
@@ -3025,8 +3025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:668",
-    "end_line": 672,
+    "where": "agent/mcp_tools/workflow_tools.py:724",
+    "end_line": 728,
     "named_in_test": false
   },
   {
@@ -3035,32 +3035,12 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:674",
-    "end_line": 674,
+    "where": "agent/mcp_tools/workflow_tools.py:730",
+    "end_line": 730,
     "named_in_test": false
   },
   {
     "code": "stage_artifact.exists_no_overwrite",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:681",
-    "end_line": 681,
-    "named_in_test": false
-  },
-  {
-    "code": "stage_artifact.source_missing",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:690",
-    "end_line": 693,
-    "named_in_test": false
-  },
-  {
-    "code": "stage_artifact.unknown_pipeline",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
@@ -3070,13 +3050,33 @@
     "named_in_test": false
   },
   {
+    "code": "stage_artifact.source_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:746",
+    "end_line": 749,
+    "named_in_test": false
+  },
+  {
+    "code": "stage_artifact.unknown_pipeline",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:793",
+    "end_line": 793,
+    "named_in_test": false
+  },
+  {
     "code": "mark_validated.bad_status",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:770",
-    "end_line": 772,
+    "where": "agent/mcp_tools/workflow_tools.py:826",
+    "end_line": 828,
     "named_in_test": false
   },
   {
@@ -3085,8 +3085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:779",
-    "end_line": 780,
+    "where": "agent/mcp_tools/workflow_tools.py:835",
+    "end_line": 836,
     "named_in_test": false
   },
   {
@@ -3095,8 +3095,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:792",
-    "end_line": 798,
+    "where": "agent/mcp_tools/workflow_tools.py:848",
+    "end_line": 854,
     "named_in_test": false
   },
   {
@@ -3105,8 +3105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:803",
-    "end_line": 805,
+    "where": "agent/mcp_tools/workflow_tools.py:859",
+    "end_line": 861,
     "named_in_test": false
   },
   {
@@ -3850,6 +3850,26 @@
     "named_in_test": false
   },
   {
+    "code": "I8.lineage_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1008",
+    "end_line": 1020,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.composition_coherence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_composition_coherence",
+    "where": "agent/skills/spec_writer.py:1121",
+    "end_line": 1128,
+    "named_in_test": true
+  },
+  {
     "code": "I0.shape_sanity",
     "outcome": "refused",
     "source": "invariant",
@@ -3985,8 +4005,58 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_service_health",
-    "where": "agent/skills/spec_writer.py:704",
-    "end_line": 712,
+    "where": "agent/skills/spec_writer.py:720",
+    "end_line": 728,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:775",
+    "end_line": 782,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_empty",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:794",
+    "end_line": 800,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_size_mismatch",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:814",
+    "end_line": 822,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:834",
+    "end_line": 839,
+    "named_in_test": false
+  },
+  {
+    "code": "I5.reference_database_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:842",
+    "end_line": 850,
     "named_in_test": true
   },
   {
@@ -3995,8 +4065,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:749",
-    "end_line": 756,
+    "where": "agent/skills/spec_writer.py:887",
+    "end_line": 894,
     "named_in_test": true
   },
   {
@@ -4005,8 +4075,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:761",
-    "end_line": 767,
+    "where": "agent/skills/spec_writer.py:899",
+    "end_line": 905,
     "named_in_test": true
   },
   {
@@ -4015,8 +4085,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:770",
-    "end_line": 779,
+    "where": "agent/skills/spec_writer.py:908",
+    "end_line": 917,
     "named_in_test": true
   },
   {
@@ -4025,8 +4095,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:843",
-    "end_line": 852,
+    "where": "agent/skills/spec_writer.py:981",
+    "end_line": 990,
     "named_in_test": true
   },
   {
@@ -4035,28 +4105,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:861",
-    "end_line": 867,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:870",
-    "end_line": 882,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.composition_coherence",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:983",
-    "end_line": 990,
+    "where": "agent/skills/spec_writer.py:999",
+    "end_line": 1005,
     "named_in_test": true
   },
   {
