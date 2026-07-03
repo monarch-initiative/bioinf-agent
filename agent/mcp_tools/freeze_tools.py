@@ -346,8 +346,18 @@ def freeze(
         locus_advisory = br.get("locus_advisory", "")
         _, tarball, hpc = _deliver_built(image)   # docker-save tarball + Apptainer contract
         # record what shipped: each baked long-tail step (the command IS the provenance).
-        shipped_binaries = [{"name": s.get("purpose", ""), "command": s.get("command", "")}
-                            for s in br.get("longtail_steps", [])]
+        # Each baked long-tail step (the command IS the provenance). A binary-tier
+        # step also carries its install→ship assurance (verified/assurance) from
+        # the integrity chain — surfaced so the artifact discloses whether each
+        # shipped binary was checksum-verified (F1/F2), never conflating them.
+        shipped_binaries = []
+        for s in br.get("longtail_steps", []):
+            entry = {"name": s.get("purpose", ""), "command": s.get("command", "")}
+            prov = s.get("provenance") or {}
+            if prov.get("tier") == "binary":
+                entry["verified"]  = bool(prov.get("verified"))
+                entry["assurance"] = prov.get("assurance", "")
+            shipped_binaries.append(entry)
         # the SELF-CONTAINED rebuild recipe — everything build_env_image needs to
         # reproduce this env with no draft/agent (the verify-by-rebuild / CI artifact).
         # content_digest is the EnvBuild one (what a rebuild via build_env_image yields).

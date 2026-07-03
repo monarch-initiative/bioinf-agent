@@ -219,6 +219,29 @@ def _tier_for(t: str, is_adopt: bool, pkg: Optional[dict], shipped: list) -> str
     return _install_method(t, pkg, shipped)
 
 
+# Supply-chain assurance of a shipped binary — the install→ship integrity chain
+# verdict (env_freeze binary branch). Rendered ONLY for binary-tier steps that
+# carry an `assurance`; conflating verified with unverified is exactly what F1/F2
+# forbid, so the badge states the level plainly.
+_ASSURANCE_BADGE = {
+    "authenticated":            ("ok",  "✓ checksum-verified"),
+    "pinned_tofu":              ("na",  "⚠ pinned (unverified, TOFU)"),
+    "unanchored_cross_platform":("na",  "⚠ cross-platform ship (unverified)"),
+    "unanchored":               ("na",  "⚠ unverified"),
+}
+
+
+def _assurance_badge(s: dict) -> str:
+    """A pill disclosing a shipped binary's install→ship assurance. Empty for
+    non-binary steps (no `assurance` key), so the run of pip/source/jar steps is
+    unaffected."""
+    a = (s or {}).get("assurance")
+    if not a:
+        return ""
+    cls, txt = _ASSURANCE_BADGE.get(a, ("na", f"⚠ {a}"))
+    return f' <span class="pill {cls}" style="font-size:11px">{_e(txt)}</span>'
+
+
 def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[dict],
                        req_v: str, shipped: Optional[list] = None,
                        adopt_source: Optional[dict] = None,
@@ -411,7 +434,8 @@ def render_env_report_html(record: dict) -> str:
             for s in shipped:
                 label = s.get("name") or s.get("purpose") or "tool"
                 cmd = (s.get("command") or "").strip()
-                P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b></p>')
+                P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b>'
+                         f'{_assurance_badge(s)}</p>')
                 if cmd:
                     P.append(f"<pre>{_e(cmd)}</pre>")
             P.append("</details>")

@@ -40,7 +40,8 @@ HPC_SUBSYSTEMS = {
 # ship a bad artifact. Kept explicit on purpose — these are the honesty
 # contract's teeth, worth naming. Add here when a new firewall lands.
 FIREWALL_CODES = {
-    "env_manager.binary_sha256_mismatch",       # supply-chain: wrong/tampered asset
+    "env_manager.binary_sha256_mismatch",       # supply-chain: wrong/tampered asset at INSTALL
+    "build.binary_integrity_mismatch",           # supply-chain: asset mutated INSTALL→SHIP (F2)
     "freeze.adopt_honesty",                      # adopt only a pure-conda env
     "freeze.recipe_not_reproduced",              # reproducibility check
     "freeze.recipe_invalid",

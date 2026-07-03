@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:518",
-    "end_line": 518,
+    "where": "agent/mcp_tools/freeze_tools.py:528",
+    "end_line": 528,
     "named_in_test": false
   },
   {
@@ -570,6 +570,16 @@
     "named_in_test": false
   },
   {
+    "code": "build.map_install_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_image",
+    "where": "agent/skills/env_freeze.py:463",
+    "end_line": 463,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.binary_extract_failed",
     "outcome": "broke",
     "source": "helper",
@@ -605,8 +615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1257",
-    "end_line": 1259,
+    "where": "agent/skills/env_manager.py:1264",
+    "end_line": 1266,
     "named_in_test": false
   },
   {
@@ -615,8 +625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1274",
-    "end_line": 1274,
+    "where": "agent/skills/env_manager.py:1281",
+    "end_line": 1281,
     "named_in_test": false
   },
   {
@@ -625,8 +635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1301",
-    "end_line": 1303,
+    "where": "agent/skills/env_manager.py:1308",
+    "end_line": 1310,
     "named_in_test": false
   },
   {
@@ -635,8 +645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1325",
-    "end_line": 1325,
+    "where": "agent/skills/env_manager.py:1332",
+    "end_line": 1332,
     "named_in_test": false
   },
   {
@@ -645,8 +655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1348",
-    "end_line": 1350,
+    "where": "agent/skills/env_manager.py:1355",
+    "end_line": 1357,
     "named_in_test": false
   },
   {
@@ -655,8 +665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1371",
-    "end_line": 1371,
+    "where": "agent/skills/env_manager.py:1378",
+    "end_line": 1378,
     "named_in_test": false
   },
   {
@@ -675,8 +685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1596",
-    "end_line": 1596,
+    "where": "agent/skills/env_manager.py:1603",
+    "end_line": 1603,
     "named_in_test": false
   },
   {
@@ -685,8 +695,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1702",
-    "end_line": 1703,
+    "where": "agent/skills/env_manager.py:1709",
+    "end_line": 1710,
     "named_in_test": false
   },
   {
@@ -695,8 +705,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1722",
-    "end_line": 1728,
+    "where": "agent/skills/env_manager.py:1729",
+    "end_line": 1735,
     "named_in_test": false
   },
   {
@@ -705,8 +715,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1805",
-    "end_line": 1806,
+    "where": "agent/skills/env_manager.py:1812",
+    "end_line": 1813,
     "named_in_test": false
   },
   {
@@ -715,8 +725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1820",
-    "end_line": 1821,
+    "where": "agent/skills/env_manager.py:1827",
+    "end_line": 1828,
     "named_in_test": false
   },
   {
@@ -1795,8 +1805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:458",
-    "end_line": 459,
+    "where": "agent/mcp_tools/freeze_tools.py:468",
+    "end_line": 469,
     "named_in_test": false
   },
   {
@@ -1805,8 +1815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:517",
-    "end_line": 517,
+    "where": "agent/mcp_tools/freeze_tools.py:527",
+    "end_line": 527,
     "named_in_test": false
   },
   {
@@ -1815,8 +1825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:550",
-    "end_line": 556,
+    "where": "agent/mcp_tools/freeze_tools.py:560",
+    "end_line": 566,
     "named_in_test": false
   },
   {
@@ -2105,18 +2115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1211",
-    "end_line": 1228,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.perl_installed",
-    "outcome": "proven",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1273",
-    "end_line": 1273,
+    "where": "agent/skills/env_manager.py:1216",
+    "end_line": 1235,
     "named_in_test": false
   },
   {
@@ -2130,13 +2130,23 @@
     "named_in_test": false
   },
   {
+    "code": "env_manager.perl_installed",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_perl_package",
+    "where": "agent/skills/env_manager.py:1280",
+    "end_line": 1280,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.cargo_installed",
     "outcome": "proven",
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1324",
-    "end_line": 1324,
+    "where": "agent/skills/env_manager.py:1331",
+    "end_line": 1331,
     "named_in_test": false
   },
   {
@@ -2145,8 +2155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1370",
-    "end_line": 1370,
+    "where": "agent/skills/env_manager.py:1377",
+    "end_line": 1377,
     "named_in_test": false
   },
   {
@@ -2155,8 +2165,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1595",
-    "end_line": 1595,
+    "where": "agent/skills/env_manager.py:1602",
+    "end_line": 1602,
     "named_in_test": false
   },
   {
@@ -2175,8 +2185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1710",
-    "end_line": 1711,
+    "where": "agent/skills/env_manager.py:1717",
+    "end_line": 1718,
     "named_in_test": false
   },
   {
@@ -2185,8 +2195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1803",
-    "end_line": 1804,
+    "where": "agent/skills/env_manager.py:1810",
+    "end_line": 1811,
     "named_in_test": false
   },
   {
@@ -2195,8 +2205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1817",
-    "end_line": 1818,
+    "where": "agent/skills/env_manager.py:1824",
+    "end_line": 1825,
     "named_in_test": false
   },
   {
@@ -2785,8 +2795,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:497",
-    "end_line": 498,
+    "where": "agent/mcp_tools/freeze_tools.py:507",
+    "end_line": 508,
     "named_in_test": false
   },
   {
@@ -2795,8 +2805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:500",
-    "end_line": 501,
+    "where": "agent/mcp_tools/freeze_tools.py:510",
+    "end_line": 511,
     "named_in_test": false
   },
   {
@@ -2805,8 +2815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:546",
-    "end_line": 547,
+    "where": "agent/mcp_tools/freeze_tools.py:556",
+    "end_line": 557,
     "named_in_test": false
   },
   {
@@ -3220,24 +3230,34 @@
     "named_in_test": false
   },
   {
+    "code": "build.binary_integrity_mismatch",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_map_install",
+    "where": "agent/skills/env_freeze.py:296",
+    "end_line": 302,
+    "named_in_test": true
+  },
+  {
     "code": "build.unknown_install_type",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "_map_install",
-    "where": "agent/skills/env_freeze.py:285",
-    "end_line": 286,
+    "where": "agent/skills/env_freeze.py:332",
+    "end_line": 333,
     "named_in_test": false
   },
   {
-    "code": "build.map_install_non_replayable",
+    "code": "build.map_install_refused",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:405",
-    "end_line": 407,
-    "named_in_test": false
+    "where": "agent/skills/env_freeze.py:462",
+    "end_line": 462,
+    "named_in_test": true
   },
   {
     "code": "build.resolve_ambiguous",
@@ -3245,8 +3265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:510",
-    "end_line": 511,
+    "where": "agent/skills/env_freeze.py:566",
+    "end_line": 567,
     "named_in_test": false
   },
   {
@@ -3255,8 +3275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:533",
-    "end_line": 535,
+    "where": "agent/skills/env_freeze.py:589",
+    "end_line": 591,
     "named_in_test": false
   },
   {
@@ -3445,8 +3465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1248",
-    "end_line": 1249,
+    "where": "agent/skills/env_manager.py:1255",
+    "end_line": 1256,
     "named_in_test": false
   },
   {
@@ -3455,8 +3475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1288",
-    "end_line": 1289,
+    "where": "agent/skills/env_manager.py:1295",
+    "end_line": 1296,
     "named_in_test": false
   },
   {
@@ -3465,8 +3485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1336",
-    "end_line": 1337,
+    "where": "agent/skills/env_manager.py:1343",
+    "end_line": 1344,
     "named_in_test": false
   },
   {
@@ -3475,8 +3495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1570",
-    "end_line": 1571,
+    "where": "agent/skills/env_manager.py:1577",
+    "end_line": 1578,
     "named_in_test": false
   },
   {
@@ -3485,8 +3505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_lock",
-    "where": "agent/skills/env_manager.py:1630",
-    "end_line": 1632,
+    "where": "agent/skills/env_manager.py:1637",
+    "end_line": 1639,
     "named_in_test": false
   },
   {
@@ -3495,8 +3515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1810",
-    "end_line": 1812,
+    "where": "agent/skills/env_manager.py:1817",
+    "end_line": 1819,
     "named_in_test": false
   },
   {

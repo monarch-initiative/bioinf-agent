@@ -278,9 +278,56 @@ def _map_install(
         if not hh.get("ok"):
             return broke("build.binary_asset_hash_failed",
                          error=f"could not hash {platform} asset for '{name}': {hh.get('reason')}")
+        freeze_hash  = (hh.get("sha256") or "").lower()
+        install_url  = (im.get("binary_url") or "").strip()
+        install_sha  = (im.get("asset_sha256") or "").strip().lower()
+        # `same_asset`: freeze re-fetched the EXACT asset the install anchored.
+        # The cross-platform bridge (darwin install → linux ship) resolves a
+        # DIFFERENT asset — there is no install-time hash for it to compare to.
+        same_asset   = bool(install_url) and la["url"] == install_url
+
+        # ── INSTALL→SHIP INTEGRITY FIREWALL (F2) ────────────────────────────
+        # When freeze re-fetches the SAME asset the install anchored, the bytes
+        # MUST be unchanged. A mismatch means the release asset was mutated
+        # between install and freeze (swapped upload / compromised mirror) —
+        # and VALIDATED_IN_IMAGE would NOT catch it (a swapped binary runs fine).
+        # Refuse: this is the only point the install→ship chain is checkable.
+        if same_asset and install_sha and freeze_hash and freeze_hash != install_sha:
+            return refused("build.binary_integrity_mismatch",
+                           error=(f"binary '{name}': ship asset changed between install and "
+                                  f"freeze — install anchored {install_sha}, freeze re-fetch is "
+                                  f"{freeze_hash} (same URL {la['url']}). Refusing to ship a "
+                                  f"mutated asset."),
+                           url=la["url"], install_asset_sha256=install_sha,
+                           freeze_asset_sha256=freeze_hash)
+
+        # ── ASSURANCE DISCLOSURE (F1 / C5) ──────────────────────────────────
+        # The shipped binary is `verified` ONLY when it was authenticated against
+        # a publisher checksum that held from install through ship. Everything
+        # else ships (valid) but is disclosed as unverified with its reason:
+        #   authenticated       — publisher sha matched at install AND chain intact
+        #   pinned_tofu         — no publisher sha, but same asset unchanged (TOFU)
+        #   unanchored_x_platform — ship asset never installed (cross-arch bridge)
+        #   unanchored          — same asset but install recorded no hash
+        chain_intact  = same_asset and bool(install_sha) and freeze_hash == install_sha
+        authenticated = bool(im.get("asset_authenticated"))
+        if chain_intact and authenticated:
+            assurance, verified = "authenticated", True
+        elif chain_intact:
+            assurance, verified = "pinned_tofu", False
+        elif not same_asset:
+            assurance, verified = "unanchored_cross_platform", False
+        else:
+            assurance, verified = "unanchored", False
+
         inner = PurePosixPath(im.get("local_path") or name).name
-        return {"spec": ic.release_binary(name, la["url"], sha256=hh["sha256"],
-                                          binary_in_archive=inner, wrapper=name)}
+        gen = ic.release_binary(name, la["url"], sha256=freeze_hash,
+                                binary_in_archive=inner, wrapper=name)
+        gen["provenance"] = {"tier": "binary", "verified": verified,
+                             "assurance": assurance, "asset_url": la["url"],
+                             "asset_sha256": freeze_hash,
+                             "install_asset_sha256": install_sha or None}
+        return {"spec": gen}
 
     return refused("build.unknown_install_type",
                    error=f"install_method.type {t!r} for '{name}' has no container-native generator")
@@ -401,10 +448,19 @@ def build_env_image(
     tool_specs = []
     for x in tool_installs:
         m = _map_install(x, platform)
-        if "error" in m:
-            return refused("build.map_install_non_replayable", success=False,
-                           stage="map_install", reason=m["error"],
-                           available=m.get("available"))
+        if m.get("outcome") in ("refused", "broke"):
+            # Forward the mapper's failure. The boundary carries its OWN literal
+            # code (per the outcomes re-wrap convention) but preserves the SPECIFIC
+            # inner code as `inner_code` — the integrity firewall
+            # build.binary_integrity_mismatch, asset-unresolved, non-replayable, …
+            # — so a caller can still tell WHY it refused (the old single generic
+            # code hid that, and wrongly forced `refused` even for a `broke` inner
+            # like a network hash failure). Class-preserving: refused stays refused.
+            fields = {**m, "success": False, "stage": "map_install",
+                      "inner_code": m.get("code")}
+            if m["outcome"] == "refused":
+                return refused("build.map_install_refused", **fields)
+            return broke("build.map_install_failed", **fields)
         tool_specs.append(m["spec"])
 
     # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).

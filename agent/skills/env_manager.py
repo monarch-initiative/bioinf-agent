@@ -1208,6 +1208,11 @@ class EnvManager:
         binary_digest = self._sha256_file(staged["binary_path"])
         log.append(f"binary sha256={binary_digest}")
 
+        # Did we authenticate the asset against a PUBLISHER checksum, or merely
+        # pin whatever came down the wire (trust-on-first-use)? `asset_authenticated`
+        # is the honest anchor freeze reads to decide the shipped binary's assurance
+        # (authenticated vs pinned-TOFU vs unanchored) — see env_freeze binary branch.
+        asset_authenticated = bool(sha256)
         return proven(
             "env_manager.binary_installed",
             success=True,
@@ -1217,12 +1222,14 @@ class EnvManager:
             url=url,
             sha256=binary_digest,
             asset_sha256=recorded_asset_sha,
+            asset_authenticated=asset_authenticated,
             install_method={
-                "type":         "binary",
-                "binary_url":   url,
-                "sha256":       binary_digest,
-                "asset_sha256": recorded_asset_sha,
-                "local_path":   staged["binary_path"],
+                "type":                "binary",
+                "binary_url":          url,
+                "sha256":              binary_digest,
+                "asset_sha256":        recorded_asset_sha,
+                "asset_authenticated": asset_authenticated,
+                "local_path":          staged["binary_path"],
             },
             log=log,
         )

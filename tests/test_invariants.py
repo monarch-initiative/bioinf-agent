@@ -1018,6 +1018,168 @@ def test_install_release_binary_sha256_mismatch_is_refused_firewall(tmp_path, mo
 
 
 # ---------------------------------------------------------------------------
+# F2 — the install→ship INTEGRITY CHAIN for the binary tier.
+#
+# The hole: `freeze` re-fetches a release asset and anchors the ship image to
+# WHATEVER the URL serves at freeze time, never comparing against the install-
+# time hash. A binary mutated between install and freeze (swapped upload /
+# compromised mirror) ships as `proven`/`frozen` — VALIDATED_IN_IMAGE only
+# proves it RUNS, not that it's untampered. These tests certify the fix:
+#   1. same asset, hash changed install→ship        → REFUSE (the firewall)
+#   2. same asset, publisher-checksum verified       → verified=True
+#   3. same asset, no publisher checksum (TOFU)      → ships, verified=False
+#   4. cross-platform ship asset (never installed)   → ships, verified=False
+#   5. install records whether it authenticated the asset (the honest anchor)
+#   6. the firewall's SPECIFIC code survives the build_env_image call site
+# ---------------------------------------------------------------------------
+
+def _binary_record(binary_url, asset_sha256, *, authenticated=False):
+    """An install_method record as install_release_binary would leave it."""
+    return {"name": "tool", "type": "binary", "install_method": {
+        "type": "binary", "binary_url": binary_url, "sha256": "deadbeef",
+        "asset_sha256": asset_sha256, "asset_authenticated": authenticated,
+        "local_path": "/e/share/tool/tool"}}
+
+
+def test_map_install_binary_integrity_mismatch_is_refused_firewall():
+    """ADVERSARIAL (F2 supply-chain firewall / full-auto safety). Attack: the
+    SAME release asset the install anchored is mutated before freeze re-fetches
+    it. Freeze MUST compare the re-fetch hash against the recorded install-time
+    asset_sha256 and REFUSE on mismatch — never silently ship the swapped bytes.
+    The refusal must be legible (outcome=refused, code=binary_integrity_mismatch,
+    both hashes surfaced). Injected resolvers → offline, deterministic."""
+    from agent.skills.env_freeze import _map_install
+    url = "https://github.com/x/tool/releases/download/v1/tool_linux_amd64.tar.gz"
+    rec = _binary_record(url, asset_sha256="a" * 64, authenticated=True)
+    out = _map_install(
+        rec,
+        resolve_linux_asset=lambda u, **k: {"found": True, "url": url},   # SAME asset
+        sha256_of_url=lambda u, **k: {"ok": True, "sha256": "b" * 64},     # bytes CHANGED
+    )
+    assert out.get("outcome") == "refused", out
+    assert out.get("code") == "build.binary_integrity_mismatch", out
+    assert out.get("install_asset_sha256") == "a" * 64
+    assert out.get("freeze_asset_sha256") == "b" * 64
+    assert "spec" not in out, "a mutated asset must NOT produce a shippable spec"
+
+
+def test_map_install_binary_authenticated_chain_is_verified():
+    """Same asset, publisher checksum matched at install (asset_authenticated),
+    freeze re-fetch hash EQUALS the install hash → the chain is intact AND
+    authenticated → the shipped binary is disclosed verified=True."""
+    from agent.skills.env_freeze import _map_install
+    url = "https://github.com/x/tool/releases/download/v1/tool_linux_amd64.tar.gz"
+    rec = _binary_record(url, asset_sha256="c" * 64, authenticated=True)
+    out = _map_install(
+        rec,
+        resolve_linux_asset=lambda u, **k: {"found": True, "url": url},
+        sha256_of_url=lambda u, **k: {"ok": True, "sha256": "c" * 64},   # unchanged
+    )
+    assert "spec" in out, out
+    prov = out["spec"]["provenance"]
+    assert prov["verified"] is True and prov["assurance"] == "authenticated", prov
+
+
+def test_map_install_binary_tofu_ships_unverified():
+    """Same asset, unchanged install→ship, but NO publisher checksum was matched
+    at install (trust-on-first-use). It ships (valid) but must be disclosed as
+    unverified — C5 legibility: a green must not conflate authenticated with TOFU."""
+    from agent.skills.env_freeze import _map_install
+    url = "https://github.com/x/tool/releases/download/v1/tool_linux_amd64.tar.gz"
+    rec = _binary_record(url, asset_sha256="d" * 64, authenticated=False)
+    out = _map_install(
+        rec,
+        resolve_linux_asset=lambda u, **k: {"found": True, "url": url},
+        sha256_of_url=lambda u, **k: {"ok": True, "sha256": "d" * 64},
+    )
+    assert "spec" in out, out
+    prov = out["spec"]["provenance"]
+    assert prov["verified"] is False and prov["assurance"] == "pinned_tofu", prov
+
+
+def test_map_install_binary_cross_platform_ships_unverified_not_refused():
+    """The COMMON case: install on darwin, ship linux. resolve_linux_asset returns
+    a DIFFERENT asset than the install anchored — there is no install-time hash for
+    it, so the integrity firewall must NOT fire (no false refuse), but the shipped
+    binary must be disclosed unverified (unanchored_cross_platform). This proves
+    freeze ACCEPTS an unverified-but-valid binary (degraded-style), just flagged."""
+    from agent.skills.env_freeze import _map_install
+    darwin = "https://github.com/x/tool/releases/download/v1/tool_darwin_arm64.tar.gz"
+    linux  = "https://github.com/x/tool/releases/download/v1/tool_linux_amd64.tar.gz"
+    rec = _binary_record(darwin, asset_sha256="e" * 64, authenticated=True)
+    out = _map_install(
+        rec,
+        resolve_linux_asset=lambda u, **k: {"found": True, "url": linux},   # DIFFERENT
+        sha256_of_url=lambda u, **k: {"ok": True, "sha256": "f" * 64},
+    )
+    assert "spec" in out, f"cross-platform ship must not be refused: {out}"
+    prov = out["spec"]["provenance"]
+    assert prov["verified"] is False, prov
+    assert prov["assurance"] == "unanchored_cross_platform", prov
+
+
+def test_install_release_binary_records_asset_authenticated(tmp_path, monkeypatch):
+    """Part-2 source of truth: install_release_binary must record WHETHER it
+    authenticated the asset against a caller-supplied publisher checksum. With a
+    (correct) sha256 → asset_authenticated=True; without → False. Freeze reads
+    this to decide authenticated vs pinned-TOFU assurance. Offline (curl mocked)."""
+    import hashlib, shlex, shutil as _sh, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+    env_name = "bioinf_unit_relbin_auth"
+    env_path = em.envs_dir / env_name
+    (env_path / "bin").mkdir(parents=True, exist_ok=True)
+    try:
+        asset = tmp_path / "tool-1.0-linux.bin"
+        asset.write_bytes(b"single-binary payload")
+        real_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+
+        def fake_curl(en, command, timeout=None):
+            toks = shlex.split(command)
+            _sh.copy(asset, toks[toks.index("-o") + 1])
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        monkeypatch.setattr(em, "run_in_env", fake_curl)
+
+        # WITH the publisher checksum → authenticated.
+        res = em.install_release_binary(env_name=env_name, tool_name="tool",
+                                        url=f"file://{asset}", sha256=real_sha)
+        assert res["success"] and res["asset_authenticated"] is True, res
+        assert res["install_method"]["asset_authenticated"] is True
+
+        # WITHOUT → pinned TOFU, honestly marked not-authenticated.
+        _sh.rmtree(env_path / "share", ignore_errors=True)
+        res2 = em.install_release_binary(env_name=env_name, tool_name="tool2",
+                                         url=f"file://{asset}")
+        assert res2["success"] and res2["asset_authenticated"] is False, res2
+        assert res2["install_method"]["asset_authenticated"] is False
+    finally:
+        _sh.rmtree(env_path, ignore_errors=True)
+
+
+def test_build_env_image_propagates_binary_integrity_firewall_code(monkeypatch):
+    """The firewall's SPECIFIC code must survive the build_env_image call site as
+    `inner_code` — previously EVERY mapper failure was flattened to a single
+    generic code (and wrongly forced `refused`), hiding the integrity firewall
+    from a caller. The boundary keeps its own literal code (model-legible) while
+    preserving WHY it refused, and preserves the outcome CLASS (refused→refused)."""
+    from agent.skills import env_freeze
+    from agent.skills.outcomes import refused
+    monkeypatch.setattr(env_freeze._freeze, "non_conda_installs",
+                        lambda spec: [{"name": "tool", "type": "binary",
+                                       "install_method": {"type": "binary"}}])
+    monkeypatch.setattr(env_freeze, "_map_install",
+                        lambda x, platform="linux/amd64", **k: refused(
+                            "build.binary_integrity_mismatch", error="mutated"))
+    out = env_freeze.build_env_image({}, name="tool")
+    assert out.get("outcome") == "refused", out            # class preserved
+    assert out.get("code") == "build.map_install_refused", out   # boundary's own code
+    assert out.get("inner_code") == "build.binary_integrity_mismatch", out  # WHY, preserved
+    assert out.get("stage") == "map_install" and out.get("success") is False, out
+
+
+# ---------------------------------------------------------------------------
 # Re-spine Slice 2/3: Perl/CPAN + cargo/go tiers
 # ---------------------------------------------------------------------------
 
