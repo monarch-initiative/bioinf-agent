@@ -645,6 +645,17 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     violations.extend(_check_lineage_integrity(spec))
 
+    # ------------------------------------------------------------------
+    # I10 (service health, restored at Layer 2): every declared service_dependency
+    # must have proven healthy. The respine retired I10 as an ENV-BUILD invariant
+    # (an env doesn't need the service to BUILD) — but VALIDATED_IN_IMAGE says
+    # nothing about whether a RUNTIME service a workflow depends on ever came up,
+    # so it fell through the crack. This restores it at the layer where service
+    # dependencies actually live (the Layer-2 draft), same move as the I9→I8
+    # authored-artifact restoration above.
+    # ------------------------------------------------------------------
+    violations.extend(_check_service_health(spec))
+
     return violations
 
 
@@ -654,7 +665,7 @@ def check_invariants(spec: dict) -> list[dict]:
 # by env_honesty.check_build. check_invariants is now itself run-side-only, so
 # this filter is belt-and-suspenders (it stays the named Layer-2 entry point and
 # guards against a future non-run-side clause leaking into check_invariants).
-_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I6", "I7", "I8"}
+_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I6", "I7", "I8", "I10"}
 
 
 def check_workflow_invariants(spec: dict) -> list[dict]:
@@ -664,6 +675,42 @@ def check_workflow_invariants(spec: dict) -> list[dict]:
     external sources, but only the run-side violations are returned."""
     return [v for v in check_invariants(spec)
             if v.get("invariant", "").split(".")[0] in _WORKFLOW_INVARIANT_TIERS]
+
+
+def _check_service_health(spec: dict) -> list[dict]:
+    """I10 (restored at Layer 2): every declared service_dependency must have at
+    least one HEALTHY probe in its health_check_log — proof the service actually
+    came up while the workflow ran.
+
+    The respine retired I10 among the env-build invariants, but it does NOT belong
+    to Layer 1 (an env doesn't need the service running to BUILD) and it was never
+    added to Layer 2 — so a WorkflowSpec could seal green while depending on a
+    service that never became healthy (a status=failed / zero-healthy record). The
+    ServiceDependency docstring even promises 'health_check_log: … I10 requires ≥1
+    healthy', so the firewall was advertised but a no-op. A probe counts healthy
+    when its `healthy` is truthy OR returncode == 0; the log is runtime-populated
+    (start_service / verify_service_dependency), so the agent can't fabricate it. A
+    service that was healthy then cleanly stopped (status=stopped, ≥1 healthy probe)
+    PASSES — the check is 'did it ever come up', not 'is it up now'."""
+    violations: list[dict] = []
+    for i, sd in enumerate(spec.get("service_dependencies", []) or []):
+        if not isinstance(sd, dict):
+            continue
+        name = sd.get("name") or sd.get("service_name") or f"service[{i}]"
+        log = sd.get("health_check_log") or []
+        healthy = [e for e in log if isinstance(e, dict)
+                   and (e.get("healthy") is True or e.get("returncode") == 0)]
+        if not healthy:
+            violations.append({
+                "invariant": "I10.service_never_healthy",
+                "where": f"service_dependencies[{i}]",
+                "message": (f"service '{name}' has no healthy probe in its "
+                            f"health_check_log (status={sd.get('status')!r}, "
+                            f"{len(log)} probe(s), 0 healthy) — a workflow cannot be "
+                            f"sealed depending on a service that never came up. "
+                            f"start_service must reach healthy, or drop the dependency."),
+            })
+    return violations
 
 
 def _check_authored_artifact_integrity(spec: dict) -> list[dict]:

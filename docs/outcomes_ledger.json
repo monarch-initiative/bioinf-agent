@@ -715,8 +715,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1824",
-    "end_line": 1825,
+    "where": "agent/skills/env_manager.py:1830",
+    "end_line": 1831,
     "named_in_test": false
   },
   {
@@ -725,8 +725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1839",
-    "end_line": 1840,
+    "where": "agent/skills/env_manager.py:1844",
+    "end_line": 1845,
     "named_in_test": false
   },
   {
@@ -2205,8 +2205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1822",
-    "end_line": 1823,
+    "where": "agent/skills/env_manager.py:1828",
+    "end_line": 1829,
     "named_in_test": false
   },
   {
@@ -2215,8 +2215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1836",
-    "end_line": 1837,
+    "where": "agent/skills/env_manager.py:1841",
+    "end_line": 1842,
     "named_in_test": false
   },
   {
@@ -3335,8 +3335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:652",
-    "end_line": 653,
+    "where": "agent/skills/env_freeze.py:655",
+    "end_line": 656,
     "named_in_test": false
   },
   {
@@ -3345,8 +3345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_tools",
-    "where": "agent/skills/env_freeze.py:675",
-    "end_line": 677,
+    "where": "agent/skills/env_freeze.py:678",
+    "end_line": 680,
     "named_in_test": false
   },
   {
@@ -3595,8 +3595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1829",
-    "end_line": 1831,
+    "where": "agent/skills/env_manager.py:1834",
+    "end_line": 1836,
     "named_in_test": false
   },
   {
@@ -3980,13 +3980,23 @@
     "named_in_test": true
   },
   {
+    "code": "I10.service_never_healthy",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_service_health",
+    "where": "agent/skills/spec_writer.py:704",
+    "end_line": 712,
+    "named_in_test": true
+  },
+  {
     "code": "I8.authored_artifact_missing",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:702",
-    "end_line": 709,
+    "where": "agent/skills/spec_writer.py:749",
+    "end_line": 756,
     "named_in_test": true
   },
   {
@@ -3995,8 +4005,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:714",
-    "end_line": 720,
+    "where": "agent/skills/spec_writer.py:761",
+    "end_line": 767,
     "named_in_test": true
   },
   {
@@ -4005,8 +4015,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:723",
-    "end_line": 732,
+    "where": "agent/skills/spec_writer.py:770",
+    "end_line": 779,
     "named_in_test": true
   },
   {
@@ -4015,8 +4025,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:796",
-    "end_line": 805,
+    "where": "agent/skills/spec_writer.py:843",
+    "end_line": 852,
     "named_in_test": true
   },
   {
@@ -4025,8 +4035,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:814",
-    "end_line": 820,
+    "where": "agent/skills/spec_writer.py:861",
+    "end_line": 867,
     "named_in_test": true
   },
   {
@@ -4035,8 +4045,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:823",
-    "end_line": 835,
+    "where": "agent/skills/spec_writer.py:870",
+    "end_line": 882,
     "named_in_test": true
   },
   {
@@ -4045,8 +4055,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:936",
-    "end_line": 943,
+    "where": "agent/skills/spec_writer.py:983",
+    "end_line": 990,
     "named_in_test": true
   },
   {

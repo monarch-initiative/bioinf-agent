@@ -128,3 +128,52 @@ def test_i13_early_gate_refuses_gated_without_license(monkeypatch):
     assert res.get("code") == "freeze.gated_no_license", res
     assert any(v.get("invariant") == "I13.gated_license_recorded"
                for v in res.get("honesty_violations", [])), res
+
+
+# ---------------------------------------------------------------------------
+# I10 (service health) — restored at Layer 2. The services probe (row 7) found
+# it advertised in every ServiceDependency docstring but enforced NOWHERE: the
+# respine retired I10 as an env-build invariant and it was never re-added to the
+# workflow checker. A workflow depending on a service that never became healthy
+# would seal GREEN. These certify the restored gate fires on exactly that attack.
+# ---------------------------------------------------------------------------
+def _svc(status, probes):
+    return {"type": "cache", "name": "redis", "start_command": "redis-server",
+            "stop_command": "redis-cli shutdown", "status": status,
+            "health_check_log": probes}
+
+
+def test_i10_fires_on_service_never_healthy():
+    """A declared service with ZERO healthy probes (status=failed) must trip
+    I10.service_never_healthy — seal cannot bless a workflow whose service never
+    came up (the advertised-but-absent firewall the probe exposed)."""
+    spec = _base_spec()
+    spec["service_dependencies"] = [_svc("failed", [{"healthy": False, "returncode": 1}])]
+    violations = check_invariants(spec)
+    assert any(v["invariant"] == "I10.service_never_healthy" for v in violations), violations
+
+
+def test_i10_passes_service_that_was_healthy_then_stopped():
+    """A service that reached healthy then cleanly stopped PASSES — the check is
+    'did it ever come up', not 'is it up now' (the probe's valid fixture)."""
+    spec = _base_spec()
+    spec["service_dependencies"] = [_svc("stopped",
+        [{"healthy": True, "returncode": 0}, {"healthy": True, "returncode": 0}])]
+    violations = check_invariants(spec)
+    assert not any(v["invariant"].startswith("I10") for v in violations), violations
+
+
+def test_i10_flows_through_workflow_entry_point():
+    """The gate must fire via check_workflow_invariants (the actual seal path), not
+    only check_invariants — i.e. I10 is in _WORKFLOW_INVARIANT_TIERS."""
+    from agent.skills.spec_writer import check_workflow_invariants
+    spec = _base_spec()
+    spec["service_dependencies"] = [_svc("running", [])]     # zero probes at all
+    wv = check_workflow_invariants(spec)
+    assert any(v["invariant"] == "I10.service_never_healthy" for v in wv), wv
+
+
+def test_i10_noop_without_services():
+    """No service_dependencies → no I10 violation (the common case is untouched)."""
+    violations = check_invariants(_base_spec())
+    assert not any(v["invariant"].startswith("I10") for v in violations)

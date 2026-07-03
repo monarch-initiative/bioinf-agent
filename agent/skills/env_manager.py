@@ -1816,15 +1816,20 @@ class EnvManager:
         working_dir: str | None = None,
     ) -> dict[str, Any]:
         """Stop a background service by running stop_command or killing by PID file."""
+        pid_file = Path("/tmp/bioinf_services") / f"{service_name}.pid"
         if stop_command:
             result = self.run_in_env(env_name, stop_command, working_dir=working_dir, timeout=30)
             if result["returncode"] == 0:
+                # Unlink the PID file on a clean stop_command shutdown too — the
+                # kill-by-PID branch does, but this one returned without it, leaving a
+                # stale .pid that a later PID-based stop would `kill` (a recycled/dead
+                # PID) until the next-startup reaper cleaned it (services probe GAP 2).
+                pid_file.unlink(missing_ok=True)
                 return proven("env_manager.service_stopped_cmd",
                               success=True, service_name=service_name, method="stop_command")
             return broke("env_manager.service_stop_cmd_failed",
                          success=False, service_name=service_name, method="stop_command")
 
-        pid_file = Path("/tmp/bioinf_services") / f"{service_name}.pid"
         if not pid_file.exists():
             return refused("env_manager.service_no_pid_no_cmd",
                            success=False, service_name=service_name,

@@ -20,7 +20,7 @@ Method: probe a real tool that exercises the row → fix what breaks → lock wi
 | 4 | Name collisions (same-name, different tool) | talos/cellranger | ⬜ | guard fires only w/ github_repo; bare-name silent. Fuzzy. |
 | 5 | Reference data / caches (big DB, indexed) | VEP | ✅ | `download_reference_database` (GTF) + bgzip/tabix + VEP `--gtf`/`--fasta` custom mode → real annotations verified. Fixed validator false-negative on long comment headers (VEP `--tab` 30 `##` lines) |
 | 6 | Perl plugins / CPAN tier | VEP plugins | ✅ | `install_perl_package` (Text::CSV) + VEP `--plugin` load proven. Fixed: legible error when cpanm prerequisite missing |
-| 7 | Auxiliary services (redis/postgres/spark) | TBD | ⬜ | `start_service` primitive exists, untested in a real probe |
+| 7 | Auxiliary services (redis/postgres/spark) | Redis | ✅ | full lifecycle proven (start→health-poll→I10 record→real round-trip→verify→stop, + failure path). **Fixed the headline: I10 (service health) was advertised but enforced NOWHERE → seal would bless a workflow whose service never came up. Restored as a Layer-2 invariant.** Also fixed a stop_command pid-file leak |
 | 8 | Multi-component pipelines (Nextflow) | Talos | ⬜ | renderer + per-project pipelines exist; untested for a real install |
 
 ### VEP probe — findings NOT yet fixed (logged, judged not clean/generalizable)
@@ -41,3 +41,7 @@ these split into (a) bridge-primitive hardening I CAN do via adversarial tests, 
 | 11 | Production pipeline run on cluster | ⬜ | user-driven (submit_workflow_job → poll → fetch) |
 
 Legend: ✅ green · 🔄 in progress · ⬜ untested. Update as rows burn down.
+
+### Services probe — minor findings (logged, not fixed)
+- **GAP 3 (ergonomic):** the conda daemon is `redis-server`, not `redis` (`redis` is the PyPI client). A naive install of `redis` fails `PackagesNotFoundError`; `resolve_tool` doesn't disambiguate a server-vs-client name collision. Doc/hint candidate.
+- **GAP 4 (ergonomic):** a diagnostic `run_in_env` with a threaded `pipeline_id` silently becomes a `pipeline_step` (rc=0, no outputs) → an I3 risk at seal. No lightweight "run but don't record" flag; the agent must omit `pipeline_id` for sanity checks.
