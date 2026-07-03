@@ -162,3 +162,40 @@ proven (`tests/test_verify_installation_cheatguards.py`): the **echo cheat**
 truth-sources (run_in_env / evidence.cli_which / _package_in_registry) are
 mocked so every branch is deterministic. Meter 63/125 → **64/125 (51%)**.
 **Status: certified.**
+
+### CERT-6 — C4 crash-safety: 64-tool harness + 9 crashes fixed
+`tests/test_c4_crash_safety.py` drives EVERY agent-facing MCP tool with hostile
+input (missing env/project/pipeline, bad paths, empty/malformed/wrong-type args)
+and asserts each returns an interpretable dict — an outcome tag where a gated
+action was attempted — never an uncaught exception (which under full-auto is a
+dead end: the agent gets a traceback it can't branch on). A safety net
+neutralises every external boundary (subprocess/Popen/urllib/requests) and
+scopes pipeline-state + job writes to tmp; a ratchet asserts every `@mcp.tool()`
+has a battery entry (it already caught a missed tool, `check_gpu`).
+
+**9 real crashes found and fixed:**
+1. `transfer.upload`/`download` — `KeyError` on unknown project/env (the auth
+   lookup raises; handler didn't catch it) → `refused`.
+2. `bridge.globus_task_status` — same `KeyError`, inlined + unguarded → `refused`.
+3. `job_manager.start` — `ProcessLookupError` from `os.getpgid` on a
+   fast-exiting child (a real race, not just the fake) → race-safe; also now
+   refuses empty command + nonexistent env before spawning.
+4. `data.download_reference_database` — built a doomed empty-URL download instead
+   of validating → refuses empty name/url/local_path up front.
+5. `package_search` — `JSONDecodeError` on a 200-but-non-JSON registry response
+   (rate-limit/proxy page) → `broke` tag (both `.json()` sites).
+6. `workflow.write_pipeline_provenance` — pydantic `ValidationError` → `refused`.
+7. `validate_output(files=[None])` — `AttributeError` on a non-dict batch entry
+   → records it failed and continues.
+8. `mark_step_validated(step="x")` — `TypeError` on `1 <= step <= len` → coerces
+   int, refuses `mark_validated.bad_step`.
+
+Query/probe/idempotent tools (resolve_tool, search_package, select_test_data,
+check_gpu, check_service_health, discard_pipeline_draft, install_pipeline_brief)
+return interpretable data dicts by design — the harness requires no-crash + dict
+for them, a tag only where a gated action was attempted. All 8 fixes are
+mutation-verified (reverting each fails its test). **Status: certified.**
+
+**PROCESS LESSON:** `git checkout -- <file>` during mutation testing reverts to
+HEAD and **silently clobbers uncommitted fixes**. It wiped two fixes mid-session
+(re-applied). Mutation-test with in-memory backup/restore, OR commit first.
