@@ -899,6 +899,12 @@ def install_r_package(
     # silently failed but Rscript would otherwise exit 0.
     rscript = (
         "lib <- file.path(Sys.getenv('CONDA_PREFIX'),'lib','R','library'); "
+        # Pin the canonical Bioconductor mirror BEFORE any BiocManager call. A stale
+        # BioC_mirror in the ambient R config (observed: a leaked mirrors.ustc.edu.cn
+        # in a conda r-base base config) silently breaks BiocManager::install with a
+        # 404/unreachable mirror. The freeze-side generator (ic.r_package) already
+        # pins this; the host primitive must match so install==ship behaves the same.
+        "options(BioC_mirror='https://bioconductor.org'); "
         "if(!requireNamespace('BiocManager',quietly=TRUE)) "
         "install.packages('BiocManager',lib=lib,repos='https://cloud.r-project.org'); "
         f"{install_block}; "
