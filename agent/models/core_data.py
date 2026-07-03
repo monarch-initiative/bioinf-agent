@@ -112,7 +112,8 @@ class InstallMethod(BaseModel):
       - openjdk is installed via conda in the same env
       - the JAR is downloaded to {env}/share/{tool}/{tool}.jar
       - a wrapper script is written to {env}/bin/{tool}
-    This means conda-pack captures the full JVM → Docker image is self-contained.
+    The container-native freeze installs the JVM (openjdk) INTO the ship image, so
+    the shipped image is self-contained.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -219,7 +220,7 @@ class RuntimeEnvironment(BaseModel):
     type="conda"   — standard: activate env, call binary directly (default).
     type="jar"     — Java tool: conda env contains openjdk (from conda-forge);
                      tool is invoked as `java <java_flags> -jar <jar_path>`.
-                     conda-pack bundles the JVM so the Docker image is self-contained.
+                     The container-native freeze bakes the JVM into the ship image.
     type="docker"  — tool is only available via a pre-pulled Docker image;
                      no conda env (use docker_image field).
     type="native"  — tool is a system binary, no special env needed.
@@ -1124,7 +1125,7 @@ class PipelineSpec(BaseModel):
     runtime_environment: describes how the primary tool is invoked.
       - type="conda"  → standard (default for most tools)
       - type="jar"    → Java tool; openjdk is in the conda env, JAR at jar_path.
-                        conda-pack bundles the JVM → Docker image is self-contained.
+                        The container-native freeze bakes the JVM into the ship image.
 
     reference_free: True for de novo assemblers (hifiasm, Flye, Canu) and tools
       that produce output without any reference genome.  Phase 3 skips the genome

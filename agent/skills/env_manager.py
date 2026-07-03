@@ -215,9 +215,12 @@ class EnvManager:
         for ch in channels:
             channel_args += ["-c", ch]
 
-        # Also install conda-pack so we can build Docker images later
-        if "conda-pack" not in " ".join(specs):
-            specs.append("conda-pack")
+        # (Historical: conda-pack was auto-added here to tarball the env for the
+        # host Docker build. That build path is RETIRED — freeze is container-native
+        # and never conda-packs, per freeze_tools/docker_builder — so we no longer
+        # install conda-pack into every env. The filter-it-out guards in env_tools /
+        # resources / spec_writer stay as a defensive no-op for envs that still have
+        # it from bootstrap_core or a manual install.)
 
         cmd = (
             [self._conda_exe, "install", "--prefix", str(env_path), "--yes", "--quiet"]
