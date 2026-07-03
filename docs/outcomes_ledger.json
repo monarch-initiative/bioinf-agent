@@ -2487,7 +2487,7 @@
     "func": "_check_sam",
     "where": "agent/validators/output_validator.py:126",
     "end_line": 127,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.sam_quickcheck_ok",
@@ -2497,7 +2497,7 @@
     "func": "_check_sam",
     "where": "agent/validators/output_validator.py:128",
     "end_line": 129,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.sam_text_ok",
@@ -2507,7 +2507,7 @@
     "func": "_sam_text_fallback",
     "where": "agent/validators/output_validator.py:139",
     "end_line": 139,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.fastq_text_ok",
@@ -2517,7 +2517,7 @@
     "func": "_check_fastq",
     "where": "agent/validators/output_validator.py:163",
     "end_line": 163,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.fasta_text_ok",
@@ -2527,7 +2527,7 @@
     "func": "_check_fasta",
     "where": "agent/validators/output_validator.py:182",
     "end_line": 182,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.vcf_ok",
@@ -2537,7 +2537,7 @@
     "func": "_check_vcf",
     "where": "agent/validators/output_validator.py:188",
     "end_line": 188,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.vcf_text_ok",
@@ -2547,7 +2547,7 @@
     "func": "_check_vcf",
     "where": "agent/validators/output_validator.py:201",
     "end_line": 208,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.bed_ok",
@@ -2557,7 +2557,7 @@
     "func": "_check_bed",
     "where": "agent/validators/output_validator.py:222",
     "end_line": 222,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.bai_ok",
@@ -2567,7 +2567,7 @@
     "func": "_check_bai",
     "where": "agent/validators/output_validator.py:229",
     "end_line": 229,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.bigwig_ok",
@@ -2577,7 +2577,7 @@
     "func": "_check_bigwig",
     "where": "agent/validators/output_validator.py:236",
     "end_line": 236,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.counts_ok",
@@ -2587,7 +2587,7 @@
     "func": "_check_counts_matrix",
     "where": "agent/validators/output_validator.py:247",
     "end_line": 247,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.gtf_ok",
@@ -2597,7 +2597,7 @@
     "func": "_check_gtf",
     "where": "agent/validators/output_validator.py:257",
     "end_line": 257,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.gfa_ok",
@@ -2607,7 +2607,7 @@
     "func": "_check_gfa",
     "where": "agent/validators/output_validator.py:274",
     "end_line": 279,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.log_ok",
@@ -2617,7 +2617,7 @@
     "func": "_check_log",
     "where": "agent/validators/output_validator.py:284",
     "end_line": 285,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.json_ok",
@@ -2627,7 +2627,7 @@
     "func": "_check_json",
     "where": "agent/validators/output_validator.py:300",
     "end_line": 305,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.jsonl_ok",
@@ -2637,7 +2637,7 @@
     "func": "_check_jsonl",
     "where": "agent/validators/output_validator.py:331",
     "end_line": 332,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.html_ok",
@@ -2647,7 +2647,7 @@
     "func": "_check_html",
     "where": "agent/validators/output_validator.py:345",
     "end_line": 345,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.tabular_ok",
@@ -2657,7 +2657,7 @@
     "func": "_check_tabular",
     "where": "agent/validators/output_validator.py:362",
     "end_line": 363,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.txt_ok",
@@ -2667,7 +2667,7 @@
     "func": "_check_txt",
     "where": "agent/validators/output_validator.py:383",
     "end_line": 383,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.any_ok",
@@ -2677,7 +2677,7 @@
     "func": "_check_any",
     "where": "agent/validators/output_validator.py:386",
     "end_line": 386,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.seqkit_stats_ok",
@@ -2687,7 +2687,7 @@
     "func": "_parse_seqkit_stats",
     "where": "agent/validators/output_validator.py:485",
     "end_line": 493,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "validate.empty_allowed",
@@ -2697,7 +2697,7 @@
     "func": "validate",
     "where": "agent/validators/output_validator.py:64",
     "end_line": 72,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "data.no_test_data_on_disk",
@@ -4537,6 +4537,6 @@
     "func": "validate",
     "where": "agent/validators/output_validator.py:73",
     "end_line": 74,
-    "named_in_test": false
+    "named_in_test": true
   }
 ]

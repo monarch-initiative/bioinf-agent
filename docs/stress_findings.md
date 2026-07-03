@@ -134,3 +134,18 @@ adopted env's report is less informative than a built one — no package
 inventory for a human or downstream audit.
 **Proposed fix:** pull + inspect the adopted image to populate its SBOM, so
 adopted and built envs' reports are equally complete. Low priority.
+
+### CERT-4 — C1 (validators): all 22 output validators certified against false-greens
+Every `OutputValidator._ok` proven now has TWO adversarial anchors
+(`tests/test_validator_certification.py`): a VALID fixture → proven + the
+specific `_ok` code (real green, executed + named), and a MALFORMED
+plausible-but-wrong fixture of the SAME type → NOT proven (passed=False). The
+validators are the honesty-critical core of Layer 2 (seal I3/I4 rest on them);
+a false green means an autonomous agent trusts corrupt output. Covers the text
+fallbacks (sam/fastq/fasta/vcf), the magic-byte checks (bai/bigwig), the
+structural parsers (bed/counts/gtf/gfa/json/jsonl/html/tsv/txt), the
+tool-success paths (sam_ok/sam_quickcheck_ok/vcf_ok/seqkit_stats_ok, `_run_tool`
+mocked deterministic), and the opt-in `empty_allowed`. Notable false-green
+attacks blocked: `touch foo.html` (html_no_prefix), a binary blob renamed .txt
+(txt_binary), ragged tabular, non-int BED coords, seq/qual length mismatch.
+Meter 41/125 → **63/125 (50%)**. **Status: certified.**
