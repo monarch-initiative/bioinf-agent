@@ -820,6 +820,7 @@ def install_r_package(
     pipeline_id: str = "",
     step: int = 0,
     deps_first: list[str] = [],
+    functional_check: str = "",
 ) -> dict:
     """Install an R package end-to-end with category-correct discovery built in.
 
@@ -828,6 +829,20 @@ def install_r_package(
       bioconductor  — BiocManager::install("name")
       github:owner/repo  — remotes::install_github("owner/repo", dependencies=FALSE)
                           (use deps_first to pre-install undeclared transitive deps)
+
+    `functional_check` (optional but STRONGLY preferred for tools where import ≠
+    works): a SELF-CONTAINED R expression that actually RUNS the package on tiny
+    inline-generated data and `stop()`s if it doesn't produce a valid result — no
+    external data file (it becomes the freeze-side VALIDATED_IN_IMAGE evidence, so
+    it must run inside the ship image with nothing staged). The default validation
+    is only a `requireNamespace()` load-or-die = "the namespace loads"; that is NOT
+    proof the tool works. The GAPIT probe confirmed the hazard: a package can
+    `library()` an UNDECLARED dep inside a rarely-hit code path, install clean,
+    import clean, and fail only at runtime. When `functional_check` is given it
+    runs after the import check AND is recorded as install_method.functional_evidence
+    so `freeze` proves the tool RAN, not merely imported — mirroring the functional
+    smoke `install_release_binary`/`install_git_repo` already carry. Example (GAPIT):
+    `m<-matrix(sample(0:2,600,TRUE),60); ... myGAPIT<-GAPIT(...); if(is.null(myGAPIT))stop('GAPIT produced no result')`.
 
     Encapsulates everything the CLAUDE.md "R tools" section used to require
     the agent to remember:
@@ -916,6 +931,17 @@ def install_r_package(
         f"Rscript -e \"if(!requireNamespace('{check_name}',quietly=TRUE)) quit(status=1); "
         f"cat(as.character(packageVersion('{check_name}')))\""
     )
+    # FUNCTIONAL evidence (optional): actually RUN the package. Wrapped so the tool
+    # is loaded then the agent's self-contained expression exercises it; a stop()
+    # inside → non-zero → the install is judged FAILED (imports-but-doesn't-run is a
+    # real failure). This command is what freeze re-runs for VALIDATED_IN_IMAGE, so
+    # "validated" means "ran". Single-quote R strings only (outer double quotes).
+    functional_command = ""
+    if functional_check:
+        functional_command = (
+            f"Rscript -e \"suppressPackageStartupMessages(library('{check_name}')); "
+            f"{functional_check}\""
+        )
 
     # Delegate to run_install_command for the actual install_step plumbing.
     result = _ms._env_mgr.run_in_env(env_name, command, timeout=1800)
@@ -958,13 +984,33 @@ def install_r_package(
             result["verify_command"]  = verify_command
             result["verify_output"]   = (vresult.get("stdout") or "")[:500]
             result["resolved_version"] = r_version
+            # FUNCTIONAL check: import passed — now prove it RUNS. A failure here is a
+            # real install failure (imports but doesn't work), surfaced loudly.
+            if functional_command:
+                fresult = _ms._env_mgr.run_in_env(env_name, functional_command, timeout=600)
+                if fresult.get("returncode") != 0:
+                    result["returncode"] = fresult.get("returncode") or 1
+                    result["success"]    = False
+                    result["functional_check_failed"] = True
+                    result["stderr"] = (result.get("stderr") or "") + (
+                        f"\n[functional check failed — {check_name} imports but did not run: "
+                        f"{(fresult.get('stderr') or '')[-300:]}]")
+                else:
+                    result["functional_command"] = functional_command
+                    result["functional_output"]  = (fresult.get("stdout") or "")[:500]
 
     if pipeline_id:
+        im_record = {"type": "r_install", "source": im_source}
+        # Carry the FUNCTIONAL evidence into install_method so freeze re-runs it for
+        # VALIDATED_IN_IMAGE (validated == RAN, not just imported). Absent → freeze
+        # falls back to the import-only evidence (back-compat).
+        if result.get("functional_command"):
+            im_record["functional_evidence"] = result["functional_command"]
         ip_record = {
             "name":    check_name,
             "channel": channel,
             "source":  im_source,
-            "install_method": {"type": "r_install", "source": im_source},
+            "install_method": im_record,
         }
         if result.get("resolved_version"):
             ip_record["version"] = result["resolved_version"]

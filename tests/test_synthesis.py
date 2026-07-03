@@ -380,6 +380,75 @@ def test_spack_generator_store_under_opt_tools_and_relocation():
     assert spec["evidence"] == "bzip2 --help" and spec["tool"] == "bzip2"
 
 
+# -- functional validation: "validated means ran" for interpreted R packages ----
+# (the GAPIT probe finding — import != works; a frozen R artifact must be able to
+#  prove the package RAN, not just that its namespace loaded).
+def test_r_install_freeze_uses_functional_evidence_when_present():
+    """When the install captured a functional_evidence, freeze's r_install spec uses
+    IT as the VALIDATED_IN_IMAGE evidence — so the shipped image proves the tool ran."""
+    func = ("Rscript -e \"library('GAPIT'); m<-GAPIT(Y=y,GD=gd,GM=gm,model='GLM'); "
+            "if(is.null(m)) stop('GAPIT produced no result')\"")
+    record = {"name": "GAPIT", "type": "r_install", "install_method": {
+        "type": "r_install", "source": "remotes::install_github('jiabowang/GAPIT')",
+        "functional_evidence": func}}
+    spec = env_freeze._map_install(record)["spec"]
+    assert spec["evidence"] == func                  # functional smoke, verbatim
+    assert "GAPIT(" in spec["evidence"]              # actually invokes the tool
+    assert "packageVersion" not in spec["evidence"]  # NOT the import-only default
+
+
+def test_r_install_freeze_falls_back_to_import_evidence_without_functional():
+    """No functional_evidence → the default import evidence (back-compat), so old
+    R installs still freeze — just proving 'imports', which is disclosed as such."""
+    record = {"name": "edgeR", "type": "r_install",
+              "install_method": {"type": "r_install", "source": "BiocManager::install('edgeR')"}}
+    spec = env_freeze._map_install(record)["spec"]
+    assert "library(edgeR)" in spec["evidence"] or "packageVersion" in spec["evidence"]
+    assert "GAPIT(" not in spec["evidence"]
+
+
+def test_install_r_package_records_functional_evidence(monkeypatch):
+    """install_r_package runs the functional_check after the import check and records
+    it into install_method.functional_evidence (so freeze can re-run it)."""
+    from agent.mcp_tools import env_tools as E
+    import agent.mcp_server as ms
+    calls = []
+    def _run(env, cmd, **k):
+        calls.append(cmd)
+        # import verify prints a version; everything returns rc=0
+        return {"returncode": 0, "stdout": "4.1.0" if "packageVersion" in cmd else "", "stderr": ""}
+    captured = {}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", _run, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "add_install_step",
+                        lambda pid, data, replace_step=0: captured.update(data) or 0, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "cache_verification", lambda *a, **k: None, raising=False)
+
+    r = E.install_r_package("envx", "GAPIT", "github:jiabowang/GAPIT", pipeline_id="p",
+                            functional_check="if(is.null(GAPIT)) stop('x')")
+    assert r.get("returncode") == 0
+    # the functional command actually ran (a call that invokes the tool, not just import)
+    assert any("library('GAPIT')" in c and "packageVersion" not in c for c in calls)
+    im = captured["installed_packages"][0]["install_method"]
+    assert "functional_evidence" in im
+    assert "GAPIT" in im["functional_evidence"]
+
+
+def test_install_r_package_functional_failure_fails_the_install(monkeypatch):
+    """Imports-but-doesn't-run must be a FAILED install, not a silent green."""
+    from agent.mcp_tools import env_tools as E
+    import agent.mcp_server as ms
+    def _run(env, cmd, **k):
+        # install + import verify pass; the FUNCTIONAL run fails (tool doesn't work)
+        if "library('GAPIT')" in cmd and "packageVersion" not in cmd:
+            return {"returncode": 1, "stdout": "", "stderr": "could not find function 'foo'"}
+        return {"returncode": 0, "stdout": "4.1.0" if "packageVersion" in cmd else "", "stderr": ""}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", _run, raising=False)
+    r = E.install_r_package("envx", "GAPIT", "github:jiabowang/GAPIT",
+                            functional_check="stop('boom')")
+    assert r.get("returncode") != 0
+    assert r.get("functional_check_failed") is True
+
+
 def test_map_install_routes_spack():
     record = {"name": "bzip2", "type": "spack",
               "install_method": {"type": "spack", "package": "bzip2", "spack_ref": "v0.22.1",

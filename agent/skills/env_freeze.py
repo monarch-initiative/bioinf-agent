@@ -345,7 +345,11 @@ def _map_install_spec(
                                       build_env=im.get("build_env") or "")}
 
     if t == "r_install":
-        return {"spec": ic.r_package(name, source=_r_source_from_method(im))}
+        # functional_evidence (when the install captured a self-contained functional
+        # smoke) becomes the VALIDATED_IN_IMAGE evidence → freeze proves the package
+        # RAN, not merely imported. Absent → ic.r_package's default import evidence.
+        return {"spec": ic.r_package(name, source=_r_source_from_method(im),
+                                     evidence=im.get("functional_evidence") or "")}
 
     if t == "binary":
         la = resolve_linux_asset(im.get("binary_url") or "")
