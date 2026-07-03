@@ -214,3 +214,34 @@ def test_empty_allowed_only_with_flag(tmp_path):
     assert ok.get("outcome") == "proven" and ok.get("code") == "validate.empty_allowed", ok
     refused = v.validate(str(p), "log")
     assert refused.get("outcome") == "refused" and refused.get("code") == "validate.file_empty", refused
+
+
+# ---------------------------------------------------------------------------
+# Long comment/meta header (VEP-probe finding #3): a tabular validator must
+# stream PAST a comment header of any length. VEP --tab emits ~30 '##' lines
+# before data; the old head(20) window sampled only comments and FALSELY
+# rejected a valid annotated file as 'no data rows' (a validator false-negative
+# — a real output the agent then can't trust). Regression-locked here.
+# ---------------------------------------------------------------------------
+def test_tabular_streams_past_long_comment_header(tmp_path):
+    v = _validator()
+    p = tmp_path / "vep_out.tsv"
+    header = "\n".join(f"## meta line {i}" for i in range(29))          # 29 '##' lines
+    colhdr = "#Uploaded_variation\tLocation\tAllele\tConsequence"        # '#' column header
+    data = "\n".join(f"v{i}\tchr22:{1000+i}\tG\tmissense_variant" for i in range(12))
+    p.write_text(header + "\n" + colhdr + "\n" + data + "\n")
+    r = v.validate(str(p), "tsv")
+    assert r.get("outcome") == "proven" and r.get("passed") is True, r
+    assert r.get("code") == "validate.tabular_ok"
+    assert r.get("columns") == 4 and r.get("rows_sampled") == 12, r
+
+
+def test_tabular_comment_only_still_fails(tmp_path):
+    """A file that is ALL comment/meta and no data rows must NOT pass — the fix
+    widens the data search, it must not turn a genuinely empty-of-data file green."""
+    v = _validator()
+    p = tmp_path / "hdr_only.tsv"
+    p.write_text("\n".join(f"## only meta {i}" for i in range(40)) + "\n")
+    r = v.validate(str(p), "tsv")
+    assert r.get("outcome") != "proven" and r.get("passed") is False, r
+    assert r.get("code") == "validate.tabular_no_rows", r

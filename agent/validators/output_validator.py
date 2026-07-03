@@ -346,16 +346,39 @@ class OutputValidator:
         return refused("validate.html_no_prefix", passed=False, validation_method="html_header",
                 error=f"no <!DOCTYPE html / <html prefix; first bytes: {head[:40]!r}")
 
+    def _head_data_lines(self, path: Path, n: int, comment: str = "#") -> list[str]:
+        """First `n` DATA lines — streams PAST a comment/meta header of ANY length
+        (skipping `comment`-prefixed and blank lines). A fixed head(20) window sampled
+        BEFORE filtering comments returns nothing but header for a tool that emits a
+        long meta block: VEP --tab prints ~30 '##' lines before data, so the old
+        _check_tabular rejected a perfectly valid annotated file as 'no data rows'."""
+        out: list[str] = []
+        try:
+            opener = gzip.open if path.suffix in (".gz", ".bgz") else open
+            with opener(path, "rt", errors="replace") as f:
+                for line in f:
+                    s = line.rstrip("\n").rstrip()
+                    if not s or s.startswith(comment):
+                        continue
+                    out.append(s)
+                    if len(out) >= n:
+                        break
+        except Exception:
+            return []
+        return out
+
     def _check_tabular(self, path: Path, sep: str, label: str) -> dict:
-        """Generic tabular sanity: at least one row, consistent column count
-        across the first 20 sampled rows."""
-        rows = self._head_lines(path, 20)
-        if not rows:
+        """Generic tabular sanity: at least one DATA row, consistent column count
+        across the first 20 DATA rows — streaming past a comment/meta header of any
+        length (see _head_data_lines)."""
+        first = self._head_lines(path, 1)
+        if not first or not first[0]:
             return refused("validate.tabular_empty", passed=False, validation_method=f"{label}_parse", error="empty")
-        cols = [len(r.split(sep)) for r in rows if r and not r.startswith("#")]
-        if not cols:
+        rows = self._head_data_lines(path, 20)
+        if not rows:
             return refused("validate.tabular_no_rows", passed=False, validation_method=f"{label}_parse",
-                    error="no data rows")
+                    error="no data rows (comment/meta header only)")
+        cols = [len(r.split(sep)) for r in rows]
         if len(set(cols)) > 1:
             return refused("validate.tabular_ragged", passed=False, validation_method=f"{label}_parse",
                     error=f"inconsistent column counts across rows: {sorted(set(cols))[:5]}")
