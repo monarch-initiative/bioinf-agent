@@ -1310,6 +1310,27 @@ def test_env_build_verified_in_image_success_is_proven(monkeypatch):
     assert out["verifications"][0]["passed"] is True
 
 
+def test_env_build_built_is_proven_when_every_tool_installs(monkeypatch):
+    """env_build.built: the container build completes only when EVERY long-tail
+    tool's install returns success in-container. Mock cb.start + cb.install to
+    succeed (no conda/pip layer) so the install-loop success path reaches proven."""
+    from agent.skills.env_build import EnvBuild
+    from agent.skills.outcomes import proven as _p
+    eb = EnvBuild(name="bioinf_x")
+    eb.tools = [{"command": "curl ... tool", "evidence": "tool --version",
+                 "purpose": "tool (binary)", "tool": "tool"}]
+    monkeypatch.setattr(eb.cb, "start", lambda: {"success": True})
+    monkeypatch.setattr(eb.cb, "install", lambda spec, **k: _p("container_build.run_ok", success=True))
+    out = eb.build()
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "env_build.built", out
+    # and a FAILED tool install must NOT be proven (the honest negative).
+    monkeypatch.setattr(eb.cb, "install",
+                        lambda spec, **k: {"success": False, "stderr": "boom"})
+    bad = eb.build()
+    assert bad.get("outcome") != "proven" and bad.get("code") == "env_build.install_failed", bad
+
+
 def test_env_recipe_reproduced_is_proven_on_digest_match():
     """env_recipe.reproduced: rebuilding from the recipe alone and converging to
     the recorded content_digest is the honest reproducibility green. `build_fn` is
@@ -1348,6 +1369,23 @@ def test_env_build_cache_hit_returns_proven():
     assert out.get("outcome") == "proven", out
     assert out.get("code") == "env_build.cache_hit", out
     assert out.get("cached") is True
+
+
+def test_freeze_cache_hit_returns_proven_artifact_by_hash(monkeypatch):
+    """freeze.cache_hit: an anchored EnvCache hit (image confirmed present) returns
+    the proven artifact by request_key with NO re-solve — the scale unlock. The
+    green must reflect a real anchored lookup (a wrong hit ships a wrong env)."""
+    from agent.mcp_tools import freeze_tools
+    from agent import mcp_server as _ms
+    digest = "sha256:" + "a" * 64
+    monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+    monkeypatch.setattr(_ms._env_cache, "lookup_anchored",
+                        lambda rkey, present: {"image": "img", "image_digest": digest,
+                                               "content_digest": digest, "mode": "build"})
+    out = freeze_tools.freeze(env_name="bioinf_cached_zzz", tools=["samtools=1.21"])
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "freeze.cache_hit", out
+    assert out.get("cache_hit") is True
 
 
 def test_freeze_adopt_honesty_refuses_policy_violating_biocontainer(monkeypatch):

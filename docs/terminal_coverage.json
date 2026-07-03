@@ -1,8 +1,8 @@
 {
   "measured_terminals": 464,
-  "verified": 81,
-  "exercised": 148,
-  "dark": 235,
+  "verified": 84,
+  "exercised": 146,
+  "dark": 234,
   "by_where": {
     "agent/mcp_tools/env_tools.py:430": true,
     "agent/mcp_tools/freeze_tools.py:339": true,
@@ -56,7 +56,7 @@
     "agent/skills/env_build.py:113": false,
     "agent/skills/env_build.py:118": false,
     "agent/skills/env_build.py:122": false,
-    "agent/skills/env_build.py:136": false,
+    "agent/skills/env_build.py:136": true,
     "agent/skills/env_build.py:173": true,
     "agent/skills/env_build.py:274": false,
     "agent/skills/env_freeze.py:274": false,

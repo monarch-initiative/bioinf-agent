@@ -527,7 +527,7 @@
     "func": "build",
     "where": "agent/skills/env_build.py:136",
     "end_line": 136,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_build.verification_in_image_failed",
@@ -1807,7 +1807,7 @@
     "func": "freeze",
     "where": "agent/mcp_tools/freeze_tools.py:184",
     "end_line": 185,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.built",
@@ -2017,7 +2017,7 @@
     "func": "run",
     "where": "agent/skills/container_build.py:627",
     "end_line": 627,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "container_build.frozen",
@@ -2087,7 +2087,7 @@
     "func": "build",
     "where": "agent/skills/env_build.py:137",
     "end_line": 137,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_build.verified_in_image",
