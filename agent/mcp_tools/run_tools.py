@@ -166,6 +166,20 @@ def run_pipeline_step(
         # produced; the caller just needs to know their output_types key
         # didn't bind to anything (typo, wrong extension, file not produced).
         out["output_types_unmatched"] = unmatched
+    # Legibility (sea-trial finding): rc=0 + the caller expected outputs
+    # (output_types given) + NOTHING detected is the silent-empty trap. The step
+    # only sees files created/modified under watch_dir (defaults to the input's
+    # dir), so an output written via `-o <path>`/`> <path>` to another directory
+    # goes undetected — and an undetected output fails I3 at seal. Not an error
+    # (the run genuinely succeeded); a hint so an unattended agent self-corrects.
+    if result.get("returncode") == 0 and output_types and not result.get("detected_outputs"):
+        out["output_detection_hint"] = (
+            "rc=0 but no outputs were detected. run_pipeline_step only sees files "
+            "created/modified under watch_dir (default: the input's directory). If "
+            "your command writes via `-o <path>`/`> <path>` to a different dir, pass "
+            "watch_dir=<that dir> so the output is detected and validated — otherwise "
+            "it will fail I3 (no validated detected_outputs) at seal_workflow."
+        )
     return out
 
 

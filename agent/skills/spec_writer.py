@@ -137,6 +137,21 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     }
 
 
+def _is_output_slot(slot: str) -> bool:
+    """The I4 self-test convention, in ONE place (was duplicated inline).
+
+    The self-test runs each trial in a fresh scratch dir and scans ONLY that dir
+    for usage.outputs[*].files. So it must know which template placeholders are
+    OUTPUT targets — those get the scratch path substituted so produced files land
+    where the scan looks. A placeholder is an output slot when its name is
+    {OUTPUT_DIR}/{OUT_DIR} or contains 'output'. Any other slot keeps the trial's
+    declared value; an output written through an UNRECOGNIZED slot lands outside
+    the scratch dir and is invisible to the scan (the sea-trial `{OUT_TSV}` trap).
+    Referenced by the I4 failure hint so the refusal explains this convention."""
+    s = slot.lower()
+    return "output" in s or "out_dir" in s
+
+
 def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> dict:
     """Fallback single-trial inference from pipeline_steps[*].inputs.
 
@@ -165,8 +180,7 @@ def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> di
 
     substitutions: dict = {}
     for slot in placeholders:
-        slot_lower = slot.lower()
-        if "output" in slot_lower or "out_dir" in slot_lower:
+        if _is_output_slot(slot):
             continue   # _run_one_trial fills these with scratch
         slot_spec = next((i for i in inputs_spec if i.get("name") == slot), None)
         fmt = (slot_spec.get("format") or "").lower() if slot_spec else ""
@@ -211,7 +225,7 @@ def _run_one_trial(
 
     # Always override output slots with this trial's scratch dir.
     for slot in placeholders:
-        if "output" in slot.lower() or "out_dir" in slot.lower():
+        if _is_output_slot(slot):
             subs[slot] = str(scratch)
 
     missing = [s for s in placeholders if s not in subs or not subs[s]]
@@ -260,14 +274,34 @@ def _run_one_trial(
                 matched_files.setdefault(pat, []).extend((m, declared_type) for m in matches)
 
     if missing_outputs:
-        return {
+        # Legibility (sea-trial finding): the raw "produced_files: []" gives an
+        # unattended agent no way to see WHY nothing landed. The usual cause is an
+        # output written through a placeholder the self-test didn't recognize as an
+        # output slot (so it kept the agent's own absolute path instead of the
+        # scratch dir). Disclose the convention + which slots WERE recognized so the
+        # fix is obvious — without weakening the check.
+        recognized = sorted(s for s in placeholders if _is_output_slot(s))
+        out = {
             "name": trial_name, "ok": False,
             "reason": "command ran but expected outputs missing",
             "missing_outputs": missing_outputs,
             "produced_files": produced[:20],
+            "recognized_output_slots": recognized,
             "command_run": command, "scratch_dir": str(scratch),
             "substitutions": subs,
         }
+        if not produced:
+            out["hint"] = (
+                "Nothing landed in the self-test scratch dir. The self-test scans "
+                "ONLY a fresh scratch dir and fills that path into OUTPUT slots — "
+                "placeholders named {OUTPUT_DIR}/{OUT_DIR} or containing 'output' "
+                f"(recognized here: {recognized or 'NONE'}). An output written via "
+                "e.g. `-o {OUT_TSV}` uses an unrecognized slot, so the file lands "
+                "outside the scratch dir and is invisible. Fix: write outputs under "
+                "a recognized slot, e.g. `-o {OUTPUT_DIR}/stats.tsv`, and declare its "
+                "glob in usage.outputs[*].files."
+            )
+        return out
 
     # Step 2: type-aware validation on each matched file. Skips when the
     # validator wasn't passed in (legacy path / unit tests), but with the

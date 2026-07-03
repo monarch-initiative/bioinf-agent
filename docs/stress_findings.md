@@ -220,3 +220,47 @@ the text is diagnostic). Regression-locked docker-free
 `test_output_validator_run_tool_survives_non_utf8`). This is the payoff of the
 real-build tier: it exercises paths mocks stub out, where real-world tool
 behaviour lives. Meter 76 → **77/125**. **Status: certified.**
+
+### SEA-TRIAL-1 — unattended end-to-end drive (seqkit), honesty held + 2 legibility fixes
+The Seaworthy sea trial: a FRESH subagent, given only CLAUDE.md + the tool
+surface (no hand-holding of the primitive sequence), drove the full protocol on
+`seqkit` — start → install_conda → select_test_data → run_pipeline_step →
+patch_pipeline(usage) → freeze → run_step_in_container → seal_workflow. Verified
+INDEPENDENTLY (not trusting the agent's self-report): re-ran the honesty gate on
+the persisted record, inspected the sealed WorkflowSpec + ENV.html directly.
+
+**Honesty contract held PERFECTLY (the capstone result):**
+- Freeze took the ADOPT path (pure-conda + published biocontainer) and was
+  correctly gated by `check_adopt` — NOT `check_build`. (Re-running `check_build`
+  on the adopt record trips `VALIDATED_IN_IMAGE.no_evidence` — expected: that's
+  the wrong gate. `check_adopt` requires ADOPTED_BY_DIGEST + POLICY_CLEAN, and
+  `verifications: []` is by design for a trusted-by-digest biocontainer.)
+- The ENV report is scrupulously honest — every claim reads "adopted, trusted by
+  digest, NOT validated in-locus". Zero overclaim. ("Validated in image" is a
+  column header; seqkit's cell says "adopted (biocontainer) trusted by digest".)
+- TWO seal refusals before success — I6 (undeclared `{OUT_TSV}` placeholder) then
+  I4 (self-test produced no output) — were LEGITIMATE and forced real fixes, NOT
+  green-forced. Final: usage_verified + validated_in_shipped_image, digest-pinned.
+
+**FINDINGS (fixed) — both LEGIBILITY, no check weakened:** the two refusals were
+correct but ILLEGIBLE; an unattended agent had to read `spec_writer.py` source to
+learn why. A full-auto agent that can't recover from an opaque refusal is the
+exact failure mode Seaworthy targets.
+1. **I4 self-test output-slot convention was implicit.** The self-test fills the
+   scratch dir into placeholders named `{OUTPUT_DIR}/{OUT_DIR}` or containing
+   `output`; an output via any other slot (`-o {OUT_TSV}`) lands outside scratch →
+   `produced_files: []` with no explanation. Fix: extracted the predicate to ONE
+   tested `_is_output_slot` (was duplicated inline twice), and the refusal now
+   carries `hint` + `recognized_output_slots` naming the convention and the fix
+   (`-o {OUTPUT_DIR}/stats.tsv`). Documented in CLAUDE.md's cheatsheet.
+2. **`run_pipeline_step` silent-empty outputs.** rc=0 + caller expected outputs +
+   nothing detected (written via `-o` outside watch_dir) returned no cue — the
+   undetected output would then fail I3 at seal with no breadcrumb. Fix: returns
+   `output_detection_hint` pointing at watch_dir. Not an error (the run
+   succeeded); a self-correction cue.
+
+All 4 assertions mutation-verified (`tests/test_sea_trial_ergonomics.py`, 12
+tests) — reverting either fix fails its test. Full suite 1065 green. The sea
+trial's value: it proved the certified pieces COMPOSE end-to-end under a
+non-hand-held agent, AND surfaced two full-auto footguns unit tests never would.
+**Status: sea trial PASSED; legibility hardened.**
