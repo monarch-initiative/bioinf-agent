@@ -449,6 +449,44 @@ def test_install_r_package_functional_failure_fails_the_install(monkeypatch):
     assert r.get("functional_check_failed") is True
 
 
+def test_install_pip_package_records_functional_evidence(monkeypatch):
+    """pip analog of the R functional check: install_pip_package runs the
+    functional_check after the import check and records it into install_method.
+    functional_evidence (so freeze proves the pkg RAN, not just imported)."""
+    from agent.mcp_tools import env_tools as E
+    import agent.mcp_server as ms
+    calls = []
+    def _run(env, cmd, **k):
+        calls.append(cmd)
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+    captured = {}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", _run, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "add_install_step",
+                        lambda pid, data, replace_step=0: captured.update(data) or 0, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "cache_verification", lambda *a, **k: None, raising=False)
+
+    r = E.install_pip_package("envx", "pysam", pipeline_id="p",
+                              functional_check="assert pysam.__version__")
+    assert r.get("returncode") == 0
+    assert any("import pysam;" in c for c in calls)      # the functional run actually happened
+    im = captured["installed_packages"][0]["install_method"]
+    assert "functional_evidence" in im and "pysam" in im["functional_evidence"]
+
+
+def test_install_pip_package_functional_failure_fails_install(monkeypatch):
+    """Imports-but-doesn't-run must FAIL a pip install too (no silent green)."""
+    from agent.mcp_tools import env_tools as E
+    import agent.mcp_server as ms
+    def _run(env, cmd, **k):
+        # install + import verify pass; the FUNCTIONAL run fails
+        if cmd.startswith("python -c 'import pysam;"):
+            return {"returncode": 1, "stdout": "", "stderr": "RuntimeError: missing shared lib"}
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", _run, raising=False)
+    r = E.install_pip_package("envx", "pysam", functional_check="pysam.AlignmentFile('x')")
+    assert r.get("returncode") != 0 and r.get("functional_check_failed") is True
+
+
 def test_map_install_routes_spack():
     record = {"name": "bzip2", "type": "spack",
               "install_method": {"type": "spack", "package": "bzip2", "spack_ref": "v0.22.1",

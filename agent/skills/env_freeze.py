@@ -590,7 +590,10 @@ def build_env_image(
             nm = x.get("name", "")
             v = versions.get(nm)
             pip_specs.append(f"{nm}=={v}" if v else nm)
-            pip_verify.append((nm, _pip_presence_check(nm)))
+            # functional_evidence (when the install captured a functional smoke) is the
+            # VALIDATED_IN_IMAGE verify → freeze proves the pkg RAN, not just imported.
+            func = (x.get("install_method") or {}).get("functional_evidence")
+            pip_verify.append((nm, func or _pip_presence_check(nm)))
         eb.add_pip(pip_specs, verify=pip_verify)
     for s in tool_specs:
         eb.add_tool(s)

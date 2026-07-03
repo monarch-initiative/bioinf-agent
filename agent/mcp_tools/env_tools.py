@@ -1051,12 +1051,22 @@ def install_pip_package(
     pip_flags: OptStrList = None,
     pipeline_id: str = "",
     step: int = 0,
+    functional_check: str = "",
 ) -> dict:
     """Install a pip package end-to-end with an auto-verify_command.
 
     Equivalent to running pip install + python -c "import name" inside the env.
     The import-check is the load-or-die: if pip says it installed but the
     package isn't importable, the step is recorded as failed.
+
+    `functional_check` (optional but preferred where import ≠ works): a Python
+    expression that actually RUNS the package (it runs as `python -c "import
+    <name>; <functional_check>"`, so it can assume the module is imported) and
+    raises if the result is wrong. It executes after the import check (imports-but-
+    doesn't-run is a FAILED install) and is recorded as install_method.
+    functional_evidence, so freeze's VALIDATED_IN_IMAGE proves the package RAN,
+    not merely imported — the pip analog of install_r_package's functional_check
+    (the GAPIT/snpStats lesson: import success is not run success).
 
     `pip_flags` (NEW): extra flags passed verbatim to pip install. Use for
     `--no-binary :all:` (force source compile), `--no-build-isolation`,
@@ -1083,6 +1093,9 @@ def install_pip_package(
     _flag_str = " ".join(shlex.quote(f) for f in pip_flags)
     command = " ".join(part for part in (f"pip install", _flag_str, spec) if part)
     verify_command = f"python -c 'import {import_check_name}' || pip show {name} > /dev/null"
+    functional_command = ""
+    if functional_check:
+        functional_command = f"python -c 'import {import_check_name}; {functional_check}'"
 
     result = _ms._env_mgr.run_in_env(env_name, command, timeout=600)
     if result.get("returncode") == 0:
@@ -1096,6 +1109,19 @@ def install_pip_package(
         else:
             result["verify_command"] = verify_command
             result["verify_output"]  = (vresult.get("stdout") or "")[:200] or "(import succeeded)"
+            # FUNCTIONAL check: import passed — now prove it RUNS (validated == ran).
+            if functional_command:
+                fresult = _ms._env_mgr.run_in_env(env_name, functional_command, timeout=600)
+                if fresult.get("returncode") != 0:
+                    result["returncode"] = fresult.get("returncode") or 1
+                    result["success"]    = False
+                    result["functional_check_failed"] = True
+                    result["stderr"] = (result.get("stderr") or "") + (
+                        f"\n[functional check failed — {name} imports but did not run: "
+                        f"{(fresult.get('stderr') or '')[-300:]}]")
+                else:
+                    result["functional_command"] = functional_command
+                    result["functional_output"]  = (fresult.get("stdout") or "")[:500]
 
     if pipeline_id:
         # `pip_flags` persists on install_method so freeze's replay re-emits the
@@ -1106,6 +1132,9 @@ def install_pip_package(
         im: dict = {"type": "pip", "source": command}
         if pip_flags:
             im["pip_flags"] = list(pip_flags)
+        # functional_evidence → freeze uses it as the in-image verify (validated == ran).
+        if result.get("functional_command"):
+            im["functional_evidence"] = result["functional_command"]
         ip_record = {
             "name":    name,
             "channel": "pip",

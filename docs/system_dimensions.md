@@ -16,7 +16,7 @@ Method: probe a real tool that exercises the row → fix what breaks → lock wi
 | 1 | Install tiers: conda/pip/R/jar/binary/cargo/go/source | many | ✅ | exercised across the suite |
 | 2 | Discovery + routing (repo-only, auto-chain) | GAPIT | ✅ | github discovery + auto-adopt + r_github tier |
 | 3 | Validation honesty — R (import ≠ works) | GAPIT | ✅ | `functional_check` → freeze proves RAN (e5bbbe9) |
-| 3b | Validation honesty — pip/Python | Talos | ⬜ | generalize functional_check to install_pip_package |
+| 3b | Validation honesty — pip/Python | (generalized) | ✅ | install_pip_package gained `functional_check` → freeze proves RAN (mirrors R); Talos will use it |
 | 4 | Name collisions (same-name, different tool) | talos/cellranger | ⬜ | guard fires only w/ github_repo; bare-name silent. Fuzzy. |
 | 5 | Reference data / caches (big DB, indexed) | VEP | ✅ | `download_reference_database` (GTF) + bgzip/tabix + VEP `--gtf`/`--fasta` custom mode → real annotations verified. Fixed validator false-negative on long comment headers (VEP `--tab` 30 `##` lines) |
 | 6 | Perl plugins / CPAN tier | VEP plugins | ✅ | `install_perl_package` (Text::CSV) + VEP `--plugin` load proven. Fixed: legible error when cpanm prerequisite missing |
