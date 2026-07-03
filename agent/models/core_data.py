@@ -190,7 +190,12 @@ class ReferenceDatabase(BaseModel):
     name:               str            # e.g. "exomiser_hg38_2402", "vep_cache_111_hg38"
     version:            str            # data bundle version, e.g. "2402", "111"
     size_gb:            Optional[float] = None
-    source_url:         str            # where to download it
+    source_url:         Optional[str] = None   # where it was downloaded from; None for a
+                                               # locally-staged reference with no download
+                                               # origin (download_reference_database always
+                                               # sets it — a fabricated file:// URL is worse
+                                               # than an honest absent one). I5 pins content
+                                               # by sha256, not by URL, so provenance survives.
     local_path:         Optional[str] = None   # absolute path on this machine once downloaded
     available:          bool = False
     description:        Optional[str] = None
