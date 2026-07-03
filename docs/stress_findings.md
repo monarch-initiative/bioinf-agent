@@ -264,3 +264,36 @@ tests) — reverting either fix fails its test. Full suite 1065 green. The sea
 trial's value: it proved the certified pieces COMPOSE end-to-end under a
 non-hand-held agent, AND surfaced two full-auto footguns unit tests never would.
 **Status: sea trial PASSED; legibility hardened.**
+
+### C5 — per-tool SHIP assurance across ALL tiers (uniform-trust hole closed)
+**FINDING:** only the `binary` tier attached `provenance={verified,assurance}`, so
+the ENV report rendered nothing for every other non-conda tier → it IMPLIED
+UNIFORM TRUST. A `source` tool on a floating branch (drifts!) looked identical to a
+digest-pinned one — the report couldn't state HOW each shipped tool is anchored.
+
+**FIX (no check weakened):** one tested `env_freeze._replay_assurance(tier, im)` →
+`(assurance, verified)`, verified=True ONLY for an immutable anchor a rebuild
+reproduces (`commit_pinned`/`built_pinned`/`lock_pinned`); everything else ships
+DISCLOSED-unverified (`ref_pinned_tofu`/`built_unpinned`/`cpan_tofu`/`repo_tofu`/
+`spec_pinned_tofu`/`command_pinned`/`unpinned`). `_map_install` became a thin
+wrapper attaching provenance for every static tier (binary+jar keep inline
+runtime-sha provenance); `freeze_tools._shipped_binary_entry` (extracted for test)
+copies it for ANY tier; `_ASSURANCE_BADGE` gained the rows (verified→ok, else→na).
+conda + flagless-pip stay IMAGE-level (manifest digest / engine lock), already
+disclosed. Certified `tests/test_c5_assurance.py` (38 tests, mutation-verified —
+falsely marking a floating branch verified fails 4). **Meter unchanged (77/125):
+C5 adds disclosure legibility, not new load-bearing provens — deliberately NOT
+gaming the meter. Value = the C5 criterion + a real honesty gap closed.**
+**Status: C5 criterion GREEN.**
+
+## Seaworthy v1 — criteria status (2026-07-03)
+All 5 CRITERIA + the sea trial are now GREEN: C1 (validators+verify+seal
+invariants), C2 (8/8 firewalls), C3 (0 vanished, ratchet-locked), C4 (all 64 tools
+crash-safe), C5 (assurance disclosed across all tiers), SEA-TRIAL-1 (unattended
+seqkit drive, honesty held). The terminal METER (77/125) is the stricter
+per-terminal goal; the remaining ~48 are dominated by subprocess-rc PLUMBING
+provens (thin value, backstopped by the real-certified VALIDATED_IN_IMAGE) +
+heavy-integration real-build provens — grinding them for meter points is the
+box-ticking the milestone warns against. The qualitative bar (autonomous use is
+honest + legible + crash-safe) is met; further work should be driven by real
+long-tail runs surfacing gaps, not meter-chasing.
