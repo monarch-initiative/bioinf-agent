@@ -1261,6 +1261,18 @@ class EnvManager:
         inst = self.run_in_env(env_name, f"{prefix}cpanm {flags} {shlex.quote(target)}", timeout=1800)
         log.append(f"cpanm rc={inst['returncode']}")
         if inst["returncode"] != 0:
+            blob = ((inst.get("stderr") or "") + (inst.get("stdout") or "")).lower()
+            # LEGIBLE prerequisite (VEP probe finding #4): the perl tier needs cpanm in
+            # the env, but nothing auto-installs it — a bare "cpanm install failed" left a
+            # full-auto agent stuck on a command-not-found. Detect that specific case and
+            # return the exact fix so the autonomy loop can self-correct (install then retry).
+            if "cpanm" in blob and any(t in blob for t in
+                                       ("not found", "no such file", "command not found")):
+                return refused("env_manager.perl_cpanm_missing", success=False,
+                        error=(f"cpanm is not installed in env '{env_name}'. install_perl_package "
+                               f"requires it — install the prerequisite first: install_conda_packages("
+                               f"'{env_name}', [{{'spec': 'perl-app-cpanminus', 'channel': 'bioconda'}}]) "
+                               f"(and 'perl' if the env has none), then retry."), log=log)
             return broke("env_manager.perl_cpanm_failed",
                          success=False, error="cpanm install failed",
                          stderr=(inst.get("stderr") or "")[-800:], log=log)

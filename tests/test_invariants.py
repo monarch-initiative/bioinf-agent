@@ -2443,6 +2443,25 @@ def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
     assert im["build_env"] == "HTSLIB_DIR=$CONDA_PREFIX"
 
 
+def test_perl_missing_cpanm_gives_actionable_error(tmp_path, monkeypatch):
+    """VEP probe finding #4: when cpanm isn't in the env, install_perl_package must
+    return an ACTIONABLE refusal naming perl-app-cpanminus — not a bare 'cpanm install
+    failed' that leaves a full-auto agent stuck on command-not-found."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.skills.env_manager import EnvManager
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    em = EnvManager(cfg)
+    em.envs_dir = tmp_path
+    (tmp_path / "bioinf_x").mkdir()
+    monkeypatch.setattr(em, "run_in_env",
+                        lambda env, cmd, timeout=0, **kw: {"returncode": 127, "stdout": "",
+                                                           "stderr": "bash: cpanm: command not found"})
+    r = em.install_perl_package("bioinf_x", "Text::CSV")
+    assert r["outcome"] == "refused" and r["code"] == "env_manager.perl_cpanm_missing"
+    assert "perl-app-cpanminus" in r["error"]
+
+
 def test_container_native_dockerfile_bakes_recorded_commands():
     """The container-native emitter: an engine env-layer from the lock + one verbatim
     RUN per recorded long-tail command (NO per-tier translation), MULTI-STAGE — a
