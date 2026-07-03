@@ -1209,6 +1209,27 @@ def test_verify_env_recipe_invalid_is_refused_firewall(tmp_path):
     assert out.get("code") == "freeze.recipe_invalid", out
 
 
+def test_verify_env_recipe_verified_is_proven_on_reproduction(tmp_path, monkeypatch):
+    """freeze.recipe_verified: when the recipe rebuild SUCCEEDS and converges to the
+    recorded content_digest, verify_env_recipe returns the honest reproducibility
+    green (completes the pair with recipe_not_reproduced). Rebuild mocked."""
+    from agent.mcp_tools import freeze_tools
+    from agent import mcp_server as _ms
+    recipe = tmp_path / "ok.recipe.yaml"
+    recipe.write_text("name: bioinf_x\nversion: '1.0'\n")
+    monkeypatch.setattr(_ms._env_recipe, "rebuild_from_recipe",
+                        lambda rec, **k: {
+                            "success": True, "content_digest_match": True,   # REPRODUCED
+                            "rebuilt_content_digest": "sha256:" + "a" * 64,
+                            "expected_content_digest": "sha256:" + "a" * 64,
+                            "proves": ["COMPLETENESS", "LOCAL DETERMINISM"],
+                            "build": {"stage": "done", "honesty_violations": []}})
+    out = freeze_tools.verify_env_recipe(str(recipe))
+    assert out.get("outcome") == "proven", out
+    assert out.get("code") == "freeze.recipe_verified", out
+    assert out.get("content_digest_match") is True
+
+
 def test_verify_env_recipe_not_reproduced_is_broke_firewall(tmp_path, monkeypatch):
     """ADVERSARIAL (reproducibility firewall / full-auto trust). When the recipe
     rebuild SUCCEEDS but converges to a DIFFERENT content_digest than recorded

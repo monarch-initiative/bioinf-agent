@@ -142,6 +142,33 @@ def test_seaworthy_scope_is_well_defined_and_measurable():
 
 
 @pytest.mark.integration
+def test_measure_executed_expands_to_enclosing_stmt_not_fuzz():
+    """measure_terminal_coverage._executed expands a terminal's span DOWN to its
+    enclosing simple-statement start — because coverage attributes a multi-line
+    `return wrapper(proven(...))` to the statement's first line, below the inner
+    node the extractor anchors on. This must NOT become adjacent-line fuzz: a
+    SIBLING statement running does not count."""
+    import importlib.util
+    from pathlib import Path as _P
+    _root = _P(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "measure_terminal_coverage", _root / "scripts" / "measure_terminal_coverage.py")
+    mtc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mtc)
+
+    # lines 10..12 belong to a statement that STARTS at line 8 (a multi-line
+    # `return _summarize(proven(...))`); the terminal is anchored at 10.
+    mtc._STMT_START_CACHE["fake.py"] = {8: 8, 9: 8, 10: 8, 11: 8, 12: 8, 7: 7}
+    term = {"where": "fake.py:10", "end_line": 12}
+    # coverage recorded only the statement-start line 8 → executed (fixes undercount).
+    assert mtc._executed(term, {"fake.py": {8}}) is True
+    # coverage recorded only line 7 (an ADJACENT sibling statement) → NOT executed
+    # (proves enclosing-stmt, not fuzz — line 7 is a different statement).
+    assert mtc._executed(term, {"fake.py": {7}}) is False
+    # file not measured at all → None.
+    assert mtc._executed(term, {}) is None
+
+
 def test_coverage_state_is_exact_span_not_fuzzy():
     """The coverage classifier must use EXACT [line, end_line] span matching —
     the fuzz variant we rejected marked error branches 'covered' by their

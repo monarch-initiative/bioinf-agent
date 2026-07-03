@@ -28,6 +28,7 @@ does NOT run this — the overlay is an explicit, opt-in measurement step.
 """
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -74,15 +75,57 @@ def _run_suite_under_coverage() -> dict:
     return execmap
 
 
+_STMT_START_CACHE: dict[str, dict[int, int]] = {}
+
+
+def _stmt_starts(rel: str) -> dict[int, int]:
+    """Map each source line to its ENCLOSING simple-statement start line.
+
+    Coverage attributes a multi-line statement — e.g.
+        return _summarize(proven("freeze.cache_hit", **{...}))   # stmt starts here
+                          ^ the extractor anchors the terminal at the inner call/
+                            dict, a LOWER line than the statement start
+    — to the STATEMENT's first line. So a terminal anchored at the inner node can
+    have its whole [line, end_line] span miss the one line coverage recorded. We
+    expand each terminal's span DOWN to its enclosing statement start (which only
+    executes on that terminal's own branch — NOT an adjacent sibling statement, so
+    this does not reintroduce the happy-path-adjacent overcounting exact-span
+    avoided). Innermost stmt wins (a simple stmt can't nest another)."""
+    if rel in _STMT_START_CACHE:
+        return _STMT_START_CACHE[rel]
+    mapping: dict[int, int] = {}
+    path = ROOT / rel
+    try:
+        tree = ast.parse(path.read_text(), filename=rel)
+    except (OSError, SyntaxError):
+        _STMT_START_CACHE[rel] = mapping
+        return mapping
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        start = node.lineno
+        end = getattr(node, "end_lineno", start) or start
+        for ln in range(start, end + 1):
+            # innermost (smallest span) enclosing stmt wins → the simple stmt,
+            # not the compound if/for that contains it.
+            prev = mapping.get(ln)
+            if prev is None or start > prev:
+                mapping[ln] = start
+    _STMT_START_CACHE[rel] = mapping
+    return mapping
+
+
 def _executed(entry: dict, execmap: dict) -> bool | None:
-    """True if any line in the terminal's [line, end_line] span ran; None if the
-    file wasn't measured at all."""
+    """True if any line in the terminal's span ran; None if the file wasn't
+    measured at all. The span is expanded DOWN to the enclosing statement start so
+    a multi-line `return wrapper(proven(...))` isn't undercounted."""
     rel, ln = entry["where"].rsplit(":", 1)
     lines = execmap.get(rel)
     if lines is None:
         return None
-    start = int(ln)
-    end = int(entry.get("end_line") or start)
+    anchor = int(ln)
+    start = _stmt_starts(rel).get(anchor, anchor)   # enclosing-stmt start ≤ anchor
+    end = int(entry.get("end_line") or anchor)
     return any(l in lines for l in range(start, end + 1))
 
 

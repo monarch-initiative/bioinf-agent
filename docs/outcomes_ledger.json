@@ -1827,7 +1827,7 @@
     "func": "verify_env_recipe",
     "where": "agent/mcp_tools/freeze_tools.py:527",
     "end_line": 527,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.guide_rendered",
