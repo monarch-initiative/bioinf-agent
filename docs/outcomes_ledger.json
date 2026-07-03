@@ -2807,7 +2807,7 @@
     "func": "freeze",
     "where": "agent/mcp_tools/freeze_tools.py:124",
     "end_line": 130,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "I13.gated_license_recorded",
@@ -3987,7 +3987,7 @@
     "func": "_check_authored_artifact_integrity",
     "where": "agent/skills/spec_writer.py:680",
     "end_line": 686,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "I8.authored_artifact_mutated",
@@ -4017,7 +4017,7 @@
     "func": "_check_lineage_integrity",
     "where": "agent/skills/spec_writer.py:780",
     "end_line": 786,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "I8.lineage_mutated",
