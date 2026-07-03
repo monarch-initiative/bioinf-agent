@@ -436,7 +436,16 @@ def validate_output(
         validations: dict = {}
         passed_count = failed_count = 0
         merge_status = "merged" if pipeline_id and step > 0 else None
-        for entry in files:
+        for i, entry in enumerate(files):
+            if not isinstance(entry, dict):
+                # A malformed batch entry (None / string / …) must not crash the
+                # whole batch — record it as a failed validation and continue (C4).
+                validations[f"<invalid entry #{i}>"] = refused(
+                    "validate.malformed_entry", passed=False,
+                    error=f"files[] entries must be dicts with a 'path'; "
+                          f"entry {i} is {type(entry).__name__}")
+                failed_count += 1
+                continue
             path = entry.get("path", "")
             etype = entry.get("expected_type", "any")
             entry_allow_empty = bool(entry.get("allow_empty", False))

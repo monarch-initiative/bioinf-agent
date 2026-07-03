@@ -1895,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:793",
-    "end_line": 794,
+    "where": "agent/mcp_tools/workflow_tools.py:801",
+    "end_line": 802,
     "named_in_test": false
   },
   {
@@ -2910,6 +2910,16 @@
     "named_in_test": false
   },
   {
+    "code": "validate.malformed_entry",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "validate_output",
+    "where": "agent/mcp_tools/run_tools.py:443",
+    "end_line": 446,
+    "named_in_test": false
+  },
+  {
     "code": "run_pipeline_step.pipeline_id_required",
     "outcome": "refused",
     "source": "helper",
@@ -3070,13 +3080,23 @@
     "named_in_test": false
   },
   {
+    "code": "mark_validated.bad_step",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "mark_step_validated",
+    "where": "agent/mcp_tools/workflow_tools.py:779",
+    "end_line": 780,
+    "named_in_test": false
+  },
+  {
     "code": "mark_validated.empty_success_guard",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:784",
-    "end_line": 790,
+    "where": "agent/mcp_tools/workflow_tools.py:792",
+    "end_line": 798,
     "named_in_test": false
   },
   {
@@ -3085,8 +3105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:795",
-    "end_line": 797,
+    "where": "agent/mcp_tools/workflow_tools.py:803",
+    "end_line": 805,
     "named_in_test": false
   },
   {

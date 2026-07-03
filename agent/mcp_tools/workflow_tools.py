@@ -770,6 +770,14 @@ def mark_step_validated(
         return refused("mark_validated.bad_status",
                        error="validation_status must be 'passed' or 'failed'",
                        got=validation_status)
+    # `step` is a 1-based index; a non-int (e.g. a stringly-typed arg) must not
+    # reach the `1 <= step <= len(steps)` comparison as a TypeError (C4).
+    if not isinstance(step, int) or isinstance(step, bool):
+        try:
+            step = int(step)
+        except (TypeError, ValueError):
+            return refused("mark_validated.bad_step",
+                           error=f"step must be a 1-based integer, got {step!r}")
     # Guard against the silent-empty-success trap: a step that exited 0 but
     # produced no detected outputs and was never validated cannot be honestly
     # called "passed". The agent should use "failed" or retry the step.

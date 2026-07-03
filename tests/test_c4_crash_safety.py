@@ -186,6 +186,8 @@ def _battery():
          dict(env_name=BAD_ENV, package_name="p", check_command="p --version"), True),
         ("run_in_env", R.run_in_env, dict(env_name=BAD_ENV, command="echo hi"), True),
         ("validate_output", R.validate_output, dict(file_path=BAD_PATH, expected_type="bam"), True),
+        # malformed BATCH entry (None in files[]) must not crash the batch.
+        ("validate_output_malformed", R.validate_output, dict(files=[None, {}]), False),
         # -- service (missing env must refuse before spawning) --------------
         ("start_service", S.start_service,
          dict(env_name=BAD_ENV, service_name="svc", start_command="start", health_check_command="hc"), True),
@@ -212,6 +214,9 @@ def _battery():
         ("stage_authored_artifact", W.stage_authored_artifact,
          dict(pipeline_id=BAD_PID, path=BAD_PATH, role="r", description="d"), True),
         ("mark_step_validated", W.mark_step_validated, dict(pipeline_id=BAD_PID, step=1), True),
+        # stringly-typed step must refuse, not TypeError on the range comparison.
+        ("mark_step_validated_badstep", W.mark_step_validated,
+         dict(pipeline_id=BAD_PID, step="notanint"), True),
     ]
 
 
