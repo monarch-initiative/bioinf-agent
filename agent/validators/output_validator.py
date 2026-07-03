@@ -413,7 +413,13 @@ class OutputValidator:
         resolved = self._resolve_binary(tool)
         run_cmd = [resolved] + cmd[1:] if resolved else cmd
         try:
-            cp = subprocess.run(run_cmd, capture_output=True, text=True, timeout=timeout)
+            # errors="replace": a validator tool can emit non-UTF-8 bytes (a
+            # filename with invalid bytes, a locale-mangled message). Strict
+            # decoding would raise UnicodeDecodeError and crash the validator on
+            # what is really a passing/failing check — the returncode is the
+            # verdict, the text is diagnostic.
+            cp = subprocess.run(run_cmd, capture_output=True, text=True,
+                                errors="replace", timeout=timeout)
             cp.tool_found = resolved is not None
             return cp
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:

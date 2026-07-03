@@ -460,7 +460,13 @@ class ContainerBuild:
 
     @staticmethod
     def _sh(args: list[str], timeout: int = 1800) -> dict[str, Any]:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        # errors="replace": a tool's `--version` / banner probe can emit non-UTF-8
+        # bytes (e.g. `pigz` with a compress flag writes gzip magic 0x1f 0x8b to
+        # stdout). Strict text-mode decoding would raise UnicodeDecodeError and
+        # crash the whole build/validation; we tolerate garbled bytes instead —
+        # the returncode is what the honesty check reads, the text is diagnostic.
+        p = subprocess.run(args, capture_output=True, text=True,
+                           errors="replace", timeout=timeout)
         return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
 
     def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:

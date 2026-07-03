@@ -1297,6 +1297,33 @@ def test_env_build_verification_in_image_failure_is_broke_firewall(monkeypatch):
 # failure-direction firewalls above prove it refuses a bad image; these prove a
 # clean pass is a real green (executed + named), not a rubber stamp.
 
+def test_container_build_sh_survives_non_utf8_output():
+    """REGRESSION (found by the L15 real build): a tool's --version / banner probe
+    can emit non-UTF-8 bytes (pigz writes gzip magic 0x1f 0x8b to stdout under a
+    compress flag). ContainerBuild._sh must decode-tolerantly (errors='replace'),
+    not raise UnicodeDecodeError and crash the whole build/validation. The
+    returncode is preserved (it's the verdict the honesty check reads)."""
+    from agent.skills.container_build import ContainerBuild
+    # printf the gzip magic bytes to stdout — invalid UTF-8.
+    out = ContainerBuild._sh(["bash", "-c", r"printf '\x1f\x8b\x08\x00'; exit 0"])
+    assert out["returncode"] == 0, out          # did not crash; verdict preserved
+    assert isinstance(out["stdout"], str)       # decoded (with replacement chars)
+
+
+def test_output_validator_run_tool_survives_non_utf8(tmp_path):
+    """REGRESSION (same class, validator path): _run_tool must not crash on a tool
+    that emits non-UTF-8 bytes — a validator raising UnicodeDecodeError on tool
+    output would be an uncaught crash on an honesty-critical check."""
+    import yaml as _yaml
+    from pathlib import Path as _P
+    from agent.validators.output_validator import OutputValidator
+    cfg = _yaml.safe_load((_P(__file__).parent.parent / "config" / "agent_config.yaml").read_text())
+    ov = OutputValidator(cfg)
+    cp = ov._run_tool(["bash", "-c", r"printf '\x1f\x8b\xff'; exit 0"])
+    assert cp.returncode == 0                    # decoded tolerantly, no crash
+    assert isinstance(cp.stdout, str)
+
+
 def test_container_build_validated_in_image_success_is_proven(monkeypatch):
     """When every tool's evidence returns rc=0 INSIDE the image, validate_in_image
     must return proven(container_build.validated_in_image) — the honest green the
