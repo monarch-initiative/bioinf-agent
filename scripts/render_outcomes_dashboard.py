@@ -35,6 +35,11 @@ LEDGER = ROOT / "docs" / "outcomes_ledger.json"
 OVERLAY = ROOT / "docs" / "terminal_coverage.json"
 OUT = ROOT / "docs" / "outcomes_dashboard.html"
 
+# The Seaworthy milestone scope lives in a sibling module (single source of
+# truth). Import it whether we're run as a script or loaded via importlib.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import seaworthy_scope as _sc  # noqa: E402
+
 # outcome class → (glyph, css, meaning). Order = display order.
 OUTCOMES = {
     "proven":   ("✅", "ok",    "validated success"),
@@ -136,6 +141,31 @@ def render(entries: list[dict], overlay: dict | None) -> str:
             + seg(100*exercised/total if total else 0, "cov-e")
             + seg(100*dark/total if total else 0, "cov-d"))
 
+    # ---- SEAWORTHY v1 meter (the milestone needle) ------------------------
+    # Mark every terminal so the cards can badge load-bearing + certified.
+    for e in entries:
+        e["_lb"] = _sc.is_load_bearing(e)
+        e["_arena"] = _sc.arena(e)
+        e["_cert"] = e["_lb"] and _sc.is_certified(e, overlay)
+    m = _sc.summarize(entries, overlay)
+    sw_done = m["seaworthy_v1"]
+    sw_pct = m["local_pct"]
+    seaworthy = (
+        f'<div class="sea {"sea-done" if sw_done else ""}">'
+        f'<div class="sea-h">⚓ SEAWORTHY v1 '
+        f'<span class="sea-sub">— certify the LOAD-BEARING surface an autonomous '
+        f'agent trusts (every proven + every honesty gate + every firewall)</span></div>'
+        f'<div class="sea-row">'
+        f'<div class="sea-num">{m["local_certified"]} / {m["local_total"]}'
+        f'<span class="sea-pct"> · {sw_pct}% local certified</span></div>'
+        f'<div class="sea-bar"><span style="width:{sw_pct}%"></span></div>'
+        f'</div>'
+        f'<div class="sea-foot">'
+        f'{m["local_total"] - m["local_certified"]} local load-bearing terminals to certify '
+        f'· HPC (v2, needs a cluster): {m["hpc_certified"]}/{m["hpc_total"]} '
+        f'· {"✅ SEA TRIAL READY" if sw_done else "milestone open"}'
+        f'</div></div>')
+
     # ---- hole tiles -------------------------------------------------------
     tiles = [
         ("VANISHED", len(vanished), "ghost", "failures with no durable trace"),
@@ -171,9 +201,14 @@ def render(entries: list[dict], overlay: dict | None) -> str:
             st = e["_cov"]
             cg, ccls, _m = COVER[st]
             code = e.get("code") or "«untagged raw terminal»"
+            lb = e.get("_lb")
+            cert = e.get("_cert")
+            anchor = ('<span class="lb" title="load-bearing — Seaworthy scope">⚓</span>'
+                      if lb else '<span class="lb0"></span>')
             lis.append(
-                f'<li class="{st}">'
-                f'<span class="g">{og}</span>'
+                f'<li class="{st}" data-lb="{1 if lb else 0}" '
+                f'data-cert="{1 if cert else 0}" data-arena="{e.get("_arena","")}">'
+                f'<span class="g">{og}</span>{anchor}'
                 f'<code class="cd">{_e(code)}</code>'
                 f'<span class="cbadge {ccls}">{cg} {_e(st)}</span>'
                 f'<span class="wh">{_e(e.get("where"))}</span></li>')
@@ -201,7 +236,7 @@ def render(entries: list[dict], overlay: dict | None) -> str:
     return _PAGE.format(
         total=total, subs=len(subs), covered=covered, covered_pct=covered_pct,
         verified=verified, exercised=exercised, dark=dark,
-        cbar=cbar, banner=banner, tiles=tiles_html, tally=tally_html,
+        cbar=cbar, banner=banner, seaworthy=seaworthy, tiles=tiles_html, tally=tally_html,
         legend_out=legend_out, legend_cov=legend_cov, cards="".join(cards),
         measured=("measured" if measured else "NOT measured"))
 
@@ -272,7 +307,7 @@ h1{{font-size:22px;font-weight:800;color:var(--yellow);letter-spacing:.02em;marg
 .df{{font-size:11px;color:var(--bad);white-space:nowrap;text-align:right}}
 .df0{{font-size:11px;color:var(--muted);white-space:nowrap;text-align:right}}
 ul.terms{{list-style:none;margin:0;padding:4px 0 10px;border-top:1px solid var(--border)}}
-ul.terms li{{display:grid;grid-template-columns:22px 1fr 116px auto;gap:12px;align-items:center;padding:4px 16px}}
+ul.terms li{{display:grid;grid-template-columns:22px 16px 1fr 116px auto;gap:12px;align-items:center;padding:4px 16px}}
 ul.terms li:hover{{background:var(--surface-2)}}
 ul.terms li.dark{{background:rgba(255,75,110,.05)}}
 .g{{text-align:center}}
@@ -281,6 +316,22 @@ li.dark .cd{{color:#ffd7de}}
 .wh{{color:var(--muted);font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 body.only-dark li:not(.dark){{display:none}}
 body.only-dark details[data-dark="0"]{{display:none}}
+body.only-lb li:not([data-lb="1"]){{display:none}}
+body.only-lb li[data-cert="1"]{{display:none}}
+/* Seaworthy milestone banner */
+.sea{{border:2px solid var(--cyan);background:linear-gradient(180deg,rgba(34,227,238,.06),transparent);
+  padding:16px 20px;margin:0 0 22px}}
+.sea.sea-done{{border-color:var(--ok)}}
+.sea-h{{font-size:15px;font-weight:800;color:var(--cyan);letter-spacing:.03em}}
+.sea.sea-done .sea-h{{color:var(--ok)}}
+.sea-sub{{font-weight:400;color:var(--muted);font-size:11.5px;letter-spacing:0}}
+.sea-row{{display:flex;align-items:center;gap:18px;margin:12px 0 6px}}
+.sea-num{{font-size:26px;font-weight:800;color:var(--ink);white-space:nowrap}}
+.sea-pct{{font-size:13px;font-weight:400;color:var(--muted)}}
+.sea-bar{{flex:1;height:14px;background:var(--surface-2);overflow:hidden;min-width:160px}}
+.sea-bar>span{{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--ok))}}
+.sea-foot{{font-size:11.5px;color:var(--muted)}}
+.lb{{color:var(--cyan);font-size:11px;text-align:center}} .lb0{{display:inline-block}}
 .foot{{color:var(--muted);font-size:11px;margin-top:26px;border-top:1px solid var(--border);padding-top:14px}}
 </style></head><body>
 <h1>System Decision Surface</h1>
@@ -289,6 +340,7 @@ body.only-dark details[data-dark="0"]{{display:none}}
 by measure_terminal_coverage.py). Every terminal is a place the system succeeds,
 refuses, or fails. Nothing is hand-drawn.</p>
 {banner}
+{seaworthy}
 <div class="stats">
   <div class="big"><div class="n">{total}</div><div class="l">terminals</div></div>
   <div class="big"><div class="n">{subs}</div><div class="l">subsystems</div></div>
@@ -308,6 +360,7 @@ refuses, or fails. Nothing is hand-drawn.</p>
   <button onclick="document.querySelectorAll('details.card').forEach(d=>d.open=true)">expand all</button>
   <button onclick="document.querySelectorAll('details.card').forEach(d=>d.open=false)">collapse all</button>
   <button id="ud" onclick="toggleDark(this)">show only dark (worklist)</button>
+  <button id="ul" onclick="toggleLB(this)">⚓ show only uncertified load-bearing (Seaworthy v1 worklist)</button>
 </div>
 {cards}
 <p class="foot">Cards are ordered by <b>hardening priority</b>: most DARK failure
@@ -320,6 +373,16 @@ function toggleDark(btn){{
   btn.classList.toggle('on');
   if(document.body.classList.contains('only-dark'))
     document.querySelectorAll('details.card').forEach(d=>{{if(d.dataset.dark!=='0')d.open=true;}});
+}}
+function toggleLB(btn){{
+  const on=document.body.classList.toggle('only-lb');
+  btn.classList.toggle('on');
+  // a card is relevant if it has any uncertified load-bearing li
+  document.querySelectorAll('details.card').forEach(d=>{{
+    const has=[...d.querySelectorAll('li')].some(li=>li.dataset.lb==='1'&&li.dataset.cert==='0');
+    d.style.display = (on&&!has)?'none':'';
+    if(on&&has) d.open=true;
+  }});
 }}
 </script>
 </body></html>"""

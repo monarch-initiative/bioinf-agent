@@ -1,5 +1,11 @@
 # Stress-test campaign — plan (NOT YET RUN)
 
+> **SUPERSEDED by [seaworthiness.md](seaworthiness.md).** That doc is the
+> canonical milestone. This install-tier matrix is now just ONE input to it:
+> the "exercise the fragile BUILD tiers" step (R/source/perl/JAR builds that can
+> break on the happy path). The adversarial + composition work — the bulk of
+> robustness — lives in the seaworthiness plan. Keep this for the tier reference.
+
 Purpose: validate that the system's features actually work end-to-end on **real,
 diverse bioinformatics tools**, shake out latent bugs on the dark paths, and
 raise real terminal coverage as a byproduct. This is the "prove it works before

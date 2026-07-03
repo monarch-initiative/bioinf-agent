@@ -103,6 +103,45 @@ def test_dashboard_renders_every_terminal_deterministically():
 
 
 @pytest.mark.integration
+def test_seaworthy_scope_is_well_defined_and_measurable():
+    """The Seaworthy milestone rests on a machine-derived load-bearing surface
+    (scripts/seaworthy_scope.py). Guard its definition so the goalposts can't
+    silently move: load-bearing = every proven ∪ every invariant ∪ named
+    firewalls; the surface splits local/HPC; and the meter is a clean fraction."""
+    import json, importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "seaworthy_scope", ROOT / "scripts" / "seaworthy_scope.py")
+    sc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sc)
+    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
+
+    lb = [e for e in ledger if sc.is_load_bearing(e)]
+    # every proven and every invariant record must be in scope (the trust surface)
+    for e in ledger:
+        if e.get("outcome") == "proven" or e.get("source") == "invariant":
+            assert sc.is_load_bearing(e), f"{e.get('code')} must be load-bearing"
+    # named firewalls too
+    for code in sc.FIREWALL_CODES:
+        hits = [e for e in ledger if e.get("code") == code]
+        for e in hits:
+            assert sc.is_load_bearing(e), f"firewall {code} must be load-bearing"
+    # every load-bearing terminal is in exactly one arena
+    for e in lb:
+        assert sc.arena(e) in ("local", "hpc")
+    # the meter is a clean fraction, and the summary is internally consistent
+    overlay = json.loads((ROOT / "docs" / "terminal_coverage.json").read_text())["by_where"]
+    m = sc.summarize(ledger, overlay)
+    assert m["local_total"] + m["hpc_total"] == len(lb)
+    assert 0 <= m["local_certified"] <= m["local_total"]
+    assert m["seaworthy_v1"] == (m["local_certified"] == m["local_total"] and m["local_total"] > 0)
+    # regression: the sha256 firewall we certified must be recognised as
+    # load-bearing AND certified (CERT-1). If this breaks, the milestone lost a rivet.
+    sha = next(e for e in ledger if e.get("code") == "env_manager.binary_sha256_mismatch")
+    assert sc.is_load_bearing(sha) and sc.is_certified(sha, overlay), \
+        "the certified sha256 firewall must count toward Seaworthy"
+
+
+@pytest.mark.integration
 def test_coverage_state_is_exact_span_not_fuzzy():
     """The coverage classifier must use EXACT [line, end_line] span matching —
     the fuzz variant we rejected marked error branches 'covered' by their

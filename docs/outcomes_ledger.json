@@ -3437,7 +3437,7 @@
     "func": "install_release_binary",
     "where": "agent/skills/env_manager.py:1190",
     "end_line": 1193,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "env_manager.perl_env_missing",

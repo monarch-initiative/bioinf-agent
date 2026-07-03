@@ -968,6 +968,55 @@ def test_install_release_binary_archive_anchors_extracted_binary(tmp_path, monke
         _sh.rmtree(env_path, ignore_errors=True)
 
 
+def test_install_release_binary_sha256_mismatch_is_refused_firewall(tmp_path, monkeypatch):
+    """ADVERSARIAL (supply-chain firewall / full-auto safety). An autonomous
+    agent TRUSTS a green artifact — so a downloaded asset whose sha256 does NOT
+    match the published checksum MUST be rejected BEFORE anything is staged, and
+    the rejection must be LEGIBLE (outcome=refused, code=binary_sha256_mismatch,
+    both hashes surfaced) — never a silent install of a wrong/tampered binary and
+    never an uncaught crash. Attacks the previously-dark
+    env_manager.binary_sha256_mismatch branch. Offline: curl is monkeypatched."""
+    import hashlib, shlex, shutil as _sh, yaml as _yaml
+    from pathlib import Path as _Path
+    from agent.skills.env_manager import EnvManager
+    cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+
+    env_name = "bioinf_unit_relbin_mismatch"
+    env_path = em.envs_dir / env_name
+    (env_path / "bin").mkdir(parents=True, exist_ok=True)
+    try:
+        asset = tmp_path / "tool-1.0-linux.bin"
+        asset.write_bytes(b"the REAL downloaded bytes (a wrong/tampered asset)")
+        real_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+        published_sha = "0" * 64          # what the caller EXPECTS; asset won't match
+        assert published_sha != real_sha
+
+        def fake_curl(en, command, timeout=None):
+            toks = shlex.split(command)
+            _sh.copy(asset, toks[toks.index("-o") + 1])     # simulate the download
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        monkeypatch.setattr(em, "run_in_env", fake_curl)
+
+        res = em.install_release_binary(
+            env_name=env_name, tool_name="tool",
+            url=f"file://{asset}", sha256=published_sha,
+        )
+        # 1) firewall FIRED as a clean, legible refusal — not a crash, not a green.
+        assert res.get("success") is False, res
+        assert res.get("outcome") == "refused", res
+        assert res.get("code") == "env_manager.binary_sha256_mismatch", res
+        # 2) both hashes surfaced so an autonomous caller can diagnose.
+        assert res.get("expected_sha256") == published_sha
+        assert res.get("actual_sha256") == real_sha
+        # 3) THE load-bearing safety property: nothing was staged — the wrong
+        #    binary never became runnable (no PATH wrapper in bin/).
+        assert not (env_path / "bin" / "tool").exists(), \
+            "firewall must refuse BEFORE staging — no wrapper may exist"
+    finally:
+        _sh.rmtree(env_path, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Re-spine Slice 2/3: Perl/CPAN + cargo/go tiers
 # ---------------------------------------------------------------------------
