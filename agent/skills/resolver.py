@@ -687,21 +687,40 @@ def resolve(
         if disc["found"]:
             cands = disc["candidates"]
             rec = cands[0]   # exact-name-then-stars sorted; the most-likely THE tool
-            decision["discovered_repos"] = cands
-            decision["recommended_repo"] = rec["repo"]
             # A confident auto-adopt candidate: an EXACT name match that clearly
             # dominates. Else present candidates for a human/agent to confirm (the
             # GAB-collision guard: a same-name repo can still be the wrong project).
-            decision["repo_auto_adoptable"] = bool(
+            auto_adoptable = bool(
                 rec["exact_name_match"] and rec["stars"] >= 10 and (
                     len(cands) == 1 or not cands[1]["exact_name_match"]
                     or rec["stars"] >= 5 * max(cands[1]["stars"], 1)))
+            if auto_adoptable:
+                # AUTONOMY: it's confidently the tool → don't make a human re-run.
+                # Re-resolve WITH the discovered repo so the caller gets a COMPLETE,
+                # executable plan (synthesis/source/binary + install_call), not a
+                # "re-run please" stub. The honesty contract validates the actual
+                # build, so a rare wrong pick fails SAFE rather than shipping silently.
+                auto = resolve(tool, version=version, prefer=prefer, language=language,
+                               github_repo=rec["repo"], timeout=timeout)
+                auto["discovered_repos"]    = cands
+                auto["recommended_repo"]    = rec["repo"]
+                auto["repo_auto_adoptable"] = True
+                auto["auto_discovered"]     = True   # provenance: FOUND, not user-supplied
+                auto["rationale"] = (
+                    f"AUTO-DISCOVERED + adopted {rec['repo']} ({rec['stars']}★, exact-name) "
+                    f"— no registry hit, but a dominant exact-name repo; proceeding without "
+                    f"a human. " + auto.get("rationale", ""))
+                return auto
+            # Not confident → surface candidates for the orchestrator to confirm.
+            decision["discovered_repos"] = cands
+            decision["recommended_repo"] = rec["repo"]
+            decision["repo_auto_adoptable"] = False
             decision["rationale"] = (
                 f"no registry hit — DISCOVERED {len(cands)} candidate repo(s) via github "
-                f"search. Recommended: {rec['repo']} ({rec['stars']}★"
-                f"{', exact-name' if rec['exact_name_match'] else ''}). Re-run with "
-                f"github_repo='{rec['repo']}' to install via synthesis (the agent reads "
-                f"its build files), or pick another from discovered_repos.")
+                f"search, none dominant enough to auto-adopt. Recommended: {rec['repo']} "
+                f"({rec['stars']}★{', exact-name' if rec['exact_name_match'] else ''}). "
+                f"Confirm with github_repo='{rec['repo']}' (or pick another from "
+                f"discovered_repos) to install via synthesis.")
 
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]

@@ -145,11 +145,14 @@
     {
       "tool": "GAPIT",
       "language": "r",
-      "bucket": "DISCOVERED:jiabowang/GAPIT(AUTO)",
-      "chosen": null,
+      "bucket": "AUTO-DISCOVERED:jiabowang/GAPIT\u2192synthesis",
+      "chosen": "synthesis",
       "recommended_repo": "jiabowang/GAPIT",
       "auto_adoptable": true,
-      "available": [],
+      "available": [
+        "synthesis",
+        "source"
+      ],
       "note": "REPO-ONLY (plant GWAS) \u2014 discovery target"
     },
     {

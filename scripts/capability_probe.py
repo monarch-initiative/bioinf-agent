@@ -54,11 +54,12 @@ CASES = [
 def classify(d: dict) -> str:
     if d.get("ambiguous"):
         return "AMBIGUOUS"
+    if d.get("auto_discovered"):   # found a repo AND auto-adopted it → complete plan
+        return f"AUTO-DISCOVERED:{d.get('recommended_repo')}→{d.get('chosen')}"
     if d.get("chosen"):
         return f"ROUTED:{d['chosen']}"
-    if d.get("recommended_repo"):
-        mode = "AUTO" if d.get("repo_auto_adoptable") else "CONFIRM"
-        return f"DISCOVERED:{d['recommended_repo']}({mode})"
+    if d.get("recommended_repo"):  # found candidate(s) but needs a human to confirm
+        return f"DISCOVERED:{d['recommended_repo']}(CONFIRM)"
     return "DEAD-END"
 
 

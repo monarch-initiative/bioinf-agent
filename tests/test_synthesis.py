@@ -292,18 +292,26 @@ def _dead_registries(monkeypatch):
         monkeypatch.setattr(resolver, fn, lambda *a, **k: {"available": False})
 
 
-def test_resolve_discovers_repo_when_registries_deadend(monkeypatch):
-    """A dominant exact-name repo → recommended + auto-adoptable (the GAPIT case)."""
+def test_resolve_auto_discovers_and_adopts_dominant_repo(monkeypatch):
+    """A dominant exact-name repo → AUTO-CHAINED: re-resolve with the found repo so
+    the caller gets a complete synthesis install plan, no human re-run (the GAPIT
+    case — 'discover and install on its own if it knows it's correct')."""
     _dead_registries(monkeypatch)
     monkeypatch.setattr(resolver, "probe_github_search", lambda *a, **k: {"found": True, "candidates": [
         {"repo": "jiabowang/GAPIT", "stars": 236, "description": "GWAS", "language": "R", "exact_name_match": True},
         {"repo": "other/gapit-panel", "stars": 82, "description": "", "language": "JS", "exact_name_match": False},
     ]})
+    # the auto-chain recurses WITH the discovered repo → probe_github must resolve it
+    monkeypatch.setattr(resolver, "probe_github",
+                        lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
     d = resolver.resolve("GAPIT", language="r")
-    assert d["chosen"] is None                       # still no registry tier — honest
-    assert d["recommended_repo"] == "jiabowang/GAPIT"
+    assert d["chosen"] == "synthesis"                # a COMPLETE plan, not a dead-end
+    assert d["auto_discovered"] is True
     assert d["repo_auto_adoptable"] is True
-    assert "DISCOVERED" in d["rationale"]
+    assert d["recommended_repo"] == "jiabowang/GAPIT"
+    assert d["github_repo"] == "jiabowang/GAPIT"
+    assert d.get("install_call")                     # ready to execute, no re-run
+    assert "AUTO-DISCOVERED" in d["rationale"]
 
 
 def test_resolve_discovery_weak_candidate_needs_confirmation(monkeypatch):
