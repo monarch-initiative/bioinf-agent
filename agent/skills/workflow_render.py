@@ -105,54 +105,130 @@ def _scan_placeholders(command: str) -> set[str]:
     return set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", command))
 
 
-_SLURM_REQUIRED = ("queue", "time", "mem", "cpus")
-_SLURM_OPTIONAL = ("account",)
+# The per-job resource request — a CONTROLLED vocabulary: the same key names and
+# the same value formats every job, so a header is reproducible and reviewable.
+#   time (req)     HH:MM:SS | D-HH:MM:SS | D-   → --time
+#   mem  (req)     6G | 45g | 12000M            → --mem
+#   cpus (def 1)   int 1..256                   → --cpus-per-task
+#   ntasks (def 1) int 1..256                   → --ntasks
+#   gpus (def 0)   int 0..16                    → --gres=gpu:N (+ partition/qos)
+#   partition (opt) safe token                  → --partition (OMITTED ⇒ scheduler
+#                                                  default, e.g. Longleaf CPU jobs)
+#   qos (opt)       safe token                  → --qos (GPU access on many HPCs)
+#   account (opt)   safe token                  → --account (OMITTED when unset)
+# partition/qos/account are normally MERGED IN from the env's slurm policy by the
+# caller (bridge_tools) — the agent's per-job dict carries time/mem/cpus/ntasks/gpus.
+_SLURM_REQUIRED = ("time", "mem")
+_SLURM_OPTIONAL = ("cpus", "ntasks", "gpus", "partition", "qos", "account")
 _SLURM_ALL = _SLURM_REQUIRED + _SLURM_OPTIONAL
+
+_TIME_RE = re.compile(r"^(\d+-)?\d{1,2}:\d{2}:\d{2}$|^\d+-$")
+_MEM_RE = re.compile(r"^\d+[KMGTkmgt]$")
+# A partition value: one or more comma-separated safe tokens (Longleaf permits
+# targeting several GPU partitions, e.g. "a100-gpu,l40-gpu").
+_PARTITION_RE = re.compile(r"^[A-Za-z0-9_.\-]+(,[A-Za-z0-9_.\-]+)*$")
 
 
 def _check_slurm(slurm: Mapping) -> dict:
-    """Closed-key check + value typing. Same defense as
-    compute_access's slurm block — typos raise instead of silently
-    being ignored."""
+    """Closed-key check + value typing for the per-job resource request. Typos
+    raise instead of silently being ignored. Defaults are applied for the
+    convenience keys (cpus/ntasks=1, gpus=0) so the header is consistent even
+    from a minimal `{time, mem}` request."""
     if not isinstance(slurm, Mapping):
         raise ValueError(f"slurm must be a mapping, got {type(slurm).__name__}")
     unknown = set(slurm.keys()) - set(_SLURM_ALL)
     if unknown:
         raise ValueError(
-            f"slurm has unknown keys {sorted(unknown)} "
-            f"(allowed: {list(_SLURM_ALL)})")
+            f"slurm has unknown keys {sorted(unknown)} (allowed: {list(_SLURM_ALL)})")
     missing = set(_SLURM_REQUIRED) - set(slurm.keys())
     if missing:
         raise ValueError(
-            f"slurm missing required keys {sorted(missing)} "
-            f"(required: {list(_SLURM_REQUIRED)})")
+            f"slurm missing required keys {sorted(missing)} (required: {list(_SLURM_REQUIRED)})")
     out: dict = {}
-    # queue: safe token (partition name)
-    _check_safe_token("slurm.queue", slurm["queue"])
-    out["queue"] = slurm["queue"]
-    # time: HH:MM:SS or D-HH:MM:SS
+    # time: HH:MM:SS | D-HH:MM:SS | D-
     t = slurm["time"]
-    if not isinstance(t, str) or not re.match(
-            r"^(\d+-)?\d{1,2}:\d{2}:\d{2}$", t):
-        raise ValueError(
-            f"slurm.time={t!r} must look like HH:MM:SS or D-HH:MM:SS")
+    if not isinstance(t, str) or not _TIME_RE.match(t):
+        raise ValueError(f"slurm.time={t!r} must look like HH:MM:SS, D-HH:MM:SS, or D-")
     out["time"] = t
-    # mem: like "6G" or "12000M"
+    # mem: like "6G" / "45g" / "12000M"
     m = slurm["mem"]
-    if not isinstance(m, str) or not re.match(r"^\d+[KMGT]$", m):
-        raise ValueError(
-            f"slurm.mem={m!r} must look like 6G / 12000M / 1T")
+    if not isinstance(m, str) or not _MEM_RE.match(m):
+        raise ValueError(f"slurm.mem={m!r} must look like 6G / 45g / 12000M")
     out["mem"] = m
-    # cpus: positive int
-    c = slurm["cpus"]
-    if not isinstance(c, int) or c < 1 or c > 256:
-        raise ValueError(f"slurm.cpus={c!r} must be an int in [1, 256]")
-    out["cpus"] = c
-    # account (optional)
-    if "account" in slurm:
-        _check_safe_token("slurm.account", slurm["account"])
-        out["account"] = slurm["account"]
+    # cpus / ntasks: bounded positive ints with defaults
+    for key, default, hi in (("cpus", 1, 256), ("ntasks", 1, 256)):
+        v = slurm.get(key, default)
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1 or v > hi:
+            raise ValueError(f"slurm.{key}={v!r} must be an int in [1, {hi}]")
+        out[key] = v
+    # gpus: bounded non-negative int, default 0 (0 ⇒ a CPU job)
+    g = slurm.get("gpus", 0)
+    if not isinstance(g, int) or isinstance(g, bool) or g < 0 or g > 16:
+        raise ValueError(f"slurm.gpus={g!r} must be an int in [0, 16]")
+    out["gpus"] = g
+    # partition: optional; may be comma-separated (e.g. "a100-gpu,l40-gpu" —
+    # Longleaf lets a GPU job target several partitions). Omitted ⇒ no line.
+    if slurm.get("partition"):
+        p = slurm["partition"]
+        if not isinstance(p, str) or not _PARTITION_RE.match(p):
+            raise ValueError(
+                f"slurm.partition={p!r} must be one or more comma-separated safe "
+                f"tokens (alnum + `_.-`)")
+        out["partition"] = p
+    # qos / account: optional single safe tokens (omitted lines when unset)
+    for key in ("qos", "account"):
+        if slurm.get(key):
+            _check_safe_token(f"slurm.{key}", slurm[key])
+            out[key] = slurm[key]
+    # GPU coherence: a GPU job MUST carry a partition + qos (the HPC's GPU
+    # convention, merged in from the env slurm.gpu block by the caller). Without
+    # them the job would land on a CPU partition and never see a GPU.
+    if out["gpus"] > 0 and not (out.get("partition") and out.get("qos")):
+        raise ValueError(
+            f"slurm.gpus={out['gpus']} requires both a partition and a qos (the HPC's "
+            f"GPU convention from the env slurm.gpu block) — resolved partition="
+            f"{out.get('partition')!r}, qos={out.get('qos')!r}")
     return out
+
+
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def _check_email(email: str) -> str:
+    """A plausible email, safe to drop into `#SBATCH --mail-user=`. Empty ⇒ no
+    mail lines. Rejects anything with shell metacharacters or whitespace."""
+    if not email:
+        return ""
+    if not isinstance(email, str) or not _EMAIL_RE.match(email):
+        raise ValueError(f"email={email!r} is not a valid email address")
+    return email
+
+
+def _render_sbatch_header(workflow_name: str, slurm_v: dict, email: str) -> str:
+    """The #SBATCH block — one controlled convention, using SLURM's own filename
+    directives (%x=job-name, %j=job-id) so logs self-name with the real job ID and
+    never collide. Optional lines (partition/qos/gres/account/mail) are emitted
+    ONLY when their value is present, so a Longleaf CPU job renders no --partition
+    and no --account (matches slurm_header_template.txt)."""
+    def line(cond: object, text: str) -> str:
+        return f"{text}\n" if cond else ""
+    sv = slurm_v
+    return (
+        f"#SBATCH --job-name={workflow_name}\n"
+        f"#SBATCH --time={sv['time']}\n"
+        f"#SBATCH --mem={sv['mem']}\n"
+        f"#SBATCH --nodes=1\n"
+        f"#SBATCH --ntasks={sv['ntasks']}\n"
+        f"#SBATCH --cpus-per-task={sv['cpus']}\n"
+        + line(sv.get("partition"), f"#SBATCH --partition={sv.get('partition')}")
+        + line(sv["gpus"] > 0, f"#SBATCH --qos={sv.get('qos')}")
+        + line(sv["gpus"] > 0, f"#SBATCH --gres=gpu:{sv['gpus']}")
+        + line(sv.get("account"), f"#SBATCH --account={sv.get('account')}")
+        + f"#SBATCH --output=%x-%j.out\n"
+        + f"#SBATCH --error=%x-%j.err\n"
+        + line(email, "#SBATCH --mail-type=END")
+        + line(email, f"#SBATCH --mail-user={email}")
+    )
 
 
 def render_workflow(*,
@@ -165,6 +241,7 @@ def render_workflow(*,
                     nextflow_module: str,
                     slurm: Mapping,
                     workflow_name: str,
+                    email: str = "",
                     nextflow_main_filename: str = "main.nf",
                     nextflow_config_filename: str = "nextflow.config",
                     ) -> dict:
@@ -318,28 +395,24 @@ def render_workflow(*,
         f"\n"
         f"process {{\n"
         f"    cpus = {slurm_v['cpus']}\n"
-        f"    memory = '{slurm_v['mem']}B'\n"
+        # Nextflow MemoryUnit wants an uppercase unit + 'B' (e.g. 6GB, 20GB). The
+        # SBATCH --mem accepts either case (UNC writes lowercase '20g'); normalize
+        # here so a lowercase request doesn't render an odd '20gB'.
+        f"    memory = '{slurm_v['mem'].upper()}B'\n"
         f"    time = '{slurm_v['time']}'\n"
         f"}}\n"
     )
 
     # ─── Render launcher.sh (the sbatch wrapper) ─────────────────────────
     # The launcher is what `sbatch launcher.sh` consumes on the head
-    # node. SBATCH directives must be the first non-comment lines.
-    account_line = (
-        f"#SBATCH --account={slurm_v['account']}\n"
-        if "account" in slurm_v else "")
+    # node. SBATCH directives must be the first non-comment lines. The header
+    # follows ONE controlled convention (see _render_sbatch_header) and uses
+    # SLURM's %x/%j filename directives so logs self-name with the job ID.
+    email_v = _check_email(email)
     launcher_sh = (
         f"#!/usr/bin/env bash\n"
-        f"#SBATCH --job-name={workflow_name}\n"
-        f"#SBATCH --partition={slurm_v['queue']}\n"
-        f"#SBATCH --time={slurm_v['time']}\n"
-        f"#SBATCH --mem={slurm_v['mem']}\n"
-        f"#SBATCH --cpus-per-task={slurm_v['cpus']}\n"
-        f"#SBATCH --output={workflow_name}_sbatch_out.log\n"
-        f"#SBATCH --error={workflow_name}_sbatch_err.log\n"
-        f"{account_line}"
-        f"\n"
+        + _render_sbatch_header(workflow_name, slurm_v, email_v)
+        + f"\n"
         f"set -euo pipefail\n"
         f"\n"
         f"# Generated by workflow_render — DO NOT hand-edit.\n"

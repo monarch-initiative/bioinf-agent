@@ -63,7 +63,7 @@ def _good_access(tmp_path: Path) -> Path:
     })
 
 
-_DEMO_SLURM = {"queue": "general", "time": "00:30:00",
+_DEMO_SLURM = {"time": "00:30:00",
                "mem": "4G", "cpus": 2}
 _DEMO_KW = dict(
     project_name="demo",

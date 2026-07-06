@@ -128,6 +128,43 @@ def _parse_sbatch_parsable(stdout: str) -> Optional[str]:
 _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
+def _resolve_slurm_and_email(per_job_slurm: Mapping, env: Mapping) -> tuple[dict, str]:
+    """Merge the per-job resource request with the env's slurm POLICY into the
+    final render spec, and pull the notification email from the env.
+
+    The agent's per-job dict carries resource SIZING (time/mem/cpus/ntasks/gpus);
+    the HPC's constants (account, default partition, GPU convention) live in the
+    env `slurm:` block and are merged here so a header follows the cluster's rules:
+      - GPU (gpus>0): partition + qos come from env.slurm.gpu — the HPC's GPU
+        convention. Refuse if the env declares none (GPU not configured here).
+      - CPU (gpus==0): default partition from env.slurm.partition if the job set
+        none; qos dropped (it's GPU-only in our convention).
+      - account: from env.slurm.account unless the job set one explicitly.
+    Returns (merged_slurm, email)."""
+    sl = compute_access.get_slurm_config(env) or {}
+    merged = dict(per_job_slurm or {})
+    try:
+        gpus = int(merged.get("gpus", 0) or 0)
+    except (TypeError, ValueError):
+        gpus = 0
+    if gpus > 0:
+        gpu = sl.get("gpu") or {}
+        if not (gpu.get("partition") and gpu.get("qos")):
+            raise ValueError(
+                f"job requests gpus={gpus} but compute env {env.get('name')!r} "
+                f"declares no slurm.gpu convention (partition + qos) — GPU is not "
+                f"configured on this env")
+        merged["partition"] = gpu["partition"]
+        merged["qos"] = gpu["qos"]
+    else:
+        merged.pop("qos", None)                      # qos is GPU-only
+        if "partition" not in merged and sl.get("partition"):
+            merged["partition"] = sl["partition"]
+    if "account" not in merged and sl.get("account"):
+        merged["account"] = sl["account"]
+    return merged, (env.get("email") or "")
+
+
 def render_workflow_files(*, tool_name: str, command: str,
                           inputs: Mapping[str, str],
                           outputs: Mapping[str, str],
@@ -135,13 +172,20 @@ def render_workflow_files(*, tool_name: str, command: str,
                           apptainer_module: str,
                           nextflow_module: str,
                           slurm: Mapping,
-                          workflow_name: str) -> dict:
-    """Pure-function pass-through to workflow_render.render_workflow.
+                          workflow_name: str,
+                          env: Optional[Mapping] = None) -> dict:
+    """Render the three workflow files, merging the env's slurm policy + email
+    into the per-job `slurm` request first (see _resolve_slurm_and_email).
 
-    Centralizes the render call so submit_workflow_job and
-    run_step_on_cluster (each of which authorizes a DIFFERENT
-    workflow_dir family — directories[] vs scratch) can share the
-    same render shape without sharing the upload/auth logic."""
+    Centralizes the render call so submit_workflow_job and run_step_on_cluster
+    (each of which authorizes a DIFFERENT workflow_dir family — directories[] vs
+    scratch) share the same render+merge shape without sharing the upload/auth
+    logic. `env` is optional for back-compat: when None, the per-job slurm renders
+    as-is with no email."""
+    if env is not None:
+        slurm, email = _resolve_slurm_and_email(slurm, env)
+    else:
+        email = ""
     return workflow_render.render_workflow(
         tool_name=tool_name,
         command=command,
@@ -152,6 +196,7 @@ def render_workflow_files(*, tool_name: str, command: str,
         nextflow_module=nextflow_module,
         slurm=slurm,
         workflow_name=workflow_name,
+        email=email,
     )
 
 
@@ -322,6 +367,7 @@ def submit_workflow_job(project_name: str,
             nextflow_module=nextflow_module,
             slurm=slurm,
             workflow_name=workflow_name,
+            env=env,
         )
 
         # ─── Materialize them into a local tempdir, then upload ────────

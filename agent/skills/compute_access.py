@@ -371,79 +371,85 @@ def _validate_dir_block(block: object, where: str, path: Path,
 # time — silent typos (`max_corees_per_job: 9999`) would otherwise let the
 # agent submit jobs exceeding the user's intended cap. The values here are
 # the FENCEPOSTS — every submit_cluster_job call validates against them.
-_SLURM_REQUIRED_KEYS: frozenset[str] = frozenset({
-    "queue_default",
-    "allowed_queues",
-    "account",
-    "max_cores_per_job",
-    "max_mem_gb_per_job",
-    "max_time_hours_per_job",
+# The env-level `slurm:` block is the HPC's SCHEDULER POLICY — the constants for
+# THIS cluster that render_workflow_files merges into every job's header. EVERY
+# key is OPTIONAL: an HPC like Longleaf (no partition selection, no account for
+# CPU jobs) can omit the whole block. Email is NOT here — it's the env-level
+# `email:` field. Unknown keys still rejected (closed-key discipline).
+#   account      (str)  → --account on every job (omit ⇒ none, e.g. Longleaf)
+#   partition    (str)  → default --partition for CPU jobs (omit ⇒ scheduler default)
+#   gpu          (map)  → this HPC's GPU convention {partition, qos}; present ⇒ GPU
+#                         jobs supported (a gpus>0 request renders -p/--qos/--gres)
+#   max_cores_per_job / max_mem_gb_per_job / max_time_hours_per_job (pos int) caps
+#   module_loads (list[str]) → extra `module load X` lines in the launcher
+_SLURM_ALLOWED_KEYS: frozenset[str] = frozenset({
+    "account", "partition", "gpu",
+    "max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job",
+    "module_loads",
 })
+_SLURM_GPU_KEYS: frozenset[str] = frozenset({"partition", "qos"})
+# Shell-metacharacter set forbidden in any slurm value that reaches an SBATCH line.
+_SLURM_UNSAFE_CHARS = "\x00\n\r\t ;|&$`<>(){}[]*?\"'\\"
 
-# Optional slurm keys — present, use them; absent, the launcher omits the
-# corresponding lines. Same closed-key discipline (typos rejected) — just
-# not required to declare.
-_SLURM_OPTIONAL_KEYS: frozenset[str] = frozenset({
-    "mail_user",     # str — what `#SBATCH --mail-user=` points at
-    "module_loads",  # list[str] — module-load lines the launcher emits
-})
+
+def _validate_slurm_gpu_block(blk: object, where: str, path: Path) -> None:
+    """The GPU convention `slurm.gpu: {partition, qos}` — both REQUIRED once the
+    block is declared (a gpus>0 job's `-p`/`--qos` come from here; a half-declared
+    convention would render a broken GPU header). Both are safe tokens; partition
+    may be comma-separated (Longleaf permits `a100-gpu,l40-gpu`)."""
+    if not isinstance(blk, dict):
+        raise ConfigError(f"{path}: {where} must be a mapping")
+    extra = set(blk.keys()) - _SLURM_GPU_KEYS
+    if extra:
+        raise ConfigError(f"{path}: {where} has unknown keys {sorted(extra)!r}. "
+                          f"Allowed keys: {sorted(_SLURM_GPU_KEYS)!r}")
+    missing = _SLURM_GPU_KEYS - set(blk.keys())
+    if missing:
+        raise ConfigError(
+            f"{path}: {where} missing required keys {sorted(missing)!r} — a GPU "
+            f"convention needs BOTH partition and qos")
+    for k in _SLURM_GPU_KEYS:
+        v = blk[k]
+        if not isinstance(v, str) or not v:
+            raise ConfigError(f"{path}: {where}.{k} must be a non-empty string (got {v!r})")
+        if any(c in v for c in _SLURM_UNSAFE_CHARS):
+            raise ConfigError(f"{path}: {where}.{k} contains shell metacharacters "
+                              f"(SBATCH header injection); refused")
 
 
 def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
-    """Validate the closed `slurm:` block. Unknown keys rejected. Type-check
-    each field; the max_* values are the upper bound submit_cluster_job
-    enforces — they must be positive ints."""
+    """Validate the OPTIONAL, closed `slurm:` block — the HPC's scheduler policy.
+    ALL keys optional (Longleaf CPU jobs need none); unknown keys rejected; each
+    present key type-checked. Email is NOT here — it's the env-level `email:`."""
     if not isinstance(blk, dict):
         raise ConfigError(f"{path}: {where} must be a mapping")
-    allowed = _SLURM_REQUIRED_KEYS | _SLURM_OPTIONAL_KEYS
-    extra = set(blk.keys()) - allowed
+    extra = set(blk.keys()) - _SLURM_ALLOWED_KEYS
     if extra:
         raise ConfigError(
             f"{path}: {where} has unknown keys {sorted(extra)!r}. "
-            f"Allowed keys: {sorted(allowed)!r}")
-    missing = _SLURM_REQUIRED_KEYS - set(blk.keys())
-    if missing:
-        raise ConfigError(
-            f"{path}: {where} missing required keys {sorted(missing)!r}")
+            f"Allowed keys: {sorted(_SLURM_ALLOWED_KEYS)!r}")
 
-    qd = blk["queue_default"]
-    if not isinstance(qd, str) or not qd:
-        raise ConfigError(
-            f"{path}: {where}.queue_default must be a non-empty string")
-    aq = blk["allowed_queues"]
-    if not isinstance(aq, list) or not aq or not all(
-            isinstance(x, str) and x for x in aq):
-        raise ConfigError(
-            f"{path}: {where}.allowed_queues must be a non-empty list of "
-            f"non-empty strings (got {aq!r})")
-    if qd not in aq:
-        raise ConfigError(
-            f"{path}: {where}.queue_default={qd!r} must appear in "
-            f".allowed_queues={aq!r}")
-    acct = blk["account"]
-    if not isinstance(acct, str) or not acct:
-        raise ConfigError(
-            f"{path}: {where}.account must be a non-empty string")
+    # account / partition — optional non-empty safe strings (no header injection).
+    for k in ("account", "partition"):
+        if k in blk:
+            v = blk[k]
+            if not isinstance(v, str) or not v:
+                raise ConfigError(f"{path}: {where}.{k} must be a non-empty string (got {v!r})")
+            if any(c in v for c in _SLURM_UNSAFE_CHARS):
+                raise ConfigError(f"{path}: {where}.{k} contains shell metacharacters "
+                                  f"(SBATCH header injection); refused")
+
+    # caps — optional positive ints (bool is an int subclass; exclude it).
     for k in ("max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job"):
-        v = blk[k]
-        # `bool` is a subclass of int in Python — exclude it explicitly.
-        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
-            raise ConfigError(
-                f"{path}: {where}.{k} must be a positive integer (got {v!r})")
+        if k in blk:
+            v = blk[k]
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ConfigError(
+                    f"{path}: {where}.{k} must be a positive integer (got {v!r})")
 
-    # Optional keys — present? type-check. Absent? fine.
-    if "mail_user" in blk:
-        mu = blk["mail_user"]
-        if not isinstance(mu, str) or not mu or "@" not in mu:
-            raise ConfigError(
-                f"{path}: {where}.mail_user must be a non-empty email-like "
-                f"string (got {mu!r})")
-        # Newline injection defense — `--mail-user=<X>` would split a header
-        # if X contains a newline. Boring constraint, real defense.
-        if any(c in mu for c in "\n\r"):
-            raise ConfigError(
-                f"{path}: {where}.mail_user contains newline/CR "
-                f"(SBATCH header injection); refused")
+    if "gpu" in blk:
+        _validate_slurm_gpu_block(blk["gpu"], f"{where}.gpu", path)
+
     if "module_loads" in blk:
         ml = blk["module_loads"]
         if not isinstance(ml, list) or not all(
@@ -692,10 +698,11 @@ def get_container_upload_target(env: dict) -> Optional[dict]:
 
 
 def get_slurm_config(env: dict) -> Optional[dict]:
-    """Return the closed slurm config block for this env, or None if
-    undeclared. The block carries queue_default, allowed_queues, account,
-    and the three max_* caps. submit_cluster_job refuses any submission
-    on an env without this block."""
+    """Return the OPTIONAL slurm policy block for this env, or None if undeclared.
+    All keys optional (see _SLURM_ALLOWED_KEYS): account, partition, the gpu
+    convention {partition, qos}, the max_* caps, module_loads. render_workflow_files
+    merges these into each job's header. An HPC like Longleaf (no partition, no
+    account for CPU jobs) legitimately has no block at all."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None
 

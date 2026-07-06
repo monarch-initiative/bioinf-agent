@@ -8,7 +8,7 @@ strings in, strings out. main.nf / nextflow.config / launcher.sh.
 These tests pin:
   - placeholder-cross-check: every `${X}` in `command` MUST be declared
     in inputs or outputs; every declared key MUST be referenced.
-  - safe-token discipline on tool_name, workflow_name, slurm.queue,
+  - safe-token discipline on tool_name, workflow_name, slurm.partition,
     slurm.account, output filenames — refuses shell metacharacters.
   - absolute-path discipline on inputs, apptainer_sif — refuses `..`,
     relative paths.
@@ -42,10 +42,10 @@ _DEMO_OUTPUTS = {
 }
 _DEMO_COMMAND = "samtools view -b -h -F 4 ${input_bam} > ${output_bam}"
 _DEMO_SLURM = {
-    "queue": "general",
     "time":  "00:30:00",
     "mem":   "4G",
     "cpus":  2,
+    # no partition (Longleaf CPU convention); cpus/ntasks default when omitted
 }
 _DEMO_SIF = "/work/users/u/s/user1/CLAUDE_GENOMES/samtools/samtools_1.21.sif"
 
@@ -118,17 +118,22 @@ class TestHappyPath:
         out = _demo_render()
         sh = out["launcher.sh"]
         assert sh.startswith("#!/usr/bin/env bash\n")
-        # The SBATCH block is the canonical set, no missing directives.
+        # The SBATCH block is the canonical set, no missing directives. Logs use
+        # SLURM's %x (job-name) + %j (job-id) directives so they self-name.
         for line in [
                 "#SBATCH --job-name=phase_b_samtools_demo",
-                "#SBATCH --partition=general",
                 "#SBATCH --time=00:30:00",
                 "#SBATCH --mem=4G",
+                "#SBATCH --nodes=1",
+                "#SBATCH --ntasks=1",
                 "#SBATCH --cpus-per-task=2",
-                "#SBATCH --output=phase_b_samtools_demo_sbatch_out.log",
-                "#SBATCH --error=phase_b_samtools_demo_sbatch_err.log",
+                "#SBATCH --output=%x-%j.out",
+                "#SBATCH --error=%x-%j.err",
         ]:
             assert line in sh, f"missing SBATCH directive: {line!r}"
+        # No --partition for a CPU job (Longleaf default), no --account unless set.
+        assert "#SBATCH --partition=" not in sh
+        assert "#SBATCH --account=" not in sh
 
     @pytest.mark.integration
     def test_launcher_loads_required_modules_and_runs_nextflow(self):
@@ -342,7 +347,7 @@ class TestSlurmClosedKey:
         assert "slurm.time" in str(exc.value)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad_mem", ["4", "4GB", "4g", "fast"])
+    @pytest.mark.parametrize("bad_mem", ["4", "4GB", "fast"])   # "4g" IS valid (UNC uses lowercase)
     def test_refuses_malformed_mem(self, bad_mem):
         with pytest.raises(ValueError):
             render_workflow(
@@ -419,3 +424,148 @@ class TestCommandLine:
                 nextflow_module="nextflow/25.04.7",
                 slurm=_DEMO_SLURM,
                 workflow_name="x")
+
+
+# ===========================================================================
+# The controlled SLURM convention: directives, defaults, email, GPU, and the
+# env-policy merge (added when the CPU-omits-partition + %j-directives +
+# job_manager-driven GPU design landed).
+# ===========================================================================
+
+def _render(slurm, workflow_name="job", email=None):
+    kwargs = dict(
+        tool_name="samtools", command=_DEMO_COMMAND,
+        inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS, apptainer_sif=_DEMO_SIF,
+        apptainer_module="apptainer/1.5.0", nextflow_module="nextflow/25.04.7",
+        slurm=slurm, workflow_name=workflow_name)
+    if email is not None:
+        kwargs["email"] = email
+    return render_workflow(**kwargs)["launcher.sh"]
+
+
+class TestSlurmConvention:
+    @pytest.mark.integration
+    def test_minimal_request_applies_defaults(self):
+        """Only time+mem required; cpus/ntasks default to 1, nodes=1 always."""
+        sh = _render({"time": "01:00:00", "mem": "6G"})
+        assert "#SBATCH --cpus-per-task=1" in sh
+        assert "#SBATCH --ntasks=1" in sh
+        assert "#SBATCH --nodes=1" in sh
+
+    @pytest.mark.integration
+    def test_output_error_use_slurm_directives(self):
+        """Logs self-name with %x (job-name) + %j (job-id) directives."""
+        sh = _render({"time": "01:00:00", "mem": "6G"})
+        assert "#SBATCH --output=%x-%j.out" in sh
+        assert "#SBATCH --error=%x-%j.err" in sh
+
+    @pytest.mark.integration
+    def test_cpu_job_omits_partition_and_account(self):
+        sh = _render({"time": "01:00:00", "mem": "6G"})
+        assert "#SBATCH --partition=" not in sh
+        assert "#SBATCH --account=" not in sh
+        assert "--gres" not in sh
+
+    @pytest.mark.integration
+    def test_lowercase_mem_accepted(self):
+        """UNC Longleaf writes --mem=5g (lowercase)."""
+        assert "#SBATCH --mem=45g" in _render({"time": "1-", "mem": "45g"})
+
+    @pytest.mark.integration
+    def test_email_lines_only_when_email_supplied(self):
+        with_mail = _render({"time": "01:00:00", "mem": "6G"}, email="a@b.org")
+        assert "#SBATCH --mail-type=END" in with_mail
+        assert "#SBATCH --mail-user=a@b.org" in with_mail
+        no_mail = _render({"time": "01:00:00", "mem": "6G"})
+        assert "--mail-type" not in no_mail and "--mail-user" not in no_mail
+
+    @pytest.mark.integration
+    def test_invalid_email_refused(self):
+        with pytest.raises(ValueError):
+            _render({"time": "01:00:00", "mem": "6G"}, email="not-an-email")
+
+    @pytest.mark.integration
+    def test_gpu_job_renders_partition_qos_gres(self):
+        sh = _render({"time": "2-", "mem": "20g", "cpus": 12, "gpus": 2,
+                      "partition": "a100-gpu", "qos": "gpu_access"})
+        assert "#SBATCH --partition=a100-gpu" in sh
+        assert "#SBATCH --qos=gpu_access" in sh
+        assert "#SBATCH --gres=gpu:2" in sh
+
+    @pytest.mark.integration
+    def test_gpu_without_partition_or_qos_refused(self):
+        """A GPU count with no partition/qos would land on a CPU node — refuse."""
+        with pytest.raises(ValueError, match="gpus"):
+            _render({"time": "1:00:00", "mem": "8G", "gpus": 1})
+
+    @pytest.mark.integration
+    def test_multi_partition_comma_allowed(self):
+        sh = _render({"time": "2-", "mem": "20g", "gpus": 1,
+                      "partition": "a100-gpu,l40-gpu", "qos": "gpu_access"})
+        assert "#SBATCH --partition=a100-gpu,l40-gpu" in sh
+
+
+class TestSlurmPolicyMerge:
+    """render_workflow_files merges the env's slurm policy + email into the
+    per-job request (_resolve_slurm_and_email)."""
+
+    @pytest.mark.integration
+    def test_email_pulled_from_env(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, email = _resolve_slurm_and_email(
+            {"time": "1:00:00", "mem": "4G"},
+            {"name": "c", "type": "ssh", "email": "aaron@tislab.org"})
+        assert email == "aaron@tislab.org"
+
+    @pytest.mark.integration
+    def test_account_and_default_partition_from_env(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, _ = _resolve_slurm_and_email(
+            {"time": "1:00:00", "mem": "4G"},
+            {"name": "c", "type": "ssh",
+             "slurm": {"account": "lab1", "partition": "general"}})
+        assert merged["account"] == "lab1"
+        assert merged["partition"] == "general"
+
+    @pytest.mark.integration
+    def test_gpu_partition_qos_from_env_convention(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, _ = _resolve_slurm_and_email(
+            {"time": "2-", "mem": "20g", "gpus": 1},
+            {"name": "c", "type": "ssh",
+             "slurm": {"gpu": {"partition": "a100-gpu", "qos": "gpu_access"}}})
+        assert merged["partition"] == "a100-gpu"
+        assert merged["qos"] == "gpu_access"
+
+    @pytest.mark.integration
+    def test_gpu_request_refused_when_env_has_no_gpu_convention(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        with pytest.raises(ValueError, match="GPU is not configured"):
+            _resolve_slurm_and_email(
+                {"time": "2-", "mem": "20g", "gpus": 1},
+                {"name": "plain", "type": "ssh"})
+
+    @pytest.mark.integration
+    def test_cpu_job_drops_qos_and_omits_policy_when_env_bare(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, email = _resolve_slurm_and_email(
+            {"time": "1:00:00", "mem": "4G", "qos": "sneaky"},
+            {"name": "bare", "type": "ssh"})
+        assert "qos" not in merged          # qos is GPU-only in our convention
+        assert "partition" not in merged and "account" not in merged
+        assert email == ""
+
+
+class TestNextflowMemoryNormalization:
+    @pytest.mark.integration
+    @pytest.mark.parametrize("mem,expected", [
+        ("20g", "'20GB'"), ("6G", "'6GB'"), ("12000M", "'12000MB'"),
+    ])
+    def test_process_memory_is_uppercase_nextflow_unit(self, mem, expected):
+        cfg = render_workflow(
+            tool_name="samtools", command=_DEMO_COMMAND, inputs=_DEMO_INPUTS,
+            outputs=_DEMO_OUTPUTS, apptainer_sif=_DEMO_SIF,
+            apptainer_module="apptainer/1.5.0", nextflow_module="nextflow/25.04.7",
+            slurm={"time": "1:00:00", "mem": mem}, workflow_name="m",
+        )["nextflow.config"]
+        assert f"memory = {expected}" in cfg

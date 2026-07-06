@@ -125,9 +125,9 @@ def _parse_exit_code(s: str) -> int:
 # whitelist (not the whole dict) so a stray/injected key can't ride into the
 # sealed WorkflowSpec.
 _SLURM_CONTEXT_KEYS = (
-    "account", "partition", "queue", "queue_default", "qos",
+    "account", "partition", "qos",
     "time", "mem", "mem_per_cpu", "cpus", "cpus_per_task",
-    "nodes", "ntasks", "gres", "constraint",
+    "nodes", "ntasks", "gpus", "gres", "constraint",
 )
 
 
@@ -367,6 +367,7 @@ def run_step_on_cluster(
             nextflow_module=nextflow_module,
             slurm=slurm,
             workflow_name=workflow_name,
+            env=env,
         )
     except ValueError as e:
         return refused("run_cluster.render_failed",

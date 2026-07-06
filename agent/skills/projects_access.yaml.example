@@ -48,18 +48,21 @@
 #                                       write). MUST include permissions:
 #                                       [upload, download, exec].
 #
-#       slurm                           a CLOSED-key block (unknown keys are
-#                                       rejected to catch typos like
-#                                       `max_corees_per_job` that would
-#                                       silently bypass the cap):
-#         queue_default                 default SLURM partition
-#         allowed_queues                list of permitted partitions; default
-#                                       MUST be in this list
-#         account                       SLURM account string
-#         max_cores_per_job             positive int — submit_cluster_job
-#         max_mem_gb_per_job            positive int — refuses any
-#         max_time_hours_per_job        positive int — submission exceeding
-#                                                       these caps
+#       slurm                           OPTIONAL closed-key block — the HPC's
+#                                       scheduler policy. ALL keys optional
+#                                       (omit the block for a cluster that needs
+#                                       none, e.g. Longleaf CPU jobs); unknown
+#                                       keys rejected to catch typos:
+#         account                       SLURM account (→ --account; omit ⇒ none)
+#         partition                     default --partition for CPU jobs
+#                                       (omit ⇒ scheduler default, no line)
+#         gpu: {partition, qos}         this HPC's GPU convention; a gpus>0 job
+#                                       renders -p <partition> --qos <qos> --gres
+#         max_cores_per_job             positive int cap
+#         max_mem_gb_per_job            positive int cap
+#         max_time_hours_per_job        positive int cap
+#       email                           OPTIONAL env-level field → --mail-type=END
+#                                       + --mail-user on every job (omit ⇒ no mail)
 #
 #       All Phase 2 target paths on the SAME env MUST be disjoint subtrees
 #       (no path is a prefix of another) — a breach of one target must not
@@ -121,6 +124,8 @@ compute_envs:
                                                  #   bash  — a plain shell script run directly, no scheduler
                                                  # OPTIONAL: default follows `type` (ssh→slurm, local→bash),
                                                  # so a local machine never silently claims slurm.
+    email: alice@example.edu                     # OPTIONAL: when set, every job header emits
+                                                 # --mail-type=END + --mail-user=<this>. Omit ⇒ no mail.
 
     container_upload_target:
       path: /scratch/alice/containers/
@@ -142,13 +147,21 @@ compute_envs:
       permissions: [file_name_only, upload, download, exec]
       description: "shared reference data — genomes, public DBs, etc."
 
-    slurm:                                       # closed-key block (typos REFUSED at load)
-      queue_default: general
-      allowed_queues: [general, interact]        # queue_default MUST be in this list
-      account: alice_lab                         # the SLURM account to charge
-      max_cores_per_job: 16                      # positive ints; submit_cluster_job
-      max_mem_gb_per_job: 64                     # refuses any submission that
-      max_time_hours_per_job: 24                 # exceeds these caps
+    slurm:                                       # OPTIONAL — the HPC's scheduler POLICY.
+                                                 # EVERY key optional; typos still REFUSED. Omit
+                                                 # the whole block for a cluster that needs no
+                                                 # account/partition (e.g. UNC Longleaf CPU jobs).
+                                                 # (Per-job time/mem/cpus are passed to the run
+                                                 # primitives, NOT declared here.)
+      account: alice_lab                         # optional → --account on every job (omit ⇒ none)
+      partition: general                         # optional → default --partition for CPU jobs
+                                                 #   (omit ⇒ no --partition line; scheduler default)
+      gpu:                                       # optional → this HPC's GPU convention. Present ⇒
+        partition: a100-gpu                      #   a gpus>0 job renders  -p a100-gpu
+        qos: gpu_access                          #   --qos gpu_access --gres=gpu:N
+      max_cores_per_job: 16                      # optional positive-int caps
+      max_mem_gb_per_job: 64
+      max_time_hours_per_job: 24
 
   # ─────────────────────────────────────────────────────────────────────────
   # LOCAL MODE — this laptop / wherever the agent process runs.

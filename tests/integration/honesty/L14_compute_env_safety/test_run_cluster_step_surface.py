@@ -231,7 +231,7 @@ class TestScratchOnlyWall:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0,
             access_path=str(access_path))
         assert "error" in r
@@ -280,7 +280,7 @@ class TestScratchOnlyWall:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0,
             access_path=str(access_path))
         assert "error" in r and "only supports ssh" in r["error"]
@@ -397,7 +397,7 @@ class TestHappyPath:
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1.4.1",
             nextflow_module="nextflow/25.04.7",
-            slurm={"queue": "general", "time": "00:30:00",
+            slurm={"time": "00:30:00",
                    "mem": "4G", "cpus": 2},
             poll_interval=0,
             access_path=str(access_path),
@@ -449,7 +449,7 @@ class TestHappyPath:
         # Repro (cluster context) — modules + SLURM placement sealed onto step.
         assert step["cluster_apptainer_module"] == "apptainer/1.4.1"
         assert step["cluster_nextflow_module"] == "nextflow/25.04.7"
-        assert step["cluster_slurm"] == {"queue": "general", "time": "00:30:00",
+        assert step["cluster_slurm"] == {"time": "00:30:00",
                                           "mem": "4G", "cpus": 2}
 
         # Draft updated with cluster-locus pipeline_step
@@ -490,7 +490,7 @@ class TestPhaseFailurePreservation:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0,
             access_path=str(access_path),
             _pipeline_state=_FakePipelineState(),
@@ -537,7 +537,7 @@ class TestPhaseFailurePreservation:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0,
             access_path=str(access_path),
             _pipeline_state=ps,
@@ -603,7 +603,7 @@ class TestPhaseFailurePreservation:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0, max_polls=3,
             access_path=str(access_path),
             _pipeline_state=ps,
@@ -667,7 +667,7 @@ class TestPhaseFailurePreservation:
             inputs={}, outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0, max_polls=3,
             access_path=str(access_path),
             _pipeline_state=ps,
@@ -722,7 +722,7 @@ class TestInputPrecondition:
             outputs={"o": "out.bam"},
             download_local_dir=str(tmp_path / "downloads"),
             apptainer_module="apptainer/1", nextflow_module="nextflow/2",
-            slurm={"queue": "g", "time": "00:01:00", "mem": "1G", "cpus": 1},
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
             poll_interval=0, max_polls=3, access_path=str(access_path),
             _pipeline_state=_FakePipelineState(),
             _validator=_FakeValidator(), _env_mgr=_FakeEnvMgr())

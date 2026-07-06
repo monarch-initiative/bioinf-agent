@@ -201,11 +201,17 @@ class TestAgentCommonDataTarget:
 # ===========================================================================
 
 class TestSlurmBlock:
+    """The env-level `slurm:` block is the HPC's scheduler POLICY. ALL keys are
+    OPTIONAL now (Longleaf CPU jobs need none) — the old required
+    queue_default/allowed_queues/account/max_* model was a queue-SELECTION scheme
+    Longleaf doesn't use. Email moved to the env-level `email:` field. Unknown keys
+    still rejected; the GPU convention {partition, qos} is a closed sub-block."""
+
     def _good_slurm(self) -> dict:
         return {
-            "queue_default": "general",
-            "allowed_queues": ["general", "interact"],
             "account": "tislab",
+            "partition": "general",
+            "gpu": {"partition": "a100-gpu", "qos": "gpu_access"},
             "max_cores_per_job": 16,
             "max_mem_gb_per_job": 64,
             "max_time_hours_per_job": 24,
@@ -214,18 +220,27 @@ class TestSlurmBlock:
     @pytest.mark.integration
     def test_happy_path_loads(self, tmp_path):
         env = _base_env(slurm=self._good_slurm())
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
         cfg = compute_access.get_slurm_config(
             compute_access.get_compute_env("cluster", access))
-        assert cfg["queue_default"] == "general"
+        assert cfg["account"] == "tislab"
+        assert cfg["partition"] == "general"
+        assert cfg["gpu"] == {"partition": "a100-gpu", "qos": "gpu_access"}
         assert cfg["max_cores_per_job"] == 16
+
+    @pytest.mark.integration
+    def test_empty_block_loads(self, tmp_path):
+        """ALL keys optional — an empty slurm block is valid (a cluster that needs
+        no account/partition, like Longleaf for CPU jobs)."""
+        env = _base_env(slurm={})
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert compute_access.get_slurm_config(
+            compute_access.get_compute_env("cluster", access)) == {}
 
     @pytest.mark.integration
     def test_lookup_returns_none_when_undeclared(self, tmp_path):
         env = _base_env()
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
         assert compute_access.get_slurm_config(
             compute_access.get_compute_env("cluster", access)) is None
 
@@ -235,110 +250,81 @@ class TestSlurmBlock:
         bad = self._good_slurm()
         bad["max_corees_per_job"] = 9999   # typo
         env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
         assert "unknown keys" in str(exc.value)
         assert "max_corees_per_job" in str(exc.value)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("missing", [
-        "queue_default", "allowed_queues", "account",
-        "max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job",
-    ])
-    def test_refuses_missing_required_key(self, tmp_path, missing):
-        bad = self._good_slurm()
-        bad.pop(missing)
-        env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "missing required keys" in str(exc.value)
-        assert missing in str(exc.value)
-
-    @pytest.mark.integration
-    def test_refuses_queue_default_not_in_allowed_queues(self, tmp_path):
-        bad = self._good_slurm()
-        bad["queue_default"] = "ghost_queue"   # not in allowed_queues
-        env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "queue_default" in str(exc.value)
-        assert "allowed_queues" in str(exc.value)
-
-    @pytest.mark.integration
     @pytest.mark.parametrize("field,bad_value", [
-        ("max_cores_per_job", 0),         # zero rejected
-        ("max_cores_per_job", -1),        # negative rejected
-        ("max_cores_per_job", 1.5),       # float rejected
-        ("max_cores_per_job", "16"),      # string-of-int rejected
-        ("max_cores_per_job", True),      # bool rejected (subclass of int)
-        ("max_mem_gb_per_job", 0),
+        ("max_cores_per_job", 0), ("max_cores_per_job", -1),
+        ("max_cores_per_job", 1.5), ("max_cores_per_job", "16"),
+        ("max_cores_per_job", True), ("max_mem_gb_per_job", 0),
         ("max_time_hours_per_job", -24),
     ])
     def test_refuses_non_positive_int_caps(self, tmp_path, field, bad_value):
         bad = self._good_slurm()
         bad[field] = bad_value
         env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "positive integer" in str(exc.value)
-        assert field in str(exc.value)
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert "positive integer" in str(exc.value) and field in str(exc.value)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("field", ["queue_default", "account"])
+    @pytest.mark.parametrize("field", ["account", "partition"])
     def test_refuses_empty_string_fields(self, tmp_path, field):
         bad = self._good_slurm()
         bad[field] = ""
         env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "non-empty string" in str(exc.value)
-        assert field in str(exc.value)
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert "non-empty string" in str(exc.value) and field in str(exc.value)
 
     @pytest.mark.integration
-    def test_refuses_allowed_queues_empty_list(self, tmp_path):
+    @pytest.mark.parametrize("field", ["account", "partition"])
+    def test_refuses_shell_metacharacters(self, tmp_path, field):
+        """account/partition land in an SBATCH header — a metacharacter would be
+        header injection. Refuse before it ever reaches the cluster."""
         bad = self._good_slurm()
-        bad["allowed_queues"] = []
+        bad[field] = "general; rm -rf /"
         env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "allowed_queues" in str(exc.value)
-        assert "non-empty list" in str(exc.value)
-
-    # --- Optional keys: mail_user + module_loads -----------------------------
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert "shell metacharacters" in str(exc.value)
 
     @pytest.mark.integration
-    def test_accepts_optional_mail_user(self, tmp_path):
+    def test_partition_may_be_comma_separated(self, tmp_path):
+        """Longleaf allows targeting several GPU partitions (a100-gpu,l40-gpu)."""
         good = self._good_slurm()
-        good["mail_user"] = "user@example.org"
-        env = _base_env(slurm=good)
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
+        good["gpu"] = {"partition": "a100-gpu,l40-gpu", "qos": "gpu_access"}
+        access = compute_access.load_access(_write(tmp_path, _wrap(_base_env(slurm=good))))
         cfg = compute_access.get_slurm_config(
             compute_access.get_compute_env("cluster", access))
-        assert cfg["mail_user"] == "user@example.org"
+        assert cfg["gpu"]["partition"] == "a100-gpu,l40-gpu"
+
+    # --- GPU convention sub-block {partition, qos} ---------------------------
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad_mail", [
-        "no-at-sign",
-        "user@with\nnewline.example.org",
-        "user@with\rcarriage.example.org",
-        "",
-    ])
-    def test_refuses_bad_mail_user(self, tmp_path, bad_mail):
+    @pytest.mark.parametrize("missing", ["partition", "qos"])
+    def test_gpu_block_requires_both_partition_and_qos(self, tmp_path, missing):
         bad = self._good_slurm()
-        bad["mail_user"] = bad_mail
+        bad["gpu"] = {"partition": "a100-gpu", "qos": "gpu_access"}
+        del bad["gpu"][missing]
         env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
         with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        msg = str(exc.value)
-        assert "mail_user" in msg
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert "missing required keys" in str(exc.value) and missing in str(exc.value)
+
+    @pytest.mark.integration
+    def test_gpu_block_refuses_unknown_key(self, tmp_path):
+        bad = self._good_slurm()
+        bad["gpu"] = {"partition": "a100-gpu", "qos": "gpu_access", "count": 4}
+        env = _base_env(slurm=bad)
+        with pytest.raises(ConfigError) as exc:
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert "unknown keys" in str(exc.value) and "count" in str(exc.value)
+
+    # --- Optional module_loads -----------------------------------------------
 
     @pytest.mark.integration
     def test_accepts_optional_module_loads(self, tmp_path):
@@ -732,9 +718,9 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
             "permissions": ["upload", "download", "exec"],
             "description": "shared reference data (Exomiser, gnomAD, etc.)"},
         slurm={
-            "queue_default": "general",
-            "allowed_queues": ["general", "interact"],
             "account": "tislab",
+            "partition": "general",
+            "gpu": {"partition": "a100-gpu", "qos": "gpu_access"},
             "max_cores_per_job": 16,
             "max_mem_gb_per_job": 64,
             "max_time_hours_per_job": 24,
@@ -755,7 +741,8 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
 
     sl = compute_access.get_slurm_config(env_blk)
     assert sl["max_cores_per_job"] == 16
-    assert sl["queue_default"] in sl["allowed_queues"]
+    assert sl["account"] == "tislab"
+    assert sl["gpu"] == {"partition": "a100-gpu", "qos": "gpu_access"}
 
 
 # ===========================================================================
