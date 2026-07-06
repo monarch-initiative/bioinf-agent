@@ -300,6 +300,12 @@ def install_git_repo(
             # to the script_repo generator instead of a compiled-source build.
             "entrypoint":    entrypoint,
             "interpreter":   interpreter,
+            # The caller's smoke test (empty ⇒ freeze uses the wrapper-smoke default).
+            # freeze re-runs THIS as its in-image VALIDATED_IN_IMAGE evidence — the
+            # agent's chosen check is both more meaningful than a generic `--help`
+            # AND lighter for import-heavy tools whose `--help` pulls a giant import
+            # chain (Talos: `import talos` ~0.3s vs `talos --help` imports hail).
+            "verify_command": verify_command,
         }
         ip_record = {
             "name":           tool_name,

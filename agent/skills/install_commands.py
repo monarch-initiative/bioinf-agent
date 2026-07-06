@@ -414,5 +414,16 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
         f"{wrap} --help >/dev/null 2>&1 || {wrap} --version >/dev/null 2>&1 || "
         f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
     )
+    # ENGINE COUPLING (Talos, batch-N): a run-by-path repo whose interpreter is a
+    # CONDA-PROVIDED language runtime (python/Rscript/perl) needs the conda env
+    # ACTIVE for BOTH the build (`pip install -e .` — pip/python live in the env,
+    # not on the builder's base PATH) AND the wrapper-smoke evidence (`python
+    # entry` — same). Without this the build dies `pip: command not found`. The
+    # coupling is applied by container_build.run() (wraps in `pixi run bash -c`),
+    # correct in the build container AND when the longtail step is baked. node/
+    # yarn (Apollo3) and make/gcc (C tools via the `source` gen) are system
+    # toolchains → stay UNcoupled (still on PATH inside/outside pixi run anyway).
+    engine_coupled = interpreter in {"python", "python3", "Rscript", "perl"}
     return {"command": cmd, "evidence": ev, "tool": wrap,
-            "purpose": f"{name} (script repo @ {ref or 'HEAD'})"}
+            "purpose": f"{name} (script repo @ {ref or 'HEAD'})",
+            "engine_coupled": engine_coupled}

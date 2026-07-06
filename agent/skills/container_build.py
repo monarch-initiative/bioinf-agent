@@ -458,6 +458,16 @@ class ContainerBuild:
         self.longtail: list[dict] = []
         self.log: list[str] = []
 
+    def _emulated(self) -> bool:
+        """True when the target build platform differs from the host CPU arch, so
+        the build runs under QEMU emulation (10-50x slower — an import-heavy tool's
+        evidence smoke needs a much bigger timeout). Compares amd64-ness both ways."""
+        import platform as _plat
+        host = _plat.machine().lower()
+        host_amd = host in ("x86_64", "amd64")
+        tgt_amd = "amd64" in (self.platform or "").lower() or "x86_64" in (self.platform or "").lower()
+        return host_amd != tgt_amd
+
     @staticmethod
     def _sh(args: list[str], timeout: int = 1800) -> dict[str, Any]:
         # errors="replace": a tool's `--version` / banner probe can emit non-UTF-8
@@ -465,8 +475,19 @@ class ContainerBuild:
         # stdout). Strict text-mode decoding would raise UnicodeDecodeError and
         # crash the whole build/validation; we tolerate garbled bytes instead —
         # the returncode is what the honesty check reads, the text is diagnostic.
-        p = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=timeout)
+        try:
+            p = subprocess.run(args, capture_output=True, text=True,
+                               errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            # A hung/slow step (e.g. an import-heavy tool's evidence smoke under
+            # QEMU cross-arch emulation) must NOT crash the whole freeze with an
+            # unhandled TimeoutExpired — return a structured failure (rc=124, the
+            # conventional timeout code) so the honesty check reports a clean
+            # evidence/install failure and the freeze returns a broke() record.
+            out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+            err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
+            return {"returncode": 124, "stdout": out or "",
+                    "stderr": ((err or "") + f"\n[_sh] command timed out after {timeout}s").strip()}
         return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
 
     def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:
@@ -621,7 +642,13 @@ class ContainerBuild:
         inst = self.exec(cmd, timeout=timeout)
         if inst["returncode"] != 0:
             return broke("container_build.run_install_failed", success=False, stage="install", stderr=(inst["stderr"] or "")[-800:])
-        ev = self.exec(ev_cmd, timeout=120)
+        # Evidence smoke: 120s is fine natively, but a cross-arch (QEMU) build of an
+        # import-heavy tool (hail/pyspark/torch class — Talos's `talos --help`
+        # imports cpg_flow+hail, ~2s native → minutes emulated) blows past it. Give
+        # emulated builds a far larger cap; the _sh timeout handler keeps a genuine
+        # hang from crashing the freeze either way.
+        ev_timeout = 900 if self._emulated() else 120
+        ev = self.exec(ev_cmd, timeout=ev_timeout)
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])

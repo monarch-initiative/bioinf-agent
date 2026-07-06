@@ -296,6 +296,11 @@ def _map_install_spec(
                 script_rel=im.get("entrypoint"),
                 interpreter=im.get("interpreter") or "",
                 build_command=im.get("build_command") or "",   # N2: optional in-image build
+                # Prefer the agent's recorded smoke as the in-image evidence over the
+                # default wrapper-smoke (`{tool} --help`). For an import-heavy python
+                # entrypoint (Talos → cpg_flow+hail), `--help` runs minutes under QEMU
+                # cross-arch and blows the evidence timeout; `import talos` is seconds.
+                evidence=im.get("verify_command") or "",
                 wrapper=name)}
         if not im.get("build_command") or not im.get("bin_path"):
             return refused("build.source_non_replayable",
@@ -526,6 +531,23 @@ def build_env_image(
     pip_installs   = [x for x in all_pip if not _pip_flags(x)]
     tool_installs  = [x for x in non_conda if x.get("type") != "pip"]
 
+    # A SOURCE install whose in-image build shells out to pip/python (a
+    # git-vendored python package built `pip install -e .`, e.g. Talos) needs
+    # `python` AND the `pip` binary IN the conda env — pixi/uv envs don't ship
+    # pip by default (same gap ensure_python_for_pip already closes for the
+    # flag-bearing pip tier). The script_repo generator marks these engine_coupled
+    # so the build runs inside the activated env; without pip declared here that
+    # activated env still lacks pip → `pip: command not found` at build.
+    def _source_needs_pip(x: dict) -> bool:
+        if x.get("type") != "source":
+            return False
+        im = x.get("install_method") or {}
+        if (im.get("interpreter") or "") in ("python", "python3"):
+            return True
+        bc = im.get("build_command") or ""
+        return bool(re.search(r"\b(pip|python|python3)\b", bc))
+    source_needs_pip = any(_source_needs_pip(x) for x in tool_installs)
+
     # map every generator install up front so a non-replayable one fails BEFORE
     # we spin a build container.
     tool_specs = []
@@ -569,10 +591,23 @@ def build_env_image(
                   prebaked_lock_files=conda_lock_files,
                   apt_snapshot=apt_snapshot)
 
+    _base_conda = plan_conda(conda_deps, non_conda)
+    if source_needs_pip:
+        # A source build's python CEILING lives in its pyproject (e.g. Talos:
+        # requires-python <3.12), INVISIBLE to the conda solver — left to inject a
+        # bare `python`, the solver grabs the newest (3.14) and `pip install -e .`
+        # dies "requires a different Python". freeze deliberately drops the
+        # create_conda_env python as scaffolding (freeze.py), so PIN the injected
+        # python to the version the env was VALIDATED on (validated == shipped).
+        _py = str(spec.get("python_version") or "").strip()
+        if _py and not any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in _base_conda):
+            _base_conda = [f"python={_py}"] + _base_conda
     all_conda = ensure_python_for_pip(
-        plan_conda(conda_deps, non_conda),
+        _base_conda,
         bool(pip_installs),
-        has_flag_bearing_pip=bool(pip_with_flags),
+        # source_needs_pip reuses the flag-bearing-pip path (inject python + pip)
+        # so a `pip install -e .` source build has a real pip in the activated env.
+        has_flag_bearing_pip=bool(pip_with_flags) or source_needs_pip,
     )
     if all_conda:
         non_conda_names = {x.get("name", "") for x in non_conda}
