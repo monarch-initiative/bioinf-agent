@@ -51,6 +51,14 @@ def _refresh_reference_databases(rdbs: list) -> list:
             out.append(e)
             continue
         e = dict(e)
+        # Cluster-locus entries live on the cluster; their local_path is a CLUSTER
+        # path that isn't visible on this machine. ssh-derive available / size /
+        # sha256 from the cluster instead of reading local disk (which would
+        # wrongly mark them unavailable). Best-effort — I5 is the hard gate.
+        if e.get("locus") == "cluster":
+            from agent.skills import acquire_data
+            out.append(acquire_data.refresh_cluster_reference_db(e))
+            continue
         lp = e.get("local_path")
         if lp:
             p = Path(lp)

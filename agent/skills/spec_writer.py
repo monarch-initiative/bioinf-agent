@@ -770,6 +770,17 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
             continue   # not-yet-downloaded declaration; unused ones are harmless
         name = rdb.get("name") or f"reference_databases[{i}]"
         where = f"reference_databases[name={rdb.get('name')}]"
+
+        # Locus-aware: a cluster-resident DB (downloaded via a SLURM job into the
+        # env's common_data zone) can't be re-hashed locally — its local_path is a
+        # CLUSTER path. Verify it OVER SSH instead (existence + non-empty), the same
+        # "observe at the locus" posture as the C2 .sif round-trip. Lazy-import to
+        # keep spec_writer's base import cheap + avoid any import-order coupling.
+        if rdb.get("locus") == "cluster":
+            from agent.skills import acquire_data
+            violations.extend(acquire_data.check_cluster_reference_db(rdb))
+            continue
+
         p = Path(lp)
         if not p.exists():
             violations.append({

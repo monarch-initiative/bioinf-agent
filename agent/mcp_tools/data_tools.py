@@ -22,37 +22,64 @@ from agent.skills.outcomes import refused
 def download_reference_database(
     name: str,
     url: str,
-    local_path: str,
+    local_path: str = "",
     version: str = "",
     description: str = "",
     pipeline_id: str = "",
     extract: bool = True,
+    compute_env: str = "",
+    remote_dir: str = "",
+    slurm: dict = {},
 ) -> dict:
     """Download a reference database large enough to need watchdog-safe execution.
 
+    DEFAULT (compute_env=""): download to the LOCAL agent machine at `local_path`.
     Uses run_in_background internally — agent doesn't have to remember to wrap
     the curl in async, doesn't have to worry about --silent / -q traps that
     killed the original Exomiser install. Auto-records a ReferenceDatabase
     entry in the draft when pipeline_id is supplied.
 
-    extract=True: if `url` ends in .zip / .tar.gz / .tar, unpack into local_path
-                  and remove the archive. .zip uses unzip; .tar.gz uses tar.
-    extract=False: just download to local_path.
+    DIRECTED TO CLUSTER (compute_env set): render a SIMPLE resumable SLURM script
+    and `sbatch` it on that env, so the COMPUTE node pulls the bytes (the head
+    node stays clean — never scp/curl a huge DB through it). Lands in the env's
+    common_data zone by default (`<common_data>/<name>/`); `remote_dir` overrides
+    (must stay under common_data). `slurm` is the per-job resource request
+    ({time,mem,cpus,...}; defaults to a generous 1-day walltime). Submit-and-
+    document: returns the job_id immediately (a gnomAD/VEP-cache download runs for
+    hours and would blow the ~10-min watchdog) + writes a findable manifest. Poll
+    with cluster_job_status; the DB is verified OVER SSH at seal (locus-aware I5).
+    The recorded reference_databases entry carries locus="cluster" + compute_env +
+    the cluster path, so I8 (composition) and I5 (availability) both work with data
+    that never touches your laptop. `local_path` is ignored in this mode.
 
-    Returns immediately with a job_id — caller polls check_job(job_id) until
-    state != "running", then sees success/failure via returncode. The
-    ReferenceDatabase entry's `available`, `sha256`, and `size_bytes` are
-    re-derived from disk at seal (seal_workflow): a `<local_path>.source.sha256`
-    sidecar written during the download carries the hash of the bytes the URL
-    served (the reproducibility anchor), so the sealed WorkflowSpec pins the DB
-    by content, not just by name+URL.
+    extract=True: if `url` ends in .zip / .tar.gz / .tar, unpack in place.
+    extract=False: just download the file.
+
+    Returns immediately with a job_id — caller polls check_job(job_id) (local) or
+    cluster_job_status (cluster) until done. The ReferenceDatabase entry's
+    `available`, `sha256`, and `size_bytes` are re-derived at seal: locally from a
+    `<local_path>.source.sha256` sidecar, or over ssh from the cluster sidecar —
+    the reproducibility anchor pins the DB by content, not just name+URL.
     """
-    _missing = [n for n, v in (("name", name), ("url", url), ("local_path", local_path))
-                if not (v or "").strip()]
-    if _missing:
+    if not (name or "").strip() or not (url or "").strip():
         return refused("data.download_db_missing_args", success=False,
-                       error=f"required argument(s) empty: {_missing} — pass a name, "
-                             f"source url, and local_path")
+                       error="required argument(s) empty: pass at least a name and "
+                             "source url (local_path for a local download, or "
+                             "compute_env for a cluster download)")
+
+    # Directed to the cluster → the resumable-SLURM-download path.
+    if (compute_env or "").strip():
+        from agent.skills import acquire_data
+        return acquire_data.acquire_to_cluster(
+            name=name, url=url, compute_env=compute_env,
+            remote_dir=remote_dir, slurm=(slurm or None),
+            version=version, description=description,
+            extract=extract, pipeline_id=pipeline_id)
+
+    if not (local_path or "").strip():
+        return refused("data.download_db_missing_args", success=False,
+                       error="local_path is required for a local download "
+                             "(or set compute_env to download onto a cluster)")
 
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)
