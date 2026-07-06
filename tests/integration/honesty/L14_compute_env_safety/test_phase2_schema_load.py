@@ -756,3 +756,54 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
     sl = compute_access.get_slurm_config(env_blk)
     assert sl["max_cores_per_job"] == 16
     assert sl["queue_default"] in sl["allowed_queues"]
+
+
+# ===========================================================================
+# 6. job_manager — the batch-scheduler enum (slurm | bash)
+# ===========================================================================
+
+class TestJobManager:
+    """`job_manager` names the scheduler an env runs jobs through. A CONTROLLED
+    enum — only slurm (sbatch/sacct) and bash (plain shell script) are wired.
+    Optional: the default follows env `type` so a local machine never silently
+    claims slurm."""
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("jm", ["slurm", "bash"])
+    def test_accepts_valid_enum_values(self, tmp_path, jm):
+        env = _base_env(job_manager=jm)
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
+        env_blk = compute_access.get_compute_env("cluster", access)
+        assert compute_access.get_job_manager(env_blk) == jm
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad", ["pbs", "lsf", "SLURM", "sge", ""])
+    def test_refuses_unsupported_scheduler(self, tmp_path, bad):
+        env = _base_env(job_manager=bad)
+        with pytest.raises(ConfigError, match="job_manager"):
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+
+    @pytest.mark.integration
+    def test_ssh_env_defaults_to_slurm(self, tmp_path):
+        env = _base_env()  # type=ssh, no job_manager
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert compute_access.get_job_manager(
+            compute_access.get_compute_env("cluster", access)) == "slurm"
+
+    @pytest.mark.integration
+    def test_local_env_defaults_to_bash_not_slurm(self, tmp_path):
+        """The bug the user caught: a local machine has no scheduler, so an unset
+        job_manager must default to bash, never silently to slurm."""
+        env = {"name": "laptop", "type": "local", "container_upload_target": None}
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert compute_access.get_job_manager(
+            compute_access.get_compute_env("laptop", access)) == "bash"
+
+    @pytest.mark.integration
+    def test_explicit_bash_allowed_on_ssh_env(self, tmp_path):
+        """A user may drive an ssh node by hand (no sbatch) — explicit bash wins
+        over the type-based default."""
+        env = _base_env(job_manager="bash")
+        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
+        assert compute_access.get_job_manager(
+            compute_access.get_compute_env("cluster", access)) == "bash"

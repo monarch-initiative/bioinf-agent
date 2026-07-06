@@ -116,6 +116,11 @@ compute_envs:
     type: ssh
     host: hpc-login.example.edu
     user: alice                                  # ssh-agent handles auth; NO creds stored
+    job_manager: slurm                           # controlled enum: slurm | bash.
+                                                 #   slurm — sbatch launcher, polled via sacct (a real cluster)
+                                                 #   bash  — a plain shell script run directly, no scheduler
+                                                 # OPTIONAL: default follows `type` (ssh→slurm, local→bash),
+                                                 # so a local machine never silently claims slurm.
 
     container_upload_target:
       path: /scratch/alice/containers/

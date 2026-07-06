@@ -103,6 +103,20 @@ OPERATION_REQUIRES: dict[str, str] = {
     "run_step_on_cluster":        "exec",
 }
 
+# The batch scheduler a compute env runs jobs through, declared via `job_manager`.
+# A CONTROLLED enum:
+#   slurm — an sbatch launcher submitted via `sbatch`, polled via `sacct` (a real
+#           cluster with a batch scheduler).
+#   bash  — a plain shell script run directly, no scheduler (a local machine, or a
+#           node you drive by hand). "Just a shell script instead of a slurm script."
+# A third scheduler (pbs, lsf, …) gets added here AND gets its submit/poll wiring
+# in the SAME change — never a pre-declared value with no implementation behind it.
+VALID_JOB_MANAGERS: tuple[str, ...] = ("slurm", "bash")
+
+# When `job_manager` is omitted, the default follows the env TYPE — a local machine
+# has no scheduler, so it must NOT silently claim slurm. Keyed by compute-env `type`.
+_DEFAULT_JOB_MANAGER_BY_TYPE: dict[str, str] = {"local": "bash", "ssh": "slurm"}
+
 
 class PermissionDenied(Exception):
     """The agent attempted an operation on a path it isn't authorized for."""
@@ -235,6 +249,17 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
         # need to push to and that jobs may read/write from). One per env.
         _validate_dir_block(common, f"{where_env}.agent_common_data_target",
                             path, must_include=["upload", "download", "exec"])
+
+    # job_manager: which batch scheduler this env runs jobs through. A CONTROLLED
+    # enum (VALID_JOB_MANAGERS) — only 'slurm' is wired today. Optional: an env
+    # that declares it must name a supported scheduler; absent means slurm (the
+    # historical assumption and only implementation). Irrelevant for type=local
+    # (no scheduler), but still enum-checked if present.
+    jm = env.get("job_manager")
+    if jm is not None and jm not in VALID_JOB_MANAGERS:
+        raise ConfigError(
+            f"{where_env}.job_manager must be one of {list(VALID_JOB_MANAGERS)} "
+            f"(got {jm!r}) — only these batch schedulers are supported")
 
     slurm = env.get("slurm")
     if slurm is not None:
@@ -622,6 +647,19 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
 # fetch_from_*, submit_cluster_job) layer project-level grants on top in
 # their own modules, in the same shape as Phase 1's check_permission.
 # ---------------------------------------------------------------------------
+
+def get_job_manager(env: dict) -> str:
+    """The batch scheduler this env runs jobs through (VALID_JOB_MANAGERS).
+
+    When unset, the default follows the env TYPE — `local` → 'bash' (no scheduler
+    on your laptop), `ssh` → 'slurm' — so a local machine never silently claims
+    slurm. The config validator guarantees a declared value is in the enum, so this
+    never returns an unsupported scheduler."""
+    jm = env.get("job_manager")
+    if jm in VALID_JOB_MANAGERS:
+        return jm
+    return _DEFAULT_JOB_MANAGER_BY_TYPE.get(env.get("type"), "slurm")
+
 
 def get_agent_scratch_target(env: dict) -> Optional[dict]:
     """Return the agent_scratch_target dir-access block for this env, or
