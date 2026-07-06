@@ -638,3 +638,27 @@ class TestSubmissionManifest:
         assert "error" in result
         # No manifest on failure.
         assert not (tmp_path / "job_submissions").exists()
+
+
+# ===========================================================================
+# Globus staging (live production-run fix): submit_workflow_job renders the
+# workflow files into a repo-local staging dir (under $HOME), never a system
+# temp dir — Globus Connect Personal only scans its Accessible Folders and
+# refuses /var/folders or /tmp. This surfaced as a live `submit.upload_failed`
+# on the FIRST production run (rung 4). Mirrors the run_cluster_step guard.
+# ===========================================================================
+
+class TestSubmitRenderStagingLocation:
+    @pytest.mark.integration
+    def test_render_stage_dir_is_repo_local_not_system_temp(self):
+        import tempfile
+        import agent.skills.submit_workflow as sw
+        stage = sw._RENDER_STAGE_DIR.resolve()
+        sys_tmp = Path(tempfile.gettempdir()).resolve()
+        assert sys_tmp not in stage.parents and stage != sys_tmp, \
+            f"render staging {stage} must NOT be under the system temp dir " \
+            f"{sys_tmp} — Globus refuses to scan it"
+        repo_root = Path(sw.__file__).resolve().parents[2]
+        assert str(stage).startswith(str(repo_root)), \
+            f"render staging {stage} must live under the repo {repo_root} " \
+            f"(which is under $HOME, so Globus can access it)"
