@@ -515,7 +515,12 @@ def run_step_on_cluster(
         }
 
     # ─── 5. Download outputs back local (from scratch) ────────────────
-    download_dir = Path(download_local_dir)
+    # ABSOLUTIZE: detected_outputs must be absolute (I6) AND Globus resolves the
+    # local dest against its endpoint root, not the process CWD — a relative
+    # download_local_dir otherwise records a relative output path (I6 refusal at
+    # seal) and diverges from where Globus actually delivered. resolve() is
+    # lexical for a not-yet-created dir.
+    download_dir = Path(download_local_dir).expanduser().resolve()
     download_dir.mkdir(parents=True, exist_ok=True)
     downloaded: list[str] = []
     download_errors: list[dict] = []

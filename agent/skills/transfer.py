@@ -206,7 +206,11 @@ def _validate_local_path_for_upload(local_path: str) -> Path:
     if not isinstance(local_path, str) or not local_path:
         raise TransferError(
             f"local_path must be a non-empty string, got {local_path!r}")
-    p = Path(local_path)
+    # Absolutize (without resolving symlinks — the symlink guard below still
+    # fires): a RELATIVE local_path diverges between the CWD it's hashed against
+    # and the Globus local-endpoint root it's transferred against. abspath keeps
+    # both sides on the same absolute path.
+    p = Path(os.path.abspath(os.path.expanduser(local_path)))
     if p.is_symlink():
         raise TransferError(
             f"local_path {local_path!r} is a symlink; upload refuses "
@@ -237,7 +241,11 @@ def _validate_local_path_for_download(local_path: str) -> Path:
     if not isinstance(local_path, str) or not local_path:
         raise TransferError(
             f"local_path must be a non-empty string, got {local_path!r}")
-    p = Path(local_path)
+    # Absolutize: a RELATIVE download dest lands under the Globus local-endpoint
+    # root but is hashed against the process CWD — they diverge, so Globus reports
+    # SUCCEEDED yet the post-fetch sha256 open()s a path that isn't there. abspath
+    # keeps the transfer target and the verification on the same absolute path.
+    p = Path(os.path.abspath(os.path.expanduser(local_path)))
     if p.exists():
         raise TransferError(
             f"local_path {local_path!r} already exists; download refuses "
