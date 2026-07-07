@@ -372,7 +372,14 @@ def render_workflow(*,
         f"\n"
         f"    script:\n"
         f"    \"\"\"\n"
-        f"    apptainer exec {bind_flags} ${{params.apptainer_sif}} "
+        # --cleanenv: run with the IMAGE's baked environment, NOT the host's.
+        # Apptainer passes host env vars into the container by default, and they
+        # OVERRIDE the image's ENV — so a cluster-set JAVA_HOME (Longleaf ships
+        # /nas/.../java/17) clobbers our baked JAVA_HOME and the JVM/Spark gateway
+        # dies "java: No such file or directory". --cleanenv makes validated ==
+        # shipped hold at the env level: the container runs the environment we
+        # sealed, immune to whatever the login node happens to export.
+        f"    apptainer exec --cleanenv {bind_flags} ${{params.apptainer_sif}} "
         f"bash -c '{script_body}'\n"
         f"    \"\"\"\n"
         f"}}\n"

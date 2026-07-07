@@ -363,6 +363,7 @@ def emit_dockerfile(
     longtail_steps: list[dict],
     apt_extra: str = "",
     apt_snapshot: str = "",
+    activation_env: Optional[dict[str, str]] = None,
 ) -> str:
     """Assemble the ship-image Dockerfile from a recorded build (pure — no docker).
 
@@ -421,8 +422,20 @@ def emit_dockerfile(
     if has_env_layer:
         lines += engine.runtime_lines()
     lines += ["COPY --from=builder /usr/local /usr/local",
-              "COPY --from=builder /opt/tools /opt/tools", "",
-              "WORKDIR /data", 'CMD ["/bin/bash"]', ""]
+              "COPY --from=builder /opt/tools /opt/tools", ""]
+    # Bake conda activate.d env deltas (JAVA_HOME, GDAL_DATA, PROJ_LIB, R_HOME, …)
+    # + the fully-activated PATH. AFTER engine.runtime_lines so the activated PATH
+    # (which adds e.g. the JVM bin) wins. Without this, apptainer exec sees an
+    # env missing the activation vars and JVM/GDAL/PROJ/R conda tools break —
+    # the tool ran green in the build only because the build activates the env.
+    if activation_env:
+        lines += ["# conda activate.d env deltas — baked so `apptainer exec` gets the",
+                  "# same activated environment the build validated against."]
+        for k in sorted(activation_env):
+            v = activation_env[k].replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+            lines.append(f'ENV {k}="{v}"')
+        lines.append("")
+    lines += ["WORKDIR /data", 'CMD ["/bin/bash"]', ""]
     return "\n".join(lines)
 
 
@@ -467,6 +480,39 @@ class ContainerBuild:
         host_amd = host in ("x86_64", "amd64")
         tgt_amd = "amd64" in (self.platform or "").lower() or "x86_64" in (self.platform or "").lower()
         return host_amd != tgt_amd
+
+    def capture_activation_env(self) -> dict[str, str]:
+        """Capture the env-var deltas conda's `activate.d/*.sh` scripts produce, so
+        freeze can BAKE them as `ENV` in the runtime image.
+
+        The self-activating image bakes PATH + CONDA_PREFIX but does NOT run
+        activate.d — so JAVA_HOME (openjdk), GDAL_DATA, PROJ_LIB, R_HOME, … are
+        unset and their tools break under `apptainer exec` (which ignores the
+        docker ENTRYPOINT, so a login-shell hook can't set them either — they MUST
+        be static ENV). We run the ENGINE's activation (`pixi run env`) in the
+        builder and keep (a) every var whose value points INTO the env prefix (the
+        activate.d outputs) and (b) the fully-activated PATH (adds e.g. the JVM
+        bin). Result is baked verbatim → the shipped env == the validated env."""
+        if not self.has_env_layer or not self.cid:
+            return {}
+        ep = self.engine.env_prefix()
+        r = self.exec(self.engine.run("env"), timeout=120)
+        if r.get("returncode") != 0:
+            return {}
+        skip = {"CONDA_PREFIX", "PWD", "OLDPWD", "SHLVL", "_", "HOME",
+                "HOSTNAME", "TERM", "PS1", "SHELL"}
+        out: dict[str, str] = {}
+        for line in (r.get("stdout") or "").splitlines():
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k in skip or k.startswith("PIXI_") or k.startswith("CONDA_"):
+                continue
+            if k == "PATH":
+                out["PATH"] = v            # activated PATH
+            elif ep and ep in v:            # var points into the env prefix
+                out[k] = v
+        return out
 
     @staticmethod
     def _sh(args: list[str], timeout: int = 1800) -> dict[str, Any]:
@@ -686,9 +732,14 @@ class ContainerBuild:
                 cp = self._sh(["docker", "cp", f"{self.cid}:{self.workdir}/{f}", str(build_dir / f)])
                 if cp["returncode"] != 0:
                     return broke("container_build.freeze_cp_failed", success=False, stage="cp", file=f, stderr=cp["stderr"][-400:])
+        # Capture conda activate.d env deltas (JAVA_HOME, GDAL_DATA, …) + the
+        # activated PATH from the live builder, to BAKE them into the runtime image
+        # (apptainer exec can't run an activation hook — the env must be static).
+        activation_env = self.capture_activation_env()
         dockerfile = emit_dockerfile(self.base, engine=self.engine,
                                      has_env_layer=self.has_env_layer, longtail_steps=self.longtail,
-                                     apt_snapshot=self.apt_snapshot)
+                                     apt_snapshot=self.apt_snapshot,
+                                     activation_env=activation_env)
         (build_dir / "Dockerfile").write_text(dockerfile)
         tag = f"{name}:{version}" if version else f"{name}:latest"
         b = self._sh(["docker", "buildx", "build", "--platform", self.platform,
