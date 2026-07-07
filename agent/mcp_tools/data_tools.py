@@ -168,6 +168,57 @@ def download_reference_database(
 
 
 @mcp.tool()
+def acquire_reference_via_recipe(
+    name: str,
+    recipe_path: str,
+    compute_env: str,
+    versions: list = [],
+    bundle_version: str = "",
+    description: str = "",
+    pipeline_id: str = "",
+    remote_dir: str = "",
+    slurm: dict = {},
+    mask_tools: list = ["tmux"],
+) -> dict:
+    """Run a TOOL'S OWN reference-data acquisition recipe on a compute node.
+
+    When a tool ships its own data-gathering script (a `large_files/gather_files.sh`,
+    a `download_reference_data.sh`, …) — USE IT, don't re-implement its URL list.
+    A real gather script also does decompression, chr-renames, and format
+    conversion (echtvar/tabix/faidx) that a transcribed list silently drops,
+    drifting from the tool's recommended pipeline. This primitive uploads the
+    tool's recipe verbatim, wraps it in a resumable SLURM runner that (a) runs it
+    head-node-safe on a COMPUTE node into the env's common_data zone, (b) forces
+    the recipe's NON-INTERACTIVE path by masking interactive-only tools
+    (`mask_tools`, default tmux — a download-manager recipe re-execs into a
+    detached tmux server SLURM would kill), and (c) hashes every produced file for
+    provenance. Submit-and-document: returns the job_id immediately (a full bundle
+    is tens of GB / hours) + a findable manifest. Poll cluster_job_status; seal
+    verifies the bundle dir over ssh (locus-aware I5).
+
+    `recipe_path` = the tool's script on the agent machine (e.g. from its cloned
+    repo). `versions` = the agent-read per-file version manifest,
+    [{filename, url, version, note?}] with the FINAL produced filenames — recorded
+    on the reference_databases entry's files[] + the manifest (the reproducibility
+    + citation record; every reference must carry its version). Lands in
+    `<common_data>/<name>/` by default (`remote_dir` overrides, must stay under
+    common_data). Records ONE cluster-locus reference_databases entry for the
+    whole bundle dir.
+    """
+    if not (name or "").strip() or not (recipe_path or "").strip() \
+            or not (compute_env or "").strip():
+        return refused("data.recipe_missing_args", success=False,
+                       error="name, recipe_path, and compute_env are all required")
+    from agent.skills import acquire_data
+    return acquire_data.acquire_via_recipe(
+        name=name, recipe_local_path=recipe_path, compute_env=compute_env,
+        versions=list(versions or []), remote_dir=remote_dir,
+        slurm=(slurm or None), mask_tools=tuple(mask_tools or ()),
+        bundle_version=bundle_version, description=description,
+        pipeline_id=pipeline_id)
+
+
+@mcp.tool()
 def list_available_resources(resource_type: str = "both") -> dict:
     """List genomes and/or test datasets on disk.
     resource_type: 'genomes' | 'test_data' | 'both'"""
