@@ -7,12 +7,12 @@ EnvCache record's `mode`. These tests pin:
     agent_common_data_target — that zone is for reference data, per
     [[project-container-artifacts-routing]])
   - sif_subpath safety (no `..`, no absolute)
-  - mode=adopt → apptainer pull command shape + .sif lands under
-    container_upload_target
-  - mode=adopt skip-if-exists branch detection
-  - mode=build_archive → .tar lands under
-    container_upload_target/apptainer_sources/ (same zone as the .sif,
-    no spillover to common_data)
+  - delivery = LOCAL build (apptainer-in-docker) + ship the finished .sif;
+    NO `apptainer build`/`pull` on the head node
+    ([[feedback-no-head-node-image-builds]])
+  - skip-if-already-staged via a light read-only `test -f` ssh probe
+  - the built .sif lands under container_upload_target (no spillover to
+    common_data, per [[project-container-artifacts-routing]])
 """
 from __future__ import annotations
 
@@ -23,7 +23,43 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from agent.skills import stage_apptainer
+from agent.skills import local_sif, stage_apptainer
+from agent.skills.outcomes import proven
+
+
+def _install_local_build_mocks(monkeypatch, *, remote_exists=False, capture=None):
+    """Stub the LOCAL-build-and-ship surface so the delivery flow is testable
+    without real docker/ssh: (1) `local_sif.build_sif_locally` writes a fake .sif
+    + returns proven, (2) `transfer.upload` captures the destination, (3)
+    subprocess.run answers the `test -f` idempotency probe (EXISTS/MISSING) and
+    any `docker image inspect` as present. Asserts NO ssh apptainer build/pull is
+    ever constructed (the whole point of the fix)."""
+    def fake_build(*, out_sif, tarball="", image_tag="", platform="linux/amd64",
+                   builder_image="", timeout=1800):
+        Path(out_sif).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_sif).write_bytes(b"FAKESIF")
+        return proven("local_sif.built", success=True, sif_path=out_sif,
+                      size_bytes=7, builder_image="kaczmarj/apptainer:test")
+    monkeypatch.setattr(local_sif, "build_sif_locally", fake_build)
+
+    def fake_upload(*, project_name, compute_env_name, local_path,
+                    remote_abs_path, access_path=None, timeout=600):
+        if capture is not None:
+            capture["remote_abs_path"] = remote_abs_path
+            capture["local_path"] = local_path
+        return {"success": True, "zone": "container_upload",
+                "remote_abs_path": remote_abs_path, "manifest": "<test>"}
+    monkeypatch.setattr(stage_apptainer.transfer, "upload", fake_upload)
+
+    def fake_run(argv, *a, **kw):
+        joined = " ".join(argv) if isinstance(argv, (list, tuple)) else str(argv)
+        assert "apptainer build" not in joined and "apptainer pull" not in joined, (
+            f"head-node apptainer build/pull must never be constructed: {joined!r}")
+        m = MagicMock(); m.returncode = 0; m.stderr = ""
+        m.stdout = ("EXISTS\n" if remote_exists else "MISSING\n") \
+            if "test -f" in joined else ""
+        return m
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
 
 def _write_access(tmp_path: Path, data: dict) -> Path:
@@ -78,25 +114,24 @@ class TestPathHelpers:
 
 
 # ===========================================================================
-# apptainer-pull remote command shape
+# Idempotency: skip when the .sif is already staged (read-only `test -f`)
 # ===========================================================================
 
-class TestApptainerPullCmd:
+class TestRemoteSifExists:
     @pytest.mark.integration
-    def test_canonical_pull_shape(self):
-        cmd = stage_apptainer._build_apptainer_pull_cmd(
-            "/work/u/CLAUDE_CONTAINERS/samtools.sif",
-            "docker://quay.io/biocontainers/samtools@sha256:abc")
-        # Login shell so `module load apptainer` works on Lmod systems.
-        assert "bash -lc " in cmd
-        # Idempotent: SKIP if file exists.
-        assert "SKIP_ALREADY_STAGED" in cmd
-        # mkdir -p the parent before pulling.
-        assert "mkdir -p" in cmd
-        # The pull line itself.
-        assert "apptainer pull" in cmd
-        assert "/work/u/CLAUDE_CONTAINERS/samtools.sif" in cmd
-        assert "docker://quay.io/biocontainers/samtools@sha256:abc" in cmd
+    def test_probe_is_read_only_and_parses_exists(self, monkeypatch):
+        env = {"type": "ssh", "host": "h", "user": "u"}
+        seen = {}
+        def fake_run(argv, *a, **kw):
+            seen["argv"] = argv
+            m = MagicMock(); m.returncode = 0; m.stdout = "EXISTS\n"; m.stderr = ""
+            return m
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert stage_apptainer._remote_sif_exists(env, "/work/x.sif") is True
+        joined = " ".join(seen["argv"])
+        # read-only probe ONLY — never builds/pulls on the head node
+        assert "test -f" in joined
+        assert "apptainer build" not in joined and "apptainer pull" not in joined
 
 
 # ===========================================================================
@@ -213,8 +248,8 @@ class TestAuthGate:
     @pytest.mark.integration
     def test_sif_lands_in_container_upload_target(
             self, tmp_path, monkeypatch):
-        # Happy path: container_upload_target is declared, .sif lands
-        # there directly (no `apptainer/` subdir prefix — the whole zone
+        # Happy path: the locally-built .sif is UPLOADED directly under
+        # CLAUDE_CONTAINERS (no `apptainer/` subdir prefix — the whole zone
         # IS the container zone).
         access_path = _good_access(tmp_path)
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
@@ -222,21 +257,19 @@ class TestAuthGate:
             "image": "quay.io/biocontainers/samtools@sha256:23cda",
             "image_digest": "sha256:23cda33a3a4212587276",
             "content_digest": "sha256:23cda33a3a4212587276"}})
-
-        def fake_run(*args, **kwargs):
-            mock = MagicMock(); mock.returncode = 0
-            mock.stdout = ""; mock.stderr = ""
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        captured = {}
+        _install_local_build_mocks(monkeypatch, capture=captured)
 
         r = stage_apptainer.stage_apptainer_image(
             project_name="demo", compute_env_name="fakehpc",
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
         assert "error" not in r, r
-        # Lands directly under CLAUDE_CONTAINERS (no apptainer/ prefix).
+        # Lands directly under CLAUDE_CONTAINERS (no apptainer/ prefix), and
+        # THAT is where the finished .sif was uploaded.
         assert r["sif_path"] == \
             "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
+        assert captured["remote_abs_path"] == r["sif_path"]
 
     @pytest.mark.integration
     def test_project_without_env_access_refused(
@@ -300,51 +333,46 @@ class TestSifSubpathSafety:
 
 
 # ===========================================================================
-# Mocked-ssh happy path — adopt mode
+# Local-build-and-ship happy path — adopt mode (NO head-node pull)
 # ===========================================================================
 
 class TestAdoptHappyPath:
     @pytest.mark.integration
-    def test_adopt_pull_returns_success(self, tmp_path, monkeypatch):
+    def test_adopt_builds_locally_and_ships(self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
             "mode": "adopt",
             "image": "quay.io/biocontainers/samtools@sha256:23cda",
             "image_digest": "sha256:23cda33a3a4212587276",
             "content_digest": "sha256:23cda33a3a4212587276"}})
-
-        def fake_run(*args, **kwargs):
-            mock = MagicMock(); mock.returncode = 0
-            mock.stdout = "INFO:    Downloading container ...\n"
-            mock.stderr = ""
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        captured = {}
+        _install_local_build_mocks(monkeypatch, remote_exists=False,
+                                   capture=captured)
 
         r = stage_apptainer.stage_apptainer_image(
             project_name="demo", compute_env_name="fakehpc",
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
         assert "error" not in r, r
-        assert r["mode"] == "adopt"
+        # delivery mode reflects the local build; the .sif was shipped, not
+        # pulled on the head node (the fake_run asserts no apptainer pull).
+        assert r["mode"] == "adopt_local_sif"
         assert r["sif_path"] == \
             "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
+        assert captured["remote_abs_path"] == r["sif_path"]
         assert r["skipped"] is False
 
     @pytest.mark.integration
-    def test_adopt_skip_when_already_present(self, tmp_path, monkeypatch):
+    def test_skip_when_already_present(self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
             "mode": "adopt",
             "image": "quay.io/biocontainers/samtools@sha256:23cda",
             "image_digest": "sha256:23cda33a3a4212587276",
             "content_digest": "sha256:23cda33a3a4212587276"}})
-
-        def fake_run(*args, **kwargs):
-            mock = MagicMock(); mock.returncode = 0
-            mock.stdout = "SKIP_ALREADY_STAGED\n"
-            mock.stderr = ""
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        # A light read-only `test -f` says the .sif is already staged → the
+        # whole local build + upload is skipped (no docker, no ship).
+        _install_local_build_mocks(monkeypatch, remote_exists=True)
 
         r = stage_apptainer.stage_apptainer_image(
             project_name="demo", compute_env_name="fakehpc",
@@ -355,62 +383,19 @@ class TestAdoptHappyPath:
 
 
 # ===========================================================================
-# BUILD-archive — .tar lands in container_upload_target, NOT common_data
+# BUILD mode — the locally-built .sif ships to container_upload_target,
+# NOT common_data (container-artifacts-routing), and NOTHING builds on the
+# head node.
 # ===========================================================================
 
-class TestBuildArchiveTarRouting:
+class TestBuildShipsSifToContainerZone:
     """The point of [[project-container-artifacts-routing]]: container
-    artifacts (.tar + .sif) live in the container zone exclusively. Pins
-    the .tar landing path so a future regression that quietly re-routes
-    to agent_common_data_target gets caught at CI."""
+    artifacts live in the container zone exclusively. With local-build-and-ship
+    the ONLY artifact that moves is the finished .sif — pin that it lands under
+    container_upload_target even when common_data is also declared."""
 
     @pytest.mark.integration
-    def test_tar_uploads_to_container_upload_target(
-            self, tmp_path, monkeypatch):
-        # Build the manifest with BOTH container_upload_target AND
-        # agent_common_data_target declared on the env — to prove the
-        # .tar goes to container, NOT common_data, when both are present.
-        access_path = _write_access(tmp_path, {
-            "compute_envs": [{
-                "name": "fakehpc", "type": "local",
-                "container_upload_target": {
-                    "path": str(tmp_path / "CLAUDE_CONTAINERS"),
-                    "permissions": ["upload"]},
-                "agent_common_data_target": {
-                    "path": str(tmp_path / "COMMON_DATA"),
-                    "permissions": ["upload", "download", "exec"]},
-            }],
-            "projects": [{
-                "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
-            }],
-        })
-        # Pre-create the zone roots so transfer.upload's mkdir-parent
-        # has a real place to write into.
-        (tmp_path / "CLAUDE_CONTAINERS").mkdir()
-        (tmp_path / "COMMON_DATA").mkdir()
-
-        # Synthesize the tarball the freeze record claims to point at.
-        fake_tar = tmp_path / "bioinf_samtools.tar"
-        fake_tar.write_bytes(b"FAKE TAR BYTES FOR TEST")
-
-        # type=local skips the apptainer build ssh hop (env_type check
-        # at the top of stage_apptainer_image refuses non-ssh envs). So
-        # we can't test the FULL build path through a local env. Drive
-        # this via monkeypatching: track what transfer.upload was called
-        # with, then short-circuit.
-        captured = {}
-        def fake_upload(*, project_name, compute_env_name, local_path,
-                         remote_abs_path, access_path=None, timeout=600):
-            captured["remote_abs_path"] = remote_abs_path
-            captured["local_path"] = local_path
-            return {"success": True, "zone": "container_upload",
-                    "remote_abs_path": remote_abs_path,
-                    "manifest": "<test>"}
-        # The build path needs an ssh env to run the apptainer-build
-        # remote command. Switch the env type to ssh + intercept the
-        # build subprocess.
+    def test_built_sif_ships_to_container_zone(self, tmp_path, monkeypatch):
         access_path = _write_access(tmp_path, {
             "compute_envs": [{
                 "name": "fakehpc", "type": "ssh",
@@ -428,13 +413,13 @@ class TestBuildArchiveTarRouting:
                     "compute_env": "fakehpc", "directories": []}],
             }],
         })
+        # A freeze docker-save tarball the record points at (build mode).
+        fake_tar = tmp_path / "bioinf_samtools.tar"
+        fake_tar.write_bytes(b"FAKE TAR BYTES FOR TEST")
 
-        monkeypatch.setattr(stage_apptainer.transfer, "upload", fake_upload)
-        def fake_run(*a, **kw):
-            m = MagicMock(); m.returncode = 0
-            m.stdout = ""; m.stderr = ""
-            return m
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        captured = {}
+        _install_local_build_mocks(monkeypatch, remote_exists=False,
+                                   capture=captured)
 
         cache = FakeEnvCache({"samtools|linux/amd64|none": {
             "mode": "build",
@@ -447,16 +432,12 @@ class TestBuildArchiveTarRouting:
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
         assert "error" not in r, r
-        # The .tar lands under container_upload_target, in the
-        # `apptainer_sources/` subdir — NOT under COMMON_DATA.
-        assert captured["remote_abs_path"] == (
-            "/work/u/CLAUDE_CONTAINERS/apptainer_sources/bioinf_samtools.tar")
+        # The finished .sif ships to the container zone, NOT common_data.
+        assert r["sif_path"] == (
+            "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif")
+        assert captured["remote_abs_path"] == r["sif_path"]
         assert "COMMON_DATA" not in captured["remote_abs_path"]
-        # And the .sif itself lands under container_upload_target too.
-        assert r["sif_path"].startswith("/work/u/CLAUDE_CONTAINERS/")
-        assert "COMMON_DATA" not in r["sif_path"]
-        assert r["mode"] == "build_archive"
-        assert r["tar_remote_path"] == captured["remote_abs_path"]
+        assert r["mode"] == "build_local_sif"
 
 
 # ===========================================================================

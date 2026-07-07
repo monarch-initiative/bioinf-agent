@@ -13,37 +13,32 @@ Not a composite. The caller still calls `freeze()` to populate the
 EnvCache and `submit_workflow_job` to run jobs. This primitive is
 the irreducible "get the bytes there" step.
 
-How it picks the right method
------------------------------
-The EnvCache record's `mode` decides:
+How it delivers (local-build-and-ship)
+--------------------------------------
+The .sif is ALWAYS built on the AGENT machine and only the finished
+artifact is shipped — image -> .sif conversion (unpack + mksquashfs) is
+heavy and must never run on the shared cluster head node, and we never
+`apptainer pull` a multi-GB image there either
+([[feedback-no-head-node-image-builds]]). macOS/dev machines have no
+apptainer binary, so the build runs apptainer INSIDE a pinned linux
+container (`local_sif.build_sif_locally`).
 
-  ADOPT
-    Public BioContainer. ONE ssh hop:
-      apptainer pull <sif_path> docker://<image_by_digest>
-    No bytes move through us — apptainer fetches direct from quay.io
-    (or wherever). Idempotent: skip the pull if the .sif already
-    exists at sif_path.
+Every EnvCache `mode` converges to the same flow:
+  1. Obtain a LOCAL docker image:
+       - adopt / push_target  -> `docker pull` the (public/pushed) ref
+       - build                -> the locally-built image tag, or freeze's
+                                 docker-save tarball
+  2. `local_sif.build_sif_locally(...)` -> a .sif on the agent machine.
+  3. `transfer.upload(...)` the finished .sif to container_upload_target.
+     Wire protocol (scp_head_node vs globus) is picked by the env's
+     `data_transfer.type` inside transfer.upload.
+Idempotent: a light read-only ssh (`test -f`) skips the whole build+ship
+when the .sif is already staged. No head-node build/pull, ever.
 
-  BUILD (registry-free)
-    Local docker-save tarball. TWO steps:
-      1. Upload the .tar to the cluster via `transfer.upload`.
-         Wire protocol (scp_head_node vs globus) is picked by the
-         env's `data_transfer.type` inside transfer.upload — this
-         primitive doesn't second-guess it.
-      2. ssh apptainer build <sif_path> docker-archive://<tar_path>
-    Idempotent on the .sif side; the .tar lands at its own
-    deterministic path under the container zone.
-
-  BUILD (with push_target)
-    Pushed to a registry. ONE ssh hop:
-      apptainer pull <sif_path> docker://<push_target>
-    Same shape as adopt.
-
-Where the .sif (and .tar) land
-------------------------------
-Both container artifacts land in the env's `container_upload_target`:
-  .sif:  <env.container_upload_target>/<env_name>_<digest>.sif
-  .tar:  <env.container_upload_target>/apptainer_sources/<basename>.tar
+Where the .sif lands
+--------------------
+The finished .sif lands in the env's `container_upload_target`:
+  <env.container_upload_target>/<env_name>_<digest>.sif
 
 No fallback. If the env hasn't declared a `container_upload_target`
 with `upload` permission, the primitive refuses — per
@@ -64,9 +59,8 @@ Authorization
 Same env-implicit grant as every other env-target primitive:
   - project must have a `compute_env_access` entry for this env
   - env must declare `container_upload_target` with `upload` perm
-For ADOPT mode we ALSO need apptainer + network egress on the head
-node — that's a cluster property, not something this primitive can
-guarantee; failures surface in `apptainer_stderr`.
+Local docker (build/pull) + apptainer-in-docker run locally; the only
+cluster interaction is a read-only `test -f` probe and the .sif upload.
 """
 from __future__ import annotations
 
@@ -91,26 +85,108 @@ def _short_digest(content_digest: str) -> str:
     return hexdigest[:12] if hexdigest else "unknown"
 
 
-def _build_apptainer_pull_cmd(sif_remote_abs: str,
-                              docker_uri: str) -> str:
-    """The remote shell command that fetches an image via apptainer.
-    Login shell so `module load apptainer` works on systems where
-    apptainer lives behind Lmod. Skips the pull if the .sif already
-    exists (idempotent re-stage)."""
-    # `module load apptainer` is intentionally outside the test for
-    # the file existing — even when we skip the pull, we want failures
-    # to be diagnosed via `apptainer --version` rather than a missing
-    # `apptainer` command.
-    return (
-        f"bash -lc 'module load apptainer >/dev/null 2>&1 || true; "
-        f"if [ -f {shlex.quote(sif_remote_abs)} ]; then "
-        f"  echo SKIP_ALREADY_STAGED; "
-        f"else "
-        f"  mkdir -p {shlex.quote(str(Path(sif_remote_abs).parent))} && "
-        f"  apptainer pull {shlex.quote(sif_remote_abs)} "
-        f"{shlex.quote(docker_uri)}; "
-        f"fi'"
-    )
+# Where locally-built .sif files are staged before upload. Under the repo
+# ($HOME) so Globus Connect Personal can read them (its Accessible-Folders scan
+# refuses a system temp dir). Mirrors acquire_data._DL_STAGE_DIR. Gitignored.
+_LOCAL_SIF_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "apptainer_local_sif"
+
+
+def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> bool:
+    """ONE light read-only ssh: does the .sif already exist on the cluster?
+    Used for idempotency (skip a re-stage) WITHOUT any build/pull on the head
+    node. Returns False on any ssh failure (caller then builds+ships)."""
+    cmd = (f"bash -lc 'test -f {shlex.quote(sif_remote_abs)} "
+           f"&& echo EXISTS || echo MISSING'")
+    try:
+        res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
+                             text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return "EXISTS" in (res.stdout or "")
+
+
+def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
+                           compute_env_name: str, sif_remote_abs: str,
+                           image_digest: str, freeze_request_key: str,
+                           platform: str, access_path: Optional[str],
+                           timeout: int) -> dict:
+    """Build the .sif LOCALLY (apptainer-in-docker) and ship the finished
+    artifact — NEVER build/pull on the shared cluster head node
+    ([[feedback-no-head-node-image-builds]]). Unifies every delivery mode:
+    obtain a local docker image (pull a public/pushed ref, or use the locally
+    built image / freeze's docker-save tarball), build the .sif on the agent
+    machine, upload it to the env's container_upload_target."""
+    from agent.skills import local_sif
+
+    mode = record.get("mode")
+    # 1. Idempotency — skip if the .sif is already staged on the cluster.
+    if _remote_sif_exists(env, sif_remote_abs, timeout=min(timeout, 120)):
+        return proven("stage.skipped", success=True,
+            compute_env=compute_env_name, mode=mode,
+            sif_path=sif_remote_abs, image_digest=image_digest,
+            request_key=freeze_request_key, skipped=True,
+            staged_at=datetime.now(timezone.utc).isoformat())
+
+    # 2. Resolve the LOCAL docker source (tarball or image tag).
+    tarball = record.get("tarball")
+    image_tag = None
+    if mode == "adopt":
+        image_tag = record.get("image")                 # public biocontainer ref
+    elif record.get("push_target") and not record.get("gated"):
+        image_tag = record.get("push_target")            # pushed registry ref
+    elif tarball and Path(tarball).exists():
+        pass                                             # freeze docker-save archive
+    elif record.get("image"):
+        image_tag = record.get("image")                 # locally-built image tag
+
+    if not (tarball and Path(str(tarball)).exists()) and not image_tag:
+        return refused("stage.no_local_source",
+            error=f"cannot stage: freeze record has no local docker-save tarball "
+                  f"nor an image ref to build from (request_key="
+                  f"{freeze_request_key!r})")
+
+    # 3. If it's a registry ref not already on disk, pull it locally.
+    if image_tag and not tarball:
+        have = subprocess.run(["docker", "image", "inspect", image_tag],
+                              capture_output=True, text=True, timeout=60)
+        if have.returncode != 0:
+            pull = subprocess.run(
+                ["docker", "pull", "--platform", platform, image_tag],
+                capture_output=True, text=True, timeout=timeout)
+            if pull.returncode != 0:
+                return broke("stage.docker_pull_failed",
+                    error=f"docker pull {image_tag!r} failed: "
+                          f"{(pull.stderr or '').strip()[:400]}")
+
+    # 4. Build the .sif LOCALLY (apptainer-in-docker; no cluster involvement).
+    _LOCAL_SIF_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    local_sif_path = _LOCAL_SIF_STAGE_DIR / Path(sif_remote_abs).name
+    built = local_sif.build_sif_locally(
+        out_sif=str(local_sif_path),
+        tarball=(str(tarball) if (tarball and not image_tag) else ""),
+        image_tag=(image_tag or ""),
+        platform=platform, timeout=timeout)
+    if built.get("outcome") != "proven":
+        return built  # broke/refused (docker_save/build failure) surfaces as-is
+
+    # 5. Ship the FINISHED .sif to the container zone (globus/scp per env).
+    up = transfer.upload(
+        project_name=project_name, compute_env_name=compute_env_name,
+        local_path=str(local_sif_path), remote_abs_path=sif_remote_abs,
+        access_path=str(Path(access_path)) if access_path else None,
+        timeout=timeout)
+    if "error" in up and "already exists" not in (up.get("error") or ""):
+        return broke("stage.sif_upload_failed",
+            error=f"upload of the locally-built .sif to container_upload_target "
+                  f"failed: {up['error']}",
+            local_sif=str(local_sif_path))
+
+    return proven("stage.built_local",
+        success=True, compute_env=compute_env_name, mode=f"{mode}_local_sif",
+        sif_path=sif_remote_abs, image_digest=image_digest,
+        request_key=freeze_request_key, local_sif=str(local_sif_path),
+        builder_image=built.get("builder_image"), skipped=False,
+        staged_at=datetime.now(timezone.utc).isoformat())
 
 
 _SHA256_TOKEN_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -308,141 +384,26 @@ def stage_apptainer_image(
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""
+        platform = record.get("platform") or "linux/amd64"
 
-        # ─── ADOPT path ──────────────────────────────────────────────
-        if mode == "adopt":
-            image = record.get("image")
-            if not image:
-                return refused("stage.adopt_missing_image",
-                    error=f"ADOPT record missing `image`; can't pull "
-                    f"(request_key={freeze_request_key!r})")
-            docker_uri = f"docker://{image}"
-            remote_cmd = _build_apptainer_pull_cmd(sif_remote_abs, docker_uri)
-            argv = _ssh_argv(env, remote_cmd)
-            res = subprocess.run(argv, capture_output=True, text=True,
-                                 timeout=timeout)
-            if res.returncode != 0:
-                hint = _ssh_failure_hint(res.stderr or "",
-                                          env.get("host", "?"))
-                return broke("stage.pull_failed",
-                    error=
-                        f"apptainer pull failed (rc={res.returncode}): "
-                        f"{(res.stderr or '').strip()[:500]}",
-                    apptainer_stderr=(res.stderr or "").strip()[:1000],
-                    remote_cmd=remote_cmd[:200],
-                    **({"hint": hint} if hint else {}),
-                )
-            skipped = "SKIP_ALREADY_STAGED" in (res.stdout or "")
-            return proven("stage.adopted",
-                success=True,
-                compute_env=compute_env_name,
-                mode="adopt",
-                sif_path=sif_remote_abs,
-                image_digest=image_digest,
-                request_key=freeze_request_key,
-                skipped=skipped,
-                staged_at=datetime.now(timezone.utc).isoformat(),
-            )
+        # Guard: an ADOPT record MUST carry the image ref to build from.
+        # (Kept as an explicit pre-flight refusal — no docker/ssh before it.)
+        if mode == "adopt" and not record.get("image"):
+            return refused("stage.adopt_missing_image",
+                error=f"ADOPT record missing `image`; can't stage "
+                f"(request_key={freeze_request_key!r})")
 
-        # ─── BUILD-with-push_target path ─────────────────────────────
-        push_target = record.get("push_target")
-        if push_target and not record.get("gated"):
-            docker_uri = f"docker://{push_target}"
-            remote_cmd = _build_apptainer_pull_cmd(sif_remote_abs, docker_uri)
-            argv = _ssh_argv(env, remote_cmd)
-            res = subprocess.run(argv, capture_output=True, text=True,
-                                 timeout=timeout)
-            if res.returncode != 0:
-                return broke("stage.push_pull_failed",
-                    error=
-                        f"apptainer pull (push_target) failed (rc="
-                        f"{res.returncode}): {(res.stderr or '').strip()[:500]}",
-                    apptainer_stderr=(res.stderr or "").strip()[:1000],
-                )
-            return proven("stage.pushed",
-                success=True,
-                compute_env=compute_env_name,
-                mode="build_push",
-                sif_path=sif_remote_abs,
-                image_digest=image_digest,
-                request_key=freeze_request_key,
-                skipped="SKIP_ALREADY_STAGED" in (res.stdout or ""),
-                staged_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-        # ─── BUILD-registry-free path (.tar transfer + build) ────────
-        # Wire-protocol routing (scp_head_node vs globus) is decided
-        # inside transfer.upload() by the env's `data_transfer.type` —
-        # this primitive doesn't second-guess it.
-        tarball = record.get("tarball")
-        if not tarball:
-            return refused("stage.no_tarball",
-                error=f"freeze record has mode={mode!r} but no `tarball` or "
-                f"`push_target` — can't stage. (request_key="
-                f"{freeze_request_key!r})")
-        tarball_path = Path(tarball)
-        if not tarball_path.exists():
-            return refused("stage.tarball_missing",
-                error=f"freeze record tarball missing on disk: {tarball!r}. "
-                f"Re-run freeze() to regenerate.")
-
-        # The .tar is a container artifact — lands in the same
-        # container_upload_target as the .sif (resolved above). The
-        # `apptainer_sources/` subdir keeps build-input tarballs
-        # separate from the built .sif files inside the same zone.
-        tar_subpath = f"apptainer_sources/{tarball_path.name}"
-        tar_remote_abs = f"{ct_path}/{tar_subpath}"
-        up = transfer.upload(
-            project_name=project_name,
-            compute_env_name=compute_env_name,
-            local_path=str(tarball_path),
-            remote_abs_path=tar_remote_abs,
-            access_path=str(Path(access_path)) if access_path else None,
-            timeout=timeout,
-        )
-        if "error" in up:
-            # Tolerate the upload-already-exists case as a no-op.
-            if "already exists" not in (up.get("error") or ""):
-                return broke("stage.tar_upload_failed",
-                    error=
-                        f"tar upload to container_upload_target failed: "
-                        f"{up['error']}",
-                    tar_upload_error=up.get("error"),
-                )
-
-        # Step 2: apptainer build .sif docker-archive://<tar>
-        build_cmd = (
-            f"bash -lc 'module load apptainer >/dev/null 2>&1 || true; "
-            f"if [ -f {shlex.quote(sif_remote_abs)} ]; then "
-            f"  echo SKIP_ALREADY_STAGED; "
-            f"else "
-            f"  mkdir -p {shlex.quote(str(Path(sif_remote_abs).parent))} && "
-            f"  apptainer build {shlex.quote(sif_remote_abs)} "
-            f"docker-archive://{shlex.quote(tar_remote_abs)}; "
-            f"fi'"
-        )
-        argv = _ssh_argv(env, build_cmd)
-        res = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=timeout)
-        if res.returncode != 0:
-            return broke("stage.apptainer_build_failed",
-                error=
-                    f"apptainer build failed (rc={res.returncode}): "
-                    f"{(res.stderr or '').strip()[:500]}",
-                apptainer_build_error=(res.stderr or "").strip()[:1000],
-                tar_remote_path=tar_remote_abs,
-            )
-        return proven("stage.built_archive",
-            success=True,
-            compute_env=compute_env_name,
-            mode="build_archive",
-            sif_path=sif_remote_abs,
-            tar_remote_path=tar_remote_abs,
-            image_digest=image_digest,
-            request_key=freeze_request_key,
-            skipped="SKIP_ALREADY_STAGED" in (res.stdout or ""),
-            staged_at=datetime.now(timezone.utc).isoformat(),
-        )
+        # ─── Unified local-build-and-ship ────────────────────────────
+        # ALL modes converge here: build the .sif LOCALLY (apptainer-in-docker)
+        # and upload the finished artifact. The heavy image -> .sif conversion
+        # (unpack + mksquashfs) NEVER runs on the cluster head node, and we never
+        # `apptainer pull` a multi-GB image there either
+        # ([[feedback-no-head-node-image-builds]]).
+        return _stage_via_local_build(
+            record=record, env=env, project_name=project_name,
+            compute_env_name=compute_env_name, sif_remote_abs=sif_remote_abs,
+            image_digest=image_digest, freeze_request_key=freeze_request_key,
+            platform=platform, access_path=access_path, timeout=timeout)
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
