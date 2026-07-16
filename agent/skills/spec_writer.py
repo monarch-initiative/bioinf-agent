@@ -86,19 +86,42 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
       Each per-trial result has: name, ok, command_run, substitutions,
       produced_files, scratch_dir, [reason, missing_outputs, stderr_tail].
     """
+    # THREE-STATE, not a bool. `ok: False` used to mean two utterly different things —
+    # "the how-to was tested and it FAILED" and "the how-to was never tested at all" —
+    # and seal recorded both as usage_verified=False, which the dashboard then rendered as
+    # a verdict. Since seal REFUSES on a genuine failure, every usage_verified=False that
+    # reached disk provably meant "never attempted": a fabricated verdict, absence of data
+    # rendering as data (audit 2026-07-16). `status` says which:
+    #   verified      — every declared trial ran and produced validated outputs
+    #   failed        — a trial ran and did not (seal refuses; never reaches disk)
+    #   not_attempted — we had no way to run it; `reason` says why. NOT a judgement of the
+    #                   how-to, and must never be rendered as one.
+    def _not_attempted(reason: str) -> dict:
+        return {"ok": False, "status": "not_attempted", "reason": reason, "trials": []}
+
     usage = spec.get("usage")
     if not usage or not isinstance(usage, dict):
-        return {"ok": False, "reason": "no usage block to self-test", "trials": []}
+        return _not_attempted("no usage block to self-test")
     template = (usage.get("command_template") or "").strip()
     if not template:
-        return {"ok": False, "reason": "usage.command_template is empty", "trials": []}
+        return _not_attempted("usage.command_template is empty")
+    # A runner is either injected (the frozen image — validated == shipped) or taken from
+    # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
+    # what silently disabled I4 for every container-native env.
     env_name = spec.get("conda_env")
-    if not env_name:
-        return {"ok": False, "reason": "no conda_env on spec — cannot run self-test", "trials": []}
+    if env_manager is None:
+        return _not_attempted("no runner available — neither a frozen env image nor a host "
+                              "conda env could execute the how-to")
+    if getattr(env_manager, "is_image_runner", False):
+        env_name = env_name or "<frozen image>"
+    elif not env_name:
+        return _not_attempted(
+            "no conda_env on spec and no frozen env image supplied — nothing to run the "
+            "how-to in. Freeze the env and re-seal to self-test against the shipped bytes.")
 
     placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
     if not placeholders:
-        return {"ok": False, "reason": "command_template has no {PLACEHOLDER} slots", "trials": []}
+        return _not_attempted("command_template has no {PLACEHOLDER} slots")
 
     declared_trials = usage.get("trials") or []
     inputs_spec     = usage.get("inputs", [])  or []
@@ -116,6 +139,19 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     else:
         # Backward-compatible single inferred trial.
         inferred = _infer_substitutions(spec, placeholders, inputs_spec)
+        # An INCOMPLETE inference cannot be run — the command would still carry literal
+        # `{PEDIGREE}` text. Running it anyway reports "failed", which reads as a verdict
+        # on the how-to when the truth is we never managed to build a trial for it. Real
+        # case: talos_validate_moi declares no trials and inference fills 2 of its 5 slots,
+        # so it self-tested as FAILED and (once I4 gates the seal) became unsealable — the
+        # how-to was fine; our trial was not.
+        missing = sorted(p for p in placeholders
+                         if not _is_output_slot(p) and p not in inferred)
+        if missing:
+            return _not_attempted(
+                f"could not infer a value for {', '.join('{'+m+'}' for m in missing)} from "
+                f"pipeline_steps[*].inputs, so no runnable trial could be built. Declare "
+                f"usage.trials with explicit substitutions to self-test this how-to.")
         trial_plans = [{
             "name":          "auto",
             "substitutions": inferred,
@@ -130,6 +166,8 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     overall_ok = bool(trial_results) and all(t.get("ok") for t in trial_results)
     return {
         "ok":     overall_ok,
+        "status": "verified" if overall_ok else "failed",
+        "locus":  "image" if getattr(env_manager, "is_image_runner", False) else "host",
         "trials": trial_results,
         "trial_count": len(trial_results),
         "passed":      sum(1 for t in trial_results if t.get("ok")),

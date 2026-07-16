@@ -80,6 +80,96 @@ def _refresh_reference_databases(rdbs: list) -> list:
     return out
 
 
+class _ImageUsageRunner:
+    """An env_manager-shaped runner that executes the I4 self-test INSIDE a frozen env
+    image, so the how-to is proven against the exact bytes the user runs.
+
+    It exists to satisfy ONE call — `env_manager.run_in_env(env, cmd, timeout, watch_dir)`
+    — which is the only thing self_test_usage asks of its runner. That seam was already
+    injectable; nothing in spec_writer needed to learn about containers.
+
+    Mounts are bound at their OWN host paths so the trial's absolute substitutions resolve
+    verbatim inside the image (the same trick run_step_in_container uses), and outputs land
+    back on the host where OutputValidator can read them.
+    """
+    is_image_runner = True
+
+    def __init__(self, image: str, platform: str, mounts: list):
+        self.image, self.platform, self.mounts = image, platform, mounts
+
+    def run_in_env(self, env_name, command, timeout=600, watch_dir=None, **_):
+        mounts = list(self.mounts)
+        if watch_dir:
+            mounts.append((str(watch_dir), str(watch_dir)))
+        return _ms._docker.run_in_container(
+            self.image, command, mounts=mounts, workdir=str(watch_dir) if watch_dir else None,
+            platform=self.platform, timeout=timeout)
+
+
+def _image_usage_runner(fr: dict, draft: dict):
+    """Build an _ImageUsageRunner for this frozen env, or None when the how-to can't be
+    self-tested in-image here.
+
+    Returns None (→ seal records not_attempted + reason) rather than raising, because
+    "we couldn't run it" is missing evidence, not a broken how-to. Preconditions, each of
+    which is a real case on disk:
+      - the image must resolve locally. An ADOPTED biocontainer is a remote ref that may
+        need a pull; offline, that is not the workflow's fault.
+      - every path-valued substitution must EXIST on this host. talos_validate_moi's inputs
+        are /work/... on the cluster — unreachable here, and failing it for that would be
+        refusing the environment, not the artifact.
+    Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths, so a
+    non-path param can't silently disable the self-test. Output slots are skipped — they
+    are overwritten with the trial's fresh scratch dir and are not expected to pre-exist.
+
+    The substitutions are resolved EXACTLY as self_test_usage resolves them — declared
+    trials if any, else inferred from pipeline_steps[*].inputs. Checking only `usage.trials`
+    looked right and was wrong: talos_validate_moi declares `trials: []`, so the check
+    inspected an empty set, waved through a run whose inferred inputs are all on the
+    cluster, and turned a legitimately-unrunnable-here workflow into a hard seal refusal.
+    A precondition must inspect the same values the runner will use, or it guards nothing.
+    """
+    from pathlib import Path
+    from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
+    image = (fr.get("image") or "").strip()
+    if not image:
+        return None
+    usage = draft.get("usage") or {}
+    template = (usage.get("command_template") or "").strip()
+    if not template:
+        return None
+    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
+    if trials:
+        subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
+    else:
+        subs_sets = [_infer_substitutions(draft, placeholders, usage.get("inputs") or [])]
+
+    mounts: list[tuple[str, str]] = []
+    for subs in subs_sets:
+        for slot, val in subs.items():
+            if _is_output_slot(slot):
+                continue                       # replaced by the per-trial scratch dir
+            s = str(val)
+            if not s.startswith("/"):
+                continue                       # not a path — a scalar param
+            p = Path(s)
+            if not p.exists():
+                return None                    # cluster-locus / missing input → not_attempted
+            d = str(p.parent if p.is_file() else p)
+            if d == "/":
+                continue                       # never bind-mount the host root
+            if (d, d) not in mounts:
+                mounts.append((d, d))
+    try:
+        if not _ms._docker.image_digest(image):
+            return None                        # not resolvable locally (adopted, or no daemon)
+    except Exception:
+        return None
+    platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(fr.get("platform", ""), "linux/amd64")
+    return _ImageUsageRunner(image, platform, mounts)
+
+
 def _derive_step_dependencies(pipeline_steps: list) -> list:
     """Materialize each step's `depends_on` (prior step numbers it consumes an
     output of) into the sealed spec.
@@ -206,18 +296,40 @@ def seal_workflow(
     # otherwise the guide would publish a runnable form that doesn't actually
     # run. Previously `usage_verified` was computed then rendered cosmetically
     # while the seal proceeded regardless; that let a broken usage template
-    # ship with a "verified" badge. A draft with NO usage block seals without
-    # the badge (usage is the run contract only when the agent authored one).
+    # ship with a "verified" badge.
+    #
+    # THE LOCUS FIX (audit 2026-07-16): this gate used to read
+    # `if draft.get("usage") and draft.get("conda_env")`. self_test_usage needs a runner,
+    # and the only runner it knew was a HOST conda env — but the architecture moved
+    # container-native, so the primary path has no host env and the gate SILENTLY SKIPPED.
+    # Every one of the 4 sealed workflows on disk has conda_env=None; 3 carry
+    # usage_verified=False that means "never attempted" while rendering as a verdict.
+    # We now prefer the FROZEN IMAGE as the runner (validated == shipped: the how-to is
+    # tested against the exact bytes the user runs), fall back to the host env for the
+    # pre-freeze path, and when neither can run it we record not_attempted + WHY rather
+    # than fabricating a False.
     usage_ok = False
     usage_detail: dict | None = None
-    if draft.get("usage") and draft.get("conda_env"):
+    if draft.get("usage"):
+        runner = _image_usage_runner(fr, draft) or (_ms._env_mgr if draft.get("conda_env") else None)
         try:
-            usage_detail = self_test_usage(draft, _ms._env_mgr, validator=_ms._validator)
+            usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
             usage_ok = bool(usage_detail.get("ok"))
         except Exception as e:
             usage_ok = False
-            usage_detail = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        if not usage_ok:
+            usage_detail = {"ok": False, "status": "not_attempted",
+                            "reason": f"the self-test runner raised: {type(e).__name__}: {e}"}
+        # Refuse ONLY on a real failure. `not_attempted` is missing evidence, not a
+        # broken how-to — refusing it would make legitimately unsealable-here workflows
+        # (cluster-locus inputs, no frozen image locally) permanently unsealable.
+        #
+        # FAIL CLOSED on an unrecognized shape: a result with ok=False and no `status` is
+        # read as "failed", never waved through. Reading a missing status as "not failed"
+        # would turn absence of data into a pass — and it is not hypothetical: it silently
+        # disarmed this very gate for any caller still returning the pre-three-state shape.
+        status = usage_detail.get("status") or ("verified" if usage_ok else "failed")
+        usage_detail["status"] = status
+        if status == "failed":
             return refused(
                 "seal.usage_self_test_failed", success=False, stage="usage_self_test",
                 error="I4: usage.command_template failed its self-test — it did not "
@@ -268,6 +380,16 @@ def seal_workflow(
         "envs":               envs_used,
         "pipeline_status":    draft.get("pipeline_status", "in_progress"),
         "usage_verified":     usage_ok,
+        # The three-state truth behind the bool. `usage_verified: False` alone cannot
+        # distinguish "tested and broken" from "never tested", and since seal refuses the
+        # former, False on disk ALWAYS meant the latter — a verdict nobody reached.
+        # Renderers must read this, not the bool, before saying anything about the how-to.
+        "usage_verification": ({"status": usage_detail.get("status", "not_attempted"),
+                                "reason": usage_detail.get("reason", ""),
+                                "locus":  usage_detail.get("locus", ""),
+                                "trial_count": usage_detail.get("trial_count", 0),
+                                "passed": usage_detail.get("passed", 0)}
+                               if usage_detail else None),
         "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),

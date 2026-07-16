@@ -293,7 +293,7 @@ def test_e2e_seal_refuses_failed_usage_self_test(_staged_pipeline, monkeypatch):
     pipeline_id, request_key, *_ = _staged_pipeline
     from agent.skills import spec_writer
     monkeypatch.setattr(spec_writer, "self_test_usage",
-                        lambda *_a, **_kw: {"ok": False,
+                        lambda *_a, **_kw: {"ok": False, "status": "failed",
                                             "reason": "command ran but expected outputs missing"})
 
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
@@ -303,6 +303,52 @@ def test_e2e_seal_refuses_failed_usage_self_test(_staged_pipeline, monkeypatch):
     assert result.get("stage") == "usage_self_test", \
         f"refusal should be at the usage_self_test gate: {result}"
     assert (result.get("usage_self_test") or {}).get("ok") is False
+
+
+@pytest.mark.integration
+def test_e2e_seal_fails_closed_on_an_unrecognized_self_test_shape(_staged_pipeline, monkeypatch):
+    """A self-test result with ok=False and NO `status` must be read as FAILED.
+
+    Reading a missing status as "not failed" turns absence of data into a pass, and it is
+    not hypothetical: when self_test_usage grew three states, this exact shape (the old
+    two-state return) silently disarmed the H2 gate — a seal that should have been refused
+    went green. Fail closed on anything unrecognized.
+    """
+    pipeline_id, request_key, *_ = _staged_pipeline
+    from agent.skills import spec_writer
+    monkeypatch.setattr(spec_writer, "self_test_usage",
+                        lambda *_a, **_kw: {"ok": False, "reason": "legacy two-state shape"})
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                              workflow_name="e2e_seal_legacy_shape")
+    assert result.get("success") is False, \
+        f"ok=False with no status must fail closed, not seal: {result}"
+    assert result.get("stage") == "usage_self_test"
+
+
+@pytest.mark.integration
+def test_e2e_seal_records_not_attempted_rather_than_a_fabricated_false(_staged_pipeline, monkeypatch):
+    """`not_attempted` must SEAL (it is missing evidence, not a broken how-to) and must be
+    recorded WITH its reason.
+
+    Before three-state, "we never ran it" and "we ran it and it failed" were both
+    usage_verified=False, and the dashboard rendered that as a verdict on the command. Since
+    seal refuses real failures, every False on disk actually meant "never attempted" — a
+    verdict nobody ever reached.
+    """
+    pipeline_id, request_key, *_ = _staged_pipeline
+    from agent.skills import spec_writer
+    monkeypatch.setattr(spec_writer, "self_test_usage",
+                        lambda *_a, **_kw: {"ok": False, "status": "not_attempted",
+                                            "reason": "inputs live on the cluster"})
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                              workflow_name="e2e_seal_not_attempted")
+    assert result.get("success") is True, f"not_attempted must not refuse the seal: {result}"
+    import yaml
+    spec = yaml.safe_load(open(result["workflow_spec_path"]))
+    assert spec["usage_verified"] is False
+    uv = spec["usage_verification"]
+    assert uv["status"] == "not_attempted"
+    assert "cluster" in uv["reason"], "the REASON must survive to the artifact"
 
 
 @pytest.mark.integration

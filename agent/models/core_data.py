@@ -1094,6 +1094,12 @@ class WorkflowSpec(BaseModel):
     # The validated run.
     pipeline_status:    PipelineStatus = "in_progress"
     usage_verified:     bool = False
+    # WHY usage_verified is what it is. The bool alone conflates "tested and it FAILED"
+    # with "never tested" — and since seal REFUSES the former, every usage_verified=False
+    # that reached disk meant the latter, while dashboards rendered it as a verdict on the
+    # how-to. {status: verified|failed|not_attempted, reason, locus, trial_count, passed}.
+    # Renderers must consult this before making any claim about the how-to.
+    usage_verification: Optional[dict] = None
     # validated == shipped: every validated step ran INSIDE the pinned env image
     # (matched by digest), so the bytes the user runs are the bytes we tested.
     validated_in_shipped_image: bool = False

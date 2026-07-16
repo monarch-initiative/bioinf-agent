@@ -99,47 +99,93 @@ def _references_tool(evidence: str, tool: str) -> bool:
     return False
 
 
-#: evidence depths, weakest → strongest. 'version'/'import'/'help' prove the tool is
-#: PRESENT/loads; 'smoke'/'functional' prove it RUNS. The first three are "shallow".
-EVIDENCE_DEPTHS = ("version", "import", "help", "smoke", "functional")
-_SHALLOW_DEPTHS = frozenset({"version", "import", "help"})
+#: evidence depths, weakest → strongest. 'presence' proves only that the tool is INSTALLED
+#: (a PATH/metadata lookup that never executes it); 'version'/'import'/'help' prove it
+#: loads/answers; 'smoke'/'functional' prove it RUNS. Everything up to 'help' is "shallow".
+#: 'unknown' is not on the scale — it means the classifier declined to guess.
+EVIDENCE_DEPTHS = ("presence", "version", "import", "help", "smoke", "functional")
+_SHALLOW_DEPTHS = frozenset({"presence", "version", "import", "help"})
+
+#: Output plumbing — pipes/redirects that shape a command's OUTPUT and say nothing about
+#: what it does. These must be stripped before the "reads/writes → functional" rule, or a
+#: single `| cat` promotes any probe to 'functional'.
+_PLUMBING = re.compile(
+    r"\s*(\|\s*(cat|head|tail|grep|sed|awk|tr|cut|wc|sort|uniq)\b[^|]*"
+    r"|\d?>>?\s*/dev/null|\d?>&\d|2>&1)", re.I)
+
+
+def _strip_plumbing(ev: str) -> str:
+    prev = None
+    out = ev
+    while prev != out:
+        prev, out = out, _PLUMBING.sub(" ", out)
+    return out.strip()
 
 
 def evidence_depth(evidence: str, tool: str = "") -> str:
-    """Classify how deeply an evidence command exercises the tool — DISCLOSURE, not a
-    gate. A shallow proof ('samtools --version' resolves the binary) must not read as a
-    functional proof ('samtools sort' actually processes a BAM). This is the lever the
-    Talos reconstruction slipped past: it imported clean but didn't RUN. Ordered
-    version < import < help < smoke < functional; returns one of EVIDENCE_DEPTHS.
+    """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
 
-    Heuristic (honest about being approximate): version/help flags and language imports
-    are recognized structurally; a command that reads/writes a path, pipes, or redirects
-    is treated as functional; anything else that invokes the tool is a 'smoke' run."""
-    ev = (evidence or "").strip()
+    NOTHING GATES ON THIS, and nothing should. A string cannot tell you what a command
+    does at runtime; this reads structure and is wrong often enough that gating on it was
+    measured (audit 2026-07-16 Tier 2) to refuse the CORRECT artifact and the known-broken
+    one identically — `talos_authors` (which really does carry the bcftools fork) is
+    [help, version, version] and the broken `talos_v11` reconstruction is [import]: all
+    shallow, zero discriminating power on the very war story depth was proposed to catch.
+    Its job is to make a report honest, not to refuse a build.
+
+    Returns one of EVIDENCE_DEPTHS, or 'unknown' when the shape is not recognizable —
+    guessing 'smoke' for anything unparsed was itself a small lie.
+
+    Three defects this rule set fixes, each of which made the DISCLOSURE wrong:
+      - `command -v samtools` read as 'version' (the regex matched the `-v` of `command -v`)
+        when it is the weakest evidence there is: a PATH lookup that never runs the tool.
+        It now has its own, honest name: 'presence'.
+      - `_conda_presence_check(...)` — freeze's own auto-generated probe, and therefore the
+        evidence on nearly every real record — read as 'functional' because the path
+        `/opt/conda/envs/*/conda-meta/pigz-*.json` matched "reads a file". A presence probe
+        was reporting as the strongest possible proof.
+      - `samtools --version | head -1` read as 'functional': one pipe outranked the thing
+        being piped. Plumbing is stripped first, and version/help are decided before the
+        reads-a-path rule rather than after it.
+    """
+    raw = (evidence or "").strip()
+    if not raw:
+        return "unknown"          # nothing to classify; the shape check refuses it anyway
+    ev = _strip_plumbing(raw)
     low = ev.lower()
-    if not ev:
-        return "version"   # empty → weakest (the shape check rejects it anyway)
-    # language load-only probes
-    if re.search(r"import\s+\w|importlib\.metadata|requirenamespace|library\s*\(|-m\w*\s*[A-Za-z]", low) \
-            and not re.search(r"[<>|]|/\w+\.\w+", ev):
-        if re.search(r"\bimport\b|importlib|requirenamespace|library\s*\(|perl\s+-m", low):
-            return "import"
-    # version-only
-    if re.search(r"(--version|-version|\bversion\b|\s-v\b|\s-V\b)", ev) and \
-            not re.search(r"[<>|]|/\w+\.\w+", ev):
+
+    # -- presence: resolves the tool on PATH / in package metadata, never runs it. The
+    #    weakest evidence, and (via _conda_presence_check) by far the commonest.
+    if re.search(r"\b(command\s+-v|which|type\s+-p|hash)\b", low) or \
+            re.search(r"conda-meta|importlib\.metadata|_m\.version\(|installed\.packages\(", low):
+        return "presence"
+    # -- version / help: the tool EXECUTES and answers. Decided BEFORE both the import rule
+    #    and the path rule: `python -m talos.validate_moi --help` RUNS the module's
+    #    entrypoint (→ 'help'), which is a strictly stronger claim than "it imported", and
+    #    `tool --version /etc/x.cfg` must not be promoted by an incidental path operand.
+    if re.search(r"(--version|-version|\bversion\b|\s-V\b)", ev):
         return "version"
-    # help/usage-only
-    if re.search(r"(--help|\s-h\b|\busage\b)", ev) and not re.search(r"[<>|]", ev):
+    if re.search(r"(--help|\s-h\b|\busage\b)", ev):
         return "help"
-    # functional — reads/writes a real path, pipes, or redirects (processes data)
+    # -- import / load-only: the module loads. Proves more than presence, still not a run.
+    if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m|-m\w*\s*[a-z]", low):
+        return "import"
+    # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
+    #    a file path operand, or an explicit -i/-o.
     if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:
         return "functional"
-    return "smoke"
+    # -- a bare invocation of the tool with no recognizable shape.
+    if tool and _references_tool(ev, tool):
+        return "smoke"
+    return "unknown"
 
 
 def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
-    """True if the evidence only proves presence/loads (version/import/help), not that
-    the tool RUNS. Used for a soft advisory — never a hard refusal."""
+    """True if the evidence only proves the tool is present/loads, not that it RUNS.
+
+    DISCLOSURE ONLY — never a refusal, and never a gate. See evidence_depth: gating on
+    this was measured to refuse the correct artifact and the broken one identically.
+    'unknown' is NOT shallow — declining to classify is not evidence of shallowness."""
     return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
 
 
