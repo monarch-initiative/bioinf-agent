@@ -95,13 +95,29 @@ def resolve_tool(
     reconstructing it: that is the Talos lesson (a pip reconstruction dropped a bcftools
     fork + htslib + echtvar and still imported clean).
 
-    Returns {chosen, install_call, rationale, alternatives, ambiguous, probed,
+    Returns {chosen, install_call, rationale, identity, alternatives, ambiguous, probed,
     …}: the concrete install primitive call to make, why it was chosen over the
     others, and the rejected-but-available alternatives. `install_call` names the real
     executor for the chosen tier — for the author tiers that is `freeze_from_image` /
     `build_env_from_authors_recipe`, which do the whole env (no separate freeze needed).
     If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
     ranking below it is registry-only — it is not evidence the authors ship nothing.
+
+    IDENTITY — READ THIS BEFORE INSTALLING. `identity` answers "is this registry entry the
+    tool you MEANT?", which NOTHING else in this system checks. Every other gate verifies
+    integrity (it builds, it runs, it ships as validated); a wrong-but-working tool passes
+    all of them and ships green with a digest and an attestation. `identity.anchor` is one
+    of: `bioconda-channel` / `bioconductor` (membership of a bio-only channel = identity,
+    by construction) · `github_repo` (you named the repo and the metadata matches) · `repo`
+    (repo-backed tier) · `domain-terms` (its self-description reads like bioinformatics) ·
+    `none`. When `identity.confirmed` is false, `install_call` is PREFIXED with the reason
+    and you must check `identity.self_description` — the package's own words — before
+    running it. Two distinct cases: `reason='no_domain_signal'` means the entry describes
+    something else (CRAN's `cellranger` parses spreadsheet cell ranges; PyPI's `talos`
+    tunes Keras hyperparameters — neither is the tool a bioinformatician means), which is
+    real evidence you have the wrong package; `reason='no_description'` means the tier
+    published nothing to check against — missing evidence, not evidence of a problem.
+    Pass `github_repo='owner/repo'` to resolve either.
 
     DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
     CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one

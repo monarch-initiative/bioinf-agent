@@ -137,16 +137,17 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     on one channel (e.g. bioconda's hmmlearn reports latest_version='20151031')
     shadowing the maintained package on the other. Ties keep bioconda (probed
     first), so bio-primary tools are unaffected."""
-    best = None  # (version_key, channel, version)
+    best = None  # (version_key, channel, version, summary)
     for channel in ("bioconda", "conda-forge"):
         data = _get_json(f"https://api.anaconda.org/package/{channel}/{name.lower()}", timeout)
         if isinstance(data, dict) and data.get("versions"):
             ver = _pick_latest(data["versions"], data.get("latest_version") or "")
             key = _version_key(ver)
             if best is None or (key is not None and (best[0] is None or key > best[0])):
-                best = (key, channel, ver)
+                best = (key, channel, ver, data.get("summary") or "")
     if best:
-        return {"available": True, "channel": best[1], "latest": best[2]}
+        return {"available": True, "channel": best[1], "latest": best[2],
+                "summary": best[3]}
     return {"available": False}
 
 
@@ -154,13 +155,20 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     """PyPI metadata. Captures homepage + project_urls so a github_repo-supplied
     resolve() can confirm a same-name PyPI hit actually references the same
     project (and isn't a cross-namespace collision — PyPI's `gab` ≠ baumannlab's
-    Genome_Assembly_Booster despite the name match)."""
+    Genome_Assembly_Booster despite the name match).
+
+    Also captures `summary`, the package's OWN one-line description. That is the
+    identity evidence: PyPI's `talos` says "Talos Hyperparameter Tuning for Keras",
+    which is not the rare-disease pipeline anyone asking this agent for `talos`
+    means. Without it the decision has no basis on which anything — the agent, the
+    contract, or a human — could notice the wrong tool."""
     data = _get_json(f"https://pypi.org/pypi/{name}/json", timeout)
     if isinstance(data, dict) and data.get("info"):
         info = data["info"]
         return {
             "available": True,
             "latest": info.get("version"),
+            "summary": (info.get("summary") or "").strip(),
             "home_page": info.get("home_page") or "",
             "project_urls": info.get("project_urls") or {},
             "package_url": info.get("package_url") or "",
@@ -170,12 +178,19 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
 
 def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
     """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
-    resolve() can confirm a same-name CRAN hit references the same project."""
+    resolve() can confirm a same-name CRAN hit references the same project.
+
+    `summary` is CRAN's Title + Description — the identity evidence. CRAN's
+    `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
+    10x Genomics' Cell Ranger; the name is all they share."""
     data = _get_json(f"https://crandb.r-pkg.org/{name}", timeout)
     if isinstance(data, dict) and data.get("Package"):
+        summary = " — ".join(x for x in ((data.get("Title") or "").strip(),
+                                         (data.get("Description") or "").strip()) if x)
         return {
             "available": True,
             "latest": data.get("Version"),
+            "summary": re.sub(r"\s+", " ", summary)[:400],
             "url": data.get("URL") or "",
             "bug_reports": data.get("BugReports") or "",
         }
@@ -474,6 +489,152 @@ def _is_ambiguous(availability: dict[str, dict], language: str) -> bool:
 
 
 _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+
+
+# ---------------------------------------------------------------------------
+# IDENTITY — is the registry entry we picked the tool the caller MEANT?
+#
+# Every other check in this codebase verifies INTEGRITY: that what we installed
+# builds, runs, and ships as validated. None of them ask whether it is the RIGHT
+# THING. That gap is not theoretical — it is the system's worst failure mode,
+# because a wrong-but-working tool passes every gate and ships green:
+#
+#   resolve_tool("cellranger") -> CRAN 'cellranger' = an R spreadsheet-range
+#     parser. `library(cellranger)` loads fine, so it BUILDs, it is
+#     VALIDATED_IN_IMAGE, it is POLICY_CLEAN. It earns a content digest, an SLSA
+#     attestation, an ENV report reading "validated in shipped image", and a .sif
+#     on the cluster. A fully green artifact containing the wrong software — the
+#     exact outcome this project exists to prevent.
+#
+# Identity cannot be machine-VERIFIED: "did you mean this one?" is a question
+# about intent, and no invariant can see intent. So this does not gate. It does
+# the one thing that actually helps — puts the package's OWN self-description in
+# front of whoever decides, and says plainly when nothing anchors it. The Tier-0
+# lesson applies exactly: don't blind-tighten a checker that can't see the
+# difference; surface the evidence to the layer that can.
+# ---------------------------------------------------------------------------
+
+#: Terms that mark a package as plausibly bioinformatics. Deliberately biased toward
+#: precision over recall: a term here CONFIRMS identity and silences the warning, so a
+#: loose term ('assembly' also means a .NET assembly; 'read'/'align'/'sequence' are
+#: generic English) would quietly reinstate the very hole this closes. Missing a term
+#: only costs a warning on a real tool; a false confirm costs a wrong artifact.
+_DOMAIN_TERMS = (
+    # file formats / concrete artifacts — the strongest signals
+    "sam", "bam", "cram", "vcf", "bcf", "fastq", "fasta", "bed", "gff", "gtf",
+    "bigwig", "bedgraph", "pod5", "fast5", "mzml", "phenopacket", "newick", "pdb",
+    # domain nouns
+    "genome", "genomic", "genomics", "sequencing", "variant", "allele", "chromosome",
+    "transcript", "transcriptome", "transcriptomics", "proteome", "proteomics",
+    "metagenome", "metagenomic", "microbiome", "epigenome", "epigenetic", "methylation",
+    "phylogenetic", "phylogenetics", "phylogeny", "taxonomy", "taxonomic", "ontology",
+    "rna-seq", "rnaseq", "scrna", "single-cell", "single cell", "crispr", "gwas",
+    "pedigree", "haplotype", "genotype", "peptide", "nucleotide", "amino acid",
+    "bioinformatic", "bioinformatics", "computational biology", "molecular biology",
+    "biological sequence", "gene expression", "read alignment", "sequence alignment",
+    "basecalling", "basecaller", "de novo assembly", "genome assembly", "aligner",
+    # ecosystem / platform names that only occur in this domain
+    "htslib", "samtools", "bcftools", "bioconductor", "biopython", "bioperl",
+    "illumina", "nanopore", "pacbio", "oxford nanopore", "10x genomics", "ensembl",
+    "ncbi", "uniprot", "gnomad", "clinvar", "galaxy project", "nf-core",
+)
+
+
+def domain_signal(text: str) -> list[str]:
+    """Bioinformatics terms present in `text`, as whole words/phrases. Pure.
+
+    Returns the matched terms (not a bare bool) so the decision can SHOW its reasoning —
+    'matched: vcf, htslib' is checkable by a reader; 'plausible: true' is another
+    assertion to take on faith, which is what this codebase refuses to do."""
+    low = (text or "").lower()
+    hits = []
+    for t in _DOMAIN_TERMS:
+        # word-boundary match so 'sam' doesn't fire inside 'same' and 'bed' not in 'bedroom'
+        if re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", low):
+            hits.append(t)
+    return hits
+
+
+def assess_identity(tool: str, chosen: str, availability: dict,
+                    github_repo: str = "") -> dict:
+    """Do we have any anchor that the chosen registry entry IS the tool asked for?
+
+    Anchors, strongest first:
+      github_repo   — the caller named the repo and the entry's metadata references it.
+                      Authoritative: they told us which project they mean.
+      bioconda      — the package is ON bioconda. Bioconda is a bioinformatics-only
+                      channel, so membership IS domain identity, by construction. Free
+                      and exact — no text heuristics needed for the commonest path.
+      bioconductor  — same argument, for R.
+      domain-terms  — the entry's own self-description reads like bioinformatics.
+                      Weakest, and honestly labelled as such.
+      (none)        — we picked a package with nothing tying it to this domain. Not an
+                      error and not a refusal: could be a generic dependency (numpy) or
+                      a terse description. But it must be SAID, next to the evidence.
+
+    Returns {confirmed, anchor, evidence, self_description, note}."""
+    detail = availability.get(chosen) or {}
+    desc = (detail.get("summary") or "").strip()
+    out = {"confirmed": True, "anchor": "", "evidence": [],
+           "self_description": desc, "note": ""}
+
+    if chosen in ("author_image", "authors_recipe", "binary", "source", "synthesis",
+                  "r_github"):
+        # these tiers ARE a repo — identity is whatever repo the caller/discovery named
+        out["anchor"] = "repo"
+        out["evidence"] = [detail.get("repo") or github_repo or ""]
+        return out
+    if github_repo and chosen in ("pip", "cran"):
+        anchored = (_pip_anchored_to_repo(detail, github_repo) if chosen == "pip"
+                    else _cran_anchored_to_repo(detail, github_repo))
+        if anchored:
+            out["anchor"] = "github_repo"
+            out["evidence"] = [github_repo]
+            return out
+    if chosen == "conda" and (detail.get("channel") == "bioconda"):
+        out["anchor"] = "bioconda-channel"
+        out["evidence"] = ["bioconda is a bioinformatics-only channel"]
+        return out
+    if chosen == "bioconductor":
+        out["anchor"] = "bioconductor"
+        out["evidence"] = ["Bioconductor is a bioinformatics-only repository"]
+        return out
+
+    hits = domain_signal(desc)
+    if hits:
+        out["anchor"] = "domain-terms"
+        out["evidence"] = hits
+        return out
+
+    # NO evidence and CONTRARY evidence are different situations and must not read the
+    # same. "this package says it parses spreadsheets" is a reason to suspect the pick;
+    # "this tier publishes no description" is a reason to suspect our own probe. Saying
+    # "may not be the tool you mean" about a tool we simply couldn't check is the kind of
+    # noise that trains a reader to skip the warning — and a warning that gets skipped is
+    # worth nothing. (Live campaign: the only false alarm across 30 real tools was `vep`
+    # via the spack tier, which carries no metadata at all.)
+    out["confirmed"] = False
+    out["anchor"] = "none"
+    if not desc:
+        out["reason"] = "no_description"
+        out["note"] = (
+            f"IDENTITY UNCHECKED: the {chosen} tier publishes no description for '{tool}', "
+            f"so there is nothing to check the pick against — this is missing evidence, "
+            f"NOT evidence of a wrong tool. Anchor it with github_repo='owner/repo' if it "
+            f"matters. Nothing downstream re-checks identity: a wrong tool that installs "
+            f"cleanly ships green.")
+        return out
+    out["reason"] = "no_domain_signal"
+    out["note"] = (
+        f"IDENTITY UNCONFIRMED: the {chosen} entry for '{tool}' describes itself as "
+        f'"{desc}" — nothing in it ties it to bioinformatics, and no github_repo was '
+        f"given to anchor it. Same-name packages across registries are common and this "
+        f"may not be the '{tool}' you mean (CRAN's 'cellranger' parses spreadsheet cell "
+        f"ranges; PyPI's 'talos' tunes Keras hyperparameters). Check the description "
+        f"above, then either pass github_repo='owner/repo' to pin the real project, or "
+        f"prefer=<tier> if this entry IS correct. Nothing downstream re-checks this: "
+        f"a wrong tool that installs cleanly ships green.")
+    return out
 
 
 def _github_owner_repo(availability: dict, github_repo: str = "") -> str:
@@ -876,7 +1037,20 @@ def resolve(
             + decision["rationale"]
         )
     if chosen:
+        identity = assess_identity(tool, chosen, availability, github_repo)
+        decision["identity"] = identity
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
+        if not identity["confirmed"]:
+            # Lead the rationale AND poison the install_call. install_call is the field an
+            # agent copies and runs; leaving it a clean, confident one-liner while the
+            # doubt sits in a sibling key is how a warning gets skipped. A caller who
+            # pastes this now has to read why first — and if they strip the comment, they
+            # did so deliberately, which is the whole point.
+            decision["rationale"] = identity["note"] + " || " + decision["rationale"]
+            decision["install_call"] = (
+                f"# {identity['note']}\n"
+                f"# ---- confirm the above IS the tool you mean before running: ----\n"
+                + decision["install_call"])
     return decision
