@@ -102,7 +102,13 @@ def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypat
                                      "env_specs": [], "build_scripts": [], "author_image": None}))
     d = R.resolve("talos")
     assert d["chosen"] == "authors_recipe", d["chosen"]
-    assert "authors" in d["install_call"]
+    # the rendered guidance must match the REAL executor signature (an agent copies it):
+    # required name=, tools as [{name, evidence}] dicts — NOT a phantom `env` positional
+    # or bare-string tools that the executor would reject.
+    call = d["install_call"]
+    assert call.startswith("build_env_from_authors_recipe(")
+    assert "name=" in call and 'tools=[{"name":' in call and '"evidence":' in call
+    assert "(env," not in call
 
 
 def test_resolve_keeps_conda_when_reconstruction_is_safe(monkeypatch):
@@ -126,7 +132,10 @@ def test_resolve_adopts_author_image_over_everything(monkeypatch):
                                      "author_image": {"ref": "ghcr.io/org/tool", "source": "ghcr"}}))
     d = R.resolve("tool")
     assert d["chosen"] == "author_image", d["chosen"]
-    assert "freeze_from_image" in d["install_call"]
+    call = d["install_call"]
+    assert call.startswith("freeze_from_image(")
+    assert "name=" in call and 'tools=[{"name":' in call and '"evidence":' in call
+    assert "(env," not in call
 
 
 def test_resolve_no_repo_no_gate_conda_wins(monkeypatch):

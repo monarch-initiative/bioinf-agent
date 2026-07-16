@@ -535,14 +535,17 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     v = version or detail.get("latest") or ""
     if tier == "author_image":
         img = detail.get("ref") or "<author-image-ref>"
-        return (f'freeze_from_image(env, image="{img}", tools=["{tool}"], evidence="<cmd that RUNS {tool}>")'
+        return (f'freeze_from_image(image="{img}", name="{tool}", '
+                f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
                 '  # adopt the authors\' own image by digest')
     if tier == "authors_recipe":
         repo = detail.get("repo") or github_repo or "<owner/repo>"
         rec = (detail.get("recipe") or {})
         path = rec.get("path") or "Dockerfile"
-        return (f'build_env_from_authors_recipe(env, repo="https://github.com/{repo}", recipe="{path}", '
-                f'tools=["{tool}"], ref="<tag/commit>")  # build the authors\' {path}, don\'t reconstruct')
+        return (f'build_env_from_authors_recipe(repo="https://github.com/{repo}", name="{tool}", '
+                f'recipe="{path}", ref="<tag/commit>", '
+                f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
+                f'  # build the authors\' {path}, don\'t reconstruct')
     if tier == "conda":
         base = detail.get("r_spec") or tool          # r-{name} when resolving an R tool via conda
         spec = f"{base}={v}" if v else base
