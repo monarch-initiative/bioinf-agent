@@ -238,3 +238,78 @@ def freeze_from_image(
                   content_digest=digest, build_method=build_method, platform=platform,
                   verifications=verifications, shallow_evidence=shallow,
                   evidence_advisory=advisory, **out_paths)
+
+
+def _clone_url(repo: str) -> str:
+    """Normalize a repo argument to a git-cloneable URL. An explicit scheme
+    (http/https/git@/file://) is used verbatim; a bare 'owner/repo' is GitHub."""
+    return repo if repo.startswith(("http://", "https://", "git@", "file://")) else f"https://github.com/{repo}"
+
+
+def build_from_authors_recipe(
+    *,
+    repo: str,
+    tools: list[dict],
+    name: str,
+    env_cache,
+    reports_dir: str | Path,
+    recipe: str = "Dockerfile",
+    ref: str = "",
+    version: str = "",
+    platform: str = "linux/amd64",
+    build_args: Optional[dict] = None,
+    gated: bool = False,
+    licenses: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Clone the tool's OWN repo at a pinned `ref`, `docker build` its `recipe` (their
+    Dockerfile), then hand the built image to freeze_from_image (same honesty contract +
+    deliverables). The declarative executor for resolve_tool's `authors_recipe` tier — the
+    path taken when the authors' recipe installs pieces a conda/pip reconstruction would
+    silently DROP. The pinned source (repo + resolved commit + tag + Dockerfile verbatim)
+    is recorded so the build is reproducible. Docker + git (+ network for a remote repo).
+
+    Kept a thin, injectable executor (env_cache + reports_dir params) so it mirrors
+    freeze_from_image and is testable on real bytes without the MCP singletons."""
+    if not tools:
+        return refused("authors_recipe.no_tools",
+                       error="declare at least one tool with an evidence command that RUNS it in-image")
+    if not (repo or "").strip():
+        return refused("authors_recipe.no_repo", error="repo required ('owner/repo' or a git URL)")
+
+    import tempfile as _tf
+    url = _clone_url(repo)
+    with _tf.TemporaryDirectory(prefix="authors_recipe_") as td:
+        cl = _sh(["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [url, td], timeout=600)
+        if cl["rc"] != 0:
+            # --branch fails on a raw commit SHA; retry a full clone + checkout
+            cl2 = _sh(["git", "clone", url, td], timeout=600)
+            if cl2["rc"] != 0:
+                return broke("authors_recipe.clone_failed",
+                             error=f"could not clone {url}: {(cl2['err'] or cl['err'])[:300]}")
+            if ref:
+                co = _sh(["git", "-C", td, "checkout", ref], timeout=120)
+                if co["rc"] != 0:
+                    return broke("authors_recipe.checkout_failed",
+                                 error=f"could not checkout {ref!r}: {co['err'][:300]}")
+        commit = _sh(["git", "-C", td, "rev-parse", "HEAD"], timeout=60)["out"].strip()
+        tag = f"{name}:{version}" if version else f"{name}:latest"
+        buildx = ["docker", "buildx", "build", "--platform", platform, "--load", "-f", f"{td}/{recipe}", "-t", tag]
+        for k, v in (build_args or {}).items():
+            buildx += ["--build-arg", f"{k}={v}"]
+        buildx.append(td)
+        bd = _sh(buildx, timeout=3600)
+        if bd["rc"] != 0:
+            return broke("authors_recipe.build_failed",
+                         error=f"docker build of {recipe} failed: {(bd['err'] or '')[-800:]}",
+                         dockerfile=recipe)
+        try:
+            dockerfile_text = (Path(td) / recipe).read_text()
+        except OSError:
+            dockerfile_text = ""
+
+    return freeze_from_image(
+        image=tag, tools=[dict(t) for t in tools], name=name, version=version,
+        platform=platform, build_method="authors-dockerfile",
+        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "", "dockerfile": dockerfile_text},
+        gated=gated, licenses=list(licenses or []), pull_if_absent=False,
+        env_cache=env_cache, reports_dir=reports_dir)

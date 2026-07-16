@@ -723,59 +723,16 @@ def build_env_from_authors_recipe(
     authors_sources). A human would follow the authors' guide rather than reconstruct;
     this does the same.
 
-    Clones `repo` (a GitHub 'owner/repo' or full URL) at `ref` (PIN a tag/commit — a bare
-    default branch drifts), `docker build`s its `recipe` (default 'Dockerfile') for
-    `platform`, then hands the built image to freeze_from_image (honesty contract +
-    deliverables). `tools`: [{name, evidence}] — evidence must RUN each tool in-image.
-    The recipe records the pinned source so the build is reproducible. Docker + network +
-    git required."""
-    import subprocess as _sp
-    import tempfile as _tf
-    if not tools:
-        return refused("authors_recipe.no_tools",
-                       error="declare at least one tool with an evidence command that RUNS it in-image")
-    if not (repo or "").strip():
-        return refused("authors_recipe.no_repo", error="repo required ('owner/repo' or a git URL)")
-    url = repo if repo.startswith(("http://", "https://", "git@")) else f"https://github.com/{repo}"
-    owner_repo = repo.split("github.com/")[-1].rstrip("/").removesuffix(".git") if "github.com" in repo else repo
-    with _tf.TemporaryDirectory(prefix="authors_recipe_") as td:
-        cl = _sp.run(["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [url, td],
-                     capture_output=True, text=True, timeout=600)
-        if cl.returncode != 0:
-            # --branch fails on a raw commit SHA; retry full clone + checkout
-            cl2 = _sp.run(["git", "clone", url, td], capture_output=True, text=True, timeout=600)
-            if cl2.returncode != 0:
-                return broke("authors_recipe.clone_failed",
-                             error=f"could not clone {url}: {(cl2.stderr or cl.stderr)[:300]}")
-            if ref:
-                co = _sp.run(["git", "-C", td, "checkout", ref], capture_output=True, text=True, timeout=120)
-                if co.returncode != 0:
-                    return broke("authors_recipe.checkout_failed",
-                                 error=f"could not checkout {ref!r}: {co.stderr[:300]}")
-        head = _sp.run(["git", "-C", td, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60)
-        commit = (head.stdout or "").strip()
-        tag = f"{name}:{version}" if version else f"{name}:latest"
-        buildx = ["docker", "buildx", "build", "--platform", platform, "--load",
-                  "-f", f"{td}/{recipe}", "-t", tag]
-        for k, v in (build_args or {}).items():
-            buildx += ["--build-arg", f"{k}={v}"]
-        buildx.append(td)
-        bd = _sp.run(buildx, capture_output=True, text=True, timeout=3600)
-        if bd.returncode != 0:
-            return broke("authors_recipe.build_failed",
-                         error=f"docker build of {recipe} failed: {(bd.stderr or '')[-800:]}",
-                         dockerfile=recipe)
-        dockerfile_text = ""
-        try:
-            dockerfile_text = (Path(td) / recipe).read_text()
-        except OSError:
-            pass
+    Clones `repo` (a GitHub 'owner/repo', a full git URL, or a `file://` local mirror) at
+    `ref` (PIN a tag/commit — a bare default branch drifts), `docker build`s its `recipe`
+    (default 'Dockerfile') for `platform`, then hands the built image to freeze_from_image
+    (honesty contract + deliverables). `tools`: [{name, evidence}] — evidence must RUN each
+    tool in-image. The recipe records the pinned source so the build is reproducible.
+    Docker + git (+ network for a remote repo) required."""
     from agent.skills import freeze_from_image as _ffi
-    return _ffi.freeze_from_image(
-        image=tag, tools=[dict(t) for t in tools], name=name, version=version,
-        platform=platform, build_method="authors-dockerfile",
-        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "",
-                           "dockerfile": dockerfile_text},
-        gated=gated, licenses=list(licenses or []), pull_if_absent=False,
+    return _ffi.build_from_authors_recipe(
+        repo=repo, tools=[dict(t) for t in tools], name=name, recipe=recipe, ref=ref,
+        version=version, platform=platform, build_args=dict(build_args or {}),
+        gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
         reports_dir=_ms._env_mgr.project_root / "env_reports")

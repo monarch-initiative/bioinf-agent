@@ -40,36 +40,6 @@
     "named_in_test": true
   },
   {
-    "code": "authors_recipe.clone_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:748",
-    "end_line": 749,
-    "named_in_test": false
-  },
-  {
-    "code": "authors_recipe.checkout_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:753",
-    "end_line": 754,
-    "named_in_test": false
-  },
-  {
-    "code": "authors_recipe.build_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:765",
-    "end_line": 767,
-    "named_in_test": false
-  },
-  {
     "code": "run_container.image_pull_failed",
     "outcome": "broke",
     "source": "helper",
@@ -1047,6 +1017,36 @@
     "func": "freeze_from_image",
     "where": "agent/skills/freeze_from_image.py:117",
     "end_line": 118,
+    "named_in_test": false
+  },
+  {
+    "code": "authors_recipe.clone_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_from_authors_recipe",
+    "where": "agent/skills/freeze_from_image.py:287",
+    "end_line": 288,
+    "named_in_test": true
+  },
+  {
+    "code": "authors_recipe.checkout_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_from_authors_recipe",
+    "where": "agent/skills/freeze_from_image.py:292",
+    "end_line": 293,
+    "named_in_test": false
+  },
+  {
+    "code": "authors_recipe.build_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_from_authors_recipe",
+    "where": "agent/skills/freeze_from_image.py:302",
+    "end_line": 304,
     "named_in_test": false
   },
   {
@@ -3040,26 +3040,6 @@
     "named_in_test": false
   },
   {
-    "code": "authors_recipe.no_tools",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:735",
-    "end_line": 736,
-    "named_in_test": false
-  },
-  {
-    "code": "authors_recipe.no_repo",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:738",
-    "end_line": 738,
-    "named_in_test": false
-  },
-  {
     "code": "status.snapshot_gate_rejected",
     "outcome": "refused",
     "source": "helper",
@@ -4078,6 +4058,26 @@
     "where": "agent/skills/freeze_from_image.py:192",
     "end_line": 195,
     "named_in_test": true
+  },
+  {
+    "code": "authors_recipe.no_tools",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_from_authors_recipe",
+    "where": "agent/skills/freeze_from_image.py:274",
+    "end_line": 275,
+    "named_in_test": false
+  },
+  {
+    "code": "authors_recipe.no_repo",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_from_authors_recipe",
+    "where": "agent/skills/freeze_from_image.py:277",
+    "end_line": 277,
+    "named_in_test": false
   },
   {
     "code": "job_manager.unknown_job_check",
