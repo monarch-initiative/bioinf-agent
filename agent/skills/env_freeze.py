@@ -115,18 +115,60 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     `conda-meta/{name}-*.json` glob, satisfying env_honesty.evidence_shape's
     anchor rule.
 
-    Looks under both `/opt/conda/envs/*/conda-meta/` (pixi-managed envs)
-    and `/opt/conda/conda-meta/` (base-env installs) so it tolerates either
-    engine layout. The conda-meta JSON is well-formed enough that a
-    `sed -nE` over `\"bin/...\"` strings finds the bin entries reliably."""
+    Looks under `/opt/conda/envs/*/conda-meta/` (pixi-managed envs),
+    `/opt/conda/conda-meta/` (base-env installs) AND `/usr/local/conda-meta/`
+    (BioContainers' prefix) so it tolerates every layout we ship or adopt. The
+    conda-meta JSON is well-formed enough that a `sed -nE` over `\"bin/...\"`
+    strings finds the bin entries reliably.
+
+    `/usr/local` is load-bearing for the ADOPT path: a published BioContainer
+    installs its conda prefix at /usr/local, NOT /opt/conda. Without that glob the
+    probe cannot see any adopted package whose binary name differs from its package
+    name, and gating adopt on it false-refuses healthy envs — measured on real
+    images: gatk4 rc=1, htslib rc=127, perl-bioperl rc=1, all perfectly fine
+    packages (audit 2026-07-16 Tier 2)."""
     # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
     # interpolate directly into the subshell body.
     body = (
         f'for f in /opt/conda/envs/*/conda-meta/{name}-*.json '
-        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'/opt/conda/conda-meta/{name}-*.json '
+        f'/usr/local/conda-meta/{name}-*.json; do '
         f'[ -e "$f" ] || continue; '
         f'for b in $(sed -nE \'s|.*"bin/([^"/]+)".*|\\1|p\' "$f" | sort -u); do '
         f'command -v "$b" >/dev/null 2>&1 && exit 0; '
+        f'done; '
+        f'done; '
+        f'exit 1'
+    )
+    return f"( {body} )"
+
+
+def _perl_module_check_sh(name: str) -> str:
+    """A SUBSHELL that LOADS the Perl module a `perl-*` conda package installs.
+
+    A pure Perl module library (perl-bio-db-hts) ships NO bin/ entry, so neither
+    `command -v perl-bio-db-hts` nor the conda-meta bin probe can ever find it — the
+    package is healthy and the probe says rc=1. Gating adopt on that false-refuses an env
+    CLAUDE.md itself routes to conda ("Prefer conda when the module is on bioconda (e.g.
+    perl-bio-db-hts…)").
+
+    The module NAME is not derivable from the package name — `perl-bio-db-hts` capitalizes
+    to `Bio::DB::HTS`, which no mechanical rule produces (Bio::Db::Hts is wrong). So we
+    don't guess: we read the .pm paths out of the package's OWN conda-meta record
+    (`lib/perl5/5.32/site_perl/Bio/DB/HTS.pm`) and turn the path into the module
+    (`Bio::DB::HTS`). The package tells us its own module names; we just ask.
+
+    Bounded to the first few modules — bioperl ships hundreds, and one successful load is
+    the proof we need. The package name appears as a word-boundary token in the
+    conda-meta glob, so env_honesty's evidence_shape anchor rule is satisfied."""
+    body = (
+        f'for f in /usr/local/conda-meta/{name}-*.json '
+        f'/opt/conda/envs/*/conda-meta/{name}-*.json '
+        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'[ -e "$f" ] || continue; '
+        f'for m in $(sed -nE \'s|.*"lib/perl5/[^"]*site_perl/([A-Za-z][^"]*)\\.pm".*|\\1|p\' "$f" '
+        f'| sed \'s|/|::|g\' | sort -u | head -5); do '
+        f'perl -M"$m" -e1 >/dev/null 2>&1 && exit 0; '
         f'done; '
         f'done; '
         f'exit 1'
@@ -160,6 +202,16 @@ def _conda_presence_check(name: str) -> str:
     Route those to the R-aware Rscript installed.packages() check first."""
     if name.startswith("bioconductor-") or name.startswith("r-"):
         return _r_presence_check(name)
+    if name.startswith("perl-"):
+        # Same detour as R, same reason: a `perl-*` package is a Perl module library and
+        # the three generic clauses cannot see one that ships no binary. The module probe
+        # goes LAST so a perl package that DOES ship a binary (perl-bioperl) still
+        # short-circuits on the cheap clauses.
+        return (
+            f"command -v {name} || "
+            f"{_conda_pkg_bin_check_sh(name)} || "
+            f"{_perl_module_check_sh(name)}"
+        )
     return (
         f"command -v {name} || "
         f"{_conda_pkg_bin_check_sh(name)} || "

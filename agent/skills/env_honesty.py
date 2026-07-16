@@ -375,51 +375,22 @@ def check_build(result: dict) -> list[dict]:
     return violations
 
 
-def check_adopt(result: dict) -> list[dict]:
-    """The MODE-AWARE Layer-1 contract for an ADOPTED public biocontainer.
-
-    Adopt mode differs from build mode in ONE structural way: we DID NOT validate
-    in-locus (the biocontainer's contents are trusted by their published manifest
-    digest). So VALIDATED_IN_IMAGE → ADOPTED_BY_DIGEST and verifications are not
-    expected.
-
-    But everything ELSE in the honesty contract still applies — POLICY_CLEAN most
-    of all. The policy WE declare on the artifact (accelerator type / toolkit, the
-    gated-license firewall) is OURS to honor regardless of who built the bytes
-    inside; rendering the badge without checking the policy was the dorado-stress
-    "the artifact lies" bug. Specifically:
-
-      ADOPTED_BY_DIGEST — the image handles resolve (BUILT, structurally)
-      POLICY_CLEAN      — I12 (accelerator honesty) + I13 (license firewall) pass
-
-    Refuses (returns violations) when the adopted record claims an accelerator
-    without the required metadata or a gated artifact without licenses[].
-
-    Symmetric with check_build so the same gate fires at the same point of the
-    freeze surface — never let a record render its "POLICY_CLEAN" badge without
-    the underlying policy check having actually run.
-    """
-    violations: list[dict] = []
-
-    # -- ADOPTED_BY_DIGEST -----------------------------------------------
-    # The structural BUILT analog: an adopted image must resolve to a tag + a
-    # manifest digest (the immutable handle). Without those, the adoption did
-    # not actually pin anything.
-    if not (result.get("image") or "").strip():
-        violations.append({"invariant": "ADOPTED_BY_DIGEST.image_present", "where": "image",
-                           "message": "no adopted image ref — the biocontainer lookup did not bind "
-                                      "to an image we can pull."})
-    if not (result.get("image_digest") or "").strip():
-        violations.append({"invariant": "ADOPTED_BY_DIGEST.digest_resolved", "where": "image_digest",
-                           "message": "adopted image has no manifest digest — without it the artifact "
-                                      "is not content-addressed and the 'pull by digest' guarantee fails."})
-
-    # -- POLICY_CLEAN ----------------------------------------------------
-    # The bytes are BioContainers' to provide; the policy we render on the artifact
-    # is ours to honor. The previous build vs adopt split rendered POLICY_CLEAN on
-    # adopt without ever checking the policy — that produced the dorado-stress
-    # "samtools=1.21|linux-64|cuda → CPU biocontainer with POLICY_CLEAN" lie.
-    violations.extend(_check_accelerator(result.get("accelerator")))
-    violations.extend(_check_license(result))
-
-    return violations
+# check_adopt is DELETED (audit 2026-07-16 Tier 2).
+#
+# It was the mode-aware Layer-1 contract for an adopted BioContainer: BUILT (as
+# ADOPTED_BY_DIGEST) + POLICY_CLEAN, with VALIDATED_IN_IMAGE deliberately skipped because
+# "the biocontainer's contents are trusted by their published manifest digest".
+#
+# That reasoning answered the wrong question. Nobody suspected bioconda of lying about its
+# own bytes; the real risk is that WE bind the WRONG image — a mulled tag resolving to a
+# package set that doesn't contain the tool — and only running the tool can catch it. The
+# cost of finding out was ~0.25s per tool against an image freeze had already pulled to
+# read its SBOM. Meanwhile adopt is the DEFAULT for pure-conda envs, so the single
+# unvalidated path was also the busiest: `samtools=1.21` registered with
+# `verifications: []` and two sealed workflows rest on it, while its ENV report and
+# attestation presented it as a solved component.
+#
+# freeze() now generates the same presence evidence the build path uses, runs it in the
+# adopted image, and answers `check_build` — one contract for both modes. Its I13 clause
+# was dead regardless: `can_adopt` requires `not gated`, so a gated artifact never reached
+# it. Anything that needs "is this record an adopt?" should read `record["mode"]`.

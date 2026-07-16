@@ -17,7 +17,7 @@ Pre-D2/D3 fix (batch-1 dorado stress), `freeze(accel="cuda")` silently
 shipped without ever running I12 — the artifact carried a POLICY_CLEAN
 badge that nothing had checked. Same shape for D3 in the ADOPT branch:
 adopting a biocontainer didn't run POLICY_CLEAN at all, so an adopt of a
-gated tool with `licenses=None` would have shipped clean. check_adopt
+gated tool with `licenses=None` would have shipped clean. adopt
 exists specifically to keep the policy gates symmetric with check_build.
 
 Why integration, not unit: the contract is composed of independent
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.skills.env_honesty import check_adopt, check_build
+from agent.skills.env_honesty import check_build
 
 
 def _passing_build_record(**overrides) -> dict:
@@ -52,6 +52,10 @@ def _passing_adopt_record(**overrides) -> dict:
         "image": "quay.io/biocontainers/samtools:1.21", "image_digest": "sha256:adopted",
         "mode": "adopt", "license_gated": False, "redistributable": True,
         "accelerator": None, "licenses": [],
+        # An adopt record now carries in-image evidence like any other: check_adopt (which
+        # skipped VALIDATED_IN_IMAGE) is deleted, and adopt answers check_build.
+        "verifications": [{"label": "samtools", "tool": "samtools",
+                           "check": "command -v samtools", "passed": True}],
     }
     base.update(overrides)
     return base
@@ -86,7 +90,7 @@ def test_i13_adopt_runs_the_same_firewall():
     """The dorado-stress D3 fix: adopt mode runs I13 too. A gated adopt
     without licenses is still a lie."""
     r = _passing_adopt_record(license_gated=True, redistributable=False, licenses=[])
-    v = check_adopt(r)
+    v = check_build(r)
     assert any(x["invariant"] == "I13.gated_license_recorded" for x in v), \
         f"adopt-mode I13 missing licenses was not refused: {v}"
 
@@ -139,7 +143,7 @@ def test_i12_adopt_runs_the_same_accelerator_gate():
     """Adopt mode runs I12 too — claiming cuda on an adopted biocontainer
     without toolkit_version is the same lie as build mode."""
     r = _passing_adopt_record(accelerator={"type": "cuda"})
-    v = check_adopt(r)
+    v = check_build(r)
     assert any(x["invariant"] == "I12.accel_toolkit_version_required" for x in v), \
         f"adopt-mode I12 cuda+no-toolkit was not refused: {v}"
 
@@ -149,4 +153,4 @@ def test_passing_records_clear_the_contract():
     """Sanity: a record that meets every clause produces no violations.
     (If this fails, the test fixture above drifted, not the contract.)"""
     assert check_build(_passing_build_record()) == []
-    assert check_adopt(_passing_adopt_record()) == []
+    assert check_build(_passing_adopt_record()) == []

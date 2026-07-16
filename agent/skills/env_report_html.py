@@ -591,8 +591,16 @@ def render_env_report_html(record: dict) -> str:
     P.append('<ul class="foot">')
     if is_adopt:
         P.append("<li><b>ADOPTED_BY_DIGEST</b> — a public BioContainer pulled by its immutable "
-                 "manifest digest (above). Provenance is that digest; trust it as you trust the "
-                 "BioContainers project. It was not built or validated in-locus.</li>")
+                 "manifest digest (above). We did not build these bytes: their provenance is that "
+                 "digest, and you trust it as you trust the BioContainers project.</li>")
+        if r.get("verifications"):
+            P.append("<li><b>VALIDATED_IN_IMAGE</b> — each requested tool's evidence was RUN "
+                     "inside this adopted image and passed. This checks what the digest cannot: "
+                     "that the image we bound actually carries the tool you asked for.</li>")
+        else:
+            P.append("<li><b>NOT VALIDATED IN-IMAGE</b> — no evidence was run inside this image, "
+                     "so nothing here proves it carries the requested tool. This record predates "
+                     "in-image validation of adopted images; re-freeze to prove it.</li>")
         P.append("<li><b>POLICY_CLEAN</b> — accelerator honesty (I12) and the license firewall "
                  "(I13) passed.</li>")
     else:

@@ -23,6 +23,35 @@ from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.skills.outcomes import proven, refused, broke
 
 
+def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dict]:
+    """Run each tool's presence evidence INSIDE `image` and return the verification rows
+    env_honesty.check_build consumes: [{label, tool, check, rc, passed, out}].
+
+    Extracted for the ADOPT path, which previously validated nothing at all. It generates
+    the SAME probe the build path uses (env_freeze._conda_presence_check) and runs it in
+    the SAME way — so "adopted" and "built" are held to one contract rather than two, and
+    an adopted image proves it carries the tool instead of being taken on the registry's
+    word.
+
+    Extracted rather than routed through freeze_from_image on purpose: that function
+    computes its own request_key from tools[0] (dropping the policy facets this key folds
+    in), writes no hpc_delivery, and records no validation_locus — reusing it would have
+    quietly regressed the adopt record's shape to buy code-sharing.
+    """
+    rows: list[dict] = []
+    for tool in tools:
+        check = _ms._env_freeze._conda_presence_check(tool)
+        try:
+            r = _ms._docker.run_in_container(image, check, platform=platform, timeout=300)
+            rc = r.get("returncode", 1)
+            out = (r.get("stdout") or r.get("stderr") or "")[:400]
+        except Exception as e:
+            rc, out = 1, f"{type(e).__name__}: {e}"
+        rows.append({"label": tool, "tool": tool, "check": check,
+                     "rc": rc, "passed": rc == 0, "out": out})
+    return rows
+
+
 def _shipped_binary_entry(step: dict) -> dict:
     """One `shipped_binaries[]` record from a baked long-tail step. The baked
     command IS the tool's provenance; C5 additionally surfaces the per-tool SHIP
@@ -273,29 +302,24 @@ def freeze(
         # ADOPT — pure-conda env with a published biocontainer. The biocontainer
         # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
-        # MODE-AWARE HONESTY (D2 fix): adopt skips VALIDATED_IN_IMAGE (BioContainers'
-        # bytes are trusted by their published digest, not validated in-locus) but
-        # POLICY_CLEAN STILL MUST PASS — accelerator honesty (I12) and the license
-        # firewall (I13) describe what WE declare on this artifact, not who built it.
-        # The previous freeze code path adopted+returned without ever calling the
-        # contract, so the report rendered "POLICY_CLEAN — I12 passed" without I12
-        # ever running. dorado-stress demonstrated this with a CPU-only samtools
-        # biocontainer happily emitted under `accel=cuda`. We now refuse here.
-        adopt_check_input = {
-            "image": image, "image_digest": image_digest,
-            "accelerator": effective_accel,
-            "license_gated": gated, "licenses": list(licenses or []),
-            "redistributable": not gated,
-        }
-        adopt_violations = _ms._env_honesty.check_adopt(adopt_check_input)
-        if adopt_violations:
-            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
-                    request_key=rkey, adopt_attempt=adopt,
-                    honesty_violations=adopt_violations,
-                    violation_count=len(adopt_violations))
+        # ONE CONTRACT, not two (audit 2026-07-16 Tier 2). This branch used to call
+        # `check_adopt`, a mode-aware variant that asserted BUILT + POLICY_CLEAN and
+        # deliberately skipped VALIDATED_IN_IMAGE — "the biocontainer's bytes are trusted
+        # by their published digest". That answered the wrong question. The risk was never
+        # that bioconda lies about its own bytes; it is that WE bound the wrong image, and
+        # only running the tool catches that. Adopt is also the DEFAULT for pure-conda, i.e.
+        # the commonest env this system produces, so the one unvalidated path was also the
+        # busiest one: `samtools=1.21` shipped with `verifications: []` and two sealed
+        # workflows rest on it.
+        #
+        # Evidence is generated + run against the adopted image further down (where the
+        # image has already been pulled for the SBOM), and check_build — the SAME contract
+        # the build path answers to — is applied to the completed record. check_adopt is
+        # deleted; its I13 clause was dead anyway, since `can_adopt` requires `not gated`.
         hpc = _ms._freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
-        validation_locus = "adopted"   # we trust the published digest, not an in-locus run
+        # stays "unknown" until the in-image evidence has actually run (below), at which
+        # point it takes the real native/emulated locus the build path records.
 
     else:
         # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
@@ -467,6 +491,38 @@ def freeze(
         except Exception:
             record["resolved_packages"] = record.get("resolved_packages", [])
             record["system_packages"] = record.get("system_packages", [])
+
+        # VALIDATED_IN_IMAGE for the ADOPT path (audit 2026-07-16 Tier 2). Adopt was the
+        # ONE path that shipped an env nobody had ever run a tool in: check_adopt
+        # deliberately skipped validation and `samtools=1.21` registered with
+        # `verifications: []` — while the ENV report and the attestation carried it as a
+        # solved component, and two sealed workflows depend on it. "The biocontainer's
+        # bytes are trusted by their published digest" answers the wrong question: the risk
+        # was never that bioconda lies, it is that WE adopted the wrong image (a mulled tag
+        # resolving to a package set that doesn't contain the tool). Running the evidence
+        # is what catches that, and it is the same probe the build path uses.
+        #
+        # Affordable: the pull is already paid for by the SBOM reads above, and the
+        # marginal cost is ~0.25s per tool (measured). The fast path stays fast.
+        record["verifications"] = _validate_tools_in_image(
+            image, _adopt_platform, [n for n, _ in parsed])
+        # A real locus now — the evidence genuinely ran somewhere. `validation_locus:
+        # "adopted"` was the honest name for "we validated nowhere"; with evidence it
+        # would be a lie by omission (native vs emulated decides whether I7 timings are
+        # authoritative), so it takes the same value the build path records.
+        record["validation_locus"] = _ms._locus.detect_locus(_adopt_platform)["locus"]
+
+        # THE CONTRACT, on the completed record. It runs here (not at the adopt decision)
+        # because BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN read image + verifications +
+        # accelerator + licenses, and the last of those only land once the record is
+        # assembled — gating earlier would have checked a record that didn't exist yet.
+        adopt_violations = _ms._env_honesty.check_build(record)
+        if adopt_violations:
+            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
+                    request_key=rkey, adopt_attempt=adopt,
+                    honesty_violations=adopt_violations,
+                    violation_count=len(adopt_violations),
+                    verifications=record.get("verifications"))
     _ms._env_cache.register(rkey, record)
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):

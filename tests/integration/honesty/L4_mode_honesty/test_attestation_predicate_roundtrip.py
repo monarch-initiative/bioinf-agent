@@ -95,15 +95,27 @@ def test_build_mode_predicate_carries_built_validated_clean_triple():
 
 
 @pytest.mark.integration
-def test_adopt_mode_predicate_does_not_overclaim_validated_in_image():
-    """Adopt mode trusts the upstream digest — it does NOT validate in-
-    locus, so the attestation must NOT claim VALIDATED_IN_IMAGE. (Audit
-    #2 mode-awareness fix.)"""
-    att = build_attestation(_adopt_record())
-    internal = att["predicate"]["buildDefinition"]["internalParameters"]
-    assert "VALIDATED_IN_IMAGE" not in internal["honesty_contract"], \
-        f"adopt mode falsely claimed VALIDATED_IN_IMAGE: {internal['honesty_contract']}"
-    assert internal["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+def test_adopt_predicate_claims_validation_only_when_evidence_exists():
+    """The rule is unchanged — never claim a validation you didn't do — but the CONDITION
+    is the evidence, not the mode.
+
+    Adopt used to skip in-image validation by design, so "mode == adopt" implied "no
+    VALIDATED_IN_IMAGE". Adopt now runs each tool's evidence inside the adopted image
+    (audit 2026-07-16 Tier 2), so it EARNS the claim; keying off mode would now under-claim
+    a real proof, and keying off mode alone would over-claim for a record with no evidence.
+    Key off the evidence. ADOPTED_BY_DIGEST stays either way: it is a provenance statement
+    ("we did not build these bytes"), and that never stopped being true.
+    """
+    rec = _adopt_record()
+    rec.pop("verifications", None)
+    internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
+    assert internal["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"], \
+        f"an adopt record with no evidence must not claim validation: {internal['honesty_contract']}"
+
+    rec["verifications"] = [{"tool": "samtools", "check": "command -v samtools", "passed": True}]
+    internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
+    assert internal["honesty_contract"] == ["ADOPTED_BY_DIGEST", "VALIDATED_IN_IMAGE",
+                                            "POLICY_CLEAN"], internal["honesty_contract"]
 
 
 @pytest.mark.integration

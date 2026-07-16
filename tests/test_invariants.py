@@ -3325,13 +3325,32 @@ def test_env_report_html_escapes_injection():
     assert "evil&lt;script&gt;" in h
 
 
-def test_env_report_html_adopt_mode_does_not_claim_validation():
+def test_env_report_html_adopt_claims_validation_only_when_evidence_exists():
+    """The ENV report must claim exactly what the record earned — no more, no less.
+
+    Adopt now runs each tool's evidence inside the adopted image (audit 2026-07-16 Tier 2),
+    so VALIDATED_IN_IMAGE is a claim it can earn. The report keys off the EVIDENCE, not the
+    mode: a legacy adopt record (verifications absent — the shape samtools=1.21 registered
+    with) must still say plainly that nothing was run in it. ADOPTED_BY_DIGEST survives in
+    both cases: it is a provenance statement ("we did not build these bytes"), and that was
+    never the part that was wrong.
+    """
     from agent.skills.env_report_html import render_env_report_html
-    h = render_env_report_html({"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
-                                "mode": "adopt", "validation_locus": "adopted",
-                                "requested_tools": ["x"]})
-    assert "ADOPTED_BY_DIGEST" in h and "VALIDATED_IN_IMAGE" not in h
-    assert "not built or validated in-locus" in h.lower()
+    base = {"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
+            "mode": "adopt", "requested_tools": ["x"]}
+
+    # legacy record: no evidence → must NOT claim validation, and must say so
+    h = render_env_report_html({**base, "validation_locus": "adopted"})
+    assert "ADOPTED_BY_DIGEST" in h
+    assert "NOT VALIDATED IN-IMAGE" in h
+    assert "nothing here proves it carries the requested tool" in h
+
+    # validated adopt: evidence ran in the adopted image → the claim is earned
+    h = render_env_report_html({**base, "validation_locus": "native",
+                                "verifications": [{"label": "x", "tool": "x",
+                                                   "check": "command -v x", "passed": True}]})
+    assert "ADOPTED_BY_DIGEST" in h and "VALIDATED_IN_IMAGE" in h
+    assert "the image we bound actually carries the tool" in h
 
 
 def test_env_report_html_separates_declared_policy_from_verified():
@@ -5169,8 +5188,10 @@ def test_check_adopt_refuses_cuda_accel_without_toolkit_version():
         "image_digest": "sha256:abc123" + "0" * 58,
         "accelerator": {"type": "cuda"},                # missing toolkit_version
         "license_gated": False, "licenses": [],
+        "verifications": [{"label": "samtools", "tool": "samtools",
+                           "check": "command -v samtools", "passed": True}],
     }
-    violations = env_honesty.check_adopt(record)
+    violations = env_honesty.check_build(record)
     inv_ids = {v["invariant"] for v in violations}
     assert "I12.accel_toolkit_version_required" in inv_ids
 
@@ -5186,49 +5207,88 @@ def test_check_adopt_refuses_gated_without_licenses():
         "license_gated": True, "licenses": [],
         "redistributable": True,
     }
-    violations = env_honesty.check_adopt(record)
+    violations = env_honesty.check_build(record)
     inv_ids = {v["invariant"] for v in violations}
     assert "I13.gated_license_recorded" in inv_ids
     assert "I13.gated_not_redistributable" in inv_ids
 
 
-def test_check_adopt_passes_clean_record_with_no_policy():
-    """A bare adopted record (image + digest, no accelerator/license policy)
-    is honest by construction — POLICY_CLEAN with no policy is the empty set."""
+def test_conda_presence_probe_covers_the_biocontainer_prefix_and_perl_modules():
+    """The PRODUCER fix that had to land before adopt could be gated (audit 2026-07-16).
+
+    A published BioContainer installs its conda prefix at /usr/local, NOT /opt/conda — so
+    the probe could not see any adopted package whose binary name differs from its package
+    name. And a `perl-*` module library ships no bin/ entry at all, so no generic clause
+    could ever find it. Measured against REAL biocontainers before the fix: gatk4 rc=1,
+    htslib rc=127, perl-bio-db-hts rc=1, perl-bioperl rc=1 — four healthy packages the gate
+    would have false-refused, one of which (perl-bio-db-hts) CLAUDE.md explicitly routes to
+    conda. Enabling a gate on a probe that cannot see the thing it judges is the Tier-0
+    mistake; the fix belongs in the producer.
+    """
+    from agent.skills.env_freeze import _conda_presence_check
+    probe = _conda_presence_check("gatk4")
+    assert "/usr/local/conda-meta/gatk4-*.json" in probe, \
+        "the BioContainers prefix must be searched, or adopt false-refuses"
+    # perl packages get a module-load clause, derived from the package's OWN .pm records
+    # (perl-bio-db-hts -> Bio::DB::HTS is not mechanically derivable from the name).
+    perl = _conda_presence_check("perl-bio-db-hts")
+    assert "perl -M" in perl and "site_perl" in perl
+    assert "/usr/local/conda-meta/perl-bio-db-hts-*.json" in perl
+    # and the R detour is untouched
+    assert "installed.packages" in _conda_presence_check("bioconductor-deseq2")
+
+
+def test_adopt_passes_clean_record_with_no_policy():
+    """An adopted record with real in-image evidence and no accelerator/license policy is
+    honest — POLICY_CLEAN with no policy is the empty set."""
     from agent.skills import env_honesty
     record = {
         "image": "quay.io/biocontainers/samtools:1.21--hd87286a_0",
         "image_digest": "sha256:" + "f" * 64,
         "accelerator": None,
         "license_gated": False, "licenses": [],
+        "verifications": [{"label": "samtools", "tool": "samtools",
+                           "check": "command -v samtools", "passed": True}],
     }
-    assert env_honesty.check_adopt(record) == []
+    assert env_honesty.check_build(record) == []
 
 
-def test_check_adopt_does_not_require_verifications():
-    """The mode-aware delta from check_build: adopt has NO in-locus evidence
-    (the bytes are trusted by BioContainers' published digest), so the
-    VALIDATED_IN_IMAGE.no_evidence violation MUST NOT fire on adopt. This
-    is what distinguishes ADOPTED_BY_DIGEST from VALIDATED_IN_IMAGE."""
+def test_adopt_now_REQUIRES_verifications():
+    """INVERTED, deliberately — this is the Tier-2 change (audit 2026-07-16).
+
+    The predecessor of this test asserted the opposite: that VALIDATED_IN_IMAGE.no_evidence
+    "MUST NOT fire on adopt", because adopt trusted BioContainers' published digest instead
+    of running anything. That exemption was the hole. It answered the wrong question —
+    nobody suspected bioconda of lying about its own bytes; the risk is that WE bind the
+    WRONG image, and only running the tool catches that. Adopt was also the DEFAULT for
+    pure-conda, so the one unvalidated path was the busiest one: samtools=1.21 shipped with
+    verifications: [] and two sealed workflows rest on it.
+
+    An adopt record with no evidence is now refused, exactly like a build with none.
+    """
     from agent.skills import env_honesty
     record = {
         "image": "quay.io/biocontainers/samtools:1.21--hd87286a_0",
         "image_digest": "sha256:" + "1" * 64,
-        # NO verifications key at all
+        # NO verifications key at all — the shape samtools=1.21 registered with
         "accelerator": None,
         "license_gated": False, "licenses": [],
     }
-    inv_ids = {v["invariant"] for v in env_honesty.check_adopt(record)}
-    assert "VALIDATED_IN_IMAGE.no_evidence" not in inv_ids
+    inv_ids = {v["invariant"] for v in env_honesty.check_build(record)}
+    assert "VALIDATED_IN_IMAGE.no_evidence" in inv_ids, \
+        "an adopted image nobody ran a tool in must not register as a solved component"
 
 
-def test_check_adopt_refuses_missing_image_handles():
-    """ADOPTED_BY_DIGEST requires the image + manifest digest to resolve."""
+def test_adopt_refuses_missing_image_handles():
+    """The structural anchor: an adopted image must resolve to a ref + a manifest digest.
+    (Named BUILT.* now that adopt answers check_build — the ADOPTED_BY_DIGEST invariant
+    ids died with check_adopt; the PROVENANCE claim of that name survives in the
+    attestation + ENV report, which is where it belongs.)"""
     from agent.skills import env_honesty
-    v1 = env_honesty.check_adopt({"image": "", "image_digest": "sha256:" + "a" * 64})
-    v2 = env_honesty.check_adopt({"image": "img:tag", "image_digest": ""})
-    assert any(v["invariant"] == "ADOPTED_BY_DIGEST.image_present" for v in v1)
-    assert any(v["invariant"] == "ADOPTED_BY_DIGEST.digest_resolved" for v in v2)
+    v1 = env_honesty.check_build({"image": "", "image_digest": "sha256:" + "a" * 64})
+    v2 = env_honesty.check_build({"image": "img:tag", "image_digest": ""})
+    assert any(v["invariant"] == "BUILT.image_present" for v in v1)
+    assert any(v["invariant"] == "BUILT.image_digest_resolved" for v in v2)
 
 
 def test_synth_accelerator_from_request_draft_wins():
@@ -5268,7 +5328,7 @@ def test_synth_accelerator_from_request_cuda_without_toolkit_version_lets_i12_fi
     assert out is not None
     assert "toolkit_version" not in out
     # piped into check_adopt, I12 fires
-    v = env_honesty.check_adopt({"image": "x", "image_digest": "sha256:" + "0" * 64,
+    v = env_honesty.check_build({"image": "x", "image_digest": "sha256:" + "0" * 64,
                                  "accelerator": out, "license_gated": False,
                                  "licenses": []})
     assert any(viol["invariant"] == "I12.accel_toolkit_version_required" for viol in v)

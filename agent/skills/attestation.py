@@ -72,13 +72,22 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                   "passed": bool(v.get("passed"))}
                  for v in (r.get("verifications") or []) if isinstance(v, dict)]
 
-    # The honesty guarantees are MODE-DEPENDENT and must not over-claim: a
-    # container-native BUILD ran the contract (BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN);
-    # an ADOPTED public biocontainer is TRUSTED BY ITS PUBLISHED DIGEST — it is NOT
-    # built or validated in-locus, so claiming VALIDATED_IN_IMAGE (with an empty
-    # evidence list) would be a false provenance assertion.
+    # The honesty guarantees are MODE-DEPENDENT and must not over-claim. The distinction
+    # that survives is about PROVENANCE, not validation: a container-native BUILD made the
+    # bytes (BUILT); an ADOPTED public biocontainer's bytes are BioContainers', pinned by
+    # their published manifest digest (ADOPTED_BY_DIGEST). That claim is unchanged and
+    # still exactly true.
+    #
+    # What changed (audit 2026-07-16 Tier 2): adopt now RUNS each tool's evidence inside
+    # the adopted image, so VALIDATED_IN_IMAGE is a claim it earns rather than one it must
+    # omit. It is asserted off the evidence actually present — never as a mode default —
+    # so an adopt record that somehow carries no verifications cannot claim it. (Before,
+    # adopt validated nothing at all: the omission was honest, and the hole was real.)
     if r.get("mode") == "adopt":
-        guarantees = ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+        guarantees = ["ADOPTED_BY_DIGEST"]
+        if validated:
+            guarantees.append("VALIDATED_IN_IMAGE")
+        guarantees.append("POLICY_CLEAN")
     else:
         guarantees = ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
 
