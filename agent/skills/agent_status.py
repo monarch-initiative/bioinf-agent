@@ -46,8 +46,9 @@ def _drafts_summary(pipeline_state) -> list[dict]:
         # Best-effort access to the internal map; defensive in case the
         # PipelineState API gains a public accessor later.
         drafts = getattr(pipeline_state, "_drafts", {}) or {}
+        drafts_dir = getattr(pipeline_state, "drafts_dir", None)
         for pid, draft in drafts.items():
-            out.append({
+            row = {
                 "pipeline_id":     pid,
                 "description":     (draft.get("description") or "")[:120],
                 "env_status":      draft.get("env_status"),
@@ -57,7 +58,20 @@ def _drafts_summary(pipeline_state) -> list[dict]:
                 "pipeline_steps":  len(draft.get("pipeline_steps") or []),
                 "packages":        len(draft.get("packages") or []),
                 "verifications":   len(draft.get("verifications") or {}),
-            })
+            }
+            # Staleness signal so an abandoned draft is distinguishable from live work:
+            # the draft file's mtime + its age in days (an untouched draft = likely leaked).
+            try:
+                if drafts_dir is not None:
+                    p = Path(drafts_dir) / f"{pid}.draft.yaml"
+                    if p.exists():
+                        import datetime as _dt
+                        mt = _dt.datetime.fromtimestamp(p.stat().st_mtime, tz=_dt.timezone.utc)
+                        row["last_touched"] = mt.isoformat()
+                        row["age_days"] = round((_dt.datetime.now(_dt.timezone.utc) - mt).total_seconds() / 86400, 1)
+            except Exception:
+                pass
+            out.append(row)
         return out
     except Exception as e:
         return [{"error": f"drafts query failed: {e}"}]
@@ -80,11 +94,16 @@ def _frozen_envs_summary(env_cache, env_reports_dir: Path) -> list[dict]:
                 "image_digest":    rec.get("image_digest"),
                 "content_digest":  rec.get("content_digest"),
                 "platform":        rec.get("platform"),
-                "build_method":    rec.get("build_method"),
+                # build_method is only stamped on the build path; adopt envs record their
+                # provenance in `mode` instead. Fall back so an adopt env reads as 'adopt',
+                # not a misleading null 'unknown build method'.
+                "build_method":    rec.get("build_method") or rec.get("mode"),
                 "image_size_bytes": rec.get("image_size_bytes"),
                 "env_report":      str(html) if html.exists() else None,
                 "attestation":     str(attest) if attest.exists() else None,
                 "recipe":          str(recipe) if recipe.exists() else None,
+                "recipe_md":       (str(env_reports_dir / f"{name}.recipe.md")
+                                    if (env_reports_dir / f"{name}.recipe.md").exists() else None),
             })
         return out
     except Exception as e:

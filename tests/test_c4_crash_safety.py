@@ -166,6 +166,12 @@ def _battery():
         ("run_install_command", E.run_install_command, dict(env_name=BAD_ENV, command="echo hi"), True),
         # -- freeze (gated+no-license is a clean early guard, never reaches docker)
         ("freeze", F.freeze, dict(env_name=BAD_ENV, tools=["tool"], gated=True), True),
+        # freeze_from_image / build_env_from_authors_recipe: empty tools is a clean early
+        # guard that refuses before any docker/git — the hostile-input fast path.
+        ("freeze_from_image", F.freeze_from_image,
+         dict(image="", tools=[], name=""), True),
+        ("build_env_from_authors_recipe", F.build_env_from_authors_recipe,
+         dict(repo="", tools=[], name=""), True),
         ("verify_env_recipe", F.verify_env_recipe, dict(recipe_path=BAD_PATH), True),
         ("generate_user_guide", F.generate_user_guide, dict(pipeline_id=BAD_PID), True),
         # -- jobs -----------------------------------------------------------

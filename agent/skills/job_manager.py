@@ -277,23 +277,39 @@ class JobManager:
         return {"state": "cancelled", "job_id": job_id, "elapsed_seconds": status["elapsed_seconds"]}
 
     def list_jobs(self, include_terminated: bool = True) -> list[dict]:
-        """Enumerate every job_id with a status file on disk."""
+        """Enumerate every job_id with a status file on disk, RECONCILED against reality.
+
+        The status file's `state` is only advanced when someone calls check(); a job
+        whose process died unobserved (e.g. the MCP server restarted, losing the Popen
+        handle) stays 'running' on disk forever. So a bare read reports zombies as live —
+        exactly the agent_status inaccuracy this fixes. Here we re-observe: a 'running'
+        record whose PID is no longer alive is reported as 'exited' with reconciled=True,
+        so the caller sees the truth without needing to have polled every job."""
         out = []
         for f in sorted(self.jobs_dir.glob("*.status.json")):
             try:
                 status = json.loads(f.read_text())
             except Exception:
                 continue
-            if not include_terminated and status.get("state") != "running":
+            state = status.get("state")
+            reconciled = False
+            if state == "running":
+                pid = status.get("pid")
+                if not (pid and self._is_pid_alive(pid, status.get("start_time_iso"))):
+                    state, reconciled = "exited", True   # dead process still marked running
+            if not include_terminated and state != "running":
                 continue
-            out.append({
+            row = {
                 "job_id":          status.get("job_id"),
-                "state":           status.get("state"),
+                "state":           state,
                 "command":         (status.get("command") or "")[:80],
                 "env_name":        status.get("env_name", ""),
                 "start_time_iso":  status.get("start_time_iso"),
                 "elapsed_seconds": status.get("elapsed_seconds", 0.0),
-            })
+            }
+            if reconciled:
+                row["reconciled"] = True   # state was 'running' on disk but the PID is gone
+            out.append(row)
         return out
 
     # ------------------------------------------------------------------
@@ -330,16 +346,36 @@ class JobManager:
         if not s or s.get("state") != "running":
             return False
         pid = s.get("pid")
-        return bool(pid and self._is_pid_alive(pid))
+        return bool(pid and self._is_pid_alive(pid, s.get("start_time_iso")))
 
     @staticmethod
-    def _is_pid_alive(pid: int) -> bool:
+    def _is_pid_alive(pid: int, started_iso: Optional[str] = None) -> bool:
+        """PID liveness, hardened against PID REUSE. `os.kill(pid, 0)` alone is unsound:
+        an old job's PID can be recycled by an unrelated process, which then reads as
+        'alive' (a false positive that keeps a dead job marked running). When `started_iso`
+        is known and psutil is available, we also require the live process to have started
+        no LATER than the job did — a recycled PID's process is necessarily younger, so
+        this rejects it."""
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
         except PermissionError:
-            return True   # exists, just not ours
+            pass          # exists, just not ours — fall through to the start-time check
+        if started_iso:
+            try:
+                import datetime as _dt
+                import psutil
+                job_start = _dt.datetime.fromisoformat(started_iso)
+                if job_start.tzinfo is None:
+                    job_start = job_start.replace(tzinfo=_dt.timezone.utc)
+                proc_start = _dt.datetime.fromtimestamp(psutil.Process(pid).create_time(),
+                                                        tz=_dt.timezone.utc)
+                # a >5s-younger process on this PID is a recycled PID, not our job
+                if proc_start > job_start + _dt.timedelta(seconds=5):
+                    return False
+            except Exception:
+                pass      # psutil absent / process vanished mid-check — trust os.kill
         return True
 
     def _read_status(self, job_id: str) -> Optional[dict]:

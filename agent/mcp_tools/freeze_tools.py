@@ -563,6 +563,41 @@ def verify_env_recipe(recipe_path: str) -> dict:
     if not isinstance(recipe, dict) or not recipe.get("name"):
         return refused("freeze.recipe_invalid", success=False,
                        error="not a valid env recipe (missing name)")
+
+    # Verify the way the recipe was BUILT — a generic container-native rebuild only
+    # reproduces a container-native env. For adopt / authors-dockerfile recipes it would
+    # produce a DIFFERENT image and falsely report 'not reproduced'; branch instead.
+    method = recipe.get("build_method") or "container-native-build"
+    expected = recipe.get("content_digest") or ""
+    if method == "adopt":
+        # An adopt env's contract IS the published manifest digest — re-pull the image
+        # by digest and confirm it still resolves to the recorded digest (no build).
+        img = recipe.get("adopt_image") or ""
+        if not img:
+            return refused("freeze.recipe_adopt_no_image", success=False,
+                           error="adopt recipe has no adopt_image to re-pull")
+        pull = subprocess.run(["docker", "pull", img], capture_output=True, text=True, timeout=1800)
+        insp = subprocess.run(["docker", "image", "inspect", "--format", "{{index .Id}}", img],
+                              capture_output=True, text=True, timeout=60)
+        got = (insp.stdout or "").strip()
+        match = bool(expected) and got == expected
+        rf = dict(success=pull.returncode == 0, content_digest_match=match,
+                  rebuilt_content_digest=got, expected_content_digest=expected,
+                  proves="ADOPT: the biocontainer re-pulls to the recorded manifest digest "
+                         "(content-addressed — identical bytes). Not a from-source rebuild.")
+        return proven("freeze.recipe_verified", **rf) if match else broke("freeze.recipe_not_reproduced", **rf)
+    if method in ("authors-dockerfile", "freeze-from-image"):
+        # Reproduced by re-running build_env_from_authors_recipe at the pinned commit —
+        # NOT by a container-native rebuild from conda specs (there are none). Report
+        # honestly rather than run the wrong build and emit a false 'not reproduced'.
+        ds = recipe.get("dockerfile_source") or {}
+        return proven("freeze.recipe_verify_manual", success=True, content_digest_match=None,
+                      expected_content_digest=expected,
+                      proves=f"AUTHORS-DOCKERFILE: reproduce by re-building the pinned source "
+                             f"(repo={ds.get('repo','?')} @ {ds.get('commit') or ds.get('tag','?')}) "
+                             f"via build_env_from_authors_recipe. A generic conda rebuild does NOT "
+                             f"apply to this env, so verify-by-rebuild is not run here.")
+
     res = _ms._env_recipe.rebuild_from_recipe(recipe)
     # Outcome is runtime-conditional: only a rebuild that SUCCEEDED and converged
     # to the same content digest is `proven`. A failed build or a digest mismatch
@@ -696,6 +731,11 @@ def build_env_from_authors_recipe(
     git required."""
     import subprocess as _sp
     import tempfile as _tf
+    if not tools:
+        return refused("authors_recipe.no_tools",
+                       error="declare at least one tool with an evidence command that RUNS it in-image")
+    if not (repo or "").strip():
+        return refused("authors_recipe.no_repo", error="repo required ('owner/repo' or a git URL)")
     url = repo if repo.startswith(("http://", "https://", "git@")) else f"https://github.com/{repo}"
     owner_repo = repo.split("github.com/")[-1].rstrip("/").removesuffix(".git") if "github.com" in repo else repo
     with _tf.TemporaryDirectory(prefix="authors_recipe_") as td:
