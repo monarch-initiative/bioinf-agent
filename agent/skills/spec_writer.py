@@ -29,7 +29,7 @@ import yaml
 from agent.models.core_data import (
     AssemblyInput, BamInput, GenomeRef, GenotypeArrayInput, OutputFile,
     PedigreeInput, PhenotypeInput, Provenance, QuantitativeTraitInput,
-    ReadInput, VcfInput,
+    ReadInput, VcfInput, usage_commands,
 )
 from agent.skills.outcomes import refused
 
@@ -102,9 +102,11 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     usage = spec.get("usage")
     if not usage or not isinstance(usage, dict):
         return _not_attempted("no usage block to self-test")
-    template = (usage.get("command_template") or "").strip()
-    if not template:
+    # ONE reading of command_template (str or list[str]) — see core_data.usage_commands.
+    commands = usage_commands(usage)
+    if not commands:
         return _not_attempted("usage.command_template is empty")
+    template = "\n".join(commands)   # placeholder scanning spans every command
     # A runner is either injected (the frozen image — validated == shipped) or taken from
     # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
     # what silently disabled I4 for every container-native env.
@@ -159,7 +161,7 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
         }]
 
     trial_results = [
-        _run_one_trial(plan, template, placeholders, outputs_spec, env_manager, env_name, spec, validator)
+        _run_one_trial(plan, commands, placeholders, outputs_spec, env_manager, env_name, spec, validator)
         for plan in trial_plans
     ]
 
@@ -244,10 +246,17 @@ def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> di
 
 
 def _run_one_trial(
-    plan: dict, template: str, placeholders: set, outputs_spec: list,
+    plan: dict, commands: list[str], placeholders: set, outputs_spec: list,
     env_manager: Any, env_name: str, spec: dict, validator: Optional[Any],
 ) -> dict:
-    """Execute one trial: substitute, run in fresh scratch, verify outputs.
+    """Execute one trial: substitute, run EVERY command in order in one fresh
+    scratch dir, verify outputs.
+
+    `commands` is the normalized usage.command_template (see core_data.usage_commands):
+    a multi-command how-to runs in sequence, sharing the scratch dir, so command 2 can
+    consume command 1's output — which is what makes a Phase A→B→C pipeline self-testable
+    at all. The FIRST non-zero rc fails the trial and stops: continuing past a failure
+    would let a later command produce the declared outputs and paper over a broken step.
 
     The trial passes only when EVERY pattern in usage.outputs[*].files matched
     a produced file AND every matched file passes type-aware validate_output.
@@ -275,20 +284,35 @@ def _run_one_trial(
             "substitutions": subs,
         }
 
-    command = template
-    for slot, val in subs.items():
-        command = command.replace("{" + slot + "}", str(val))
+    def _fill(cmd: str) -> str:
+        for slot, val in subs.items():
+            cmd = cmd.replace("{" + slot + "}", str(val))
+        return cmd
 
-    result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
-    rc = result.get("returncode")
-    if rc != 0:
-        return {
-            "name": trial_name, "ok": False,
-            "reason": f"command_template execution failed (rc={rc})",
-            "command_run": command, "scratch_dir": str(scratch),
-            "stderr_tail": (result.get("stderr") or "")[-500:],
-            "substitutions": subs,
-        }
+    ran: list[str] = []
+    for i, raw in enumerate(commands, start=1):
+        command = _fill(raw)
+        ran.append(command)
+        result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
+        rc = result.get("returncode")
+        if rc != 0:
+            # Stop at the first failure — a later command must never be allowed to
+            # produce the declared outputs on top of a broken earlier one.
+            step = (f"command {i} of {len(commands)}" if len(commands) > 1
+                    else "command_template")
+            return {
+                "name": trial_name, "ok": False,
+                "reason": f"{step} execution failed (rc={rc})",
+                "command_run": command, "commands_run": ran,
+                "failed_index": i, "scratch_dir": str(scratch),
+                "stderr_tail": (result.get("stderr") or "")[-500:],
+                "substitutions": subs,
+            }
+
+    # Every command succeeded. From here on the trial is judged on its OUTPUTS, and
+    # what "ran" means is the whole sequence — reporting only the last command would
+    # misname the thing that was tested the moment a how-to has more than one step.
+    command_run = "\n".join(ran)
 
     produced = []
     for p in scratch.rglob("*"):
@@ -325,7 +349,7 @@ def _run_one_trial(
             "missing_outputs": missing_outputs,
             "produced_files": produced[:20],
             "recognized_output_slots": recognized,
-            "command_run": command, "scratch_dir": str(scratch),
+            "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
             "substitutions": subs,
         }
         if not produced:
@@ -370,13 +394,13 @@ def _run_one_trial(
                 "failed_validations": failed[:10],
                 "validation_results": validation_results[:20],
                 "produced_files": produced[:20],
-                "command_run": command, "scratch_dir": str(scratch),
+                "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
                 "substitutions": subs,
             }
 
     return {
         "name": trial_name, "ok": True,
-        "command_run": command, "substitutions": subs,
+        "command_run": command_run, "commands_run": ran, "substitutions": subs,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
         "validation_results": validation_results[:20],
         "description": plan.get("description"),
@@ -587,7 +611,10 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     usage = spec.get("usage") if isinstance(spec.get("usage"), dict) else None
     if usage:
-        template = (usage.get("command_template") or "").strip()
+        # Scan EVERY command (str or list[str]) through the one reader — an undeclared
+        # placeholder in command 3 of a multi-step how-to is exactly as broken as one in
+        # command 1, and re-reading the raw field here would have seen only the first.
+        template = "\n".join(usage_commands(usage))
         if template:
             template_placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
             declared_input_names = {

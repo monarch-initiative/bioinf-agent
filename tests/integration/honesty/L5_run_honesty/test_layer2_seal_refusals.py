@@ -264,3 +264,134 @@ def test_i8_authored_artifact_satisfies_provenance(tmp_path):
     ]
     v = _violations(spec, "I8.")
     assert v == [], f"authored_artifact path should satisfy I8: {v}"
+
+
+# ---------------------------------------------------------------------------
+# usage.command_template is a str OR a list[str] — the multi-phase how-to.
+# `pipeline_steps` was always a list and I8 lineage always held across a chain,
+# but the HOW-TO contract — the thing a user reads and runs, and the thing the
+# guides render — could only ever say ONE command. No amount of later guide
+# design fixes data that cannot say what you mean (audit 2026-07-16).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_i6_scans_placeholders_in_every_command_not_just_the_first():
+    """An undeclared placeholder in command 3 is exactly as broken as one in command 1.
+
+    Reading the raw field here would have seen only the first command — which is the
+    tier-2 bug in miniature: a check that inspects something other than what the runner
+    actually uses."""
+    spec = _minimal_passing_spec()
+    spec["usage"] = {
+        "description": "three phases",
+        "command_template": [
+            "sort {INPUT_BAM} > {OUTPUT_DIR}/a.txt",
+            "uniq {OUTPUT_DIR}/a.txt > {OUTPUT_DIR}/b.txt",
+            "wc -l < {OUTPUT_DIR}/b.txt > {TYPOED_DIR}/c.txt",   # only reachable if all are scanned
+        ],
+        "inputs": [{"name": "INPUT_BAM", "format": "bam"}],
+    }
+    v = _violations(spec, "I6.")
+    assert any(x["invariant"] == "I6.template_placeholders_declared" for x in v), \
+        f"an undeclared placeholder in the LAST command was not refused: {v}"
+    bad = next(x for x in v if x["invariant"] == "I6.template_placeholders_declared")
+    assert bad["undeclared_placeholders"] == ["TYPOED_DIR"], bad
+
+
+@pytest.mark.integration
+def test_i6_accepts_a_valid_multi_command_how_to():
+    """The pair: a well-formed multi-phase how-to must NOT be refused."""
+    spec = _minimal_passing_spec()
+    spec["usage"] = {
+        "description": "three phases",
+        "command_template": [
+            "sort {INPUT_BAM} > {OUTPUT_DIR}/a.txt",
+            "uniq {OUTPUT_DIR}/a.txt > {OUTPUT_DIR}/b.txt",
+        ],
+        "inputs": [{"name": "INPUT_BAM", "format": "bam"}],
+    }
+    v = _violations(spec, "I6.")
+    assert not any(x["invariant"] == "I6.template_placeholders_declared" for x in v), v
+
+
+@pytest.mark.integration
+def test_self_test_runs_every_command_in_order_sharing_one_scratch_dir():
+    """A → B → C: each command consumes the previous one's output. Drives the REAL
+    self_test_usage with a real shell runner — the whole point is that the sequence,
+    not just the first command, is what gets verified."""
+    import subprocess as _sp
+    import tempfile
+    from pathlib import Path as _P
+    from agent.skills import spec_writer
+
+    src = _P(tempfile.mkdtemp()) / "reads.txt"
+    src.write_text("beta\nalpha\nalpha\n")
+
+    class _Host:
+        is_image_runner = False
+        def run_in_env(self, env, command, timeout=600, watch_dir=None):
+            p = _sp.run(command, shell=True, capture_output=True, text=True, cwd=watch_dir)
+            return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
+
+    spec = {
+        "pipeline_name": "multi", "conda_env": "host",
+        "usage": {
+            "description": "A->B->C",
+            "command_template": [
+                "sort {INPUT} > {OUTPUT_DIR}/a.sorted.txt",
+                "uniq {OUTPUT_DIR}/a.sorted.txt > {OUTPUT_DIR}/b.uniq.txt",
+                "wc -l < {OUTPUT_DIR}/b.uniq.txt > {OUTPUT_DIR}/c.count.txt",
+            ],
+            "inputs":  [{"name": "INPUT", "format": "txt"}],
+            "outputs": [{"name": "OUTPUT_DIR",
+                         "files": ["a.sorted.txt", "b.uniq.txt", "c.count.txt"]}],
+            "trials":  [{"name": "abc", "substitutions": {"INPUT": str(src)}}],
+        },
+    }
+    r = spec_writer.self_test_usage(spec, _Host())
+    assert r["status"] == "verified", r
+    t = r["trials"][0]
+    assert t["ok"] is True, t
+    assert len(t["commands_run"]) == 3, t["commands_run"]
+    # step 2 really consumed step 1's output, so all three landed in ONE scratch dir
+    assert sorted(t["produced_files"]) == ["a.sorted.txt", "b.uniq.txt", "c.count.txt"], t
+
+
+@pytest.mark.integration
+def test_self_test_stops_at_the_first_failing_command():
+    """A broken middle step fails the trial and names WHICH step — and must stop, so a
+    later command can never `touch` the declared outputs over a broken earlier one."""
+    import subprocess as _sp
+    import tempfile
+    from pathlib import Path as _P
+    from agent.skills import spec_writer
+
+    src = _P(tempfile.mkdtemp()) / "reads.txt"
+    src.write_text("x\n")
+
+    class _Host:
+        is_image_runner = False
+        def run_in_env(self, env, command, timeout=600, watch_dir=None):
+            p = _sp.run(command, shell=True, capture_output=True, text=True, cwd=watch_dir)
+            return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
+
+    spec = {
+        "pipeline_name": "multi", "conda_env": "host",
+        "usage": {
+            "description": "B is broken; C would fake the outputs",
+            "command_template": [
+                "sort {INPUT} > {OUTPUT_DIR}/a.sorted.txt",
+                "zzz_no_such_command_xyz {OUTPUT_DIR}/a.sorted.txt",
+                "touch {OUTPUT_DIR}/b.uniq.txt {OUTPUT_DIR}/c.count.txt",
+            ],
+            "inputs":  [{"name": "INPUT", "format": "txt"}],
+            "outputs": [{"name": "OUTPUT_DIR", "files": ["b.uniq.txt", "c.count.txt"]}],
+            "trials":  [{"name": "broken", "substitutions": {"INPUT": str(src)}}],
+        },
+    }
+    r = spec_writer.self_test_usage(spec, _Host())
+    assert r["status"] == "failed", r
+    t = r["trials"][0]
+    assert t["failed_index"] == 2, t
+    assert "command 2 of 3" in t["reason"], t["reason"]
+    assert len(t["commands_run"]) == 2, "must not have run command 3"

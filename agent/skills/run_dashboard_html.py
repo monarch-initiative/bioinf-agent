@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from agent.models.core_data import usage_commands
 from agent.skills.env_report_html import (
     _CSS, _badge, _e, _empty, _header_banner, _kv_table,
 )
@@ -241,11 +242,14 @@ def _render_howto(spec: dict) -> str:
            "the runnable command as authored — see below for whether it was self-tested")
     P.append(f'<h2>How to run it <span class="note">{_e(sub)}</span></h2>')
     P.append('<div class="bx-body">')
-    if not isinstance(usage, dict) or not (usage.get("command_template") or "").strip():
+    # ONE reading of command_template (str or list[str]) — core_data.usage_commands.
+    cmds = usage_commands(usage) if isinstance(usage, dict) else []
+    if not cmds:
         P.append(_empty("(no usage.command_template on this workflow — nothing to run)"))
         P.append("</div></section>")
         return "".join(P)
-    P.append(f'<div class="how"><div class="run-title">Command {tag}</div>')
+    label = "Command" if len(cmds) == 1 else f"Commands ({len(cmds)}, run in order)"
+    P.append(f'<div class="how"><div class="run-title">{label} {tag}</div>')
     if status == "not_attempted" and uv.get("reason"):
         # WHY it wasn't tested. Without this the reader is left to assume the how-to is
         # suspect, when the real reason is usually about our runner (inputs live on the
@@ -255,7 +259,13 @@ def _render_howto(spec: dict) -> str:
                  'not evidence against it.</p>')
     if usage.get("description"):
         P.append(f'<p class="note">{_e(usage["description"])}</p>')
-    P.append(f'<pre>{_e(usage["command_template"].strip())}</pre>')
+    # Numbered when there's more than one, because the ORDER is part of the contract:
+    # the self-test runs them in sequence sharing a working dir, so a reader who runs
+    # them out of order is not running what was verified.
+    if len(cmds) == 1:
+        P.append(f'<pre>{_e(cmds[0])}</pre>')
+    else:
+        P.append("<pre>" + "\n".join(f"{i}. {_e(c)}" for i, c in enumerate(cmds, 1)) + "</pre>")
     ins = [i for i in (usage.get("inputs") or []) if isinstance(i, dict)]
     if ins:
         P.append('<p class="note"><b>Inputs</b></p>')

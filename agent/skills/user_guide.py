@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from agent.models.core_data import usage_commands
+
 
 def _version_of(pkg: dict) -> str:
     """Best-known version of a package record, with fallbacks for tiers that
@@ -76,9 +78,15 @@ def executed_commands(spec: dict) -> list[dict]:
             continue
         out.append({"command": cmd, "outputs": outs, "source": f"pipeline_step {s.get('step')}"})
     usage = spec.get("usage") or {}
-    if spec.get("usage_verified") and usage.get("command_template"):
-        out.append({"command": usage["command_template"],
-                    "outputs": [], "source": "usage.command_template (self-tested)"})
+    # ONE reading of command_template (str or list[str]) — core_data.usage_commands. A
+    # multi-command how-to lists each command in order; the guide must show every one,
+    # because the self-test ran every one.
+    if spec.get("usage_verified"):
+        cmds = usage_commands(usage)
+        for i, c in enumerate(cmds, 1):
+            src = ("usage.command_template (self-tested)" if len(cmds) == 1
+                   else f"usage.command_template step {i}/{len(cmds)} (self-tested)")
+            out.append({"command": c, "outputs": [], "source": src})
     return out
 
 
@@ -179,11 +187,14 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     L += ["## 2. Run it", ""]
     usage = spec.get("usage") or {}
     cmds = executed_commands(spec)
-    template = usage.get("command_template") if spec.get("usage_verified") else None
-    if template:
+    template_cmds = usage_commands(usage) if spec.get("usage_verified") else []
+    if template_cmds:
+        order = ("" if len(template_cmds) == 1
+                 else " Run them IN ORDER, from one working directory — that is the "
+                      "sequence the self-test verified.")
         L += ["Fill the `{PLACEHOLDER}` slots with your inputs. Inside the container the "
-              "paths live under the `--bind` mount (e.g. `/data/reads.fastq.gz`):",
-              "", _fence(template), ""]
+              "paths live under the `--bind` mount (e.g. `/data/reads.fastq.gz`)." + order,
+              "", _fence("\n".join(template_cmds)), ""]
     elif cmds:
         for c in cmds:
             L += [f"_{c['source']}_", _fence(c["command"]), ""]

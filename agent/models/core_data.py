@@ -22,7 +22,7 @@ Used by:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -1023,12 +1023,25 @@ class UsageTemplate(BaseModel):
     """How to invoke the pipeline on new data.
 
     Distinct from pipeline_steps: pipeline_steps records what we ran to
-    build/test the pipeline; usage records the canonical command a downstream
+    build/test the pipeline; usage records the canonical command(s) a downstream
     user (or Nextflow generator) should run on *their* data.
 
     LLM authors this via patch_pipeline after Phase 4. The command_template
     uses {PLACEHOLDER} substitutions whose names line up with `inputs` and
     `outputs` entries.
+
+    command_template is a str OR a list[str] — one entry per command, run IN
+    ORDER, sharing one working directory (so step 2 consumes step 1's output).
+    It was `str` alone, which made a real multi-phase pipeline INEXPRESSIBLE:
+    `pipeline_steps` is a list and I8 lineage already holds across a chain, but
+    the how-to contract — the thing a user actually reads and runs, and the thing
+    the guides will render — could only ever say one command. No amount of later
+    guide design can fix data that cannot say what you mean (audit 2026-07-16).
+
+    A bare str is still valid and means exactly what it always did; read either
+    shape through `usage_commands()`, never by branching on the type at the call
+    site. Two spellings of one concept is precisely how this codebase's defects
+    are born — see usage_commands.
 
     trials: optional list of explicit input-shape test cases. When non-empty
     the finalize self-test runs every trial and only marks usage_verified=True
@@ -1038,11 +1051,35 @@ class UsageTemplate(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     description:      str
-    command_template: str
+    command_template: Union[str, list[str]]
     inputs:           list[UsageInput] = []
     outputs:          list[UsageOutput] = []
     trials:           list[UsageTrial] = []   # I4 — multi-shape self-test cases
     example:          Optional[str] = None    # concrete invocation example
+
+
+def usage_commands(usage: Any) -> list[str]:
+    """The ordered, non-empty commands in a usage block — THE one reading of
+    `command_template`, for every consumer (I4 self-test, I6 placeholder scan, the
+    RUN dashboard, the user guide).
+
+    `command_template` accepts a str or a list[str]. That is two shapes, and two
+    shapes invite two readings: the moment a renderer does `usage["command_template"]
+    .strip()` and the self-test does something subtly different, they disagree about
+    what the workflow is — which is this project's entire disease (one truth, N
+    definitions, the stale one in the load path). So the shape is normalized in
+    exactly one function and nothing else may branch on the type.
+
+    Accepts a dict or a UsageTemplate; tolerates None/garbage by returning []."""
+    if usage is None:
+        return []
+    ct = (usage.get("command_template") if isinstance(usage, dict)
+          else getattr(usage, "command_template", None))
+    if isinstance(ct, str):
+        ct = [ct]
+    if not isinstance(ct, list):
+        return []
+    return [c.strip() for c in ct if isinstance(c, str) and c.strip()]
 
 
 class DockerBuild(BaseModel):

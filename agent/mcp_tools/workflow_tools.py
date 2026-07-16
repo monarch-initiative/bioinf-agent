@@ -135,7 +135,12 @@ def _image_usage_runner(fr: dict, draft: dict):
     if not image:
         return None
     usage = draft.get("usage") or {}
-    template = (usage.get("command_template") or "").strip()
+    # ONE reading of command_template (str or list[str]) — core_data.usage_commands. This
+    # precondition MUST see the same placeholders self_test_usage will resolve, across
+    # every command; reading only the first would re-create the tier-2 bug where a
+    # precondition inspected something other than what the runner actually uses.
+    from agent.models.core_data import usage_commands
+    template = "\n".join(usage_commands(usage))
     if not template:
         return None
     placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
