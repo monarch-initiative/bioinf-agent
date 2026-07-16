@@ -14,6 +14,7 @@ mcp_server.py (read via `_ms.X`) so this submodule stays purely a tool surface.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
 # so test monkeypatching on mcp_server reaches us.
@@ -625,3 +626,116 @@ def generate_user_guide(
     return result
 
 
+
+
+@mcp.tool()
+def freeze_from_image(
+    image: str,
+    tools: list,
+    name: str,
+    version: str = "",
+    platform: str = "linux/amd64",
+    build_method: str = "adopt-image",
+    dockerfile_source: dict = {},
+    gated: bool = False,
+    licenses: OptStrList = None,
+) -> dict:
+    """Freeze an env from an EXISTING image — the authors' OWN published image, or one
+    built from their Dockerfile — instead of reconstructing it from conda/pip. This is
+    the executor for the authors-recipe-first path (route via resolve_tool's `author_image`
+    tier): a human handed a tool that ships its own image would USE it, and so does the
+    agent, as a first-class primitive.
+
+    The honesty contract is UNCHANGED — the image earns its registration:
+      BUILT (image+digest resolve) · VALIDATED_IN_IMAGE (each tool's evidence RUNS green
+      in the image, no echo/print cheats) · POLICY_CLEAN (I12/I13). VALIDATED_IN_IMAGE is
+      the guard the Talos reconstruction slipped past — so `tools[*].evidence` must RUN the
+      tool (shell out on real inputs), not merely import it.
+
+    `tools`: [{name, evidence}] — evidence is a command that exercises the tool in-image
+    and exits 0. `build_method`: 'adopt-image' (author image, adopted by digest) or
+    'authors-dockerfile' (an image built from their Dockerfile; pass `dockerfile_source`=
+    {repo, commit, tag} so the recipe records the pinned source). Writes the four Layer-1
+    deliverables (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from
+    the verified record. Docker required."""
+    from agent.skills import freeze_from_image as _ffi
+    return _ffi.freeze_from_image(
+        image=image, tools=[dict(t) for t in tools], name=name, version=version,
+        platform=platform, build_method=build_method,
+        dockerfile_source=dict(dockerfile_source) if dockerfile_source else None,
+        gated=gated, licenses=list(licenses or []),
+        env_cache=_ms._env_cache,
+        reports_dir=_ms._env_mgr.project_root / "env_reports")
+
+
+@mcp.tool()
+def build_env_from_authors_recipe(
+    repo: str,
+    tools: list,
+    name: str,
+    recipe: str = "Dockerfile",
+    ref: str = "",
+    version: str = "",
+    platform: str = "linux/amd64",
+    build_args: dict = {},
+    gated: bool = False,
+    licenses: OptStrList = None,
+) -> dict:
+    """Build an env image from the tool's OWN container recipe (their Dockerfile), then
+    freeze it. The declarative executor for resolve_tool's `authors_recipe` tier — the
+    path taken when the authors' recipe installs pieces a conda/pip reconstruction would
+    silently DROP (compiled/vendored/system/binary deps; the completeness gate in
+    authors_sources). A human would follow the authors' guide rather than reconstruct;
+    this does the same.
+
+    Clones `repo` (a GitHub 'owner/repo' or full URL) at `ref` (PIN a tag/commit — a bare
+    default branch drifts), `docker build`s its `recipe` (default 'Dockerfile') for
+    `platform`, then hands the built image to freeze_from_image (honesty contract +
+    deliverables). `tools`: [{name, evidence}] — evidence must RUN each tool in-image.
+    The recipe records the pinned source so the build is reproducible. Docker + network +
+    git required."""
+    import subprocess as _sp
+    import tempfile as _tf
+    url = repo if repo.startswith(("http://", "https://", "git@")) else f"https://github.com/{repo}"
+    owner_repo = repo.split("github.com/")[-1].rstrip("/").removesuffix(".git") if "github.com" in repo else repo
+    with _tf.TemporaryDirectory(prefix="authors_recipe_") as td:
+        cl = _sp.run(["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [url, td],
+                     capture_output=True, text=True, timeout=600)
+        if cl.returncode != 0:
+            # --branch fails on a raw commit SHA; retry full clone + checkout
+            cl2 = _sp.run(["git", "clone", url, td], capture_output=True, text=True, timeout=600)
+            if cl2.returncode != 0:
+                return broke("authors_recipe.clone_failed",
+                             error=f"could not clone {url}: {(cl2.stderr or cl.stderr)[:300]}")
+            if ref:
+                co = _sp.run(["git", "-C", td, "checkout", ref], capture_output=True, text=True, timeout=120)
+                if co.returncode != 0:
+                    return broke("authors_recipe.checkout_failed",
+                                 error=f"could not checkout {ref!r}: {co.stderr[:300]}")
+        head = _sp.run(["git", "-C", td, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60)
+        commit = (head.stdout or "").strip()
+        tag = f"{name}:{version}" if version else f"{name}:latest"
+        buildx = ["docker", "buildx", "build", "--platform", platform, "--load",
+                  "-f", f"{td}/{recipe}", "-t", tag]
+        for k, v in (build_args or {}).items():
+            buildx += ["--build-arg", f"{k}={v}"]
+        buildx.append(td)
+        bd = _sp.run(buildx, capture_output=True, text=True, timeout=3600)
+        if bd.returncode != 0:
+            return broke("authors_recipe.build_failed",
+                         error=f"docker build of {recipe} failed: {(bd.stderr or '')[-800:]}",
+                         dockerfile=recipe)
+        dockerfile_text = ""
+        try:
+            dockerfile_text = (Path(td) / recipe).read_text()
+        except OSError:
+            pass
+    from agent.skills import freeze_from_image as _ffi
+    return _ffi.freeze_from_image(
+        image=tag, tools=[dict(t) for t in tools], name=name, version=version,
+        platform=platform, build_method="authors-dockerfile",
+        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "",
+                           "dockerfile": dockerfile_text},
+        gated=gated, licenses=list(licenses or []), pull_if_absent=False,
+        env_cache=_ms._env_cache,
+        reports_dir=_ms._env_mgr.project_root / "env_reports")
