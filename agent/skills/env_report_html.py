@@ -502,14 +502,19 @@ def render_env_report_html(record: dict) -> str:
          '<span class="note"> — reproducible anchor: lock + long-tail + platform + engine + base image</span>'
          if r.get("content_digest") else "—"),
     ]
-    if is_adopt:
-        art_rows.append(("Self-contained rebuild recipe",
-                         '<span class="muted">— not applicable to adopt mode '
-                         '(no in-locus build to replay; the biocontainer\'s manifest digest IS the contract)</span>'))
-    else:
-        art_rows.append(("Self-contained rebuild recipe",
-                         f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a>'
-                         '<span class="note"> — verify rebuild with <code>verify_env_recipe</code></span>'))
+    # The build recipe ALWAYS exists, in BOTH forms, for every install path — a frozen
+    # env is only a solved component if anyone can reproduce it. For adopt mode the
+    # recipe is "pull the biocontainer by digest"; for a build it is the self-contained
+    # replayable recipe verify_env_recipe rebuilds and digest-checks.
+    _verify_note = ('<span class="muted"> — adopt: pull the biocontainer by digest '
+                    '(the manifest digest IS the contract)</span>' if is_adopt else
+                    '<span class="note"> — verify rebuild with <code>verify_env_recipe</code></span>')
+    art_rows.append(("Build recipe (machine)",
+                     f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a>'
+                     + _verify_note))
+    art_rows.append(("Build recipe (human)",
+                     f'<a href="{_e(name)}.recipe.md"><code>{_e(name)}.recipe.md</code></a>'
+                     '<span class="note"> — the runnable command sequence for a hand rebuild</span>'))
     art_rows.append(("In-toto / SLSA attestation",
                      f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a>'
                      '<span class="note"> — sign with <code>cosign attest</code></span>'))

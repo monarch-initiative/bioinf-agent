@@ -399,6 +399,19 @@ def freeze(
     )
     if build_method:
         record["build_method"] = build_method
+    # A recipe ALWAYS exists, regardless of install path (an env is not a solved
+    # component if no one can rebuild it). The BUILD path assembled env_recipe_dict
+    # above; the ADOPT path's recipe is "pull this biocontainer by digest" — trivially
+    # self-contained, so construct it here from the finalized content_digest.
+    if env_recipe_dict is None and mode == "adopt":
+        env_recipe_dict = _ms._env_recipe.extract_recipe(
+            draft, name=name, version=version,
+            conda_deps=[f"{n}={v}" if v else n for n, v in parsed],
+            primary_tools=[n for n, _ in parsed], platform=platform,
+            accelerator=effective_accel,
+            license_gated=gated, licenses=licenses, redistributable=not gated,
+            content_digest=content_digest,
+            build_method="adopt", adopt_image=adopt.get("image_by_digest", image))
     if shipped_binaries:
         record["shipped_binaries"] = shipped_binaries
     record["validation_locus"] = validation_locus
@@ -477,8 +490,14 @@ def freeze(
         attestation_path = str(reports_dir / f"{name}.attestation.json")
     except Exception as e:
         attestation_path = f"(attestation render failed: {e!r})"
-    # the SELF-CONTAINED rebuild recipe (build path only) — verify with verify_env_recipe.
-    recipe_path = None
+    # The build recipe — ALWAYS written, for EVERY install path (build / adopt), in
+    # BOTH forms rendered PURELY from the verified record:
+    #   {name}.recipe.yaml  — machine-readable, self-contained; verify_env_recipe rebuilds it
+    #   {name}.recipe.md    — human-readable, the runnable command sequence for a hand rebuild
+    # A frozen env is only a "solved component" if anyone can reproduce it; the recipe
+    # is that guarantee, so it is never optional. Views — a render error never blocks a
+    # good freeze.
+    recipe_path = recipe_md_path = None
     if env_recipe_dict:
         try:
             import yaml as _yaml
@@ -487,6 +506,13 @@ def freeze(
             recipe_path = str(reports_dir / f"{name}.recipe.yaml")
         except Exception as e:
             recipe_path = f"(recipe render failed: {e!r})"
+        try:
+            from agent.skills import env_recipe_render as _err
+            (reports_dir / f"{name}.recipe.md").write_text(
+                _err.render_recipe_markdown(env_recipe_dict, record))
+            recipe_md_path = str(reports_dir / f"{name}.recipe.md")
+        except Exception as e:
+            recipe_md_path = f"(recipe.md render failed: {e!r})"
 
     # merge (not kwargs) — `record` is a build result that may already carry a
     # `success` key; a dict-literal merge makes the explicit values last-wins
@@ -496,6 +522,7 @@ def freeze(
     out["env_report_html"] = report_html_path
     out["attestation"] = attestation_path
     out["env_recipe"] = recipe_path
+    out["env_recipe_md"] = recipe_md_path
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     # Summarize the bulky SBOM in the live response only. The full SBOM lives

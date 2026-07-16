@@ -36,7 +36,10 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
                    license_gated: bool = False, licenses: Optional[list[str]] = None,
                    redistributable: bool = True, content_digest: str = "",
                    conda_lock: Optional[dict[str, str]] = None,
-                   apt_snapshot: str = "") -> dict[str, Any]:
+                   apt_snapshot: str = "",
+                   build_method: str = "container-native-build",
+                   adopt_image: str = "",
+                   dockerfile_source: Optional[dict] = None) -> dict[str, Any]:
     """Assemble the self-contained recipe from a draft + the freeze args. Carries the
     install_steps subset (which holds every non-conda install_method, incl. synthesized
     commands + provenance + commit) verbatim, so a rebuild needs nothing else.
@@ -45,13 +48,22 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
     captured during freeze). When present, a replay skips the conda/pip SOLVE and
     materializes the env from these exact bytes — eliminates the bioconda-moves-and-
     your-rebuild-drifts class of failure. The lock is the URL+sha256 list pixi
-    generates; same lock → identical packages across time and machines."""
+    generates; same lock → identical packages across time and machines.
+
+    `build_method` selects how the env was produced, so the recipe REPRESENTS every
+    freeze scenario (not just container-native builds):
+      • container-native-build — conda/pip + the non-conda tiers, baked into an image.
+      • adopt                   — a published BioContainer pulled BY DIGEST (`adopt_image`).
+      • authors-dockerfile      — the tool's OWN Dockerfile at a pinned source commit
+                                  (`dockerfile_source`: {repo, commit, tag, dockerfile?}).
+    A recipe ALWAYS exists regardless of path; the human renderer branches on this."""
     draft = draft or {}
     return {
         "recipe_version": RECIPE_VERSION,
         "name": name,
         "version": version,
         "platform": platform,
+        "build_method": build_method,
         "primary_tools": list(primary_tools or []),
         "conda_deps": list(conda_deps or []),
         "conda_lock": dict(conda_lock) if conda_lock else {},
@@ -60,6 +72,10 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
         "apt_snapshot": apt_snapshot or "",
         # install_steps carry the non-conda install_methods that build_env_image replays.
         "install_steps": [s for s in (draft.get("install_steps") or []) if isinstance(s, dict)],
+        # adopt: the biocontainer ref (image@sha256:…) the recipe pulls by digest.
+        "adopt_image": adopt_image or "",
+        # authors-dockerfile: the pinned source the Dockerfile builds against.
+        "dockerfile_source": dict(dockerfile_source) if dockerfile_source else {},
         "accelerator": accelerator,
         "license_gated": bool(license_gated),
         "licenses": list(licenses or []),
