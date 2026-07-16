@@ -1465,22 +1465,14 @@ def test_env_recipe_reproduced_is_proven_on_digest_match():
     assert bad.get("outcome") != "proven", bad
 
 
-def test_env_build_cache_hit_returns_proven():
-    """env_build.cache_hit: an ANCHORED cache hit (image still present) returns the
-    proven artifact by hash with no rebuild. Cache-hit honesty is load-bearing —
-    a wrong hit ships a wrong env (the B1 class) — so the green must reflect a real
-    anchored lookup."""
-    from agent.skills.env_build import EnvBuild
-    eb = EnvBuild(name="bioinf_x")
-
-    class _FakeCache:
-        def lookup_anchored(self, key, present):
-            return {"image": "img", "image_digest": "sha256:" + "a" * 64,
-                    "content_digest": "sha256:" + "a" * 64}
-    out = eb.build_or_cached(_FakeCache(), image_present=lambda ref: True)
-    assert out.get("outcome") == "proven", out
-    assert out.get("code") == "env_build.cache_hit", out
-    assert out.get("cached") is True
+# `test_env_build_cache_hit_returns_proven` was here. It covered EnvBuild.build_or_cached
+# (deleted — dead code, see env_build.py) and is worth a note as the audit's own thesis in
+# miniature: its docstring said "Cache-hit honesty is load-bearing — a wrong hit ships a
+# wrong env — so the green must reflect a real anchored lookup", and then handed the code a
+# `_FakeCache` whose `lookup_anchored` returns a hard-coded dict. It named the exact risk
+# and mocked away the only thing that could detect it. The real cache-hit contract is
+# covered by test_envcache_hit_must_still_satisfy_the_honesty_contract, against a real
+# EnvCache on a real file.
 
 
 def test_freeze_cache_hit_returns_proven_artifact_by_hash(monkeypatch):
@@ -3218,8 +3210,6 @@ def test_envbuild_run_stamps_validation_locus(monkeypatch):
     assert res["success"] is True
     assert res["validation_locus"] == "native"
     assert res["i7_authoritative"] is True
-    rec = eb.to_cache_record(res)
-    assert rec["validation_locus"] == "native"
 
 
 def test_stamp_i7_authority_tracks_locus(monkeypatch):
@@ -3497,9 +3487,8 @@ def test_effective_push_target_derivation_and_i13():
 # pt4b — EnvCache bridge (solve-once, re-anchored) + resolver container-native routing.
 # ---------------------------------------------------------------------------
 
-def test_envbuild_request_key_and_cache_record():
-    """request_key is the order-independent lookup handle (tools+platform+accel);
-    to_cache_record carries content_digest + image handles + the I13 firewall."""
+def test_envbuild_request_key_is_order_independent():
+    """request_key is the order-independent lookup handle (tools+platform+accel)."""
     from agent.skills.env_build import EnvBuild
     from agent.skills import install_commands as ic
     eb = EnvBuild("demo", "1.0", platform="linux/amd64")
@@ -3514,49 +3503,59 @@ def test_envbuild_request_key_and_cache_record():
                                    binary_in_archive="seqkit"))
     eb2.add_conda(["samtools=1.21"], verify=[("samtools", "samtools --version")])
     assert eb2.request_key() == key
-    rec = eb.to_cache_record({"content_digest": "sha256:cd", "image": "demo:1.0",
-                              "image_digest": "sha256:img", "platform": "linux/amd64",
-                              "engine": "pixi"})
-    assert rec["mode"] == "container-native" and rec["content_digest"] == "sha256:cd"
-    assert rec["image_digest"] == "sha256:img" and rec["redistributable"] is True
 
 
 def test_envcache_lookup_anchored_treats_evicted_image_as_miss(tmp_path):
     """A cache hit is re-anchored against reality: present image → hit; evicted
     image → MISS (None) so the caller rebuilds rather than ship a dangling ref."""
     from agent.skills.freeze import EnvCache
+    from env_records import env_record
     cache = EnvCache(tmp_path / "envcache.json")
-    cache.register("k", {"image": "demo:1.0", "image_digest": "sha256:img"})
+    cache.register("k", env_record())
     assert cache.lookup_anchored("k", image_present=lambda ref: True)["image"] == "demo:1.0"
     assert cache.lookup_anchored("k", image_present=lambda ref: False) is None   # evicted
     assert cache.lookup_anchored("missing", image_present=lambda ref: True) is None
 
 
-def test_envbuild_build_or_cached_returns_hit_without_building(tmp_path, monkeypatch):
-    """build_or_cached short-circuits on an anchored hit (no run()); on a miss it
-    runs and registers the successful build."""
-    from agent.skills.env_build import EnvBuild
+def test_envcache_hit_must_still_satisfy_the_honesty_contract(tmp_path):
+    """A hit re-anchors the WHOLE contract, not just image presence.
+
+    `samtools=1.21` was registered before the adopt path validated anything, so its
+    record carries `verifications: []`. It fails check_build today — and freeze()
+    served it as `proven` on every hit anyway, because the only thing re-checked was
+    whether the image was still in the daemon. That made the Tier-2 adopt-validation
+    gate live in code and absent in effect for every env that already existed.
+
+    Re-anchoring the full contract is what lets a STRENGTHENED gate reach artifacts
+    frozen before it existed: the record simply stops being served and is re-earned
+    by a rebuild. Without this, every future contract change is retroactively opt-out.
+    """
     from agent.skills.freeze import EnvCache
-    from agent.skills import install_commands as ic
-    cache = EnvCache(tmp_path / "c.json")
-    eb = EnvBuild("demo", "1.0")
-    eb.add_tool(ic.release_binary("seqkit", "https://x/seqkit_linux_amd64.tar.gz",
-                                  binary_in_archive="seqkit"))
-    # pre-seed the cache with a record under eb's key → anchored hit, run() never called
-    cache.register(eb.request_key(), {"image": "demo:1.0", "image_digest": "sha256:img",
-                                      "content_digest": "sha256:cd"})
-    monkeypatch.setattr(eb, "run", lambda: (_ for _ in ()).throw(AssertionError("run() should not be called on a hit")))
-    hit = eb.build_or_cached(cache, image_present=lambda ref: True)
-    assert hit["cached"] is True and hit["image"] == "demo:1.0"
-    # miss path (different key via a new build) → run() called + registered
-    eb3 = EnvBuild("other", "9")
-    eb3.add_tool(ic.release_binary("mosdepth", "https://x/mosdepth_linux_amd64", binary_in_archive="mosdepth"))
-    monkeypatch.setattr(eb3, "run", lambda: {"success": True, "content_digest": "sha256:z",
-                                             "image": "other:9", "image_digest": "sha256:o",
-                                             "platform": "linux/amd64", "engine": "none"})
-    miss = eb3.build_or_cached(cache, image_present=lambda ref: False)
-    assert miss["cached"] is False
-    assert cache.lookup(eb3.request_key())["image_digest"] == "sha256:o"   # registered
+    from env_records import env_record
+    cache = EnvCache(tmp_path / "envcache.json")
+    present = lambda ref: True                                       # noqa: E731
+
+    # the real shape of the samtools record on disk: built, image present, no evidence
+    cache.register("unvalidated", env_record(verifications=[]))
+    assert cache.lookup_anchored("unvalidated", image_present=present) is None
+    rec, violations = cache.lookup_verified("unvalidated")
+    assert rec is None
+    assert [v["invariant"] for v in violations] == ["VALIDATED_IN_IMAGE.no_evidence"]
+
+    # an echo-cheat that never runs the tool is refused on the way OUT of the cache,
+    # exactly as it is on the way in
+    cache.register("cheat", env_record(
+        verifications=[{"label": "samtools", "tool": "samtools",
+                        "check": "echo samtools", "rc": 0, "passed": True}]))
+    assert cache.lookup_anchored("cheat", image_present=present) is None
+
+    # a contract-clean record is served, and lookup() stays raw so diagnostics can
+    # still show what is really on disk
+    cache.register("good", env_record())
+    assert cache.lookup_anchored("good", image_present=present)["image"] == "demo:1.0"
+    assert cache.lookup_verified("good")[0]["image"] == "demo:1.0"
+    assert cache.lookup("unvalidated") is not None   # raw view unchanged
+    assert cache.lookup_verified("missing") == (None, [])
 
 
 def test_resolver_route_maps_every_tier():

@@ -29,6 +29,9 @@ import pytest
 _RECORD_DIRS = ("transfer_history", "job_submissions")
 _REPO = Path(__file__).resolve().parent.parent
 
+# Contract-clean EnvCache record builders live in tests/env_records.py — importable as
+# `from env_records import env_record, env_evidence` from anywhere in the suite.
+
 
 @pytest.fixture(autouse=True)
 def _isolate_agent_record_writers(tmp_path: Path, monkeypatch):

@@ -185,9 +185,15 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
     depth = ""
     if check:
         try:
-            from agent.skills.env_honesty import evidence_depth
+            from agent.skills.env_honesty import evidence_depth, is_shallow_evidence
             d = evidence_depth(check, tool)
-            shallow = d in ("version", "import", "help")
+            # ASK the classifier; never re-derive its answer. This literal used to be
+            # ("version", "import", "help") — a stale copy of _SHALLOW_DEPTHS that omitted
+            # `presence`, so the WEAKEST evidence in the system rendered as "runs the tool"
+            # while the stronger `--version` got the ⚠. That matters most on adopted envs,
+            # whose evidence IS a presence check. `unknown` (the classifier declining to
+            # guess) also read as a functional run — an assertion built out of a shrug.
+            shallow = is_shallow_evidence(check, tool) or d == "unknown"
             depth = (f' <span class="note" title="evidence depth: {d} '
                      f'({"presence only — not a functional run" if shallow else "runs the tool"})">'
                      f'{"⚠ " if shallow else ""}{_e(d)}</span>')

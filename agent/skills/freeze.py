@@ -520,20 +520,60 @@ class EnvCache:
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)
 
+    def contract_violations(self, record: dict) -> list[dict]:
+        """The Layer-1 honesty contract, re-run against a STORED record.
+
+        The contract is a pure function of the record, so the question "would this
+        artifact be accepted if we froze it today?" is answerable at any time — and
+        must be, because a cache record is a claim that outlives the event that
+        made it. Kept here (not inlined at each call site) so there is exactly ONE
+        answer to "is this cached artifact trustworthy?"; the audit's whole finding
+        was one concept re-derived in N places and drifting in N-1 of them."""
+        from agent.skills import env_honesty   # pure (re + typing); no import cycle
+        return env_honesty.check_build(record)
+
     def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
-        """A cache hit RE-ANCHORED against reality: returns the record only if its
-        image is still present per `image_present(ref) -> bool`. The cache spans
-        events (unlike EnvBuild.run(), which verifies on live calls in one pass), so
-        a hit is a claim until re-checked — the container-native analog of anchoring
-        docker_status to `docker image inspect` at finalize. An evicted image is
-        treated as a MISS (None) so the caller rebuilds rather than shipping a
-        dangling reference. `image_present` is injected to keep this module network-
-        free (a face supplies the docker-backed check)."""
+        """A cache hit RE-ANCHORED against reality: the record is returned only if
+        it still satisfies the SAME contract a fresh freeze must satisfy — BUILT
+        (its image is still present per `image_present(ref) -> bool`) AND
+        VALIDATED_IN_IMAGE AND POLICY_CLEAN. Anything else is a MISS (None), so the
+        caller rebuilds rather than serving a claim it can no longer support.
+
+        The cache spans events (unlike EnvBuild.run(), which verifies on live calls
+        in one pass), so a hit is a claim until re-checked. This used to re-check
+        only image PRESENCE, which made the contract retroactively unenforceable:
+        `samtools=1.21` was registered pre-Tier-2 with `verifications: []`, fails
+        `check_build` today, and was still served as `proven` on every hit — the
+        adopt-path validation gate was live in the code and absent in effect for
+        every env that already existed (audit 2026-07-16).
+
+        Re-anchoring the FULL contract is what makes a strengthened gate apply to
+        artifacts frozen before it existed: a record that can no longer earn its
+        green is simply re-earned by a rebuild. `image_present` is injected to keep
+        this module network-free (a face supplies the docker-backed check)."""
         rec = self.lookup(key)
         if not rec:
             return None
         ref = rec.get("image") or rec.get("image_digest") or ""
-        return rec if (ref and image_present(ref)) else None
+        if not (ref and image_present(ref)):
+            return None
+        return None if self.contract_violations(rec) else rec
+
+    def lookup_verified(self, key: str) -> tuple[Optional[dict], list[dict]]:
+        """The SERVING question — "is there a record here I can honestly hand out?"
+
+        Returns (record, violations). `lookup()` answers a different question ("is
+        there a record?") and stays raw for diagnostics/listing, which must show
+        what is really on disk. Consumers that RUN, SHIP, or PIN an env ask this
+        one instead, and report `violations` rather than pretending the record was
+        missing — a refusal that misnames its own reason is the same disease.
+        Presence of the image is not re-checked here: these callers touch the image
+        directly and fail loudly on their own when it is gone."""
+        rec = self.lookup(key)
+        if not rec:
+            return None, []
+        violations = self.contract_violations(rec)
+        return (None, violations) if violations else (rec, [])
 
     def register(self, key: str, record: dict) -> dict:
         data = self._load()

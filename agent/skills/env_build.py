@@ -225,40 +225,19 @@ class EnvBuild:
             licenses=self.licenses,
         )
 
-    def to_cache_record(self, result: dict) -> dict:
-        """The artifact record stored in the EnvCache from a successful BuildResult.
-        Container-native is always a recipe BUILD (we never adopt a foreign image);
-        redistributable derives from the I13 firewall."""
-        return {
-            "request_key":     self.request_key(),
-            "content_digest":  result["content_digest"],
-            "mode":            "container-native",
-            "image":           result["image"],
-            "image_digest":    result["image_digest"],
-            "platform":        result["platform"],
-            "engine":          result.get("engine", "none"),
-            "validation_locus": result.get("validation_locus", "unknown"),
-            "license_gated":   self.license_gated,   # canonical name — see freeze.record_is_gated
-            "redistributable": self.redistributable,
-        }
-
-    def build_or_cached(self, cache, image_present=None) -> dict[str, Any]:
-        """Solve-once entry: an anchored cache hit (image still present) is returned
-        without rebuilding; otherwise run() builds, and a successful+honest build is
-        registered. `image_present` defaults to the docker-backed check (injectable
-        for tests)."""
-        if image_present is None:
-            from agent.skills.container_build import image_present as _ip
-            image_present = _ip
-        key = self.request_key()
-        hit = cache.lookup_anchored(key, image_present)
-        if hit:
-            return proven("env_build.cache_hit", **{**hit, "success": True, "cached": True})
-        result = self.run()
-        if result.get("success"):
-            cache.register(key, self.to_cache_record(result))
-            result["cached"] = False
-        return result
+    # `to_cache_record` + `build_or_cached` lived here: a SECOND EnvCache record builder
+    # and a second solve-once entry point, both with zero production callers (only tests).
+    # Deleted (audit 2026-07-16) rather than repaired, because they were actively harmful
+    # to keep:
+    #   - `to_cache_record` OMITTED `verifications`, so it minted precisely the shape that
+    #     fails today's contract — the `samtools` defect, encoded as a constructor. Any
+    #     future path wired to it would have reintroduced the hole structurally.
+    #   - it was the only producer of a third `mode` vocabulary ("container-native", vs
+    #     freeze_record's "adopt"|"build"), which the audit flagged as a latent landmine
+    #     across 5 consumers. The landmine's only producer was dead code; deleting it
+    #     removes the divergence outright instead of "unifying" two spellings.
+    # The live path is freeze() → env_freeze.build_env_image → EnvBuild.run(), which
+    # assembles its record in freeze_tools and gates it on check_build there.
 
     # -- run it all -------------------------------------------------------
     def run(self) -> dict[str, Any]:

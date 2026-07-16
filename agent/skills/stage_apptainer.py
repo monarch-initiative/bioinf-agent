@@ -321,7 +321,16 @@ def stage_apptainer_image(
         if env_cache is None:
             from agent import mcp_server as _ms  # late import; singleton
             env_cache = _ms._env_cache
-        record = env_cache.lookup(freeze_request_key)
+        # The SERVING question — this is the last gate before the artifact leaves the
+        # machine for a cluster we cannot re-check. An env whose Layer-1 contract no
+        # longer holds must not become a .sif on someone's HPC.
+        record, env_violations = env_cache.lookup_verified(freeze_request_key)
+        if env_violations:
+            return refused("stage.env_contract_violated",
+                error=f"the frozen env {freeze_request_key!r} no longer satisfies the "
+                f"Layer-1 honesty contract — re-run freeze() before staging it to a cluster",
+                honesty_violations=env_violations,
+                violation_count=len(env_violations))
         if not record:
             return refused("stage.not_in_cache",
                 error=f"freeze_request_key {freeze_request_key!r} not in "

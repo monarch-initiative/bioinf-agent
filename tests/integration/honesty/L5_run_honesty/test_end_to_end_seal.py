@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from agent import mcp_server as m
+from env_records import env_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +121,16 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
     })
 
     # ---- EnvCache entry: makes freeze_request_key resolvable -----------------
+    # Carries `verifications` because seal now asks the SERVING question — a record
+    # that can't satisfy Layer-1 can't be the foundation of a Layer-2 spec. A fixture
+    # without it was a shape no producer can emit (see tests/env_records.py).
     cache_path = tmp_path / "_env_cache.json"
     cache_path.write_text(json.dumps({request_key: {
         "request_key":     request_key,
         "image":           image_name,
         "image_digest":    image_digest,
         "content_digest":  "ec_fake_pkg_1.0",
+        "verifications":   env_evidence("fake_pkg"),
         "hpc_delivery":    {"format": "tarball", "path": "/tmp/fake_pkg.tar"},
     }}))
     monkeypatch.setattr(m._env_cache, "path", cache_path)

@@ -23,8 +23,10 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+from agent.skills import freeze as _freeze
 from agent.skills import local_sif, stage_apptainer
 from agent.skills.outcomes import proven
+from env_records import env_evidence
 
 
 def _install_local_build_mocks(monkeypatch, *, remote_exists=False, capture=None):
@@ -89,11 +91,30 @@ def _good_access(tmp_path: Path) -> Path:
     })
 
 
-class FakeEnvCache:
+class FakeEnvCache(_freeze.EnvCache):
+    """A REAL EnvCache with its persistence swapped for a dict.
+
+    It used to be a bare class implementing only `lookup()`. That is the drift the
+    audit named: staging now asks the SERVING question (`lookup_verified` — is this
+    record still contract-clean before it becomes a .sif on someone's cluster?), and
+    a hand-rolled double simply wouldn't have the method. Overriding the I/O seam and
+    inheriting every lookup rule means these tests exercise the real gate and cannot
+    drift away from it again."""
     def __init__(self, records: dict):
+        super().__init__(Path("/nonexistent/never-read.json"))
         self._records = records
-    def lookup(self, key):
-        return self._records.get(key)
+    def _load(self):
+        return self._records
+    def _save(self, data):
+        self._records = data
+
+
+def _staged_record(**overrides) -> dict:
+    """An adopt record that satisfies Layer-1, as every real staged record must."""
+    rec = {"mode": "adopt", "image": "quay.io/x@sha256:abc", "image_digest": "sha256:abc",
+           "verifications": env_evidence("samtools")}
+    rec.update(overrides)
+    return rec
 
 
 # ===========================================================================
@@ -156,12 +177,14 @@ class TestRecordLookupFailures:
     @pytest.mark.integration
     def test_adopt_record_missing_image_field_refused(
             self, tmp_path, monkeypatch):
+        """A record with no `image` is refused by the Layer-1 contract itself.
+
+        This used to assert stage's own "missing `image`" string. The contract now
+        runs first and answers the same question better: BUILT.image_present is the
+        one definition of "does this record name a shipped artifact?", and staging
+        gets it for free rather than re-deriving a weaker version of it."""
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt",
-            "image_digest": "sha256:abc",
-            # missing "image"
-        }})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(image="")})
         called = []
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: called.append(a) or MagicMock())
@@ -169,7 +192,8 @@ class TestRecordLookupFailures:
             project_name="demo", compute_env_name="fakehpc",
             freeze_request_key="samtools|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
-        assert "error" in r and "missing `image`" in r["error"]
+        assert r["code"] == "stage.env_contract_violated", r
+        assert [v["invariant"] for v in r["honesty_violations"]] == ["BUILT.image_present"]
         assert called == []
 
 
@@ -201,9 +225,7 @@ class TestAuthGate:
                     "compute_env": "fakehpc", "directories": []}],
             }],
         })
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt", "image": "quay.io/x@sha256:abc",
-            "image_digest": "sha256:abc"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record()})
         called = []
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: called.append(a) or MagicMock())
@@ -252,11 +274,9 @@ class TestAuthGate:
         # CLAUDE_CONTAINERS (no `apptainer/` subdir prefix — the whole zone
         # IS the container zone).
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt",
-            "image": "quay.io/biocontainers/samtools@sha256:23cda",
-            "image_digest": "sha256:23cda33a3a4212587276",
-            "content_digest": "sha256:23cda33a3a4212587276"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(image="quay.io/biocontainers/samtools@sha256:23cda",
+                           image_digest="sha256:23cda33a3a4212587276",
+                           content_digest="sha256:23cda33a3a4212587276")})
         captured = {}
         _install_local_build_mocks(monkeypatch, capture=captured)
 
@@ -290,9 +310,7 @@ class TestAuthGate:
                 "compute_env_access": [],  # no env grant
             }],
         })
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt", "image": "quay.io/x@sha256:abc",
-            "image_digest": "sha256:abc"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record()})
         called = []
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: called.append(a) or MagicMock())
@@ -317,9 +335,7 @@ class TestSifSubpathSafety:
     ])
     def test_refuses_bad_subpath(self, bad, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt", "image": "quay.io/x@sha256:abc",
-            "image_digest": "sha256:abc"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record()})
         called = []
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: called.append(a) or MagicMock())
@@ -340,11 +356,9 @@ class TestAdoptHappyPath:
     @pytest.mark.integration
     def test_adopt_builds_locally_and_ships(self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt",
-            "image": "quay.io/biocontainers/samtools@sha256:23cda",
-            "image_digest": "sha256:23cda33a3a4212587276",
-            "content_digest": "sha256:23cda33a3a4212587276"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(image="quay.io/biocontainers/samtools@sha256:23cda",
+                           image_digest="sha256:23cda33a3a4212587276",
+                           content_digest="sha256:23cda33a3a4212587276")})
         captured = {}
         _install_local_build_mocks(monkeypatch, remote_exists=False,
                                    capture=captured)
@@ -365,11 +379,9 @@ class TestAdoptHappyPath:
     @pytest.mark.integration
     def test_skip_when_already_present(self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "adopt",
-            "image": "quay.io/biocontainers/samtools@sha256:23cda",
-            "image_digest": "sha256:23cda33a3a4212587276",
-            "content_digest": "sha256:23cda33a3a4212587276"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(image="quay.io/biocontainers/samtools@sha256:23cda",
+                           image_digest="sha256:23cda33a3a4212587276",
+                           content_digest="sha256:23cda33a3a4212587276")})
         # A light read-only `test -f` says the .sif is already staged → the
         # whole local build + upload is skipped (no docker, no ship).
         _install_local_build_mocks(monkeypatch, remote_exists=True)
@@ -421,11 +433,12 @@ class TestBuildShipsSifToContainerZone:
         _install_local_build_mocks(monkeypatch, remote_exists=False,
                                    capture=captured)
 
-        cache = FakeEnvCache({"samtools|linux/amd64|none": {
-            "mode": "build",
-            "tarball": str(fake_tar),
-            "image_digest": "sha256:23cda33a3a4212587276",
-            "content_digest": "sha256:23cda33a3a4212587276"}})
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(
+            mode="build",
+            image="samtools_env:latest",
+            tarball=str(fake_tar),
+            image_digest="sha256:23cda33a3a4212587276",
+            content_digest="sha256:23cda33a3a4212587276")})
 
         r = stage_apptainer.stage_apptainer_image(
             project_name="demo", compute_env_name="fakehpc",

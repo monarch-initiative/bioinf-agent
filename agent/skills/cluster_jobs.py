@@ -297,14 +297,21 @@ def _parse_hhmmss(t: str) -> float:
 
 def _parse_max_rss_mb(rss: str) -> Optional[float]:
     """Parse SLURM's MaxRSS (`123456K` / `1.5G`) into MB, or None when sacct accounted
-    NOTHING (empty / `0` / unparseable).
+    NOTHING (empty / any spelling of zero / unparseable).
 
     None vs 0.0 is the honesty distinction (audit 2026-07-16): every "we don't know" case
     used to collapse to 0.0, which is indistinguishable from a real observation of zero —
     and no process that actually ran has a zero peak RSS. On a cluster without cgroup
     memory accounting that fabricated a 0.0 that I7 then sealed as honest cost data.
-    Callers must translate None into an explicit `sacct_error`, never into a number."""
-    if not isinstance(rss, str) or not rss.strip() or rss.strip() == "0":
+    Callers must translate None into an explicit `sacct_error`, never into a number.
+
+    The zero test is NUMERIC and happens after the parse, because a cluster with no
+    memory accounting writes `0K` / `0M` / `0.00M`, not `0`. The first cut of this fix
+    compared string literals (`"" | "0"`), so `0K` — the shape a real SLURM actually
+    emits — still parsed to 0.0 with no error marker and sealed straight through I7:
+    the very defect this function exists to close, surviving in its own fix. Compare
+    the value, never its spelling."""
+    if not isinstance(rss, str) or not rss.strip():
         return None
     rss = rss.strip()
     suffix = rss[-1] if rss[-1].isalpha() else ""
@@ -315,7 +322,9 @@ def _parse_max_rss_mb(rss: str) -> Optional[float]:
         return None
     mult = {"K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}.get(
         suffix.upper(), 1 / 1024 if not suffix else 1)
-    return round(v * mult, 1)
+    mb = round(v * mult, 1)
+    # <= 0 is not a measurement. A negative is nonsense; a zero means unaccounted.
+    return mb if mb > 0 else None
 
 
 def cluster_job_resources(project_name: str,
@@ -400,10 +409,16 @@ def cluster_job_resources(project_name: str,
 
         # The batch row is the source of truth for MaxRSS. Some SLURM
         # builds emit it as `<id>.batch`, others as `<id>.0`. Take the
-        # last row with MaxRSS != 0; if none, fall back to the
+        # last row carrying a REAL MaxRSS; if none, fall back to the
         # job-summary row's Elapsed-only evidence.
+        #
+        # "Real" is decided by the parser, not by string equality: this used to read
+        # `!= "0"`, which accepted `0K` — the spelling a cluster with no cgroup memory
+        # accounting actually emits — and promoted that row to authoritative, handing
+        # I7 a fabricated zero. One definition of "did sacct measure this?", and it
+        # lives in _parse_max_rss_mb.
         batch = next((r for r in reversed(rows)
-                      if r["max_rss"] and r["max_rss"] != "0"), rows[-1])
+                      if _parse_max_rss_mb(r["max_rss"]) is not None), rows[-1])
         summary = rows[0]
 
         wall_seconds = _parse_hhmmss(batch["elapsed"] or summary["elapsed"])

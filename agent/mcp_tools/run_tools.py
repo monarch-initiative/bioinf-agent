@@ -219,7 +219,17 @@ def run_step_in_container(
     if not pipeline_id:
         return refused("run_container.pipeline_id_required",
                        error="pipeline_id is required for run_step_in_container")
-    rec = _ms._env_cache.lookup(freeze_request_key)
+    # The SERVING question, not "is there a record?". This step's whole purpose is
+    # `validated == shipped` — recording a run inside the shipped image AS evidence.
+    # Running in an image whose own Layer-1 contract no longer holds would launder an
+    # unverified env into Layer-2 evidence, which is the inverse of the point.
+    rec, env_violations = _ms._env_cache.lookup_verified(freeze_request_key)
+    if env_violations:
+        return refused("run_container.env_contract_violated",
+                       error=f"the frozen env '{freeze_request_key}' no longer satisfies the "
+                             f"Layer-1 honesty contract — re-run freeze() to re-earn it",
+                       honesty_violations=env_violations,
+                       violation_count=len(env_violations))
     if not rec:
         return refused("run_container.no_frozen_env",
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")

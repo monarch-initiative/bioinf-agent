@@ -109,19 +109,40 @@ def test_i3_failed_validation_refused():
 
 
 @pytest.mark.integration
-def test_i3_failed_validation_overridden_by_mark_validated():
-    """C1 sanctioned escape hatch: an explicit mark_step_validated=passed
-    (validation_status='passed') is the ONLY way a step with a failed
-    per-file record still seals — the agent asserts it verified the output
-    by other means. Without the override the same step is refused (above)."""
+def test_i3_failed_validation_cannot_be_overridden_by_mark_validated():
+    """mark_step_validated CANNOT bury a validation record that says FAILED.
+
+    This test used to assert the opposite — that `validation_status='passed'` let a
+    step seal over a `passed: False` record because "the agent asserts it verified the
+    output by other means". That is verbatim the one thing CLAUDE.md's opening promise
+    rules out ("nothing is taken on faith from the agent"), and it was a switch, exposed
+    on the MCP surface, that turned off the C1 amendment built specifically to stop this.
+
+    The distinction that makes the override legitimate elsewhere: the other I3 clauses
+    concern ABSENT evidence, where "I checked it another way" adds information. Here the
+    evidence exists and says FAILED. An assertion cannot un-fail a measurement — it can
+    only hide it (audit 2026-07-16, re-audit)."""
     spec = _minimal_passing_spec()
     spec["pipeline_steps"][0]["validation"] = {
         "out.txt": {"passed": False, "expected_type": "txt"},
     }
     spec["pipeline_steps"][0]["validation_status"] = "passed"
     v = _violations(spec, "I3.")
-    assert not any(x["invariant"] == "I3.validation_passed" for x in v), \
-        f"mark_step_validated=passed should override the failed record: {v}"
+    assert any(x["invariant"] == "I3.validation_passed" for x in v), \
+        f"mark_step_validated must NOT override a failed validation record: {v}"
+
+
+@pytest.mark.integration
+def test_i3_mark_validated_still_substitutes_for_absent_validation():
+    """The override that IS legitimate survives: outputs with NO validate_output record
+    (not validate_output-able, verified another way) still seal when explicitly marked.
+    Narrowing the failed-record case must not break the absent-record case."""
+    spec = _minimal_passing_spec()
+    spec["pipeline_steps"][0]["validation"] = {}          # no per-file records at all
+    spec["pipeline_steps"][0]["validation_status"] = "passed"
+    v = _violations(spec, "I3.")
+    assert not any(x["invariant"] == "I3.outputs_validated" for x in v), \
+        f"mark_step_validated should still substitute for ABSENT validation: {v}"
 
 
 @pytest.mark.integration

@@ -243,7 +243,10 @@ def freeze_from_image(
     # SOFT advisory (never a refusal): requested tools whose evidence only proved
     # presence/loads, not that the tool RUNS. Surfaced so the agent can strengthen the
     # evidence — the honest nudge against a shallow proof reading as functional.
-    shallow = [v["tool"] for v in verifications if v.get("depth") in ("version", "import", "help")]
+    # Read the depth set from the classifier that defines it — a second stale copy of
+    # _SHALLOW_DEPTHS here omitted `presence` and silently under-reported the advisory.
+    shallow = [v["tool"] for v in verifications
+               if v.get("depth") in env_honesty._SHALLOW_DEPTHS or v.get("depth") == "unknown"]
     advisory = ""
     if shallow:
         advisory = ("shallow evidence (proves presence, not function) for: "

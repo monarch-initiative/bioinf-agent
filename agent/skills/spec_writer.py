@@ -494,21 +494,28 @@ def check_invariants(spec: dict) -> list[dict]:
         # as it PASSING. The runtime records passed:False for a malformed BAM /
         # empty VCF / bad JSON — but seal used to accept any record. That let a
         # spec claim "outputs checked" over a step whose outputs demonstrably
-        # failed their type-aware check. An explicit mark_step_validated=passed
-        # is the only sanctioned override (it re-anchors by other means and
-        # itself refuses to pass an outputs-empty step).
+        # failed their type-aware check.
+        #
+        # THIS CLAUSE IS NOT OVERRIDABLE (audit 2026-07-16, re-audit). It used to honour
+        # `mark_step_validated=passed`, which made the agent's assertion outrank the
+        # runtime's own measurement — the exact thing CLAUDE.md's opening promise rules
+        # out ("nothing is taken on faith from the agent"). The other I3 clauses are about
+        # ABSENT evidence, where an agent saying "I checked it another way" adds
+        # information. This one is about evidence that EXISTS and says FAILED; an
+        # assertion cannot un-fail a measurement, it can only hide it. If the validator is
+        # wrong, fix the validator or re-run the step — don't let the spec outrank the run.
         failed_validations = [
             fn for fn, v in validation.items()
             if isinstance(v, dict) and v.get("passed") is False
         ]
-        if failed_validations and s.get("validation_status") != "passed":
+        if failed_validations:
             violations.append({
                 "invariant": "I3.validation_passed",
                 "message":   f"pipeline_step {step_n} has {len(failed_validations)} output(s) "
                              f"whose validate_output result is passed=False — the run recorded "
                              f"that these outputs FAILED type-aware validation. A spec cannot seal "
-                             f"over a failed output check (use mark_step_validated only when the "
-                             f"output was genuinely verified by other means).",
+                             f"over a failed output check, and mark_step_validated cannot override "
+                             f"this: re-run the step, or fix the validator if it is wrong.",
                 "where":     f"pipeline_steps[step={step_n}].validation",
                 "failed_files": failed_validations[:5],
             })

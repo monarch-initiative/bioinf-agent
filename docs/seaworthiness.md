@@ -31,13 +31,18 @@ A subagent trusts the **outcome tag**. So the surface its trust depends on is
 Everything else is ordinary error propagation — important, but honest by
 construction (a `broke` that surfaces a subprocess failure isn't a trust risk).
 
-**Current scope (from the ledger):**
+**Current scope: read it off the dashboard — `docs/outcomes_dashboard.html`, ⚓ banner.**
 
-| | terminals | certified today | to certify |
-|---|---|---|---|
-| **Load-bearing total** | 136 | 34 | 102 |
-| **LOCAL (Seaworthy v1)** | **124** | **34** | **90** |
-| HPC (Seaworthy v2, needs a cluster) | 12 | 0 | 12 |
+There are deliberately no numbers in this file. There used to be a table here, and a
+second copy in a project memory, and both drifted from `scripts/seaworthy_scope.py`,
+which computes the meter and was right the whole time (audit 2026-07-16: this file said
+34/124, the memory said 77/125, the generator said 87/142). Three hand-copied snapshots,
+three different answers to a question that has one computed answer. A number typed into
+prose is a number that rots — the same duplicated-truth failure this project's whole
+honesty contract exists to prevent, committed against ourselves.
+
+Regenerate with `scripts/extract_outcomes.py` + `scripts/measure_terminal_coverage.py`
++ `scripts/render_outcomes_dashboard.py`.
 
 ## The five certification criteria
 Seaworthy v1 = **all** of these green on the LOCAL load-bearing surface:
@@ -54,13 +59,26 @@ Seaworthy v1 = **all** of these green on the LOCAL load-bearing surface:
 - **C5 — Legible assurance.** Full-assurance and reduced-assurance are
   distinguishable (`degraded`, not `proven`). See finding F1.
 
-## Certified = verified
-A load-bearing terminal is **certified** when it is `verified` (executed by a
-test AND named by its code). For a firewall/gate, verified means an adversarial
-test actually triggered its reject branch. For a `proven`, a test exercises and
-names the success. The meter counts certified / load-bearing over the LOCAL
-surface — visible as the ⚓ banner + the "⚓ show only uncertified load-bearing"
-filter on `docs/outcomes_dashboard.html`.
+## Certified = verified — and what that does NOT mean
+A load-bearing terminal is **certified** when it is `verified`: its line was executed
+by the suite AND some test names its outcome code. The meter counts certified /
+load-bearing over the LOCAL surface — the ⚓ banner + the "⚓ show only uncertified
+load-bearing" filter on `docs/outcomes_dashboard.html`.
+
+**Read that definition literally, because it is weaker than it sounds.** This section
+used to claim "for a firewall/gate, verified means an adversarial test actually
+triggered its reject branch." **Nothing checks that.** The two halves are computed by
+independent whole-corpus scans with no join key: "executed" comes from one coverage run
+over the whole suite, "named" from a raw-text grep of `tests/**` that counts comments and
+docstrings. Nothing requires the naming test to be the executing test, or the executing
+test to have taken the reject branch.
+
+So the meter measures **execution, not rejection** — and the entire honesty contract
+lives in the reject branch. Coverage will paint `except Exception: pass` bright green;
+that is precisely how the reliability gate sat dead for five commits under 1251 green
+tests. Certification is a floor ("this line is reachable and someone named it"), never
+proof that a gate fires. Only an adversarial test that reintroduces the defect proves
+that, and only a human reading it can confirm it did.
 
 ## The sea trial (the final gate)
 Once C1–C5 are green, a **subagent drives a real workflow end-to-end**
@@ -68,18 +86,18 @@ Once C1–C5 are green, a **subagent drives a real workflow end-to-end**
 completes *honestly* or fails *legibly* — no false-green, no crash, no silent
 hang. Passing the trial = **Seaworthy v1**.
 
-## The v1 worklist (90 local load-bearing terminals to certify)
-Ordered by concentration (use the dashboard's ⚓ filter for the live list):
+## The v1 worklist
+**Get the live list from the dashboard's ⚓ filter** — a hand-copied worklist is the
+thing this file just got burned by. Certify by subsystem: feed each validator a
+malformed file and assert it rejects; attack each install firewall (bad sha, missing
+env, failed subprocess); force a build/validate failure and assert
+`validation_in_image_failed`; and so on — one adversarial test each.
 
-| subsystem | to certify | how we certify |
-|---|---|---|
-| validate | 22 | feed each validator a malformed/empty file → assert it rejects, not passes |
-| env_manager | 21 | attack each install firewall (bad sha, missing env, failed subprocess) |
-| container_build | 15 | force a build/validate failure → assert `validation_in_image_failed` |
-| freeze | 8 | adopt-honesty, recipe-reproduction, cache-hit integrity |
-| env_build | 4 | declare/verify-in-image failure paths |
-| test_runner / core_test_data | 7 | download/build failure + genome-materialize |
-| the rest (I8/I6/I13/service/…) | ~13 | one adversarial test each |
+**But treat the meter as secondary.** The 2026-07-16 audit found 10 gates that were
+live in code and absent in effect, and **not one** would have been caught by certifying
+another terminal — several were on lines coverage already painted green. Every one was
+found by driving the real surface and reading the real artifacts. Grinding the meter is
+the cheaper-feeling work; it is not the work that finds these.
 
 ## Working order
 1. **C2 firewalls first** — the scariest under full-auto (sha256 done).
@@ -93,5 +111,12 @@ Ordered by concentration (use the dashboard's ⚓ filter for the live list):
    real cluster ([[feedback-no-cheeky-head-node-testing]]).
 
 ## How we'll know we're there
-The dashboard says **⚓ SEAWORTHY v1: 124/124 · SEA TRIAL READY**, C1–C5 all
-green, and the trial passes. Not before, not "feels solid." Today: **34/124**.
+The dashboard's ⚓ banner reads **SEA TRIAL READY** (it computes that itself — see
+`scripts/seaworthy_scope.py:summarize`), and the trial passes. Not before, not "feels
+solid," and not because this file says so.
+
+**C1–C5 have no evaluator.** They are prose intent, not a computed gate: `grep` for
+them across `scripts/` and `agent/` returns nothing but this document. Only C3 (zero
+vanished) is mechanically ratcheted. That gap is how a memory came to record "C1–C5
+GREEN" with nothing able to contradict it. Either the criteria get an evaluator or they
+stay honestly labelled as intent — but nobody should ever again report them as a status.

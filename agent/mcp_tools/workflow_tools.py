@@ -273,7 +273,17 @@ def seal_workflow(
     if draft is None:
         return refused("seal.unknown_pipeline_id", success=False,
                        error=f"unknown pipeline_id: {pipeline_id}")
-    fr = _ms._env_cache.lookup(freeze_request_key)
+    # A WorkflowSpec PINS this env by digest and asserts Layer-2 on top of Layer-1.
+    # Sealing against a record that can no longer earn its Layer-1 green would make
+    # the spec's own foundation unverifiable — so ask the serving question, and say
+    # which clause failed rather than reporting it as absent.
+    fr, env_violations = _ms._env_cache.lookup_verified(freeze_request_key)
+    if env_violations:
+        return refused("seal.env_contract_violated", success=False,
+                       error=f"the frozen env '{freeze_request_key}' no longer satisfies the "
+                             f"Layer-1 honesty contract — re-run freeze() before sealing",
+                       honesty_violations=env_violations,
+                       violation_count=len(env_violations))
     if not fr:
         return refused("seal.no_frozen_env", success=False,
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")

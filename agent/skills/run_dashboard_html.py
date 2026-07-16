@@ -193,16 +193,36 @@ def _render_validated_evidence(spec: dict, primary_digest: Optional[str]) -> str
 # How-to — the DISTINCT panel (the auto-generated user guide, no markdown).
 # ---------------------------------------------------------------------------
 
+def _usage_status(spec: dict) -> str:
+    """The I4 self-test state — "verified" | "failed" | "not_attempted" | "".
+
+    THREE STATES, not a bool. `usage_verified: False` conflates "tested and it failed"
+    with "never tested" — and since seal REFUSES the former, False on disk always meant
+    the latter, while the page rendered it as a verdict. `usage_verification` carries
+    the truth + the reason; the bool is the fallback for specs sealed before it existed.
+
+    One derivation, read by every panel. The head table used to re-derive it as the raw
+    bool, so the same page said "Usage self-tested: False" above the fold and
+    "not attempted — <reason>" below it. Two answers to one question is the bug this
+    whole audit is about."""
+    uv = spec.get("usage_verification") or {}
+    return uv.get("status") or ("verified" if spec.get("usage_verified") else "")
+
+
+#: How each I4 state reads in a one-line summary cell.
+_USAGE_LABEL = {
+    "verified":      "yes",
+    "failed":        "NO — self-test failed",
+    "not_attempted": "not attempted",
+    "":              "not attempted",
+}
+
+
 def _render_howto(spec: dict) -> str:
     usage = spec.get("usage")
     P = ['<section class="bx">']
-    # THREE STATES, not a bool. `usage_verified: False` conflates "tested and it failed"
-    # with "never tested" — and since seal refuses the former, False on disk always meant
-    # the latter, while this panel rendered "not self-tested" as if it were a verdict.
-    # usage_verification carries the truth + the reason; fall back to the bool for specs
-    # sealed before it existed.
     uv = spec.get("usage_verification") or {}
-    status = uv.get("status") or ("verified" if spec.get("usage_verified") else "")
+    status = _usage_status(spec)
     verified = status == "verified"
     locus = uv.get("locus") or ""
     if verified:
@@ -392,7 +412,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         ("Env image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
         ("Env content digest",
          f'<code>{_e(s.get("env_content_digest","—"))}</code>' if s.get("env_content_digest") else "—"),
-        ("Usage self-tested", _e(s.get("usage_verified"))),
+        ("Usage self-tested", _e(_USAGE_LABEL.get(_usage_status(s), _usage_status(s)))),
     ]
     if s.get("description"):
         head_rows.insert(0, ("Workflow", _e(s["description"])))
