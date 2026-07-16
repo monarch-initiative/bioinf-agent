@@ -172,12 +172,26 @@ def _e(v: Any) -> str:
     return escape("" if v is None else str(v))
 
 
-def _badge(passed: Optional[bool], check: str = "") -> str:
+def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
     if passed is None:
         return '<span class="badge na">—</span>'
     cls, mark = ("ok", "✓") if passed else ("bad", "✗")
     c = f' <code>{_e(check)}</code>' if check else ""
-    return f'<span class="badge {cls}">{mark}</span>{c}'
+    # DISCLOSURE: how deeply the evidence exercised the tool. A shallow proof (version/
+    # import/help = presence only) is labelled so it can't read as a functional run — the
+    # honesty lever the Talos reconstruction slipped past (imported clean, didn't RUN).
+    depth = ""
+    if check:
+        try:
+            from agent.skills.env_honesty import evidence_depth
+            d = evidence_depth(check, tool)
+            shallow = d in ("version", "import", "help")
+            depth = (f' <span class="note" title="evidence depth: {d} '
+                     f'({"presence only — not a functional run" if shallow else "runs the tool"})">'
+                     f'{"⚠ " if shallow else ""}{_e(d)}</span>')
+        except Exception:
+            depth = ""
+    return f'<span class="badge {cls}">{mark}</span>{c}{depth}'
 
 
 def _kv_table(rows: list[tuple[str, str]]) -> str:
@@ -385,10 +399,15 @@ def render_env_report_html(record: dict) -> str:
             else:
                 inst_cell = '<span class="muted">—</span>'
             tier_cell = _e(_tier_for(t, is_adopt, pkg, shipped))
-            if is_adopt:
+            if v and (v or {}).get("check"):
+                # Real in-image evidence exists — show it (with its depth). A
+                # freeze_from_image adopt VALIDATES in-image, unlike a biocontainer adopt,
+                # so hiding it behind 'trusted by digest' would understate what we proved.
+                status = _badge(v.get("passed"), v.get("check", ""), t)
+            elif is_adopt:
                 status = '<span class="badge na">trusted by digest</span>'
             else:
-                status = _badge(v.get("passed") if v else None, (v or {}).get("check", ""))
+                status = _badge(v.get("passed") if v else None, "", t)
             P.append(f"<tr><td>{_e(t)}</td><td>{req_cell}</td>"
                      f"<td>{inst_cell}</td><td>{tier_cell}</td><td>{status}</td></tr>")
         P.append("</table></div>")

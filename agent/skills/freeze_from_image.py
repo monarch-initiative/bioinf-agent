@@ -127,9 +127,15 @@ def freeze_from_image(
             return refused("freeze_from_image.bad_tool",
                            error=f"each tool needs a name + evidence command (got {t!r})")
         res = _run_in_image(image, platform, ev)
+        from agent.skills import env_honesty as _eh
         verifications.append({"label": tname, "tool": tname, "check": ev,
                               "passed": res["rc"] == 0, "rc": res["rc"],
-                              "out": res["out"]})
+                              "out": res["out"],
+                              # DISCLOSURE (not a gate): how deeply this evidence exercises
+                              # the tool. 'version'/'import'/'help' prove presence; only
+                              # 'smoke'/'functional' prove it RUNS. Surfaced so a shallow
+                              # proof can't masquerade as a functional one.
+                              "depth": _eh.evidence_depth(ev, tname)})
 
     # -- SBOM captured FROM the shipped image (can't be faked) --
     resolved_packages: list[dict] = []
@@ -219,7 +225,16 @@ def freeze_from_image(
         except Exception as e:
             out_paths[label] = f"({label} render failed: {e!r})"
 
+    # SOFT advisory (never a refusal): requested tools whose evidence only proved
+    # presence/loads, not that the tool RUNS. Surfaced so the agent can strengthen the
+    # evidence — the honest nudge against a shallow proof reading as functional.
+    shallow = [v["tool"] for v in verifications if v.get("depth") in ("version", "import", "help")]
+    advisory = ""
+    if shallow:
+        advisory = ("shallow evidence (proves presence, not function) for: "
+                    + ", ".join(shallow) + " — consider evidence that RUNS the tool on an input")
     return proven("freeze_from_image.frozen", success=True, cache_hit=False,
                   request_key=rkey, image=image, image_digest=digest,
                   content_digest=digest, build_method=build_method, platform=platform,
-                  verifications=verifications, **out_paths)
+                  verifications=verifications, shallow_evidence=shallow,
+                  evidence_advisory=advisory, **out_paths)

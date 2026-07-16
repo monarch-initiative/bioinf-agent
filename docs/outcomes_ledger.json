@@ -45,8 +45,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:743",
-    "end_line": 744,
+    "where": "agent/mcp_tools/freeze_tools.py:748",
+    "end_line": 749,
     "named_in_test": false
   },
   {
@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:748",
-    "end_line": 749,
+    "where": "agent/mcp_tools/freeze_tools.py:753",
+    "end_line": 754,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_from_authors_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:760",
-    "end_line": 762,
+    "where": "agent/mcp_tools/freeze_tools.py:765",
+    "end_line": 767,
     "named_in_test": false
   },
   {
@@ -2475,8 +2475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:222",
-    "end_line": 225,
+    "where": "agent/skills/freeze_from_image.py:236",
+    "end_line": 240,
     "named_in_test": false
   },
   {
@@ -3037,6 +3037,26 @@
     "func": "generate_user_guide",
     "where": "agent/mcp_tools/freeze_tools.py:645",
     "end_line": 646,
+    "named_in_test": false
+  },
+  {
+    "code": "authors_recipe.no_tools",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_from_authors_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:735",
+    "end_line": 736,
+    "named_in_test": false
+  },
+  {
+    "code": "authors_recipe.no_repo",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "build_env_from_authors_recipe",
+    "where": "agent/mcp_tools/freeze_tools.py:738",
+    "end_line": 738,
     "named_in_test": false
   },
   {
@@ -3735,8 +3755,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:140",
-    "end_line": 143,
+    "where": "agent/skills/env_honesty.py:184",
+    "end_line": 187,
     "named_in_test": true
   },
   {
@@ -3745,8 +3765,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:146",
-    "end_line": 148,
+    "where": "agent/skills/env_honesty.py:190",
+    "end_line": 192,
     "named_in_test": true
   },
   {
@@ -3755,8 +3775,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:151",
-    "end_line": 154,
+    "where": "agent/skills/env_honesty.py:195",
+    "end_line": 198,
     "named_in_test": true
   },
   {
@@ -3765,8 +3785,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:156",
-    "end_line": 158,
+    "where": "agent/skills/env_honesty.py:200",
+    "end_line": 202,
     "named_in_test": true
   },
   {
@@ -3775,8 +3795,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:180",
-    "end_line": 183,
+    "where": "agent/skills/env_honesty.py:224",
+    "end_line": 227,
     "named_in_test": true
   },
   {
@@ -3785,8 +3805,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:189",
-    "end_line": 192,
+    "where": "agent/skills/env_honesty.py:233",
+    "end_line": 236,
     "named_in_test": true
   },
   {
@@ -3795,8 +3815,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:194",
-    "end_line": 198,
+    "where": "agent/skills/env_honesty.py:238",
+    "end_line": 242,
     "named_in_test": true
   },
   {
@@ -3805,8 +3825,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:210",
-    "end_line": 212,
+    "where": "agent/skills/env_honesty.py:254",
+    "end_line": 256,
     "named_in_test": true
   },
   {
@@ -3815,8 +3835,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:214",
-    "end_line": 216,
+    "where": "agent/skills/env_honesty.py:258",
+    "end_line": 260,
     "named_in_test": true
   },
   {
@@ -3825,8 +3845,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:243",
-    "end_line": 245,
+    "where": "agent/skills/env_honesty.py:287",
+    "end_line": 289,
     "named_in_test": true
   },
   {
@@ -3835,8 +3855,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:247",
-    "end_line": 249,
+    "where": "agent/skills/env_honesty.py:291",
+    "end_line": 293,
     "named_in_test": true
   },
   {
@@ -3845,8 +3865,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:257",
-    "end_line": 259,
+    "where": "agent/skills/env_honesty.py:301",
+    "end_line": 303,
     "named_in_test": true
   },
   {
@@ -3855,8 +3875,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:266",
-    "end_line": 268,
+    "where": "agent/skills/env_honesty.py:310",
+    "end_line": 312,
     "named_in_test": true
   },
   {
@@ -3865,8 +3885,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:270",
-    "end_line": 274,
+    "where": "agent/skills/env_honesty.py:314",
+    "end_line": 318,
     "named_in_test": true
   },
   {
@@ -3875,8 +3895,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_adopt",
-    "where": "agent/skills/env_honesty.py:319",
-    "end_line": 321,
+    "where": "agent/skills/env_honesty.py:363",
+    "end_line": 365,
     "named_in_test": true
   },
   {
@@ -3885,8 +3905,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_adopt",
-    "where": "agent/skills/env_honesty.py:323",
-    "end_line": 325,
+    "where": "agent/skills/env_honesty.py:367",
+    "end_line": 369,
     "named_in_test": true
   },
   {
@@ -4055,8 +4075,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:186",
-    "end_line": 189,
+    "where": "agent/skills/freeze_from_image.py:192",
+    "end_line": 195,
     "named_in_test": true
   },
   {

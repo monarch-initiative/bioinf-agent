@@ -91,3 +91,44 @@ def test_legitimate_invocation_accepted():
     assert evidence_shape_violation("samtools --version", tool="samtools") is None
     assert evidence_shape_violation("samtools view -h /tmp/x.bam",
                                     tool="samtools") is None
+
+
+# ---------------------------------------------------------------------------
+# Evidence DEPTH — the disclosure sibling of the shape rule. Not a gate: it
+# classifies how deeply evidence exercises the tool so a shallow proof (presence
+# only) can't read as a functional run — the honesty lever the Talos
+# reconstruction slipped past (imported clean, but didn't RUN).
+# ---------------------------------------------------------------------------
+from agent.skills.env_honesty import evidence_depth, is_shallow_evidence  # noqa: E402
+
+
+@pytest.mark.parametrize("ev,tool,expected", [
+    ("samtools --version", "samtools", "version"),
+    ("bcftools --version", "bcftools", "version"),
+    ('python -c "import talos"', "talos", "import"),
+    ("perl -MBio::DB::HTS -e1", "x", "import"),
+    ("mytool --help", "mytool", "help"),
+    ("python -m talos.validate_moi --help", "talos", "help"),
+    ("samtools sort -o /tmp/out.bam /data/in.bam", "samtools", "functional"),
+    ("bwa 2>&1 | head", "bwa", "functional"),
+    ("seqkit stats /data/reads.fq", "seqkit", "functional"),
+    ("mytool", "mytool", "smoke"),
+])
+def test_evidence_depth_classifies(ev, tool, expected):
+    assert evidence_depth(ev, tool) == expected
+
+
+def test_shallow_flags_presence_only_not_functional():
+    # version/import/help prove PRESENCE; smoke/functional prove it RUNS.
+    assert is_shallow_evidence("samtools --version", "samtools") is True
+    assert is_shallow_evidence('python -c "import x"', "x") is True
+    assert is_shallow_evidence("tool --help", "tool") is True
+    assert is_shallow_evidence("samtools view -c /data/in.bam", "samtools") is False
+    assert is_shallow_evidence("bwa 2>&1 | head", "bwa") is False
+
+
+def test_depth_is_disclosure_not_a_gate():
+    # A shallow proof is NOT a shape violation — it still validly references the tool.
+    # The two checks are orthogonal: shape rejects cheats; depth discloses thinness.
+    assert evidence_shape_violation("samtools --version", "samtools") is None
+    assert is_shallow_evidence("samtools --version", "samtools") is True

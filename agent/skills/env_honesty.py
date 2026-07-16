@@ -99,6 +99,50 @@ def _references_tool(evidence: str, tool: str) -> bool:
     return False
 
 
+#: evidence depths, weakest → strongest. 'version'/'import'/'help' prove the tool is
+#: PRESENT/loads; 'smoke'/'functional' prove it RUNS. The first three are "shallow".
+EVIDENCE_DEPTHS = ("version", "import", "help", "smoke", "functional")
+_SHALLOW_DEPTHS = frozenset({"version", "import", "help"})
+
+
+def evidence_depth(evidence: str, tool: str = "") -> str:
+    """Classify how deeply an evidence command exercises the tool — DISCLOSURE, not a
+    gate. A shallow proof ('samtools --version' resolves the binary) must not read as a
+    functional proof ('samtools sort' actually processes a BAM). This is the lever the
+    Talos reconstruction slipped past: it imported clean but didn't RUN. Ordered
+    version < import < help < smoke < functional; returns one of EVIDENCE_DEPTHS.
+
+    Heuristic (honest about being approximate): version/help flags and language imports
+    are recognized structurally; a command that reads/writes a path, pipes, or redirects
+    is treated as functional; anything else that invokes the tool is a 'smoke' run."""
+    ev = (evidence or "").strip()
+    low = ev.lower()
+    if not ev:
+        return "version"   # empty → weakest (the shape check rejects it anyway)
+    # language load-only probes
+    if re.search(r"import\s+\w|importlib\.metadata|requirenamespace|library\s*\(|-m\w*\s*[A-Za-z]", low) \
+            and not re.search(r"[<>|]|/\w+\.\w+", ev):
+        if re.search(r"\bimport\b|importlib|requirenamespace|library\s*\(|perl\s+-m", low):
+            return "import"
+    # version-only
+    if re.search(r"(--version|-version|\bversion\b|\s-v\b|\s-V\b)", ev) and \
+            not re.search(r"[<>|]|/\w+\.\w+", ev):
+        return "version"
+    # help/usage-only
+    if re.search(r"(--help|\s-h\b|\busage\b)", ev) and not re.search(r"[<>|]", ev):
+        return "help"
+    # functional — reads/writes a real path, pipes, or redirects (processes data)
+    if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:
+        return "functional"
+    return "smoke"
+
+
+def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
+    """True if the evidence only proves presence/loads (version/import/help), not that
+    the tool RUNS. Used for a soft advisory — never a hard refusal."""
+    return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
+
+
 def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
     """Return a reason string if `evidence` is a cheat shape, else None. Public so
     a face (MCP/CLI) can pre-flight an agent-authored evidence before a build."""

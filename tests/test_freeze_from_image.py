@@ -54,6 +54,11 @@ def test_adopt_image_happy_path_registers_and_renders(tmp_path, monkeypatch):
     # the human recipe records the adopt path
     md = (tmp_path / "talos_authors.recipe.md").read_text()
     assert "adopt" in md.lower()
+    # evidence DEPTH is disclosed per verification + a soft advisory (not a refusal):
+    # `--help` proves presence, not a functional run → flagged shallow.
+    assert out["verifications"][0]["depth"] == "help"
+    assert "talos" in out["shallow_evidence"]
+    assert "shallow evidence" in out["evidence_advisory"]
 
 
 def test_failing_evidence_is_refused_by_honesty_contract(tmp_path, monkeypatch):
