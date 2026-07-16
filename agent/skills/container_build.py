@@ -166,6 +166,45 @@ def image_present(ref: str) -> bool:
     return p.returncode == 0
 
 
+def registry_manifest_digest(ref: str) -> str:
+    """The PULLABLE manifest digest of an image we obtained from a registry —
+    `sha256:…` as it appears in `<repo>@sha256:…`. "" when the image isn't local or
+    carries no repo digest (e.g. it was built here, never pushed).
+
+    THIS IS NOT `.Id`, and the difference is a real bug we shipped. `.Id` is the
+    daemon's local content id; under the classic overlay2 store it is the image's
+    *config blob* digest, which is NOT what anyone can `docker pull`. It happens to
+    equal the manifest digest under the containerd snapshotter — which is what this
+    project's dev Mac runs, so `verify_env_recipe`'s adopt branch compared `.Id`
+    against a recorded manifest digest and PASSED, locally, by luck. On a normal
+    overlay2 daemon (most Linux, most CI, most users) it reported "recipe not
+    reproduced" for every adopt recipe ever written (audit 2026-07-16 §14/Tier 6).
+
+    So `image_digest` and this are not two copies of one concept to be unified —
+    they answer two different questions and both are needed:
+        image_digest(x)             → "what are these bytes, locally?"  (we BUILT it)
+        registry_manifest_digest(x) → "what would anyone else pull?"    (we ADOPTED it)
+    Conflating them under one name is the same disease as duplicating a definition:
+    one name, two meanings, and the wrong one silently in the load path."""
+    if not ref:
+        return ""
+    p = subprocess.run(
+        ["docker", "image", "inspect", "--format",
+         "{{range .RepoDigests}}{{println .}}{{end}}", ref],
+        capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return ""
+    repo = ref.split("@", 1)[0].split(":")[0] if "@" in ref else ref.split(":")[0]
+    digests = [ln.strip() for ln in (p.stdout or "").splitlines() if "@sha256:" in ln]
+    # Prefer the entry for the repo we asked about; an image can carry repo digests
+    # for several repos (same bytes, mirrored), and picking another repo's digest
+    # would be a different pullable reference.
+    for d in digests:
+        if d.split("@", 1)[0] == repo:
+            return d.split("@", 1)[1]
+    return digests[0].split("@", 1)[1] if digests else ""
+
+
 # ---------------------------------------------------------------------------
 # EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
 # ---------------------------------------------------------------------------
@@ -808,7 +847,12 @@ class ContainerBuild:
         return broke("container_build.validation_in_image_failed", success=False, checks=results, banners=banners)
 
     def image_digest(self, image: str) -> str:
-        """The built image's content id (sha256), the local shipping handle."""
+        """The built image's content id (sha256), the local shipping handle.
+
+        `.Id` is the RIGHT answer here and only here: an image we just BUILT has no
+        registry manifest digest until it is pushed, so its daemon content id is the
+        only id it has. For an image we PULLED, the question is different and so is
+        the answer — see `registry_manifest_digest`."""
         r = self._sh(["docker", "image", "inspect", "--format", "{{index .Id}}", image])
         return (r["stdout"] or "").strip() if r["returncode"] == 0 else ""
 

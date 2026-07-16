@@ -1053,4 +1053,31 @@ def resolve(
                 f"# {identity['note']}\n"
                 f"# ---- confirm the above IS the tool you mean before running: ----\n"
                 + decision["install_call"])
+
+    # A BROKEN RELIABILITY GATE MUST REACH THE CALLER, not sit in `probed`.
+    # `authors_gate_error` was recorded and then consumed by nobody: resolve() went on to
+    # return a clean, confident `chosen: conda` + install_call, with the failure buried in
+    # a sibling dict no agent reads. For a tool like Talos that is the exact reconstruction
+    # bug the gate exists to prevent, delivered with full confidence — so the same
+    # treatment the identity and collision paths already give applies here. (audit
+    # 2026-07-16 Tier 6: the fix for the silent gate was itself unconsumed and untested.)
+    gate_err = (availability.get("authors_gate_error") or {}).get("error")
+    img_err = ((availability.get("author_image") or {}).get("assessment") or {}).get(
+        "author_image_error")
+    for note in (
+        (f"AUTHORS-PATH GATE FAILED ({gate_err}) — we could NOT check whether the authors "
+         f"ship their own image/recipe, so this pick is the registry's answer to a "
+         f"question the gate never got to weigh in on. If '{tool}' bundles compiled or "
+         f"vendored pieces, a conda/pip reconstruction can silently drop them."
+         if gate_err else ""),
+        (f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' was NOT "
+         f"established here; it was unchecked."
+         if img_err else ""),
+    ):
+        if note and decision.get("install_call"):
+            decision["rationale"] = note + " || " + decision.get("rationale", "")
+            decision["install_call"] = (
+                f"# {note}\n"
+                f"# ---- the authors' own install path was NOT ruled out: ----\n"
+                + decision["install_call"])
     return decision

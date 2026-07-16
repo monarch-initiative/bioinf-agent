@@ -94,6 +94,7 @@ from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
 from agent.skills import provenance as _prov
 from agent.skills import env_recipe as _env_recipe
+from agent.skills import container_build as _container_build
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_core_pod5_data as _add_core_pod5_data

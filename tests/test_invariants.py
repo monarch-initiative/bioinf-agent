@@ -1294,6 +1294,89 @@ def test_verify_env_recipe_verified_is_proven_on_reproduction(tmp_path, monkeypa
     assert out.get("content_digest_match") is True
 
 
+@pytest.mark.parametrize("store,config_blob_id", [
+    # containerd snapshotter: .Id COINCIDES with the manifest digest. This is what the
+    # project's dev Mac runs, which is the only reason the .Id bug ever passed here.
+    ("containerd", None),
+    # classic overlay2 (most Linux, most CI, most users): .Id is the CONFIG BLOB digest,
+    # a different value entirely. Reading .Id here reports "not reproduced" for every
+    # adopt recipe ever written.
+    ("overlay2", "sha256:" + "9f" * 32),
+])
+def test_verify_env_recipe_adopt_reads_the_pullable_manifest_digest_not_local_id(
+        tmp_path, monkeypatch, store, config_blob_id):
+    """An adopt recipe verifies against the REGISTRY MANIFEST digest, on ANY docker store.
+
+    An adopt env's `content_digest` IS the biocontainer's published manifest digest — it
+    is literally visible in `adopt_image: repo@sha256:…`. The branch used to compare it to
+    `docker inspect {{index .Id}}`, the daemon's LOCAL content id. Those two coincide ONLY
+    under the containerd snapshotter; under overlay2 `.Id` is the config blob digest.
+
+    So `verify_env_recipe` — a tool whose entire job is telling a user whether their env
+    reproduces — passed by accident of one developer's docker config and lied to everyone
+    else (audit 2026-07-16 Tier 6). Parametrized over both stores because the bug is
+    invisible on exactly one of them, and that one is ours.
+
+    Stubs the DOCKER BOUNDARY (subprocess), not our logic, so the real digest-selection
+    code runs. Reverting to `.Id` fails the overlay2 case."""
+    from agent.mcp_tools import freeze_tools
+    from agent.skills import container_build
+    MANIFEST = "sha256:" + "d1" * 32
+    IMG = f"quay.io/biocontainers/samtools@{MANIFEST}"
+    recipe = tmp_path / "adopt.recipe.yaml"
+    recipe.write_text(
+        "name: samtools_env\nbuild_method: adopt\n"
+        f"adopt_image: {IMG}\ncontent_digest: {MANIFEST}\n")
+
+    def fake_run(argv, *a, **kw):
+        joined = " ".join(argv) if isinstance(argv, (list, tuple)) else str(argv)
+        r = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "{{index .Id}}" in joined or "{{.Id}}" in joined:
+            # the local content id — equals the manifest only on containerd
+            r.stdout = (config_blob_id or MANIFEST) + "\n"
+        elif "RepoDigests" in joined:
+            # the pullable reference — identical on both stores, which is the point
+            r.stdout = f"{IMG}\n"
+        return r
+    monkeypatch.setattr(freeze_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(container_build.subprocess, "run", fake_run)
+
+    out = freeze_tools.verify_env_recipe(str(recipe))
+    assert out.get("code") == "freeze.recipe_verified", (store, out)
+    assert out.get("content_digest_match") is True, (store, out)
+    assert out.get("rebuilt_content_digest") == MANIFEST, (store, out)
+
+
+def test_verify_env_recipe_adopt_refuses_a_genuinely_different_image(tmp_path, monkeypatch):
+    """The pair to the above: a REAL mismatch must still be caught.
+
+    Reading the manifest digest must not become a rubber stamp — if the registry now
+    serves different bytes under the recorded reference, that is exactly the drift
+    verify_env_recipe exists to surface."""
+    from agent.mcp_tools import freeze_tools
+    from agent.skills import container_build
+    EXPECTED = "sha256:" + "d1" * 32
+    ACTUAL   = "sha256:" + "ee" * 32          # the registry served something else
+    recipe = tmp_path / "adopt.recipe.yaml"
+    recipe.write_text(
+        "name: samtools_env\nbuild_method: adopt\n"
+        f"adopt_image: quay.io/biocontainers/samtools@{EXPECTED}\n"
+        f"content_digest: {EXPECTED}\n")
+
+    def fake_run(argv, *a, **kw):
+        joined = " ".join(argv) if isinstance(argv, (list, tuple)) else str(argv)
+        r = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "RepoDigests" in joined:
+            r.stdout = f"quay.io/biocontainers/samtools@{ACTUAL}\n"
+        return r
+    monkeypatch.setattr(freeze_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(container_build.subprocess, "run", fake_run)
+
+    out = freeze_tools.verify_env_recipe(str(recipe))
+    assert out.get("code") == "freeze.recipe_not_reproduced", out
+    assert out.get("content_digest_match") is False, out
+
+
 def test_verify_env_recipe_not_reproduced_is_broke_firewall(tmp_path, monkeypatch):
     """ADVERSARIAL (reproducibility firewall / full-auto trust). When the recipe
     rebuild SUCCEEDS but converges to a DIFFERENT content_digest than recorded

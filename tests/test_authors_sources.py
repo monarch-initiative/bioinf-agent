@@ -128,13 +128,20 @@ def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = "
             return dockerfile
         return None
     def _get_json(url, timeout=12):
-        # the ghcr probe lists an owner's container packages; a package NAMED FOR THE REPO
-        # is the "authors publish an image" signal.
-        if ghcr_package and "package_type=container" in url:
-            return [{"name": ghcr_package}]
         return []
+    def _probe_image(owner, repo, tag="latest", timeout=12):
+        # The author-image signal is "can we PULL ghcr.io/{owner}/{repo}?", answered by
+        # the registry. It used to be "is a package listed under this org?", answered by
+        # api.github.com/orgs/{owner}/packages — which returns 401 for EVERY org, public
+        # ones included, because that API always requires auth. No token was ever plumbed
+        # and the 401 was swallowed, so this tier was 100% dead while reporting "the
+        # authors ship no image" (audit 2026-07-16 Tier 6).
+        if ghcr_package and ghcr_package.lower() == repo.lower():
+            return {"ref": f"ghcr.io/{owner}/{repo}", "source": "ghcr", "tag": tag}
+        return None
     monkeypatch.setattr(A, "_default_get_text", _get_text)
     monkeypatch.setattr(A, "_default_get_json", _get_json)
+    monkeypatch.setattr(A, "_default_probe_ghcr_image", _probe_image)
 
 
 def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypatch):
@@ -186,3 +193,104 @@ def test_resolve_no_repo_no_gate_conda_wins(monkeypatch):
     d = R.resolve("samtools")
     assert d["chosen"] == "conda"
     assert called["n"] == 0     # gate not even probed without a repo
+
+
+# ---------------------------------------------------------------------------
+# The author-image probe: it must ask the REGISTRY, and it must not report a
+# broken probe as a negative finding. (audit 2026-07-16 Tier 6)
+# ---------------------------------------------------------------------------
+
+def test_author_image_probe_asks_the_registry_not_the_github_package_index():
+    """The probe must be answerable ANONYMOUSLY, so it must hit ghcr's own token+manifest
+    flow — never `api.github.com/orgs/{owner}/packages`.
+
+    That endpoint returns 401 for every org on earth (public ones included: verified live
+    against nf-core, bioconda, astral-sh); the packages REST API always requires auth, and
+    no token was ever plumbed. So the top-ranked tier of the reliability gate could not
+    have worked even in principle — and its 401 was swallowed in `_default_get_text`, two
+    layers below the error recorder, so it reported "the authors ship no image".
+
+    It was also the wrong question: package *listing* needs auth and excludes user-owned
+    repos (`/orgs/` only), while "can I pull this?" is what we actually need — and an image
+    we can't pull anonymously is one we could never adopt anyway."""
+    import ast
+    import inspect
+    import textwrap
+    # Read the CODE, not the prose: the docstring deliberately names api.github.com to
+    # record why it's gone, and a naive substring check would flag its own explanation.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(A._default_probe_ghcr_image)))
+    fn = tree.body[0]
+    if ast.get_docstring(fn):
+        fn.body = fn.body[1:]
+    code = "\n".join(ast.unparse(n) for n in fn.body)
+    assert "api.github.com" not in code, (
+        "the author-image probe must not use GitHub's package index — it 401s for every "
+        "org, so the tier would be dead again")
+    assert "ghcr.io/token" in code and "/manifests/" in code
+
+
+def test_author_image_probe_reports_a_denial_as_a_true_negative(monkeypatch):
+    """ghcr DENYING an anonymous pull scope means the image is private or absent — a real
+    answer ("no adoptable image"), not a probe failure. Reporting it as an error would
+    stamp a scary NB on every cleanly-packaged tool and train the reader to skip it."""
+    import urllib.error
+    def _denied(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 403, "denied", {}, None)
+    monkeypatch.setattr(A.urllib.request, "urlopen", _denied)
+    assert A._default_probe_ghcr_image("someone", "private-thing") is None
+
+
+def test_author_image_probe_failure_is_disclosed_never_read_as_no_image(monkeypatch):
+    """R2: absence of data must not render as data. A network failure must surface as
+    `author_image_error` AND poison the recommendation text — because every sentence the
+    verdict emits otherwise assumes `author_image: None` was an observation."""
+    import urllib.error
+    def _broken(req, timeout=None):
+        raise urllib.error.URLError("network down")
+    monkeypatch.setattr(A.urllib.request, "urlopen", _broken)
+    probed = A._default_probe_ghcr_image("owner", "repo")
+    assert probed and probed.get("error"), probed
+
+    out = A.assess_tool_sources("tool", owner="owner", repo="repo", sources={
+        "container_recipes": [], "env_specs": [], "build_scripts": [],
+        "author_image": None, "author_image_error": "URLError: network down"})
+    assert out["author_image_error"] == "URLError: network down"
+    assert "UNCHECKED" in out["recommendation"], out["recommendation"]
+
+
+def test_a_broken_gate_poisons_the_install_call_not_just_probed(monkeypatch):
+    """A FAILED reliability gate must reach the field an agent copies.
+
+    `authors_gate_error` was recorded by the Tier-0 fix and then read by NOBODY: resolve()
+    returned a clean, confident `chosen: conda` + a paste-ready install_call, with the
+    failure parked in `probed` where nothing looks. For Talos that is precisely the
+    silent-reconstruction bug the gate exists to prevent, served with full confidence.
+
+    Worse, NOTHING FAILED when the fix was reverted to `except: pass` — verified during
+    the re-audit: the whole suite stayed green. The fix for the silent gate was itself
+    silent and untested. This test is that missing guard."""
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="populationgenomics/talos")
+
+    def _boom(tool, owner="", repo="", timeout=12):
+        raise OSError("github unreachable")
+    monkeypatch.setattr(R, "probe_authors_sources", _boom)
+
+    d = R.resolve("talos")
+    assert d["chosen"] == "conda"                       # registry routing still works
+    assert d["probed"].get("authors_gate_error")        # ...and is recorded
+    # the load-bearing part: it must be IMPOSSIBLE to copy the install_call without
+    # reading that the authors' path was never checked
+    assert "AUTHORS-PATH GATE FAILED" in d["install_call"], d["install_call"]
+    assert "AUTHORS-PATH GATE FAILED" in d["rationale"]
+
+
+def test_a_healthy_gate_leaves_the_install_call_clean(monkeypatch):
+    """The pair: no error ⇒ no noise. A warning that fires on healthy tools is a warning
+    readers learn to strip — the calibration lesson from the identity campaign."""
+    _stub_registries(monkeypatch, conda=True)
+    _stub_authors_io(monkeypatch)
+    d = R.resolve("samtools", github_repo="samtools/samtools")
+    assert d["chosen"] == "conda"
+    assert "authors_gate_error" not in d["probed"]
+    assert "GATE FAILED" not in d["install_call"], d["install_call"]
+    assert d["install_call"].startswith("install_conda_packages("), d["install_call"]

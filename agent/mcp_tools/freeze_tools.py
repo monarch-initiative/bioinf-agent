@@ -633,9 +633,15 @@ def verify_env_recipe(recipe_path: str) -> dict:
             return refused("freeze.recipe_adopt_no_image", success=False,
                            error="adopt recipe has no adopt_image to re-pull")
         pull = subprocess.run(["docker", "pull", img], capture_output=True, text=True, timeout=1800)
-        insp = subprocess.run(["docker", "image", "inspect", "--format", "{{index .Id}}", img],
-                              capture_output=True, text=True, timeout=60)
-        got = (insp.stdout or "").strip()
+        # The REGISTRY MANIFEST digest — the thing `expected` actually is (an adopt's
+        # content_digest is the biocontainer's published manifest digest, visible right
+        # there in `adopt_image: repo@sha256:…`). This read `{{index .Id}}`, the daemon's
+        # LOCAL content id, and matched only because this project's dev Mac runs the
+        # containerd snapshotter, where the two coincide. On a classic overlay2 daemon
+        # `.Id` is the config blob digest, so this branch reported "recipe not reproduced"
+        # for EVERY adopt recipe, for every normal user — a verification tool that passed
+        # by accident of one machine's docker config (audit 2026-07-16 Tier 6).
+        got = _ms._container_build.registry_manifest_digest(img)
         match = bool(expected) and got == expected
         rf = dict(success=pull.returncode == 0, content_digest_match=match,
                   rebuilt_content_digest=got, expected_content_digest=expected,
