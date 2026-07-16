@@ -26,6 +26,13 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+try:
+    # the authors'-own-resources reliability gate (image / recipe completeness). Imported
+    # softly so a resolver import never hard-depends on it; None disables the gate.
+    from agent.skills.authors_sources import assess_tool_sources as probe_authors_sources
+except Exception:  # pragma: no cover
+    probe_authors_sources = None
+
 # Preference order — lower index wins. Cross-cutting concerns (gpu/service/
 # license/db) are flags layered on top, not tiers.
 #
@@ -35,10 +42,25 @@ from typing import Any, Optional
 # contract) and so handles EVERY repo — half-baked, run-by-path, custom build — not
 # just the conventional make+binary case the `source` generator assumes. `source`
 # (and binary) survive as opt-in FAST-PATHS, not the boundary of installable.
-TIER_ORDER = ["conda", "pip", "cran", "bioconductor", "r_github", "binary", "spack",
+# `author_image` / `authors_recipe` sit ABOVE conda, but they are RELIABILITY-GATED,
+# not unconditional: their `available` flag is only set when the tool actually ships a
+# usable image, or when the authors' recipe installs pieces a conda/pip reconstruction
+# would DROP (system/compiled/vendored/binary deps — the completeness gate in
+# authors_sources). For a cleanly, completely bioconda-packaged tool the gate stays shut
+# and conda wins as before. This encodes "use the authors' own machinery when
+# reconstruction would be incomplete" (see [[feedback-prioritize-authors-own-env-recipe]])
+# as ranking, not just prose — WITHOUT over-preferring a heavy author image for tools
+# conda handles perfectly.
+TIER_ORDER = ["author_image", "authors_recipe",
+              "conda", "pip", "cran", "bioconductor", "r_github", "binary", "spack",
               "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
+    "author_image": "the authors publish a container image — adopt it by digest (highest "
+                    "fidelity: they built + tested the whole env; lowest cost: a pull)",
+    "authors_recipe": "the authors' Dockerfile/recipe installs deps a registry reconstruction "
+                    "would silently DROP (compiled/vendored/system/binary) — build THEIR recipe, "
+                    "the reliable path a human would follow rather than reconstruct from scratch",
     "conda":        "on bioconda/conda-forge — solver-managed, pinned, containerizes cleanly (preferred)",
     "pip":          "on PyPI — language registry; chosen when not on conda",
     "cran":         "on CRAN — R language registry via install_r_package(source=cran)",
@@ -451,6 +473,33 @@ def _is_ambiguous(availability: dict[str, dict], language: str) -> bool:
                 and availability.get("cran", {}).get("available"))
 
 
+_GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+
+
+def _github_owner_repo(availability: dict, github_repo: str = "") -> str:
+    """Best 'owner/repo' for the tool: the explicit github_repo, else extracted from the
+    pip/cran registry metadata (home_page / project_urls / URL). This is what lets the
+    authors-source gate fire AUTOMATICALLY on a tool that hits a registry — the common
+    case (Talos hit PyPI) — without the caller having to hand us the repo."""
+    if github_repo and "/" in github_repo:
+        return github_repo.strip().strip("/")
+    urls: list[str] = []
+    pip = availability.get("pip", {})
+    if pip.get("available"):
+        urls.append(pip.get("home_page", ""))
+        urls.append(pip.get("package_url", ""))
+        urls += [str(v) for v in (pip.get("project_urls") or {}).values()]
+    cran = availability.get("cran", {})
+    if cran.get("available"):
+        urls += [u.strip() for u in (cran.get("url", "") or "").split(",")]
+        urls.append(cran.get("bug_reports", ""))
+    for u in urls:
+        m = _GH_REPO_RE.search(u or "")
+        if m:
+            return f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
+    return ""
+
+
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
     """Pure: given per-tier availability, pick the tier and explain. `prefer`
     forces a tier when it is available. Returns chosen tier (or None), the
@@ -484,6 +533,16 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
 
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:
     v = version or detail.get("latest") or ""
+    if tier == "author_image":
+        img = detail.get("ref") or "<author-image-ref>"
+        return (f'freeze_from_image(env, image="{img}", tools=["{tool}"], evidence="<cmd that RUNS {tool}>")'
+                '  # adopt the authors\' own image by digest')
+    if tier == "authors_recipe":
+        repo = detail.get("repo") or github_repo or "<owner/repo>"
+        rec = (detail.get("recipe") or {})
+        path = rec.get("path") or "Dockerfile"
+        return (f'build_env_from_authors_recipe(env, repo="https://github.com/{repo}", recipe="{path}", '
+                f'tools=["{tool}"], ref="<tag/commit>")  # build the authors\' {path}, don\'t reconstruct')
     if tier == "conda":
         base = detail.get("r_spec") or tool          # r-{name} when resolving an R tool via conda
         spec = f"{base}={v}" if v else base
@@ -650,6 +709,30 @@ def resolve(
     # but above the agent-read synthesis fallback (a community recipe beats
     # improvisation). Needs only a name (registry probe), no github_repo.
     availability["spack"] = probe_spack(tool, timeout)
+
+    # AUTHORS' OWN RESOURCES (the reliability gate). Find the tool's repo — explicit or
+    # extracted from registry metadata — and ask: does the tool publish an image, and
+    # does its own recipe install pieces a conda/pip reconstruction would DROP? If so,
+    # the authors' path outranks conda (build what they build, don't reconstruct). If
+    # the recipe is trivially registry-equivalent, the gate stays SHUT and conda wins.
+    # Best-effort: any probe failure simply leaves the author tiers unavailable, so the
+    # registry route is unaffected. This is what makes the agent 'thread the needle'
+    # automatically on tools like Talos (PyPI hit, but a Dockerfile compiling a fork).
+    eff_repo = _github_owner_repo(availability, github_repo)
+    if eff_repo and "/" in eff_repo and probe_authors_sources is not None:
+        try:
+            owner, rp = eff_repo.split("/", 1)
+            assessment = probe_authors_sources(tool, owner=owner, repo=rp, timeout=timeout)
+            availability["author_image"] = {
+                "available": bool(assessment.get("author_image")),
+                "assessment": assessment, "repo": eff_repo,
+                **(assessment.get("author_image") or {})}
+            availability["authors_recipe"] = {
+                "available": bool(assessment.get("reconstruction_incomplete")),
+                "assessment": assessment, "repo": eff_repo,
+                "recipe": assessment.get("authors_recipe")}
+        except Exception:
+            pass   # never let the authors probe break registry routing
 
     # PROTECTIVE: cross-namespace name-collision guard. When `github_repo` is
     # provided, the user is signaling authoritative intent ("THIS repo is what I
