@@ -440,6 +440,18 @@ def apptainer_delivery(
     }
 
 
+def record_is_gated(record: dict) -> bool:
+    """Is this EnvCache record a license-gated artifact (I13)?
+
+    Reads the canonical `license_gated`, falling back to the legacy `gated` key that
+    records written before the 2026-07-16 unification carry on disk. Every consumer of
+    "is this gated" goes through here so the two names can never drift apart again —
+    drifting apart is exactly how I13 stopped firing on the authors'-image path."""
+    if "license_gated" in record:
+        return bool(record.get("license_gated"))
+    return bool(record.get("gated", False))
+
+
 def freeze_record(
     *,
     request_key: str,
@@ -467,7 +479,14 @@ def freeze_record(
         "image":           image,
         "image_digest":    image_digest,
         "platform":        platform,
-        "gated":           gated,
+        # CANONICAL NAME: `license_gated` — the same key env_honesty._check_license reads
+        # and the same field name on the pydantic model (core_data.PipelineSpec). This used
+        # to be emitted as `gated`, which silently disabled I13 on the ONE path that hands
+        # the cache record straight to check_build (freeze_from_image / the authors' path):
+        # the contract read `license_gated`, the record only had `gated`, so a gated
+        # artifact with no licenses[] registered clean (audit 2026-07-16). One concept,
+        # one name. Records written before this carry `gated` — read via record_is_gated().
+        "license_gated":   gated,
         "redistributable": not gated,
         "lock":            lock_path,
         "conda_lock":      conda_lock_path,

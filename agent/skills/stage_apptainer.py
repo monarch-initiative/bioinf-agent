@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access, transfer
+from agent.skills.freeze import record_is_gated as _record_is_gated
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
@@ -132,7 +133,7 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
     image_tag = None
     if mode == "adopt":
         image_tag = record.get("image")                 # public biocontainer ref
-    elif record.get("push_target") and not record.get("gated"):
+    elif record.get("push_target") and not _record_is_gated(record):
         image_tag = record.get("push_target")            # pushed registry ref
     elif tarball and Path(tarball).exists():
         pass                                             # freeze docker-save archive

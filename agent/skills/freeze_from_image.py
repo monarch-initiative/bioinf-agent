@@ -138,14 +138,25 @@ def freeze_from_image(
                               "depth": _eh.evidence_depth(ev, tname)})
 
     # -- SBOM captured FROM the shipped image (can't be faked) --
+    # A capture FAILURE must not look like an image with no dependencies: an empty
+    # resolved_packages renders as "0 along for the ride" in the ENV report and as an
+    # empty package list in the attestation — absence of data reading as data. So each
+    # probe records WHY it came back empty, the same way the authors gate records
+    # authors_gate_error and cluster accounting records sacct_error. Not a refusal: some
+    # images legitimately carry no conda prefix and no apt layer.
     resolved_packages: list[dict] = []
     system_packages: list[dict] = []
+    sbom_errors: list[str] = []
+    from agent.skills.container_build import ContainerBuild as _CB
     try:
-        from agent.skills.container_build import ContainerBuild as _CB
         resolved_packages = _CB.conda_sbom_from_image(image, platform) or []
+    except Exception as e:
+        sbom_errors.append(f"conda: {type(e).__name__}: {e}")
+    try:
+        # separate try — an apt failure must not also discard a good conda closure
         system_packages = _CB.apt_sbom_from_image(image, platform) or []
-    except Exception:
-        pass
+    except Exception as e:
+        sbom_errors.append(f"apt: {type(e).__name__}: {e}")
     # pip-only / venv images (no conda prefix) — best-effort importlib.metadata SBOM,
     # as a single-line `python -c` (a heredoc through `docker run bash -c` is fragile).
     if not resolved_packages:
@@ -176,6 +187,10 @@ def freeze_from_image(
     record["verifications"] = verifications
     record["resolved_packages"] = resolved_packages
     record["system_packages"] = system_packages
+    if sbom_errors and not resolved_packages:
+        # only surfaced when the SBOM is ACTUALLY empty — a conda probe that failed on an
+        # image the importlib fallback then read successfully is not a gap worth flagging.
+        record["sbom_error"] = "; ".join(sbom_errors)
     record["accelerator"] = accelerator
     record["licenses"] = list(licenses or [])
     record["redistributable"] = not gated

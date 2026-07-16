@@ -608,6 +608,19 @@ def check_invariants(spec: dict) -> list[dict]:
             })
         elif (float(ru.get("peak_rss_mb") or 0) <= 0
               and float(ru.get("wall_seconds") or 0) <= 0):
+            # DELIBERATELY `and` — an ALL-zeros record is the "monitor captured nothing"
+            # shape. It is tempting to reject either-zero (the audit-2026-07-16 draft did,
+            # since this rule's message says a real process has nonzero RSS *and* wall),
+            # but a value-level check CANNOT tell fabrication from a sampling limit:
+            #   - host locus: _run_monitored polls the process tree every 0.3s, so any step
+            #     faster than that (`samtools --version` → rc=0, wall=0.01, peak_rss_mb=0.0)
+            #     legitimately reports zero RSS. Rejecting it would refuse a real, green run.
+            #   - cluster locus: a zero from sacct genuinely IS fabrication.
+            # Only the PRODUCER knows which it is, so that is where the distinction lives:
+            # cluster_jobs._parse_max_rss_mb returns None for "sacct accounted nothing" and
+            # cluster_job_resources attaches an explicit `sacct_error`, which the branch
+            # above already refuses. Fix the producer that fabricates; don't blind-tighten
+            # a checker that can't see the difference.
             violations.append({
                 "invariant": "I7.resource_usage_captured",
                 "message":   f"pipeline_step {step_n} resource_usage is all zeros "

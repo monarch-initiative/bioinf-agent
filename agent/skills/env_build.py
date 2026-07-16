@@ -238,7 +238,7 @@ class EnvBuild:
             "platform":        result["platform"],
             "engine":          result.get("engine", "none"),
             "validation_locus": result.get("validation_locus", "unknown"),
-            "gated":           self.license_gated,
+            "license_gated":   self.license_gated,   # canonical name — see freeze.record_is_gated
             "redistributable": self.redistributable,
         }
 

@@ -513,6 +513,12 @@ def run_step_on_cluster(
             "sacct_job_id":    job_id,
             "sacct_rows":      resources.get("sacct_rows", []),
         }
+        # A successful sacct QUERY can still carry no MaxRSS (cluster without cgroup
+        # memory accounting). cluster_job_resources marks that with a sacct_error;
+        # propagate it so I7 sees it — dropping it here would have let the placeholder
+        # zero seal as an observation (audit 2026-07-16).
+        if resources.get("sacct_error"):
+            resource_usage["sacct_error"] = resources["sacct_error"]
 
     # ─── 5. Download outputs back local (from scratch) ────────────────
     # ABSOLUTIZE: detected_outputs must be absolute (I6) AND Globus resolves the

@@ -641,7 +641,11 @@ def build_env_image(
 # R needs its toolchain (compile C/C++/Fortran source pkgs) — the resolver-tier
 # names for R, mapped to the engine specs (build_env_image uses the install_method
 # 'r_install' key; this is the resolve→route path's equivalent).
-_R_TIERS = {"cran", "bioconductor"}
+# `r_github` belongs here too: route() emits an `Rscript -e 'remotes::install_github(...)'`
+# spec for it exactly as it does for cran/bioconductor. Omitting it meant needs_r stayed
+# False, r-base was never injected, and the build ran Rscript in an image with no R
+# (audit 2026-07-16). Any tier whose install spec shells out to Rscript needs the toolchain.
+_R_TIERS = {"cran", "bioconductor", "r_github"}
 
 
 def build_env_from_tools(

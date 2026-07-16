@@ -83,6 +83,70 @@ def test_invariant_checker_catches_missing_resource_usage():
         "rc=0 pipeline_step missing resource_usage should violate I7"
 
 
+def _spec_with_resource_usage(ru):
+    return {
+        "pipeline_name": "test",
+        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
+        "install_steps": [{"step": 1, "returncode": 0}],
+        "pipeline_steps": [{
+            "step": 1, "tool": "samtools", "command": "samtools view x.bam",
+            "returncode": 0,
+            "inputs":  [{"path": "/abs/x.bam"}],
+            "detected_outputs": ["/abs/x.sam"],
+            "validation": {"x.sam": {"passed": True}},
+            "validation_status": "passed",
+            "resource_usage": ru,
+        }],
+        "test_data": {"bam": "/abs/x.bam"},
+    }
+
+
+def test_i7_rejects_a_fabricated_cluster_zero_via_the_producers_marker():
+    """The audit-2026-07-16 defect: a cluster with no cgroup MaxRSS accounting produced
+    peak_rss_mb=0.0 alongside a REAL wall time, and I7 sealed it as honest cost data.
+
+    The fix lives in the producer, not here: cluster_job_resources attaches an explicit
+    sacct_error when sacct accounted no MaxRSS, and I7 refuses any step carrying one. This
+    pins the end of that chain — the shape that used to seal clean must now be refused.
+    """
+    v = check_invariants(_spec_with_resource_usage({
+        "wall_seconds": 14.0, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0,
+        "locus": "cluster", "sacct_error": "sacct returned no MaxRSS for job 123 …"}))
+    assert any(x["invariant"] == "I7.resource_usage_captured" for x in v), \
+        "a cluster step whose peak RSS was never accounted must not seal"
+
+
+def test_i7_accepts_a_fast_host_step_that_the_sampler_missed():
+    """The mirror guard, and the reason I7 does NOT reject either-zero.
+
+    _run_monitored polls the process tree every 0.3s, so a real, successful, sub-0.3s host
+    step (`samtools --version` → rc=0, wall=0.01, peak_rss_mb=0.0) legitimately reports a
+    zero peak RSS. That is a sampling limit, not fabrication — refusing it would refuse a
+    green run. Tightening this check to either-zero (an appealing reading of its own
+    message) breaks exactly this case, which is why the honesty distinction is drawn by
+    the producer that knows, via sacct_error, and not by the value here.
+    """
+    v = check_invariants(_spec_with_resource_usage(
+        {"wall_seconds": 0.01, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0,
+         "sample_count": 1}))
+    assert not any(x["invariant"].startswith("I7") for x in v), v
+
+
+def test_i7_still_rejects_an_all_zeros_record():
+    """The monitor captured nothing at all — no wall, no RSS."""
+    v = check_invariants(_spec_with_resource_usage(
+        {"wall_seconds": 0.0, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0}))
+    assert any(x["invariant"] == "I7.resource_usage_captured" for x in v)
+
+
+def test_i7_accepts_a_real_observation():
+    """Guard against 'fixed' meaning 'refuses everything' — these are the real values
+    the sealed samtools_cluster_rung3 workflow recorded on Longleaf."""
+    v = check_invariants(_spec_with_resource_usage(
+        {"wall_seconds": 16.0, "peak_rss_mb": 377.5, "peak_cpu_percent": 100.0}))
+    assert not any(x["invariant"].startswith("I7") for x in v), v
+
+
 def test_invariant_checker_catches_orphan_step_input():
     """I8: a step input that wasn't produced by any prior step and isn't a
     declared external source should be flagged as an orphan — pipeline isn't
@@ -1690,11 +1754,29 @@ def test_freeze_record_derives_redistributable_from_gated():
     rec = freeze_record(request_key="k", content_digest="sha256:c", mode="build",
                         image="img:1", image_digest="sha256:i", platform="linux-64",
                         gated=True, hpc={"get_image": "..."})
-    assert rec["redistributable"] is False and rec["gated"] is True
+    # `license_gated` is the CANONICAL key — the same name env_honesty._check_license
+    # reads and the same field on the pydantic model. It used to be emitted as `gated`,
+    # so I13 silently never fired on the one path that hands this record straight to
+    # check_build (freeze_from_image). One concept, one name (audit 2026-07-16).
+    assert rec["redistributable"] is False and rec["license_gated"] is True
+    assert "gated" not in rec, "the legacy alias must not be re-introduced alongside it"
     rec2 = freeze_record(request_key="k", content_digest="sha256:c", mode="adopt",
                          image="q@sha256:d", image_digest="sha256:d", platform="linux-64",
                          gated=False)
     assert rec2["redistributable"] is True and rec2["created_at"]
+
+
+def test_record_is_gated_reads_new_and_legacy_records():
+    """EnvCache records written before the rename carry `gated`; the helper is the single
+    reader so the two names can never drift apart again."""
+    from agent.skills.freeze import record_is_gated
+    assert record_is_gated({"license_gated": True}) is True
+    assert record_is_gated({"license_gated": False}) is False
+    assert record_is_gated({"gated": True}) is True            # legacy, on disk today
+    assert record_is_gated({"gated": False}) is False
+    assert record_is_gated({}) is False
+    # canonical wins when both are somehow present
+    assert record_is_gated({"license_gated": True, "gated": False}) is True
 
 
 # ---------------------------------------------------------------------------
@@ -3490,6 +3572,43 @@ def test_resolver_route_maps_every_tier():
     assert a["kind"] == "tool" and "github.com/lh3/seqtk" in a["spec"]["command"] and "v1.4" in a["spec"]["command"]
     # no automatable tier → honest defer
     assert route({"chosen": None, "tool": "x"})["kind"] == "defer"
+
+
+def test_every_rscript_shelling_tier_injects_the_r_toolchain():
+    """PROPERTY: if route() emits a spec that shells out to Rscript, that tier MUST be in
+    env_freeze._R_TIERS — otherwise build_env_from_tools leaves needs_r False, never
+    injects r-base, and bakes an image that runs Rscript with no R in it.
+
+    Regression for audit 2026-07-16: `r_github` emitted an
+    `Rscript -e 'remotes::install_github(...)'` spec but was missing from _R_TIERS, so the
+    declarative path built a broken image for every language='r' + github_repo request.
+
+    Written as a property over all tiers rather than an assertion about r_github, so the
+    NEXT R-shelling tier someone adds is covered on the day it lands.
+    """
+    from agent.skills.resolver import TIER_ORDER, route
+    from agent.skills.env_freeze import _R_TIERS
+
+    probes = {"cran": {}, "bioconductor": {}, "r_github": {"repo_exists": True},
+              "conda": {"channel": "bioconda"}, "pip": {}, "spack": {"package": "x"},
+              "binary": {"assets": []}, "source": {"tag": "v1"}, "synthesis": {},
+              "author_image": {}, "authors_recipe": {"recipe": {"path": "Dockerfile"}}}
+    offenders = []
+    for tier in TIER_ORDER:
+        try:
+            a = route({"chosen": tier, "tool": "mypkg", "version": "",
+                       "probed": {tier: probes.get(tier, {})},
+                       "github_repo": "owner/mypkg", "language": "r"})
+        except Exception:
+            continue
+        if "Rscript" in str(a.get("spec", "")) and tier not in _R_TIERS:
+            offenders.append(tier)
+    assert not offenders, (
+        f"tier(s) {offenders} emit an Rscript spec but are absent from _R_TIERS — "
+        f"build_env_from_tools would bake an image with no R installed")
+    # and the toolchain it injects must actually contain R
+    from agent.skills.env_freeze import _TOOLCHAIN_SPECS
+    assert "r-base" in _TOOLCHAIN_SPECS["r_install"]
 
 
 def test_install_command_jar_generator_self_contained():

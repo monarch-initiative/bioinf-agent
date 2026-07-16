@@ -649,6 +649,22 @@ def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
                 "spec": ic.source(tool, f"https://github.com/{repo}",
                                   ref=detail.get("tag") or "")}
 
+    # The author tiers are not "not implemented" — they have REAL executors, they just
+    # aren't reachable from this function. route() exists only to feed
+    # env_freeze.build_env_from_tools, which bakes ONE image from conda/pip/tool specs;
+    # the authors' path instead adopts or docker-builds the authors' OWN image, which is a
+    # different build entirely (freeze_from_image / build_env_from_authors_recipe own it).
+    # Say exactly that, and name the executor — the old text here blamed missing "engine
+    # pypi support", which is both stale (pip routes fine, above) and irrelevant to these
+    # tiers, so a caller who hit it would go looking in the wrong place.
+    if tier in ("author_image", "authors_recipe"):
+        executor = ("freeze_from_image" if tier == "author_image"
+                    else "build_env_from_authors_recipe")
+        return {"kind": "defer", "tier": tier,
+                "reason": (f"tier {tier!r} is executed by {executor}(), not by a "
+                           f"container-native bake — call it directly with the "
+                           f"install_call resolve() returned. build_env_from_tools only "
+                           f"bakes conda/pip/tool specs into one image.")}
     return {"kind": "defer", "tier": tier,
             "reason": (f"tier {tier!r} has no container-native generator yet — pip needs engine "
                        f"pypi support; cran/bioconductor need an R install generator (engine-coupled). "
@@ -734,8 +750,15 @@ def resolve(
                 "available": bool(assessment.get("reconstruction_incomplete")),
                 "assessment": assessment, "repo": eff_repo,
                 "recipe": assessment.get("authors_recipe")}
-        except Exception:
-            pass   # never let the authors probe break registry routing
+        except Exception as e:
+            # Best-effort: a probe failure must not break registry routing. But it MUST
+            # NOT be silent either — a bare `except: pass` here let a call-signature
+            # TypeError disable this entire gate for every tool, invisibly, across five
+            # commits and a green test suite (audit 2026-07-16). The gate is either
+            # reported as fired or reported as errored; there is no third state.
+            availability["authors_gate_error"] = {
+                "available": False, "repo": eff_repo,
+                "error": f"{type(e).__name__}: {e}"}
 
     # PROTECTIVE: cross-namespace name-collision guard. When `github_repo` is
     # provided, the user is signaling authoritative intent ("THIS repo is what I

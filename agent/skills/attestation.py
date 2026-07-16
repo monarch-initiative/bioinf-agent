@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.skills.freeze import record_is_gated as _record_is_gated
+
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 SLSA_PREDICATE = "https://slsa.dev/provenance/v1"
 BUILD_TYPE = "https://github.com/bioinf-agent/container-native-build/v1"
@@ -96,7 +98,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "validation_locus": r.get("validation_locus", ""),
                 "honesty_contract": guarantees,
                 "validated_in_image": validated,        # validated == shipped, per tool (build only)
-                "redistributable": r.get("redistributable", not r.get("gated")),
+                "redistributable": r.get("redistributable", not _record_is_gated(r)),
                 # F4 fix (Batch 2): the gated/license firewall (I13) is verified
                 # at build time; the attestation must CARRY the declared licenses
                 # forward so a downstream verifier / cosign-attest consumer can
@@ -105,7 +107,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # against what". Recorded alongside `redistributable` (the
                 # boolean firewall flag) since they're a unit — gated=True means
                 # redistributable=False AND licenses[] names the terms.
-                "license_gated": bool(r.get("license_gated", r.get("gated", False))),
+                "license_gated": _record_is_gated(r),
                 "licenses": list(r.get("licenses") or []),
                 # The accelerator policy that gated POLICY_CLEAN (I12). Pure
                 # metadata pass-through — the contract already enforces shape.

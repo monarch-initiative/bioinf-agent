@@ -80,24 +80,38 @@ def resolve_tool(
     language: str = "",
 ) -> dict:
     """Decide WHICH install tier to use for `tool`, and record WHY (the
-    ResolutionDecision). Probes availability independently per tier
-    (conda/bioconda, PyPI, CRAN — plus release-binary/source when github_repo is
-    given) and ranks by the preference order conda > pip/cran/bioconductor >
-    binary > source > manual (reproducibility + clean containerization + least
-    build fragility).
+    ResolutionDecision). Probes availability independently per tier and ranks by:
+
+        author_image > authors_recipe > conda > pip/cran/bioconductor
+                     > binary > spack > synthesis > source > manual
+
+    RELIABILITY GATE (authors-recipe-first). The two author tiers rank above conda but
+    are GATED, not a fixed ladder — they only become available when the tool's OWN repo
+    (explicit `github_repo`, or one extracted from pip/cran metadata) actually publishes
+    an image, or when its own Dockerfile installs things a conda/pip reconstruction would
+    silently DROP (compiled/vendored/system/binary deps). For a cleanly bioconda-packaged
+    tool the gate stays SHUT and conda wins — conda is solver-managed, pinned, and
+    containerizes small. When the gate fires, build what the authors build rather than
+    reconstructing it: that is the Talos lesson (a pip reconstruction dropped a bcftools
+    fork + htslib + echtvar and still imported clean).
 
     Returns {chosen, install_call, rationale, alternatives, ambiguous, probed,
     …}: the concrete install primitive call to make, why it was chosen over the
-    others, and the rejected-but-available alternatives.
+    others, and the rejected-but-available alternatives. `install_call` names the real
+    executor for the chosen tier — for the author tiers that is `freeze_from_image` /
+    `build_env_from_authors_recipe`, which do the whole env (no separate freeze needed).
+    If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
+    ranking below it is registry-only — it is not evidence the authors ship nothing.
 
     DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
     CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one
     ecosystem; with no hint, a name found in both PyPI and CRAN comes back
     `ambiguous: true`. `prefer` forces a tier when available. `github_repo`
-    ('owner/repo') unlocks the binary/source tiers.
+    ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
+    reliability gate — pass it whenever you know the tool's repo.
 
     Query-only: it does NOT install. Use the returned install_call with the
-    matching primitive, then freeze().
+    matching primitive, then freeze() (except the author tiers, which freeze themselves).
     """
     return _ms._resolver.resolve(tool, version=version, github_repo=github_repo,
                              prefer=(prefer or None), language=language)

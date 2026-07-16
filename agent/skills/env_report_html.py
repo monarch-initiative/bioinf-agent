@@ -32,6 +32,8 @@ from __future__ import annotations
 from html import escape
 from typing import Any, Optional
 
+from agent.skills.freeze import record_is_gated as _record_is_gated
+
 from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
@@ -564,7 +566,7 @@ def render_env_report_html(record: dict) -> str:
     P.append('</div></section>')
 
     # -- DECLARED POLICY (verified vs declared — plain table + note) --------
-    gated = bool(r.get("gated"))
+    gated = _record_is_gated(r)
     licenses = list(r.get("licenses") or [])
     accel = r.get("accelerator") if isinstance(r.get("accelerator"), dict) else None
     accel_type = (accel or {}).get("type") or "none"

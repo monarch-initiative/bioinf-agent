@@ -28,6 +28,7 @@ assess_tool_sources() combines them into the router-facing verdict + recommendat
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import Any, Callable, Optional
 
@@ -222,11 +223,23 @@ def discover_authors_sources(
 def assess_tool_sources(
     tool: str, *, owner: str = "", repo: str = "", ref: str = "HEAD",
     sources: Optional[dict] = None,
-    get_text: Callable[..., Optional[str]] = _default_get_text,
-    get_json: Callable[..., Optional[Any]] = _default_get_json,
+    timeout: int = 12,
+    get_text: Optional[Callable[..., Optional[str]]] = None,
+    get_json: Optional[Callable[..., Optional[Any]]] = None,
 ) -> dict[str, Any]:
     """Combine discovery + completeness into the reliability-gate verdict the router
     consumes. `sources` may be injected (already-discovered) to skip network.
+
+    `timeout` bounds each default fetch: discovery is a serial walk of _CONTAINER_RECIPES
+    + _ENV_SPECS + _BUILD_SCRIPTS, and resolve_tool is a query-only interactive call, so
+    the caller owns the budget. It binds to the DEFAULT fetchers only — an injected
+    get_text/get_json owns its own I/O (and its own timeout).
+
+    get_text/get_json default to None (not to the functions themselves) so the fallback is
+    resolved from module globals at CALL time: that keeps `_default_get_*` monkeypatchable,
+    which is what lets a test drive the REAL resolve→assess call path with stubbed I/O
+    instead of replacing this function with a double. Replacing the function is how the
+    call-signature drift of audit 2026-07-16 stayed invisible behind 9 green tests.
 
     Returns:
       {
@@ -241,6 +254,8 @@ def assess_tool_sources(
     reconstruction_incomplete is True iff a container recipe carries a strong signal.
     When False, the authors ship nothing conda/pip would miss → the registry route
     stays preferred (conda keeps winning for cleanly-packaged tools)."""
+    get_text = get_text or functools.partial(_default_get_text, timeout=timeout)
+    get_json = get_json or functools.partial(_default_get_json, timeout=timeout)
     src = sources if sources is not None else discover_authors_sources(
         owner, repo, ref=ref, get_text=get_text, get_json=get_json)
     self_repo = f"{owner}/{repo}" if owner and repo else (repo or tool)

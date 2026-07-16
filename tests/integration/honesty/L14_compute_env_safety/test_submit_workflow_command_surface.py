@@ -544,17 +544,19 @@ class TestSubmissionManifest:
 
         monkeypatch.setattr(_tr, "upload", fake_upload)
         monkeypatch.setattr(subprocess, "run", fake_run)
-        monkeypatch.chdir(tmp_path)  # so the manifest lands in tmp_path
+        # NB: no chdir. The manifest root is anchored to the repo root (via
+        # transfer._repo_root), which the root conftest redirects at tmp_path. It used to
+        # be CWD-relative, which is why an un-chdir'd test in this very file wrote a
+        # `fake.example.edu` submission into the live repo (audit 2026-07-16).
 
         result = submit_workflow.submit_workflow_job(
             **{**_DEMO_KW, "access_path": str(access_path)})
         assert "error" not in result, result
 
         manifest_path = result["manifest_path"]
-        expected = ("job_submissions/demo/"
-                    "demo_run_555000.submission.json")
-        assert manifest_path == expected
-        assert (tmp_path / manifest_path).exists()
+        expected = tmp_path / "job_submissions" / "demo" / "demo_run_555000.submission.json"
+        assert manifest_path == str(expected)
+        assert expected.exists()
 
     @pytest.mark.integration
     def test_manifest_records_everything_user_needs(

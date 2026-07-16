@@ -79,6 +79,25 @@ def test_assess_author_image_wins():
 
 
 # ---------------------------------------------------------------------------
+# the call-signature contract between resolver and authors_sources
+# ---------------------------------------------------------------------------
+def test_resolver_call_into_assess_tool_sources_is_signature_compatible():
+    """resolver.py calls probe_authors_sources(tool, owner=, repo=, timeout=). Pin that
+    exact shape against the real callee.
+
+    This is the guard for the audit-2026-07-16 defect in its most direct form: the call
+    carried a `timeout` kwarg the callee didn't accept, so every invocation raised
+    TypeError into a bare `except: pass` and the reliability gate never fired for any
+    tool — invisibly, because the test doubles declared the signature the CALLER wanted.
+    A double can lie about a signature; inspect.bind against the real function cannot.
+    """
+    import inspect
+    assert R.probe_authors_sources is A.assess_tool_sources
+    inspect.signature(A.assess_tool_sources).bind(
+        "talos", owner="populationgenomics", repo="talos", timeout=12)
+
+
+# ---------------------------------------------------------------------------
 # resolver integration — the gate changes routing correctly
 # ---------------------------------------------------------------------------
 def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo=""):
@@ -91,16 +110,40 @@ def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo=""):
     monkeypatch.setattr(R, "probe_spack", lambda n, t=12: {"available": False})
 
 
+def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = ""):
+    """Stub the authors-probe at its I/O SEAM (_default_get_text/_default_get_json), never
+    by replacing probe_authors_sources itself.
+
+    This is load-bearing. These tests used to monkeypatch R.probe_authors_sources with a
+    `lambda tool, owner="", repo="", timeout=12: ...` double — inventing the `timeout` kwarg
+    the real assess_tool_sources never had. The double satisfied the caller; production
+    raised TypeError into a bare `except: pass`, so the ENTIRE reliability gate was dead
+    for every tool across five commits while these tests stayed green (audit 2026-07-16).
+
+    Stubbing the I/O keeps the real resolve → assess_tool_sources call — signature and all —
+    under test. If the call signature drifts again, these tests fail.
+    """
+    def _get_text(url, timeout=12):
+        if dockerfile and url.endswith("/Dockerfile"):
+            return dockerfile
+        return None
+    def _get_json(url, timeout=12):
+        # the ghcr probe lists an owner's container packages; a package NAMED FOR THE REPO
+        # is the "authors publish an image" signal.
+        if ghcr_package and "package_type=container" in url:
+            return [{"name": ghcr_package}]
+        return []
+    monkeypatch.setattr(A, "_default_get_text", _get_text)
+    monkeypatch.setattr(A, "_default_get_json", _get_json)
+
+
 def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypatch):
     # tool hits PyPI (would normally be 'pip'), but its repo Dockerfile is incomplete →
     # the gate fires and authors_recipe outranks pip.
     _stub_registries(monkeypatch, pip=True, pip_repo="populationgenomics/talos")
-    monkeypatch.setattr(R, "probe_authors_sources",
-                        lambda tool, owner="", repo="", timeout=12: A.assess_tool_sources(
-                            tool, owner=owner, repo=repo,
-                            sources={"container_recipes": [{"path": "Dockerfile", "text": _INCOMPLETE_DF}],
-                                     "env_specs": [], "build_scripts": [], "author_image": None}))
+    _stub_authors_io(monkeypatch, dockerfile=_INCOMPLETE_DF)
     d = R.resolve("talos")
+    assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
     assert d["chosen"] == "authors_recipe", d["chosen"]
     # the rendered guidance must match the REAL executor signature (an agent copies it):
     # required name=, tools as [{name, evidence}] dicts — NOT a phantom `env` positional
@@ -114,23 +157,17 @@ def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypat
 def test_resolve_keeps_conda_when_reconstruction_is_safe(monkeypatch):
     # tool on conda AND pip, repo Dockerfile is trivial → gate stays shut, conda wins.
     _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="me/mytool")
-    monkeypatch.setattr(R, "probe_authors_sources",
-                        lambda tool, owner="", repo="", timeout=12: A.assess_tool_sources(
-                            tool, owner=owner, repo=repo,
-                            sources={"container_recipes": [{"path": "Dockerfile", "text": _SAFE_DF}],
-                                     "env_specs": [], "build_scripts": [], "author_image": None}))
+    _stub_authors_io(monkeypatch, dockerfile=_SAFE_DF)
     d = R.resolve("mytool")
     assert d["chosen"] == "conda", d["chosen"]
+    assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
 
 
 def test_resolve_adopts_author_image_over_everything(monkeypatch):
     _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="org/tool")
-    monkeypatch.setattr(R, "probe_authors_sources",
-                        lambda tool, owner="", repo="", timeout=12: A.assess_tool_sources(
-                            tool, owner=owner, repo=repo,
-                            sources={"container_recipes": [], "env_specs": [], "build_scripts": [],
-                                     "author_image": {"ref": "ghcr.io/org/tool", "source": "ghcr"}}))
+    _stub_authors_io(monkeypatch, ghcr_package="tool")   # ghcr.io/org/tool exists
     d = R.resolve("tool")
+    assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
     assert d["chosen"] == "author_image", d["chosen"]
     call = d["install_call"]
     assert call.startswith("freeze_from_image(")

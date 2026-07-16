@@ -64,17 +64,26 @@ class TestElapsedParser:
 class TestMaxRssParser:
     @pytest.mark.integration
     @pytest.mark.parametrize("inp,want", [
-        ("0",        0.0),
         ("1024K",    1.0),
         ("512K",     0.5),
         ("100M",     100.0),
         ("1G",       1024.0),
         ("1.5G",     1536.0),
         ("2T",       1024.0 * 1024 * 2),
-        ("",         0.0),
     ])
     def test_parses(self, inp, want):
         assert cluster_jobs._parse_max_rss_mb(inp) == want
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("inp", ["0", "", "   ", "not-a-number", None])
+    def test_unaccounted_is_none_not_zero(self, inp):
+        """"sacct told us nothing" must NOT be reported as a measured 0.0.
+
+        Regression for audit 2026-07-16: every unknown collapsed to 0.0, which is
+        indistinguishable from an observation — and since no real process has a zero peak
+        RSS, that fabricated number sealed through I7 as honest cost data on any cluster
+        without cgroup memory accounting."""
+        assert cluster_jobs._parse_max_rss_mb(inp) is None
 
 
 class TestExitCodeParser:
