@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -77,24 +78,92 @@ _TIER_RATIONALE = {
 }
 
 
-def _get_json(url: str, timeout: int = 12) -> Optional[Any]:
-    try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                                   "User-Agent": "bioinf-agent-resolver"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return None
+def _headers(url: str) -> dict[str, str]:
+    """Request headers, with a GitHub token when the environment offers one.
+
+    Unauthenticated GitHub allows 60 core req/hr and 10 search req/min — low enough
+    that a normal session exhausts it, after which every repo probe 403s. A token
+    raises that to 5000/hr. This is a MITIGATION, not the fix: the fix is that an
+    exhausted quota reports UNCHECKED instead of masquerading as a finding (see
+    `_fetch_json`). Raising a ceiling only makes the cliff rarer; it never makes
+    falling off it honest."""
+    h = {"Accept": "application/json", "User-Agent": "bioinf-agent-resolver"}
+    if "github.com" in url:
+        tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+        if tok:
+            h["Authorization"] = f"Bearer {tok}"
+    return h
 
 
-def _head_ok(url: str, timeout: int = 12) -> bool:
+def _http_error_kind(e: urllib.error.HTTPError) -> str:
+    """Name WHY a request failed, distinguishing a rate limit from a real denial.
+
+    GitHub signals an exhausted quota as 403 (or 429) with X-RateLimit-Remaining: 0 —
+    the same status code it uses for a genuine authorization denial. Telling them apart
+    matters because they mean opposite things about the tool: 'come back later' vs
+    'this is private'."""
+    remaining = (e.headers or {}).get("X-RateLimit-Remaining")
+    if e.code in (403, 429) and str(remaining) == "0":
+        return "rate_limited"
+    if e.code in (403, 429):
+        return f"HTTP {e.code} (forbidden)"
+    return f"HTTP {e.code}"
+
+
+def _fetch_json(url: str, timeout: int = 12) -> tuple[Optional[Any], str]:
+    """Fetch JSON and report WHETHER THE PROBE RAN — the (payload, error) seam.
+
+    `error == ""` means the probe reached a conclusion, and the payload is that
+    conclusion: the data, or None for a CHECKED, GENUINE absence (HTTP 404 — the
+    registry answered, and its answer was "no such package").
+
+    A NON-EMPTY error means the probe never concluded. The tool's availability is
+    then UNKNOWN, not False.
+
+    This distinction is the whole point of the function, and it replaces a
+    `except (...): return None` that collapsed both into one value. That collapse was
+    not cosmetic — it silently rewrote the routing decision. Measured: with a single
+    transient 403 on api.anaconda.org and NOTHING about the tool changed, resolve
+    ('samtools') stopped returning `conda` + a pinned `install_conda_packages(...)`
+    and instead returned `binary`, recording `conda: {available: False}` on disk and
+    announcing "AUTO-DISCOVERED + adopted samtools/samtools (1928*) — no registry hit
+    ... proceeding without a human". There WAS a registry hit; we simply could not
+    reach it. Every clause of that sentence was false, stated with full confidence, and
+    the whole tier ladder slid a rung on a network blip.
+
+    So: absence of data must never render as data (Rule 2), enforced at the bottom of
+    the stack, because every tier's `available: False` is built on this return value."""
     try:
-        req = urllib.request.Request(url, method="HEAD",
-                                     headers={"User-Agent": "bioinf-agent-resolver"})
+        req = urllib.request.Request(url, headers=_headers(url))
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return 200 <= r.status < 300
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        return False
+            return json.load(r), ""
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, ""                      # the registry ANSWERED: no such package
+        return None, _http_error_kind(e)
+    except urllib.error.URLError as e:
+        return None, f"unreachable: {e.reason}"
+    except ValueError as e:                      # malformed JSON — the host answered garbage
+        return None, f"malformed response: {e}"
+    except OSError as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _fetch_ok(url: str, timeout: int = 12) -> tuple[bool, str]:
+    """HEAD probe as (present, error) — same contract as `_fetch_json`: an error means
+    UNCHECKED, and `present=False` is only meaningful when the error is empty."""
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers=_headers(url))
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300, ""
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False, ""                     # the host ANSWERED: not there
+        return False, _http_error_kind(e)
+    except urllib.error.URLError as e:
+        return False, f"unreachable: {e.reason}"
+    except OSError as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def _looks_like_serial(v: str) -> bool:
@@ -135,8 +204,13 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     shadowing the maintained package on the other. Ties keep bioconda (probed
     first), so bio-primary tools are unaffected."""
     best = None  # (version_key, channel, version, summary)
+    errors: list[str] = []
     for channel in ("bioconda", "conda-forge"):
-        data = _get_json(f"https://api.anaconda.org/package/{channel}/{name.lower()}", timeout)
+        data, err = _fetch_json(
+            f"https://api.anaconda.org/package/{channel}/{name.lower()}", timeout)
+        if err:
+            errors.append(f"{channel}: {err}")
+            continue
         if isinstance(data, dict) and data.get("versions"):
             ver = _pick_latest(data["versions"], data.get("latest_version") or "")
             key = _version_key(ver)
@@ -145,6 +219,12 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     if best:
         return {"available": True, "channel": best[1], "latest": best[2],
                 "summary": best[3]}
+    # A hit on either channel is a fact regardless of the other's health, so errors only
+    # matter when NOTHING was found: then "not on conda" rests on a probe that never ran.
+    # Reported, never inferred — a silent conda miss demotes the tool to the pip/cran
+    # fall-through, which is the measured 9-in-10-wrong path.
+    if errors:
+        return {"available": False, "probe_error": "; ".join(errors)}
     return {"available": False}
 
 
@@ -159,7 +239,7 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     which is not the rare-disease pipeline anyone asking this agent for `talos`
     means. Without it the decision has no basis on which anything — the agent, the
     contract, or a human — could notice the wrong tool."""
-    data = _get_json(f"https://pypi.org/pypi/{name}/json", timeout)
+    data, err = _fetch_json(f"https://pypi.org/pypi/{name}/json", timeout)
     if isinstance(data, dict) and data.get("info"):
         info = data["info"]
         return {
@@ -170,7 +250,7 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
             "project_urls": info.get("project_urls") or {},
             "package_url": info.get("package_url") or "",
         }
-    return {"available": False}
+    return {"available": False, **({"probe_error": err} if err else {})}
 
 
 def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
@@ -180,7 +260,7 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
     `summary` is CRAN's Title + Description — the identity evidence. CRAN's
     `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
     10x Genomics' Cell Ranger; the name is all they share."""
-    data = _get_json(f"https://crandb.r-pkg.org/{name}", timeout)
+    data, err = _fetch_json(f"https://crandb.r-pkg.org/{name}", timeout)
     if isinstance(data, dict) and data.get("Package"):
         summary = " — ".join(x for x in ((data.get("Title") or "").strip(),
                                          (data.get("Description") or "").strip()) if x)
@@ -191,7 +271,7 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
             "url": data.get("URL") or "",
             "bug_reports": data.get("BugReports") or "",
         }
-    return {"available": False}
+    return {"available": False, **({"probe_error": err} if err else {})}
 
 
 def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
@@ -252,10 +332,21 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     out = {"repo_exists": False, "has_release_assets": False, "assets": []}
     if not repo or "/" not in repo:
         return out
-    if _get_json(f"https://api.github.com/repos/{repo}", timeout) is None:
+    data, err = _fetch_json(f"https://api.github.com/repos/{repo}", timeout)
+    if err:
+        # UNCHECKED, not absent. Left as repo_exists=False so the tiers built on it stay
+        # unavailable (fail closed), but the reason is recorded so the decision can say
+        # "we could not look" rather than "there is no repo" — the binary/source/synthesis
+        # tiers ALL rest on this one call, and the unauthenticated quota is 60/hr.
+        out["probe_error"] = err
         return out
+    if data is None:
+        return out                               # GitHub answered: no such repo
     out["repo_exists"] = True
-    rel = _get_json(f"https://api.github.com/repos/{repo}/releases/latest", timeout)
+    rel, rel_err = _fetch_json(
+        f"https://api.github.com/repos/{repo}/releases/latest", timeout)
+    if rel_err:
+        out["releases_probe_error"] = rel_err     # "no release assets" would be a guess
     if isinstance(rel, dict):
         assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
                   if a.get("browser_download_url")]
@@ -279,9 +370,16 @@ def probe_github_search(name: str, timeout: int = 12, limit: int = 5) -> dict[st
     right repo rather than guess a URL. Candidate order: exact-name first, then stars."""
     from urllib.parse import quote
     q = quote(f"{name} in:name,description")
-    data = _get_json(
+    data, err = _fetch_json(
         f"https://api.github.com/search/repositories?q={q}&sort=stars&order=desc"
         f"&per_page={max(limit, 5)}", timeout)
+    if err:
+        # "I searched and found nothing" and "I could not search" are opposite facts about
+        # the tool, and this function used to return the same value for both. Search is the
+        # tightest quota on the API (10 req/min unauthenticated), so the failure is common —
+        # and it is the INVESTIGATION's own probe: a caller that refuses on an empty result
+        # would be reporting a rate limit as a finding about the world.
+        return {"found": False, "candidates": [], "probe_error": err}
     if not isinstance(data, dict) or not data.get("items"):
         return {"found": False, "candidates": []}
     cands = []
@@ -405,9 +503,14 @@ def resolve_linux_asset(
     m = _GH_RELEASE_RE.match(binary_url or "")
     if m:
         owner, repo, tag = m.group(1), m.group(2), m.group(3)
-        rel = _get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", timeout)
+        rel, err = _fetch_json(
+            f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", timeout)
+        if err:
+            return {"found": False, "probe_error": err,
+                    "reason": f"could not fetch release {owner}/{repo}@{tag}: {err} "
+                              f"— UNCHECKED, not 'no such release'"}
         if not isinstance(rel, dict):
-            return {"found": False, "reason": f"could not fetch release {owner}/{repo}@{tag}"}
+            return {"found": False, "reason": f"no release {owner}/{repo}@{tag}"}
         assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
                   if a.get("browser_download_url")]
         pick = _pick_platform_asset(assets, target_os, target_arch)
@@ -456,8 +559,9 @@ def sha256_of_url(url: str, timeout: int = 600) -> dict[str, Any]:
 
 def probe_bioconductor(name: str, timeout: int = 12) -> dict[str, Any]:
     """Best-effort: does a release Bioconductor package page exist for `name`?"""
-    ok = _head_ok(f"https://bioconductor.org/packages/release/bioc/html/{name}.html", timeout)
-    return {"available": ok}
+    ok, err = _fetch_ok(
+        f"https://bioconductor.org/packages/release/bioc/html/{name}.html", timeout)
+    return {"available": ok, **({"probe_error": err} if err else {})}
 
 
 def _is_ambiguous(availability: dict[str, dict], language: str) -> bool:
@@ -641,6 +745,49 @@ def _github_owner_repo(availability: dict, github_repo: str = "") -> str:
         if m:
             return f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
     return ""
+
+
+#: Tiers whose availability is decided by a GitHub API call — the only ones for which a
+#: GITHUB_TOKEN is the right advice when a probe reports `rate_limited`.
+_GITHUB_BACKED_TIERS = ("author_image", "authors_recipe", "r_github", "binary",
+                        "synthesis", "source")
+
+
+def _disclose(decision: dict, note: str, caveat: str) -> None:
+    """Attach a caveat to the decision, in EVERY field a reader might stop at.
+
+    `rationale` always; `install_call` when there is one to poison. That asymmetry is the
+    whole point: `install_call` is None on a refusal, and each of this function's callers
+    used to be guarded by `if ... decision.get("install_call")` — so every disclosure
+    silently vanished on the one outcome it was written for. A caller was told "no
+    registry/repo tier found" while the authors-path gate had crashed with a TypeError, and
+    the note explaining that never rendered.
+
+    One function rather than four copies of the pattern, because this file has now forked a
+    disclosure rule three times and each fork drifted (audit 2026-07-16, Rule 4)."""
+    if not note:
+        return
+    decision["rationale"] = note + " || " + decision.get("rationale", "")
+    if decision.get("install_call"):
+        decision["install_call"] = (
+            f"# {note}\n" + (f"# ---- {caveat}: ----\n" if caveat else "")
+            + decision["install_call"])
+
+
+def unchecked_tiers(availability: dict[str, dict]) -> dict[str, str]:
+    """Tiers whose probe never reached a conclusion, as {tier: why}. Pure.
+
+    `available: False` answers two different questions with one value: "the registry said
+    no" and "we never got an answer". Only the first is a fact about the tool. This reads
+    back the `probe_error` each probe records so a caller can tell them apart — because
+    ranking treats both as unavailable (fail closed, which is right) and would otherwise
+    present a tier ladder with rungs missing as though they were never there."""
+    out: dict[str, str] = {}
+    for tier in TIER_ORDER:
+        err = (availability.get(tier) or {}).get("probe_error")
+        if err and not (availability.get(tier) or {}).get("available"):
+            out[tier] = err
+    return out
 
 
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
@@ -872,9 +1019,22 @@ def resolve(
     # from "go find the repo + figure out its build" into "confirm this repo" —
     # the orchestrator-in-the-loop model. Only here (dead-end) so github search
     # rate limits never bite the common registry path.
-    if decision["chosen"] is None and not github_repo:
+    if decision["chosen"] is None and not github_repo and not unchecked_tiers(availability):
         disc = probe_github_search(tool, timeout)
-        if disc["found"]:
+        if disc.get("probe_error"):
+            # The investigation's OWN probe failed. "I searched github and found nothing"
+            # is now unavailable to us as a claim — so say what actually happened instead
+            # of letting an empty candidate list stand in for a finding.
+            decision["discovery_error"] = disc["probe_error"]
+            decision["rationale"] = (
+                f"NO registry hit for '{tool}', AND the github fallback search FAILED "
+                f"({disc['probe_error']}) — so we have NOT established that '{tool}' is "
+                f"unfindable; we established nothing. Re-run"
+                + (" (set GITHUB_TOKEN: unauthenticated github search is 10 req/min)"
+                   if "rate_limited" in disc["probe_error"] else "")
+                + f", or pass github_repo='owner/repo' to skip discovery. "
+                + decision["rationale"])
+        elif disc["found"]:
             cands = disc["candidates"]
             rec = cands[0]   # exact-name-then-stars sorted; the most-likely THE tool
             # A confident auto-adopt candidate: an EXACT name match that clearly
@@ -914,6 +1074,7 @@ def resolve(
 
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
+    unchecked = unchecked_tiers(availability)
     decision.update({
         "tool": tool,
         "version": version or None,
@@ -922,6 +1083,7 @@ def resolve(
         "ambiguous": ambiguous,
         "probed": availability,
         "cross_namespace_collisions": cross_namespace_collisions,
+        "unchecked_tiers": unchecked,
     })
     if cross_namespace_collisions:
         # Surface the rejection prominently so an agent reading the rationale
@@ -940,6 +1102,13 @@ def resolve(
             f"different packages. Pass language='python'|'r' (or prefer=) to disambiguate. "
             + decision["rationale"]
         )
+    # STATE the absence; never omit the key. A caller reading `decision.get("install_call")`
+    # cannot tell "there is no call to make" from "this producer forgot the field", and the
+    # difference is a KeyError at best and a skipped disclosure at worst (see the gate-error
+    # block below, which used to hang its entire note off `if decision.get("install_call")`
+    # and therefore vanished on every refusal — the one outcome where it matters most).
+    decision["identity"] = None
+    decision["install_call"] = None
     if chosen:
         identity = assess_identity(tool, chosen, availability, github_repo)
         decision["identity"] = identity
@@ -958,41 +1127,67 @@ def resolve(
                 f"# ---- confirm the above IS the tool you mean before running: ----\n"
                 + decision["install_call"])
 
+    # A TIER WE COULD NOT REACH IS NOT A TIER THAT SAID NO. Ranking silently skips an
+    # unchecked tier, so the answer reads as "the best there is" while meaning "the best of
+    # what we could reach". Only tiers ranked ABOVE the pick matter — one below it could not
+    # have won anyway, and warning about it is the noise that trains readers to skip.
+    if unchecked:
+        cutoff = TIER_ORDER.index(chosen) if chosen in TIER_ORDER else len(TIER_ORDER)
+        blocking = {t: e for t, e in unchecked.items() if TIER_ORDER.index(t) < cutoff}
+        if blocking:
+            detail = ", ".join(f"{t} ({e})" for t, e in blocking.items())
+            # Only advise a GitHub token when GitHub is what ran out. Advice aimed at the
+            # wrong host is worse than none: it sends the reader to fix something that was
+            # never broken, and teaches them the next hint is noise too.
+            gh_quota = any(t in _GITHUB_BACKED_TIERS and "rate_limited" in e
+                           for t, e in blocking.items())
+            retry = ("Re-run when the probe recovers"
+                     + (" (set GITHUB_TOKEN to raise the GitHub quota from 60/hr to 5000/hr)"
+                        if gh_quota else "") + ".")
+            if chosen is None:
+                # NOT a refusal — a refusal is a conclusion, and we reached none. "No tier
+                # found" here would be the same lie one level up: we did not find that
+                # there is nothing; we failed to look.
+                _disclose(decision,
+                          f"NOT A REFUSAL — UNRESOLVED: {detail}. We never reached a verdict "
+                          f"on '{tool}' because those probes did not answer. Nothing here "
+                          f"says '{tool}' is unavailable. {retry}", "")
+            else:
+                _disclose(decision,
+                          f"UNCHECKED TIER(S) RANKED ABOVE THIS PICK: {detail}. Those probes "
+                          f"never reached a conclusion, so '{tool}' is NOT known to be absent "
+                          f"from them — this is the best answer among the tiers we could "
+                          f"REACH, which is a different claim. {retry}",
+                          "a higher-ranked tier was NOT ruled out, only unreachable")
+
     # A BROKEN RELIABILITY GATE MUST REACH THE CALLER, not sit in `probed`.
     # `authors_gate_error` was recorded and then consumed by nobody: resolve() went on to
     # return a clean, confident `chosen: conda` + install_call, with the failure buried in
     # a sibling dict no agent reads. For a tool like Talos that is the exact reconstruction
-    # bug the gate exists to prevent, delivered with full confidence — so the same
-    # treatment the identity and collision paths already give applies here. (audit
-    # 2026-07-16 Tier 6: the fix for the silent gate was itself unconsumed and untested.)
+    # bug the gate exists to prevent, delivered with full confidence. (audit 2026-07-16
+    # Tier 6: the fix for the silent gate was itself unconsumed and untested.)
     gate_err = (availability.get("authors_gate_error") or {}).get("error")
     img_err = ((availability.get("author_image") or {}).get("assessment") or {}).get(
         "author_image_error")
-    for note in (
-        (f"AUTHORS-PATH GATE FAILED ({gate_err}) — we could NOT check whether the authors "
-         f"ship their own image/recipe, so this pick is the registry's answer to a "
-         f"question the gate never got to weigh in on. If '{tool}' bundles compiled or "
-         f"vendored pieces, a conda/pip reconstruction can silently drop them."
-         if gate_err else ""),
-        (f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' was NOT "
-         f"established here; it was unchecked."
-         if img_err else ""),
-    ):
-        if note and decision.get("install_call"):
-            decision["rationale"] = note + " || " + decision.get("rationale", "")
-            decision["install_call"] = (
-                f"# {note}\n"
-                f"# ---- the authors' own install path was NOT ruled out: ----\n"
-                + decision["install_call"])
+    if gate_err:
+        _disclose(decision,
+                  f"AUTHORS-PATH GATE FAILED ({gate_err}) — we could NOT check whether the "
+                  f"authors ship their own image/recipe, so this pick is the registry's "
+                  f"answer to a question the gate never got to weigh in on. If '{tool}' "
+                  f"bundles compiled or vendored pieces, a conda/pip reconstruction can "
+                  f"silently drop them.",
+                  "the authors' own install path was NOT ruled out")
+    if img_err:
+        _disclose(decision,
+                  f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' "
+                  f"was NOT established here; it was unchecked.",
+                  "the authors' own install path was NOT ruled out")
 
     # An IGNORED `prefer` gets the same treatment, for the same reason: the caller
-    # explicitly asked for a tier and did NOT get it. Silently handing back a
-    # different tier's install_call is indistinguishable from honoring the request —
-    # and a typo ('spak') looked identical to a real fallback. Same rule as above:
-    # the warning belongs in the string an agent copies, not in a sibling key.
-    if decision.get("prefer_ignored_reason") and decision.get("install_call"):
-        decision["install_call"] = (
-            f"# {decision['prefer_ignored_reason']}\n"
-            f"# ---- this is the {decision.get('chosen')} tier, NOT the one you asked for: ----\n"
-            + decision["install_call"])
+    # explicitly asked for a tier and did NOT get it. Silently handing back a different
+    # tier's install_call is indistinguishable from honoring the request — and a typo
+    # ('spak') looked identical to a real fallback.
+    if decision.get("prefer_ignored_reason"):
+        _disclose(decision, decision["prefer_ignored_reason"],
+                  f"this is the {decision.get('chosen')} tier, NOT the one you asked for")
     return decision

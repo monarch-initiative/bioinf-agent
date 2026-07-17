@@ -265,7 +265,7 @@ def test_probe_github_search_sorts_exact_name_then_stars(monkeypatch):
         {"full_name": "canonical/foo", "name": "foo", "stargazers_count": 200, "description": "the foo tool"},
         {"full_name": "misc/foo", "name": "foo", "stargazers_count": 50, "description": ""},
     ]}
-    monkeypatch.setattr(resolver, "_get_json", lambda *a, **k: payload)
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *a, **k: (payload, ""))
     r = resolver.probe_github_search("foo")
     assert r["found"] is True
     # exact-name matches rank ABOVE a higher-starred non-exact repo — "most likely THE tool"
@@ -275,8 +275,12 @@ def test_probe_github_search_sorts_exact_name_then_stars(monkeypatch):
 
 
 def test_probe_github_search_empty(monkeypatch):
-    monkeypatch.setattr(resolver, "_get_json", lambda *a, **k: {"items": []})
-    assert resolver.probe_github_search("nope")["found"] is False
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *a, **k: ({"items": []}, ""))
+    r = resolver.probe_github_search("nope")
+    assert r["found"] is False
+    # a CHECKED empty result carries no probe_error — that is what makes it a finding
+    # rather than a shrug, and what lets a caller refuse on it honestly.
+    assert "probe_error" not in r
 
 
 def _dead_registries(monkeypatch):

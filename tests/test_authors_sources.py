@@ -257,6 +257,41 @@ def test_author_image_probe_failure_is_disclosed_never_read_as_no_image(monkeypa
     assert "UNCHECKED" in out["recommendation"], out["recommendation"]
 
 
+def test_a_clean_ghcr_miss_does_not_claim_the_authors_ship_no_image():
+    """R2 on the SUCCESS path, not just the error path.
+
+    The probe checks ghcr.io and nothing else, yet the verdict said "no authoring
+    image/recipe found" — a claim about every registry on earth drawn from one. The blind
+    spot is not incidental: bioinformatics publishes on Docker Hub and quay (biocontainers),
+    so the registries we skip are exactly the ones our tools live on. The gate is green in
+    its own test case (uv, a Rust tool that happens to be on ghcr) and blind across the
+    actual domain — and it fails as a CONFIDENT NEGATIVE, so "the gate returns results"
+    passes while the answer is fiction.
+
+    Asserted as substring-absence on OUR OWN string (per the corpus row
+    `dorado-author-image-invisible-ghcr-only`), never against live registry text."""
+    out = A.assess_tool_sources("dorado", owner="nanoporetech", repo="dorado", sources={
+        "container_recipes": [], "env_specs": [], "build_scripts": [],
+        "author_image": None})          # a CLEAN miss: probe ran, ghcr had nothing
+    rec = out["recommendation"]
+    assert "no authoring image/recipe found" not in rec, rec
+    assert "ghcr.io" in rec and "UNCHECKED" in rec, rec
+    assert "Docker Hub" in rec and "quay" in rec, rec
+    # ...and it must NOT masquerade as a probe failure — nothing broke here
+    assert "author_image_error" not in out
+
+
+def test_a_found_author_image_carries_no_unchecked_caveat():
+    """The caveat must stay scarce: when the authors DO ship an image, nothing is unchecked
+    that matters, and a warning bolted on regardless is the noise that trains a reader to
+    skip the real one."""
+    out = A.assess_tool_sources("uv", owner="astral-sh", repo="uv", sources={
+        "container_recipes": [], "env_specs": [], "build_scripts": [],
+        "author_image": {"ref": "ghcr.io/astral-sh/uv", "source": "ghcr", "tag": "latest"}})
+    assert "UNCHECKED" not in out["recommendation"]
+    assert "adopt it by digest" in out["recommendation"]
+
+
 def test_a_broken_gate_poisons_the_install_call_not_just_probed(monkeypatch):
     """A FAILED reliability gate must reach the field an agent copies.
 

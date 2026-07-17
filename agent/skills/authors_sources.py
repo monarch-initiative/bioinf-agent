@@ -381,8 +381,21 @@ def assess_tool_sources(
         rec_txt = ("the authors ship a recipe but it installs nothing a registry route "
                    "would miss — a clean conda/pip install is the reliable least-resistance path")
     else:
-        rec_txt = ("no authoring image/recipe found — route by the registry tiers "
-                   "(conda/pip/...) as usual")
+        rec_txt = ("no recipe in the repo, and no image on ghcr.io — route by the registry "
+                   "tiers (conda/pip/...) as usual")
+    if not author_image and not image_error:
+        # R2 on the SUCCESS path. The probe checks ghcr.io and nothing else
+        # (_default_probe_ghcr_image), yet this verdict used to read "no authoring
+        # image/recipe found" — a claim about every registry on earth, drawn from one. The
+        # error path immediately below has always said this correctly; the clean-negative
+        # path, which is the COMMON one, did not. And the blind spot is not incidental:
+        # bioinformatics publishes on Docker Hub and quay (biocontainers), so the registries
+        # we skip are precisely the ones our tools live on. The gate is green in its own
+        # test case (uv, a Rust tool on ghcr) and blind across the actual domain.
+        rec_txt += (" [NB: the author-image probe covers ghcr.io ONLY — Docker Hub and "
+                    "quay.io were NOT checked, and bio tools commonly publish there. 'The "
+                    "authors ship no image' is UNCHECKED for those registries, not a "
+                    "negative finding]")
     if image_error:
         # R2 again, at the verdict layer: "we couldn't check" must never be delivered as
         # "there is nothing there". Every sentence above assumes author_image is a real

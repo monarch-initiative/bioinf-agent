@@ -2254,7 +2254,7 @@ def test_resolve_linux_asset_uses_installed_tag(monkeypatch):
         "https://github.com/o/repo/releases/download/v1.2.3/tool_linux_amd64.tar.gz",
         "https://github.com/o/repo/releases/download/v1.2.3/tool_linux_amd64.tar.gz.md5",
     ]]}
-    monkeypatch.setattr(r, "_get_json", lambda url, timeout=12: fake)
+    monkeypatch.setattr(r, "_fetch_json", lambda url, timeout=12: (fake, ""))
     got = r.resolve_linux_asset(
         "https://github.com/o/repo/releases/download/v1.2.3/tool_darwin_arm64.tar.gz")
     assert got["found"] and got["asset_name"] == "tool_linux_amd64.tar.gz"
