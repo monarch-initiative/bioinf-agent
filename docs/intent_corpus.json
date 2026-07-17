@@ -1,5 +1,5 @@
 {
- "probed_on": "2026-07-16",
+ "probed_on": "2026-07-17",
  "source": "Mined by workflow wf_432b6933-fcf (6 scenario families, live-probed against real registries), structured + adversarially verified by wf_dea34e43-d9d. Every row's actual_today was reproduced against the live resolver; expectations survived a refutation pass that rewrote 79 things and killed several rows outright.",
  "rows": [
   {
@@ -23,9 +23,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": true,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": true,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -52,9 +53,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": true,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": true,
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -83,7 +85,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -110,9 +113,10 @@
    },
    "actual_today": {
     "chosen": "binary",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -140,7 +144,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -197,9 +202,10 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -228,7 +234,8 @@
     "chosen": "cran",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -251,13 +258,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE and route to the vendor download. LOAD-BEARING GUARD FOR A FIX NOT YET WRITTEN: chosen must NEVER become 'author_image' via a name-matched image under a namespace unrelated to the tool's anchored repo owner. Adoption requires an OWNERSHIP link (nanoporetech/dorado image \u2190 github.com/nanoporetech/dorado); a name match is provenance, not identity. If a third-party image is surfaced at all it must be labelled unverified + EULA-gated (freeze would need gated=True, licenses=[...], redistributable=False per I13), never entered into the author_image tier. This row shares its `call` with cellranger-registry-decoy BY DESIGN \u2014 same input, different guard: that row asserts the refusal happens, this one asserts the future Docker Hub probe never rescues the wrong tool into the top tier. Both must hold simultaneously; neither subsumes the other, so do not dedupe them."
+    "note": "MUST REFUSE and route to the vendor download. LOAD-BEARING GUARD FOR A FIX NOT YET WRITTEN: chosen must NEVER become 'author_image' via a name-matched image under a namespace unrelated to the tool's anchored repo owner. Adoption requires an OWNERSHIP link (nanoporetech/dorado image \u2190 github.com/nanoporetech/dorado); a name match is provenance, not identity. If a third-party image is surfaced at all it must be labelled unverified + EULA-gated (freeze would need gated=True, licenses=[...], redistributable=False per I13), never entered into the author_image tier. This row shares its `call` with cellranger-registry-decoy BY DESIGN \u2014 same input, different guard: that row asserts the refusal happens, this one asserts the future Docker Hub probe never rescues the wrong tool into the top tier. Both must hold simultaneously; neither subsumes the other, so do not dedupe them.",
+    "authors_gate": "not_assessed"
    },
    "actual_today": {
     "chosen": "cran",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -286,7 +295,8 @@
     "chosen": "cran",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -313,9 +323,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -344,7 +355,8 @@
     "chosen": "bioconductor",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -371,9 +383,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -402,7 +415,8 @@
     "chosen": "cran",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -429,9 +443,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -458,9 +473,10 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -488,7 +504,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -547,7 +564,8 @@
     "chosen": "synthesis",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -575,7 +593,8 @@
     "chosen": "author_image",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -599,13 +618,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE + ASK: ONT dorado is in no registry; the lone PyPI hit is astronomy. Load-bearing REPORT assertion: the assessment MUST NOT say 'no authoring image/recipe found' \u2014 the image probe covers ghcr.io ONLY, so it must render Docker Hub/quay as UNCHECKED (Rule 2), exactly as the existing authors_gate_error path already does. Adopting nanoporetech/dorado by digest is only legitimate once an OWNERSHIP link exists (see cellranger-third-party-image-trap); from a bare name there is no anchor, so refuse. Same implementation warning as cellranger-registry-decoy: chosen=null WITH identity_confirmed=false requires the refusal path to carry the identity verdict (resolver.py:944). The 'must not say no authoring image/recipe found' clause is checkable but it is a string in OUR OWN code \u2014 assert it as substring-absence on assessment.recommendation, never against registry text."
+    "note": "MUST REFUSE + ASK: ONT dorado is in no registry; the lone PyPI hit is astronomy. Load-bearing REPORT assertion: the assessment MUST NOT say 'no authoring image/recipe found' \u2014 the image probe covers ghcr.io ONLY, so it must render Docker Hub/quay as UNCHECKED (Rule 2), exactly as the existing authors_gate_error path already does. Adopting nanoporetech/dorado by digest is only legitimate once an OWNERSHIP link exists (see cellranger-third-party-image-trap); from a bare name there is no anchor, so refuse. Same implementation warning as cellranger-registry-decoy: chosen=null WITH identity_confirmed=false requires the refusal path to carry the identity verdict (resolver.py:944). The 'must not say no authoring image/recipe found' clause is checkable but it is a string in OUR OWN code \u2014 assert it as substring-absence on assessment.recommendation, never against registry text.",
+    "authors_gate": "not_assessed"
    },
    "actual_today": {
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -661,9 +682,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -692,7 +714,8 @@
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -719,9 +742,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -749,7 +773,8 @@
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -777,9 +802,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": true,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": true,
+    "install_call_poisoned": true,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -803,9 +829,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -834,7 +861,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -862,7 +890,8 @@
     "chosen": "conda",
     "identity_confirmed": false,
     "ambiguous": true,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -892,7 +921,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -921,7 +951,8 @@
     "chosen": null,
     "identity_confirmed": null,
     "ambiguous": false,
-    "install_call_poisoned": null
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -949,7 +980,8 @@
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": true,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1006,9 +1038,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1035,9 +1068,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": true,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": true,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1066,7 +1100,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -1124,7 +1159,8 @@
     "chosen": null,
     "identity_confirmed": null,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -1152,7 +1188,8 @@
     "chosen": null,
     "identity_confirmed": null,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1206,9 +1243,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -1235,9 +1273,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -1264,9 +1303,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1322,9 +1362,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1382,7 +1423,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -1410,7 +1452,8 @@
     "chosen": "cran",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1469,7 +1512,8 @@
     "chosen": "synthesis",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -1496,9 +1540,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": true,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": true,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1525,9 +1570,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1555,7 +1601,8 @@
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": true,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1579,13 +1626,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE + ASK ('PyPI talos is a Keras tuner; if you mean a bio pipeline, give me github_repo='). A decoy's metadata must NEVER seed the authors gate: _github_owner_repo() may only return a repo that is independently anchored (user-supplied, or extracted from a registry entry that ALREADY passed identity). With no anchored repo the gate must not run and must report 'authors-path NOT assessed: no anchored repo for talos' \u2014 never 'no authoring image/recipe found', which is a claim about the USER'S tool generated from a different project's files. Same implementation warning as the other refusal rows: chosen=null WITH identity_confirmed=false needs the refusal path to carry the identity verdict (resolver.py:944 gates identity behind `if chosen:` today)."
+    "note": "MUST REFUSE + ASK ('PyPI talos is a Keras tuner; if you mean a bio pipeline, give me github_repo='). A decoy's metadata must NEVER seed the authors gate: _github_owner_repo() may only return a repo that is independently anchored (user-supplied, or extracted from a registry entry that ALREADY passed identity). With no anchored repo the gate must not run and must report 'authors-path NOT assessed: no anchored repo for talos' \u2014 never 'no authoring image/recipe found', which is a claim about the USER'S tool generated from a different project's files. Same implementation warning as the other refusal rows: chosen=null WITH identity_confirmed=false needs the refusal path to carry the identity verdict (resolver.py:944 gates identity behind `if chosen:` today).",
+    "authors_gate": "not_assessed"
    },
    "actual_today": {
     "chosen": "pip",
     "identity_confirmed": false,
     "ambiguous": false,
-    "install_call_poisoned": true
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1608,13 +1657,15 @@
     "identity_confirmed": true,
     "ambiguous": null,
     "note": "REGRESSION GUARD \u2014 VERIFIED AND KEPT AS RECORDED. conda must keep winning. A repo harvested from PyPI's colliding 'trinity' (ethereum/trinity) may anchor the PIP candidate only \u2014 never authorize author_image/authors_recipe, which outrank conda. This row goes red exactly when ethereum/trinity publishes a GHCR image and the tiers pool their evidence; that is the assertion's purpose, not its fragility \u2014 the redness would signal a REAL defect in our routing, which is the one legitimate reason to depend on third-party state. ASSERT: chosen=='conda' AND identity.confirmed is True. This row is also the PRECEDENT that rewrites the limma row: a bio-only-channel anchor beating a same-name PyPI squat WITHOUT asking is scored correct here, so it must be scored correct there. AMBIGUOUS NULLED (was false): false only because CRAN has no 'trinity' today \u2014 third-party state, and not the fact this row is about.",
-    "unassertable_reason": null
+    "unassertable_reason": null,
+    "authors_gate": "no_repo"
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": true,
-    "install_call_poisoned": false
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1643,7 +1694,8 @@
     "chosen": "conda",
     "identity_confirmed": true,
     "ambiguous": false,
-    "install_call_poisoned": false
+    "install_call_poisoned": false,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1670,9 +1722,10 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "not_assessed"
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1699,9 +1752,10 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "ambiguous": false,
     "identity_confirmed": false,
-    "install_call_poisoned": true
+    "ambiguous": false,
+    "install_call_poisoned": true,
+    "authors_gate": "assessed"
    },
    "is_correct_today": false,
    "gap_class": "outcome",
@@ -1716,10 +1770,10 @@
    "what_tier_8_must_do": "Add `decision.refusal_reason` \u2208 {needs_user_input, investigation_empty, investigation_contradicted} + the evidence that backs it, extend `probe()` to read it, add `expect.refusal_reason` to these 32 rows, and promote them. THEN this gap closes. Live proof it is real: `resolve('dorado')` never runs github discovery at all (probe_github_search fires ONLY at a registry dead-end, and PyPI's astronomy package counts as a hit) \u2014 so nanoporetech/dorado, 849 stars, exact name match, is never even looked for. That refusal would not be earned."
   },
   {
-   "gap": "the `report` gap (16 rows) is VISIBLE but not MEASURABLE",
-   "detail": "6 of them are marked assertable:false \u2014 their decision is already correct and the defect is in what identity REPORTS (identity.anchor / .evidence / .note). No assertion reads those fields. Tier 8 must add them and promote the rows.",
-   "why_not_fixed_here": "No field exists to assert on; faking one is worse than saying so.",
-   "what_tier_8_must_do": "Restate identity's warrant (bioconda membership is ECOSYSTEM, not IDENTITY \u2014 the evidence string 'bioconda is a bioinformatics-only channel' is FALSE and perl-json disproves it on the same screen), expose anchor/evidence/note, then promote."
+   "gap": "the `report` gap (16 rows) is only PARTLY measurable",
+   "detail": "PARTLY CLOSED 2026-07-17. The authors'-path half is now measurable: `expect.authors_gate` asserts which of four things happened to the reliability gate (assessed / not_assessed / errored / no_repo), and 4 rows carry it. That was NOT cosmetic \u2014 `trinity-author-image-tier-probes-the-ethereum-repo` was recorded is_correct_today=TRUE and PASSING the whole time the author tiers were probing ethereum/trinity: it asserted chosen=='conda', which was true, while the very thing it claims to guard was broken. Green with the wrong tool in it, inside the corpus built to expose exactly that. All 4 gate rows go RED against the pre-fix resolver and pass against it now \u2014 verified by reverting the fix. STILL OPEN: the identity half. 6 rows remain assertable:false because their defect is in identity.anchor / .evidence / .note and no assertion reads those fields \u2014 e.g. `perl-json` is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a proposition its own self_description ('JSON encoder/decoder') disproves on the same screen.",
+   "why_not_fixed_here": "The gate's state is a DECISION (it obeys the stability rule \u2014 a row must not go red because a maintainer edited a recipe), so it could be asserted. identity.anchor/.evidence are not exposed yet, and faking a field is worse than saying so.",
+   "what_tier_8_must_do": "Restate identity's warrant (bioconda membership is ECOSYSTEM, not IDENTITY \u2014 the evidence string 'bioconda is a bioinformatics-only channel' is FALSE and perl-json disproves it on the same screen), expose anchor/evidence/note, then promote the remaining 6."
   }
  ]
 }

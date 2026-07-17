@@ -62,7 +62,37 @@ def probe(call: dict) -> dict:
         "identity_confirmed": (None if not d.get("identity") else bool(ident.get("confirmed"))),
         "ambiguous": bool(d.get("ambiguous")),
         "install_call_poisoned": install.lstrip().startswith("#"),
+        "authors_gate": _authors_gate(d),
     }
+
+
+def _authors_gate(d: dict) -> str:
+    """Which of the four things happened to the authors'-path gate. A DECISION, not
+    registry state — so it obeys the corpus's stability rule (a row must never go red
+    because a maintainer edited a recipe).
+
+    This closes the corpus's declared blind spot #2 ("the report gap is VISIBLE but not
+    MEASURABLE"). The 2026-07-17 repo-provenance fix stopped the author tiers — which
+    outrank conda — from probing squatters' repos (`Mucephie/DORADO` for dorado,
+    `ethereum/trinity` for trinity). Not one row moved, because every assertion the grid
+    could make was about `chosen`/`identity_confirmed`, and neither changed. The grid was
+    right to stay flat and right to have declared that it could not see this; the answer
+    is to give it eyes, not to trust the fix on faith.
+
+      assessed     — the gate RAN, against a repo something vouched for
+      not_assessed — a repo candidate existed but nothing anchored it to this tool, so we
+                     declined to look. The third state: NOT "they publish no image"
+      errored      — the probe broke. Also not "they publish no image"
+      no_repo      — no repo candidate at all; there was nothing to assess
+    """
+    pr = d.get("probed") or {}
+    if pr.get("authors_gate_error"):
+        return "errored"
+    if pr.get("authors_gate_not_assessed"):
+        return "not_assessed"
+    if "author_image" in pr or "authors_recipe" in pr:
+        return "assessed"
+    return "no_repo"
 
 
 def _is_correct(expect: dict, actual: dict) -> bool:
@@ -77,6 +107,13 @@ def _is_correct(expect: dict, actual: dict) -> bool:
             return False
     if expect.get("ambiguous") is not None:
         if actual.get("ambiguous") != expect.get("ambiguous"):
+            return False
+    # Opt-in: only rows whose intent is ABOUT the authors' path carry this, so adding it
+    # cannot silently re-grade the other 50. `expect` is reviewed judgement and is never
+    # written from `actual` — a corpus that rewrites its expectations to match today's
+    # behaviour cannot fail, and a test that cannot fail is decoration.
+    if expect.get("authors_gate") is not None:
+        if actual.get("authors_gate") != expect.get("authors_gate"):
             return False
     return True
 
