@@ -1,7 +1,7 @@
 """Conftest for L15 (real-build) — the ONE tier that drives a genuine Docker
 build end-to-end (every other build test mocks the container layer).
 
-A real `freeze()` / `build_env_from_tools()` writes to two singletons that are
+A real `freeze()` / `build_env_image()` writes to two singletons that are
 bound to the working tree at import time:
   - `_env_cache`  → env_reports/_env_cache.json  (register on a successful build)
   - `_pipeline_state` → data/pipeline_drafts/     (if a draft is created)

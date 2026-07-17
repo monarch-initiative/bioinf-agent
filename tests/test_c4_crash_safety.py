@@ -154,7 +154,6 @@ def _battery():
          dict(env_name=BAD_ENV, repo_url="not://url", tool_name="t"), True),
         ("synth_fetch", E.synth_fetch, dict(repo_url="not://url"), True),
         ("synth_build", E.synth_build, dict(env_name=BAD_ENV, repo_url="not://url", tool_name="t"), True),
-        ("install_spack_package", E.install_spack_package, dict(env_name=BAD_ENV, tool_name="t"), True),
         ("install_release_binary", E.install_release_binary,
          dict(env_name=BAD_ENV, tool_name="t", url="not://url"), True),
         ("install_perl_package", E.install_perl_package, dict(env_name=BAD_ENV, module="Mod"), True),

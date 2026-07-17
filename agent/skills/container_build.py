@@ -687,29 +687,6 @@ class ContainerBuild:
             self.has_env_layer = True
         return res
 
-    # -- DECLARE: an authored file (patch / config / wrapper) --------------
-    def write_file(self, path: str, content: str, *, mode: str = "",
-                   purpose: str = "") -> dict[str, Any]:
-        """Capture an agent-authored file (a patched Makefile, a config, a wrapper
-        script) INTO the build — written now in the container AND recorded as a
-        base64 RUN so freeze bakes its exact bytes. Replaces stage_authored_artifact
-        + I9 hashing: the content lives in the recorded build, so there is no host
-        orphan to trace (the container is the captured state)."""
-        import base64
-        import shlex as _shlex
-        b64 = base64.b64encode(content.encode()).decode()
-        q = _shlex.quote(path)
-        cmd = f'mkdir -p "$(dirname {q})"; echo {b64} | base64 -d > {q}'
-        if mode:
-            cmd += f"; chmod {mode} {q}"
-        r = self.exec(cmd, timeout=120)
-        if r["returncode"] != 0:
-            return broke("container_build.write_file_failed", success=False, stderr=(r["stderr"] or "")[-400:])
-        self.longtail.append({"command": cmd, "purpose": purpose or f"authored file {path}",
-                              "evidence": f"test -f {q}"})
-        self.log.append(f"write_file {path} ({len(content)}B)")
-        return proven("container_build.write_file_ok", success=True, path=path)
-
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,

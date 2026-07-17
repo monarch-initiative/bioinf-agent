@@ -234,9 +234,9 @@ def freeze(
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
     # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
     # for a build, the biocontainer manifest digest for an adopt) via
-    # _ms._freeze.record_content_digest. The old content_digest_from_spec(draft) read
-    # finalized-only fields (packages[]/lock_sha256) a live draft lacks, collapsing
-    # to one constant for every container-native build.
+    # _ms._freeze.record_content_digest. The superseded finalized-spec digest read
+    # fields (packages[]/lock_sha256) a live draft lacks, collapsing to one constant
+    # for every container-native build — see record_content_digest's docstring.
     content_digest = _ms._freeze.compute_content_digest({
         "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
         "platform": platform, "accel": accel,

@@ -51,7 +51,7 @@ def _tier_from_purpose(purpose: str) -> str:
 def _version_from_purpose(purpose: str) -> str:
     """Pull the version anchor (commit / release / version) from a long-tail
     purpose string. `install_commands` generators emit `name (<tier> @ <ref>)`
-    for source / synthesized / script-repo / spack tiers — the ref IS the pinned
+    for source / synthesized / script-repo tiers — the ref IS the pinned
     install identity captured by the build. Returns '' if no anchor present."""
     if not purpose:
         return ""

@@ -56,7 +56,7 @@ from __future__ import annotations
 # bottom of mcp_server.py.
 from . import bridge_tools         # noqa: F401  (upload, download, stage_apptainer_image, submit_workflow_job, run_step_on_cluster, cluster_job_status, cluster_module_avail, globus_task_status)
 from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, download_resource, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
-from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_spack_package, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
+from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)
 from . import jobs_tools           # noqa: F401  (run_in_background, check_job, cancel_job, list_jobs)
 from . import observability_tools  # noqa: F401  (agent_status, snapshot_project)

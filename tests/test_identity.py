@@ -39,7 +39,6 @@ def _stub(monkeypatch, *, conda=None, pip=None, cran=None):
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: pip or {"available": False})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: cran or {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_spack", lambda n, t=12: {"available": False})
     # the authors gate needs no network for these cases
     monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
 
@@ -149,17 +148,21 @@ def test_generic_conda_forge_package_is_flagged_not_refused(monkeypatch):
 def test_missing_description_reads_as_unchecked_not_as_a_wrong_tool(monkeypatch):
     """No evidence and CONTRARY evidence must not read the same.
 
-    'this package says it parses spreadsheets' is a reason to suspect the PICK; 'this tier
-    publishes no description' is a reason to suspect our own PROBE. Crying "may not be the
-    tool you mean" about a tool we merely failed to check is the noise that trains a reader
-    to skip warnings — and a skipped warning is worth nothing. Found by the live identity
-    campaign: `vep` was the only false alarm across 30 real tools, because it routed via
-    the spack tier, which carries no metadata at all.
+    'this package says it parses spreadsheets' is a reason to suspect the PICK; 'we have no
+    description to check against' is a reason to suspect our own PROBE. Crying "may not be
+    the tool you mean" about a tool we merely failed to check is the noise that trains a
+    reader to skip warnings — and a skipped warning is worth nothing.
+
+    Vehicle: a registry entry that resolves but carries an EMPTY summary. Any tier can hand
+    us that, so the branch is reached by the probe returning nothing to read — never by a
+    claim about which tier is metadata-poor. (The original vehicle was `vep` via the spack
+    tier, retired in tier 7. Its docstring blamed Spack for "carrying no metadata at all",
+    which was false: Spack publishes a description in the package.py class docstring — our
+    HEAD-only probe discarded the body. The tier was innocent; the probe was lazy.)
     """
-    _stub(monkeypatch)
-    monkeypatch.setattr(R, "probe_spack", lambda n, t=12: {"available": True, "package": "vep"})
-    d = R.resolve("vep")
-    assert d["chosen"] == "spack"
+    _stub(monkeypatch, pip={"available": True, "latest": "1.0.0", "summary": ""})
+    d = R.resolve("foo")
+    assert d["chosen"] == "pip"
     idy = d["identity"]
     assert idy["confirmed"] is False
     assert idy["reason"] == "no_description"

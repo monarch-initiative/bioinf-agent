@@ -62,32 +62,6 @@ def test_ground_true_for_refless_command():
     assert p.ground("make && make install", "anything")["grounded"] is True
 
 
-# -- check_grounding (the gate) -------------------------------------------------
-def test_check_grounding_flags_only_ungrounded_authored():
-    corpus = "download https://good.org/a.tgz to build"
-    records = [
-        {"command": "curl https://good.org/a.tgz -o a.tgz",
-         "provenance": {"source": p.AGENT_AUTHORED}},          # grounded → ok
-        {"command": "curl https://bad.org/b.tgz -o b.tgz",
-         "provenance": {"source": p.AGENT_AUTHORED}},          # ungrounded → violation
-        {"command": "curl https://bad.org/c.tgz -o c.tgz",
-         "provenance": {"source": p.EXTRACTED}},               # extracted → trusted, skipped
-        {"command": "curl https://bad.org/d.tgz -o d.tgz",
-         "provenance": {"source": p.GENERATOR}},               # generator → trusted, skipped
-    ]
-    v = p.check_grounding(records, corpus)
-    assert len(v) == 1
-    assert v[0]["command"].endswith("b.tgz")
-    assert v[0]["ungrounded"] == ["https://bad.org/b.tgz"]
-
-
-def test_check_grounding_clean_passes():
-    corpus = "https://good.org/a.tgz"
-    records = [{"command": "curl https://good.org/a.tgz", "provenance": {"source": p.AGENT_AUTHORED}},
-               {"command": "make", "provenance": {"source": p.AGENT_AUTHORED}}]
-    assert p.check_grounding(records, corpus) == []
-
-
 # -- extract_run_lines (the EXTRACTED path) -------------------------------------
 def test_extract_run_lines_basic_and_continuation():
     dockerfile = (

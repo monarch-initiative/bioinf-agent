@@ -12,7 +12,7 @@ authored from an agent's memory — every command below is a deterministic funct
 what freeze actually recorded. It covers every build_method a freeze can produce:
 
     container-native-build   conda/pip + the non-conda tiers (jar/source/binary/
-                             cargo/go/perl/r/synthesized/spack), baked into an image
+                             cargo/go/perl/r/synthesized), baked into an image
     adopt                    a published BioContainer pulled BY DIGEST (pure-conda)
     authors-dockerfile       the tool's OWN Dockerfile at a pinned source commit
 
@@ -123,8 +123,6 @@ def render_step_commands(step: dict) -> list[str]:
         src = im.get("source") or ""
         return [f"# {name}: R package",
                 f"Rscript -e 'install.packages(\"{name}\")'   # source: {src or 'cran'}"]
-    if t == "spack":
-        return [f"# {name}: Spack package", f"spack install {im.get('package') or name}"]
     # conda umbrella step, or an install_method we can't detail — show the purpose.
     if (t in ("", "conda")) and (step.get("purpose") or "").lower().startswith("install"):
         return []   # conda handled by the conda-create block; no per-step line

@@ -94,29 +94,6 @@ def ground(command: str, corpus: str) -> dict[str, Any]:
     return {"grounded": not ungrounded, "refs": refs, "ungrounded": ungrounded}
 
 
-def check_grounding(records: Iterable[dict], corpus: str) -> list[dict]:
-    """Gate: every AGENT_AUTHORED command must be grounded against the corpus.
-    GENERATOR (our code) and EXTRACTED (verbatim from the repo) are trusted by
-    construction and skipped. Returns one violation per ungrounded authored
-    command — empty list == clean. The synthesis tier and env_honesty call this
-    so an ungrounded (possibly hallucinated) install can never ship."""
-    violations: list[dict] = []
-    for r in records:
-        prov = r.get("provenance") or {}
-        if prov.get("source") != AGENT_AUTHORED:
-            continue
-        g = ground(r.get("command", ""), corpus)
-        if not g["grounded"]:
-            violations.append({
-                "command": r.get("command", ""),
-                "ungrounded": g["ungrounded"],
-                "reason": "agent-authored install references a URL/remote not present in the "
-                          "fetched repo — possible hallucination; extract from the repo's own "
-                          "build files or correct the reference",
-            })
-    return violations
-
-
 _RUN_RE = re.compile(r"^\s*RUN\s+(.*)$", re.IGNORECASE)
 
 

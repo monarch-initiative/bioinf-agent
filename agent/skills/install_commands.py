@@ -9,10 +9,10 @@ live in three places (install primitive + install_method record + _emit_/dispatc
 now lives here, once.
 
 SELF-CONTAINED tiers (here): release binaries, git-source built with the apt C
-toolchain, and the MANUAL/half-baked tier (the agent records its own ad-hoc
-commands via ContainerBuild.run + authored files via ContainerBuild.write_file —
-no generator needed; the container is the captured state, so there are no host
-orphans). These install to /usr/local/bin and need no engine env at runtime.
+toolchain, and the MANUAL tier (the agent records its own ad-hoc commands via
+ContainerBuild.run — no generator needed; the container is the captured state,
+so there are no host orphans). These install to /usr/local/bin and need no
+engine env at runtime.
 
 TOOLCHAIN-COUPLED tiers (follow-up): cargo→rust, go→go, perl→perl all need a
 conda-provided toolchain to BUILD, so their build command must run with the engine
@@ -293,43 +293,6 @@ def pip_install_with_flags(name: str, *, version: str = "",
     )
     return {"command": cmd, "evidence": ev, "tool": name,
             "purpose": f"{name} (pip with flags)", "engine_coupled": True}
-
-
-def spack(name: str, *, package: str = "", spack_ref: str = "v0.22.1",
-          evidence: str = "") -> dict[str, Any]:
-    """Spack package (the HPC from-source registry, thousands of curated recipes).
-    Bootstraps Spack with its STORE under /opt/tools/spack (the slim multi-stage
-    runtime COPYs /opt/tools, so the dep-closure store dirs ship at the EXACT paths
-    the binaries' RPATHs point to — the relocation crux, verified by spike). Uses the
-    build container's system gcc (`spack compiler find` — never builds a compiler),
-    `spack gc` trims build-only deps to the runtime closure, the tool's bins are
-    symlinked onto /usr/local/bin, and Spack's own source is dropped so only the
-    store ships. From-source ⇒ can't be wrong-arch; presence + the in-image evidence
-    are the anchors.
-
-    `spack_ref` pins Spack (default v0.22.1 — builtin packages are in-repo there;
-    v1.0 split them out). NOTE: from-source builds are slow; this tier is practical
-    on a NATIVE amd64 host (a dep closure under emulation is pathologically slow).
-    Pass a real `evidence` that RUNS the tool — `command -v` alone won't catch a
-    mis-relocated binary that's on PATH but can't load its libs."""
-    pkg = package or name
-    root = "/opt/tools/spack"
-    parts = [
-        "command -v python3 >/dev/null 2>&1 || { apt-get update && "
-        "apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*; }",
-        f"git clone --depth 1 --branch {shlex.quote(spack_ref)} https://github.com/spack/spack {root}",
-        f"export SPACK_ROOT={root}",                 # required under Rosetta; harmless native
-        f". {root}/share/spack/setup-env.sh",
-        "spack compiler find",
-        f"spack install --fail-fast {shlex.quote(pkg)}",
-        "spack gc -y || true",                       # trim build-only deps to the runtime closure
-        f'P="$(spack location -i {shlex.quote(pkg)})"; ln -sf "$P"/bin/* /usr/local/bin/',
-        # slim: keep the store (opt/), drop Spack's own source/python so it never ships
-        f"find {root} -maxdepth 1 -mindepth 1 ! -name opt -exec rm -rf {{}} +",
-    ]
-    cmd = "set -eux; " + "; ".join(parts)
-    return {"command": cmd, "evidence": evidence or f"command -v {name}", "tool": name,
-            "purpose": f"{name} (spack {spack_ref})"}
 
 
 def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: str = "",

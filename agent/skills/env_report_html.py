@@ -262,7 +262,6 @@ _ASSURANCE_BADGE = {
     "built_unpinned":           ("na",  "⚠ unpinned version (drifts)"),
     "cpan_tofu":                ("na",  "⚠ CPAN (unverified, TOFU)"),
     "repo_tofu":                ("na",  "⚠ repo version (unverified, TOFU)"),
-    "spec_pinned_tofu":         ("na",  "⚠ spack spec (unverified, TOFU)"),
     "command_pinned":           ("na",  "⚠ literal command (unverified)"),
     "unpinned":                 ("na",  "⚠ unpinned (floating branch — drifts)"),
 }

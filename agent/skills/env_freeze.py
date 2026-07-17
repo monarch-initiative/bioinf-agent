@@ -274,8 +274,6 @@ def _replay_assurance(tier: str, im: dict) -> tuple[str, bool]:
         if src.startswith("github:") and _is_commit_sha(ref):
             return "commit_pinned", True
         return "repo_tofu", False
-    if tier == "spack":
-        return "spec_pinned_tofu", False
     if tier == "pip":   # only flag-bearing pip reaches a longtail step (flagless → engine lock)
         return "command_pinned", False
     return "unanchored", False
@@ -379,11 +377,6 @@ def _map_install_spec(
                                        engine_coupled=im.get("engine_coupled", False),
                                        repo=im.get("source") or "",
                                        commit=im.get("commit_sha") or "")}
-
-    if t == "spack":
-        return {"spec": ic.spack(name, package=im.get("package") or name,
-                                 spack_ref=im.get("spack_ref") or "v0.22.1",
-                                 evidence=im.get("evidence") or "")}
 
     if t == "cargo":
         return {"spec": ic.cargo(name, im.get("crate") or name, version=im.get("version") or "",
@@ -690,102 +683,3 @@ def build_env_image(
     return result
 
 
-# R needs its toolchain (compile C/C++/Fortran source pkgs) — the resolver-tier
-# names for R, mapped to the engine specs (build_env_image uses the install_method
-# 'r_install' key; this is the resolve→route path's equivalent).
-# `r_github` belongs here too: route() emits an `Rscript -e 'remotes::install_github(...)'`
-# spec for it exactly as it does for cran/bioconductor. Omitting it meant needs_r stayed
-# False, r-base was never injected, and the build ran Rscript in an image with no R
-# (audit 2026-07-16). Any tier whose install spec shells out to Rscript needs the toolchain.
-_R_TIERS = {"cran", "bioconductor", "r_github"}
-
-
-def build_env_from_tools(
-    name: str,
-    tools: list[str],
-    *,
-    github_repos: Optional[dict] = None,
-    languages: Optional[dict] = None,
-    prefers: Optional[dict] = None,
-    version: str = "",
-    channels: Optional[list[str]] = None,
-    platform: str = "linux/amd64",
-    accelerator: Optional[dict] = None,
-    license_gated: bool = False,
-    licenses: Optional[list[str]] = None,
-    redistributable: bool = True,
-    engine=None,
-    resolve_fn: Callable[..., dict] = _resolver.resolve,
-) -> dict[str, Any]:
-    """Declarative container-native build straight from TOOL NAMES — no host install.
-
-    For each requested tool: resolve() the best tier, route() it to an EnvBuild
-    action, and build the image (gated by env_honesty.check_build). This is the
-    'call once per tool, get a trustworthy artifact' entry point — the container-
-    native alternative to the host install→draft→freeze flow (and the Phase-E
-    enabler). Covers the resolvable tiers (conda/pip/cran/bioconductor/binary/
-    source); cargo/go/perl come via their install primitives → build_env_image.
-
-    `github_repos`/`languages`/`prefers` are per-tool {tool: value} hints passed to
-    resolve(). `resolve_fn` is injectable for testing. Refuses (success=False) on an
-    ambiguous resolve or a tier with no container-native route, BEFORE building."""
-    github_repos, languages, prefers = github_repos or {}, languages or {}, prefers or {}
-    conda_specs: list[str] = []
-    conda_verify: list[tuple[str, str]] = []
-    pip_specs: list[str] = []
-    pip_verify: list[tuple[str, str]] = []
-    tool_actions: list[dict] = []
-    needs_r = False
-
-    for ts in tools:
-        tool, _, ver = ts.replace("==", "=").partition("=")
-        tool, ver = tool.strip(), ver.strip()
-        d = resolve_fn(tool, version=ver, github_repo=github_repos.get(tool, ""),
-                       language=languages.get(tool, ""), prefer=prefers.get(tool, ""))
-        if d.get("ambiguous"):
-            return refused("build.resolve_ambiguous", success=False,
-                           stage="resolve", tool=tool, reason=d.get("rationale"))
-        action = _resolver.route(d, platform)
-        kind = action.get("kind")
-        if kind == "conda":
-            # Honor an EXPLICIT user pin (samtools=1.21); otherwise add the BARE
-            # name and let the solver co-resolve compatible versions. Pinning every
-            # auto-resolved package to its independent latest over-constrains the
-            # co-solve (e.g. numpy=latest vs numba's older-numpy requirement →
-            # python_abi conflict). The lock still records exact versions, so
-            # reproducibility is preserved; bare names just hand the SAT problem to
-            # the solver instead of pre-deciding it wrong.
-            base = action["spec"].split("=")[0]
-            conda_specs.append(f"{base}={ver}" if ver else base)
-            conda_verify.append((tool, _conda_presence_check(tool)))
-        elif kind == "pip":
-            pip_specs.append(action["spec"])
-            pip_verify.append((tool, _pip_presence_check(tool)))
-        elif kind == "tool":
-            tool_actions.append(action)
-            if action.get("tier") in _R_TIERS:
-                needs_r = True
-        else:  # defer / no automatable tier
-            return refused("build.route_no_tier", success=False,
-                           stage="route", tool=tool,
-                           reason=action.get("reason"), decision=d)
-
-    if needs_r:  # R toolchain for the engine (compiles source CRAN/Bioc pkgs)
-        for s in _TOOLCHAIN_SPECS["r_install"]:
-            if s not in conda_specs:
-                conda_specs.append(s)
-
-    conda_specs = ensure_python_for_pip(conda_specs, bool(pip_specs))
-    eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
-                  accelerator=accelerator, license_gated=license_gated,
-                  licenses=licenses, redistributable=redistributable)
-    if conda_specs:
-        eb.add_conda(conda_specs, verify=conda_verify)
-    if pip_specs:
-        eb.add_pip(pip_specs, verify=pip_verify)
-    for action in tool_actions:
-        eb.add_tool(action["spec"])
-
-    result = eb.run()
-    result["request_key"] = eb.request_key()
-    return result

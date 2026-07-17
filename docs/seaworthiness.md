@@ -6,8 +6,12 @@ green, no uncaught crash, no silent failure. This doc defines that precisely,
 makes it measurable, and splits it into what we can certify locally now (v1) vs
 what needs a real cluster (v2).
 
-Canonical over [stress_test_campaign.md](stress_test_campaign.md) (the tool-tier
-exercise is now just one input to this). Findings log: [stress_findings.md](stress_findings.md).
+Findings log: [stress_findings.md](stress_findings.md).
+
+**The one open capability row:** GPU / accelerators — the I12 honesty firewall is
+certified, but a real CUDA run needs the cluster (this mac is Metal-only), so it
+is user-driven. Everything else that was tracked as a hand-maintained checkbox is
+now read off the dashboard instead, which is derived and cannot flatter us.
 
 ## Why not "100% coverage" or "no known bugs"
 - *100% coverage* is the wrong flag — most of the 452 terminals don't bear on

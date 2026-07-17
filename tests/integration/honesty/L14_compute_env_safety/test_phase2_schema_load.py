@@ -71,6 +71,61 @@ def _wrap(env: dict) -> dict:
 
 
 # ===========================================================================
+# 0. the compute_env block itself — closed key set
+# ===========================================================================
+
+class TestEnvClosedKeys:
+    """The env block must reject unknown keys, exactly as its nested `slurm` /
+    `data_transfer` blocks already do.
+
+    It did not, and the two typos below are why that matters (tier 7):
+
+      data_transfr:          the globus block is never seen, so the env silently
+                             falls back to scp_head_node and GB-scale .sif pushes
+                             go over the HEAD NODE — the precise thing choosing
+                             globus exists to prevent. Silent, and wrong in the
+                             one direction the user has a standing rule about.
+      agent_scratch_targets: no scratch target, so run_step_on_cluster refuses
+                             much later with "env has no scratch target" and
+                             nothing connects that to the typo.
+
+    A key we never read is a setting that silently does nothing. The cost of a
+    typo should be an error naming the key, not a head-node transfer."""
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad_key", [
+        "data_transfr",             # → silent scp fallback
+        "agent_scratch_targets",    # plural — → no sandbox
+        "agent_common_data_targets",
+        "container_upload_targets",
+        "slurmm",
+        "lol_wut",
+    ])
+    def test_refuses_unknown_env_key(self, tmp_path, bad_key):
+        env = _base_env(**{bad_key: {"path": "/x"}})
+        with pytest.raises(ConfigError, match="unknown keys"):
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        # the message must NAME the offending key — that is the whole point
+        try:
+            compute_access.load_access(_write(tmp_path, _wrap(env)))
+        except ConfigError as e:
+            assert bad_key in str(e)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("good_key,value", [
+        ("email", "a@b.org"),
+        ("job_manager", "slurm"),
+        ("agent_scratch_target", None),
+        ("data_transfer", None),
+    ])
+    def test_allows_every_key_the_code_actually_reads(self, tmp_path, good_key, value):
+        """The guard must not refuse a legitimate key — a closed set that is too
+        tight breaks real configs, which is how closed-key checks get reverted."""
+        env = _base_env(**{good_key: value})
+        compute_access.load_access(_write(tmp_path, _wrap(env)))
+
+
+# ===========================================================================
 # 1. agent_scratch_target — single dir-access block
 # ===========================================================================
 
@@ -751,17 +806,11 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
 
 class TestJobManager:
     """`job_manager` names the scheduler an env runs jobs through. A CONTROLLED
-    enum — only slurm (sbatch/sacct) and bash (plain shell script) are wired.
-    Optional: the default follows env `type` so a local machine never silently
-    claims slurm."""
+    enum — the config validator refuses anything outside VALID_JOB_MANAGERS.
 
-    @pytest.mark.integration
-    @pytest.mark.parametrize("jm", ["slurm", "bash"])
-    def test_accepts_valid_enum_values(self, tmp_path, jm):
-        env = _base_env(job_manager=jm)
-        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
-        env_blk = compute_access.get_compute_env("cluster", access)
-        assert compute_access.get_job_manager(env_blk) == jm
+    Only the REFUSAL is tested, because refusing is all that is wired: nothing
+    reads job_manager to dispatch on, so there is no accessor and no default to
+    assert. When bash execution ships, the default-by-env-type belongs here."""
 
     @pytest.mark.integration
     @pytest.mark.parametrize("bad", ["pbs", "lsf", "SLURM", "sge", ""])
@@ -770,27 +819,3 @@ class TestJobManager:
         with pytest.raises(ConfigError, match="job_manager"):
             compute_access.load_access(_write(tmp_path, _wrap(env)))
 
-    @pytest.mark.integration
-    def test_ssh_env_defaults_to_slurm(self, tmp_path):
-        env = _base_env()  # type=ssh, no job_manager
-        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
-        assert compute_access.get_job_manager(
-            compute_access.get_compute_env("cluster", access)) == "slurm"
-
-    @pytest.mark.integration
-    def test_local_env_defaults_to_bash_not_slurm(self, tmp_path):
-        """The bug the user caught: a local machine has no scheduler, so an unset
-        job_manager must default to bash, never silently to slurm."""
-        env = {"name": "laptop", "type": "local", "container_upload_target": None}
-        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
-        assert compute_access.get_job_manager(
-            compute_access.get_compute_env("laptop", access)) == "bash"
-
-    @pytest.mark.integration
-    def test_explicit_bash_allowed_on_ssh_env(self, tmp_path):
-        """A user may drive an ssh node by hand (no sbatch) — explicit bash wins
-        over the type-based default."""
-        env = _base_env(job_manager="bash")
-        access = compute_access.load_access(_write(tmp_path, _wrap(env)))
-        assert compute_access.get_job_manager(
-            compute_access.get_compute_env("cluster", access)) == "bash"

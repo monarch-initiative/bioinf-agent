@@ -1710,52 +1710,6 @@ def test_request_key_is_order_independent():
     assert request_key([("x", "1")], "linux-64", "cuda") != request_key([("x", "1")], "linux-64")
 
 
-def test_content_digest_is_stable_and_sensitive():
-    """Same env bytes → same digest; any captured anchor changing → different
-    digest. This is what makes the cache trustworthy."""
-    import json
-    from agent.skills.freeze import content_digest_from_spec
-    spec = {
-        "lock_sha256": "abc123",
-        "packages": [
-            {"name": "tool", "install_method": {"type": "binary", "sha256": "ff" * 32}},
-            {"name": "repo", "install_method": {"type": "source", "commit_sha": "deadbeef"}},
-        ],
-        "authored_artifacts": [{"sha256": "11" * 32}],
-        "docker": {"platform": "linux/amd64"},
-        "accelerator": {"type": "cuda"},
-    }
-    d1 = content_digest_from_spec(spec)
-    assert d1.startswith("sha256:")
-    # Re-deriving from an equivalent dict (different key order) is identical.
-    assert content_digest_from_spec(dict(reversed(list(spec.items())))) == d1
-    # Flip the lock → different digest.
-    spec2 = {**spec, "lock_sha256": "xyz789"}
-    assert content_digest_from_spec(spec2) != d1
-    # Flip a binary sha256 → different digest.
-    spec3 = json.loads(json.dumps(spec))
-    spec3["packages"][0]["install_method"]["sha256"] = "00" * 32
-    assert content_digest_from_spec(spec3) != d1
-    # Flip platform → different digest (same env, different target = different artifact).
-    spec4 = json.loads(json.dumps(spec))
-    spec4["docker"]["platform"] = "linux/arm64"
-    assert content_digest_from_spec(spec4) != d1
-
-
-def test_content_digest_from_spec_is_degenerate_on_a_draft():
-    """A LIVE draft has no packages[]/lock_sha256 (those are finalized-only), so
-    content_digest_from_spec collapses to ONE constant for any draft — which is why
-    the freeze record must NOT use it as the anchor. This guards the regression the
-    shakeout caught (4 distinct envs → identical record content_digest)."""
-    from agent.skills.freeze import content_digest_from_spec
-    draft_a = {"install_steps": [{"tool": "conda", "subcommand": "install",
-                                  "installed_packages": [{"name": "pyfaidx"}]}]}
-    draft_b = {"install_steps": [{"tool": "git", "subcommand": "synthesize",
-                                  "installed_packages": [{"name": "bwa"}]}]}
-    # Two clearly-different envs hash the SAME from a draft → degenerate (the bug).
-    assert content_digest_from_spec(draft_a) == content_digest_from_spec(draft_b)
-
-
 def test_record_content_digest_picks_the_what_was_got_anchor():
     """The freeze anchor by mode: EnvBuild digest for a build, biocontainer manifest
     digest for an adopt, request hash only as a last resort. Distinct envs get
@@ -1880,6 +1834,55 @@ def test_rank_decision_prefer_override_and_fallthrough():
     assert rank_decision({"conda": {"available": False}})["chosen"] is None
 
 
+def test_an_ignored_prefer_is_disclosed_never_silent():
+    """The caller asked for a tier and did NOT get it. Say so.
+
+    This test's neighbour above asserts `prefer='source'` → conda and calls that
+    "ignored, normal order wins" — it encoded the SILENCE as correct. It isn't:
+    a caller who passes prefer='pip' and receives conda cannot tell that from
+    conda being what they asked for, and a TYPO ('spak') produced the exact same
+    confident conda install_call as a real fallback. Same shape as every other
+    finding in this audit — the information existed and reached nobody."""
+    from agent.skills.resolver import rank_decision
+    avail = {"conda": {"available": True}}
+
+    # honored → no noise (a warning that fires when nothing is wrong gets skipped)
+    ok = rank_decision(avail, prefer="conda")
+    assert ok["prefer_honored"] is True and not ok["prefer_ignored_reason"]
+    # not passed at all → not a judgement either way
+    assert rank_decision(avail)["prefer_honored"] is None
+
+    # unavailable tier → ignored, and SAID so
+    miss = rank_decision(avail, prefer="pip")
+    assert miss["chosen"] == "conda"
+    assert miss["prefer_honored"] is False
+    assert "IGNORED" in miss["prefer_ignored_reason"]
+    assert "pip" in miss["rationale"] and "IGNORED" in miss["rationale"]
+
+    # a typo must not read like a considered fallback — name it as unknown
+    typo = rank_decision(avail, prefer="spak")
+    assert typo["prefer_honored"] is False
+    assert "not a known tier" in typo["prefer_ignored_reason"]
+
+    # and it survives to the string an agent actually copies + runs
+    import agent.skills.resolver as R
+    R_probe = dict(probe_conda=R.probe_conda, probe_pypi=R.probe_pypi, probe_cran=R.probe_cran,
+                   probe_bioconductor=R.probe_bioconductor,
+                   probe_authors_sources=R.probe_authors_sources)
+    try:
+        R.probe_conda = lambda n, t=12: {"available": True, "channel": "bioconda",
+                                         "latest": "1.21", "summary": "SAM BAM CRAM files"}
+        R.probe_pypi = R.probe_cran = R.probe_bioconductor = lambda n, t=12: {"available": False}
+        R.probe_authors_sources = lambda *a, **k: {}
+        call = R.resolve("samtools", prefer="spak")["install_call"]
+        assert call.startswith("#"), "the doubt must lead the copied string, not sit in a sibling key"
+        assert "IGNORED" in call and "NOT the one you asked for" in call
+        assert "install_conda_packages" in call, "still usable — disclosure is not refusal"
+    finally:
+        for k, v in R_probe.items():
+            setattr(R, k, v)
+
+
 def test_install_call_maps_each_tier_to_its_primitive():
     from agent.skills.resolver import _install_call
     assert "install_conda_packages" in _install_call("conda", "samtools", "1.21", {"channel": "bioconda"}, "")
@@ -1957,7 +1960,6 @@ def test_resolve_cross_namespace_collision_disqualifies_pip(monkeypatch):
     })
     monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "gab"})
     monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
         "repo_exists": True, "has_release_assets": False, "assets": [],
     })
@@ -1999,7 +2001,6 @@ def test_resolve_pip_anchored_to_repo_is_kept(monkeypatch):
     })
     monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "pyhmmer"})
     monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
         "repo_exists": True, "has_release_assets": False, "assets": [],
     })
@@ -2024,7 +2025,6 @@ def test_resolve_no_github_repo_no_collision_check(monkeypatch):
     })
     monkeypatch.setattr(r, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "gab"})
 
     d = r.resolve("gab", timeout=5)   # NO github_repo
     assert d["chosen"] == "pip"
@@ -2046,7 +2046,6 @@ def test_resolve_cran_cross_namespace_collision(monkeypatch):
         "bug_reports": "https://example.com/bugs",
     })
     monkeypatch.setattr(r, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(r, "probe_spack", lambda n, t=12: {"available": False, "package": "x"})
     monkeypatch.setattr(r, "probe_github", lambda repo, t=12: {
         "repo_exists": True, "has_release_assets": False, "assets": [],
     })
@@ -2507,11 +2506,6 @@ def test_non_conda_installs_reads_draft_install_steps():
     d = _draft_with_binary()
     nc = freeze.non_conda_installs(d)
     assert [(x["name"], x["type"]) for x in nc] == [("seqkit", "binary")]
-    assert freeze.has_conda_packages(d) is False   # only bootstrap python present
-    # a real 'conda install' step flips has_conda_packages on
-    d["install_steps"].append({"step": 3, "tool": "conda", "subcommand": "install",
-                               "installed_packages": [{"name": "samtools", "version": "1.21"}]})
-    assert freeze.has_conda_packages(d) is True
 
 
 def _db():
@@ -3641,77 +3635,6 @@ def test_envcache_hit_must_still_satisfy_the_honesty_contract(tmp_path):
     assert cache.lookup_verified("missing") == (None, [])
 
 
-def test_resolver_route_maps_every_tier():
-    """route() maps a decision to an EnvBuild action across ALL tiers: conda spec /
-    pip spec / R generator (cran|bioc) / release_binary / source generator."""
-    from agent.skills.resolver import route
-    # conda
-    a = route({"chosen": "conda", "tool": "samtools", "version": "1.21",
-               "probed": {"conda": {"channel": "bioconda"}}})
-    assert a["kind"] == "conda" and a["spec"] == "samtools=1.21" and a["channel"] == "bioconda"
-    # pip → engine --pypi spec
-    a = route({"chosen": "pip", "tool": "cyvcf2", "version": "0.31.1", "probed": {"pip": {}}})
-    assert a["kind"] == "pip" and a["spec"] == "cyvcf2==0.31.1"
-    # cran / bioconductor → R install generator (engine-coupled Rscript)
-    a = route({"chosen": "cran", "tool": "ape", "probed": {"cran": {}}})
-    assert a["kind"] == "tool" and a["spec"]["engine_coupled"] and "install.packages" in a["spec"]["command"]
-    a = route({"chosen": "bioconductor", "tool": "DESeq2", "probed": {"bioconductor": {}}})
-    assert a["kind"] == "tool" and "BiocManager::install" in a["spec"]["command"]
-    # binary → picks the linux/amd64 asset (rejects wrong-arch + wrong-os), emits a
-    # release_binary generator spec
-    a = route({"chosen": "binary", "tool": "sylph", "github_repo": "bluenote-1577/sylph",
-               "probed": {"binary": {"assets": [
-                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-linux-x86_64.tar.gz",
-                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-linux-aarch64.tar.gz",
-                   "https://github.com/bluenote-1577/sylph/releases/download/v0.8.0/sylph-macos-x86_64.tar.gz"]}}})
-    assert a["kind"] == "tool" and a["spec"]["tool"] == "sylph" and a["needs_sha256"] is True
-    assert "linux-x86_64" in a["spec"]["command"] and "aarch64" not in a["spec"]["command"] \
-        and "macos" not in a["spec"]["command"]
-    # source → clone at the release tag
-    a = route({"chosen": "source", "tool": "seqtk", "github_repo": "lh3/seqtk",
-               "probed": {"source": {"tag": "v1.4"}}})
-    assert a["kind"] == "tool" and "github.com/lh3/seqtk" in a["spec"]["command"] and "v1.4" in a["spec"]["command"]
-    # no automatable tier → honest defer
-    assert route({"chosen": None, "tool": "x"})["kind"] == "defer"
-
-
-def test_every_rscript_shelling_tier_injects_the_r_toolchain():
-    """PROPERTY: if route() emits a spec that shells out to Rscript, that tier MUST be in
-    env_freeze._R_TIERS — otherwise build_env_from_tools leaves needs_r False, never
-    injects r-base, and bakes an image that runs Rscript with no R in it.
-
-    Regression for audit 2026-07-16: `r_github` emitted an
-    `Rscript -e 'remotes::install_github(...)'` spec but was missing from _R_TIERS, so the
-    declarative path built a broken image for every language='r' + github_repo request.
-
-    Written as a property over all tiers rather than an assertion about r_github, so the
-    NEXT R-shelling tier someone adds is covered on the day it lands.
-    """
-    from agent.skills.resolver import TIER_ORDER, route
-    from agent.skills.env_freeze import _R_TIERS
-
-    probes = {"cran": {}, "bioconductor": {}, "r_github": {"repo_exists": True},
-              "conda": {"channel": "bioconda"}, "pip": {}, "spack": {"package": "x"},
-              "binary": {"assets": []}, "source": {"tag": "v1"}, "synthesis": {},
-              "author_image": {}, "authors_recipe": {"recipe": {"path": "Dockerfile"}}}
-    offenders = []
-    for tier in TIER_ORDER:
-        try:
-            a = route({"chosen": tier, "tool": "mypkg", "version": "",
-                       "probed": {tier: probes.get(tier, {})},
-                       "github_repo": "owner/mypkg", "language": "r"})
-        except Exception:
-            continue
-        if "Rscript" in str(a.get("spec", "")) and tier not in _R_TIERS:
-            offenders.append(tier)
-    assert not offenders, (
-        f"tier(s) {offenders} emit an Rscript spec but are absent from _R_TIERS — "
-        f"build_env_from_tools would bake an image with no R installed")
-    # and the toolchain it injects must actually contain R
-    from agent.skills.env_freeze import _TOOLCHAIN_SPECS
-    assert "r-base" in _TOOLCHAIN_SPECS["r_install"]
-
-
 def test_install_command_jar_generator_self_contained():
     """jar generator (C1): self-contained (JRE via apt only if java absent),
     sha256-anchored, single-jar AND zip-distribution wrappers, honest evidence."""
@@ -4578,61 +4501,6 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
 # (no host install). The container-native "call once per tool" entry point.
 # ---------------------------------------------------------------------------
 
-def test_build_env_from_tools_assembles_plan_across_tiers(monkeypatch):
-    """resolve->route->EnvBuild: a conda tool, a pip tool, an R (cran) tool, and a
-    binary are each resolved + routed to the right EnvBuild call; the R toolchain is
-    injected. EnvBuild is stubbed to capture the assembled plan (no container)."""
-    from agent.skills import env_freeze as ef
-
-    decisions = {
-        "samtools": {"chosen": "conda", "tool": "samtools", "version": "1.21",
-                     "probed": {"conda": {"channel": "bioconda"}}},
-        "pyfaidx":  {"chosen": "pip", "tool": "pyfaidx", "probed": {"pip": {}}},
-        "ape":      {"chosen": "cran", "tool": "ape", "probed": {"cran": {}}},
-        "sylph":    {"chosen": "binary", "tool": "sylph", "github_repo": "x/sylph",
-                     "probed": {"binary": {"assets": ["https://x/sylph-linux-x86_64.tar.gz"]}}},
-    }
-    plan = {"conda": [], "conda_verify": [], "pip": [], "tools": []}
-    class FakeEB:
-        def __init__(self, *a, **k): plan["init"] = k
-        def add_conda(self, specs, verify): plan["conda"] = specs; plan["conda_verify"] = verify
-        def add_pip(self, specs, verify): plan["pip"] = specs
-        def add_tool(self, spec): plan["tools"].append(spec)
-        def run(self): return {"success": True, "image": "x:1"}
-        def request_key(self): return "rk"
-    monkeypatch.setattr(ef, "EnvBuild", FakeEB)
-
-    res = ef.build_env_from_tools("demo", ["samtools=1.21", "pyfaidx", "ape", "sylph"],
-                                  github_repos={"sylph": "x/sylph"},
-                                  resolve_fn=lambda tool, **k: decisions[tool])
-    assert res["success"] and res["request_key"] == "rk"
-    assert "samtools=1.21" in plan["conda"]
-    # R toolchain injected because a cran tool is present
-    assert {"r-base", "c-compiler", "cxx-compiler", "fortran-compiler"} <= set(plan["conda"])
-    assert plan["pip"] == ["pyfaidx"]
-    # R (cran) + binary became add_tool generator specs
-    tool_tools = {t["tool"] for t in plan["tools"]}
-    assert "ape" in tool_tools and "sylph" in tool_tools
-    # conda verify is presence-based: a CLI on PATH, else installed dist-metadata
-    # (so library-only packages validate too). Both clauses name the tool token.
-    sv = dict(plan["conda_verify"])
-    assert sv["samtools"].startswith("command -v samtools")
-    assert "importlib.metadata" in sv["samtools"]
-
-
-def test_build_env_from_tools_refuses_ambiguous_and_unroutable(monkeypatch):
-    """Refuses BEFORE building on an ambiguous resolve or a tier with no route."""
-    from agent.skills import env_freeze as ef
-    monkeypatch.setattr(ef, "EnvBuild", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not build")))
-    r = ef.build_env_from_tools("demo", ["ape"],
-                                resolve_fn=lambda tool, **k: {"ambiguous": True, "rationale": "ape is PyPI AND CRAN"})
-    assert r["success"] is False and r["stage"] == "resolve"
-    # no automatable tier -> route returns defer -> refuse
-    r = ef.build_env_from_tools("demo", ["weirdtool"],
-                                resolve_fn=lambda tool, **k: {"chosen": None, "tool": tool})
-    assert r["success"] is False and r["stage"] == "route"
-
-
 def test_container_native_multistage_runtime_provisions_jar_jre():
     """Phase D: a jar tool's wrapper needs java at RUNTIME — the runtime stage adds a
     JRE only when a jar step is present (non-jar images stay lean)."""
@@ -4728,27 +4596,6 @@ def test_resolver_filters_serial_version_anomaly():
     assert r._pick_latest(["20151031", "0.1.1"]) == "0.1.1"
     assert r._pick_latest(["0.2.0", "0.3.3", "0.3.2"]) == "0.3.3"
     assert r._pick_latest(["20151031"]) == "20151031"   # all-serial -> still resolves
-
-
-def test_build_env_from_tools_bare_name_for_unpinned_conda(monkeypatch):
-    """Unpinned conda tools join the co-solve as BARE names (the solver co-resolves
-    compatible versions); an explicit user pin is honored. Over-pinning each to its
-    independent latest is what broke GAB's numba/numpy co-solve."""
-    from agent.skills import env_freeze as ef
-    cap = {}
-    class FakeEB:
-        def __init__(self, *a, **k): pass
-        def add_conda(self, specs, verify): cap["conda"] = specs
-        def add_pip(self, *a, **k): pass
-        def add_tool(self, *a, **k): pass
-        def run(self): return {"success": True, "image": "x:1"}
-        def request_key(self): return "rk"
-    monkeypatch.setattr(ef, "EnvBuild", FakeEB)
-    dec = lambda tool, **k: {"chosen": "conda", "tool": tool, "version": k.get("version", ""),
-                             "probed": {"conda": {"latest": "2.4.6", "channel": "conda-forge"}}, "found": True}
-    ef.build_env_from_tools("d", ["numpy", "samtools=1.21"], resolve_fn=dec)
-    assert "numpy" in cap["conda"] and "numpy=2.4.6" not in cap["conda"]   # bare (no auto-latest pin)
-    assert "samtools=1.21" in cap["conda"]                                  # explicit pin honored
 
 
 def test_runtime_image_is_self_activating_env_on_path():
@@ -5243,16 +5090,6 @@ def test_build_apt_includes_jq_for_swh_fallback():
     assert " jq " not in f" {_RUNTIME_APT} "   # never ships
 
 
-def test_env_vendor_stub_returns_explicit_not_implemented():
-    """The HEAVY mirror sidecar (audit-proof mode) is a stub for now — must
-    refuse explicitly rather than silently doing nothing. Adding it later is a
-    contained change against this contract."""
-    from agent.skills import env_vendor
-    r = env_vendor.materialize([{"install_method": {"type": "release_binary"}}], "/tmp/x")
-    assert r["success"] is False
-    assert "audit_proof" in r["reason"] or "future heavy-mode" in r["reason"]
-
-
 # =============================================================================
 # Batch-1 stress-test fixes (2026-05-27) — adopt-runs-honesty-contract (D2 + D3)
 # =============================================================================
@@ -5466,66 +5303,6 @@ def test_biocontainer_resolves_to_highest_version_when_unpinned(monkeypatch):
     assert out["found"] is True
     assert out["tag"] == "6.0.0--pyhdfd78af_3"
     assert "6" * 64 in (out["image_by_digest"] or "")
-
-
-def test_lookup_tag_by_digest_returns_matching_tag(monkeypatch):
-    """Backfill helper: given a manifest digest, find the BioContainer tag
-    that currently points at it. Used to populate adopt_source on legacy
-    freeze records (where the resolver's output wasn't preserved)."""
-    from agent.skills import biocontainers
-    fake_tags = [
-        {"name": "1.21--h50ea8bc_0", "manifest_digest": "sha256:" + "a" * 64},
-        {"name": "1.23.1--ha83d96e_0", "manifest_digest": "sha256:" + "b" * 64},
-        {"name": "1.22--abcdef_0", "manifest_digest": "sha256:" + "c" * 64},
-    ]
-    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: fake_tags)
-    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "b" * 64)
-    assert out is not None
-    assert out["repo"] == "samtools"
-    assert out["tag"] == "1.23.1--ha83d96e_0"
-    assert out["image_by_tag"] == ("quay.io/biocontainers/samtools:"
-                                    "1.23.1--ha83d96e_0")
-    assert out["image_by_digest"].endswith("@sha256:" + "b" * 64)
-    assert out["digest"] == "sha256:" + "b" * 64
-
-
-def test_lookup_tag_by_digest_returns_none_when_no_match(monkeypatch):
-    """When the digest no longer matches any active tag (upstream deleted
-    or re-pointed it), return None so the caller surfaces a clear message
-    instead of silently producing wrong metadata."""
-    from agent.skills import biocontainers
-    monkeypatch.setattr(biocontainers, "_quay_tags",
-                        lambda *a, **k: [
-                            {"name": "9.9--x_0", "manifest_digest": "sha256:" + "9" * 64},
-                        ])
-    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "0" * 64)
-    assert out is None
-
-
-def test_lookup_tag_by_digest_handles_network_failure(monkeypatch):
-    """Quay API unreachable → lookup returns None, not a crash. Matches
-    resolve_biocontainer's swallow-failures posture."""
-    from agent.skills import biocontainers
-    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: [])
-    out = biocontainers.lookup_tag_by_digest("samtools", "sha256:" + "1" * 64)
-    assert out is None
-
-
-def test_lookup_tag_by_digest_picks_highest_version_on_collision(monkeypatch):
-    """If multiple tags share a manifest digest (rare but legal — quay
-    sometimes re-uses a layer set under different tags), the lookup picks
-    the highest semver-ish tag. Defensible default: matches what the
-    forward resolver does."""
-    from agent.skills import biocontainers
-    same_digest = "sha256:" + "d" * 64
-    fake_tags = [
-        {"name": "1.20--x_0", "manifest_digest": same_digest},
-        {"name": "1.22--x_0", "manifest_digest": same_digest},
-        {"name": "1.21--x_0", "manifest_digest": same_digest},
-    ]
-    monkeypatch.setattr(biocontainers, "_quay_tags", lambda *a, **k: fake_tags)
-    out = biocontainers.lookup_tag_by_digest("samtools", same_digest)
-    assert out["tag"] == "1.22--x_0"
 
 
 def test_env_mutating_pipeline_steps_detects_pip_install():
@@ -7059,3 +6836,77 @@ def test_run_pipeline_step_output_types_lookup_order(monkeypatch, tmp_path):
     assert seen["etype"] == "specific"
     # The generic key remains unused
     assert result.get("output_types_unmatched") == [".bam"]
+
+
+# ---------------------------------------------------------------------------
+# list_installed_pipelines — the "what have I already built?" inventory
+# ---------------------------------------------------------------------------
+
+def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_path):
+    """The inventory must read the artifacts the runtime ACTUALLY writes.
+
+    It used to parse every *.yaml in env_reports/ as a `PipelineSpec` — a model
+    whose producers (finalize_pipeline / save_pipeline_spec) were retired in the
+    re-spine. So it matched only WorkflowSpec/recipe yamls, every parse raised,
+    a try/except turned each into an {file, error} dict, and the tool returned
+    `count: 7` having understood NONE of them. Broken for a real user, green in
+    the suite — the audit's disease in a user-facing MCP tool."""
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+    from env_records import env_record
+
+    (tmp_path / "demo.workflow.yaml").write_text(yaml.safe_dump({
+        "workflow_name": "demo", "description": "d", "created_at": "2026-01-01",
+        "env_request_key": "samtools=1.21|linux/amd64|none",
+        "env_content_digest": "sha256:" + "a" * 64, "env_image": "demo:1.0",
+        "validated_in_shipped_image": True, "usage_verified": True,
+        "pipeline_steps": [{"step": 1, "validation_status": "passed"},
+                           {"step": 2, "validation_status": "failed"}],
+    }))
+    # a recipe yaml sits in the same dir and must NOT be mistaken for a workflow
+    (tmp_path / "demo.recipe.yaml").write_text(yaml.safe_dump({"name": "demo"}))
+
+    cache = EnvCache(tmp_path / "_env_cache.json")
+    cache.register("samtools=1.21|linux/amd64|none",
+                   env_record(name="demo", requested_tools=["samtools=1.21"],
+                              resolved_packages=[{"name": "samtools", "version": "1.21"}]))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache)
+
+    assert r["counts"] == {"envs": 1, "envs_contract_ok": 1, "workflows": 1}
+    # Layer 1 — the frozen env, with a HUMAN-READABLE version off the SBOM
+    (env,) = r["envs"]
+    assert env["tools"] == [{"tool": "samtools", "version": "1.21"}]
+    assert env["contract_ok"] is True and env["contract_violations"] == []
+    # Layer 2 — the sealed workflow, counted honestly (1 of 2 steps validated)
+    (wf,) = r["workflows"]
+    assert wf["workflow_name"] == "demo"
+    assert (wf["steps_total"], wf["steps_validated"]) == (2, 1)
+    assert wf["validated_in_shipped_image"] is True and wf["usage_verified"] is True
+
+
+def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
+    """`contract_ok` is EARNED at read time, not remembered from freeze time.
+
+    An inventory is a serving path like any other: if it lists a record the
+    runtime would refuse, it hands the reader a false green — the exact hole
+    tier 5 closed for the cache. So the listing asks the same question
+    (env_honesty.check_build) the serving paths ask, and says so when the answer
+    is no. This is what lets a STRENGTHENED gate reach artifacts frozen before it
+    existed, instead of grandfathering them."""
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+    from env_records import env_record
+
+    cache = EnvCache(tmp_path / "_env_cache.json")
+    # bypass register()'s own gate to plant a record that can no longer earn its green
+    # (exactly what a pre-tier-2 samtools record looked like: no in-image evidence)
+    cache._save({"stale=1.0|linux/amd64|none":
+                 env_record(name="stale", verifications=[])})
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache)
+    (env,) = r["envs"]
+    assert env["contract_ok"] is False, "a record failing check_build must not read as usable"
+    assert env["contract_violations"], "the failing clause must be NAMED, not just flagged"
+    assert r["counts"]["envs"] == 1 and r["counts"]["envs_contract_ok"] == 0

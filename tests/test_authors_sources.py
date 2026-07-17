@@ -107,7 +107,6 @@ def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo=""):
                                                           "home_page": "", "project_urls": urls, "package_url": ""})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_spack", lambda n, t=12: {"available": False})
 
 
 def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = ""):

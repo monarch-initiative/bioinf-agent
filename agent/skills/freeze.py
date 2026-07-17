@@ -108,54 +108,6 @@ def compute_content_digest(parts: dict) -> str:
     return "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
 
 
-def content_digest_parts(spec: dict) -> dict:
-    """Extract the identity-determining parts of a spec/draft. Kept separate
-    from the hash so tests (and debugging) can see exactly what feeds the
-    digest. Every component is something the runtime captured, not an
-    agent assertion: lock_sha256 (conda list --explicit), source commit_shas
-    (I11), binary sha256s (I14), authored-artifact sha256s (I9)."""
-    pkgs = [p for p in (spec.get("packages") or []) if isinstance(p, dict)]
-
-    def _im(p):
-        im = p.get("install_method")
-        return im if isinstance(im, dict) else {}
-
-    sources = sorted(
-        [[p.get("name", ""), _im(p).get("commit_sha", "")]
-         for p in pkgs if _im(p).get("type") == "source"]
-    )
-    binaries = sorted(
-        [[p.get("name", ""), _im(p).get("sha256", "")]
-         for p in pkgs if _im(p).get("type") == "binary"]
-    )
-    artifacts = sorted(
-        a.get("sha256", "") for a in (spec.get("authored_artifacts") or [])
-        if isinstance(a, dict)
-    )
-    docker = spec.get("docker") if isinstance(spec.get("docker"), dict) else {}
-    accel = spec.get("accelerator") if isinstance(spec.get("accelerator"), dict) else {}
-    return {
-        "lock":      spec.get("lock_sha256") or "",
-        "sources":   sources,
-        "binaries":  binaries,
-        "artifacts": artifacts,
-        "platform":  (docker or {}).get("platform") or "",
-        "accel":     (accel or {}).get("type") or "none",
-    }
-
-
-def content_digest_from_spec(spec: dict) -> str:
-    """Content digest of an env from its FINALIZED spec dict (packages[] + lock_sha256).
-
-    NOTE: this reads derived/finalized fields (packages[], lock_sha256) that a LIVE
-    DRAFT does not carry — a draft holds install_steps[].installed_packages and has
-    no lock yet. On a draft it therefore collapses to a constant (empty parts → one
-    digest for every env), so it must NOT be used as the freeze record's anchor on
-    the container-native path. Use record_content_digest() with the EnvBuild digest
-    instead — see that function."""
-    return compute_content_digest(content_digest_parts(spec))
-
-
 def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: str = "",
                           fallback: str = "") -> str:
     """The AUTHORITATIVE 'what was GOT' content anchor for a frozen env, by mode:
@@ -167,10 +119,15 @@ def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: st
               registry, reproducible by re-pull).
 
     `fallback` (a request-based hash) is used only if the mode-specific digest is
-    missing. This replaces content_digest_from_spec(draft) on the freeze path, which
-    read finalized-only fields a live draft lacks and so produced ONE constant digest
-    for every container-native build (a false content collision across distinct
-    envs)."""
+    missing.
+
+    WHY THIS SHAPE (a real regression, kept as a warning): the superseded
+    finalized-spec digest read packages[]/lock_sha256 — fields a live draft does
+    not have — so it hashed the same empty view for every container-native build
+    and returned ONE constant digest for four distinct envs. A content anchor that
+    collides is worse than none: it silently declares different envs identical.
+    Anchor on what was actually GOT (the build/adopt digest), never on fields the
+    caller may not have populated yet."""
     if mode == "build" and build_digest:
         return build_digest
     if mode == "adopt" and adopt_digest:
@@ -295,33 +252,16 @@ def non_conda_installs(spec: dict) -> list[dict]:
     for p in installed_packages(spec):
         im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
         t = im.get("type") or "conda"
-        if t not in ("conda", "docker_pull"):
+        if t != "conda":
             out.append({"name": p.get("name", ""), "type": t, "install_method": im})
     return out
-
-
-def has_conda_packages(spec: dict) -> bool:
-    """True if any TOOL was installed via conda (so the recipe build needs a
-    conda layer). The bootstrap python from create_conda_env is scaffolding, not
-    a tool — it lands in the 'conda create' step and must NOT trigger a conda
-    layer. So we look for a real 'conda install' step (install_conda_packages),
-    or, in a finalized spec, a package with install_method.type == conda."""
-    for st in (spec.get("install_steps") or []):
-        if (isinstance(st, dict) and st.get("tool") == "conda"
-                and st.get("subcommand") == "install" and st.get("installed_packages")):
-            return True
-    for p in _packages(spec):
-        im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
-        if im.get("type") == "conda":
-            return True
-    return False
 
 
 def requested_conda_specs(spec: dict) -> list[str]:
     """The conda specs the agent EXPLICITLY asked for — install_conda_packages
     steps (tool==conda, subcommand==install) as 'name=version' / 'name'. EXCLUDES
     the bootstrap python from create_conda_env (a 'create' step: scaffolding, not a
-    requested tool), matching has_conda_packages's view. This is the TOP-LEVEL
+    requested tool). This is the TOP-LEVEL
     request the container-native build re-solves from via the engine — not the full
     dependency closure (the engine resolves that; the in-image lock content-addresses
     what was actually got).

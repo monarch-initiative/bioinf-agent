@@ -113,11 +113,6 @@ OPERATION_REQUIRES: dict[str, str] = {
 # in the SAME change — never a pre-declared value with no implementation behind it.
 VALID_JOB_MANAGERS: tuple[str, ...] = ("slurm", "bash")
 
-# When `job_manager` is omitted, the default follows the env TYPE — a local machine
-# has no scheduler, so it must NOT silently claim slurm. Keyed by compute-env `type`.
-_DEFAULT_JOB_MANAGER_BY_TYPE: dict[str, str] = {"local": "bash", "ssh": "slurm"}
-
-
 class PermissionDenied(Exception):
     """The agent attempted an operation on a path it isn't authorized for."""
 
@@ -188,10 +183,37 @@ def _validate(data: dict, path: Path) -> None:
         _validate_project(proj, i, project_names, env_names, path)
 
 
+# The closed key set for a compute_envs[] entry. The nested blocks (slurm,
+# data_transfer, globus) were already closed-key; the env block itself was NOT,
+# so a typo was silently ACCEPTED and then went missing at the worst moment:
+#   `data_transfr:`          → the globus block is never seen, the env silently
+#                              falls back to scp_head_node, and GB-scale .sif
+#                              pushes go over the HEAD NODE — the exact thing the
+#                              wire-protocol choice exists to avoid.
+#   `agent_scratch_targets:` → no scratch target, so run_step_on_cluster refuses
+#                              much later with "env has no scratch target" and
+#                              nothing points at the typo that caused it.
+# A silently-ignored key is a config that doesn't do what it says. Fail closed at
+# LOAD, naming the key — the cost of a typo should be an error message, not a
+# head-node transfer. Keep in step with the keys the code actually reads.
+_ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
+    "name", "type", "host", "user", "email",
+    "job_manager", "slurm", "data_transfer",
+    "agent_scratch_target", "agent_common_data_target", "container_upload_target",
+})
+
+
 def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path) -> None:
     """Validate one compute_envs[] entry."""
     if not isinstance(env, dict):
         raise ConfigError(f"{path}: compute_envs[{idx}] must be a mapping")
+
+    extra = set(env.keys()) - _ENV_ALLOWED_KEYS
+    if extra:
+        raise ConfigError(
+            f"{path}: compute_envs[{idx}] has unknown keys {sorted(extra)!r}. "
+            f"Allowed keys: {sorted(_ENV_ALLOWED_KEYS)!r}. (A key we don't read "
+            f"is a setting that silently does nothing — check for a typo.)")
 
     name = env.get("name")
     if not isinstance(name, str) or not name:
@@ -654,19 +676,6 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
 # their own modules, in the same shape as Phase 1's check_permission.
 # ---------------------------------------------------------------------------
 
-def get_job_manager(env: dict) -> str:
-    """The batch scheduler this env runs jobs through (VALID_JOB_MANAGERS).
-
-    When unset, the default follows the env TYPE — `local` → 'bash' (no scheduler
-    on your laptop), `ssh` → 'slurm' — so a local machine never silently claims
-    slurm. The config validator guarantees a declared value is in the enum, so this
-    never returns an unsupported scheduler."""
-    jm = env.get("job_manager")
-    if jm in VALID_JOB_MANAGERS:
-        return jm
-    return _DEFAULT_JOB_MANAGER_BY_TYPE.get(env.get("type"), "slurm")
-
-
 def get_agent_scratch_target(env: dict) -> Optional[dict]:
     """Return the agent_scratch_target dir-access block for this env, or
     None if undeclared. The block carries `path`, `permissions` (always
@@ -813,7 +822,11 @@ def check_permission(project: dict, compute_env_name: str, path: str,
     `permissions: [file_name_only, upload]` satisfies both.
 
     `path` MUST be an absolute path string; otherwise the match is rejected
-    immediately — relative paths have no meaning at the security boundary.
+    immediately — relative paths have no meaning at the security boundary. A
+    '..' segment is refused outright (before any prefix match), and the path is
+    lexically normalized before matching, so this function is safe to call on an
+    un-pre-validated path. It does NOT resolve symlinks — remote POSIX perms
+    own that.
 
     NOTE: scratch + common_data zones are env-level (declared on the
     compute_env, not on the project). They do NOT route through this
@@ -829,9 +842,29 @@ def check_permission(project: dict, compute_env_name: str, path: str,
         raise PermissionDenied(
             f"path must be an absolute string, got {path!r}")
 
-    # Normalize for comparison (strip trailing slash so '/a/b' and '/a/b/'
-    # match the same entry).
-    req_norm = path.rstrip("/")
+    # Traversal must die HERE, not in whatever the caller happened to run first.
+    # This function's docstring says every primitive must call it before touching
+    # a compute_env — so it has to hold on its own. It did not: a plain prefix
+    # match on the RAW string authorized '/proj/safe/../../etc/passwd' against a
+    # '/proj/safe' grant, because the string does start with the prefix even
+    # though the path it names is /etc/passwd. Nothing exploited it (every caller
+    # today pre-validates separately), which is exactly the trap: the gate that
+    # CLAIMED authority was leaning on a check it does not own, and one caller
+    # forgetting that check is a full escape. Fail closed on the shape, then
+    # match on the NORMALIZED path so '/a/./b' still resolves to '/a/b'.
+    #
+    # NB: normpath is lexical — it does not resolve symlinks. A symlink out of an
+    # authorized dir is the REMOTE filesystem's call to make, not ours; POSIX
+    # perms on the far side are the backstop.
+    import posixpath
+    if any(seg == ".." for seg in path.split("/")):
+        raise PermissionDenied(
+            f"path {path!r} contains a '..' traversal segment — refused before "
+            f"any prefix match. Pass the real absolute path you mean.")
+
+    # Normalize for comparison (collapse '.', duplicate slashes; strip trailing
+    # slash so '/a/b' and '/a/b/' match the same entry).
+    req_norm = posixpath.normpath(path).rstrip("/") or "/"
 
     dirs = get_project_directories(project, compute_env_name)
     best: Optional[dict] = None

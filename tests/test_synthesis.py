@@ -251,14 +251,6 @@ def test_binary_still_beats_synthesis_when_release_assets_exist():
     assert resolver.rank_decision(avail)["chosen"] == "binary"
 
 
-def test_route_synthesis_hands_off_to_agent():
-    r = resolver.route({"chosen": "synthesis", "tool": "hic_assembler",
-                        "github_repo": "baumannlab/Genome_Assembly_Booster", "probed": {}})
-    assert r["kind"] == "synthesize"
-    assert "Genome_Assembly_Booster" in r["repo"]
-    assert "synth_fetch" in r["instruction"]
-
-
 def test_source_only_still_resolves_to_source_unit():
     # back-compat: when ONLY source is offered (synthesis absent), source is chosen.
     assert resolver.rank_decision({"source": {"available": True}})["chosen"] == "source"
@@ -288,7 +280,7 @@ def test_probe_github_search_empty(monkeypatch):
 
 
 def _dead_registries(monkeypatch):
-    for fn in ("probe_conda", "probe_pypi", "probe_cran", "probe_bioconductor", "probe_spack"):
+    for fn in ("probe_conda", "probe_pypi", "probe_cran", "probe_bioconductor"):
         monkeypatch.setattr(resolver, fn, lambda *a, **k: {"available": False})
 
 
@@ -337,8 +329,6 @@ def test_r_github_tier_beats_synthesis_for_r_package(monkeypatch):
     d = resolver.resolve("GAPIT", language="r", github_repo="jiabowang/GAPIT")
     assert d["chosen"] == "r_github"
     assert 'source="github:jiabowang/GAPIT"' in d["install_call"]
-    # route() yields a real Rscript remotes::install_github spec
-    assert "install_github" in (resolver.route(d)["spec"]["command"])
 
 
 def test_r_github_tier_absent_without_r_hint(monkeypatch):
@@ -365,19 +355,6 @@ def test_resolve_skips_discovery_when_repo_supplied(monkeypatch):
     d = resolver.resolve("foo", github_repo="o/foo")
     assert calls["n"] == 0
     assert d["chosen"] in ("synthesis", "source")    # repo tiers unlocked, not a dead-end
-
-
-# -- buildable Spack tier --------------------------------------------------------
-def test_spack_generator_store_under_opt_tools_and_relocation():
-    spec = ic.spack("bzip2", evidence="bzip2 --help")
-    cmd = spec["command"]
-    assert "git clone --depth 1 --branch v0.22.1 https://github.com/spack/spack /opt/tools/spack" in cmd
-    assert "spack compiler find" in cmd                      # use system gcc, don't build one
-    assert "spack install --fail-fast bzip2" in cmd
-    assert "spack gc -y" in cmd                              # trim build-only deps
-    assert "/usr/local/bin/" in cmd                          # bins symlinked onto PATH
-    assert "! -name opt" in cmd                              # drop spack source, keep the store
-    assert spec["evidence"] == "bzip2 --help" and spec["tool"] == "bzip2"
 
 
 # -- functional validation: "validated means ran" for interpreted R packages ----
@@ -487,36 +464,3 @@ def test_install_pip_package_functional_failure_fails_install(monkeypatch):
     assert r.get("returncode") != 0 and r.get("functional_check_failed") is True
 
 
-def test_map_install_routes_spack():
-    record = {"name": "bzip2", "type": "spack",
-              "install_method": {"type": "spack", "package": "bzip2", "spack_ref": "v0.22.1",
-                                 "evidence": "bzip2 --help"}}
-    out = env_freeze._map_install(record)
-    assert "spec" in out and "spack install --fail-fast bzip2" in out["spec"]["command"]
-
-
-def test_rank_spack_below_binary_above_synthesis():
-    # binary (precompiled exact bytes) beats spack; spack (curated recipe) beats the
-    # agent-read synthesis fallback and the conventional source generator.
-    assert resolver.rank_decision({"binary": {"available": True}, "spack": {"available": True}}
-                                  )["chosen"] == "binary"
-    d = resolver.rank_decision({"spack": {"available": True}, "synthesis": {"available": True},
-                                "source": {"available": True}})
-    assert d["chosen"] == "spack"
-    assert [a["tier"] for a in d["alternatives"]] == ["synthesis", "source"]
-
-
-def test_route_spack_is_a_tool_spec():
-    r = resolver.route({"chosen": "spack", "tool": "bzip2", "probed": {"spack": {}}})
-    assert r["kind"] == "tool" and "spack install" in r["spec"]["command"]
-
-
-def test_probe_spack_live_advisory():
-    # Spack is ADVISORY (not a chosen build tier). Live: a real Spack package is
-    # detected, a nonsense one isn't. Network-guarded so it doesn't fail offline.
-    import pytest
-    hit = resolver.probe_spack("samtools")
-    miss = resolver.probe_spack("definitely-not-a-real-pkg-xyz-000")
-    if hit.get("available") is False and miss.get("available") is False:
-        pytest.skip("no network / spack-packages unreachable")
-    assert hit["available"] is True and miss["available"] is False

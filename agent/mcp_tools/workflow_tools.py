@@ -533,8 +533,29 @@ def write_pipeline_provenance(
 
 @mcp.tool()
 def list_installed_pipelines() -> dict:
-    """List all pipelines installed and validated, with Docker tags and validation status."""
-    return _ms._list_pipelines(_ms.config)
+    """What has ALREADY been built here — check this before solving a tool again.
+
+    Returns both layers:
+      `envs[]`     — Layer 1: the frozen, content-addressed envs in the EnvCache.
+                     These are the reusable "solved components": ask for one of
+                     these tools again and freeze serves it BY DIGEST instead of
+                     rebuilding. Each carries its REQUESTED tools with semantic
+                     versions (from the shipped image's SBOM), image_digest,
+                     content_digest, build_method (adopt/build/authors-dockerfile)
+                     and validation_locus.
+      `workflows[]`— Layer 2: the sealed WorkflowSpecs, each pinning its env by
+                     digest, with steps_validated / validated_in_shipped_image /
+                     usage_verified.
+
+    **`contract_ok` is earned, not remembered.** Every env is re-anchored against
+    the full honesty contract AS YOU ASK (`env_honesty.check_build`, the same
+    question freeze/run/stage/seal ask at serve time). `contract_ok: False` means
+    "on disk, but the serving paths would REFUSE it today" — a record whose green
+    has expired, e.g. because a gate got stronger since it was frozen. Read
+    `contract_violations[]` for the failing clause. An inventory that showed a
+    stale record as usable would be precisely the false green tier 5 closed.
+    """
+    return _ms._list_pipelines(_ms.config, env_cache=_ms._env_cache)
 
 
 # ---------------------------------------------------------------------------

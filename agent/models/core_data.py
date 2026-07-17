@@ -1,9 +1,30 @@
 """
 Core data models for the bioinformatics agent.
 
+SCOPE NOTE (tier 7, read before adding to this file). `PipelineSpec` — the
+pre-respine combined model — was DELETED here: its producers (finalize_pipeline /
+save_pipeline_spec) were retired in the re-spine, and the last reader
+(resources.list_pipelines) was repointed at the artifacts that actually exist
+(the EnvCache + `*.workflow.yaml`). `WorkflowSpec` is now the only spec model
+with a real producer.
+
+Consequence to be honest about: five models were reachable ONLY through
+PipelineSpec and are now unreferenced by any model — `Accelerator`,
+`InstallStep`, `PackageRecord`, `RuntimeEnvironment`, `ServiceDependency` (and
+`InstallMethod` under PackageRecord). They are NOT dead weight in the ordinary
+sense: they are the declared SHAPE of records the runtime really does produce and
+gate on (I12 reads accelerator dicts, I10 reads service_dependencies, freeze
+reads install_method dicts) — the runtime just passes plain dicts and never
+validates against these classes. So they are schema-as-documentation whose drift
+nothing catches, which is exactly how InstallMethod's Literal came to name two
+tiers with no producer while omitting one that had. Deleting them, or wiring them
+in as real validators, is a deliberate call that needs its own verification pass —
+NOT a quiet cleanup. Flagged, not swept.
+
 Single source of truth for:
   - Controlled vocabulary (ReadType, EndType, AssayType, FileType, Database)
-  - InstallMethod      (conda | jar | pip | r_install | docker_pull | source | manual)
+  - InstallMethod      (conda | jar | pip | r_install | source | binary | perl |
+                        cargo | go | synthesized)
   - ReferenceDatabase  (large external databases beyond the genome FASTA)
   - RuntimeEnvironment (conda | jar-in-conda | r | docker | native; GPU fields)
   - RuntimeConfig      (config files the tool needs at runtime)
@@ -93,12 +114,6 @@ PLATFORM_FAMILY: dict[str, str] = {
     "pacbio_fiberseq": "pacbio",
 }
 
-KNOWN_PIPELINES: frozenset[str] = frozenset({
-    "bwa_samtools", "freebayes", "star", "gatk", "fastqc",
-    "featurecounts", "bcftools", "trimmomatic", "fastp", "minimap2",
-})
-
-
 # ---------------------------------------------------------------------------
 # Install method
 # ---------------------------------------------------------------------------
@@ -117,8 +132,16 @@ class InstallMethod(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["conda", "jar", "pip", "r_install", "docker_pull", "source",
-                  "binary", "perl", "cargo", "go", "manual"] = "conda"
+    # Keep this in step with the tier dispatchers that actually RUN — env_freeze
+    # `_map_install_spec` / `_replay_assurance` and env_recipe_render. Tier 7 found
+    # this list drifted in BOTH directions at once: it named `docker_pull`/`manual`
+    # (zero producers, ever) while OMITTING `synthesized`, which env_tools' synth_build
+    # writes and two dispatchers consume. It never exploded only because InstallMethod
+    # is not pydantic-validated on the live path — i.e. the copy that CLAIMED authority
+    # was stale and the copies that RAN were right. Adding a tier here is not optional
+    # bookkeeping; it is what stops that trap from arming again.
+    type: Literal["conda", "jar", "pip", "r_install", "source",
+                  "binary", "perl", "cargo", "go", "synthesized"] = "conda"
     # conda
     conda_spec: Optional[str] = None   # e.g. "samtools=1.21"
     channel:    Optional[str] = None   # e.g. "bioconda"
@@ -138,8 +161,6 @@ class InstallMethod(BaseModel):
     asset_sha256: Optional[str] = None  # sha256 of the downloaded asset (the .tar.gz/.zip); == sha256 for
                                         # single-binary downloads. Provenance anchor checked vs the publisher
                                         # checksum at download. I14 anchors the runnable binary, not the archive.
-    # docker_pull — tool only available as a pulled image (no conda/JAR path)
-    docker_image: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1082,29 +1103,6 @@ def usage_commands(usage: Any) -> list[str]:
     return [c.strip() for c in ct if isinstance(c, str) and c.strip()]
 
 
-class DockerBuild(BaseModel):
-    """
-    Docker image build result.
-
-    volume_mounts lists directories that must be bind-mounted at runtime
-    (e.g. the Exomiser data directory).  These are NOT baked into the image.
-    runtime_data_env is the environment variable the tool reads to locate
-    its data directory (e.g. EXOMISER_DATA_DIR), so downstream users know
-    what to set when running the container.
-    """
-    model_config = ConfigDict(extra="allow")
-
-    build_attempted:      bool = False
-    build_success:        bool = False
-    image_tag:            Optional[str] = None
-    registry:             str = "local"
-    pushed_to_registry:   bool = False
-    reason:               Optional[str] = None
-    nvidia_runtime:       bool = False        # True → image requires --gpus / nvidia runtime
-    volume_mounts:        list[str] = []      # e.g. ["/data/exomiser"]
-    runtime_data_env:     Optional[str] = None
-
-
 class WorkflowSpec(BaseModel):
     """Layer 2 — a workflow that runs on a FROZEN environment, pinned by digest.
 
@@ -1160,89 +1158,3 @@ class WorkflowSpec(BaseModel):
                          default_flow_style=False, sort_keys=False)
 
 
-class PipelineSpec(BaseModel):
-    """
-    Complete record of an installed, validated pipeline.
-    Written to config/pipelines/{name}_{version}.yaml after a successful install.
-
-    runtime_environment: describes how the primary tool is invoked.
-      - type="conda"  → standard (default for most tools)
-      - type="jar"    → Java tool; openjdk is in the conda env, JAR at jar_path.
-                        The container-native freeze bakes the JVM into the ship image.
-
-    reference_free: True for de novo assemblers (hifiasm, Flye, Canu) and tools
-      that produce output without any reference genome.  Phase 3 skips the genome
-      reference step when this is True.  Hi-C scaffolding tools set this False and
-      supply assembly_input in their Provenance records instead.
-
-    reference_databases: large external databases beyond the genome FASTA.
-      These are documented here but NOT baked into the Docker image.
-      Mount them at the paths listed in docker.volume_mounts.
-
-    runtime_configs: global config files written during installation
-      (e.g. application.properties for Exomiser). For agent-authored files
-      (driver scripts, generated test data, hand-staged transformations),
-      use stage_authored_artifact → authored_artifacts[*] instead — those
-      carry a sha256 anchor (I9) that runtime_configs lacks.
-
-    service_dependencies: companion processes (web server, database, Spark) that
-      must be running before the pipeline executes.  Managed by
-      EnvManager.start_service / stop_service during Phase 4.
-    """
-    model_config = ConfigDict(extra="allow")
-
-    pipeline_name:        str
-    description:          str
-    conda_env:            str
-    python_version:       Optional[str] = None
-    created_at:           str
-    # Two orthogonal status fields. env_status reflects whether the conda env
-    # was built and verified successfully; pipeline_status reflects whether the
-    # algorithm/analysis runs succeeded AND had their outputs validated.
-    env_status:           PipelineStatus = "in_progress"
-    pipeline_status:      PipelineStatus = "in_progress"
-    docker_status:        Literal["not_attempted", "built", "failed"] = "not_attempted"
-    lock_sha256:          Optional[str] = None    # sha256 of the .lock file — verify bit-exact env reproduction
-    usage_verified:       bool = False             # True after self-test runs usage.command_template successfully
-    packages:             list[PackageRecord]
-    reference_free:       bool = False
-    # Hardware acceleration + licensing contract (I12 / I13 enforce honesty).
-    accelerator:          Optional[Accelerator] = None          # None → CPU-only
-    license_gated:        bool = False                          # tool requires accepting a license / auth to obtain
-    licenses:             list[str] = []                        # the license/terms the artifact is bound by
-    redistributable:      bool = True                           # False when gated — blocks public-registry push (I13)
-    runtime_environment:  Optional[RuntimeEnvironment] = None   # None → conda (default)
-    reference_databases:  list[ReferenceDatabase] = []
-    runtime_configs:      list[RuntimeConfig] = []
-    service_dependencies: list[ServiceDependency] = []
-    authored_artifacts:   list[AuthoredArtifact] = []
-    test_data:            Optional[TestDataRef] = None
-    install_steps:        list[InstallStep] = []   # env-build journey (chronological by `step`)
-    pipeline_steps:       list[PipelineStep] = []  # algorithm/analysis runs
-    docker:               Optional[DockerBuild] = None
-    usage:                Optional[UsageTemplate] = None  # canonical "run on new data" contract
-    notes:                list[str] = []
-    final_summary:        Optional[str] = None
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def _wrap_str_notes(cls, v):
-        if isinstance(v, str):
-            return [v]
-        return v
-
-    def to_yaml(self) -> str:
-        data = self.model_dump(exclude_none=True)
-        return yaml.dump(data, default_flow_style=False, sort_keys=False)
-
-    def write(self, path: str | Path) -> Path:
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(self.to_yaml())
-        return out
-
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "PipelineSpec":
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
-        return cls(**data)

@@ -2,7 +2,7 @@
 """
 extract_outcomes — harvest the system's terminal decision surface straight from
 the code, so the model is DERIVED from reality and can't silently drift (see
-docs/scenario_decision_tree.md and agent/skills/outcomes.py).
+agent/skills/outcomes.py).
 
 It sweeps every primitive module and finds three kinds of terminal:
 

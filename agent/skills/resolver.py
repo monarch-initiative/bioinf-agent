@@ -52,7 +52,7 @@ except Exception:  # pragma: no cover
 # as ranking, not just prose — WITHOUT over-preferring a heavy author image for tools
 # conda handles perfectly.
 TIER_ORDER = ["author_image", "authors_recipe",
-              "conda", "pip", "cran", "bioconductor", "r_github", "binary", "spack",
+              "conda", "pip", "cran", "bioconductor", "r_github", "binary",
               "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
@@ -69,9 +69,6 @@ _TIER_RATIONALE = {
                     "purpose-built R path (remotes::install_github + load-or-die); beats generic "
                     "synthesis for a known R package",
     "binary":       "precompiled release binary — exact bytes (sha256), but platform-specific",
-    "spack":        "in the Spack HPC registry — a curated from-source recipe (community-maintained); "
-                    "store baked under /opt/tools so RPATHs resolve in the slim image. Build is slow "
-                    "(from source) — best on a native amd64 host",
     "synthesis":    "agent reads the repo's OWN build files and synthesizes a grounded, contract-"
                     "gated install — the universal path for any source/bespoke tool (no per-tool recipe)",
     "source":       "conventional `make`+binary fast-path (install_git_repo) — faster than synthesis "
@@ -249,20 +246,6 @@ def _cran_anchored_to_repo(probe: dict, github_repo: str) -> bool:
     return _anchored_to_github_repo(urls, github_repo)
 
 
-def probe_spack(name: str, timeout: int = 12) -> dict[str, Any]:
-    """Is `name` a Spack builtin package (the HPC from-source registry, ~thousands
-    of recipes)? Checks the package recipe exists via raw.githubusercontent (no Spack
-    install, and not the rate-limited GitHub API). Spack names are lowercase; C/C++/
-    Fortran tools usually match the bare name (py-/r- prefixes exist but aren't probed
-    here). ADVISORY for now — see _TIER_RATIONALE note: the buildable Spack tier
-    needs slim-runtime relocation work before it can be a CHOSEN build tier."""
-    # Spack v1.0 (2025) split builtin recipes into the spack/spack-packages repo:
-    # repos/spack_repo/builtin/packages/<name>/package.py
-    url = (f"https://raw.githubusercontent.com/spack/spack-packages/develop/"
-           f"repos/spack_repo/builtin/packages/{name.lower()}/package.py")
-    return {"available": _head_ok(url, timeout), "package": name.lower()}
-
-
 def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     """For a github 'owner/repo': does it exist (→ source tier) and does its
     latest release carry downloadable assets (→ binary tier)?"""
@@ -285,7 +268,7 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
 def probe_github_search(name: str, timeout: int = 12, limit: int = 5) -> dict[str, Any]:
     """DISCOVERY (the router's reach beyond package registries). Search github for
     repos matching a bare tool NAME — so a tool that lives only as a repo (no conda/
-    pip/cran/spack entry) can still reach the synthesis/source floor. This is the
+    pip/cran entry) can still reach the synthesis/source floor. This is the
     missing link between 'has a synthesis engine' and 'installs arbitrary tools':
     without it, an unregistered tool DEAD-ENDS until a human hand-supplies the repo
     (verified: GAPIT3 lives at jiabowang/GAPIT3, not on any registry).
@@ -611,8 +594,7 @@ def assess_identity(tool: str, chosen: str, availability: dict,
     # "this tier publishes no description" is a reason to suspect our own probe. Saying
     # "may not be the tool you mean" about a tool we simply couldn't check is the kind of
     # noise that trains a reader to skip the warning — and a warning that gets skipped is
-    # worth nothing. (Live campaign: the only false alarm across 30 real tools was `vep`
-    # via the spack tier, which carries no metadata at all.)
+    # worth nothing.
     out["confirmed"] = False
     out["anchor"] = "none"
     if not desc:
@@ -664,18 +646,42 @@ def _github_owner_repo(availability: dict, github_repo: str = "") -> str:
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
     """Pure: given per-tier availability, pick the tier and explain. `prefer`
     forces a tier when it is available. Returns chosen tier (or None), the
-    ordered available tiers, and the rejected alternatives."""
+    ordered available tiers, and the rejected alternatives.
+
+    An IGNORED `prefer` is disclosed, never silent (`prefer_honored` +
+    `prefer_ignored_reason`, and the caller stamps it onto `install_call`). It
+    used to fall through without a word: `prefer='pip'` with pip unavailable
+    returned conda, and a typo'd `prefer='spak'` returned conda — same output,
+    two very different situations, and no way to tell either from "conda is
+    simply what I wanted". The caller ASKED for something and did not get it;
+    that is exactly the case where staying quiet is a lie of omission."""
     available = [t for t in TIER_ORDER if availability.get(t, {}).get("available")]
     chosen = None
+    prefer_ignored_reason = ""
     if prefer and prefer in available:
         chosen = prefer
     elif available:
         chosen = available[0]
 
+    if prefer and prefer != chosen:
+        if prefer not in TIER_ORDER:
+            prefer_ignored_reason = (
+                f"prefer={prefer!r} is not a known tier (known: {', '.join(TIER_ORDER)}) "
+                f"— check for a typo; it was IGNORED")
+        else:
+            prefer_ignored_reason = (
+                f"prefer={prefer!r} was IGNORED: that tier is not available for this tool"
+                + (f" (available: {', '.join(available)})" if available else ""))
+
     if chosen is None:
+        rationale = ("no registry/repo tier found — pass a github_repo (or repo/archive URL) "
+                     "to unlock synthesis (the universal agent-read path), else manual")
+        if prefer_ignored_reason:
+            rationale = f"{prefer_ignored_reason}. {rationale}"
         return {"chosen": None, "available": [], "alternatives": [],
-                "rationale": "no registry/repo tier found — pass a github_repo (or repo/archive URL) "
-                             "to unlock synthesis (the universal agent-read path), else manual"}
+                "prefer_honored": False if prefer else None,
+                "prefer_ignored_reason": prefer_ignored_reason,
+                "rationale": rationale}
 
     why = _TIER_RATIONALE.get(chosen, chosen)
     others = [t for t in available if t != chosen]
@@ -684,10 +690,14 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
     )
     if prefer == chosen and others:
         rationale = f"{chosen} (forced via prefer): {why}; would otherwise consider {', '.join(others)}"
+    if prefer_ignored_reason:
+        rationale = f"{prefer_ignored_reason} → fell back to {rationale}"
     return {
         "chosen": chosen,
         "available": available,
         "alternatives": [{"tier": t, "detail": availability.get(t, {})} for t in others],
+        "prefer_honored": (prefer == chosen) if prefer else None,
+        "prefer_ignored_reason": prefer_ignored_reason,
         "rationale": rationale,
     }
 
@@ -722,8 +732,6 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "binary":
         asset = (detail.get("assets") or ["<release-asset-url>"])[0]
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
-    if tier == "spack":
-        return f'install_spack_package(env, "{tool}")  # Spack curated recipe; best on a native amd64 host'
     if tier == "synthesis":
         url = f"https://github.com/{github_repo}" if github_repo else "<repo-or-archive-url>"
         return (f'synth_fetch("{url}")  # read its build files, then '
@@ -731,105 +739,6 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "source":
         return f'install_git_repo(env, "https://github.com/{github_repo}", "{tool}", ref="<tag/commit>")'
     return "# no automatable tier — author a manual path (and stage_authored_artifact for any scripts)"
-
-
-def route(decision: dict, platform: str = "linux/amd64") -> dict[str, Any]:
-    """Container-native sibling of `_install_call`: map a resolve() decision to an
-    EnvBuild action instead of a host-primitive call string. Pure (no network).
-
-      conda        → {"kind":"conda", "spec","channel"}        — fed to EnvBuild.add_conda
-      pip          → {"kind":"pip",   "spec"}                  — fed to EnvBuild.add_pip
-      cran / bioc  → {"kind":"tool",  "spec": <r_package gen>} — fed to EnvBuild.add_tool
-      binary       → {"kind":"tool",  "spec": <release_binary gen>}
-      source       → {"kind":"tool",  "spec": <source gen>}
-
-    pip uses the engine (pixi --pypi → into the lock); cran/bioconductor use the R
-    install generator (engine-coupled Rscript) — both engine-native, so a `chosen` of
-    cran/bioc is installed by Rscript, NOT a (would-fail) r-{tool} conda mapping."""
-    from agent.skills import install_commands as ic
-    tier = decision.get("chosen")
-    tool = decision.get("tool") or ""
-    version = decision.get("version") or ""
-    detail = (decision.get("probed") or {}).get(tier, {}) if tier else {}
-    repo = decision.get("github_repo") or ""
-
-    if tier == "conda":
-        base = detail.get("r_spec") or tool
-        v = version or detail.get("latest") or ""
-        spec = f"{base}={v}" if v else base
-        return {"kind": "conda", "tier": tier, "spec": spec,
-                "channel": detail.get("channel", "bioconda")}
-
-    if tier == "pip":
-        v = version or detail.get("latest") or ""
-        return {"kind": "pip", "tier": tier, "spec": f"{tool}=={v}" if v else tool}
-
-    if tier in ("cran", "bioconductor"):
-        return {"kind": "tool", "tier": tier,
-                "spec": ic.r_package(tool, source="bioconductor" if tier == "bioconductor" else "cran")}
-
-    if tier == "r_github":
-        if not repo:
-            return {"kind": "defer", "tier": tier, "reason": "r_github tier needs github_repo"}
-        return {"kind": "tool", "tier": tier, "spec": ic.r_package(tool, source=f"github:{repo}")}
-
-    if tier == "binary":
-        os_tok, _, arch_tok = platform.partition("/")
-        url = _pick_platform_asset(detail.get("assets") or [], os_tok or "linux",
-                                   arch_tok or "amd64")
-        if not url:
-            return {"kind": "defer", "tier": tier,
-                    "reason": f"no {platform} asset among the release assets — pass an explicit "
-                              f"linux URL or pick a different tier"}
-        # sha256 anchoring is a network step (resolver.sha256_of_url) the caller adds
-        # before build; absent, the in-image smoke evidence still catches a wrong arch.
-        return {"kind": "tool", "tier": tier,
-                "spec": ic.release_binary(tool, url, binary_in_archive=tool),
-                "needs_sha256": True}
-
-    if tier == "spack":
-        return {"kind": "tool", "tier": tier,
-                "spec": ic.spack(tool, package=detail.get("package") or tool)}
-
-    if tier == "synthesis":
-        # The universal repo tail is AGENT-DRIVEN (two-call: synth_fetch → read the
-        # repo's build files → synth_build), so a declarative route can't auto-build
-        # it — it hands off to the agent. The build itself still flows through the ONE
-        # `synthesized` generator + the honesty contract (validated == shipped).
-        url = f"https://github.com/{repo}" if repo else ""
-        return {"kind": "synthesize", "tier": tier, "repo": url,
-                "instruction": "agent: call synth_fetch(repo_url) to read the tool's own build "
-                               "files, then synth_build(env, repo_url, tool, commit, commands, "
-                               "evidence) — commands tagged extracted/agent_authored (grounded)."}
-
-    if tier == "source":
-        if not repo:
-            return {"kind": "defer", "tier": tier,
-                    "reason": "source tier needs github_repo to clone"}
-        return {"kind": "tool", "tier": tier,
-                "spec": ic.source(tool, f"https://github.com/{repo}",
-                                  ref=detail.get("tag") or "")}
-
-    # The author tiers are not "not implemented" — they have REAL executors, they just
-    # aren't reachable from this function. route() exists only to feed
-    # env_freeze.build_env_from_tools, which bakes ONE image from conda/pip/tool specs;
-    # the authors' path instead adopts or docker-builds the authors' OWN image, which is a
-    # different build entirely (freeze_from_image / build_env_from_authors_recipe own it).
-    # Say exactly that, and name the executor — the old text here blamed missing "engine
-    # pypi support", which is both stale (pip routes fine, above) and irrelevant to these
-    # tiers, so a caller who hit it would go looking in the wrong place.
-    if tier in ("author_image", "authors_recipe"):
-        executor = ("freeze_from_image" if tier == "author_image"
-                    else "build_env_from_authors_recipe")
-        return {"kind": "defer", "tier": tier,
-                "reason": (f"tier {tier!r} is executed by {executor}(), not by a "
-                           f"container-native bake — call it directly with the "
-                           f"install_call resolve() returned. build_env_from_tools only "
-                           f"bakes conda/pip/tool specs into one image.")}
-    return {"kind": "defer", "tier": tier,
-            "reason": (f"tier {tier!r} has no container-native generator yet — pip needs engine "
-                       f"pypi support; cran/bioconductor need an R install generator (engine-coupled). "
-                       f"Next slice.") if tier else "no automatable tier found"}
 
 
 def resolve(
@@ -884,11 +793,6 @@ def resolve(
         # bare github repo could be anything); ranks above synthesis via TIER_ORDER.
         if language == "r":
             availability["r_github"] = {"available": gh["repo_exists"], **gh}
-
-    # Spack is a real (curated, from-source) tier — ranks below precompiled binary
-    # but above the agent-read synthesis fallback (a community recipe beats
-    # improvisation). Needs only a name (registry probe), no github_repo.
-    availability["spack"] = probe_spack(tool, timeout)
 
     # AUTHORS' OWN RESOURCES (the reliability gate). Find the tool's repo — explicit or
     # extracted from registry metadata — and ask: does the tool publish an image, and
@@ -1080,4 +984,15 @@ def resolve(
                 f"# {note}\n"
                 f"# ---- the authors' own install path was NOT ruled out: ----\n"
                 + decision["install_call"])
+
+    # An IGNORED `prefer` gets the same treatment, for the same reason: the caller
+    # explicitly asked for a tier and did NOT get it. Silently handing back a
+    # different tier's install_call is indistinguishable from honoring the request —
+    # and a typo ('spak') looked identical to a real fallback. Same rule as above:
+    # the warning belongs in the string an agent copies, not in a sibling key.
+    if decision.get("prefer_ignored_reason") and decision.get("install_call"):
+        decision["install_call"] = (
+            f"# {decision['prefer_ignored_reason']}\n"
+            f"# ---- this is the {decision.get('chosen')} tier, NOT the one you asked for: ----\n"
+            + decision["install_call"])
     return decision

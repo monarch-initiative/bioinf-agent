@@ -42,12 +42,11 @@ _C = "a" * 40   # a full 40-hex commit
     ("cargo",       {},                                 ("built_unpinned", False)),
     ("go",          {"version": "v1.2.3"},              ("built_pinned", True)),
     ("go",          {"version": "latest"},              ("built_unpinned", False)),
-    # perl / r / spack: TOFU (no immutable content anchor we reproduce)
+    # perl / r: TOFU (no immutable content anchor we reproduce)
     ("perl",        {},                                 ("cpan_tofu", False)),
     ("r_install",   {"source": "github:o/r", "commit_sha": _C}, ("commit_pinned", True)),
     ("r_install",   {"source": "cran"},                 ("repo_tofu", False)),
     ("r_install",   {"source": "github:o/r", "ref": "main"},    ("repo_tofu", False)),
-    ("spack",       {},                                 ("spec_pinned_tofu", False)),
     # flag-bearing pip: literal command, not lock-representable
     ("pip",         {},                                 ("command_pinned", False)),
 ])
@@ -81,7 +80,7 @@ _EMITTED = {
     "authenticated", "pinned_tofu", "unanchored_cross_platform", "unanchored",  # binary/jar
     "commit_pinned", "ref_pinned_tofu", "unpinned",                             # source/synth/r
     "built_pinned", "built_unpinned",                                           # cargo/go
-    "cpan_tofu", "repo_tofu", "spec_pinned_tofu", "command_pinned",             # perl/r/spack/pip
+    "cpan_tofu", "repo_tofu", "command_pinned",                                 # perl/r/pip
 }
 _VERIFIED_ASSURANCES = {"authenticated", "commit_pinned", "built_pinned", "lock_pinned"}
 

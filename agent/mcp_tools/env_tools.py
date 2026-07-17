@@ -1,7 +1,7 @@
 """env_tools — research + install primitives + verify + raw install runner.
 
 This is the install-side surface of the agent: one tool per *ecosystem*
-(conda / git-source / spack / release-binary / perl / cargo / go / jar /
+(conda / git-source / release-binary / perl / cargo / go / jar /
 R / pip / pre-built BioContainer via synth) plus `search_package` and
 `resolve_tool` for pre-install research, plus `run_install_command` for the
 arbitrary-shell escape hatch when no primitive fits.
@@ -83,7 +83,7 @@ def resolve_tool(
     ResolutionDecision). Probes availability independently per tier and ranks by:
 
         author_image > authors_recipe > conda > pip/cran/bioconductor
-                     > binary > spack > synthesis > source > manual
+                     > binary > synthesis > source > manual
 
     RELIABILITY GATE (authors-recipe-first). The two author tiers rank above conda but
     are GATED, not a fixed ladder — they only become available when the tool's OWN repo
@@ -522,60 +522,6 @@ def synth_build(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
     return _ms._shrink_stdio_for_response(result, label=f"synth.{env_name}.{tool_name}")
-
-
-@mcp.tool()
-def install_spack_package(
-    env_name: str,
-    tool_name: str,
-    package: str = "",
-    spack_ref: str = "v0.22.1",
-    evidence: str = "",
-    pipeline_id: str = "",
-    step: int = 0,
-) -> dict:
-    """Declare a Spack package (the HPC from-source registry — thousands of curated
-    community recipes) for a tool not on conda/pip/cran. A DECLARE primitive: it
-    records the install_method (type='spack') into the draft; the actual build +
-    validation happen at freeze() INSIDE the ship image (Spack on the host is
-    impractical, and container-native is where 'validated == shipped' holds anyway).
-
-    freeze() bootstraps Spack with its store under /opt/tools (so the dep-closure
-    RPATHs resolve in the slim runtime), builds `package` (default = tool_name) from
-    source with the build container's gcc, trims build-only deps, and symlinks the
-    tool onto PATH — then the honesty contract proves the tool RUNS in the shipped
-    image via `evidence`. NOTE: from-source builds are slow; this tier is practical
-    on a NATIVE amd64 host. Pass an `evidence` that RUNS the tool (e.g.
-    'samtools --version') — `command -v` alone can't catch a mis-relocated binary.
-    `spack_ref` pins Spack (default v0.22.1; v1.0 split builtin packages out).
-
-    Returns {success, install_method, pipeline_merge?}."""
-    install_method = {
-        "type":      "spack",
-        "package":   package or tool_name,
-        "spack_ref": spack_ref,
-        "evidence":  evidence or f"command -v {tool_name}",
-        "source":    f"spack:{package or tool_name}@{spack_ref}",
-    }
-    result: dict = proven("install.spack_declared", success=True, tool_name=tool_name,
-                    install_method=install_method,
-                    note="declared — Spack builds + validates at freeze() in the ship image "
-                            "(best on a native amd64 host; from-source is slow under emulation)")
-    if pipeline_id:
-        ip_record = {"name": tool_name, "channel": "spack",
-                     "source": install_method["source"], "install_method": install_method}
-        step_data = {
-            "tool": "spack", "subcommand": "install",
-            "purpose": f"Declare {tool_name} via Spack ({package or tool_name}@{spack_ref})",
-            "command": f"spack install {package or tool_name}",
-            "returncode": 0, "installed_packages": [ip_record],
-        }
-        idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
-        result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
-            if idx is not None else
-            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
-    return _ms._shrink_stdio_for_response(result, label=f"spack.{env_name}.{tool_name}")
 
 
 @mcp.tool()
