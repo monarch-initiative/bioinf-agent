@@ -261,4 +261,27 @@ The user opens `ssh hpc-agent` in a separate terminal and leaves it open. Every 
 
 ## Tests
 
-`pytest tests/` — covers both layers: `env_honesty.check_build` (BUILT / VALIDATED_IN_IMAGE incl. echo-cheat shapes / POLICY_CLEAN I12+I13) for the env, and `check_workflow_invariants` (I0/I3/I6/I7/I8) + the usage self-test for the workflow. Sanity tests verify the gates themselves catch silent-empty-success steps, relative paths, undeclared placeholders, and orphan step inputs.
+`pytest tests/` — covers both layers: `env_honesty.check_build` (BUILT / VALIDATED_IN_IMAGE incl. echo-cheat shapes / POLICY_CLEAN I12+I13 / WELL_FORMED) for the env, and `check_workflow_invariants` (I0/I3/I6/I7/I8) + the usage self-test for the workflow. Sanity tests verify the gates themselves catch silent-empty-success steps, relative paths, undeclared placeholders, and orphan step inputs.
+
+### The two maps — and why you need both
+
+The suite tells you the code does what it says. Neither of these does that; they tell you **what the system IS**, from opposite ends, and each is blind to the other's half:
+
+| | question | source | page |
+|---|---|---|---|
+| **outcomes dashboard** | what can the code EMIT, and has it ever run? | AST sweep → `docs/outcomes_ledger.json` + real coverage | `docs/outcomes_dashboard.html` |
+| **intent grid** | what can a user MEAN, and does it reach that? | live-probed → `docs/intent_corpus.json` | `docs/intent_grid.html` |
+
+**A map of ANSWERS cannot show a QUESTION with no answer.** An intent that reaches no terminal isn't a dark cell — it isn't a cell. And a terminal can be **green with the wrong tool in it**: `resolve('cellranger')` emits a clean, fully-tagged `proven` install_call for a CRAN *spreadsheet-range parser*. Every terminal behaved perfectly; nothing is broken except the meaning. No amount of terminal coverage finds that.
+
+    python scripts/extract_outcomes.py && python scripts/measure_terminal_coverage.py   # output side
+    pytest -m live && python scripts/build_intent_corpus.py && python scripts/render_intent_grid.py   # input side
+
+**The intent corpus** (`tests/live/test_intent_corpus.py`) is a **ratchet, not a green suite**: each row is one real user intent with the outcome it deserves. A *change detector* fires on any behaviour drift; a *correctness ratchet* (`xfail(strict=True)`) fails-on-XPASS so a fix must be PROMOTED, never left to rot back into a silent regression. Its meter is the not-yet-correct count — read it off the grid, never from prose.
+
+Three rules it lives by, each bought with a real defect:
+- **Live, never mocked, and opt-in** (`-m live`). Its whole value is that PyPI really does normalise `1.0`→`1.0.0`, so `resolve('talos','1.0.0')` really can "exactly match" a Keras tuner. A mocked corpus asserts only that our fixtures agree with our fixtures. (Its pure integrity tests DO run on every push — they're what stops the corpus rotting.)
+- **Assert on the DECISION, never on volatile registry state.** A corpus that goes red because a maintainer cut a release is one people learn to ignore, and an ignored corpus protects nothing.
+- **Judgement vs observation.** `expect` is reviewed and never auto-written; only `actual_today` is re-probed. A corpus that rewrites its own expectations to match today's behaviour cannot fail.
+
+It declares its own blind spots (`known_gaps`, rendered ABOVE the table, and tested): today it **cannot distinguish an EARNED refusal from a lazy one**, and the 16-row *report* gap is visible but not yet measurable. A grid silent about what it can't see reads as "this is everything".
