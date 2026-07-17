@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 _shq = shlex.quote
 
+from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills import env_recipe, env_recipe_render
 from agent.skills.outcomes import proven, refused, broke
 
@@ -196,9 +197,20 @@ def freeze_from_image(
     record["redistributable"] = not gated
     if dockerfile_source:
         record["dockerfile_source"] = dict(dockerfile_source)
+    # The authors' image: we ADOPTED these bytes, we did not build them — so there is
+    # no `install_command` to show and no tier assurance to disclose, and saying so
+    # explicitly is the record. `version` is None because this path does not probe the
+    # binary for one; a reader must render that as "unrecorded" rather than scrape a
+    # number out of the evidence output (scraping bcftools' banner is what produced
+    # htslib's version under bcftools' name — see ShippedBinary).
     record["shipped_binaries"] = [
-        {"command": t["name"],
-         "provenance": f"validated in the {build_method} image (evidence: {t['evidence'][:60]})"}
+        _ShippedBinary(
+            tool=t["name"],
+            version=None,
+            provenance=f"validated in the {build_method} image (evidence: {t['evidence'][:60]})",
+            install_command=None,
+            tier=None, verified=None, assurance=None,
+        ).model_dump()
         for t in tools]
 
     from agent.skills import env_honesty

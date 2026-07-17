@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from agent.models.core_data import shipped_binaries as _shipped_binaries
+
 
 # ---------------------------------------------------------------------------
 # small helpers
@@ -298,14 +300,17 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
 
     # Provenance
     L += ["## What's inside (provenance)", ""]
-    sb = record.get("shipped_binaries") or []
+    sb = _shipped_binaries(record)
     if sb:
         L += ["**Long-tail binaries baked in** (the pieces a package manager wouldn't give you):", ""]
         for b in sb:
-            if isinstance(b, dict):
-                L += [f"- `{b.get('command','?')}` "
-                      + (f"({b.get('version')})" if b.get("version") else "")
-                      + (f" — {b.get('provenance')}" if b.get("provenance") else "")]
+            # `command` used to be read here as if it were the tool name, but the
+            # freeze_tools producer wrote the literal shell line into that key — so
+            # this rendered a whole `git clone …` command where a tool name belongs.
+            # `tool` is now the tool; `install_command` is the command.
+            L += [f"- `{b.tool}` "
+                  + (f"({b.version})" if b.version else "(version unrecorded)")
+                  + (f" — {b.provenance}" if b.provenance else "")]
         L += [""]
     rp = record.get("resolved_packages") or []
     syp = record.get("system_packages") or []

@@ -469,7 +469,7 @@ class EnvCache:
         made it. Kept here (not inlined at each call site) so there is exactly ONE
         answer to "is this cached artifact trustworthy?"; the audit's whole finding
         was one concept re-derived in N places and drifting in N-1 of them."""
-        from agent.skills import env_honesty   # pure (re + typing); no import cycle
+        from agent.skills import env_honesty   # re + typing + models (leaf); no import cycle
         return env_honesty.check_build(record)
 
     def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
@@ -516,10 +516,35 @@ class EnvCache:
         return (None, violations) if violations else (rec, [])
 
     def register(self, key: str, record: dict) -> dict:
+        """Write a freeze record to the cache — and the ONE place Layer 1 asserts the
+        record's SHAPE, the analog of `spec_writer.py`'s `model_validate` for Layer 2.
+
+        This used to be a pure passthrough (`data[key] = record; self._save(data)`),
+        and that is precisely how three producers came to write three key-dialects of
+        `shipped_binaries` that four readers each mis-read differently. Every write
+        path — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe` —
+        converges here, so a declaration here binds all of them at once.
+
+        RAISES on a malformed record rather than returning a violation: a producer
+        emitting a shape it never declared is OUR bug, not a user's env failing a
+        policy gate. It must be loud at the seam and impossible to serve. Records that
+        FAIL policy still register (that is what `contract_violations` is for) — this
+        gate is strictly about "can this record be read at all".
+        """
+        self._validate_shape(record)
         data = self._load()
         data[key] = record
         self._save(data)
         return record
+
+    @staticmethod
+    def _validate_shape(record: dict) -> None:
+        """Sub-records with a declared model must conform BEFORE they reach disk.
+        Kept separate from `contract_violations` (policy, returns violations) because
+        this is a producer bug and must raise. Patch `_save` — the I/O — in tests, not
+        `register`; patching `register` patches out the contract itself."""
+        from agent.models.core_data import shipped_binaries
+        shipped_binaries(record)   # raises ValidationError on an undeclared dialect
 
     def all(self) -> dict:
         return self._load()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from agent.skills import env_recipe as er
 from agent.skills import env_recipe_render as R
+from env_records import shipped_binary as _shipped_binary
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +69,9 @@ def test_authors_dockerfile_method_renders_pinned_source():
                           dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
                                              "tag": "v11.0.1", "commit": "c" * 40})
     md = R.render_recipe_markdown(
-        r, {"shipped_binaries": [{"command": "bcftools", "version": "9cef4057",
-                                  "provenance": "populationgenomics/bcftools csq fork"}]})
+        r, {"shipped_binaries": [_shipped_binary(
+            tool="bcftools", version="9cef4057",
+            provenance="populationgenomics/bcftools csq fork")]})
     assert "the tool's OWN Dockerfile" in md
     assert "git clone https://github.com/populationgenomics/talos" in md
     assert "git checkout v11.0.1" in md

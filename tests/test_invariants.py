@@ -3441,10 +3441,10 @@ def test_env_report_html_install_commands_is_own_top_level_section():
     from 'what got pulled in' as a transitive dep."""
     from agent.skills.env_report_html import render_env_report_html
     rec = dict(_sample_record())
-    rec["shipped_binaries"] = [
-        {"name": "seqkit (release binary)",
-         "command": "curl -L -o /tmp/seqkit.tgz https://example.com/seqkit.tgz && tar xf /tmp/seqkit.tgz"},
-    ]
+    from env_records import shipped_binary
+    rec["shipped_binaries"] = [shipped_binary(
+        "seqkit", provenance="seqkit (release binary)",
+        install_command="curl -L -o /tmp/seqkit.tgz https://example.com/seqkit.tgz && tar xf /tmp/seqkit.tgz")]
     h = render_env_report_html(rec)
     # The install commands header is now an <h2>, NOT an <h3 class="sub">
     assert "<h2>Install commands" in h
@@ -4468,8 +4468,13 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
     monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: draft)
     monkeypatch.setattr(m._biocontainers, "resolve_biocontainer", lambda parsed: {"found": False})
     monkeypatch.setattr(m._env_cache, "lookup", lambda k: None)
-    registered = {}
-    monkeypatch.setattr(m._env_cache, "register", lambda k, rec: registered.update({k: rec}) or rec)
+    # Patch the I/O (`_save`), NOT the contract (`register`). A lambda standing in for
+    # `register` accepts ANY dict, which patches out the one gate that asserts a record's
+    # shape — the fix location and the monkeypatch location were the same line. The real
+    # `register` now runs (and validates) while nothing touches disk.
+    registered: dict = {}
+    monkeypatch.setattr(m._env_cache, "_load", lambda: registered)
+    monkeypatch.setattr(m._env_cache, "_save", lambda data: None)
     monkeypatch.setattr(m._env_mgr, "generate_lock", lambda *a, **k: {"success": False})
     monkeypatch.setattr(m._docker, "save_archive", lambda img, path: {"success": False})
     monkeypatch.setattr(m._docker, "image_digest", lambda img: "")
@@ -4478,7 +4483,10 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
         captured["spec"], captured["kw"] = spec, kw
         return {"success": True, "image": "samtools-seqkit:latest", "image_digest": "sha256:deadbeef",
                 "content_digest": "sha256:cd",
-                "longtail_steps": [{"purpose": "seqkit (release binary)", "command": "set -eux; curl ..."}]}
+                # matches what env_build really emits: `tool` alongside the prose
+                # `purpose` and the shell `command` (they are three different things)
+                "longtail_steps": [{"tool": "seqkit", "purpose": "seqkit (release binary)",
+                                    "command": "set -eux; curl ..."}]}
     monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
     monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
 
@@ -4491,9 +4499,13 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
     assert captured["kw"]["platform"] == "linux/amd64"            # converted from the conda subdir linux-64
     assert set(captured["kw"]["primary_tools"]) == {"samtools", "seqkit"}
     assert captured["spec"] is draft
-    # registered in the cache; shipped_binaries record the baked long-tail command
-    assert registered and any(sb.get("name") == "seqkit (release binary)"
-                              for sb in res.get("shipped_binaries", []))
+    # registered in the cache; shipped_binaries NAME the tool and carry its baked
+    # command in a separate field. This assertion used to read `name`, matching prose
+    # against a key the other producer never wrote — see test_shipped_binary_contract.
+    assert registered
+    sb = [x for x in res.get("shipped_binaries", []) if x["tool"] == "seqkit"]
+    assert sb and sb[0]["install_command"].startswith("set -eux; curl")
+    assert sb[0]["provenance"] == "seqkit (release binary)"
 
 
 # ---------------------------------------------------------------------------
@@ -4526,7 +4538,10 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch,
     monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: None)
     monkeypatch.setattr(m._biocontainers, "resolve_biocontainer", lambda parsed: {"found": False})
     monkeypatch.setattr(m._env_cache, "lookup", lambda k: None)
-    monkeypatch.setattr(m._env_cache, "register", lambda k, rec: rec)
+    # `_save`, not `register` — see the note at the other site. Patching `register` out
+    # would silently disable the shape contract this test runs through.
+    monkeypatch.setattr(m._env_cache, "_load", dict)
+    monkeypatch.setattr(m._env_cache, "_save", lambda data: None)
     monkeypatch.setattr(m._env_mgr, "generate_lock", lambda *a, **k: {"success": False})
     monkeypatch.setattr(m._docker, "save_archive", lambda img, path: {"success": False})
     monkeypatch.setattr(m._docker, "image_digest", lambda img: "")
@@ -4683,25 +4698,64 @@ def test_version_from_banner_accepts_only_version_shaped_tokens():
     assert _version_from_banner("") == ""
 
 
-def test_resolved_version_prefers_conda_then_banner_then_out_then_anchor():
-    """The chain that's identical across .md + .html renderers: conda/pip > banner
-    > evidence `out` > install anchor. Each step is a runtime-captured fact (or
-    an agent-supplied evidence command — labelled honestly); fakeability decreases
-    left to right."""
+def test_banner_scrape_never_reports_a_dependencys_version_as_the_tools():
+    """REINTRODUCE-THE-BUG. This is the defect that motivated ShippedBinary, and the
+    old test above could not see it: it used `bcftools 1.21 / Using htslib 1.21`,
+    where the two versions are IDENTICAL, so a scraper that read the wrong line still
+    returned the right string.
+
+    The real banner from the Talos env's bcftools — a populationgenomics csq FORK,
+    which is the entire reason that env exists — is:
+
+        bcftools 9cef4057      <- the fork's commit; NOT version-shaped
+        Using htslib 1.23.1    <- a DIFFERENT PROJECT
+
+    A whole-text regex skips line 1 (no dotted token) and returns `1.23.1`, so the
+    shipped ENV.html rendered `bcftools | 1.23.1` — upstream htslib's number, under
+    the name of a fork whose behaviour differs from upstream. Citable, and false.
+
+    '' is the correct answer: we did not capture bcftools' version. Absence must
+    render as absence (Rule 2). Delete `_first_line` and this goes red."""
+    from agent.skills.env_report_helpers import _extract_version, _version_from_banner
+    real = "bcftools 9cef4057\nUsing htslib 1.23.1\nCopyright (C) 2025 Genome Research Ltd."
+    assert _version_from_banner(real) == "", (
+        "a version-shaped token below line 1 belongs to a DEPENDENCY, not to this tool")
+    assert _extract_version(real) == ""
+    # a version the tool really does print on its own line still resolves
+    assert _version_from_banner("echtvar 0.2.2\n") == "0.2.2"
+    assert _version_from_banner("bcftools 1.21\nUsing htslib 1.23.1") == "1.21"
+
+
+def test_resolved_version_prefers_recorded_facts_over_scraped_prose():
+    """The chain every renderer shares, ordered RECORDED-BEFORE-SCRAPED:
+    conda/pip metadata > shipped_binaries[].version > banner > evidence `out` >
+    install anchor.
+
+    The first two are facts a producer WROTE DOWN. The next two are inferences
+    regexed out of prose — and an inference is precisely what cited htslib's version
+    for bcftools. So anything recorded outranks anything parsed. This ordering used to
+    put the banner second, which let a scraped guess beat a captured fact whenever
+    both existed."""
+    from env_records import shipped_binary
     from agent.skills.env_report_helpers import _resolved_version
-    # conda wins
+    # conda wins over everything
     assert _resolved_version("samtools", {"version": "1.21"},
                              {"banner": "samtools 1.99", "out": "samtools 1.50"}, []) == "1.21"
-    # banner beats out when no conda
+    # REINTRODUCE-THE-BUG: a RECORDED version beats a scrapeable banner. Swap rungs 2
+    # and 3 back and this returns the banner's 9.9.9 — a parse outranking a fact.
+    assert _resolved_version("bcftools", None, {"banner": "bcftools 9.9.9", "out": ""},
+                             [shipped_binary("bcftools", version="9cef4057")]) == "9cef4057"
+    # banner beats out when nothing is recorded
     assert _resolved_version("seqtk", None,
                              {"banner": "Version: 1.4-r122", "out": ""}, []) == "1.4-r122"
     # out only — last resort before the anchor
     assert _resolved_version("tool", None, {"banner": "", "out": "tool v0.9.1"}, []) == "0.9.1"
-    # anchor is the last resort (synthesized purpose carries the commit)
+    # anchor is the last resort (the synthesized provenance carries the commit)
     assert _resolved_version("seqtk", None, {"banner": "", "out": ""},
-                             [{"name": "seqtk (synthesized @ abc1234def56)",
-                               "command": "..."}]) == "abc1234def56"
-    # nothing → empty
+                             [shipped_binary("seqtk",
+                                             provenance="seqtk (synthesized @ abc1234def56)",
+                                             install_command="...")]) == "abc1234def56"
+    # nothing → empty. NOT a guess, NOT a fallback: '' means unrecorded.
     assert _resolved_version("ghost", None, None, []) == ""
 
 
@@ -4718,6 +4772,15 @@ def test_is_sha_recognizes_commit_only_for_hex_blobs():
     assert not _is_sha("")
 
 
+def _seqtk_shipped() -> dict:
+    """seqtk as the synthesis tier really records it: the tool name in `tool`, the
+    baked command in `install_command`, and the `@ <ref>` anchor inside the human
+    provenance string where `_version_from_purpose` reads it."""
+    from env_records import shipped_binary
+    return shipped_binary("seqtk", provenance="seqtk (synthesized @ 94e707082d39)",
+                          install_command="git clone ...")
+
+
 def test_html_report_dual_displays_banner_version_with_sha_anchor():
     """When a banner version is captured AND the install anchor is a SHA, the
     cell renders both: '1.4-r122 (commit 94e707082d)'. Full provenance kept."""
@@ -4729,8 +4792,7 @@ def test_html_report_dual_displays_banner_version_with_sha_anchor():
               "verifications": [{"tool": "seqtk", "check": "seqtk 2>&1 | grep -qi usage",
                                  "passed": True, "out": "",
                                  "banner": "Version: 1.4-r122\nUsage: seqtk ..."}],
-              "shipped_binaries": [{"name": "seqtk (synthesized @ 94e707082d39)",
-                                    "command": "git clone ..."}],
+              "shipped_binaries": [_seqtk_shipped()],
               "resolved_packages": [], "system_packages": [], "conda_specs": []}
     html = render_env_report_html(record)
     # banner version up front, commit anchor in parentheses

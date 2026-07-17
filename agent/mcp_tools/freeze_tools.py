@@ -20,6 +20,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -53,19 +54,32 @@ def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dic
 
 
 def _shipped_binary_entry(step: dict) -> dict:
-    """One `shipped_binaries[]` record from a baked long-tail step. The baked
-    command IS the tool's provenance; C5 additionally surfaces the per-tool SHIP
-    assurance (verified/assurance/tier) whenever the tier disclosed one — so the
-    ENV report states HOW each shipped tool is anchored across ALL tiers, not just
-    binary. A step with no assurance (nothing to disclose) carries name+command
-    only, unchanged."""
-    entry = {"name": step.get("purpose", ""), "command": step.get("command", "")}
+    """One `shipped_binaries[]` record from a baked long-tail step, as the declared
+    `ShippedBinary` shape. The baked command IS this tier's provenance; C5 surfaces
+    the per-tool SHIP assurance (verified/assurance/tier) whenever the tier disclosed
+    one — so the ENV report states HOW each shipped tool is anchored across ALL tiers,
+    not just binary.
+
+    Fields state absence explicitly rather than defaulting it (see `ShippedBinary`):
+    `version` is None because this tier does not probe the built binary for one —
+    "we did not capture it" is the honest record, and a reader must render it as
+    absence, never scrape a number out of a banner to fill the hole.
+
+    `tool` (the PATH command) and `install_command` (the literal baked shell line)
+    used to share one `command` key with opposite meanings across the two producers,
+    which is what rendered `bcftools` inside a <pre> shell block under the label
+    "tool". `purpose` stays as the human label; `step["tool"]` is now carried from the
+    generator that computed it (audit 2026-07-16)."""
     prov = step.get("provenance") or {}
-    if prov.get("assurance"):
-        entry["tier"]      = prov.get("tier", "")
-        entry["verified"]  = bool(prov.get("verified"))
-        entry["assurance"] = prov.get("assurance", "")
-    return entry
+    return _ShippedBinary(
+        tool=step.get("tool") or "",
+        version=None,
+        provenance=step.get("purpose") or None,
+        install_command=step.get("command") or None,
+        tier=prov.get("tier") if prov.get("assurance") else None,
+        verified=bool(prov.get("verified")) if prov.get("assurance") else None,
+        assurance=prov.get("assurance") or None,
+    ).model_dump()
 
 
 @mcp.tool()

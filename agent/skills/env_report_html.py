@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from agent.skills.freeze import record_is_gated as _record_is_gated
 
+from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
@@ -480,13 +481,22 @@ def render_env_report_html(record: dict) -> str:
         P.append('<div class="bx-body">')
         if shipped:
             P.append('<details open><summary>Verbatim long-tail commands</summary>')
-            for s in shipped:
-                label = s.get("name") or s.get("purpose") or "tool"
-                cmd = (s.get("command") or "").strip()
-                P.append(f'<p style="margin:10px 0 2px"><b>{_e(label)}</b>'
-                         f'{_assurance_badge(s)}</p>')
-                if cmd:
-                    P.append(f"<pre>{_e(cmd)}</pre>")
+            for s in _shipped_binaries(r):
+                # `name or purpose or "tool"` read keys the authors'-image producer
+                # never wrote, so every one of its binaries fell through to the literal
+                # string "tool" — four rows labelled <b>tool</b> under a header
+                # asserting "the command IS the provenance", with the tool NAME
+                # rendered inside the <pre> as if it were a shell line. `tool` and
+                # `install_command` are separate fields now; an adopted binary has no
+                # command and says so rather than borrowing another field's value.
+                # The TOOL names itself; the provenance prose ("seqkit (release
+                # binary)") rides alongside as the note it always was, rather than
+                # standing in for a name it never was.
+                prov = f' <span class="note">{_e(s.provenance)}</span>' if s.provenance else ""
+                P.append(f'<p style="margin:10px 0 2px"><b>{_e(s.tool)}</b>'
+                         f'{_assurance_badge(s.model_dump())}{prov}</p>')
+                if s.install_command:
+                    P.append(f"<pre>{_e(s.install_command.strip())}</pre>")
             P.append("</details>")
         else:
             P.append(_empty("(no long-tail steps — pure conda env)"))

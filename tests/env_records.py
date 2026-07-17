@@ -24,6 +24,32 @@ def env_evidence(tool: str = "samtools") -> list[dict]:
              "rc": 0, "passed": True, "out": f"{tool} 1.21"}]
 
 
+def shipped_binary(tool: str, *, version=None, provenance=None, install_command=None,
+                   tier=None, verified=None, assurance=None) -> dict:
+    """One `shipped_binaries[]` entry, CONSTRUCTED THROUGH THE MODEL so a fixture can
+    never encode a shape the producers don't emit.
+
+    This helper exists because the suite proved the point the hard way. Four fixtures
+    hand-rolled four mutually exclusive dialects and all four were green:
+
+        test_env_recipe_render.py:71  {"command": "bcftools", "version": …}
+        test_invariants.py:3444       {"name": "seqkit (release binary)", "command": "curl …"}
+        test_invariants.py:4732       {"name": "seqtk (synthesized @ …)", "command": "git clone …"}
+        html_structure.py:155         {"name": "samtools (conda)", "command": "conda install …"}
+
+    Meanwhile the shape `freeze_from_image` ACTUALLY emitted was exercised by NO test.
+    The suite was 100% green on a record shape that did not exist and blind to the one
+    that did — which is how the ENV report came to cite htslib's version for bcftools.
+    An untyped dict makes the fixture the schema, and every test file writes its own.
+
+    Go through here. `ShippedBinary(extra="forbid")` rejects a key no producer writes.
+    """
+    from agent.models.core_data import ShippedBinary
+    return ShippedBinary(tool=tool, version=version, provenance=provenance,
+                         install_command=install_command, tier=tier,
+                         verified=verified, assurance=assurance).model_dump()
+
+
 def env_record(**overrides) -> dict:
     """An EnvCache record that satisfies the Layer-1 honesty contract."""
     rec = {

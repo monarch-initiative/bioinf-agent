@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Controlled vocabulary
@@ -849,6 +849,98 @@ class PackageRecord(BaseModel):
     platform_note:     Optional[str] = None
     input_types:       list[str] = []
     output_types:      list[str] = []
+
+
+class ShippedBinary(BaseModel):
+    """One tool baked into the shipped image OUTSIDE the package-manager closure —
+    a source build, a release binary, a jar, a synthesized script. The SBOM cannot
+    see these (a hand-compiled C binary carries no metadata in any packaging system,
+    ever), so this record is the only place their identity exists.
+
+    THIS MODEL IS A GATE, NOT DOCUMENTATION. It is validated at the Layer-1 disk
+    seam (`EnvCache.register`), the analog of `spec_writer.py`'s `model_validate` for
+    Layer 2. Read it through `freeze.shipped_binaries(record)` — never `.get()` a key
+    off the raw dict, which is how the drift below happened.
+
+    Two design rules, both bought with a real defect:
+
+    1. `extra="forbid"`. Three producers wrote three key-dialects; `user_guide.py`
+       read `platform`/`sha256`, keys NO producer has ever written, and rendered
+       `shipped binary: None (None, sha256 …)` into a user-facing guide. Forbidding
+       extras turns a producer's private dialect into a write-time error.
+
+    2. NO FABRICATING DEFAULTS — every field is REQUIRED, and `None` is a legal value
+       a producer must state explicitly. `WorkflowSpec` is the counter-example in this
+       repo: its `outputs: list[str] = []` stamps an empty list into every sealed spec
+       while the truth lives elsewhere. A permissive model with defaults does not catch
+       drift, it AUTHORS it. "I did not capture this" is a fact; it must be written
+       down, not defaulted into existence.
+
+    `tool` vs `install_command` are SEPARATE fields because the old shared `command`
+    key carried both meanings: `freeze_tools` wrote the literal shell line
+    ("git clone https://…"), `freeze_from_image` wrote the binary name ("bcftools").
+    One key, opposite semantics — so the ENV report rendered four binaries labelled
+    "tool" with `bcftools` inside a <pre> shell block. Splitting them is the fix.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1)
+    """The command as it exists on PATH in the shipped image — `bcftools`, `seqtk`.
+    The one thing a user types. Never a shell line, never prose.
+
+    NON-EMPTY, enforced: a shipped binary nobody can name is not a record of anything,
+    and `tool=""` would sail through a bare `str` and land in a report as a blank cell.
+    Every install_commands generator emits this; if it arrives empty, a producer
+    dropped it and that must be loud here rather than rendered as nothing."""
+
+    version: Optional[str]
+    """Semantic version or commit sha, as the tool itself reports it. `None` means
+    NOT CAPTURED — and readers MUST render that as absence ("unrecorded"), never as a
+    value. Absence of data must never render as data. Do NOT scrape this from a
+    multi-line banner: `bcftools --version` prints "bcftools 9cef4057\\nUsing htslib
+    1.23.1", and a regex over that returns HTSLIB's version for bcftools — the exact
+    lie that motivated this model. The producer captures; the reader must not guess."""
+
+    provenance: Optional[str]
+    """Prose: where these bytes came from ("populationgenomics/bcftools csq fork,
+    compiled from source (htslib 1.23.1)"). For a long-tail step the baked command IS
+    the provenance, so this may be None when `install_command` carries it."""
+
+    install_command: Optional[str]
+    """The literal shell line baked into the image, verbatim, when this binary came
+    from a long-tail build step. `None` for a binary adopted from an authors' image —
+    we did not build it, so there is no command to show."""
+
+    tier: Optional[str]
+    """Which install tier produced it (binary/source/jar/synthesized/…)."""
+
+    verified: Optional[bool]
+    """Whether the tier's install→ship integrity chain was verified."""
+
+    assurance: Optional[str]
+    """The C5 ship-assurance key (`authenticated`, `commit_pinned`, `unpinned`, …) —
+    HOW this tool is anchored. Rendered as a pill by `_assurance_badge`. `None` = the
+    tier disclosed nothing, which is itself a disclosure."""
+
+
+def shipped_binaries(record: dict) -> list[ShippedBinary]:
+    """THE reader for `record["shipped_binaries"]`. Every consumer goes through here.
+
+    Rule 4 ("one truth, one definition, read at every use") in its mechanical form.
+    Four readers used to `.get()` keys straight off the raw dicts and each invented its
+    own dialect — `name or purpose`, `platform`, `sha256` — so each one degraded
+    silently and differently against the same record. Attribute access on a validated
+    model turns every one of those into an error at the seam instead of a `None` in a
+    shipped deliverable.
+
+    STRICT BY DESIGN: raises `pydantic.ValidationError` on any record whose shape does
+    not conform. That is Rule 3 (fail closed on an unrecognized shape) — a record we
+    cannot read is not a record we may render. `EnvCache.register` validates on the way
+    in, so anything freeze just wrote parses here; a record on disk that does NOT parse
+    predates the schema and is surfaced by `env_honesty.check_build`'s WELL_FORMED
+    clause as `contract_ok: false` — re-freeze it, do not backfill it.
+    """
+    return [ShippedBinary.model_validate(b) for b in (record.get("shipped_binaries") or [])]
 
 
 class TestDataRef(BaseModel):

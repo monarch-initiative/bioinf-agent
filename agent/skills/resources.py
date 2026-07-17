@@ -156,19 +156,35 @@ def list_resources(inputs: dict, config: dict) -> dict:
 
 
 def _semantic_versions(record: dict) -> list[dict]:
-    """The REQUESTED tools with human-readable semantic versions, read off the
-    shipped image's SBOM. Never image/build hashes — this is the string a user
-    cites in a paper."""
-    resolved = {p.get("name"): p.get("version")
-                for p in (record.get("resolved_packages") or [])
-                if isinstance(p, dict)}
+    """The REQUESTED tools with human-readable semantic versions — the string a user
+    cites in a paper. Never image/build hashes.
+
+    Delegates to `env_report_helpers._resolved_version`, THE definition, which the
+    ENV report also uses. This function originally forked that chain and read only its
+    first rung (the SBOM), which meant `list_installed_pipelines` reported
+    `bcftools: null` for the authors'-image env while the ENV report claimed `1.23.1`
+    — one fact, two readings, disagreeing, both wrong. The SBOM cannot see a tool
+    installed outside the package manager (a source-compiled binary carries no
+    metadata anywhere), so a SBOM-only read is structurally blind on exactly the
+    long-tail tiers this project prefers. Rule 4: one definition, read at every use.
+    """
+    from agent.skills.env_report_helpers import (
+        _pkg_index, _resolved_version, _verif_index)
+
+    pidx = _pkg_index(record.get("resolved_packages") or [])
+    vidx = _verif_index(record.get("verifications") or [])
+    shipped = record.get("shipped_binaries") or []
     out = []
     for spec in (record.get("requested_tools") or []):
         name = str(spec).split("=")[0].strip()
         if not name:
             continue
         pinned = str(spec).split("=", 1)[1].strip() if "=" in str(spec) else ""
-        out.append({"tool": name, "version": resolved.get(name) or pinned or None})
+        resolved = _resolved_version(name, pidx.get(name.lower()), vidx.get(name.lower()), shipped)
+        # `pinned` is what the USER ASKED FOR, not what shipped — a last resort, and
+        # only when nothing observed the real thing. None stays None: absence of a
+        # version is a fact about our record, and must not render as a version.
+        out.append({"tool": name, "version": resolved or pinned or None})
     return out
 
 
@@ -212,7 +228,13 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
             "image":            rec.get("image"),
             "image_digest":     rec.get("image_digest"),
             "content_digest":   rec.get("content_digest"),
-            "build_method":     rec.get("mode"),
+            # `build_method` is the real field ("adopt-image" / "authors-dockerfile" /
+            # container-native); `mode` is the coarse two-valued sibling ("adopt" /
+            # "build") that predates it. Reading `mode` here reported the authors'-
+            # Dockerfile env as a generic "build" — erasing, in the inventory, the one
+            # fact that distinguishes the authors'-own-machinery path this project
+            # prefers. Fall back to `mode` only for records frozen before build_method.
+            "build_method":     rec.get("build_method") or rec.get("mode"),
             "platform":         rec.get("platform"),
             "validation_locus": rec.get("validation_locus"),
             "created_at":       rec.get("created_at"),

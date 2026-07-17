@@ -688,12 +688,20 @@ class ContainerBuild:
         return res
 
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
-    def run(self, command: str, evidence: str, purpose: str = "",
+    def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
             timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
         baking; `evidence` is re-run in the built image at freeze.
+
+        `tool` is the command this step puts on PATH (`seqtk`) — DISTINCT from
+        `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every one of
+        the ten install_commands generators already computes it; it used to be dropped
+        right here, one line before it would have been recorded, after which
+        `_install_anchor` tried to scrape it back out of the prose. That round trip is
+        why the ENV report labelled four binaries "tool" and cited htslib's version for
+        bcftools. The producer knows the name — record it (audit 2026-07-16, Rule 1).
 
         engine_coupled: the command (and evidence) need the engine env active — the
         BUILD uses an engine-provided toolchain (rust/go/perl) or the artifact lives
@@ -714,7 +722,7 @@ class ContainerBuild:
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
-        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd}
+        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd, "tool": tool}
         if provenance:                       # synthesis tier: carry the per-command
             rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
         self.longtail.append(rec)
@@ -722,10 +730,14 @@ class ContainerBuild:
         return proven("container_build.run_ok", success=True, evidence_output=(ev["stdout"] or "").strip()[:200])
 
     def install(self, spec: dict, timeout: int = 1800) -> dict[str, Any]:
-        """Run an install_commands generator's spec ({command, evidence, purpose,
+        """Run an install_commands generator's spec ({command, evidence, tool, purpose,
         engine_coupled?}). The single entry point for every long-tail tier — the
-        generator carries the per-tier knowledge; the locus just runs+bakes it."""
+        generator carries the per-tier knowledge; the locus just runs+bakes it.
+
+        `spec["tool"]` is emitted by ALL TEN generators and was dropped here until the
+        2026-07-16 audit — see `run()`'s docstring for what that cost downstream."""
         return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
+                        tool=spec.get("tool", ""),
                         engine_coupled=spec.get("engine_coupled", False),
                         provenance=spec.get("provenance"), timeout=timeout)
 

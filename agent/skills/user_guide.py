@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.models.core_data import usage_commands
+from agent.models.core_data import shipped_binaries as _shipped_binaries, usage_commands
 
 
 def _version_of(pkg: dict) -> str:
@@ -238,9 +238,15 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     if kpkgs:
         listed = ", ".join(f"{n}={v}" for n, v in list(kpkgs.items())[:12])
         L += [f"- key packages: {listed}" + (" …" if len(kpkgs) > 12 else "")]
-    for sb in (freeze_record or {}).get("shipped_binaries", []) or []:
-        L.append(f"- shipped binary: `{sb.get('name')}` ({sb.get('platform')}, "
-                 f"sha256 {str(sb.get('sha256', ''))[:12]}…)")
+    # `platform` and `sha256` were read here for as long as this line has existed and
+    # are written by ZERO producers — so this rendered, verbatim, into a user-facing
+    # guide: "- shipped binary: `None` (None, sha256 …)". Four times, for the
+    # authors'-image env. Absence of data must never render as data (Rule 2); a key no
+    # producer writes is now an AttributeError on the model, not a None in a document.
+    for sb in _shipped_binaries(freeze_record or {}):
+        ver = f" {sb.version}" if sb.version else " (version unrecorded)"
+        prov = f" — {sb.provenance}" if sb.provenance else ""
+        L.append(f"- shipped binary: `{sb.tool}`{ver}{prov}")
     L.append("")
 
     # 3b. Reference databases — the biology-half reproducibility anchor. A DB

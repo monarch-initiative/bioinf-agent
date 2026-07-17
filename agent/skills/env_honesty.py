@@ -46,6 +46,11 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+# The declared shape of the sub-records WELL_FORMED asserts. core_data is a leaf
+# (pydantic/yaml only) so this keeps the module import-cycle-free; it is no longer
+# stdlib-pure, which is the price of the contract knowing what a record IS.
+from agent.models import core_data as _core_data
+
 # ---------------------------------------------------------------------------
 # The anti-echo-cheat shape rule (carried from evidence.py / env_manager.verify).
 #
@@ -324,6 +329,23 @@ def check_build(result: dict) -> list[dict]:
         licenses, redistributable
     """
     violations: list[dict] = []
+
+    # -- WELL_FORMED -----------------------------------------------------
+    # Layer-1's shape-sanity clause — the analog of Layer-2's I0, and asserted here
+    # (the SERVING question) as well as at EnvCache.register (the WRITING question),
+    # because tier 5's lesson is that a gate only at the producer leaves every record
+    # frozen before it existed grandfathered in. A record whose sub-records don't
+    # conform cannot be READ, so it cannot be honestly rendered or served: freeze /
+    # run / stage / seal all refuse it and name this clause, and it is re-earned by a
+    # re-freeze rather than a backfill ([[feedback-existing-installs-not-precious]]).
+    try:
+        _core_data.shipped_binaries(result)
+    except Exception as e:
+        violations.append({"invariant": "WELL_FORMED.shipped_binaries",
+                           "where": "shipped_binaries",
+                           "message": f"shipped_binaries does not conform to the declared "
+                                      f"ShippedBinary shape, so its contents cannot be read "
+                                      f"without guessing: {e}"})
 
     # -- BUILT -----------------------------------------------------------
     # The image existing is the structural anchor for I1/I9/I11/I14: every RUN
