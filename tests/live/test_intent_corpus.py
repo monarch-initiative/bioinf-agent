@@ -217,6 +217,60 @@ def test_corpus_is_well_formed_and_dated():
         assert "chosen" in r.get("expect", {}), f"{r['id']}: no expectation"
 
 
+def test_rows_sharing_a_call_do_not_demand_contradictory_outcomes():
+    """Two rows on ONE call must be mutually satisfiable, or one of them can never pass.
+
+    Pure — no network — so it runs on every push.
+
+    Multiple rows per call are DELIBERATE and good: the four `cellranger` rows share an
+    input and guard different things ("same input, different guard; neither subsumes the
+    other, so do not dedupe"). That only works while they AGREE on the decision.
+
+    Three pairs did not, and every one was the same mechanical slip: the verify pass
+    rewrote one row's `expect` — with reasoning, in the note, saying "EXPECT REWRITTEN …
+    is REFUTED" — and never propagated to its sibling.
+
+        {tool: seurat}                  chosen=null       vs  chosen='cran'
+        {tool: limma}                   chosen=null       vs  chosen='bioconductor'
+        {tool: bcftools, github_repo:…} chosen=null       vs  chosen='synthesis'
+
+    They were quiet because BOTH were xfail. That is the trap: under `strict=True` the day
+    someone fixes `seurat` to return 'cran', the sibling becomes a PERMANENT red that no fix
+    can ever clear — and a maintainer who cannot make the suite green by fixing the code
+    learns to ignore it. An ignored corpus protects nothing, which is the one failure this
+    whole apparatus exists to avoid.
+
+    A review pass found this class and missed three instances (memory records `limma` being
+    killed for exactly this, while these three survived). That is the argument for a
+    mechanical check: judgement scales badly across 59 rows; a set comparison does not.
+
+    Unassertable rows are exempt — they are never executed, so they cannot collide.
+    """
+    from collections import defaultdict
+
+    by_call = defaultdict(list)
+    for r in _rows():
+        if not r.get("expect", {}).get("assertable", True):
+            continue
+        by_call[json.dumps({k: v for k, v in sorted(r["call"].items())
+                            if v is not None})].append(r)
+
+    clashes = []
+    for call, rows in by_call.items():
+        for field in ("chosen", "identity_confirmed", "ambiguous"):
+            # None means "do not check" for identity_confirmed/ambiguous, so only a
+            # disagreement between two STATED values is a contradiction. `chosen: None` is
+            # itself a demand (REFUSE), so it always counts.
+            stated = {json.dumps(r["expect"].get(field)) for r in rows
+                      if field == "chosen" or r["expect"].get(field) is not None}
+            if len(stated) > 1:
+                clashes.append(f"{call} — rows {[r['id'] for r in rows]} disagree on "
+                               f"{field}: {sorted(stated)}")
+    assert not clashes, (
+        "rows sharing a call demand contradictory outcomes; at most one can ever pass:\n  "
+        + "\n  ".join(clashes))
+
+
 def test_every_assertable_row_agrees_with_what_the_harness_can_actually_check():
     """A row must not CLAIM a defect the harness cannot SEE.
 

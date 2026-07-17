@@ -765,8 +765,8 @@
     "chosen": null,
     "identity_confirmed": null,
     "ambiguous": true,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None for {tool: seurat}; `seurat-cran-case-miss-plus-empty-pypi-squat` demands chosen='cran' for the same call, and did so via an explicit verify-pass rewrite ('the recorded expect (chosen=null, refuse and ask) is REFUTED as a tax on a name the resolver can resolve correctly and unaided' \u2014 CRAN's Seurat self-describes as 'Tools for Single Cell Genomics' and domain_signal returns ['genomics','sequencing','single cell']). Both cannot pass; under strict xfail, fixing either makes the other a PERMANENT red that no fix can clear. The rewrite's judgement supersedes. This row's UNIQUE content \u2014 that an empty-description PyPI stub must not read as a real candidate \u2014 is real but lives in identity.evidence, which no assertion reads (see known_gaps[1]). Restore when that field is exposed.",
     "note": "MUST REFUSE AND ASK. Assert chosen is None AND 'identity' key ABSENT AND ambiguous==true. NB this row demands TWO INDEPENDENT fixes and stays red until both land \u2014 (1) refuse rather than choose-and-warn, (2) case-insensitive crandb lookup, without which the ambiguity guard is silently disabled. Deliberate coupling (both defects are real on this one call), but a maintainer seeing red must check which half. Refusal rests on the strongest evidence in the corpus: the sole hit is a 0.0.x stub with an EMPTY description on the pip-after-conda-missed tier (9/10 wrong)."
    },
    "actual_today": {
@@ -1413,10 +1413,10 @@
    },
    "expect": {
     "chosen": null,
-    "assertable": true,
+    "assertable": false,
     "identity_confirmed": null,
     "ambiguous": null,
-    "unassertable_reason": null,
+    "unassertable_reason": "UNASSERTABLE \u2014 THIS ROW SAYS SO ITSELF: 'PRECONDITION \u2014 NOT EXPRESSIBLE IN `call`, AND `call` IS A BYTE-DUPLICATE OF THE fork-is-the-point ROW: a runner that reads `call` alone WILL execute the wrong scenario.' It needs api.github.com stubbed to 403; as an R.resolve(call) row it silently runs fork-is-the-point's scenario and contradicts its chosen='synthesis'. Same downgrade as github-ratelimit-renders-false-negatives-as-facts. ITS DEMAND IS NOW MET, one level down where it belongs: probe_github is tri-state (repo_exists=False + probe_error='rate_limited', so 'we could not ask' never renders as 'it is not there') and it is pinned by tests/test_probe_honesty.py::test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo (2026-07-17).",
     "note": "PRECONDITION \u2014 NOT EXPRESSIBLE IN `call`, AND `call` IS A BYTE-DUPLICATE OF THE fork-is-the-point ROW: a runner that reads `call` alone WILL execute the wrong scenario. The test MUST monkeypatch resolver._get_json to return None for any 'api.github.com' URL (exactly what a real 403 produces) \u2014 no quota exhaustion, so this row is deterministic and the most CI-safe of the set. probe_github must be TRI-STATE (exists/absent/unknown) so 'we could not ask' NEVER renders as 'it is not there'. LOAD-BEARING: chosen must NOT be 'conda' \u2014 a 403 must never silently re-qualify the registry tiers the fork rule disqualifies \u2014 AND a machine-readable unknown/403 reason key must exist. chosen==null is the scoped demand (repo supplied AND GH unknown \u21d2 the pin is unevaluable), NOT 'always ask': it cannot tax the measured bioconda names, which resolve with no repo and no GH call at all."
    },
    "actual_today": {
@@ -1593,8 +1593,8 @@
     "chosen": null,
     "identity_confirmed": null,
     "ambiguous": true,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None for {tool: limma}; `limma-bioconductor-never-probed-without-language-hint` demands chosen='bioconductor' for the same call via an explicit verify-pass rewrite citing THIS corpus's trinity precedent (a bio-channel anchor beats a same-name PyPI squat WITHOUT asking, and that is scored correct; Bioconductor membership is a domain anchor by the identical argument to bioconda). Both cannot pass. This row's UNIQUE content is STALENESS ('right project, wrong decade') \u2014 a different concern from identity, and no field exposes it. Restore when one does.",
     "note": "MUST REFUSE AND ASK: PyPI's ESP8266 IoT framework is not limma. Assert chosen is None AND 'identity' key ABSENT AND ambiguous==true (already fires correctly \u2014 keep green). Refusal, not choose-and-warn. Do NOT assert any version string: the point is a decade-stale artifact, but '2.10.7'/'0.2.5' are registry state."
    },
    "actual_today": {
@@ -1774,6 +1774,12 @@
    "detail": "PARTLY CLOSED 2026-07-17. The authors'-path half is now measurable: `expect.authors_gate` asserts which of four things happened to the reliability gate (assessed / not_assessed / errored / no_repo), and 4 rows carry it. That was NOT cosmetic \u2014 `trinity-author-image-tier-probes-the-ethereum-repo` was recorded is_correct_today=TRUE and PASSING the whole time the author tiers were probing ethereum/trinity: it asserted chosen=='conda', which was true, while the very thing it claims to guard was broken. Green with the wrong tool in it, inside the corpus built to expose exactly that. All 4 gate rows go RED against the pre-fix resolver and pass against it now \u2014 verified by reverting the fix. STILL OPEN: the identity half. 6 rows remain assertable:false because their defect is in identity.anchor / .evidence / .note and no assertion reads those fields \u2014 e.g. `perl-json` is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a proposition its own self_description ('JSON encoder/decoder') disproves on the same screen.",
    "why_not_fixed_here": "The gate's state is a DECISION (it obeys the stability rule \u2014 a row must not go red because a maintainer edited a recipe), so it could be asserted. identity.anchor/.evidence are not exposed yet, and faking a field is worse than saying so.",
    "what_tier_8_must_do": "Restate identity's warrant (bioconda membership is ECOSYSTEM, not IDENTITY \u2014 the evidence string 'bioconda is a bioinformatics-only channel' is FALSE and perl-json disproves it on the same screen), expose anchor/evidence/note, then promote the remaining 6."
+  },
+  {
+   "gap": "3 rows are PARKED as unassertable: they contradicted a sibling on an identical call",
+   "detail": "Found 2026-07-17 by the new mechanical check (test_rows_sharing_a_call_do_not_demand_contradictory_outcomes). {tool: seurat}, {tool: limma} and {tool: bcftools, github_repo: populationgenomics/bcftools} each had TWO rows demanding mutually exclusive `chosen`. Every one was the same slip: the verify pass rewrote one row's expect \u2014 saying so in the note ('EXPECT REWRITTEN ... is REFUTED') \u2014 and never propagated to its sibling. Both were xfail, so they were quiet; under strict xfail the day either got fixed the other became a PERMANENT red no fix could clear, which is how a corpus earns being ignored. The measured surface therefore SHRANK from 50 assertable rows to 47. That is the honest number: those 3 were never measuring what they claimed.",
+   "why_not_fixed_here": "Each parked row's UNIQUE content is real but not yet expressible: seurat's is that an empty-description PyPI stub must not read as a real candidate (needs identity.evidence); limma's is STALENESS ('right project, wrong decade' \u2014 no field exposes it); bcftools's needs api.github.com stubbed to 403 and its `call` is a byte-duplicate of fork-is-the-point, so an R.resolve(call) runner silently executes the WRONG scenario.",
+   "what_tier_8_must_do": "seurat -> expose identity.evidence (see known_gaps[1]). limma -> a staleness field. bcftools -> nothing: its demand is ALREADY MET one level down, where it belongs, by tests/test_probe_honesty.py::test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo. Delete it rather than restore it."
   }
  ]
 }
