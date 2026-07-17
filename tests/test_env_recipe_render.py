@@ -55,10 +55,25 @@ def test_adopt_method_renders_pull_by_digest():
                           build_method="adopt",
                           adopt_image="quay.io/biocontainers/samtools@sha256:" + "ef" * 32)
     md = R.render_recipe_markdown(r, {"image": "quay.io/biocontainers/samtools@sha256:" + "ef" * 32})
-    assert "adopt a published BioContainer" in md
+    assert "adopt a published image" in md
     assert "docker pull quay.io/biocontainers/samtools@sha256:" in md
     # the conda-direct alternative is offered
     assert "conda create" in md
+
+
+def test_adopt_without_a_registry_digest_refuses_rather_than_print_a_local_tag():
+    """The heading promises "the digest guarantees identical bytes", so a recipe with no
+    digest must not print a pull command. This fell back to `record["image"]` — for the
+    real talos_authors record that is `talos-authors:11.0.0`, a tag that resolves on
+    exactly one machine on earth, rendered under a content-addressing claim."""
+    r = er.extract_recipe(None, name="talos_authors", version="11.0.0", conda_deps=[],
+                          primary_tools=["talos"], content_digest="sha256:" + "7f" * 32,
+                          build_method="adopt", adopt_image="")
+    md = R.render_recipe_markdown(r, {"image": "talos-authors:11.0.0",
+                                      "adopt_pin_error": "no registry manifest digest"})
+    assert "NOT PINNABLE" in md
+    assert "docker pull talos-authors:11.0.0" not in md
+    assert "no registry manifest digest" in md
 
 
 def test_authors_dockerfile_method_renders_pinned_source():
@@ -74,9 +89,48 @@ def test_authors_dockerfile_method_renders_pinned_source():
             provenance="populationgenomics/bcftools csq fork")]})
     assert "the tool's OWN Dockerfile" in md
     assert "git clone https://github.com/populationgenomics/talos" in md
-    assert "git checkout v11.0.1" in md
+    # PIN TO THE COMMIT, name the tag. A tag is mutable — the repo owner can move v11.0.1
+    # tomorrow — so `git checkout v11.0.1` is not a pin, it just looks like one.
+    assert f"git checkout {'c' * 40}" in md
+    assert "v11.0.1" in md
     # provenance surfaces the long-tail binary the reconstruction would drop
     assert "bcftools" in md and "9cef4057" in md
+
+
+def test_authors_dockerfile_renders_the_dockerfile_path_and_build_args_it_actually_used():
+    """The executor USES `-f {recipe}` and `--build-arg`, then dropped both at the disk
+    seam — so every rendered recipe said `docker build .`, rebuilding the ROOT Dockerfile
+    and letting the Dockerfile's own ARG defaults silently win. Talos pins
+    `ARG BCFTOOLS_VERSION` and `ARG ECHTVAR_VERSION` that way: a human follows the recipe
+    and gets a different image, with nothing flagging it."""
+    r = er.extract_recipe(None, name="tool_env", version="2.0", conda_deps=[],
+                          primary_tools=["tool"], content_digest="sha256:" + "aa" * 32,
+                          build_method="authors-dockerfile",
+                          dockerfile_source={"repo": "https://github.com/o/r",
+                                             "commit": "d" * 40, "tag": "v2.0",
+                                             "recipe_path": "docker/Dockerfile.gpu",
+                                             "build_args": {"BCFTOOLS_VERSION": "1.23.1"},
+                                             "platform": "linux/arm64"})
+    md = R.render_recipe_markdown(r, {})
+    assert "-f docker/Dockerfile.gpu" in md          # NOT the root Dockerfile
+    assert "--build-arg BCFTOOLS_VERSION=1.23.1" in md
+    assert "--platform linux/arm64" in md            # not hardcoded amd64
+    assert "ARG" in md and "DIFFERENT image" in md   # says WHY the args matter
+
+
+def test_an_unpinned_authors_source_refuses_instead_of_emitting_a_placeholder():
+    """The real on-disk talos_authors record's dockerfile_source is {note, repo, version}
+    — no commit, no tag. Re-rendered from that record, this emitted a copy-pasteable
+    `git checkout <ref>`, and suppressed its own "Source pin" note precisely because the
+    pin was missing (it was gated on `if commit and tag_ref`)."""
+    r = er.extract_recipe(None, name="x", version="1", conda_deps=[], primary_tools=["x"],
+                          content_digest="sha256:" + "bb" * 32,
+                          build_method="authors-dockerfile",
+                          dockerfile_source={"repo": "https://github.com/o/r", "note": "hand-made"})
+    md = R.render_recipe_markdown(r, {})
+    assert "NOT REPRODUCIBLE" in md
+    assert "missing `commit`" in md
+    assert "<ref>" not in md and "git checkout" not in md
 
 
 # ---------------------------------------------------------------------------

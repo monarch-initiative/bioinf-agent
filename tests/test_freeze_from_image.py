@@ -175,4 +175,7 @@ def test_authors_dockerfile_records_pinned_source(tmp_path, monkeypatch):
     assert rec["build_method"] == "authors-dockerfile"
     assert rec["dockerfile_source"]["commit"] == "c5a8f07"
     md = (tmp_path / "talos_authors.recipe.md").read_text()
-    assert "git checkout v11.0.1" in md
+    # Pin to the COMMIT and name the tag alongside. `git checkout v11.0.1` is not a pin —
+    # the repo owner can move that tag tomorrow — it only reads like one.
+    assert "git checkout c5a8f07" in md
+    assert "v11.0.1" in md

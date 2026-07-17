@@ -223,13 +223,35 @@ def freeze_from_image(
 
     # -- register + deliverables (rendered purely from the record) --
     env_cache.register(rkey, record)
+    # ADOPT MUST RECORD WHAT SOMEONE ELSE CAN PULL, NOT WHAT WE HAPPEN TO CALL IT.
+    # This passed `image` through verbatim — a MUTABLE TAG — while the rendered recipe
+    # printed it under "pulling that image BY DIGEST (content-addressed — the digest
+    # guarantees identical bytes)". The tag moves; the sentence doesn't. `freeze()`'s adopt
+    # path has always done this correctly (`adopt.get("image_by_digest", image)`), so this
+    # was one concept with two implementations and the wrong one under the top tier.
+    # `.Id` is NOT the answer either: it is the daemon's LOCAL content id, not a pullable
+    # reference (see container_build.registry_manifest_digest — the same confusion already
+    # shipped once and reported "recipe not reproduced" for every adopt recipe on any
+    # overlay2 daemon). When no repo digest exists the image was never pulled from a
+    # registry, so there is nothing to pin: say so rather than emit an unpullable string.
+    adopt_ref = ""
+    if build_method == "adopt-image":
+        from agent.skills.container_build import registry_manifest_digest
+        md = registry_manifest_digest(image)
+        adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{md}" if md else ""
+        if adopt_ref:
+            record["image_by_digest"] = adopt_ref
+        else:
+            record["adopt_pin_error"] = (
+                f"{image} carries no registry manifest digest — it was not pulled from a "
+                f"registry, so it cannot be pinned or re-pulled by anyone else")
     recipe = env_recipe.extract_recipe(
         None, name=name, version=version, conda_deps=[],
         primary_tools=[t["name"] for t in tools], platform=platform,
         accelerator=accelerator, license_gated=gated, licenses=licenses,
         redistributable=not gated, content_digest=digest,
         build_method=("authors-dockerfile" if build_method == "authors-dockerfile" else "adopt"),
-        adopt_image=(image if build_method == "adopt-image" else ""),
+        adopt_image=adopt_ref,
         dockerfile_source=dockerfile_source or {})
     recipe["shipped_binaries"] = record["shipped_binaries"]
 
@@ -340,6 +362,16 @@ def build_from_authors_recipe(
     return freeze_from_image(
         image=tag, tools=[dict(t) for t in tools], name=name, version=version,
         platform=platform, build_method="authors-dockerfile",
-        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "", "dockerfile": dockerfile_text},
+        # RECORD WHAT WE ACTUALLY RAN. `recipe` and `build_args` were used two lines up
+        # (`-f {td}/{recipe}`, `--build-arg`) and then dropped here, so the rendered recipe
+        # always emitted a bare `docker build .` — rebuilding the ROOT Dockerfile for a
+        # `recipe="docker/Dockerfile.gpu"` build, with every --build-arg silently reverting
+        # to the Dockerfile's ARG defaults. Talos's own Dockerfile carries
+        # `ARG BCFTOOLS_VERSION=1.23.1` and `ARG ECHTVAR_VERSION=v0.2.2` — precisely the
+        # knobs whose drift this project exists to prevent. The executor had both facts in
+        # hand; the record simply had nowhere to put them (Rule 1: fix the PRODUCER).
+        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "",
+                           "recipe_path": recipe, "build_args": dict(build_args or {}),
+                           "platform": platform, "dockerfile": dockerfile_text},
         gated=gated, licenses=list(licenses or []), pull_if_absent=False,
         env_cache=env_cache, reports_dir=reports_dir)

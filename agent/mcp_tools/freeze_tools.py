@@ -663,16 +663,33 @@ def verify_env_recipe(recipe_path: str) -> dict:
                          "(content-addressed — identical bytes). Not a from-source rebuild.")
         return proven("freeze.recipe_verified", **rf) if match else broke("freeze.recipe_not_reproduced", **rf)
     if method in ("authors-dockerfile", "freeze-from-image"):
-        # Reproduced by re-running build_env_from_authors_recipe at the pinned commit —
-        # NOT by a container-native rebuild from conda specs (there are none). Report
-        # honestly rather than run the wrong build and emit a false 'not reproduced'.
+        # NOT VERIFIED — and it must not be tagged as though it were. This returned
+        # `proven(success=True, content_digest_match=None)` for a check that runs NOTHING:
+        # an agent branching on `success` concludes the recipe was verified, and the only
+        # tell is a None buried in a sibling key. Declining to rebuild is right (a
+        # Dockerfile build is not bit-reproducible — apt mirrors, timestamps and upstream
+        # tags all move — so digest convergence would fail for a CORRECT recipe and emit a
+        # false 'not reproduced'). Declining is not the same as passing, and `refused` is
+        # the tag that exists for exactly this.
         ds = recipe.get("dockerfile_source") or {}
-        return proven("freeze.recipe_verify_manual", success=True, content_digest_match=None,
-                      expected_content_digest=expected,
-                      proves=f"AUTHORS-DOCKERFILE: reproduce by re-building the pinned source "
-                             f"(repo={ds.get('repo','?')} @ {ds.get('commit') or ds.get('tag','?')}) "
-                             f"via build_env_from_authors_recipe. A generic conda rebuild does NOT "
-                             f"apply to this env, so verify-by-rebuild is not run here.")
+        pin = ds.get("commit") or ""
+        missing = [n for n, v in (("repo", ds.get("repo")), ("commit", pin)) if not v]
+        return refused(
+            "freeze.recipe_verify_unavailable", success=False, content_digest_match=None,
+            expected_content_digest=expected,
+            verifiable=not missing,
+            error=(f"this recipe cannot be verified by rebuild: its source is unpinned "
+                   f"(missing {', '.join(missing)}), so there is nothing to rebuild FROM"
+                   if missing else
+                   "an authors-Dockerfile build is not bit-reproducible, so digest "
+                   "convergence cannot prove it — no check was run"),
+            proves="NOTHING WAS VERIFIED HERE. To reproduce by hand: re-run "
+                   f"build_env_from_authors_recipe(repo={ds.get('repo') or '?'!r}, "
+                   f"ref={pin or '?'!r}"
+                   + (f", recipe={ds['recipe_path']!r}" if ds.get("recipe_path") else "")
+                   + (f", build_args={ds['build_args']!r}" if ds.get("build_args") else "")
+                   + ") and compare the tools' evidence output. A generic conda rebuild does "
+                     "not apply to this env.")
 
     res = _ms._env_recipe.rebuild_from_recipe(recipe)
     # Outcome is runtime-conditional: only a rebuild that SUCCEEDED and converged

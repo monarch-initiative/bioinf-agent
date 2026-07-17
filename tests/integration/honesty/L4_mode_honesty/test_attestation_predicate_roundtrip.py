@@ -60,6 +60,47 @@ def _adopt_record(**overrides) -> dict:
 
 
 @pytest.mark.integration
+def test_authors_dockerfile_provenance_names_the_source_it_was_built_from():
+    """SLSA provenance for an authors-built env must say WHOSE Dockerfile, at which commit.
+
+    externalParameters carried {requested_tools, platform, conda_specs} — and an
+    authors-dockerfile env has NO conda specs, so the document asserted
+    `build_method: authors-dockerfile` while naming nothing it was built from. A provenance
+    attestation that omits the source is a signature over an anonymous artifact."""
+    rec = _build_record(build_method="authors-dockerfile", conda_specs=[],
+                        dockerfile_source={"repo": "https://github.com/o/r",
+                                           "commit": "c" * 40, "tag": "v1",
+                                           "recipe_path": "docker/Dockerfile.gpu",
+                                           "build_args": {"BCFTOOLS_VERSION": "1.23.1"},
+                                           "dockerfile": "FROM debian:bookworm-slim"})
+    ext = build_attestation(rec)["predicate"]["buildDefinition"]["externalParameters"]
+    src = ext["authors_recipe"]
+    assert src["repo"] == "https://github.com/o/r"
+    assert src["commit"] == "c" * 40
+    assert src["recipe_path"] == "docker/Dockerfile.gpu"
+    assert src["build_args"] == {"BCFTOOLS_VERSION": "1.23.1"}
+
+
+@pytest.mark.integration
+def test_provenance_omits_a_source_it_does_not_have_rather_than_blanking_it():
+    """No fabricated defaults: a container-native env has no authors' source, so the key is
+    ABSENT — not present-and-empty. An empty dict here would read as "we checked and there
+    is no source", which is a different claim from "this build had none"."""
+    ext = build_attestation(_build_record())["predicate"]["buildDefinition"]["externalParameters"]
+    assert "authors_recipe" not in ext
+    assert "adopted_image" not in ext
+
+
+@pytest.mark.integration
+def test_adopt_provenance_names_the_pullable_digest():
+    rec = _adopt_record(image_by_digest="quay.io/biocontainers/samtools@sha256:" + "ef" * 32,
+                        verifications=[{"tool": "samtools", "check": "samtools --version",
+                                        "passed": True}])
+    ext = build_attestation(rec)["predicate"]["buildDefinition"]["externalParameters"]
+    assert ext["adopted_image"].endswith("@sha256:" + "ef" * 32)
+
+
+@pytest.mark.integration
 def test_license_gated_and_licenses_roundtrip_to_predicate():
     """A gated build with licenses=['NVIDIA-SLA'] must surface BOTH the
     boolean firewall flag AND the license terms in the predicate."""

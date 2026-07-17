@@ -91,6 +91,23 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
     else:
         guarantees = ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
 
+    # WHAT WAS THIS BUILT FROM? For the two authors' paths the answer used to be nowhere in
+    # the document: externalParameters carried {requested_tools, platform, conda_specs}, and
+    # an authors-dockerfile env has NO conda specs — so the provenance said "build_method:
+    # authors-dockerfile" without saying WHOSE Dockerfile, at which commit. SLSA's
+    # externalParameters is exactly the slot for inputs the requester controlled, and the
+    # repo/commit/recipe/build-args are precisely that. Emitted only when present: a key
+    # whose value is a fabricated blank is worse than an absent key (the ShippedBinary rule).
+    ds = r.get("dockerfile_source") or {}
+    source: dict = {}
+    if ds:
+        source["authors_recipe"] = {
+            k: v for k, v in (("repo", ds.get("repo")), ("commit", ds.get("commit")),
+                              ("tag", ds.get("tag")), ("recipe_path", ds.get("recipe_path")),
+                              ("build_args", ds.get("build_args"))) if v}
+    if r.get("image_by_digest"):
+        source["adopted_image"] = r["image_by_digest"]
+
     predicate = {
         "buildDefinition": {
             "buildType": BUILD_TYPE,
@@ -98,6 +115,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "requested_tools": r.get("requested_tools", []),
                 "platform": r.get("platform", ""),
                 "conda_specs": r.get("conda_specs", []),
+                **source,
             },
             "internalParameters": {
                 "engine": r.get("engine", ""),

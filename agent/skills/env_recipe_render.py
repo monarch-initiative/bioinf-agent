@@ -207,13 +207,30 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
 
 
 def _section_adopt(recipe: dict, record: Optional[dict]) -> list[str]:
-    img = recipe.get("adopt_image") or (record or {}).get("image") or "<biocontainer@digest>"
+    img = recipe.get("adopt_image") or ""
     name = recipe.get("name", "env")
     tag = f"{name}:local"
-    out = ["## Option B — rebuild from scratch (adopt a published BioContainer)", "",
-           "This env is pure-conda and maps to a published BioContainer, so the recipe is "
-           "simply pulling that image BY DIGEST (content-addressed — the digest guarantees "
-           "identical bytes) and converting it to a .sif:", ""]
+    out = ["## Option B — rebuild from scratch (adopt a published image)", ""]
+    # THE HEADING PROMISES A DIGEST — SO ONLY PRINT IT WHEN WE HAVE ONE. This fell back to
+    # `record["image"]`, a local tag (e.g. `talos-authors:11.0.0`) that exists on exactly
+    # one machine, and printed it under "the digest guarantees identical bytes". A pull
+    # command that cannot work, sold as content-addressing.
+    if "@sha256:" not in img:
+        pin_err = (record or {}).get("adopt_pin_error") or ""
+        # Do NOT name the unpullable reference here. Printing it — even inside the warning
+        # against it — hands the reader the exact copy-pasteable line the warning exists to
+        # withhold, and a reader who skims to the monospace text is the reader this is for.
+        out += ["> **NOT PINNABLE — this image has no registry manifest digest"
+                + (f": {pin_err}" if pin_err else "") + ".** It was not pulled from a "
+                "registry, so no reference exists that anyone else could pull: the local "
+                "tag resolves only on the machine that built it. The pull command is "
+                "omitted rather than guessed. Deliver this env via the `.sif`/tarball "
+                "route instead, or re-freeze against a pushed image to get a pinnable "
+                "recipe.", ""]
+        return out
+    out += ["This env maps to a published image, so the recipe is simply pulling it BY "
+            "DIGEST (content-addressed — the digest guarantees identical bytes) and "
+            "converting it to a .sif:", ""]
     out += _fence([f"docker pull {img}",
                    f"docker tag {img} {tag}"])
     out += _local_sif_block(tag)
@@ -228,25 +245,58 @@ def _section_adopt(recipe: dict, record: Optional[dict]) -> list[str]:
 
 def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
     ds = recipe.get("dockerfile_source") or (record or {}).get("dockerfile_source") or {}
-    repo = ds.get("repo") or "<repo_url>"
+    repo = ds.get("repo") or ""
     commit = ds.get("commit") or ds.get("commit_sha") or ""
     tag_ref = ds.get("tag") or ""
+    recipe_path = ds.get("recipe_path") or ""
+    build_args = ds.get("build_args") or {}
+    platform = ds.get("platform") or "linux/amd64"
     name = recipe.get("name", "env")
     ver = recipe.get("version", "")
     img = f"{name}:{ver}" if ver else f"{name}:latest"
-    checkout = tag_ref or commit or "<ref>"
     out = ["## Option B — rebuild from scratch (the tool's OWN Dockerfile)", "",
            "This env was built the authors-recipe-first way: from the tool's own Dockerfile "
            "at a pinned source commit. That is what captures the non-python / compiled "
-           "pieces a conda/pip reconstruction silently drops. To reproduce:", ""]
+           "pieces a conda/pip reconstruction silently drops.", ""]
+
+    # A RECIPE THAT CANNOT BE FOLLOWED MUST SAY SO, NOT RENDER A PLACEHOLDER AS A COMMAND.
+    # This used to emit `git clone <repo_url> src` / `git checkout <ref>` — copy-pasteable,
+    # confidently wrong — and gate its "Source pin" note on `if commit and tag_ref`, so the
+    # warning appeared only when the data was already there and vanished exactly when the
+    # reader needed it. An unpinned source is the ONE fact that voids the whole document.
+    missing = [n for n, v in (("repo", repo), ("commit", commit)) if not v]
+    if missing:
+        # As in _section_adopt: state the gap, never demonstrate it. A placeholder shown as
+        # an example is still a placeholder the reader can paste.
+        out += [f"> **THIS RECIPE IS NOT REPRODUCIBLE — the record is missing "
+                f"`{'`, `'.join(missing)}`.** A rebuild cannot be pinned to the source this "
+                f"image was actually built from, so the build commands are omitted rather "
+                f"than guessed: an unpinned checkout you can paste is worse than no "
+                f"instruction at all, because it looks like one. Re-freeze via "
+                f"`build_env_from_authors_recipe` with an explicit tag or commit to produce "
+                f"a followable recipe.", ""]
+        return out
+
+    build = [f"docker build --platform {platform}"]
+    if recipe_path and recipe_path != "Dockerfile":
+        build.append(f"  -f {recipe_path}")          # NOT the root Dockerfile
+    for k, v in build_args.items():
+        build.append(f"  --build-arg {k}={v}")       # else the ARG defaults silently win
+    build.append(f"  -t {img} .")
+    out += ["To reproduce:", ""]
     out += _fence([f"git clone {repo} src",
-                   f"cd src && git checkout {checkout}"
-                   + (f"   # commit {commit}" if commit and checkout != commit else ""),
-                   f"docker build --platform linux/amd64 -t {img} ."])
+                   f"cd src && git checkout {commit}"
+                   + (f"   # tag {tag_ref}" if tag_ref else ""),
+                   " \\\n".join(build)])
     out += _local_sif_block(img)
-    if commit and tag_ref:
-        out += [f"> Source pin: `{repo}` tag `{tag_ref}` (commit `{commit}`). "
-                "The Dockerfile is included alongside this recipe for inspection.", ""]
+    pin = f"> Source pin: `{repo}` commit `{commit}`"
+    pin += f" (tag `{tag_ref}`)." if tag_ref else "."
+    if recipe_path:
+        pin += f" Built from `{recipe_path}`."
+    if build_args:
+        pin += (" Build args are pinned above — without them the Dockerfile's own `ARG`"
+                " defaults apply, which is a DIFFERENT image.")
+    out += [pin + " The Dockerfile is included alongside this recipe for inspection.", ""]
     return out
 
 
