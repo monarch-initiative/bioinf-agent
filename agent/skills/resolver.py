@@ -203,7 +203,7 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     on one channel (e.g. bioconda's hmmlearn reports latest_version='20151031')
     shadowing the maintained package on the other. Ties keep bioconda (probed
     first), so bio-primary tools are unaffected."""
-    best = None  # (version_key, channel, version, summary)
+    best = None  # (version_key, channel, version, summary, repo, repo_field)
     errors: list[str] = []
     for channel in ("bioconda", "conda-forge"):
         data, err = _fetch_json(
@@ -215,10 +215,26 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
             ver = _pick_latest(data["versions"], data.get("latest_version") or "")
             key = _version_key(ver)
             if best is None or (key is not None and (best[0] is None or key > best[0])):
-                best = (key, channel, ver, data.get("summary") or "")
+                # THE RECIPE'S OWN LINK TO THE PROJECT — free, in a response we already
+                # fetch, and the strongest identity anchor available (a curated recipe
+                # maintainer wrote it down). Prefer `dev_url` over `home`: multiqc's home is
+                # seqera.io, its dev_url is MultiQC/MultiQC. Not every recipe carries one
+                # (bioconda's `trinity` carries neither) — absent is a fact, and a repo we
+                # do not have must never be substituted from somewhere else.
+                repo, field = "", ""
+                for f in ("dev_url", "home", "source_git_url"):
+                    m = _GH_REPO_RE.search(str(data.get(f) or ""))
+                    if m:
+                        repo = f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
+                        field = f
+                        break
+                best = (key, channel, ver, data.get("summary") or "", repo, field)
     if best:
-        return {"available": True, "channel": best[1], "latest": best[2],
-                "summary": best[3]}
+        out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3]}
+        if best[4]:
+            out["repo"] = best[4]
+            out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
+        return out
     # A hit on either channel is a fact regardless of the other's health, so errors only
     # matter when NOTHING was found: then "not on conda" rests on a probe that never ran.
     # Reported, never inferred — a silent conda miss demotes the tool to the pip/cran
@@ -667,9 +683,34 @@ def assess_identity(tool: str, chosen: str, availability: dict,
 
     if chosen in ("author_image", "authors_recipe", "binary", "source", "synthesis",
                   "r_github"):
-        # these tiers ARE a repo — identity is whatever repo the caller/discovery named
+        # These tiers ARE a repo — so identity is whatever vouches for THAT repo, and it is
+        # not automatically the caller. This returned confirmed=True unconditionally, which
+        # made the claim `assess_identity('dorado', 'author_image', ...)` -> {confirmed:
+        # True, anchor: 'repo', evidence: ['Mucephie/DORADO']}: an astronomy repo presented
+        # as a confirmed identity anchor at the tier that outranks conda.
+        # Read the ONE anchoring decision `repo_evidence` already made — never re-decide it
+        # here. This checked `source in ("conda", "user")`, a second copy of the rule that
+        # promptly disagreed with the first: a repo anchored via an anchored pip entry was
+        # good enough to RUN the gate and then reported unconfirmed by the tier the gate
+        # produced. One truth, one definition, read at every use (Rule 4).
+        anchored = detail.get("repo_anchored")
+        if anchored is None:
+            anchored = bool(github_repo)          # a caller-named repo, no gate involved
         out["anchor"] = "repo"
-        out["evidence"] = [detail.get("repo") or github_repo or ""]
+        out["evidence"] = [e for e in (detail.get("repo") or github_repo or "",
+                                       detail.get("repo_detail") or "") if e]
+        if anchored:
+            return out
+        # A repo scraped off an unanchored registry entry is the same unanchored guess
+        # wearing a different hat.
+        out["confirmed"] = False
+        out["anchor"] = "none"
+        out["reason"] = "repo_not_anchored"
+        out["note"] = (
+            f"IDENTITY UNCONFIRMED: the {chosen} tier here rests on "
+            f"{detail.get('repo') or '<repo>'}, which was not independently anchored to "
+            f"'{tool}' — a repo is not the tool's just because it shares its name. "
+            f"Pass github_repo='owner/repo' to name the project you mean.")
         return out
     if github_repo and chosen in ("pip", "cran"):
         anchored = (_pip_anchored_to_repo(detail, github_repo) if chosen == "pip"
@@ -723,28 +764,90 @@ def assess_identity(tool: str, chosen: str, availability: dict,
     return out
 
 
-def _github_owner_repo(availability: dict, github_repo: str = "") -> str:
-    """Best 'owner/repo' for the tool: the explicit github_repo, else extracted from the
-    pip/cran registry metadata (home_page / project_urls / URL). This is what lets the
-    authors-source gate fire AUTOMATICALLY on a tool that hits a registry — the common
-    case (Talos hit PyPI) — without the caller having to hand us the repo."""
+#: The registry tiers a repo can be scraped FROM, best-vouched first. conda leads because
+#: its entry is a curated recipe whose maintainer wrote the project link down by hand.
+_REPO_SOURCES = ("conda", "pip", "cran")
+
+
+def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
+    """WHICH repo is this tool's, and WHAT vouches for that claim? Pure.
+
+    Returns `{repo, source, detail}` — or `{}` when nothing vouches for any repo, which is
+    a real and common answer (bioconda's `trinity` recipe carries no dev_url at all).
+
+    THE RULE: **a repo may only be taken from the registry candidate that WON.** A repo
+    scraped from a losing tier describes the LOSING tier's package, not the one we picked.
+
+    This replaces `_github_owner_repo`, which read pip/cran metadata unconditionally and
+    handed the result to the author tiers — which outrank conda. Live, that meant the
+    authors' tiers probed the SQUATTER's repo:
+
+        resolve('dorado')  -> author_image.repo = 'Mucephie/DORADO'  (an astronomy package)
+        resolve('talos')   -> author_image.repo = 'autonomio/talos'  (a Keras tuner)
+        resolve('trinity') -> author_image.repo = 'ethereum/trinity' (conda WON; the repo
+                                                  came from the losing pip candidate)
+
+    and `assess_identity` then stamped `confirmed: True, anchor: 'repo'` on them. The only
+    thing keeping the right answers standing was the accident that those squat repos ship
+    no image — had `Mucephie/DORADO` published one, dorado would have adopted an astronomy
+    image by digest, at the TOP tier, validated in-image and shipped green.
+
+    The winner's own entry is the answer, and for conda it is FREE: api.anaconda.org
+    already returns `dev_url`/`home` in the response `probe_conda` was already fetching.
+    Measured — uv -> astral-sh/uv, multiqc -> MultiQC/MultiQC, bakta -> oschwengers/bakta
+    (all correct, all from conda's own recipe), while trinity's recipe names none, so
+    nothing is eligible and ethereum/trinity never gets probed.
+
+    `anchored` says whether that vouching is strong enough to hand the repo to the AUTHOR
+    tiers, which outrank conda. A repo can never be vouched for more strongly than the
+    entry it was scraped from: pip's `dorado` describes an astronomy package, so the repo
+    in its metadata is an astronomy repo, and no amount of name-matching upgrades it.
+    """
     if github_repo and "/" in github_repo:
-        return github_repo.strip().strip("/")
-    urls: list[str] = []
-    pip = availability.get("pip", {})
-    if pip.get("available"):
-        urls.append(pip.get("home_page", ""))
-        urls.append(pip.get("package_url", ""))
-        urls += [str(v) for v in (pip.get("project_urls") or {}).values()]
-    cran = availability.get("cran", {})
-    if cran.get("available"):
-        urls += [u.strip() for u in (cran.get("url", "") or "").split(",")]
-        urls.append(cran.get("bug_reports", ""))
-    for u in urls:
-        m = _GH_REPO_RE.search(u or "")
-        if m:
-            return f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
-    return ""
+        # The caller named the project. That is authoritative for WHICH repo to look at —
+        # though NOT, on its own, evidence that the repo IS the tool (a 200 from
+        # github.com/torvalds/linux proves the repo exists, nothing more). See
+        # `assess_identity`, which must still find a repo<->tool link.
+        return {"repo": github_repo.strip().strip("/"), "source": "user", "anchored": True,
+                "detail": "caller-supplied github_repo"}
+
+    winner = next((t for t in _REPO_SOURCES if availability.get(t, {}).get("available")), "")
+    if not winner:
+        return {}
+    detail = availability[winner]
+
+    if winner == "conda" and detail.get("repo"):
+        # A curated recipe maintainer wrote this link by hand. bioconda: 39 names / 0 wrong;
+        # conda-forge 9/1. Note this anchors on PROVENANCE, not domain: we never ask whether
+        # `uv` is bioinformatics (it isn't), only whether the channel that packaged it names
+        # a repo. "Did the authors publish this?" and "is this a bio tool?" are different
+        # questions, and the author tiers only ever asked the first.
+        return {"repo": detail["repo"], "source": "conda", "anchored": True,
+                "detail": f"the {detail.get('channel', 'conda')} recipe's "
+                          f"`{detail.get('repo_field', 'dev_url')}`"}
+    if winner in ("pip", "cran"):
+        urls = ([detail.get("home_page", ""), detail.get("package_url", "")]
+                + [str(v) for v in (detail.get("project_urls") or {}).values()]
+                if winner == "pip" else
+                [detail.get("bug_reports", "")]
+                + [u.strip() for u in (detail.get("url", "") or "").split(",")])
+        for u in urls:
+            m = _GH_REPO_RE.search(u or "")
+            if m:
+                # The entry's OWN identity confidence, and the repo inherits exactly it.
+                # Read through domain_signal rather than re-deciding here — one definition,
+                # one reading (Rule 4). This is the surface domain_signal was measured on
+                # (registry prose, <=400 chars), NOT github's 140-char blurbs, where it
+                # cannot carry weight.
+                hits = domain_signal(detail.get("summary") or "")
+                return {"repo": f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}",
+                        "source": winner, "anchored": bool(hits),
+                        "detail": (f"the {winner} entry's own metadata; that entry "
+                                   + (f"describes itself with {', '.join(hits)}"
+                                      if hits else
+                                      "has nothing tying it to this domain, so its repo "
+                                      "is no better anchored than the entry itself"))}
+    return {}
 
 
 #: Tiers whose availability is decided by a GitHub API call — the only ones for which a
@@ -949,7 +1052,19 @@ def resolve(
     # Best-effort: any probe failure simply leaves the author tiers unavailable, so the
     # registry route is unaffected. This is what makes the agent 'thread the needle'
     # automatically on tools like Talos (PyPI hit, but a Dockerfile compiling a fork).
-    eff_repo = _github_owner_repo(availability, github_repo)
+    ev = repo_evidence(availability, github_repo)
+    if ev and not ev.get("anchored"):
+        # NOT ASSESSED — and that is a THIRD state, distinct from "fired" and "errored".
+        # Running the gate here is what probed Mucephie/DORADO and autonomio/talos; skipping
+        # it silently would be worse still, because "no authoring image/recipe found" would
+        # then be reported about a repo we deliberately declined to look at. Say which.
+        availability["authors_gate_not_assessed"] = {
+            "available": False, "repo": ev["repo"], "repo_source": ev["source"],
+            "reason": (f"no anchored repo for '{tool}': the only candidate is "
+                       f"{ev['repo']} from {ev['detail']}. A repo is not the tool's just "
+                       f"because it shares its name — so the authors' path was NOT "
+                       f"assessed, and nothing here says they publish no image or recipe.")}
+    eff_repo = ev.get("repo", "") if ev.get("anchored") else ""
     if eff_repo and "/" in eff_repo and probe_authors_sources is not None:
         try:
             owner, rp = eff_repo.split("/", 1)
@@ -957,10 +1072,14 @@ def resolve(
             availability["author_image"] = {
                 "available": bool(assessment.get("author_image")),
                 "assessment": assessment, "repo": eff_repo,
+                "repo_source": ev["source"], "repo_detail": ev["detail"],
+                "repo_anchored": True,
                 **(assessment.get("author_image") or {})}
             availability["authors_recipe"] = {
                 "available": bool(assessment.get("reconstruction_incomplete")),
                 "assessment": assessment, "repo": eff_repo,
+                "repo_source": ev["source"], "repo_detail": ev["detail"],
+                "repo_anchored": True,
                 "recipe": assessment.get("authors_recipe")}
         except Exception as e:
             # Best-effort: a probe failure must not break registry routing. But it MUST
@@ -1115,17 +1234,10 @@ def resolve(
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
-        if not identity["confirmed"]:
-            # Lead the rationale AND poison the install_call. install_call is the field an
-            # agent copies and runs; leaving it a clean, confident one-liner while the
-            # doubt sits in a sibling key is how a warning gets skipped. A caller who
-            # pastes this now has to read why first — and if they strip the comment, they
-            # did so deliberately, which is the whole point.
-            decision["rationale"] = identity["note"] + " || " + decision["rationale"]
-            decision["install_call"] = (
-                f"# {identity['note']}\n"
-                f"# ---- confirm the above IS the tool you mean before running: ----\n"
-                + decision["install_call"])
+        # NOTE: the identity disclosure is applied LAST, at the end of this function —
+        # every _disclose PREPENDS, so the last one applied is the one a reader sees first,
+        # and "this package describes itself as a spreadsheet parser" outranks every other
+        # caveat we might attach. It is the headline, not a footnote to the gate's status.
 
     # A TIER WE COULD NOT REACH IS NOT A TIER THAT SAID NO. Ranking silently skips an
     # unchecked tier, so the answer reads as "the best there is" while meaning "the best of
@@ -1166,6 +1278,13 @@ def resolve(
     # a sibling dict no agent reads. For a tool like Talos that is the exact reconstruction
     # bug the gate exists to prevent, delivered with full confidence. (audit 2026-07-16
     # Tier 6: the fix for the silent gate was itself unconsumed and untested.)
+    not_assessed = (availability.get("authors_gate_not_assessed") or {}).get("reason")
+    if not_assessed:
+        _disclose(decision,
+                  f"AUTHORS-PATH NOT ASSESSED — {not_assessed} If this IS the project you "
+                  f"mean, re-run with github_repo to unlock the authors' own image/recipe; "
+                  f"if it is not, this pick is a same-name package from another domain.",
+                  "we did NOT check the authors' path, and did NOT rule it out")
     gate_err = (availability.get("authors_gate_error") or {}).get("error")
     img_err = ((availability.get("author_image") or {}).get("assessment") or {}).get(
         "author_image_error")
@@ -1190,4 +1309,14 @@ def resolve(
     if decision.get("prefer_ignored_reason"):
         _disclose(decision, decision["prefer_ignored_reason"],
                   f"this is the {decision.get('chosen')} tier, NOT the one you asked for")
+
+    # IDENTITY LEADS. Applied last so it prepends in front of every other caveat: a reader
+    # who stops after one sentence must get "this may not be the tool you mean", not "the
+    # authors' path was not assessed" — the latter is a CONSEQUENCE of the former.
+    # install_call is the field an agent copies and runs; leaving it a clean, confident
+    # one-liner while the doubt sits in a sibling key is how a warning gets skipped.
+    ident = decision.get("identity") or {}
+    if ident and not ident.get("confirmed"):
+        _disclose(decision, ident["note"],
+                  "confirm the above IS the tool you mean before running")
     return decision

@@ -100,10 +100,25 @@ def test_resolver_call_into_assess_tool_sources_is_signature_compatible():
 # ---------------------------------------------------------------------------
 # resolver integration — the gate changes routing correctly
 # ---------------------------------------------------------------------------
-def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo=""):
-    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: {"available": conda, "latest": "1.0", "channel": "bioconda"})
+def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo="", conda_repo="",
+                     pip_summary="a genomics variant caller for VCF files"):
+    """`conda_repo` / `pip_summary` are what ANCHOR the scraped repo, and the gate only ever
+    runs on an anchored one.
+
+    They default to anchored because these tests are about the GATE, not about identity —
+    but they are parameters, not constants, because the two questions used to be conflated:
+    a repo was handed to the author tiers (which outrank conda) purely because it appeared
+    in some registry's metadata. Live, that pointed the gate at `Mucephie/DORADO` (astronomy)
+    for `dorado` and `ethereum/trinity` for `trinity`. See test_repo_provenance.py."""
+    cd = {"available": conda, "latest": "1.0", "channel": "bioconda",
+          "summary": "a genomics tool"}
+    if conda_repo:
+        cd["repo"] = conda_repo
+        cd["repo_field"] = "dev_url"
+    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: dict(cd))
     urls = {"Source": f"https://github.com/{pip_repo}"} if pip_repo else {}
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": pip, "latest": "1.0",
+                                                          "summary": pip_summary,
                                                           "home_page": "", "project_urls": urls, "package_url": ""})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
@@ -162,7 +177,8 @@ def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypat
 
 def test_resolve_keeps_conda_when_reconstruction_is_safe(monkeypatch):
     # tool on conda AND pip, repo Dockerfile is trivial → gate stays shut, conda wins.
-    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="me/mytool")
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="me/mytool",
+                     conda_repo="me/mytool")
     _stub_authors_io(monkeypatch, dockerfile=_SAFE_DF)
     d = R.resolve("mytool")
     assert d["chosen"] == "conda", d["chosen"]
@@ -170,7 +186,8 @@ def test_resolve_keeps_conda_when_reconstruction_is_safe(monkeypatch):
 
 
 def test_resolve_adopts_author_image_over_everything(monkeypatch):
-    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="org/tool")
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="org/tool",
+                     conda_repo="org/tool")
     _stub_authors_io(monkeypatch, ghcr_package="tool")   # ghcr.io/org/tool exists
     d = R.resolve("tool")
     assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
@@ -303,7 +320,8 @@ def test_a_broken_gate_poisons_the_install_call_not_just_probed(monkeypatch):
     Worse, NOTHING FAILED when the fix was reverted to `except: pass` — verified during
     the re-audit: the whole suite stayed green. The fix for the silent gate was itself
     silent and untested. This test is that missing guard."""
-    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="populationgenomics/talos")
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="populationgenomics/talos",
+                     conda_repo="populationgenomics/talos")
 
     def _boom(tool, owner="", repo="", timeout=12):
         raise OSError("github unreachable")
