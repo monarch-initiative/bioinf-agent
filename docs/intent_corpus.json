@@ -303,7 +303,7 @@
    "actual_today": {
     "chosen": "conda",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
    "is_correct_today": false,
@@ -387,7 +387,7 @@
    "actual_today": {
     "chosen": "cran",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "no_repo"
    },
    "is_correct_today": false,
@@ -750,7 +750,7 @@
    "actual_today": {
     "chosen": "conda",
     "ambiguous": true,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
    "is_correct_today": false,
@@ -775,7 +775,7 @@
    "actual_today": {
     "chosen": "conda",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
    "is_correct_today": false,
@@ -830,7 +830,7 @@
    "actual_today": {
     "chosen": "conda",
     "ambiguous": true,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
    "is_correct_today": false,
@@ -970,7 +970,7 @@
    "actual_today": {
     "chosen": "pip",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "no_repo"
    },
    "is_correct_today": false,
@@ -1466,7 +1466,7 @@
    "actual_today": {
     "chosen": "pip",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "no_repo"
    },
    "is_correct_today": false,
@@ -1636,7 +1636,7 @@
    "actual_today": {
     "chosen": "conda",
     "ambiguous": false,
-    "install_call_poisoned": true,
+    "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
    "is_correct_today": false,
