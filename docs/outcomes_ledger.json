@@ -1335,8 +1335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1004",
-    "end_line": 1009,
+    "where": "agent/skills/transfer.py:1015",
+    "end_line": 1020,
     "named_in_test": false
   },
   {
@@ -1345,8 +1345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1037",
-    "end_line": 1041,
+    "where": "agent/skills/transfer.py:1048",
+    "end_line": 1052,
     "named_in_test": false
   },
   {
@@ -1355,8 +1355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1053",
-    "end_line": 1057,
+    "where": "agent/skills/transfer.py:1064",
+    "end_line": 1068,
     "named_in_test": false
   },
   {
@@ -1395,8 +1395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:985",
-    "end_line": 985,
+    "where": "agent/skills/transfer.py:996",
+    "end_line": 996,
     "named_in_test": false
   },
   {
@@ -2495,8 +2495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1016",
-    "end_line": 1031,
+    "where": "agent/skills/transfer.py:1027",
+    "end_line": 1042,
     "named_in_test": false
   },
   {
@@ -2505,8 +2505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1064",
-    "end_line": 1079,
+    "where": "agent/skills/transfer.py:1075",
+    "end_line": 1090,
     "named_in_test": false
   },
   {
@@ -4670,13 +4670,23 @@
     "named_in_test": false
   },
   {
+    "code": "transfer.access_config_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:983",
+    "end_line": 984,
+    "named_in_test": false
+  },
+  {
     "code": "transfer.project_or_env_not_found",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:980",
-    "end_line": 981,
+    "where": "agent/skills/transfer.py:991",
+    "end_line": 992,
     "named_in_test": false
   },
   {

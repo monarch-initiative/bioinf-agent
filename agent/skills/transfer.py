@@ -971,6 +971,17 @@ def _do_transfer(*, direction: str,
         return refused("transfer.config_error",
                 error=f"ConfigError: {e}",
                 manifest=str(mpath))
+    except FileNotFoundError as e:
+        # load_access() raises this when projects_access.yaml is ABSENT (a
+        # malformed manifest is ConfigError, above). It's the ONLY
+        # FileNotFoundError source in this body — the local-path validators
+        # raise TransferError, not this. A missing access manifest is an
+        # interpretable refusal (no manifest ⇒ nothing to authorize against),
+        # never an uncaught crash the agent can't branch on (C4).
+        mpath = _journal(result="error", zone="?",
+                          error_msg=f"access manifest not found: {e}")
+        return refused("transfer.access_config_missing",
+                error=str(e), manifest=str(mpath))
     except KeyError as e:
         # get_project / get_compute_env raise KeyError for an unknown name.
         # A hostile/typo'd project or env is a clean auth failure, not a crash
