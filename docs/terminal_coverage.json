@@ -1,8 +1,8 @@
 {
-  "measured_terminals": 521,
+  "measured_terminals": 525,
   "verified": 117,
   "exercised": 153,
-  "dark": 251,
+  "dark": 255,
   "by_where": {
     "agent/mcp_tools/env_tools.py:481": true,
     "agent/mcp_tools/freeze_tools.py:402": true,
@@ -523,6 +523,10 @@
     "agent/mcp_tools/sealed_tools.py:93": true,
     "agent/skills/acquire_data.py:605": false,
     "agent/skills/authors_sources.py:232": true,
-    "agent/skills/authors_sources.py:253": false
+    "agent/skills/authors_sources.py:253": false,
+    "agent/skills/resolver.py:811": false,
+    "agent/skills/resolver.py:815": false,
+    "agent/skills/resolver.py:817": false,
+    "agent/skills/resolver.py:844": false
   }
 }

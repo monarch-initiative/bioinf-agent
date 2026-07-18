@@ -701,6 +701,157 @@ def resolve_linux_asset(
             "asset_name": pick.rsplit("/", 1)[-1]}
 
 
+# ---------------------------------------------------------------------------
+# BINARY-VERSION ANCHOR. A version-pinned request routed to the binary tier must
+# resolve to THAT version's release asset — never the LATEST release's bytes under
+# the requested version's name (the somalier 0.2.15→v0.3.3 bite: every integrity
+# signal passes while the WRONG version ships, sha256 + SLSA + .sif and all). The
+# probe_github fact the binary tier is built on reads releases/latest, so the
+# pinned version is invisible to it. These helpers locate the pinned release
+# DIRECTLY and drive both binary-tier availability and the emitted asset from it.
+# ---------------------------------------------------------------------------
+
+# mmseqs2 '15-6f452a0' — a bare version, a '-'/'_', then a git short hash. The separator is
+# '-'/'_' ONLY, NEVER '.': a DOTTED suffix is a minor version, not a build hash, and since
+# [0-9a-f] admits every decimal digit, '.' here would read '1.234567' (version 1.234567) as
+# "version 1 + build-hash 234567" — a silent over-match shipping a different release's bytes.
+_TAG_BUILDHASH_RE = re.compile(r"^(\d+)[-_][0-9a-f]{6,}$", re.I)   # e.g. mmseqs2 '15-6f452a0'
+
+
+def _strip_tag_prefix(tag: str, tool: str = "") -> str:
+    """Reduce a release tag to its version core: strip a leading 'v', a
+    '{tool}-'/'{tool}_'/'{tool}.'(+optional 'v') prefix, or a generic
+    'release-'/'rel-' prefix. 'Trinity-v2.15.1' → '2.15.1'; 'v0.2.15' → '0.2.15';
+    '15-6f452a0' → '15-6f452a0' (no alpha prefix — the build-hash matcher handles
+    it). Longest tool-prefix tried first so 'v' never wins over '{tool}-v'."""
+    s = (tag or "").strip()
+    low = s.lower()
+    prefixes: list[str] = []
+    t = (tool or "").lower().strip()
+    if t:
+        for sep in ("-", "_", "."):
+            prefixes += [f"{t}{sep}v", f"{t}{sep}"]
+    prefixes += ["release-", "release_", "rel-", "rel_", "v"]
+    for p in prefixes:
+        if low.startswith(p):
+            return s[len(p):]
+    return s
+
+
+def _tag_matches(requested: str, tag: str, tool: str = "") -> bool:
+    """Does release `tag` denote version `requested`? Layered, each rule SAFE
+    against OVER-match (the false-green risk — requesting '1' must never match
+    '1.2.3'; '2' must never match 'v2.28'; '0.2' must never match 'v0.2.15'):
+
+      1. raw equality
+      2. prefix-stripped equality  ('Trinity-v2.15.1' vs '2.15.1')
+      3. PEP440 equality           ('1.10' vs 'v1.10.0' — the normalization PyPI
+                                     and git tags disagree on)
+      4. bare-number ↔ 'N-<githash>'  (mmseqs2 '15' vs '15-6f452a0', ONLY when the
+                                     suffix is a sha-like hash — never a dotted minor)
+      5. separator-normalized equality, but ONLY for the build-hash form where NEITHER
+         side is PEP440-parseable ('15-6f452' vs requested '15.6f452') — a bare '15' can
+         never collapse into a dotted tag it isn't. If EITHER side parses as a real
+         version, rule 3's PEP440 verdict is authoritative and stands: '1.2-3' is
+         1.2.post3, a DIFFERENT release than '1.2.3', so normalizing '-'→'.' must not forge
+         a match rule 3 already refused."""
+    if not requested or not tag:
+        return False
+    req = str(requested).strip()
+    if tag == req:
+        return True
+    norm = _strip_tag_prefix(tag, tool)
+    if norm == req:
+        return True
+    rk, nk = _version_key(req), _version_key(norm)
+    if rk is not None and nk is not None and rk == nk:
+        return True
+    m = _TAG_BUILDHASH_RE.match(norm)
+    if m and m.group(1) == req:
+        return True
+    # Rule 5 is the LAST resort and only for the genuinely un-PEP440-parseable build-hash
+    # form. Gating on `rk is None and nk is None` is load-bearing: a request like '1.2.3'
+    # parses, so it must NEVER reach the crude '-'/'_'→'.' normalization that would equate it
+    # to '1.2-3' (=1.2.post3) or '1.2_3'. Both-None is exactly the '15.6f452'/'15-6f452' case
+    # rule 4 can't reach (the hash is <6 chars).
+    if (rk is None and nk is None
+            and any(c in req for c in "-_.") and any(c in norm for c in "-_.")
+            and norm.replace("-", ".").replace("_", ".")
+                == req.replace("-", ".").replace("_", ".")):
+        return True
+    return False
+
+
+def _release_for_version(repo: str, version: str, tool: str = "",
+                         target_os: str = "linux", target_arch: str = "amd64",
+                         timeout: int = 12) -> dict[str, Any]:
+    """Locate the GitHub release for a PINNED `version` in `repo` and its
+    ship-platform asset — the binary tier's honesty anchor. Answers "does THIS
+    repo ship THIS version as a downloadable {os}/{arch} binary?" so a pin is
+    never silently served the latest release's bytes. Returns {status, ...}:
+
+      match      {tag, asset, asset_name} — resolves to a real platform binary;
+                 PROCEED, pin this asset.
+      no_asset   {tag, assets}           — the release exists but ships no
+                 {os}/{arch} binary (source-only / foreign-OS / sidecars only);
+                 cannot honor the pin on this tier — refuse, don't substitute.
+      absent     {nearest, tags}         — no release matches across the fully-seen
+                 list (the somalier==9.99 analog for the binary tier).
+      incomplete {tags}                  — not on the newest 100 AND a direct tag
+                 lookup missed; page 2+ MAY hold it. UNCHECKED — disclose, never
+                 rendered as 'absent'.
+      error      {error}                 — the release list never fetched
+                 (rate-limit/timeout). UNCHECKED — never a refuse, never a
+                 latest-substitution ((payload,error) seam).
+
+    ONE GitHub call on the common path; a bounded ≤4 more only when the first page
+    is full (100) and misses — the >100-release repo. Only ever called on the
+    already-narrow version+github_repo path."""
+    if not repo or "/" not in repo or not version:
+        return {"status": "error", "error": "no repo/version"}
+    data, err = _fetch_json(
+        f"https://api.github.com/repos/{repo}/releases?per_page=100", timeout)
+    if err:
+        return {"status": "error", "error": err}
+    if not isinstance(data, list):
+        return {"status": "error", "error": "unexpected releases payload"}
+
+    def _asset_result(rel: dict) -> Optional[dict]:
+        assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
+                  if a.get("browser_download_url")]
+        pick = _pick_platform_asset(assets, target_os, target_arch)
+        if pick:
+            return {"status": "match", "tag": rel.get("tag_name") or "",
+                    "asset": pick, "asset_name": pick.rsplit("/", 1)[-1]}
+        return {"status": "no_asset", "tag": rel.get("tag_name") or "",
+                "assets": [a.rsplit("/", 1)[-1] for a in assets][:10]}
+
+    pairs = [(r.get("tag_name") or "", r) for r in data if isinstance(r, dict)]
+    for tag, rel in pairs:
+        if _tag_matches(version, tag, tool):
+            return _asset_result(rel)
+    # Not on page 1. A FULL page means older releases exist beyond it — try a
+    # bounded direct tag lookup for the common forms before giving up (resolves
+    # the >100-release exact-tag case without walking every page).
+    if len(data) >= 100:
+        cands = [version, f"v{version}"]
+        if tool:
+            cands += [f"{tool}-{version}", f"{tool}-v{version}"]
+        for cand in cands:
+            rel, terr = _fetch_json(
+                f"https://api.github.com/repos/{repo}/releases/tags/{cand}", timeout)
+            if terr:
+                return {"status": "error", "error": terr}
+            if isinstance(rel, dict) and rel.get("tag_name"):
+                return _asset_result(rel)
+        return {"status": "incomplete",
+                "tags": [_strip_tag_prefix(t, tool) for t, _ in pairs][:8]}
+    norms = [_strip_tag_prefix(t, tool) for t, _ in pairs if t]
+    return {"status": "absent",
+            "nearest": _nearest_versions(version, norms),
+            "tags": norms[:8]}
+
+
 def sha256_of_url(url: str, timeout: int = 600) -> dict[str, Any]:
     """Stream-download an asset and return {ok, sha256, size} without keeping it
     — used to anchor a ship-platform binary at freeze time. Network failure →
@@ -984,7 +1135,11 @@ def _classify_refusal(decision: dict) -> str:
     4. EMPTY. Every reachable tier answered AND discovery reached and found nothing — the one
        genuine dead end.
     """
-    if decision.get("unchecked_tiers") or decision.get("discovery_error"):
+    if (decision.get("unchecked_tiers") or decision.get("discovery_error")
+            or decision.get("binary_version_unchecked")):
+        # ...including a version pin the registry tier lacks whose pin-honoring binary tier
+        # we could NOT reach (rate-limit / >100-release pagination): the version might exist
+        # there, so the investigation did not COMPLETE — not a settled contradiction.
         return "investigation_incomplete"
     if (decision.get("cross_namespace_collisions") or decision.get("version_absent")
             or decision.get("declared_repo_contradiction")):
@@ -1088,7 +1243,17 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "r_github":
         return f'install_r_package(env, "{tool}", source="github:{github_repo}")'
     if tier == "binary":
-        asset = (detail.get("assets") or ["<release-asset-url>"])[0]
+        # Prefer the version-anchored asset (the PINNED release's linux binary); else a
+        # platform-selected asset (never a raw assets[0], which can be a .sha256 sidecar or
+        # a foreign-OS build); else, when the version lookup was UNCHECKED, a loud
+        # verify-manually placeholder rather than latest's bytes masquerading as version v.
+        asset = detail.get("resolved_asset")
+        if not asset and version and detail.get("binary_version_unverified"):
+            asset = (f"<{tool} {version} linux asset — UNVERIFIED: enumerate "
+                     f"https://github.com/{github_repo}/releases; do NOT use latest>")
+        if not asset:
+            asset = (_pick_platform_asset(detail.get("assets") or [])
+                     or (detail.get("assets") or ["<release-asset-url>"])[0])
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
     if tier == "synthesis":
         url = f"https://github.com/{github_repo}" if github_repo else "<repo-or-archive-url>"
@@ -1189,6 +1354,7 @@ def resolve(
         availability["pip"]   = probe_pypi(tool, timeout)
         availability["cran"]  = probe_cran(tool, timeout)
 
+    binary_ver: Optional[dict] = None   # BINARY-VERSION ANCHOR (set below when version + repo)
     if github_repo:
         gh = probe_github(github_repo, timeout)
         availability["binary"]    = {"available": gh["has_release_assets"], **gh}
@@ -1202,6 +1368,29 @@ def resolve(
         # bare github repo could be anything); ranks above synthesis via TIER_ORDER.
         if language == "r":
             availability["r_github"] = {"available": gh["repo_exists"], **gh}
+        # BINARY-VERSION ANCHOR. probe_github read releases/LATEST, so a version pin is
+        # invisible to it — the binary tier would ship latest's bytes under the requested
+        # version's name (somalier 0.2.15→v0.3.3, fully green). When a version is pinned,
+        # decide the binary tier from the PINNED release instead of latest: available (with
+        # the exact asset) IFF that version ships a linux binary here; NOT available if it
+        # doesn't (so the tier can't win and then substitute); latest-derived but FLAGGED
+        # when the lookup was UNCHECKED (so the emitted call never claims latest IS version X).
+        if version and gh.get("repo_exists") and not gh.get("probe_error"):
+            binary_ver = _release_for_version(github_repo, version, tool, timeout=timeout)
+            if binary_ver["status"] == "match":
+                availability["binary"] = {
+                    **availability["binary"], "available": True,
+                    "resolved_asset": binary_ver["asset"],
+                    "resolved_tag": binary_ver["tag"], "binary_version": binary_ver}
+            elif binary_ver["status"] in ("absent", "no_asset"):
+                availability["binary"] = {
+                    **availability["binary"], "available": False,
+                    "binary_version": binary_ver}
+            else:   # error / incomplete → UNCHECKED: keep the latest-derived availability
+                    # but flag it, so _install_call emits a verify-manually placeholder rather
+                    # than latest's asset masquerading as the pinned version.
+                availability["binary"] = {
+                    **availability["binary"], "binary_version_unverified": binary_ver}
 
     # AUTHORS' OWN RESOURCES (the reliability gate). Find the tool's repo — explicit or
     # extracted from registry metadata — and ask: does the tool publish an image, and
@@ -1425,18 +1614,60 @@ def resolve(
     if version and chosen in ("conda", "pip"):
         vs = availability.get(chosen, {}).get("versions") or []
         if vs and not _version_present(version, vs):
-            nearest = _nearest_versions(version, vs)
-            decision["version_absent"] = {
-                "tier": chosen, "requested": version,
-                "channel": availability.get(chosen, {}).get("channel", ""),
-                "nearest": nearest}
-            decision["rationale"] = (
-                f"VERSION NOT FOUND on {chosen}: no {tool}=={version} "
-                f"(nearest real: {', '.join(nearest) or '—'}). Emitting it would be a "
-                f"real-looking but UNSOLVABLE pin, byte-identical to a valid one — refuse "
-                f"and pick an existing version. || " + decision.get("rationale", ""))
-            chosen = None
-            decision["chosen"] = None
+            if binary_ver and binary_ver.get("status") == "match":
+                # conda/pip does NOT carry this version, but the user-named repo ships it as
+                # a binary — route there rather than refuse a version that plainly EXISTS
+                # (bioconda skips somalier 0.2.16 while brentp/somalier ships v0.2.16). NOT a
+                # silent switch: the reroute is disclosed and rests on a 200 + a real asset.
+                prior = chosen
+                chosen = "binary"
+                decision["chosen"] = "binary"
+                decision["binary_version_reroute"] = {
+                    "from": prior, "requested": version, "resolved_tag": binary_ver["tag"]}
+                decision["rationale"] = (
+                    f"{prior.upper()} LACKS {tool}=={version}, but {github_repo} ships it as a "
+                    f"binary (release {binary_ver['tag']}) — routing to the binary tier to honor "
+                    f"the pin. || " + decision.get("rationale", ""))
+            else:
+                nearest = _nearest_versions(version, vs)
+                # If the named repo was ALSO checked and can't deliver the pin, say so — the
+                # refusal then reflects the whole investigation, not just the registry tier.
+                # But an error/incomplete release lookup is UNCHECKED, NOT a "checked": it must
+                # not be rendered as a settled fact (binary_checked stays False), it gets its own
+                # UNCHECKED disclosure, and it is recorded so _classify_refusal downgrades the
+                # refusal to investigation_incomplete — a pin-honoring tier we could NOT reach
+                # does not make the version known-absent (the UNREACHABLE-first doctrine).
+                bstat = binary_ver.get("status") if binary_ver else None
+                also = ""
+                if bstat in ("absent", "no_asset"):
+                    also = (f" The named repo {github_repo} was also checked: "
+                            + ("no release matches this version."
+                               if bstat == "absent"
+                               else f"release {binary_ver.get('tag','')} exists but ships no "
+                                    f"linux/amd64 binary."))
+                elif bstat in ("error", "incomplete"):
+                    why = binary_ver.get("error", "release list truncated at 100; page 2+ may hold it")
+                    also = (f" The named repo {github_repo} could NOT be checked for this version "
+                            f"({why}) — UNCHECKED, not absent; {version} may ship there as a binary.")
+                    decision["binary_version_unchecked"] = binary_ver
+                decision["version_absent"] = {
+                    "tier": chosen, "requested": version,
+                    "channel": availability.get(chosen, {}).get("channel", ""),
+                    # TRUE only when the release lookup actually CONCLUDED (a 'match' would have
+                    # rerouted above, so absent/no_asset are the only concluded states here).
+                    "nearest": nearest, "binary_checked": bstat in ("absent", "no_asset")}
+                tail = ("Emitting it would be a real-looking but UNSOLVABLE pin, byte-identical "
+                        "to a valid one — refuse and pick an existing version."
+                        if bstat not in ("error", "incomplete") else
+                        f"conda/pip lacks it and the binary tier that could carry it was "
+                        f"UNCHECKED — re-run (or fetch the {version} asset explicitly) rather "
+                        f"than silently switching to a nearby version.")
+                decision["rationale"] = (
+                    f"VERSION NOT FOUND on {chosen}: no {tool}=={version} "
+                    f"(nearest real: {', '.join(nearest) or '—'}).{also} {tail} || "
+                    + decision.get("rationale", ""))
+                chosen = None
+                decision["chosen"] = None
     # FORK-ANCHOR outcomes (computed before rank_decision; applied to the ranked decision).
     if fork_divergence:
         decision["fork_divergence"] = fork_divergence
@@ -1461,6 +1692,48 @@ def resolve(
         decision["chosen"] = None
     if fork_disclosure:
         decision["rationale"] = decision.get("rationale", "") + "  NOTE: " + fork_disclosure
+    # BINARY-VERSION disclosures. Two honest-non-refusal cases the version pin creates:
+    if binary_ver:
+        bstat = binary_ver.get("status")
+        if chosen == "binary" and bstat in ("error", "incomplete"):
+            # UNCHECKED: we kept the binary pick (no silent tier switch) but could NOT confirm
+            # the pinned version's asset. The install_call carries a verify-manually placeholder,
+            # not latest's bytes — say why, and that this is NOT a claim the version is absent.
+            why = binary_ver.get("error", "release list truncated at 100; the version may be older")
+            decision["binary_version_unverified"] = binary_ver
+            decision["rationale"] = (
+                f"BINARY VERSION UNVERIFIED: could not confirm {tool}=={version} in "
+                f"{github_repo}'s releases ({why}) — NOT using latest's bytes; fetch the "
+                f"{version} asset from https://github.com/{github_repo}/releases and pass it "
+                f"explicitly. This is UNCHECKED, not 'version absent'. || "
+                + decision.get("rationale", ""))
+        elif bstat in ("error", "incomplete") and chosen in ("synthesis", "source"):
+            # UNCHECKED and binary did NOT win: latest ships no linux asset (a CHECKED fact →
+            # tier unavailable-from-latest) AND the pinned-release lookup did not complete. The
+            # CHECKED-absent fallthrough below IS disclosed, so staying silent on this
+            # strictly-weaker-knowledge case is a backwards asymmetry — and a prefer='binary'
+            # here is reported merely 'not available', which is UNCHECKED for this pin, not
+            # settled. Disclose + surface the fact machine-readably (mirroring the chosen==binary
+            # path). No tier/bytes change — the unchecked lookup can only PROMOTE binary, never
+            # demote it, so synthesis was the pick regardless; this only names what we couldn't see.
+            why = binary_ver.get("error", "release list truncated at 100; the version may be older")
+            decision["binary_version_unverified"] = binary_ver
+            decision["rationale"] = (
+                f"NOTE: the binary tier was UNCHECKED for {tool}=={version} ({why}) — "
+                f"{github_repo}'s latest release ships no linux/amd64 binary AND the pinned "
+                f"release could not be reached, so a {version} binary MAY exist there; {chosen} "
+                f"builds from a repo ref instead. UNCHECKED, not 'no binary' — re-run to confirm. "
+                f"|| " + decision.get("rationale", ""))
+        elif bstat in ("absent", "no_asset") and chosen in ("synthesis", "source"):
+            # The pin isn't deliverable as a binary, so the binary tier went unavailable and we
+            # fell to synthesis/source — which build a REF, not this version's release asset.
+            # Disclose so the fallthrough isn't silent (the reader may want a different version).
+            decision["rationale"] = (
+                f"NOTE: {github_repo} has no linux/amd64 binary for {tool}=={version} "
+                + ("(no release matches this version)" if bstat == "absent"
+                   else f"(release {binary_ver.get('tag','')} ships no such asset)")
+                + f" — the binary tier is unavailable for this pin; {chosen} builds from a repo "
+                f"ref, so confirm it targets {version}. || " + decision.get("rationale", ""))
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.

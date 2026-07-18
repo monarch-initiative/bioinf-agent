@@ -99,22 +99,56 @@
    "intent": "somalier 0.2.15 specifically \u2014 the version the original 2021 analysis used; the whole point of naming a version is byte-level reproducibility.",
    "why_hard": "The honesty contract makes this WORSE: every identity check passes (repo-anchored), so the wrong-version bytes ship fully green with a sha256, an SLSA attestation and a .sif \u2014 no record says the version was replaced.",
    "expect": {
-    "chosen": null,
+    "chosen": "binary",
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "HARD ERROR, emit no install_call: when a version is supplied the binary tier must query releases/tags/{version} (v-prefixed and bare) instead of releases/latest \u2014 resolve_linux_asset already does exactly this at resolver.py:408 while probe_github hardcodes releases/latest at resolver.py:258, so the two siblings are simply inconsistent. If the tag has no release/asset: say so and stop, never substitute another version's bytes. TEST PRECONDITION (REWRITTEN \u2014 the original 'guard on rate_limit.remaining > 0' is RACY and WRONG: resolve() spends several GH calls after the check, and the remaining-count is itself a GH call). Use the deterministic self-check instead: skip the row unless `resolver.probe_github('brentp/somalier')['repo_exists'] is True`. That consults the exact code path resolve() uses, so there is no interpretive gap. Rationale is measured, not theoretical \u2014 see probe_evidence: with GH budget exhausted _get_json swallows the 403 (resolver.py:86) and the row silently becomes chosen='conda', which would make the post-fix assertion cry wolf. This is the ONLY row in the corpus needing authenticated-scale GitHub budget; every other row hits PyPI/CRAN/anaconda.org, which are effectively unlimited.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": null,
+    "pins_requested_version": true,
+    "note": "PROCEED with the PINNED version's asset. v0.2.15 is a real brentp/somalier release shipping a linux `somalier` binary, so the byte-reproducibility intent CAN be honored \u2014 resolve() must emit install_release_binary(...releases/download/v0.2.15/somalier...), never the latest (v0.3.3) bytes under the requested name. probe_github reads releases/LATEST, so the fix probes the pinned release directly (_release_for_version) and drives the binary tier's asset from it. ASSERTED via pins_requested_version (opt-in): chosen=='binary' AND the requested version appears as a delimited token in the install_call \u2014 the ONE fact separating the correct v0.2.15 asset from the v0.3.3 substitution, which chosen='binary' alone cannot see. (The earlier expect said chosen=null/refuse; that presumed v0.2.15 was unreachable \u2014 the live 200+asset disproves it. Refuse is right ONLY when the pin has NO asset: see binary-tier-version-with-no-release-refuses.) TEST PRECONDITION: skip unless resolver.probe_github('brentp/somalier')['repo_exists'] is True \u2014 this row and its sibling are the only rows needing GitHub release-list budget; under an exhausted quota _release_for_version returns status='error' and the tier degrades to a verify-manually placeholder (UNCHECKED), not this asset."
    },
    "actual_today": {
     "chosen": "binary",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": true
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
-   "probe_evidence": "$ curl -s https://api.github.com/rate_limit -> core {'limit': 60, 'remaining': 36, 'used': 24}   <-- budget available, binary tier reachable\n$ PYTHONPATH=. python -c \"...R.resolve(tool='somalier', version='0.2.15', github_repo='brentp/somalier', prefer='binary')\"\n  chosen        = 'binary'\n  prefer_honored= True   (prefer WAS honored)\n  ambiguous     = False\n  identity      = {\"confirmed\": true, \"anchor\": \"repo\", \"evidence\": [\"brentp/somalier\"]}   <-- fully green\n  poisoned      = False   <-- no warning of any kind\n  binary probe  = {\"available\": true, \"repo_exists\": true, \"tag\": \"v0.3.3\", \"has_release_assets\": true}\n  REQUESTED VERSION \"0.2.15\" IN install_call? -> False\n  install_call_last = ['install_release_binary(env, \"somalier\", url=\"https://github.com/brentp/somalier/releases/download/v0.3.3/somalier\", sha256=\"<published>\")']\n\nCODE (resolver.py:258): probe_github hardcodes `releases/latest`; (resolver.py:408) resolve_linux_asset uses `releases/tags/{tag}`. Sibling inconsistency CONFIRMED by reading.\n\nSTABILITY MEASURED (I simulated exhausted budget by stubbing _get_json->None for api.github.com, exactly what the 403 does at resolver.py:86):\n  chosen='conda' | prefer_honored=False | prefer_ignored=\"prefer='binary' was IGNORED: that tier is not available\"\n  identity={'confirmed': True, 'anchor': 'bioconda-channel'} | poisoned=True\n  install_call = install_conda_packages(env, [{\"spec\": \"somalier=0.2.15\", \"channel\": \"bioconda\"}])\n=> the row SILENTLY changes tier under rate limit. Hence the hard skip guard above.\nREPRODUCED TODAY, and WORSE than the recorded RUN 1 (which was rate-limited into chosen='conda' and at least kept 0.2.15 in the spec)."
+   "probe_evidence": "$ resolve(tool='somalier', version='0.2.15', github_repo='brentp/somalier', prefer='binary')\n  chosen = 'binary'\n  install_call = install_release_binary(env, \"somalier\", url=\"https://github.com/brentp/somalier/releases/download/v0.2.15/somalier\", sha256=\"<published>\")\n  pins_requested_version = True  (v0.2.15 asset, NOT latest v0.3.3)\n  binary_version.status = 'match', resolved_tag = 'v0.2.15'\nLIVE FACT (2026-07-18): GET /repos/brentp/somalier/releases/tags/v0.2.15 -> 200, asset 'somalier' (33.9MB); bare '0.2.15' -> 404. Fixed by _release_for_version enumerating the PINNED release instead of probe_github's releases/latest."
+  },
+  {
+   "id": "binary-tier-version-with-no-release-refuses",
+   "call": {
+    "tool": "somalier",
+    "version": "0.9.99",
+    "github_repo": "brentp/somalier",
+    "prefer": "binary",
+    "language": null
+   },
+   "intent": "somalier 0.9.99 \u2014 a version that does NOT exist. A pinned version with no release must REFUSE, never fall back to another release's bytes.",
+   "why_hard": "The dangerous temptation is to substitute the nearest/latest release so 'something' installs \u2014 that ships wrong bytes green. The refusal must ALSO be EARNED: the named repo was enumerated (no matching release) AND conda lacks it, not a lazy 'didn't find it'.",
+   "expect": {
+    "chosen": null,
+    "ambiguous": false,
+    "assertable": true,
+    "unassertable_reason": null,
+    "refusal_reason": "investigation_contradicted",
+    "note": "REFUSE, emit no install_call: 0.9.99 is absent from brentp/somalier's releases AND from bioconda, so no tier can deliver it. resolve() names the nearest real versions and stops \u2014 never substituting v0.3.3 (latest) or the nearest binary. The refusal is EARNED: version_absent.binary_checked is True (the named repo WAS enumerated), so refusal_reason='investigation_contradicted' (evidence contradicts the pin), not a bare empty. TEST PRECONDITION: skip unless resolver.probe_github('brentp/somalier')['repo_exists'] is True (needs GitHub release-list budget)."
+   },
+   "actual_today": {
+    "chosen": null,
+    "ambiguous": false,
+    "install_call_poisoned": false,
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
+   },
+   "is_correct_today": true,
+   "gap_class": "outcome",
+   "probe_evidence": "$ resolve(tool='somalier', version='0.9.99', github_repo='brentp/somalier', prefer='binary')\n  chosen = None | refusal_reason = 'investigation_contradicted'\n  rationale: \"prefer='binary' was IGNORED: that tier is not available (available: conda, synthesis, source) || VERSION NOT FOUND on conda: no somalier==0.9.99 (nearest real: 0.3.1, 0.3.2). The named repo brentp/somalier was also checked: no release matches this version.\"\n  version_absent = {tier: conda, requested: 0.9.99, nearest: [0.3.1, 0.3.2], binary_checked: True}\nThe binary tier went unavailable (0.9.99 absent from releases), conda lacks it, and the refusal names both \u2014 no substitution."
   },
   {
    "id": "bioconda-hit-proceed-silently",

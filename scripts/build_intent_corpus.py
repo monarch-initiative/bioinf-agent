@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -59,6 +60,14 @@ def probe(call: dict) -> dict:
 
     d = R.resolve(**{k: v for k, v in call.items() if v is not None})
     install = d.get("install_call") or ""
+    req_v = call.get("version")
+    # Does the emitted install_call actually PIN the requested version? A stable boolean, so
+    # a version-substitution defect the chosen-tier is blind to becomes visible: chosen='binary'
+    # is identical for a somalier v0.2.15 (correct) or v0.3.3 (the bug) asset — only THIS fact
+    # tells them apart. The version must appear as a delimited token (optionally v-prefixed), so
+    # a request for 0.2.1 never counts as pinned by a v0.2.15 URL. Opt-in in _is_correct.
+    pins_version = bool(req_v) and re.search(
+        r"(?<![\w.])v?" + re.escape(str(req_v)) + r"(?![\w.])", install) is not None
     return {
         "chosen": d.get("chosen"),
         "ambiguous": bool(d.get("ambiguous")),
@@ -70,6 +79,7 @@ def probe(call: dict) -> dict:
         # The machine-readable WHY behind a refusal (None on a successful pick). This is what
         # lets a chosen=null row be graded EARNED vs lazy — see _is_correct + known_gaps[0].
         "refusal_reason": d.get("refusal_reason"),
+        "pins_requested_version": pins_version,
     }
 
 
@@ -126,6 +136,13 @@ def _is_correct(expect: dict, actual: dict) -> bool:
     # behaviour cannot fail, and a test that cannot fail is decoration.
     if expect.get("authors_gate") is not None:
         if actual.get("authors_gate") != expect.get("authors_gate"):
+            return False
+    # Opt-in, same discipline as authors_gate: only a row whose intent is byte-level version
+    # reproducibility carries this. It reads the ONE fact `chosen` can't — that the install_call
+    # pins the REQUESTED version, not another release's bytes under its name (somalier 0.2.15 vs
+    # the v0.3.3-latest substitution). Adding it cannot re-grade the other rows.
+    if expect.get("pins_requested_version") is not None:
+        if actual.get("pins_requested_version") != expect.get("pins_requested_version"):
             return False
     return True
 

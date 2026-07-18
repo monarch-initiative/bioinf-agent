@@ -5208,5 +5208,45 @@
     "where": "agent/skills/authors_sources.py:253",
     "end_line": 253,
     "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_release_for_version",
+    "where": "agent/skills/resolver.py:811",
+    "end_line": 811,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_release_for_version",
+    "where": "agent/skills/resolver.py:815",
+    "end_line": 815,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_release_for_version",
+    "where": "agent/skills/resolver.py:817",
+    "end_line": 817,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "_release_for_version",
+    "where": "agent/skills/resolver.py:844",
+    "end_line": 844,
+    "named_in_test": null
   }
 ]
