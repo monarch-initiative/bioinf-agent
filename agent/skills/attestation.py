@@ -139,6 +139,14 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # The accelerator policy that gated POLICY_CLEAN (I12). Pure
                 # metadata pass-through — the contract already enforces shape.
                 "accelerator": r.get("accelerator") or {},
+                # IDENTITY DISCLOSURE (audit #8): each requested tool's OWN self-
+                # description, read at freeze from the registry the shipped package
+                # came from. AGENT-ASSERTED, not a verified capability — it lives in
+                # internalParameters beside the other declared (license/accelerator)
+                # metadata, NOT in resolvedDependencies (which are verified). A
+                # downstream verifier reads it to catch a wrong-domain adoption; it
+                # gates nothing. Pass-through: register validated the ToolIdentity shape.
+                "tool_identities": r.get("tool_identities") or [],
             },
             "resolvedDependencies": resolved,
         },

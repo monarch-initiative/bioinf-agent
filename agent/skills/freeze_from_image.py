@@ -168,7 +168,17 @@ def freeze_from_image(
         if pj["rc"] == 0 and "[" in pj["out"]:
             try:
                 lst = json.loads(pj["out"][pj["out"].index("["):])
-                resolved_packages = [{"name": s, "manager": "pip"} for s in lst]
+                # Emit the STANDARD SBOM shape {name, version, kind} that every other
+                # producer follows (_parse_prefix_scan / conda_sbom_from_image). The old
+                # {name: "pkg==ver", manager: "pip"} shape put the version inside the name
+                # and omitted `kind` (a dead key `manager` nobody reads), so every consumer
+                # keyed on name/kind — tool_identity.capture, attestation._purl, the env
+                # report's per-tool version — silently failed on venv/pip author images.
+                resolved_packages = []
+                for s in lst:
+                    nm, _, vr = s.partition("==")
+                    if nm:
+                        resolved_packages.append({"name": nm, "version": vr, "kind": "pypi"})
             except (ValueError, IndexError):
                 pass
 
@@ -213,6 +223,16 @@ def freeze_from_image(
         ).model_dump()
         for t in tools]
 
+    # IDENTITY DISCLOSURE (audit #8): what each requested tool says it IS, read from the
+    # registry the shipped package came from (matched via the image's own SBOM). Agent-
+    # asserted, best-effort — captured BEFORE check_build so the checked record is the
+    # registered one; a probe miss yields self_description=None and never fails the freeze.
+    from agent.skills import tool_identity as _ti
+    try:
+        record["tool_identities"] = _ti.capture(record["requested_tools"], resolved_packages)
+    except Exception:
+        record["tool_identities"] = []
+
     from agent.skills import env_honesty
     violations = env_honesty.check_build(record)
     if violations:
@@ -254,6 +274,7 @@ def freeze_from_image(
         adopt_image=adopt_ref,
         dockerfile_source=dockerfile_source or {})
     recipe["shipped_binaries"] = record["shipped_binaries"]
+    recipe["tool_identities"] = record.get("tool_identities") or []
 
     out_paths: dict[str, str] = {}
     for label, fname, render in (

@@ -35,6 +35,7 @@ from typing import Any, Optional
 from agent.skills.freeze import record_is_gated as _record_is_gated
 
 from agent.models.core_data import shipped_binaries as _shipped_binaries
+from agent.models.core_data import tool_identities as _tool_identities
 from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
@@ -141,6 +142,7 @@ table{width:100%;border-collapse:collapse;background:var(--surface);
 border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}
 th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
 tr:last-child td{border-bottom:none}
+tr.id-row td{padding:4px 14px 10px 32px;font-size:12px;font-style:italic;border-bottom:1px solid var(--border)}
 th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
 letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}
 /* LEFTMOST COLUMN — same muted color as the build-details key column, in EVERY table */
@@ -404,6 +406,14 @@ def render_env_report_html(record: dict) -> str:
     image_digest_raw = r.get("image_digest") or ""
     vidx, pidx = _verif_index(verifs), _pkg_index(resolved)
     req_versions = _requested_versions(r)
+    # IDENTITY DISCLOSURE (audit #8): the tool's OWN self-description, keyed by tool name.
+    # Rendered as a labelled, clearly-UNVERIFIED sub-line under each tool row — the record
+    # already parsed at register/check_build, but degrade gracefully rather than crash a
+    # report over an optional disclosure.
+    try:
+        identities = {i.tool.lower(): i for i in _tool_identities(r)}
+    except Exception:
+        identities = {}
     requested_set = {t.lower() for t in requested}
     ride = [p for p in resolved if isinstance(p, dict) and p.get("name")
             and p["name"].lower() not in requested_set]
@@ -486,6 +496,18 @@ def render_env_report_html(record: dict) -> str:
                 status = _badge(v.get("passed") if v else None, "", t)
             P.append(f"<tr><td>{_e(t)}</td><td>{req_cell}</td>"
                      f"<td>{inst_cell}</td><td>{tier_cell}</td><td>{status}</td></tr>")
+            # Identity disclosure sub-row — the tool's OWN words, from the registry the
+            # shipped package came from. Labelled UNVERIFIED and visually distinct from the
+            # green validation badge: this is what the tool CLAIMS to be, never proof it is.
+            # A human reads "Translate Spreadsheet Cell Ranges" under `cellranger` and knows.
+            idn = identities.get(t.lower())
+            if idn is not None and idn.self_description:
+                src = f" · {_e(idn.source)}" if idn.source else ""
+                P.append(
+                    f'<tr class="id-row"><td colspan="5">'
+                    f'<span class="badge na">self-described</span> '
+                    f'<span class="muted">unverified{src}:</span> '
+                    f'&ldquo;{_e(idn.self_description)}&rdquo;</td></tr>')
         P.append("</table></div>")
     else:
         P.append(_empty("(no tools recorded)"))

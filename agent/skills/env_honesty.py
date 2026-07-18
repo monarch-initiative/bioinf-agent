@@ -346,6 +346,14 @@ def check_build(result: dict) -> list[dict]:
                            "message": f"shipped_binaries does not conform to the declared "
                                       f"ShippedBinary shape, so its contents cannot be read "
                                       f"without guessing: {e}"})
+    try:
+        _core_data.tool_identities(result)
+    except Exception as e:
+        violations.append({"invariant": "WELL_FORMED.tool_identities",
+                           "where": "tool_identities",
+                           "message": f"tool_identities does not conform to the declared "
+                                      f"ToolIdentity shape, so the identity disclosure cannot "
+                                      f"be read without guessing: {e}"})
 
     # -- BUILT -----------------------------------------------------------
     # The image existing is the structural anchor for I1/I9/I11/I14: every RUN

@@ -551,8 +551,9 @@ class EnvCache:
         Kept separate from `contract_violations` (policy, returns violations) because
         this is a producer bug and must raise. Patch `_save` — the I/O — in tests, not
         `register`; patching `register` patches out the contract itself."""
-        from agent.models.core_data import shipped_binaries
+        from agent.models.core_data import shipped_binaries, tool_identities
         shipped_binaries(record)   # raises ValidationError on an undeclared dialect
+        tool_identities(record)    # identity disclosure (audit #8) — same forbid-extras seam
 
     def all(self) -> dict:
         return self._load()

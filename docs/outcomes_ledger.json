@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:679",
-    "end_line": 679,
+    "where": "agent/mcp_tools/freeze_tools.py:699",
+    "end_line": 699,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:725",
-    "end_line": 725,
+    "where": "agent/mcp_tools/freeze_tools.py:745",
+    "end_line": 745,
     "named_in_test": true
   },
   {
@@ -1005,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:339",
-    "end_line": 340,
+    "where": "agent/skills/freeze_from_image.py:360",
+    "end_line": 361,
     "named_in_test": true
   },
   {
@@ -1015,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:344",
-    "end_line": 345,
+    "where": "agent/skills/freeze_from_image.py:365",
+    "end_line": 366,
     "named_in_test": false
   },
   {
@@ -1025,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:354",
-    "end_line": 356,
+    "where": "agent/skills/freeze_from_image.py:375",
+    "end_line": 377,
     "named_in_test": false
   },
   {
@@ -1875,8 +1875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:606",
-    "end_line": 607,
+    "where": "agent/mcp_tools/freeze_tools.py:626",
+    "end_line": 627,
     "named_in_test": false
   },
   {
@@ -1885,8 +1885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:679",
-    "end_line": 679,
+    "where": "agent/mcp_tools/freeze_tools.py:699",
+    "end_line": 699,
     "named_in_test": true
   },
   {
@@ -1895,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:724",
-    "end_line": 724,
+    "where": "agent/mcp_tools/freeze_tools.py:744",
+    "end_line": 744,
     "named_in_test": true
   },
   {
@@ -1905,8 +1905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:768",
-    "end_line": 774,
+    "where": "agent/mcp_tools/freeze_tools.py:788",
+    "end_line": 794,
     "named_in_test": false
   },
   {
@@ -2395,8 +2395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:288",
-    "end_line": 292,
+    "where": "agent/skills/freeze_from_image.py:309",
+    "end_line": 313,
     "named_in_test": false
   },
   {
@@ -2925,8 +2925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:646",
-    "end_line": 647,
+    "where": "agent/mcp_tools/freeze_tools.py:666",
+    "end_line": 667,
     "named_in_test": true
   },
   {
@@ -2935,8 +2935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:649",
-    "end_line": 650,
+    "where": "agent/mcp_tools/freeze_tools.py:669",
+    "end_line": 670,
     "named_in_test": true
   },
   {
@@ -2945,8 +2945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:662",
-    "end_line": 663,
+    "where": "agent/mcp_tools/freeze_tools.py:682",
+    "end_line": 683,
     "named_in_test": false
   },
   {
@@ -2955,8 +2955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:692",
-    "end_line": 707,
+    "where": "agent/mcp_tools/freeze_tools.py:712",
+    "end_line": 727,
     "named_in_test": false
   },
   {
@@ -2965,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:763",
-    "end_line": 764,
+    "where": "agent/mcp_tools/freeze_tools.py:783",
+    "end_line": 784,
     "named_in_test": false
   },
   {
@@ -3770,13 +3770,23 @@
     "named_in_test": true
   },
   {
+    "code": "WELL_FORMED.tool_identities",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_build",
+    "where": "agent/skills/env_honesty.py:352",
+    "end_line": 356,
+    "named_in_test": true
+  },
+  {
     "code": "BUILT.image_present",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:355",
-    "end_line": 357,
+    "where": "agent/skills/env_honesty.py:363",
+    "end_line": 365,
     "named_in_test": true
   },
   {
@@ -3785,8 +3795,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:359",
-    "end_line": 361,
+    "where": "agent/skills/env_honesty.py:367",
+    "end_line": 369,
     "named_in_test": true
   },
   {
@@ -3795,8 +3805,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:369",
-    "end_line": 371,
+    "where": "agent/skills/env_honesty.py:377",
+    "end_line": 379,
     "named_in_test": true
   },
   {
@@ -3805,8 +3815,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:378",
-    "end_line": 380,
+    "where": "agent/skills/env_honesty.py:386",
+    "end_line": 388,
     "named_in_test": true
   },
   {
@@ -3815,8 +3825,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_build",
-    "where": "agent/skills/env_honesty.py:382",
-    "end_line": 386,
+    "where": "agent/skills/env_honesty.py:390",
+    "end_line": 394,
     "named_in_test": true
   },
   {
@@ -3975,8 +3985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:219",
-    "end_line": 222,
+    "where": "agent/skills/freeze_from_image.py:239",
+    "end_line": 242,
     "named_in_test": true
   },
   {
@@ -3985,8 +3995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:326",
-    "end_line": 327,
+    "where": "agent/skills/freeze_from_image.py:347",
+    "end_line": 348,
     "named_in_test": false
   },
   {
@@ -3995,8 +4005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:329",
-    "end_line": 329,
+    "where": "agent/skills/freeze_from_image.py:350",
+    "end_line": 350,
     "named_in_test": false
   },
   {
