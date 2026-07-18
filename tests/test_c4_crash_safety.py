@@ -100,7 +100,7 @@ def _sandbox(monkeypatch, tmp_path):
 def _battery():
     from agent.mcp_tools import (bridge_tools as B, data_tools as D, env_tools as E,
                                  freeze_tools as F, intent_tools as I, jobs_tools as J,
-                                 observability_tools as O, run_tools as R,
+                                 observability_tools as O, plan_tools as P, run_tools as R,
                                  service_tools as S, workflow_tools as W)
     return [
         # -- bridge (auth must refuse before any ssh) -----------------------
@@ -148,6 +148,13 @@ def _battery():
         # no side effects. Its verdicts (decline/ask/investigate/proceed) are a DIFFERENT
         # axis from the outcome-tag vocabulary, so no tag is required. Like resolve_tool.
         ("interpret_request", I.interpret_request, dict(intent_json="not valid json{{"), False),
+        # -- plan (the composition front door) ------------------------------
+        # plan_request is a pure validation/gating QUERY, exactly like interpret_request:
+        # malformed JSON (or an invalid plan) comes back as {ok: False, error: …} —
+        # interpretable, no crash, no side effects. Its verdict (plan_ready) is a
+        # DIFFERENT axis from the outcome-tag vocabulary, so no tag is required. It
+        # dispatches NOTHING, so there is no action to gate.
+        ("plan_request", P.plan_request, dict(plan_json="not valid json{{"), False),
         # -- env / install (missing env must refuse before subprocess) ------
         # search_package / resolve_tool are QUERIES: an unknown package returns a
         # not-found / no-decision dict (interpretable), tag optional.

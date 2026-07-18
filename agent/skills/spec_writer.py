@@ -35,6 +35,26 @@ from agent.skills.outcomes import refused
 
 
 # ---------------------------------------------------------------------------
+# I8 external-source vocabulary — SINGLE-SOURCED.
+#
+# The Layer-2 composition-coherence law (I8): every pipeline_step input must
+# trace to a prior step's output OR one of these external-source categories.
+# Defined ONCE, here, so the runtime seal-time check (_check_composition_coherence
+# below) and the Phase-4 plan-authoring gate (agent/skills/plan.py — the SAME law
+# lifted to authoring time) read the identical set and the identical sentence,
+# instead of two copies that drift (this repo's signature disease). Adding a 5th
+# category here flows to BOTH checks automatically. The set is exactly the fields
+# _check_composition_coherence seeds its external universe from (test_data /
+# reference_databases.local_path / runtime_configs.path / authored_artifacts.path).
+# ---------------------------------------------------------------------------
+I8_STATEMENT = "every input traces to a prior step's output OR an external source"
+
+EXTERNAL_SOURCE_KINDS = frozenset({
+    "test_data", "reference_databases", "runtime_configs", "authored_artifacts",
+})
+
+
+# ---------------------------------------------------------------------------
 # Pipeline spec persistence
 # ---------------------------------------------------------------------------
 
@@ -1245,8 +1265,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             violations.append({
                 "invariant": "I8.composition_coherence",
                 "message":   f"pipeline_step {step_n} input '{p}' has no producing source — "
-                             f"not in test_data, reference_databases, runtime_configs, "
-                             f"or any prior step's outputs",
+                             f"{I8_STATEMENT}; recognized external kinds are "
+                             f"{', '.join(sorted(EXTERNAL_SOURCE_KINDS))}",
                 "where":     f"pipeline_steps[step={step_n}].inputs",
                 "orphan_path": p,
             })

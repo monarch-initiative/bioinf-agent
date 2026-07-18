@@ -4215,198 +4215,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1011",
-    "end_line": 1018,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.authored_artifact_unreadable",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1023",
-    "end_line": 1029,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.authored_artifact_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1032",
-    "end_line": 1041,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_missing",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1105",
-    "end_line": 1114,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_unreadable",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1123",
-    "end_line": 1129,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1132",
-    "end_line": 1144,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.composition_coherence",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:1245",
-    "end_line": 1252,
-    "named_in_test": true
-  },
-  {
-    "code": "I0.shape_sanity",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:486",
-    "end_line": 490,
-    "named_in_test": true
-  },
-  {
-    "code": "I0.shape_sanity",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:494",
-    "end_line": 499,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.pipeline_step_has_outputs",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:517",
-    "end_line": 523,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.outputs_validated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:536",
-    "end_line": 543,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.validation_passed",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:564",
-    "end_line": 573,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.declared_output_type",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:587",
-    "end_line": 596,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:619",
-    "end_line": 623,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:626",
-    "end_line": 630,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.template_placeholders_declared",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:657",
-    "end_line": 666,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_recorded",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:683",
-    "end_line": 689,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_captured",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:700",
-    "end_line": 708,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_captured",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:724",
-    "end_line": 732,
-    "named_in_test": true
-  },
-  {
-    "code": "I10.service_never_healthy",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_service_health",
-    "where": "agent/skills/spec_writer.py:833",
-    "end_line": 841,
+    "where": "agent/skills/spec_writer.py:1031",
+    "end_line": 1038,
     "named_in_test": true
   },
   {
@@ -4415,9 +4225,199 @@
     "source": "helper",
     "tagged": true,
     "func": "write_workflow_spec",
-    "where": "agent/skills/spec_writer.py:84",
-    "end_line": 84,
+    "where": "agent/skills/spec_writer.py:104",
+    "end_line": 104,
     "named_in_test": false
+  },
+  {
+    "code": "I8.authored_artifact_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:1043",
+    "end_line": 1049,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.authored_artifact_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:1052",
+    "end_line": 1061,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1125",
+    "end_line": 1134,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1143",
+    "end_line": 1149,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1152",
+    "end_line": 1164,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.composition_coherence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_composition_coherence",
+    "where": "agent/skills/spec_writer.py:1265",
+    "end_line": 1272,
+    "named_in_test": true
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:506",
+    "end_line": 510,
+    "named_in_test": true
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:514",
+    "end_line": 519,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.pipeline_step_has_outputs",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:537",
+    "end_line": 543,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.outputs_validated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:556",
+    "end_line": 563,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.validation_passed",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:584",
+    "end_line": 593,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.declared_output_type",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:607",
+    "end_line": 616,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:639",
+    "end_line": 643,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:646",
+    "end_line": 650,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.template_placeholders_declared",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:677",
+    "end_line": 686,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_recorded",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:703",
+    "end_line": 709,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:720",
+    "end_line": 728,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:744",
+    "end_line": 752,
+    "named_in_test": true
+  },
+  {
+    "code": "I10.service_never_healthy",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_service_health",
+    "where": "agent/skills/spec_writer.py:853",
+    "end_line": 861,
+    "named_in_test": true
   },
   {
     "code": "I5.reference_database_missing",
@@ -4425,8 +4425,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:899",
-    "end_line": 906,
+    "where": "agent/skills/spec_writer.py:919",
+    "end_line": 926,
     "named_in_test": true
   },
   {
@@ -4435,8 +4435,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:918",
-    "end_line": 924,
+    "where": "agent/skills/spec_writer.py:938",
+    "end_line": 944,
     "named_in_test": true
   },
   {
@@ -4445,8 +4445,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:938",
-    "end_line": 946,
+    "where": "agent/skills/spec_writer.py:958",
+    "end_line": 966,
     "named_in_test": true
   },
   {
@@ -4455,8 +4455,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:958",
-    "end_line": 963,
+    "where": "agent/skills/spec_writer.py:978",
+    "end_line": 983,
     "named_in_test": false
   },
   {
@@ -4465,8 +4465,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:966",
-    "end_line": 974,
+    "where": "agent/skills/spec_writer.py:986",
+    "end_line": 994,
     "named_in_test": true
   },
   {
@@ -5097,6 +5097,36 @@
     "func": "interpret_request",
     "where": "agent/mcp_tools/intent_tools.py:99",
     "end_line": 99,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "plan_request",
+    "where": "agent/mcp_tools/plan_tools.py:102",
+    "end_line": 102,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "plan_request",
+    "where": "agent/mcp_tools/plan_tools.py:104",
+    "end_line": 104,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "plan_request",
+    "where": "agent/mcp_tools/plan_tools.py:109",
+    "end_line": 109,
     "named_in_test": null
   },
   {

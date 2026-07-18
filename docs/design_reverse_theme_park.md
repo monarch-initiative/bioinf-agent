@@ -13,7 +13,33 @@ thesis in the small: **the LLM is the identity judge, not a word-list** — it l
 tool and the honesty contract validates; genuinely-unsure-after-investigating → ASK.
 Full fast suite green (1379). Deferred: reconciling the live intent corpus (35 rows pin
 the deleted verdict) — a reviewed re-probe, not an auto-rewrite of the crown jewel.
-Phases 3-7 below are still design. The rest of this document is the plan, unchanged.
+**Phase 3 LANDED** (behaviour-changing, user-approved) — explicit lifecycle: seal
+write-guard refuses a silent clobber of a sealed spec; `pipeline_state.current_state()`
+is the ONE re-earned lifecycle deriver (ABSENT<DRAFT<ENV_BUILT<ENV_FROZEN<SEALED); the
+fabricated `pipeline_status="in_progress"` default is killed (now DERIVED at seal). See
+§8 (GROWS A LITTLE).
+**Phase 4 LANDED** (behaviour-neutral, advisory) — composition: `agent/skills/plan.py`
+= `ExecutionPlan` (a typed DAG) + `gate_plan()` (Layer-2's I8 lifted to authoring time);
+`plan_tools.py` = `plan_request`, advisory like `interpret_request`. Three forks resolved
+with the user (see §6): (a) **node vocabulary** — `Rail` is imported by reference and the
+ONLY delta is `PlanRide = {SEAL}` (the terminal ride that is a plan node but not an entry
+rail; produces the `workflow_spec` no rail does); a node's `action`/`produces`/`depends_on`
+are all DERIVED, never stored, so no second truth. AUTHOR_PIPELINE is FOLDED IN (our
+system has no author primitive — you author by running-and-validating; the ExecutionPlan
+itself IS the authored pipeline), so the §6 worst case is a **5-node** DAG (3× INSTALL_ENV
+→ RUN_STEP → SEAL = scenario-15's `install_env ⊕ run_step` + the seal terminal). (b) **the
+I8 gate** — a node declares `consumes: [from_step | external]` mirroring runtime I8's
+disjunction verbatim; the check is PROVENANCE-NOT-TYPE (runtime I8 is itself pure
+provenance), the external vocabulary + the I8 sentence are single-sourced from
+`spec_writer` (`EXTERNAL_SOURCE_KINDS`/`I8_STATEMENT`), and the gate is
+NECESSARY-NOT-SUFFICIENT (seal re-checks on concrete paths and stays the authority).
+Project/cluster data is expressed through the existing four kinds — the project directory
++ compute resource are authorized via `projects_access.yaml` and resolved at walk time (no
+new runtime category). (c) **scope** — advisory author-and-gate; it DISPATCHES NOTHING
+(an `execute_plan` loop over freeze/run/seal would be the forbidden composite primitive
+that buries the per-seam gates); the agent WALKS the plan by calling the existing
+primitives. Fast suite green (1437). Phases 5-7 below are still design.
+The rest of this document is the plan, unchanged.
 Date: 2026-07-17.
 
 ---
@@ -243,7 +269,7 @@ Priority is **mistake-proof for a collaborator**, tamper-evident-for-an-adversar
 1. **Phase 1 — the front gate, behaviour-neutral.** Add `intent.py` + router + the scenario catalog (§7) as a live test corpus. The middle is unchanged; we just make the intake typed and routed. The intent grid already exists to measure this — it stops measuring a component that doesn't exist and starts measuring one that does.
 2. **Phase 2 — shrink RESOLVE.** Delete the heuristics; resolver returns facts only; identity judgment moves into the ride. Prove the scenario catalog rows 3/4/9 pass with judgment, not detection.
 3. **Phase 3 — explicit rails.** Formalize the lifecycle states + legal transitions in `pipeline_state.py`. Wire the seven rails to the router.
-4. **Phase 4 — composition.** Add `plan.py` + the PLAN ride; the I8-at-authoring gate; execute a multi-rail plan. Acceptance test = the §6 worst case, end to end.
+4. **Phase 4 — composition. ✅ LANDED (2026-07-17).** Added `plan.py` (`ExecutionPlan` + `gate_plan`, the I8-at-authoring gate) + `plan_tools.py` (`plan_request`, advisory). The §6 worst case gates GREEN as a 5-node DAG (`tests/test_plan_gate.py`). "Execute a multi-rail plan" is realized the theme-park way — the plan is authored + gated, then WALKED by the agent calling the existing primitives in topo order; auto-dispatch is deferred (it is the forbidden composite primitive; a Phase-5 question the user has not opened). Node vocabulary = `Rail` imported + the 1-element `PlanRide={SEAL}` delta (AUTHOR_PIPELINE folded into the RUN ride); the gate is the runtime I8 lifted (provenance-not-type, single-sourced vocabulary, necessary-not-sufficient).
 5. **Phase 5 — the new rails.** RUN_STEP-of-a-sealed-workflow (scenario 5), DECLINE (scenario 7).
 6. **Phase 6 (deferred) — relocate the checker to CI.** The adversary property, only if/when wanted.
 7. **Phase 7 (LAST, user-driven) — the user-facing layer: guides + report visual identity.** Deliberately last. The reports render **purely from the verified records** (the principle already holds — a deliverable can't claim what the record doesn't prove), so the visual identity / how-to layout is safe to design *after* the records and rails are solid. Nothing above depends on it; it depends on everything above.
