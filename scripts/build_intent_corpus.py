@@ -40,7 +40,12 @@ sys.path.insert(0, str(ROOT))
 # The observable, ASSERTABLE facts. Deliberately NOT `latest`, star counts, or description
 # text: a corpus that goes red because a maintainer cut a release is a corpus people learn
 # to ignore, and an ignored corpus protects nothing. See tests/live/test_intent_corpus.py.
-_OBSERVED = ("chosen", "identity_confirmed", "ambiguous", "install_call_poisoned")
+# `identity_confirmed` was retired 2026-07-17 (reverse-theme-park Phase 2): the resolver no
+# longer emits a verdict, it surfaces identity FACTS and the LLM ride judges — so there is
+# no confirm/flag boolean to observe. `install_call_poisoned` survives and now means ONLY
+# routing-disclosure poisoning (gate_error / unchecked_tiers / not_assessed / prefer_ignored);
+# identity no longer poisons the install_call.
+_OBSERVED = ("chosen", "ambiguous", "install_call_poisoned")
 
 
 def probe(call: dict) -> dict:
@@ -53,14 +58,13 @@ def probe(call: dict) -> dict:
     from agent.skills import resolver as R
 
     d = R.resolve(**{k: v for k, v in call.items() if v is not None})
-    ident = d.get("identity") or {}
     install = d.get("install_call") or ""
     return {
         "chosen": d.get("chosen"),
-        # absent identity (None) != present-and-unconfirmed (False). An assessment that
-        # never happened must not read as a negative assessment (Rule 2).
-        "identity_confirmed": (None if not d.get("identity") else bool(ident.get("confirmed"))),
         "ambiguous": bool(d.get("ambiguous")),
+        # ONLY routing-disclosure poisoning survives Phase 2 (see _OBSERVED). The resolver
+        # emits identity FACTS (identity.self_description / .repo_anchored / .channel), never
+        # a verdict; judging them is the LLM ride's job, unmeasurable by a resolve()-probe.
         "install_call_poisoned": install.lstrip().startswith("#"),
         "authors_gate": _authors_gate(d),
     }
@@ -75,7 +79,7 @@ def _authors_gate(d: dict) -> str:
     MEASURABLE"). The 2026-07-17 repo-provenance fix stopped the author tiers — which
     outrank conda — from probing squatters' repos (`Mucephie/DORADO` for dorado,
     `ethereum/trinity` for trinity). Not one row moved, because every assertion the grid
-    could make was about `chosen`/`identity_confirmed`, and neither changed. The grid was
+    could make was about `chosen`/`ambiguous`, and neither changed. The grid was
     right to stay flat and right to have declared that it could not see this; the answer
     is to give it eyes, not to trust the fix on faith.
 
@@ -102,9 +106,6 @@ def _is_correct(expect: dict, actual: dict) -> bool:
             return False
     elif actual.get("chosen") != expect.get("chosen"):
         return False
-    if expect.get("identity_confirmed") is not None:
-        if actual.get("identity_confirmed") != expect.get("identity_confirmed"):
-            return False
     if expect.get("ambiguous") is not None:
         if actual.get("ambiguous") != expect.get("ambiguous"):
             return False

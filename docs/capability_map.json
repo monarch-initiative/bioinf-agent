@@ -8,23 +8,21 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "The BWA read mapper.",
-        "note": ""
+        "has_description": true,
+        "repo": "lh3/bwa",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
         "conda",
-        "pip",
-        "spack"
+        "pip"
       ],
       "note": "conda sanity"
     },
@@ -36,22 +34,20 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Tools for dealing with SAM, BAM and CRAM files",
-        "note": ""
+        "has_description": true,
+        "repo": "samtools/samtools",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
-        "conda",
-        "spack"
+        "conda"
       ],
       "note": "conda sanity"
     },
@@ -63,17 +59,16 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Trim adapters from high-throughput sequencing reads",
-        "note": ""
+        "has_description": true,
+        "repo": "marcelm/cutadapt",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
@@ -90,17 +85,16 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Model Based Analysis for ChIP-Seq data",
-        "note": ""
+        "has_description": true,
+        "repo": "macs3-project/MACS",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
@@ -117,21 +111,21 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Genome Analysis Toolkit (GATK4)",
-        "note": ""
+        "has_description": true,
+        "repo": "broadinstitute/gatk",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
-        "conda"
+        "conda",
+        "authors_recipe"
       ],
       "note": "jar-class, on bioconda"
     },
@@ -143,21 +137,21 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Miniprot aligns a protein sequence against a genome with affine gap penalty, splicing and frameshift. It is primarily intended for annotating protein-coding genes in a new species using known genes from other species.",
-        "note": ""
+        "has_description": true,
+        "repo": "lh3/miniprot",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
-        "conda"
+        "conda",
+        "authors_recipe"
       ],
       "note": "aligner"
     },
@@ -169,17 +163,16 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconda-channel",
-        "evidence": [
-          "bioconda is a bioinformatics-only channel"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Plotting suite for long read sequencing data and alignments.",
-        "note": ""
+        "has_description": true,
+        "repo": "wdecoster/NanoPlot",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
@@ -196,17 +189,16 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconductor",
-        "evidence": [
-          "Bioconductor is a bioinformatics-only repository"
-        ],
+        "chosen_tier": "bioconductor",
         "self_description": "",
-        "note": ""
+        "has_description": false,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": ""
       },
       "expect": {
-        "bucket": "ROUTED:bioconductor",
-        "identity": true
+        "bucket": "ROUTED:bioconductor"
       },
       "violations": [],
       "available": [
@@ -222,17 +214,16 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "bioconductor",
-        "evidence": [
-          "Bioconductor is a bioinformatics-only repository"
-        ],
+        "chosen_tier": "bioconductor",
         "self_description": "",
-        "note": ""
+        "has_description": false,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": ""
       },
       "expect": {
-        "bucket": "ROUTED:bioconductor",
-        "identity": true
+        "bucket": "ROUTED:bioconductor"
       },
       "violations": [],
       "available": [
@@ -248,12 +239,13 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": false,
-        "anchor": "none",
-        "evidence": [],
+        "chosen_tier": "pip",
         "self_description": "A Productive Environment - make/rake/ant/fab-like system with support for FOSD",
-        "note": "IDENTITY UNCONFIRMED: the pip entry for 'ape' describes itself as \"A Productive Environment - make/rake/ant/fab-like system with support for FOSD\" \u2014 nothing in it ties it to bioinformatics, and no github_repo was given to anchor it. Same-name packages across registries are common and this may not be the 'ape' you mean (CRAN's 'cellranger' parses spreadsheet cell ranges; PyPI's 'talos' tunes Keras hyperparameters). Check the description above, then either pass github_repo='owner/repo' to pin the real project, or prefer=<tier> if this entry IS correct. Nothing downstream re-checks this: a wrong tool that installs cleanly ships green.",
-        "reason": "no_domain_signal"
+        "has_description": true,
+        "repo": "henzk/ape",
+        "repo_source": "pip",
+        "repo_anchored": false,
+        "channel": ""
       },
       "expect": {
         "bucket": "AMBIGUOUS"
@@ -261,8 +253,7 @@
       "violations": [],
       "available": [
         "pip",
-        "cran",
-        "spack"
+        "cran"
       ],
       "note": "name collision (PyPI ape != CRAN ape)"
     },
@@ -274,26 +265,21 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": true,
-        "anchor": "domain-terms",
-        "evidence": [
-          "phylogenetic",
-          "phylogeny",
-          "nucleotide",
-          "bioconductor"
-        ],
+        "chosen_tier": "conda",
         "self_description": "Functions for reading, writing, plotting, and manipulating phylogenetic trees, analyses of comparative data in a phylogenetic framework, ancestral character analyses, analyses of diversification and macroevolution, computing distances from DNA sequences, reading and writing nucleotide sequences as well as importing from BioConductor, and several tools such as Mantel's test, generalized skyline plots, graphical exploration of phylogenetic data (alex, trex, kronoviz), estimation of absolute evolutionary rates and clock-like trees using mean path lengths and penalized likelihood, dating trees with non-contemporaneous sequences, translating DNA into AA sequences, and assessing sequence alignments. Phylogeny estimation can be done with the NJ, BIONJ, ME, MVR, SDM, and triangle methods, and several methods handling incomplete distance matrices (NJ*, BIONJ*, MVR*, and the corresponding triangle method). Some functions call external applications (PhyML, Clustal, T-Coffee, Muscle) whose results are returned into R.",
-        "note": ""
+        "has_description": true,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": "conda-forge"
       },
       "expect": {
-        "bucket": "ROUTED:conda",
-        "identity": true
+        "bucket": "ROUTED:conda"
       },
       "violations": [],
       "available": [
         "conda",
-        "cran",
-        "spack"
+        "cran"
       ],
       "note": "disambiguated -> the R phylogenetics pkg (conda r-ape)"
     },
@@ -305,13 +291,13 @@
       "recommended_repo": "jiabowang/GAPIT",
       "auto_adoptable": true,
       "identity": {
-        "confirmed": true,
-        "anchor": "repo",
-        "evidence": [
-          "jiabowang/GAPIT"
-        ],
+        "chosen_tier": "r_github",
         "self_description": "",
-        "note": ""
+        "has_description": false,
+        "repo": "jiabowang/GAPIT",
+        "repo_source": "user",
+        "repo_anchored": true,
+        "channel": ""
       },
       "expect": {},
       "violations": [],
@@ -343,22 +329,20 @@
       "recommended_repo": null,
       "auto_adoptable": null,
       "identity": {
-        "confirmed": false,
-        "anchor": "none",
-        "evidence": [],
+        "chosen_tier": "cran",
         "self_description": "Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.",
-        "note": "IDENTITY UNCONFIRMED: the cran entry for 'cellranger' describes itself as \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.\" \u2014 nothing in it ties it to bioinformatics, and no github_repo was given to anchor it. Same-name packages across registries are common and this may not be the 'cellranger' you mean (CRAN's 'cellranger' parses spreadsheet cell ranges; PyPI's 'talos' tunes Keras hyperparameters). Check the description above, then either pass github_repo='owner/repo' to pin the real project, or prefer=<tier> if this entry IS correct. Nothing downstream re-checks this: a wrong tool that installs cleanly ships green.",
-        "reason": "no_domain_signal"
+        "has_description": true,
+        "repo": "rsheets/cellranger",
+        "repo_source": "cran",
+        "repo_anchored": false,
+        "channel": ""
       },
-      "expect": {
-        "identity": false
-      },
+      "expect": {},
       "violations": [],
       "available": [
-        "cran",
-        "spack"
+        "cran"
       ],
-      "note": "COLLISION: CRAN cellranger != 10x cellranger"
+      "note": "COLLISION: CRAN cellranger != 10x cellranger \u2014 identity is the ride's call now"
     },
     {
       "tool": "zzz_no_such_tool_xyz",

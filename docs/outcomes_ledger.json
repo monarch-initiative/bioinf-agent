@@ -5,8 +5,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:466",
-    "end_line": 466,
+    "where": "agent/mcp_tools/env_tools.py:481",
+    "end_line": 481,
     "named_in_test": false
   },
   {
@@ -1855,8 +1855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:507",
-    "end_line": 508,
+    "where": "agent/mcp_tools/env_tools.py:522",
+    "end_line": 523,
     "named_in_test": false
   },
   {
@@ -2855,8 +2855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:471",
-    "end_line": 473,
+    "where": "agent/mcp_tools/env_tools.py:486",
+    "end_line": 488,
     "named_in_test": false
   },
   {
@@ -2865,8 +2865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:479",
-    "end_line": 481,
+    "where": "agent/mcp_tools/env_tools.py:494",
+    "end_line": 496,
     "named_in_test": false
   },
   {
@@ -2875,8 +2875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:490",
-    "end_line": 495,
+    "where": "agent/mcp_tools/env_tools.py:505",
+    "end_line": 510,
     "named_in_test": false
   },
   {
@@ -2885,8 +2885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:891",
-    "end_line": 892,
+    "where": "agent/mcp_tools/env_tools.py:906",
+    "end_line": 907,
     "named_in_test": false
   },
   {
@@ -5058,6 +5058,36 @@
     "where": "agent/validators/output_validator.py:73",
     "end_line": 74,
     "named_in_test": true
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "interpret_request",
+    "where": "agent/mcp_tools/intent_tools.py:92",
+    "end_line": 92,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "interpret_request",
+    "where": "agent/mcp_tools/intent_tools.py:94",
+    "end_line": 94,
+    "named_in_test": null
+  },
+  {
+    "code": null,
+    "outcome": "untagged",
+    "source": "raw",
+    "tagged": false,
+    "func": "interpret_request",
+    "where": "agent/mcp_tools/intent_tools.py:99",
+    "end_line": 99,
+    "named_in_test": null
   },
   {
     "code": null,

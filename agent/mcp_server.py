@@ -87,6 +87,7 @@ from agent.skills import env_freeze as _env_freeze
 from agent.skills import env_honesty as _env_honesty
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
+from agent.skills import intent as _intent
 from agent.skills import user_guide as _user_guide
 from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
@@ -622,8 +623,8 @@ def _watch_and_exit_on_change():
 if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
     for _sub in ("bridge_tools", "data_tools", "env_tools", "freeze_tools",
-                 "jobs_tools", "observability_tools", "run_tools",
-                 "service_tools", "workflow_tools"):
+                 "intent_tools", "jobs_tools", "observability_tools",
+                 "run_tools", "service_tools", "workflow_tools"):
         _full = f"agent.mcp_tools.{_sub}"
         if _full in sys.modules:
             _importlib.reload(sys.modules[_full])
@@ -674,6 +675,9 @@ from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
     verify_env_recipe,
     generate_user_guide,
+)
+from agent.mcp_tools.intent_tools import (  # noqa: E402,F401
+    interpret_request,
 )
 from agent.mcp_tools.jobs_tools import (  # noqa: E402,F401
     run_in_background,

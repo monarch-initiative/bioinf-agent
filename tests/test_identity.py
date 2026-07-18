@@ -1,18 +1,22 @@
-"""Identity — is the registry entry we picked the tool the caller MEANT?
+"""Identity — does resolve() surface the FACTS the ride needs to judge "is this the
+tool you MEANT?"
 
-The gap this closes (audit 2026-07-16 §3): every other check in the codebase verifies
-INTEGRITY (it builds, it runs, it ships as validated) and none verifies IDENTITY. A
-wrong-but-working tool therefore passes every gate and ships green — `library(cellranger)`
-loads fine, so an R spreadsheet-range parser earns a content digest, an SLSA attestation,
-an ENV report saying "validated in shipped image", and a .sif on the cluster.
+Phase 2 (2026-07-17, the reverse theme park) moved identity JUDGMENT to the LLM ride.
+The resolver no longer stamps a `confirmed` verdict or poisons `install_call` with a
+word-list warning — `assess_identity` and the 86-word `_DOMAIN_TERMS` list are DELETED.
+The reasoning (the user's): an LLM in a bioinformatics context is a far better judge of
+"ONT's dorado, not the PyPI astronomy package" than any regex could ever be, and when it
+lands on a tool it is probably right — the honesty contract downstream is the net that
+catches a mechanical error, and a genuinely-undecidable case becomes an ASK.
 
-Identity can't be machine-verified — "did you mean this one?" is about intent. So the
-contract here is DISCLOSURE, and these tests pin both halves of it:
-  - the two real misroutes are flagged, with the package's own words as the evidence
-  - real bioinformatics tools are NOT flagged (alarm fatigue would undo the whole thing)
+So the resolver's job here shrank to ONE thing: put the evidence on the table, honestly.
+These tests pin that the evidence is present and correct — the entry's OWN self-description,
+its repo provenance, the missing-vs-contrary distinction — and that identity adds NO
+poisoning to `install_call`. They do NOT assert a verdict, because the resolver no longer
+makes one; that is the ride's call, exercised by an LLM-in-the-loop eval, not here.
 
-Registry data is stubbed with the REAL strings these registries return (captured live), so
-these run offline while testing the real resolve() path end to end.
+Registry data is stubbed with the REAL strings these registries return (captured live),
+so these run offline while driving the real resolve() path end to end.
 """
 
 from __future__ import annotations
@@ -29,8 +33,12 @@ _CRAN_CELLRANGER = ('Translate Spreadsheet Cell Ranges to Rows and Columns — H
 _PYPI_TALOS = "Talos Hyperparameter Tuning for Keras"
 _CONDA_SAMTOOLS = "Tools for dealing with SAM, BAM and CRAM files"
 _PYPI_CYVCF2 = "fast vcf parsing with cython + htslib"
-_CRAN_APE = ("Analyses of Phylogenetics and Evolution — Functions for reading, writing, "
-             "plotting, and manipulating phylogenetic trees.")
+
+
+#: the fact keys the ride judges on — and the verdict keys that must NOT reappear.
+_FACT_KEYS = {"chosen_tier", "self_description", "has_description", "repo",
+              "repo_source", "repo_anchored", "channel"}
+_VERDICT_KEYS = {"confirmed", "anchor", "evidence", "note", "reason"}
 
 
 def _stub(monkeypatch, *, conda=None, pip=None, cran=None):
@@ -44,162 +52,154 @@ def _stub(monkeypatch, *, conda=None, pip=None, cran=None):
 
 
 # ---------------------------------------------------------------------------
-# domain_signal — pure
+# the shape of the contract: facts, never a verdict
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("text,expect_hit", [
-    (_CONDA_SAMTOOLS, True),        # sam/bam/cram
-    (_PYPI_CYVCF2, True),           # vcf/htslib
-    (_CRAN_APE, True),              # phylogenetic
-    ("Genome assembly and variant calling", True),
-    (_CRAN_CELLRANGER, False),      # spreadsheets
-    (_PYPI_TALOS, False),           # keras
-    ("Fundamental package for array computing", False),
-    ("", False),
-])
-def test_domain_signal_discriminates(text, expect_hit):
-    assert bool(R.domain_signal(text)) is expect_hit, R.domain_signal(text)
+def test_identity_is_a_facts_block_with_no_verdict_keys(monkeypatch):
+    """The whole point of Phase 2: `identity` carries evidence for the ride, not a
+    `confirmed` boolean the resolver invented from a word-list."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda",
+                              "latest": "1.21", "summary": _CONDA_SAMTOOLS,
+                              "repo": "samtools/samtools", "repo_source": "conda"})
+    d = R.resolve("samtools")
+    idy = d["identity"]
+    assert set(idy) == _FACT_KEYS
+    assert not (_VERDICT_KEYS & set(idy)), "a resolver identity VERDICT has come back"
 
 
-def test_domain_signal_respects_word_boundaries():
-    """'sam' must not fire inside 'same', 'bed' not inside 'bedroom'. A loose match would
-    silently CONFIRM a wrong tool, which is worse than not matching at all."""
-    assert R.domain_signal("the same thing in the bedroom") == []
-    assert "sam" in R.domain_signal("reads a SAM file")
-
-
-def test_domain_signal_returns_the_matched_terms_not_a_bool():
-    """The decision must be able to SHOW its reasoning — a bare bool is one more
-    assertion to take on faith, which is what this codebase refuses to do."""
-    assert set(R.domain_signal(_PYPI_CYVCF2)) >= {"vcf", "htslib"}
+def test_no_chosen_means_no_identity(monkeypatch):
+    """Absence renders as absence (Rule 2): when nothing resolves there is no entry to
+    describe, so `identity` is None — not an empty facts block asserting things about
+    a tool we never picked."""
+    _stub(monkeypatch)
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": False, "candidates": []})
+    d = R.resolve("nope-not-a-tool")
+    assert d["chosen"] is None
+    assert d["identity"] is None
 
 
 # ---------------------------------------------------------------------------
-# the two real misroutes
+# the two real misroutes: the entry's OWN words are surfaced as the evidence
 # ---------------------------------------------------------------------------
-def test_cellranger_the_wrong_tool_is_flagged(monkeypatch):
-    """resolve_tool('cellranger') returns CRAN's spreadsheet-range parser, not 10x
-    Genomics' Cell Ranger. It used to come back as a confident install_call with
-    cross_namespace_collisions == [] and nothing anywhere hinting at doubt."""
+def test_wrong_tool_surfaces_its_own_words_for_the_ride(monkeypatch):
+    """resolve('cellranger') returns CRAN's spreadsheet-range parser, not 10x Genomics'
+    Cell Ranger. The resolver no longer flags it — but it MUST hand the ride the package's
+    own description, because that string ("Spreadsheet Cell Ranges") is exactly what lets
+    the LLM see it is the wrong tool."""
     _stub(monkeypatch, cran={"available": True, "latest": "1.1.0",
                              "summary": _CRAN_CELLRANGER,
                              "url": "https://github.com/rsheets/cellranger",
                              "bug_reports": ""})
     d = R.resolve("cellranger")
     assert d["chosen"] == "cran"
-    assert d["identity"]["confirmed"] is False
-    assert d["identity"]["anchor"] == "none"
-    # the package's OWN words must be in the decision — that is the whole point
     assert "Spreadsheet" in d["identity"]["self_description"]
-    # and the string an agent copies must carry the doubt, not just a sibling key
-    assert d["install_call"].startswith("# IDENTITY UNCONFIRMED")
-    assert "install_r_package" in d["install_call"]
-    assert "IDENTITY UNCONFIRMED" in d["rationale"]
+    assert d["identity"]["has_description"] is True
 
 
-def test_talos_the_wrong_tool_is_flagged(monkeypatch):
-    """PyPI 'talos' is autonomio's Keras tuner — not the rare-disease pipeline this
-    project was built around."""
+def test_talos_keras_self_description_is_surfaced(monkeypatch):
+    """PyPI 'talos' is autonomio's Keras tuner. The ride reads "Hyperparameter Tuning for
+    Keras" and knows this is not the rare-disease pipeline."""
     _stub(monkeypatch, pip={"available": True, "latest": "1.4", "summary": _PYPI_TALOS,
                             "home_page": "", "project_urls": {}, "package_url": ""})
     d = R.resolve("talos")
     assert d["chosen"] == "pip"
-    assert d["identity"]["confirmed"] is False
     assert "Keras" in d["identity"]["self_description"]
-    assert d["install_call"].startswith("# IDENTITY UNCONFIRMED")
 
 
 # ---------------------------------------------------------------------------
-# real tools must NOT be flagged — alarm fatigue would undo the disclosure
+# channel membership is a FACT the ride weighs — surfaced, not adjudicated
 # ---------------------------------------------------------------------------
-def test_bioconda_membership_alone_confirms_identity(monkeypatch):
-    """bioconda is a bioinformatics-only channel, so membership IS identity — exact,
-    free, and no text heuristic on the commonest path by far."""
+def test_bioconda_channel_is_surfaced_as_a_fact(monkeypatch):
+    """bioconda is a bioinformatics-only channel, so membership is a strong identity signal.
+    The resolver reports the fact (`channel: bioconda`); the ride does the weighing. And
+    because nothing is in doubt to the RESOLVER, `install_call` is a clean one-liner."""
     _stub(monkeypatch, conda={"available": True, "channel": "bioconda",
-                              "latest": "1.21", "summary": _CONDA_SAMTOOLS})
+                              "latest": "1.21", "summary": _CONDA_SAMTOOLS,
+                              "repo": "samtools/samtools", "repo_source": "conda"})
     d = R.resolve("samtools")
     assert d["chosen"] == "conda"
-    assert d["identity"]["confirmed"] is True
-    assert d["identity"]["anchor"] == "bioconda-channel"
-    assert not d["install_call"].startswith("#")
+    assert d["identity"]["channel"] == "bioconda"
+    assert not d["install_call"].lstrip().startswith("#"), \
+        "identity must not poison install_call — that verdict is the ride's now"
 
 
-def test_conda_forge_package_falls_back_to_its_description(monkeypatch):
-    """conda-forge is NOT bio-only, so the channel proves nothing — the description has
-    to carry it."""
-    _stub(monkeypatch, conda={"available": True, "channel": "conda-forge",
-                              "latest": "1.0", "summary": _PYPI_CYVCF2})
-    d = R.resolve("cyvcf2")
-    assert d["identity"]["confirmed"] is True
-    assert d["identity"]["anchor"] == "domain-terms"
-    assert "vcf" in d["identity"]["evidence"]
-
-
-def test_generic_conda_forge_package_is_flagged_not_refused(monkeypatch):
-    """numpy genuinely is not a bioinformatics tool, so saying so is correct — but it is a
-    perfectly legitimate thing to install, so this must never become a refusal."""
-    _stub(monkeypatch, conda={"available": True, "channel": "conda-forge",
-                              "latest": "2.0", "summary": "Fundamental package for array computing"})
+def test_generic_conda_forge_package_resolves_clean(monkeypatch):
+    """numpy is genuinely not a bioinformatics tool, but it is a perfectly legitimate
+    install. The resolver surfaces its words and its non-bio channel and does NOT editorialize
+    — no refusal, no poisoning. The ride decides whether numpy-as-a-dep makes sense."""
+    _stub(monkeypatch, conda={"available": True, "channel": "conda-forge", "latest": "2.0",
+                              "summary": "Fundamental package for array computing",
+                              "repo": "numpy/numpy", "repo_source": "conda"})
     d = R.resolve("numpy")
-    assert d["chosen"] == "conda"                 # still resolves
-    assert d["identity"]["confirmed"] is False    # honestly flagged
-    assert "install_conda_packages" in d["install_call"]   # still usable
+    assert d["chosen"] == "conda"
+    assert d["identity"]["channel"] == "conda-forge"
+    assert "array computing" in d["identity"]["self_description"]
+    assert "install_conda_packages" in d["install_call"]
 
 
-def test_missing_description_reads_as_unchecked_not_as_a_wrong_tool(monkeypatch):
-    """No evidence and CONTRARY evidence must not read the same.
-
-    'this package says it parses spreadsheets' is a reason to suspect the PICK; 'we have no
-    description to check against' is a reason to suspect our own PROBE. Crying "may not be
-    the tool you mean" about a tool we merely failed to check is the noise that trains a
-    reader to skip warnings — and a skipped warning is worth nothing.
-
-    Vehicle: a registry entry that resolves but carries an EMPTY summary. Any tier can hand
-    us that, so the branch is reached by the probe returning nothing to read — never by a
-    claim about which tier is metadata-poor. (The original vehicle was `vep` via the spack
-    tier, retired in tier 7. Its docstring blamed Spack for "carrying no metadata at all",
-    which was false: Spack publishes a description in the package.py class docstring — our
-    HEAD-only probe discarded the body. The tier was innocent; the probe was lazy.)
-    """
+# ---------------------------------------------------------------------------
+# missing evidence != contrary evidence — the distinction survives as a FACT
+# ---------------------------------------------------------------------------
+def test_missing_description_reads_as_missing_not_as_contrary(monkeypatch):
+    """No evidence and contrary evidence are different situations and the ride must be able
+    to tell them apart. The resolver does not editorialize ('may not be the tool you mean')
+    about a tool it simply could not read — it states the fact: has_description is False."""
     _stub(monkeypatch, pip={"available": True, "latest": "1.0.0", "summary": ""})
     d = R.resolve("foo")
     assert d["chosen"] == "pip"
-    idy = d["identity"]
-    assert idy["confirmed"] is False
-    assert idy["reason"] == "no_description"
-    assert "UNCHECKED" in idy["note"]
-    assert "may not be the" not in idy["note"], \
-        "missing evidence must not be reported as evidence of a wrong tool"
+    assert d["identity"]["has_description"] is False
+    assert d["identity"]["self_description"] == ""
 
 
-def test_contrary_description_reads_as_a_probable_wrong_tool(monkeypatch):
-    """The mirror of the above: when the entry's own words contradict the domain, say so
-    in the stronger language — that IS evidence."""
+def test_present_but_off_domain_description_reads_as_present(monkeypatch):
+    """The mirror: a description that exists but is about something else is has_description
+    True with the words intact — the ride reads them and judges 'contrary'. The resolver
+    draws no such conclusion (no word-list to draw it from)."""
     _stub(monkeypatch, cran={"available": True, "latest": "1.1.0",
                              "summary": _CRAN_CELLRANGER, "url": "", "bug_reports": ""})
     idy = R.resolve("cellranger")["identity"]
-    assert idy["reason"] == "no_domain_signal"
-    assert "UNCONFIRMED" in idy["note"] and "may not be the" in idy["note"]
+    assert idy["has_description"] is True
+    assert "Spreadsheet" in idy["self_description"]
 
 
-def test_explicit_github_repo_anchors_identity(monkeypatch):
-    """The caller naming the repo is authoritative — they told us which project they mean,
-    so no description heuristic should second-guess it."""
+# ---------------------------------------------------------------------------
+# repo provenance is a FACT: anchor vs candidate
+# ---------------------------------------------------------------------------
+def test_explicit_github_repo_is_recorded_as_a_user_anchor(monkeypatch):
+    """The caller naming the repo is authoritative for WHICH project they mean, so the
+    resolver records it as a user-sourced anchor. (Whether that repo IS the tool is still
+    the ride's judgment — a 200 from a repo URL proves it exists, nothing more.)"""
     _stub(monkeypatch, pip={"available": True, "latest": "1.0", "summary": "no bio words here",
                             "home_page": "https://github.com/owner/mytool",
                             "project_urls": {}, "package_url": ""})
     d = R.resolve("mytool", github_repo="owner/mytool")
-    assert d["identity"]["confirmed"] is True
-    assert d["identity"]["anchor"] == "github_repo"
+    assert d["identity"]["repo"] == "owner/mytool"
+    assert d["identity"]["repo_source"] == "user"
+    assert d["identity"]["repo_anchored"] is True
 
 
-def test_repo_backed_tiers_are_identity_anchored_by_construction(monkeypatch):
-    """binary/source/synthesis/author tiers ARE a repo — identity is whatever repo was
-    named or discovered, so they must not be flagged on description grounds."""
+def test_scraped_repo_is_a_candidate_not_an_anchor(monkeypatch):
+    """A repo scraped from pip/cran metadata is surfaced as a CANDIDATE (repo_anchored
+    False) — the INVESTIGATE signal. This is what keeps a bare `dorado` from adopting the
+    astronomy repo's image at the tier above conda: unanchored, so the authors' path is
+    not auto-taken; the ride confirms the repo first."""
+    _stub(monkeypatch, pip={"available": True, "latest": "1.0", "summary": "some astronomy pkg",
+                            "home_page": "https://github.com/someone/notthetool",
+                            "project_urls": {}, "package_url": ""})
+    d = R.resolve("mytool")
+    assert d["identity"]["repo"] == "someone/notthetool"
+    assert d["identity"]["repo_source"] == "pip"
+    assert d["identity"]["repo_anchored"] is False
+
+
+def test_repo_backed_tier_surfaces_the_repo(monkeypatch):
+    """binary/source/synthesis tiers ARE a repo — the resolver surfaces which one, anchored
+    because the caller named it."""
     _stub(monkeypatch)
     monkeypatch.setattr(R, "probe_github", lambda o, r, t=12: {
         "available": True, "repo_exists": True, "has_release_assets": False,
         "assets": [], "tag": "v1.0"})
     d = R.resolve("seqtk", github_repo="lh3/seqtk")
     assert d["chosen"] in ("source", "synthesis", "binary")
-    assert d["identity"]["confirmed"] is True
-    assert d["identity"]["anchor"] == "repo"
+    assert d["identity"]["repo"] == "lh3/seqtk"
+    assert d["identity"]["repo_anchored"] is True

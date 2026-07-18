@@ -113,22 +113,30 @@ def test_conda_anchors_on_provenance_not_on_bio_ness():
     assert ev["anchored"] is True and ev["repo"] == "astral-sh/uv"
 
 
-def test_a_repo_scraped_from_an_unanchored_pip_entry_is_not_anchored():
-    """THE dorado BUG. pip won, so its repo is the only candidate — but that entry describes
-    an astronomy package, so the repo in its metadata is an astronomy repo."""
+def test_a_repo_scraped_from_a_pip_entry_is_a_candidate_never_an_anchor():
+    """THE dorado BUG. pip won, so its repo is the only candidate — an astronomy repo
+    (Mucephie/DORADO) from an astronomy entry. It is recorded as a candidate but anchored
+    nothing, so the author tiers (above conda) are never auto-run on it."""
     ev = R.repo_evidence({"pip": _pip(summary=_PYPI_DORADO,
                                       home="https://github.com/Mucephie/DORADO")})
     assert ev["repo"] == "Mucephie/DORADO"          # recorded as a candidate...
     assert ev["source"] == "pip"
     assert ev["anchored"] is False                  # ...but it vouches for nothing
-    assert "nothing tying it to this domain" in ev["detail"]
+    assert "candidate repo for the ride to confirm" in ev["detail"]
 
 
-def test_a_repo_from_an_anchored_pip_entry_IS_anchored():
+def test_a_scraped_pip_repo_is_a_candidate_even_with_a_bio_summary():
+    """Phase 2 (2026-07-17): a repo SCRAPED from pip/cran metadata is never anchored on the
+    strength of its summary — the 86-word domain list that used to do that is deleted, and
+    identity is the ride's judgment now, not a regex over a blurb. multiqc's REAL
+    authors-image path is anchored by its curated conda `dev_url` (see
+    test_conda_anchors_on_provenance_not_on_bio_ness above), NOT by scraping PyPI. So a bare
+    pip entry, bio-worded or not, comes back as a CANDIDATE for the ride to confirm."""
     ev = R.repo_evidence({"pip": _pip(summary=_PYPI_MULTIQC,
                                       home="https://github.com/MultiQC/MultiQC")})
-    assert ev["anchored"] is True
-    assert "bioinformatics" in ev["detail"]
+    assert ev["repo"] == "MultiQC/MultiQC"
+    assert ev["anchored"] is False
+    assert "candidate repo for the ride to confirm" in ev["detail"]
 
 
 def test_a_user_supplied_repo_is_authoritative_for_WHICH_repo_to_look_at():
@@ -194,41 +202,47 @@ def test_the_gate_still_fires_for_a_conda_anchored_tool(monkeypatch):
     d = R.resolve("multiqc")
     assert called["repo"] == "MultiQC/MultiQC"
     assert d["chosen"] == "author_image"
-    assert d["identity"]["confirmed"] is True
+    # Phase 2: no `confirmed` verdict — the FACT is that the repo is conda-anchored, which
+    # is exactly why the gate was safe to run and the ride can trust the adoption.
+    assert d["identity"]["repo"] == "MultiQC/MultiQC"
+    assert d["identity"]["repo_anchored"] is True
     assert d["probed"]["author_image"]["repo_source"] == "conda"
 
 
 # ---------------------------------------------------------------------------
-# assess_identity no longer false-confirms a scraped repo
+# identity_facts REPORT the anchoring decision — they never re-make it, and there is
+# no verdict to false-confirm anymore (Phase 2 — the word-list is deleted)
 # ---------------------------------------------------------------------------
-def test_a_repo_tier_resting_on_an_unanchored_repo_is_NOT_confirmed():
-    """`assess_identity('dorado', 'author_image', ...)` returned
+def test_identity_facts_mark_an_unanchored_scraped_repo_as_a_candidate():
+    """Pre-Phase-2, `assess_identity('dorado','author_image',...)` stamped
     {confirmed: True, anchor: 'repo', evidence: ['Mucephie/DORADO']} — an astronomy repo
-    presented as a CONFIRMED identity anchor, at the tier above conda."""
-    out = R.assess_identity("dorado", "author_image",
-                            {"author_image": {"repo": "Mucephie/DORADO", "repo_source": "pip",
-                                              "repo_anchored": False}})
-    assert out["confirmed"] is False
-    assert out["anchor"] == "none"
-    assert out["reason"] == "repo_not_anchored"
+    presented as a confirmed identity anchor at the tier above conda. There is no verdict
+    to stamp now: the resolver states `repo_anchored=False` (a candidate) and the ride
+    confirms or asks. What actually keeps the astronomy image from being adopted is the
+    UNANCHORED repo (the author tier is not auto-run on it) — tested at resolve() level."""
+    out = R.identity_facts("dorado", "author_image",
+                           {"author_image": {"repo": "Mucephie/DORADO", "repo_source": "pip",
+                                             "repo_anchored": False}})
+    assert out["repo"] == "Mucephie/DORADO"
+    assert out["repo_source"] == "pip"
+    assert out["repo_anchored"] is False
+    assert "confirmed" not in out            # the verdict is gone
 
 
-def test_a_repo_tier_resting_on_a_conda_anchored_repo_IS_confirmed():
-    out = R.assess_identity("uv", "author_image",
-                            {"author_image": {"repo": "astral-sh/uv", "repo_source": "conda",
-                                              "repo_anchored": True,
-                                              "repo_detail": "the conda-forge recipe's `dev_url`"}})
-    assert out["confirmed"] is True and out["anchor"] == "repo"
-    assert "astral-sh/uv" in out["evidence"]
+def test_identity_facts_mark_a_conda_anchored_repo_as_anchored():
+    out = R.identity_facts("uv", "author_image",
+                           {"author_image": {"repo": "astral-sh/uv", "repo_source": "conda",
+                                             "repo_anchored": True,
+                                             "repo_detail": "the conda-forge recipe's `dev_url`"}})
+    assert out["repo"] == "astral-sh/uv" and out["repo_anchored"] is True
+    assert out["repo_source"] == "conda"
 
 
-def test_identity_reads_the_anchoring_decision_rather_than_re_deciding_it():
-    """The gate and assess_identity must agree BY CONSTRUCTION, not by both implementing the
-    rule. assess_identity checked `repo_source in ("conda","user")` — a second copy that
-    promptly disagreed: a repo anchored via an ANCHORED pip entry (multiqc's says
-    "bioinformatics") was good enough to RUN the gate, and then the tier the gate produced
-    was reported unconfirmed. One truth, one definition, read at every use (Rule 4)."""
-    out = R.assess_identity("multiqc", "author_image",
-                            {"author_image": {"repo": "MultiQC/MultiQC", "repo_source": "pip",
-                                              "repo_anchored": True}})
-    assert out["confirmed"] is True
+def test_identity_facts_read_the_anchoring_decision_never_re_decide_it():
+    """One truth, one definition, read at every use (Rule 4). identity_facts REPORTS the
+    anchoring the gate already made (`repo_anchored`); it runs no anchoring rule of its own,
+    so the second copy that used to disagree with the first is simply gone."""
+    out = R.identity_facts("multiqc", "author_image",
+                           {"author_image": {"repo": "MultiQC/MultiQC", "repo_source": "pip",
+                                             "repo_anchored": True}})
+    assert out["repo_anchored"] is True

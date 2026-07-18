@@ -16,14 +16,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": true,
-    "identity_confirmed": true,
     "ambiguous": null,
     "note": "EXPECT REWRITTEN, same grounds as atlas \u2014 the recorded chosen=null demands a refusal on a bioconda-anchored name, the brief's named anti-pattern. Note the recorded row's own mechanism does not even fire here: bioconda has ZERO siblings containing 'apollo' (measured), so its only discriminator is description-class-reading \u2014 which my domain_signal measurement kills (10/10 canonical tools score []). This row's REAL contribution is that it is the sharpest possible case for the DISCLOSURE fix and against any gating fix: the decisive evidence ('WebApollo API library' \u2014 a CLASS mismatch against a request for the platform) is already IN the returned record, one field from the pick, while identity.note is the empty string. The row's own strongest claim survives verification and cuts against gating: a github_repo anchor would ALSO confirm this pick, because galaxy-genome-annotation/python-apollo genuinely IS Apollo's repo \u2014 so the intent hierarchy's TOP signal cannot break this tie either. Only the description can, and only a human can weigh it. Therefore: keep chosen='conda' and confirmed=true, and make the bioconda branch ALWAYS disclose self_description in note so the curator reads 'API library' and stops. ASSERT: chosen=='conda' AND identity.confirmed is True (regression guard). Same SCHEMA GAP as atlas: identity.note != '' is the fact that matters and the schema cannot express it, so this row passes today without proving the fix. AMBIGUOUS NULLED (was true): fires on PyPI apollo + a THIRD unrelated CRAN apollo (econometrics) \u2014 third-party accident.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -46,14 +44,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": true,
-    "identity_confirmed": true,
     "ambiguous": null,
     "note": "EXPECT REWRITTEN \u2014 the recorded expect (chosen=null, identity_confirmed NOT true) is REFUTED on measurement, and its proposed mechanism is refuted empirically. (1) It demands a refusal on a bioconda-anchored EXACT-name match \u2014 the brief's named anti-pattern (39 names, 0 wrong; keep the short-circuit). bioconda 'atlas' IS a real bio tool at the exact name asked for; 'metagenome-atlas' is a DIFFERENT name the user could have typed. (2) Its mechanism \u2014 'when sibling bioconda packages share the name as substring/acronym, demand the user pick' \u2014 I ran it: bwa has 14 bioconda siblings (bwa-mem2, bwakit, bwameth, ...), muscle 2, busco 4, hmmer 3. The rule REFUSES bwa/muscle/busco/hmmer \u2014 4 of 9 canonical tools tested, the exact false-accusation the brief forbids. (3) identity_confirmed=false is also unbuildable: I measured domain_signal() on the bioconda summaries of all 10 named canonical tools \u2014 bwa/fastqc/hmmer/macs2/prokka/muscle/iqtree/busco/bracken/humann ALL return [] \u2014 so any description-reading confirmation rule marks 10/10 unconfirmed. THE REAL, BUILDABLE DEFECT IS THE REPORT, hence gap_class report: identity.note=='' silences all doubt while identity.self_description holds the evidence one field away. Fix = keep the pick and confirmed=true (bioconda genuinely anchors DOMAIN), and ALWAYS populate note with the self_description on the bioconda branch \u2014 a uniform DISCLOSURE ('bioconda anchors domain, not identity; this package says: X \u2014 confirm'), which accuses nobody and matches resolver.py's own stated philosophy ('does not gate ... puts the package's OWN self-description in front of whoever decides'). ASSERT: chosen=='conda' AND identity.confirmed is True \u2014 a REGRESSION GUARD protecting the pick from a well-meaning refuse-fix. SCHEMA GAP, stated plainly: the decisive assertion (identity.note != '') has no field in this schema, so a pytest built from this row PASSES today and does NOT prove the report fix. Add a note_nonempty field. AMBIGUOUS NULLED (was true): live, it fires on a THIRD and FOURTH unrelated atlas (PyPI = AI-agent environments, CRAN = a Stanford search API) \u2014 a pure third-party accident that says nothing about the ancient-DNA/metagenome collision. Asserting it asserts registry weather.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -75,7 +71,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
@@ -83,7 +78,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -105,7 +99,6 @@
    "why_hard": "The honesty contract makes this WORSE: every identity check passes (repo-anchored), so the wrong-version bytes ship fully green with a sha256, an SLSA attestation and a .sif \u2014 no record says the version was replaced.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -113,7 +106,6 @@
    },
    "actual_today": {
     "chosen": "binary",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -134,7 +126,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -142,7 +133,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -165,15 +155,13 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": false,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "Proceed silently (chosen='conda', install_call NOT poisoned) \u2014 the package is right; this KEEPS the measured-correct channel short-circuit (39 names, 0 wrong picks). Only the REPORT changes: identity.confirmed must be null/UNKNOWN, not True; identity.anchor must be 'channel' (ECOSYSTEM) not 'bioconda-channel' (IDENTITY); evidence=['published on bioconda']; self_description always shown verbatim. The string 'bioconda is a bioinformatics-only channel' must never be emitted as evidence \u2014 it is false. IMPLEMENTER: null must be distinguished from False at the poisoning site (resolver.py:949 `if not identity['confirmed']`), or a tri-state null falsely poisons this correct pick."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -195,14 +183,12 @@
    "expect": {
     "chosen": null,
     "assertable": true,
-    "identity_confirmed": null,
     "ambiguous": null,
     "note": "MUST refuse \u2014 expect KEPT (it is the strongest refusal row in the set and it does not touch a bioconda-anchored name). Absent from all registries + a single hit whose own words are about spreadsheets is a STRONG fact pattern, not a weak one: the resolver reached chosen='cran' through the SAME code path it uses for a legitimate sole candidate, so 'only one hit' is being read as convergence when here it is evidence of absence. Terminate in a question ('Cell Ranger is a 10x vendor download; supply the tarball path, or confirm you want the R package'), never in install_r_package. ASSERT: chosen is None AND install_call is None AND identity is None \u2014 grounded in the verified Genome_Assembly_Booster template. Backed by measurement (pip/cran-after-conda-missed: 10 names, 9 wrong) and corroborated independently: this exact package is the worked example inside resolver.py's own identity design comment. AMBIGUOUS NULLED (was false): the recorded row made ambiguous=False semantically load-bearing ('disarmed by the collision being maximally severe') and that reading is CORRECT and worth keeping as prose \u2014 but the assertion is still contingent on no PyPI/conda 'cellranger' ever appearing, so it must not be asserted. STABILITY CAVEAT: chosen=null goes red if 10x ever publishes to a public registry. Judged acceptable \u2014 the tool is vendor-gated by business model, not by accident.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -224,7 +210,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -232,7 +217,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -254,7 +238,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -263,7 +246,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -285,7 +267,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -293,7 +274,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -315,7 +295,6 @@
    "why_hard": "probe_conda races the two channels on VERSION and keeps only the winner, so the requested version is never checked against the channel that actually gets emitted \u2014 the request lands on a channel that has never carried it.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -323,7 +302,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "assessed"
@@ -345,7 +323,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -353,7 +330,6 @@
    },
    "actual_today": {
     "chosen": "bioconductor",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -375,7 +351,6 @@
    "why_hard": "This is the row that any version-checking or identity-reading fix is most likely to break; it is the guard on the measured 39-names-0-wrong bioconda short-circuit.",
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -383,7 +358,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -405,7 +379,6 @@
    },
    "expect": {
     "chosen": "bioconductor",
-    "identity_confirmed": true,
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
@@ -413,7 +386,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "no_repo"
@@ -435,7 +407,6 @@
    "why_hard": "The mirror of the talos trap: NOT normalizing punishes a completely correct request, while the SAME normalization manufactures the false talos match \u2014 so normalization cannot be tuned globally, only downstream of identity.",
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -443,7 +414,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -465,7 +435,6 @@
    "why_hard": "A version 5 majors past the only candidate's final release must DISQUALIFY that candidate, not be softened into a nearest-neighbour 'best match'.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -473,7 +442,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -494,7 +462,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -502,7 +469,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -525,15 +491,13 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": false,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "SHOW FACTS AND PROCEED \u2014 install it (chosen='conda', NOT poisoned): a user reproducing an old paper is legitimately right and must not be blocked. This row therefore doubles as a GUARD AGAINST OVER-CORRECTION: whatever fitness machinery lands must NOT turn into a refusal here. SPLIT the verdict into two axes now fused into one boolean: IDENTITY (is this the named thing? tophat: YES) and FITNESS (should you use it? tophat: deprecated since 2016, authors recommend HISAT2). Two assertable sub-facts have no schema slot: (a) identity.anchor must become 'domain-terms' with evidence ['rna-seq'] \u2014 VERIFIED live that deleting the bioconda short-circuit does NOT lose this confirm; (b) a FITNESS finding must be surfaced next to install_call (today note=''). Assert those on the new fitness key once it exists."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -554,7 +518,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -562,7 +525,6 @@
    },
    "actual_today": {
     "chosen": "synthesis",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -583,7 +545,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": null,
     "assertable": true,
     "unassertable_reason": null,
@@ -591,7 +552,6 @@
    },
    "actual_today": {
     "chosen": "author_image",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -614,7 +574,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -623,7 +582,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -645,7 +603,6 @@
    },
    "expect": {
     "chosen": "binary",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": false,
     "unassertable_reason": "DOWNGRADED FROM assertable=true ON VERIFY \u2014 this row failed the same stability test it was filed as passing, for two independent reasons. (1) IT IS A FUNCTION OF THE INVISIBLE GITHUB QUOTA, exactly like github-ratelimit-renders-false-negatives-as-facts. PROVEN, not argued: with urlopen stubbed to 403 for api.github.com+ghcr.io, R.resolve(tool='dorado', github_repo='nanoporetech/dorado') returns chosen=None, available=[], identity=null \u2014 NOT chosen='synthesis'/identity_confirmed=true. Every repo tier here (binary/source/synthesis/author_image) rests on probe_github, which collapses 403 into repo_exists=false. So the recorded actual_today is a snapshot of one quota state, and a pytest asserting chosen would be red whenever the unauthenticated 60/hr budget is spent \u2014 which this corpus itself burns ~5 core calls per resolve. Row 8 declared this exact coupling unassertable; this row is the same call class and must be filed the same way or the corpus contradicts itself. (2) THE EXPECT IS A DISJUNCTION A SCALAR CANNOT HOLD. The note itself says author_image (adopt nanoporetech/dorado by digest \u2014 Docker Hub 200) is an equally correct, arguably better answer that must NOT count as a regression \u2014 yet expect.chosen='binary' encodes as assertEqual(chosen,'binary'), which goes RED the moment the Docker Hub probe lands and author_image correctly wins. The row would fire on its own fix. WHERE THE REAL TEST BELONGS (same remedy row 8 prescribes, one level down): stub probe_github to return the live-observed payload {repo_exists: True, has_release_assets: False, assets: [], tag: <any>} plus a release body carrying a CDN URL, then assert tier selection deterministically \u2014 no network, no quota, and it measures exactly the CDN-in-body fix. Held here as a documented scenario, NOT an executable row. Third, weaker reason: even at healthy quota, chosen='binary' presumes ONT keeps publishing CDN links in the release body and keeps attaching no GitHub assets \u2014 vendor packaging choices, which drift.",
@@ -653,7 +610,6 @@
    },
    "actual_today": {
     "chosen": "synthesis",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -675,14 +631,12 @@
    "expect": {
     "chosen": null,
     "assertable": true,
-    "identity_confirmed": null,
     "ambiguous": null,
     "note": "MUST refuse: conda/cran absent and the ONLY hit's own metadata points at Mucephie/DORADO (astronomy) \u2014 CONTRARY evidence, not missing evidence. Return candidates + demand github_repo/vendor URL, exactly like the verified no-registry-hit template (chosen=None, identity=None, install_call=None, recommended_repo set). No install_call may survive, poisoned or not. ASSERT: chosen is None AND install_call is None AND identity is None. AMBIGUOUS NULLED (was false): it is false only because CRAN happens to have no 'dorado' today \u2014 a third party publishing one flips it with no change to us. Not our decision, not assertable. Backed by measurement: this is the pip-after-conda-missed path, 9/10 wrong.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -704,7 +658,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -712,7 +665,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -734,7 +686,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -742,7 +693,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -763,7 +713,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": false,
     "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None for {tool: seurat}; `seurat-cran-case-miss-plus-empty-pypi-squat` demands chosen='cran' for the same call, and did so via an explicit verify-pass rewrite ('the recorded expect (chosen=null, refuse and ask) is REFUTED as a tax on a name the resolver can resolve correctly and unaided' \u2014 CRAN's Seurat self-describes as 'Tools for Single Cell Genomics' and domain_signal returns ['genomics','sequencing','single cell']). Both cannot pass; under strict xfail, fixing either makes the other a PERMANENT red that no fix can clear. The rewrite's judgement supersedes. This row's UNIQUE content \u2014 that an empty-description PyPI stub must not read as a real candidate \u2014 is real but lives in identity.evidence, which no assertion reads (see known_gaps[1]). Restore when that field is exposed.",
@@ -771,7 +720,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "no_repo"
@@ -794,7 +742,6 @@
    "why_hard": "'Matches the internet exactly' has two readings and both fail: as a registry key 0.12.15 matches exactly (so proceed silently, installing a retracted build); as 'installable from the chosen tier' it does not match at all \u2014 and the code notices neither.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
@@ -802,7 +749,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "assessed"
@@ -821,7 +767,6 @@
    "why_hard": "'The user specified it exactly, so prefer it' is an argument for handing them the abandoned 2015 build that _looks_like_serial was deliberately built to hide \u2014 a version-as-intent rule that overrides the guard designed to protect against that same version inverts its own purpose.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -829,7 +774,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "assessed"
@@ -851,7 +795,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -859,7 +802,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -880,7 +822,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -888,7 +829,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "assessed"
@@ -912,14 +852,12 @@
    "expect": {
     "chosen": "synthesis",
     "assertable": true,
-    "identity_confirmed": false,
     "ambiguous": null,
     "unassertable_reason": null,
     "note": "CORRECTED chosen: source->synthesis. LOAD-BEARING ASSERTION is `chosen NOT IN {conda,pip,cran}` \u2014 a supplied repo whose fork/parent edge shows ahead_by>0 is a HARD PIN disqualifying the registry tiers (they build the PARENT). But the row must then name the tier that ACTUALLY wins: TIER_ORDER is binary>synthesis>source, the fork has has_release_assets=False (binary unavailable), so synthesis wins \u2014 `source` is unreachable and the row would have gone RED against a CORRECT fix. Prefer asserting `chosen not in ('conda','pip','cran')` over the literal 'synthesis'. Does NOT threaten the measured bioconda short-circuit: bare `bcftools` with no repo still routes to conda; the pin fires only on an explicit fork-edge repo. Fork facts are structural GitHub edges (behind_by=33 DRIFTS \u2014 never assert it)."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -941,7 +879,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": "Scoping note (assertable=true stands; this records what is deliberately NOT asserted): the row's residual defect \u2014 the 'Recommended: Aria-Dolatabadian/GAPIT3 (1\u2605)' line \u2014 is prose over volatile inputs (star counts, GitHub search ranking), so no assertion is made about WHICH repo is recommended or whether it clears a floor. Only the decision surface (chosen, identity, repo_auto_adoptable, install_call) is asserted. MEASURED DRIFT BOUNDARY for that surface (resolver.py:883-886): auto_adoptable = exact_name_match AND stars >= 10 AND (sole candidate OR second candidate is not an exact-name match). Aria-Dolatabadian/GAPIT3 sits at 1\u2605, so 9 more stars from strangers would flip chosen to non-null and turn this row red \u2014 and that red would be a CORRECT alarm, because silently adopting a 10\u2605 namesake of a renamed canonical project is precisely the regression this row exists to catch. Red-on-drift is only a wolf-cry when the drift is not the bug; here it IS the bug.",
@@ -949,7 +886,6 @@
    },
    "actual_today": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -970,7 +906,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
@@ -978,7 +913,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1001,7 +935,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": false,
     "unassertable_reason": "R.resolve('exomiser') is a function of an INVISIBLE GLOBAL \u2014 the unauthenticated GitHub 60/hr core quota \u2014 so no hardcoded expect on this call is stable. Both answers have now been observed on this machine across passes: quota healthy (this pass, core 36/60 \u2192 chosen='binary' + a real install_call, which is CORRECT) and quota exhausted (the original recording, core 0/60 \u2192 chosen=None plus the self-contradictory 'AUTO-DISCOVERED + adopted exomiser/Exomiser (260\u2605) \u2014 proceeding without a human' with install_call=None). A row asserting either would be red half the day for reasons that are not regressions. NOTE the expect fields here are the 'quota-exhausted SHOULD' (refuse rather than guess), recorded for design intent only \u2014 NOT an equality target, and must not be asserted. The DEFECT is deterministically assertable, but one level down at probe_github with a stubbed urlopen \u2014 not as an R.resolve row. That test belongs in the suite (see probe_evidence C for the exact stub); this row must not pretend to be it. This is also the pattern that dorado-cdn-binary-invisible-routes-to-cuda-source-build was downgraded to match on this pass.",
@@ -1009,7 +942,6 @@
    },
    "actual_today": {
     "chosen": "binary",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1031,14 +963,12 @@
    "expect": {
     "chosen": null,
     "assertable": true,
-    "identity_confirmed": null,
     "ambiguous": null,
     "note": "MUST refuse. ASSERT ONLY: chosen is None AND install_call is None AND identity is None. SCOPED DOWN from the recorded row: the demand that the resolver 'say why it is PERMANENT / vendor-gated' and 'offer no github_repo prompt' is NOT mechanically checkable \u2014 it needs a hardcoded vendor registry, and no field in this schema expresses prose content. Keep it as design intent, assert only the refusal. AMBIGUOUS NULLED (was false): contingent on no CRAN/conda 'guppy' existing \u2014 third-party state.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "no_repo"
@@ -1061,14 +991,12 @@
    "expect": {
     "chosen": "bioconductor",
     "assertable": true,
-    "identity_confirmed": true,
     "ambiguous": null,
     "note": "EXPECT REWRITTEN \u2014 the recorded expect (chosen=null, refuse on a bioc+pip collision) is REFUTED by this corpus's OWN trinity row. Bioconductor is a bioinformatics-only repository and assess_identity already treats membership as a domain anchor (resolver.py:581, identical argument to bioconda). trinity establishes the precedent and the brief blesses it: a bio-channel anchor (bioconda trinity) beats a same-name PyPI squat (ethereum/trinity) WITHOUT asking, and that is scored correct. bioc limma vs PyPI 'limma' (an ESP8266 controller) is the same fact pattern; refusing it while auto-picking trinity is incoherent. Nobody typing 'limma' at a bioinformatics agent means an ESP8266 controller or CRAN's archived 2008 limma 2.10.7. ASSERT: 'bioconductor' in probed AND chosen=='bioconductor' AND identity.confirmed is True. The first conjunct is the row's real load-bearing fact and survives the rewrite intact: a registry never asked cannot be ranked, and its absence is indistinguishable from a miss. NOTE the fix is two-part \u2014 probe bioconductor for every bare name, AND rank it above a pip/cran hit it out-anchors (TIER_ORDER currently puts bioconductor BELOW cran, so probing alone still yields pip). STABILITY: chosen=='bioconductor' holds whether or not the ESP8266 squat or the CRAN archive survive. AMBIGUOUS NULLED (was true).",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1091,19 +1019,17 @@
    "expect": {
     "chosen": "conda",
     "assertable": true,
-    "identity_confirmed": false,
     "ambiguous": null,
     "unassertable_reason": null,
     "note": "PROCEED with conda but state the anchor is UNAVAILABLE rather than fabricate one: bioconda's bedtools declares home=readthedocs and dev_url=None, so there is NOTHING the supplied repo can be matched against \u21d2 identity.status='unanchorable' naming the reason. bedtools is the TRUE exemplar of unanchorable (the vbz row is not \u2014 its recipe DOES declare a repo). PRIMARY ASSERTION: anchor != 'bioconda-channel' (stable). identity_confirmed==false is SECONDARY and drifts if a maintainer adds dev_url to the bedtools recipe \u2014 rare, but that is registry state, so prefer the anchor assertion. CRITICAL CONSTRAINT the recorded row omitted: 'unanchorable' MUST NOT poison the install_call. Today `if not identity['confirmed']` poisons unconditionally; flipping bioconda picks to confirmed=false without a third state would comment-poison a large share of the 39 measured-correct bioconda installs \u2014 the cry-wolf failure that kills the warning. Unanchorable is a NORMAL state, not a suspicion."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "report",
    "probe_evidence": "BOTH REPOS LIVE AND DISTINCT (curl -sI): arq5x/bedtools -> 200 (dead v1); arq5x/bedtools2 -> 200 (maintained).\n\nLIVE (miniforge; rate_limit before=34 after=32 \u2014 quota REMAINING):\n$ R.resolve(tool='bedtools', github_repo='arq5x/bedtools')\n  chosen      : 'conda'\n  install_call: 'install_conda_packages(env, [{\"spec\": \"bedtools=2.31.1\", \"channel\": \"bioconda\"}])'\n  identity    : {\"confirmed\": true, \"anchor\": \"bioconda-channel\", \"evidence\": [\"bioconda is a bioinformatics-only channel\"], \"self_description\": \"A powerful toolset for genome arithmetic\", \"note\": \"\"}\n  collisions  : []\n=> REPRODUCED; the supplied repo appears nowhere in identity.\n\nTHE REPO IS PROVABLY INERT (assess_identity is pure \u2014 no network, so not a quota artifact):\n  repo='arq5x/bedtools'  -> confirmed=True anchor='bioconda-channel'\n  repo='arq5x/bedtools2' -> confirmed=True anchor='bioconda-channel'\n  repo='torvalds/linux'  -> confirmed=True anchor='bioconda-channel'\n  repo=''                -> confirmed=True anchor='bioconda-channel'\n=> IDENTICAL for the dead repo, the right repo, the Linux kernel, and NO repo at all.\n\nREGISTRY SIDE GENUINELY EMPTY (live api.anaconda.org):\n  bedtools home='http://bedtools.readthedocs.org/' dev_url=None\n=> nothing to anchor against; confirmation is invented."
   },
@@ -1121,14 +1047,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": false,
-    "identity_confirmed": true,
     "ambiguous": null,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "CORRECTED identity_confirmed: false->TRUE. The recorded expect ('N:1 \u21d2 must not render confirmed:true') does NOT follow for THIS call: bioconda's pod5 declares dev_url=nanoporetech/pod5-file-format \u2014 EXACTLY the user's repo \u2014 and the package NAME matches the request exactly, which discriminates among the 3 monorepo packages. The repo is not the only term in the request. Marking this unconfirmed would false-accuse a correct pick (cry-wolf). LOAD-BEARING ASSERTION: anchor != 'bioconda-channel' \u2014 it must cite the declared-repo match; today the supplied repo is not even READ on the conda path. HONEST SCOPE LIMIT: this call does not exercise the monorepo anchor at all (conda wins, repo inert). The N:1 defect is real but fires on a DIFFERENT call this schema cannot express \u2014 R.resolve('pod5-format', github_repo='nanoporetech/pod5-file-format') -> chosen='pip', anchor='github_repo' (the strongest anchor) for the DEPRECATED package. That belongs in its own row; note also it is a DEPRECATION problem, not strictly identity (the user did name pod5-format)."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1149,7 +1073,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1157,7 +1080,6 @@
    },
    "actual_today": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -1178,7 +1100,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1186,7 +1107,6 @@
    },
    "actual_today": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -1210,14 +1130,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": false,
-    "identity_confirmed": true,
     "ambiguous": null,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "CORRECTED identity_confirmed: false->TRUE, and the row's title premise ('no repo anchor exists anywhere') is REFUTED BY ITS OWN EVIDENCE \u2014 bioconda's vbz-h5py-plugin declares home AND dev_url = nanoporetech/vbz-h5py-plugin. Once probe_conda stops discarding that field (it keeps only ['available','channel','latest','summary']), this pick IS anchorable: exact name match + a real declared upstream repo \u21d2 anchor='conda-declared-repo' with the URL as checkable evidence. Demanding confirmed=false here would false-accuse a correct, exactly-named pick. LOAD-BEARING ASSERTION (the actual bug, unchanged): anchor != 'bioconda-channel' AND evidence must cite the declared repo, not the axiom \u2014 channel membership is not identity, proven live by perl-json (a generic JSON encoder/decoder) earning the same anchor. gap_class stays 'report': right tool, right bytes, FALSE REASON. Assert the anchor string, never the version."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1235,7 +1153,6 @@
    "why_hard": "The version parameter is inert \u2014 never compared to anything, it flows straight into _install_call as `v = version or detail.get('latest')`, so 'the version does not exist' is byte-identical to 'the version is right'.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1243,7 +1160,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -1265,7 +1181,6 @@
    "why_hard": "The version parameter is inert \u2014 never compared to anything, it flows straight into _install_call as `v = version or detail.get('latest')`, so 'the version does not exist' is byte-identical to 'the version is right'.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1273,7 +1188,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -1295,7 +1209,6 @@
    "why_hard": "The string '1.21.0' is ABSENT from bioconda's version list, so the naive fix demanded by the 9.99 row ('requested string must appear in the probed list => else refuse') would REFUSE a request that resolves correctly to the right bytes.",
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1303,7 +1216,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -1326,14 +1238,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": false,
-    "identity_confirmed": true,
     "ambiguous": null,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "PROCEED SILENTLY. LOAD-BEARING ASSERTION: cross_namespace_collisions == [] \u2014 no fabricated accusation against a user who is right. The collision fires from PyPI metadata (which names scverse/scanpy) vs the user's theislab/scanpy; canon(theislab/scanpy)--301-->scverse/scanpy makes them equal, so canonicalization is the fix. Assert the tier 'conda', NEVER the channel or version (the row's own evidence shows the bioconda-1.7.2 / conda-forge-1.12.2 race can flip the channel under a different interpreter). identity_confirmed==true is STABLE under the fix for a reason the recorded note missed: BOTH channels declare dev_url=theislab/scanpy \u2014 the user's string matches the registry's RAW, so the anchor survives the channel flip. (Today it is true only via the fragile anchor='domain-terms' on the word 'single-cell' \u2014 a reworded description would flip it, which is exactly why the fix must anchor on the repo.)"
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1354,7 +1264,6 @@
    "why_hard": "PEP440 makes PyPI's 1.0 'exactly match' 1.0.0, so a version-as-intent rule would PREFER the Keras tuner and silence the IDENTITY UNCONFIRMED warning that today correctly fires.",
    "expect": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1362,7 +1271,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1384,7 +1292,6 @@
    },
    "expect": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "assertable": false,
     "unassertable_reason": "The defect is NOT on R.resolve's asserted surface, and this row must NOT be asserted \u2014 but the RECORDED REASONING FOR THAT WAS FACTUALLY WRONG and is corrected here. Recorded: 'R.resolve(biopython) is already correct ... anchor=domain-terms on a genuine self-description'. REFUTED live: the anchor is 'bioconda-channel' \u2014 biopython gets the SAME fabricated channel confirm as perl-json, which is already covered by row 'bioconda-membership-is-ecosystem-not-identity'. So this row is not assertable for the recorded reason (correct-and-would-pass) but for a better one: (a) its only R.resolve-surface defect is a DUPLICATE of row 1 and must be asserted THERE, not twice; (b) the real defect lives in env_honesty.evidence_shape_violation \u2014 not an R.resolve call, so it is inexpressible in this schema's `call` (tool/version/github_repo/prefer/language); and (c) the ABSENCE of an import-name/evidence-token field in the decision record is not expressible in {chosen, identity_confirmed, ambiguous, install_call_poisoned}. This scenario needs its OWN corpus row against env_honesty.evidence_shape_violation(evidence, tool) \u2014 the four probes below are already mechanically checkable and stable (biopython's import name 'Bio' does not drift).",
@@ -1392,7 +1299,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1414,14 +1320,12 @@
    "expect": {
     "chosen": null,
     "assertable": false,
-    "identity_confirmed": null,
     "ambiguous": null,
     "unassertable_reason": "UNASSERTABLE \u2014 THIS ROW SAYS SO ITSELF: 'PRECONDITION \u2014 NOT EXPRESSIBLE IN `call`, AND `call` IS A BYTE-DUPLICATE OF THE fork-is-the-point ROW: a runner that reads `call` alone WILL execute the wrong scenario.' It needs api.github.com stubbed to 403; as an R.resolve(call) row it silently runs fork-is-the-point's scenario and contradicts its chosen='synthesis'. Same downgrade as github-ratelimit-renders-false-negatives-as-facts. ITS DEMAND IS NOW MET, one level down where it belongs: probe_github is tri-state (repo_exists=False + probe_error='rate_limited', so 'we could not ask' never renders as 'it is not there') and it is pinned by tests/test_probe_honesty.py::test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo (2026-07-17).",
     "note": "PRECONDITION \u2014 NOT EXPRESSIBLE IN `call`, AND `call` IS A BYTE-DUPLICATE OF THE fork-is-the-point ROW: a runner that reads `call` alone WILL execute the wrong scenario. The test MUST monkeypatch resolver._get_json to return None for any 'api.github.com' URL (exactly what a real 403 produces) \u2014 no quota exhaustion, so this row is deterministic and the most CI-safe of the set. probe_github must be TRI-STATE (exists/absent/unknown) so 'we could not ask' NEVER renders as 'it is not there'. LOAD-BEARING: chosen must NOT be 'conda' \u2014 a 403 must never silently re-qualify the registry tiers the fork rule disqualifies \u2014 AND a machine-readable unknown/403 reason key must exist. chosen==null is the scoped demand (repo supplied AND GH unknown \u21d2 the pin is unevaluable), NOT 'always ask': it cannot tax the measured bioconda names, which resolve with no repo and no GH call at all."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -1442,7 +1346,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": null,
     "assertable": true,
     "unassertable_reason": null,
@@ -1450,7 +1353,6 @@
    },
    "actual_today": {
     "chosen": "cran",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1474,14 +1376,12 @@
    "expect": {
     "chosen": "conda",
     "assertable": false,
-    "identity_confirmed": true,
     "ambiguous": null,
-    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision; the defect is in what identity REPORTS (identity.anchor / .evidence / .note: e.g. perl-json is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a FALSE proposition its own self_description disproves). No assertion reads those fields today. Tier 8 must add the field AND promote this row \u2014 see the note for exactly what it must assert.",
+    "unassertable_reason": "gap_class=report \u2014 the DECISION is already correct and the harness asserts on the decision. This row tracked a FALSE identity VERDICT (identity.confirmed/anchor/evidence \u2014 e.g. perl-json 'confirmed' on the evidence string 'bioconda is a bioinformatics-only channel', which its own self_description disproves). Phase 2 (2026-07-17) DELETED that verdict: the resolver no longer confirms/anchors, it surfaces FACTS (self_description, channel, repo_anchored) and the LLM ride judges. So the fabricated-verdict defect is DISSOLVED, not pending a field. What is NOT yet settled here (the deferred re-probe): whether the resolver reliably SURFACES those facts (mechanically checkable), any residual non-verdict defect (fitness/deprecation, false collision accusation), and whether the LLM's judgment lands (needs an LLM-in-the-loop eval, not a resolve()-probe). See known_gaps: 'the report gap'.",
     "note": "PROCEED SILENTLY. canon(endrebak/pyranges)==canon(pyranges/pyranges)==canon(pyranges/pyranges0)=='pyranges/pyranges0' \u21d2 every claimed identity collapses to the user's repo. LOAD-BEARING ASSERTION: cross_namespace_collisions == [] and the literal 'likely a same-name unrelated package' must NEVER be produced from a failed substring match. The refusal in the pyranges1 sibling row IS derivable from the same data: bioconda declares dev_url=endrebak/pyranges (canon-> pyranges0) \u2014 so the registry side has a repo to compare, and it MATCHES here / MISMATCHES there. Assert the collision list is empty (structural), never the version."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false
    },
@@ -1503,19 +1403,17 @@
    "expect": {
     "chosen": "synthesis",
     "assertable": true,
-    "identity_confirmed": false,
     "ambiguous": null,
     "unassertable_reason": null,
     "note": "A 200 is PROVENANCE, not identity. anchor='repo' with an EMPTY self_description means 'I asked nothing' and must render unconfirmed \u2014 never confirmed:true. Confirmation needs an OBSERVED LINK between repo and tool. PRIMARY ASSERTION: identity_confirmed==false (this is the stable one). SECONDARY (not expressible in this schema \u2014 assert in the test body): install_call MUST be comment-poisoned. chosen='synthesis' is a weaker assertion: it holds only while torvalds/linux publishes no release ASSETS (verified has_release_assets=False; the kernel does not use GH releases, so risk is low but nonzero \u2014 binary would outrank synthesis)."
    },
    "actual_today": {
     "chosen": "synthesis",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "report",
    "probe_evidence": "LIVE (rate_limit before=38 after=36 \u2014 quota REMAINING):\n$ R.resolve(tool='cellranger', github_repo='torvalds/linux')\n  chosen      : 'synthesis'\n  install_call: 'synth_fetch(\"https://github.com/torvalds/linux\")  # read its build files, then synth_build(env, \"https://github.com/torvalds/linux\", \"cellranger\", commit, ...)'\n  identity    : {\"confirmed\": true, \"anchor\": \"repo\", \"evidence\": [\"torvalds/linux\"], \"self_description\": \"\", \"note\": \"\"}\n  collisions  : [{\"tier\": \"cran\", \"name\": \"cellranger\", \"latest\": \"1.1.0\", ...}]\n=> REPRODUCED. The LINUX KERNEL is 'confirmed' as Cell Ranger; empty note, no warning, install_call NOT poisoned.\n\nMECHANISM (assess_identity source, lines 566-571): for chosen in (author_image, authors_recipe, binary, source, synthesis, r_github) it returns {confirmed:True, anchor:'repo', evidence:[repo]} UNCONDITIONALLY \u2014 it never reads a description, so the record is structurally identical for ANY repo string. The byte-compare in the recorded row is a consequence of this code path, not a coincidence.\n\nSTABILITY CHECK: $ R.probe_github('torvalds/linux') -> {'repo_exists': True, 'has_release_assets': False}, n_assets=0 => binary stays unavailable => chosen='synthesis' holds today."
   },
@@ -1532,7 +1430,6 @@
    "why_hard": "Both candidates match 0.2.0, so the version has ZERO discriminating power \u2014 yet a 'version matched => prefer' rule fires on whichever is evaluated first and upgrades confidence on an already-wrong pick.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
@@ -1540,7 +1437,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1563,14 +1459,12 @@
    "expect": {
     "chosen": "cran",
     "assertable": true,
-    "identity_confirmed": true,
     "ambiguous": null,
     "note": "EXPECT REWRITTEN \u2014 the recorded expect (chosen=null, refuse and ask) is REFUTED as a tax on a name the resolver can resolve correctly and unaided. I probed the real candidate: CRAN 'Seurat' 5.5.1 self-describes as 'Tools for Single Cell Genomics ...' and domain_signal() returns ['genomics','sequencing','single cell'] \u2014 a genuine domain-terms anchor. So once probe_cran is case-insensitive, exactly ONE candidate is an anchored real bio tool and the other is an empty 0.0.2 stub with no description and no project_urls. Asking the user to choose between those two is a question with one possible answer \u2014 the exact 'always ask taxes the 70%' failure the brief names. CORRECT: deprioritize the empty 0.0.x squat, choose CRAN Seurat, identity.confirmed=true via domain-terms. ASSERT: chosen=='cran' AND identity.confirmed is True. STABILITY BONUS of the rewrite: chosen=='cran' holds whether or not the PyPI squat is ever yanked, whereas the recorded chosen=null would have gone RED the day the squat is deleted (pip misses -> nothing to be ambiguous with -> cran wins -> correct behaviour scored as failure). AMBIGUOUS NULLED (was true): it was the recorded row's mechanism, but it is contingent on the squat's continued existence and is not the decision.",
     "unassertable_reason": null
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "no_repo"
@@ -1591,7 +1485,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": true,
     "assertable": false,
     "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None for {tool: limma}; `limma-bioconductor-never-probed-without-language-hint` demands chosen='bioconductor' for the same call via an explicit verify-pass rewrite citing THIS corpus's trinity precedent (a bio-channel anchor beats a same-name PyPI squat WITHOUT asking, and that is scored correct; Bioconductor membership is a domain anchor by the identical argument to bioconda). Both cannot pass. This row's UNIQUE content is STALENESS ('right project, wrong decade') \u2014 a different concern from identity, and no field exposes it. Restore when one does.",
@@ -1599,7 +1492,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": true,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1622,7 +1514,6 @@
    },
    "expect": {
     "chosen": null,
-    "identity_confirmed": false,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1631,7 +1522,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1654,7 +1544,6 @@
    "expect": {
     "chosen": "conda",
     "assertable": true,
-    "identity_confirmed": true,
     "ambiguous": null,
     "note": "REGRESSION GUARD \u2014 VERIFIED AND KEPT AS RECORDED. conda must keep winning. A repo harvested from PyPI's colliding 'trinity' (ethereum/trinity) may anchor the PIP candidate only \u2014 never authorize author_image/authors_recipe, which outrank conda. This row goes red exactly when ethereum/trinity publishes a GHCR image and the tiers pool their evidence; that is the assertion's purpose, not its fragility \u2014 the redness would signal a REAL defect in our routing, which is the one legitimate reason to depend on third-party state. ASSERT: chosen=='conda' AND identity.confirmed is True. This row is also the PRECEDENT that rewrites the limma row: a bio-only-channel anchor beating a same-name PyPI squat WITHOUT asking is scored correct here, so it must be scored correct there. AMBIGUOUS NULLED (was false): false only because CRAN has no 'trinity' today \u2014 third-party state, and not the fact this row is about.",
     "unassertable_reason": null,
@@ -1662,7 +1551,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
@@ -1685,14 +1573,12 @@
    "expect": {
     "chosen": null,
     "assertable": true,
-    "identity_confirmed": null,
     "ambiguous": null,
     "unassertable_reason": null,
     "note": "CORRECTED ambiguous: true->null. `ambiguous` is a DEDICATED field with ONE meaning \u2014 _is_ambiguous() = pip AND cran both hit with no language hint. pyranges is not on CRAN, so it is False today and would REMAIN False under a correct fix; asserting true would force a second meaning onto one field, which is this codebase's named disease (one truth in N places). The refusal is expressed by chosen==null ALONE. MUST REFUSE AND ASK, template = the no-registry-hit/discovery path (chosen=None + identity=null + real candidates + a next call). DERIVABLE: bioconda declares dev_url=endrebak/pyranges (canon-> pyranges0); user says pyranges1 (canon-> pyranges1, a distinct 200). Two declared repos that never converge \u21d2 true mismatch. NOT a description heuristic and NOT a tax on the measured bioconda names: it fires only when BOTH sides declare a repo and they diverge. Assert chosen is None; do NOT assert version strings."
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": true,
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed"
@@ -1714,7 +1600,6 @@
    "why_hard": "Two stacked traps: 'best match' installs the Keras tuner at 1.4, and the obvious repair (version-miss => github discovery) is measurably worse \u2014 siderolabs/talos ranks first and clears the auto-adopt bar.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1722,7 +1607,6 @@
    },
    "actual_today": {
     "chosen": "pip",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
@@ -1744,7 +1628,6 @@
    "why_hard": "'The user specified it exactly, so prefer it' is an argument for handing them the abandoned 2015 build that _looks_like_serial was deliberately written to hide \u2014 a version-as-intent rule would invert the guard's own purpose.",
    "expect": {
     "chosen": null,
-    "identity_confirmed": null,
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
@@ -1752,7 +1635,6 @@
    },
    "actual_today": {
     "chosen": "conda",
-    "identity_confirmed": false,
     "ambiguous": false,
     "install_call_poisoned": true,
     "authors_gate": "assessed"
@@ -1770,10 +1652,10 @@
    "what_tier_8_must_do": "Add `decision.refusal_reason` \u2208 {needs_user_input, investigation_empty, investigation_contradicted} + the evidence that backs it, extend `probe()` to read it, add `expect.refusal_reason` to these 32 rows, and promote them. THEN this gap closes. Live proof it is real: `resolve('dorado')` never runs github discovery at all (probe_github_search fires ONLY at a registry dead-end, and PyPI's astronomy package counts as a hit) \u2014 so nanoporetech/dorado, 849 stars, exact name match, is never even looked for. That refusal would not be earned."
   },
   {
-   "gap": "the `report` gap (16 rows) is only PARTLY measurable",
-   "detail": "PARTLY CLOSED 2026-07-17. The authors'-path half is now measurable: `expect.authors_gate` asserts which of four things happened to the reliability gate (assessed / not_assessed / errored / no_repo), and 4 rows carry it. That was NOT cosmetic \u2014 `trinity-author-image-tier-probes-the-ethereum-repo` was recorded is_correct_today=TRUE and PASSING the whole time the author tiers were probing ethereum/trinity: it asserted chosen=='conda', which was true, while the very thing it claims to guard was broken. Green with the wrong tool in it, inside the corpus built to expose exactly that. All 4 gate rows go RED against the pre-fix resolver and pass against it now \u2014 verified by reverting the fix. STILL OPEN: the identity half. 6 rows remain assertable:false because their defect is in identity.anchor / .evidence / .note and no assertion reads those fields \u2014 e.g. `perl-json` is confirmed on the evidence string 'bioconda is a bioinformatics-only channel', a proposition its own self_description ('JSON encoder/decoder') disproves on the same screen.",
-   "why_not_fixed_here": "The gate's state is a DECISION (it obeys the stability rule \u2014 a row must not go red because a maintainer edited a recipe), so it could be asserted. identity.anchor/.evidence are not exposed yet, and faking a field is worse than saying so.",
-   "what_tier_8_must_do": "Restate identity's warrant (bioconda membership is ECOSYSTEM, not IDENTITY \u2014 the evidence string 'bioconda is a bioinformatics-only channel' is FALSE and perl-json disproves it on the same screen), expose anchor/evidence/note, then promote the remaining 6."
+   "gap": "the identity half of the `report` gap is DISSOLVED, and its replacement is not yet measured",
+   "detail": "THE AUTHORS'-PATH HALF STAYS CLOSED (2026-07-17): expect.authors_gate asserts which of four things happened to the reliability gate (assessed / not_assessed / errored / no_repo), and 4 rows carry it \u2014 that caught trinity-author-image-tier-probes-the-ethereum-repo, which was recorded is_correct_today=TRUE and PASSING the whole time the author tiers probed ethereum/trinity, because it only asserted chosen=='conda' (true) while the thing it guards was broken: green with the wrong tool in it, inside the corpus built to expose exactly that. THIS GAP NOW CONCERNS THE IDENTITY HALF. Until Phase 2 (2026-07-17) the report gap's identity half was: the resolver stamped a confident identity VERDICT (identity.confirmed/anchor/evidence/note) that could be FALSE on right-tool/right-bytes picks \u2014 perl-json 'confirmed' on 'bioconda is a bioinformatics-only channel', a proposition its own self_description ('JSON encoder/decoder') disproves on the same screen. Phase 2 DELETED the verdict outright (the reverse-theme-park ruling: the LLM ride is the identity judge, not an 86-word list). The resolver now emits identity FACTS only \u2014 self_description, has_description, channel, repo, repo_source, repo_anchored \u2014 and never a verdict. There is no longer a fabricated confirmation to be false, so the ~7 rows that were assertable:false 'waiting for Tier 8 to expose anchor/evidence/note' are waiting on fields that no longer exist.",
+   "why_not_fixed_here": "Three things replace the old measurement and each needs work this offline pass cannot do. (a) The mechanically-checkable successor \u2014 does the resolver SURFACE the facts the LLM needs (has_description True, self_description = the tool's own words, repo_anchored correct) \u2014 needs a live re-probe to populate actual_today with the new facts (and a GITHUB_TOKEN, or the author-tier rows rate-limit and corrupt authors_gate). (b) Residual non-verdict defects survive on some rows (deprecated-tools wants a FITNESS finding surfaced; false-accusation/rename/org-move want the false cross-namespace collision suppressed) \u2014 those are separate from the deleted verdict and keep their own gap. (c) The deepest one: whether the LLM's identity JUDGMENT actually lands ('is this the tool you MEANT?') is now the ride's job, and resolve()-probing structurally cannot see it.",
+   "what_tier_8_must_do": "Re-probe each report row's new facts and re-grade: promote the rows whose ONLY defect was the deleted verdict, add a facts-surfacing assertion (has_description True + self_description content + repo_anchored) where checkable, and keep a scoped gap for the residual fitness/collision defects. Then build an LLM-in-the-loop eval for the judgment itself \u2014 feed the surfaced facts to the ride and score whether it reaches the tool the user meant. That eval, not a resolve()-probe, is the honest successor to the old verdict assertion."
   },
   {
    "gap": "3 rows are PARKED as unassertable: they contradicted a sibling on an identical call",

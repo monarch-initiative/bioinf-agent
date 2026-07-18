@@ -82,42 +82,57 @@ def resolve_tool(
     """Decide WHICH install tier to use for `tool`, and record WHY (the
     ResolutionDecision). Probes availability independently per tier and ranks by:
 
-        author_image > authors_recipe > conda > pip/cran/bioconductor
+        PULL AN EXISTING IMAGE  >  clean registry package  >  build from source
+        author_image > conda > authors_recipe > pip/cran/bioconductor
                      > binary > synthesis > source > manual
 
-    RELIABILITY GATE (authors-recipe-first). The two author tiers rank above conda but
-    are GATED, not a fixed ladder — they only become available when the tool's OWN repo
-    (explicit `github_repo`, or one extracted from pip/cran metadata) actually publishes
-    an image, or when its own Dockerfile installs things a conda/pip reconstruction would
-    silently DROP (compiled/vendored/system/binary deps). For a cleanly bioconda-packaged
-    tool the gate stays SHUT and conda wins — conda is solver-managed, pinned, and
-    containerizes small. When the gate fires, build what the authors build rather than
-    reconstructing it: that is the Talos lesson (a pip reconstruction dropped a bcftools
-    fork + htslib + echtvar and still imported clean).
+    PULL-AN-EXISTING-IMAGE FIRST. Prefer using what already exists over building anything.
+    `author_image` (the authors' OWN published image, adopted by digest — a pull, not a
+    build) tops the order; then a clean conda/bioconda package, which itself ships as a
+    pre-built BioContainer freeze ADOPTS by digest (so "conda wins" already means "pull an
+    image" downstream). Check the **`pullable_image`** field: it unifies "is there a pullable
+    image?" across both sources ({found, source: author_image|biocontainer, image_by_digest,
+    adopt_call, provenance}) — when found, `adopt_call` is the freeze_from_image shortcut that
+    skips building a host env entirely. Provenance is guaranteed (the authors' own anchored
+    repo, or the curated quay.io/biocontainers namespace — never a stranger's image claiming
+    to be the tool), and a pulled image is still VALIDATED_IN_IMAGE at freeze (pull, then
+    prove it runs).
 
-    Returns {chosen, install_call, rationale, identity, alternatives, ambiguous, probed,
-    …}: the concrete install primitive call to make, why it was chosen over the
-    others, and the rejected-but-available alternatives. `install_call` names the real
-    executor for the chosen tier — for the author tiers that is `freeze_from_image` /
+    RELIABILITY GATE — `authors_recipe` is the LAST resort, not a shortcut. BUILDING the
+    authors' Dockerfile ranks BELOW conda: a build never beats a package the ecosystem
+    already built + containerized. It fires only when there is no pullable image AND no clean
+    conda package AND the registry route is a genuine RECONSTRUCTION that would silently DROP
+    deps (compiled/vendored/system/binary) — a pip/CRAN-only tool like Talos whose Dockerfile
+    compiles a bcftools fork + htslib + echtvar a pip reconstruction drops. For a cleanly
+    bioconda-packaged tool the gate stays SHUT and conda wins. (This corrected an over-fire
+    where self-build `make` / a self-source tarball read as "incomplete" and routed cleanly-
+    packaged tools like gatk4/miniprot to a heavy Dockerfile build.)
+
+    Returns {chosen, install_call, rationale, identity, pullable_image, alternatives,
+    ambiguous, probed, …}: the concrete install primitive call to make, why it was chosen
+    over the others, and the rejected-but-available alternatives. `install_call` names the
+    real executor for the chosen tier — for the author tiers that is `freeze_from_image` /
     `build_env_from_authors_recipe`, which do the whole env (no separate freeze needed).
     If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
     ranking below it is registry-only — it is not evidence the authors ship nothing.
 
-    IDENTITY — READ THIS BEFORE INSTALLING. `identity` answers "is this registry entry the
-    tool you MEANT?", which NOTHING else in this system checks. Every other gate verifies
-    integrity (it builds, it runs, it ships as validated); a wrong-but-working tool passes
-    all of them and ships green with a digest and an attestation. `identity.anchor` is one
-    of: `bioconda-channel` / `bioconductor` (membership of a bio-only channel = identity,
-    by construction) · `github_repo` (you named the repo and the metadata matches) · `repo`
-    (repo-backed tier) · `domain-terms` (its self-description reads like bioinformatics) ·
-    `none`. When `identity.confirmed` is false, `install_call` is PREFIXED with the reason
-    and you must check `identity.self_description` — the package's own words — before
-    running it. Two distinct cases: `reason='no_domain_signal'` means the entry describes
-    something else (CRAN's `cellranger` parses spreadsheet cell ranges; PyPI's `talos`
-    tunes Keras hyperparameters — neither is the tool a bioinformatician means), which is
-    real evidence you have the wrong package; `reason='no_description'` means the tier
-    published nothing to check against — missing evidence, not evidence of a problem.
-    Pass `github_repo='owner/repo'` to resolve either.
+    IDENTITY — YOU are the judge; these are the FACTS. `identity` answers nothing on its
+    own: it hands YOU the evidence to decide "is this registry entry the tool I MEANT?",
+    which nothing else in this system checks (every other gate verifies integrity — it
+    builds, it runs, it ships as validated — so a wrong-but-working tool passes all of them
+    and ships green with a digest and an attestation). The resolver does NOT stamp a verdict
+    and does NOT poison `install_call`; you know the context is bioinformatics and are a far
+    better judge of "ONT's dorado, not the PyPI astronomy package" than any word-list. The
+    facts: `self_description` (the entry's OWN words — the single strongest signal: CRAN's
+    `cellranger` says "Translate Spreadsheet Cell Ranges", PyPI's `talos` says "Tuning for
+    Keras"), `has_description` (false = the tier published nothing to read — MISSING
+    evidence, never confuse it with contrary evidence), `channel` (`bioconda`/`bioconductor`
+    membership is bio-only, weigh it heavily), and `repo` + `repo_source` + `repo_anchored`
+    (an anchored repo — a curated conda `dev_url` or your explicit `github_repo` — was safe
+    to auto-adopt; a scraped `pip`/`cran` repo is a CANDIDATE, `repo_anchored: false`, that
+    you confirm with `github_repo='owner/repo'` before trusting). Read the facts; if they
+    point at the tool, proceed (the honesty contract downstream catches a mechanical error);
+    if you genuinely cannot tell even after investigating, ASK.
 
     DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
     CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one

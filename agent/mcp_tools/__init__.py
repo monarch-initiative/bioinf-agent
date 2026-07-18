@@ -58,6 +58,7 @@ from . import bridge_tools         # noqa: F401  (upload, download, stage_apptai
 from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, download_resource, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
 from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)
+from . import intent_tools         # noqa: F401  (interpret_request — the typed front door: RequestIntent → completeness gate → rail)
 from . import jobs_tools           # noqa: F401  (run_in_background, check_job, cancel_job, list_jobs)
 from . import observability_tools  # noqa: F401  (agent_status, snapshot_project)
 from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in_container, verify_installation, run_in_env, validate_output)

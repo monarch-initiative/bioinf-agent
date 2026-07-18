@@ -40,38 +40,43 @@ from agent.skills import resolver  # noqa: E402
 # detection was never the problem; the note was prose, so nothing could fail on it.
 #
 # A diagnostic that reports without asserting is a diagnostic that gets skipped. So the
-# expectation is now machine-checked and a violated one exits non-zero:
+# expectation is machine-checked and a violated one exits non-zero:
 #   bucket=<str>       the routing bucket this tool MUST land in
-#   identity=True      resolve must CONFIRM identity (an anchor tied it to the request)
-#   identity=False     resolve must FLAG it — the pick is not demonstrably the tool asked for
-#   identity=None      don't assert either way
+# It used to also carry identity=True/False (resolve must CONFIRM / FLAG the pick). The
+# reverse-theme-park Phase 2 (2026-07-17) DELETED the resolver's identity verdict: it now
+# surfaces identity FACTS and the LLM ride judges. So this probe pins ROUTING only — the
+# question a capability map exists to answer ("where does the router land real tools?").
+# Whether the landed tool is the one the user MEANT (cellranger) is the ride's judgment and
+# is unmeasurable here; it is the intent corpus's known_gap, tracked one level up.
 # Add real tools here as the use-cases grow: this is the regression net for "can the
 # system still handle an arbitrary tool?", which no unit test can answer.
 CASES = [
-    ("bwa",        "", None, {"bucket": "ROUTED:conda", "identity": True},  "conda sanity"),
-    ("samtools",   "", None, {"bucket": "ROUTED:conda", "identity": True},  "conda sanity"),
-    ("cutadapt",   "", None, {"bucket": "ROUTED:conda", "identity": True},  "conda/pip"),
-    ("macs2",      "", None, {"bucket": "ROUTED:conda", "identity": True},  "peak calling"),
-    ("gatk4",      "", None, {"bucket": "ROUTED:conda", "identity": True},  "jar-class, on bioconda"),
-    ("miniprot",   "", None, {"bucket": "ROUTED:conda", "identity": True},  "aligner"),
-    ("nanoplot",   "", None, {"bucket": "ROUTED:conda", "identity": True},  "long-read QC"),
-    ("DESeq2",     "r", None, {"bucket": "ROUTED:bioconductor", "identity": True}, "bioconductor"),
-    ("edgeR",      "r", None, {"bucket": "ROUTED:bioconductor", "identity": True}, "bioconductor"),
+    ("bwa",        "", None, {"bucket": "ROUTED:conda"},  "conda sanity"),
+    ("samtools",   "", None, {"bucket": "ROUTED:conda"},  "conda sanity"),
+    ("cutadapt",   "", None, {"bucket": "ROUTED:conda"},  "conda/pip"),
+    ("macs2",      "", None, {"bucket": "ROUTED:conda"},  "peak calling"),
+    ("gatk4",      "", None, {"bucket": "ROUTED:conda"},  "jar-class, on bioconda"),
+    ("miniprot",   "", None, {"bucket": "ROUTED:conda"},  "aligner"),
+    ("nanoplot",   "", None, {"bucket": "ROUTED:conda"},  "long-read QC"),
+    ("DESeq2",     "r", None, {"bucket": "ROUTED:bioconductor"}, "bioconductor"),
+    ("edgeR",      "r", None, {"bucket": "ROUTED:bioconductor"}, "bioconductor"),
     ("ape",        "",  None, {"bucket": "AMBIGUOUS"},         "name collision (PyPI ape != CRAN ape)"),
     # `language='r'` disambiguates away from the PyPI `ape` (a build tool). It lands on
-    # conda's r-ape, not CRAN, because conda outranks cran — correct, and confirmed by the
-    # package's own words ("manipulating phylogenetic trees"). The note here said
-    # "disambiguated -> CRAN" until the expectations went in and immediately caught it.
-    ("ape",        "r", None, {"bucket": "ROUTED:conda", "identity": True},
+    # conda's r-ape, not CRAN, because conda outranks cran — correct (the package's own
+    # words, "manipulating phylogenetic trees", are surfaced for the ride to confirm).
+    ("ape",        "r", None, {"bucket": "ROUTED:conda"},
      "disambiguated -> the R phylogenetics pkg (conda r-ape)"),
     ("GAPIT",      "r", None, {},                              "REPO-ONLY (plant GWAS) — discovery target"),
     ("GAPIT3",     "r", None, {},                              "REPO-ONLY variant name"),
     # THE case this file exists for. CRAN's cellranger parses spreadsheet cell ranges;
     # the tool anyone asking for "cellranger" means is 10x Genomics' single-cell suite,
-    # which is a release binary and is on no registry. We cannot know intent, so we do
-    # not refuse — but resolve MUST NOT hand back a confident, unflagged install_call.
-    ("cellranger", "", None, {"identity": False},
-     "COLLISION: CRAN cellranger != 10x cellranger"),
+    # which is a release binary and is on no registry. resolve ROUTES to cran (a real fact)
+    # and surfaces its self_description ("Translate Spreadsheet Cell Ranges …"); catching
+    # that this is not the meant tool is the LLM ride's job on those facts, not the router's,
+    # so no `bucket` is asserted — the note carries the finding. This is the corpus's
+    # 'interpretation' gap in miniature: green routing, wrong meaning.
+    ("cellranger", "", None, {},
+     "COLLISION: CRAN cellranger != 10x cellranger — identity is the ride's call now"),
     ("zzz_no_such_tool_xyz", "", None, {"bucket": "DEAD-END"}, "genuine dead-end"),
 ]
 
@@ -92,19 +97,18 @@ def check(d: dict, bucket: str, expect: dict) -> list[str]:
     """Expectations violated by this resolution. Empty == the router still behaves.
 
     Only asserts what `expect` declares — an unlisted key is not a silent pass, it is
-    a deliberate "we don't pin this yet"."""
+    a deliberate "we don't pin this yet".
+
+    ROUTING only. The identity verdict (`identity.confirmed`) this used to assert was
+    DELETED in the reverse-theme-park Phase 2 (2026-07-17): the resolver no longer
+    confirms/flags a pick, it surfaces identity FACTS (self_description, channel,
+    repo_anchored) and the LLM ride judges. So this probe pins WHERE a tool lands, which
+    is what a capability map is for; whether the landed tool is the one the user MEANT is
+    the ride's call and is unmeasurable by a resolve()-probe (see cellranger below)."""
     bad = []
     want = expect.get("bucket")
     if want and bucket != want:
         bad.append(f"expected bucket {want!r}, got {bucket!r}")
-    want_id = expect.get("identity")
-    if want_id is not None:
-        got = bool((d.get("identity") or {}).get("confirmed"))
-        if got != want_id:
-            ident = d.get("identity") or {}
-            bad.append(
-                f"expected identity.confirmed={want_id}, got {got} "
-                f"(anchor={ident.get('anchor')!r}, says: {(ident.get('self_description') or '')[:60]!r})")
     return bad
 
 

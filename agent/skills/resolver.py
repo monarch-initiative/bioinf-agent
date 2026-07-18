@@ -7,8 +7,15 @@ It PROBES availability independently per tier (so it can rank AND record the
 rejected alternatives), then RANKS by a preference order chosen to maximize
 reproducibility + clean containerization + least build fragility:
 
-    conda  >  language-registry (pip / CRAN / Bioconductor)
-           >  release-binary  >  source-build  >  manual
+    pull an existing image  >  clean registry package  >  build from source
+
+Concretely: the authors' OWN published image (adopt by digest — pull, don't
+build) outranks everything; then a clean conda/bioconda package (which itself
+ships as a pre-built BioContainer we ADOPT rather than rebuild); then the
+language registries; and only when the registry route is a RECONSTRUCTION that
+would drop deps do we build the authors' Dockerfile (`authors_recipe`). Building
+from a recipe is the OPPOSITE of using an existing image, so it never outranks a
+pullable image or a clean package — see `_pullable_image` and TIER_ORDER.
 
 The probes are observations (live registry lookups). The ranking is the
 judgment. The ResolutionDecision (chosen tier + install call + rationale +
@@ -34,6 +41,13 @@ try:
 except Exception:  # pragma: no cover
     probe_authors_sources = None
 
+try:
+    # the "is there a pullable BioContainer?" query — quay.io/biocontainers, anonymous,
+    # returns an adopt-by-digest ref. Soft import so the resolver never hard-depends on it.
+    from agent.skills.biocontainers import resolve_biocontainer as _resolve_biocontainer
+except Exception:  # pragma: no cover
+    _resolve_biocontainer = None
+
 # Preference order — lower index wins. Cross-cutting concerns (gpu/service/
 # license/db) are flags layered on top, not tiers.
 #
@@ -43,25 +57,36 @@ except Exception:  # pragma: no cover
 # contract) and so handles EVERY repo — half-baked, run-by-path, custom build — not
 # just the conventional make+binary case the `source` generator assumes. `source`
 # (and binary) survive as opt-in FAST-PATHS, not the boundary of installable.
-# `author_image` / `authors_recipe` sit ABOVE conda, but they are RELIABILITY-GATED,
-# not unconditional: their `available` flag is only set when the tool actually ships a
-# usable image, or when the authors' recipe installs pieces a conda/pip reconstruction
-# would DROP (system/compiled/vendored/binary deps — the completeness gate in
-# authors_sources). For a cleanly, completely bioconda-packaged tool the gate stays shut
-# and conda wins as before. This encodes "use the authors' own machinery when
-# reconstruction would be incomplete" (see [[feedback-prioritize-authors-own-env-recipe]])
-# as ranking, not just prose — WITHOUT over-preferring a heavy author image for tools
-# conda handles perfectly.
-TIER_ORDER = ["author_image", "authors_recipe",
-              "conda", "pip", "cran", "bioconductor", "r_github", "binary",
+# PULL-AN-EXISTING-IMAGE FIRST. `author_image` (the authors' OWN published image, adopted
+# by digest) sits at the top: pulling a pre-built, tested image is the lowest-resistance and
+# highest-fidelity path, and it can't drop deps because it isn't a reconstruction. A clean
+# conda/bioconda package comes next — and it, too, ships as a pre-built BioContainer we ADOPT
+# rather than rebuild (see `_pullable_image`), so "conda wins" already means "pull an image"
+# downstream.
+#
+# `authors_recipe` — BUILDING the authors' Dockerfile from source — is the OPPOSITE of using
+# an existing image, so it sits BELOW conda, not above it. It fires only when the registry
+# route is a genuine RECONSTRUCTION that would DROP deps (system/compiled/vendored/binary —
+# the completeness gate in authors_sources) AND there is no clean conda package to fall back
+# on: i.e. a pip/CRAN-only tool like Talos whose Dockerfile compiles a vendored fork. For a
+# cleanly bioconda-packaged tool (miniprot, gatk4, samtools) conda outranks it and wins — a
+# Dockerfile build must never beat a package the ecosystem already built and containerized.
+# (This corrects the over-fire where `analyze_recipe_completeness` flagged self-build `make`
+# / a self-source tarball as "incomplete" and routed cleanly-packaged tools to a heavy
+# Dockerfile build.) See [[project-reliability-gate-routing]] / [[feedback-prioritize-authors-own-env-recipe]].
+TIER_ORDER = ["author_image",
+              "conda", "authors_recipe", "pip", "cran", "bioconductor", "r_github", "binary",
               "synthesis", "source", "manual"]
 
 _TIER_RATIONALE = {
     "author_image": "the authors publish a container image — adopt it by digest (highest "
                     "fidelity: they built + tested the whole env; lowest cost: a pull)",
-    "authors_recipe": "the authors' Dockerfile/recipe installs deps a registry reconstruction "
+    "authors_recipe": "no pullable image and no clean conda package, and the authors' "
+                    "Dockerfile/recipe installs deps a language-registry (pip/CRAN) reconstruction "
                     "would silently DROP (compiled/vendored/system/binary) — build THEIR recipe, "
-                    "the reliable path a human would follow rather than reconstruct from scratch",
+                    "the reliable path a human would follow rather than reconstruct from scratch. "
+                    "Ranks BELOW conda: a Dockerfile BUILD never beats a package the ecosystem "
+                    "already built + containerized",
     "conda":        "on bioconda/conda-forge — solver-managed, pinned, containerizes cleanly (preferred)",
     "pip":          "on PyPI — language registry; chosen when not on conda",
     "cran":         "on CRAN — R language registry via install_r_package(source=cran)",
@@ -599,169 +624,75 @@ _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 #
 # Every other check in this codebase verifies INTEGRITY: that what we installed
 # builds, runs, and ships as validated. None of them ask whether it is the RIGHT
-# THING. That gap is not theoretical — it is the system's worst failure mode,
-# because a wrong-but-working tool passes every gate and ships green:
+# THING — and a wrong-but-working tool passes every gate and ships green:
+# resolve_tool("cellranger") -> CRAN's spreadsheet-range parser loads fine, so it
+# BUILDs, is VALIDATED_IN_IMAGE, is POLICY_CLEAN, and earns a digest + attestation.
+# A fully green artifact containing the wrong software — the exact outcome this
+# project exists to prevent.
 #
-#   resolve_tool("cellranger") -> CRAN 'cellranger' = an R spreadsheet-range
-#     parser. `library(cellranger)` loads fine, so it BUILDs, it is
-#     VALIDATED_IN_IMAGE, it is POLICY_CLEAN. It earns a content digest, an SLSA
-#     attestation, an ENV report reading "validated in shipped image", and a .sif
-#     on the cluster. A fully green artifact containing the wrong software — the
-#     exact outcome this project exists to prevent.
-#
-# Identity cannot be machine-VERIFIED: "did you mean this one?" is a question
-# about intent, and no invariant can see intent. So this does not gate. It does
-# the one thing that actually helps — puts the package's OWN self-description in
-# front of whoever decides, and says plainly when nothing anchors it. The Tier-0
-# lesson applies exactly: don't blind-tighten a checker that can't see the
-# difference; surface the evidence to the layer that can.
+# Identity cannot be machine-VERIFIED: "did you mean this one?" is a question about
+# intent, and no invariant sees intent. It also should not be machine-GUESSED: a
+# word-list that stamps `confirmed: true/false` is fake intelligence — worse at the
+# judgment than the LLM in the loop, which already knows the context is
+# bioinformatics and that ONT's `dorado` is a basecaller, not the PyPI astronomy
+# package a bare name resolves to. So the resolver does NOT decide identity and does
+# NOT gate on it. It surfaces the FACTS the judgment needs — the entry's OWN
+# self-description, the repo it points at and what vouches for that, whether any
+# description exists at all — and the ride (the LLM) decides PROCEED or ASK. When the
+# ride lands on a tool it is probably right, and the honesty contract downstream is
+# the net that catches a mechanical error; when it genuinely cannot tell even after
+# investigating, it ASKs. (This replaced `assess_identity` + the 86-word
+# `_DOMAIN_TERMS` list, deleted 2026-07-17 — the reverse-theme-park Phase 2: judgment
+# moves to the ride, the resolver returns facts.)
 # ---------------------------------------------------------------------------
 
-#: Terms that mark a package as plausibly bioinformatics. Deliberately biased toward
-#: precision over recall: a term here CONFIRMS identity and silences the warning, so a
-#: loose term ('assembly' also means a .NET assembly; 'read'/'align'/'sequence' are
-#: generic English) would quietly reinstate the very hole this closes. Missing a term
-#: only costs a warning on a real tool; a false confirm costs a wrong artifact.
-_DOMAIN_TERMS = (
-    # file formats / concrete artifacts — the strongest signals
-    "sam", "bam", "cram", "vcf", "bcf", "fastq", "fasta", "bed", "gff", "gtf",
-    "bigwig", "bedgraph", "pod5", "fast5", "mzml", "phenopacket", "newick", "pdb",
-    # domain nouns
-    "genome", "genomic", "genomics", "sequencing", "variant", "allele", "chromosome",
-    "transcript", "transcriptome", "transcriptomics", "proteome", "proteomics",
-    "metagenome", "metagenomic", "microbiome", "epigenome", "epigenetic", "methylation",
-    "phylogenetic", "phylogenetics", "phylogeny", "taxonomy", "taxonomic", "ontology",
-    "rna-seq", "rnaseq", "scrna", "single-cell", "single cell", "crispr", "gwas",
-    "pedigree", "haplotype", "genotype", "peptide", "nucleotide", "amino acid",
-    "bioinformatic", "bioinformatics", "computational biology", "molecular biology",
-    "biological sequence", "gene expression", "read alignment", "sequence alignment",
-    "basecalling", "basecaller", "de novo assembly", "genome assembly", "aligner",
-    # ecosystem / platform names that only occur in this domain
-    "htslib", "samtools", "bcftools", "bioconductor", "biopython", "bioperl",
-    "illumina", "nanopore", "pacbio", "oxford nanopore", "10x genomics", "ensembl",
-    "ncbi", "uniprot", "gnomad", "clinvar", "galaxy project", "nf-core",
-)
+def identity_facts(tool: str, chosen: str, availability: dict,
+                   github_repo: str = "", repo_ev: Optional[dict] = None) -> dict:
+    """The evidence an identity judgment needs — FACTS, never a verdict.
 
+    "Is this the tool you MEANT?" is the ride's call to make (see the block comment
+    above): the LLM knows the domain and reads these facts to decide PROCEED or ASK.
+    This function's whole job is to put the evidence on the table, honestly:
 
-def domain_signal(text: str) -> list[str]:
-    """Bioinformatics terms present in `text`, as whole words/phrases. Pure.
+      self_description — the chosen entry's OWN words. The single most useful signal:
+                         CRAN cellranger says "Translate Spreadsheet Cell Ranges",
+                         PyPI talos says "Hyperparameter Tuning for Keras". The ride
+                         reads this and knows.
+      has_description  — did the tier publish anything to read? MISSING evidence
+                         (nothing to check) must never read as CONTRARY evidence (it
+                         describes something else). The ride is told which it is, and
+                         never asked to treat one as the other.
+      repo/repo_source — which repo this points at, and what vouches for that link (a
+                         curated conda `dev_url`, the caller's own `github_repo`, or
+                         merely scraped from pip/cran metadata — a candidate, not an
+                         anchor). Provenance is a fact; whether the repo IS the tool's
+                         is the ride's judgment.
+      repo_anchored    — did something trustworthy vouch for the repo (so the authors'
+                         image/recipe was safe to auto-probe), or is it a scraped
+                         candidate the ride must confirm first? A fact about how we got
+                         the repo, not a claim about identity.
+      channel          — bioconda/bioconductor membership is a bio-only-channel fact
+                         the ride will weigh heavily; conda-forge/PyPI is not.
 
-    Returns the matched terms (not a bare bool) so the decision can SHOW its reasoning —
-    'matched: vcf, htslib' is checkable by a reader; 'plausible: true' is another
-    assertion to take on faith, which is what this codebase refuses to do."""
-    low = (text or "").lower()
-    hits = []
-    for t in _DOMAIN_TERMS:
-        # word-boundary match so 'sam' doesn't fire inside 'same' and 'bed' not in 'bedroom'
-        if re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", low):
-            hits.append(t)
-    return hits
-
-
-def assess_identity(tool: str, chosen: str, availability: dict,
-                    github_repo: str = "") -> dict:
-    """Do we have any anchor that the chosen registry entry IS the tool asked for?
-
-    Anchors, strongest first:
-      github_repo   — the caller named the repo and the entry's metadata references it.
-                      Authoritative: they told us which project they mean.
-      bioconda      — the package is ON bioconda. Bioconda is a bioinformatics-only
-                      channel, so membership IS domain identity, by construction. Free
-                      and exact — no text heuristics needed for the commonest path.
-      bioconductor  — same argument, for R.
-      domain-terms  — the entry's own self-description reads like bioinformatics.
-                      Weakest, and honestly labelled as such.
-      (none)        — we picked a package with nothing tying it to this domain. Not an
-                      error and not a refusal: could be a generic dependency (numpy) or
-                      a terse description. But it must be SAID, next to the evidence.
-
-    Returns {confirmed, anchor, evidence, self_description, note}."""
+    No `confirmed` boolean, no note, no poisoning of `install_call`. The resolver
+    states what is true and gets out of the way (Phase 2, 2026-07-17)."""
     detail = availability.get(chosen) or {}
     desc = (detail.get("summary") or "").strip()
-    out = {"confirmed": True, "anchor": "", "evidence": [],
-           "self_description": desc, "note": ""}
-
-    if chosen in ("author_image", "authors_recipe", "binary", "source", "synthesis",
-                  "r_github"):
-        # These tiers ARE a repo — so identity is whatever vouches for THAT repo, and it is
-        # not automatically the caller. This returned confirmed=True unconditionally, which
-        # made the claim `assess_identity('dorado', 'author_image', ...)` -> {confirmed:
-        # True, anchor: 'repo', evidence: ['Mucephie/DORADO']}: an astronomy repo presented
-        # as a confirmed identity anchor at the tier that outranks conda.
-        # Read the ONE anchoring decision `repo_evidence` already made — never re-decide it
-        # here. This checked `source in ("conda", "user")`, a second copy of the rule that
-        # promptly disagreed with the first: a repo anchored via an anchored pip entry was
-        # good enough to RUN the gate and then reported unconfirmed by the tier the gate
-        # produced. One truth, one definition, read at every use (Rule 4).
-        anchored = detail.get("repo_anchored")
-        if anchored is None:
-            anchored = bool(github_repo)          # a caller-named repo, no gate involved
-        out["anchor"] = "repo"
-        out["evidence"] = [e for e in (detail.get("repo") or github_repo or "",
-                                       detail.get("repo_detail") or "") if e]
-        if anchored:
-            return out
-        # A repo scraped off an unanchored registry entry is the same unanchored guess
-        # wearing a different hat.
-        out["confirmed"] = False
-        out["anchor"] = "none"
-        out["reason"] = "repo_not_anchored"
-        out["note"] = (
-            f"IDENTITY UNCONFIRMED: the {chosen} tier here rests on "
-            f"{detail.get('repo') or '<repo>'}, which was not independently anchored to "
-            f"'{tool}' — a repo is not the tool's just because it shares its name. "
-            f"Pass github_repo='owner/repo' to name the project you mean.")
-        return out
-    if github_repo and chosen in ("pip", "cran"):
-        anchored = (_pip_anchored_to_repo(detail, github_repo) if chosen == "pip"
-                    else _cran_anchored_to_repo(detail, github_repo))
-        if anchored:
-            out["anchor"] = "github_repo"
-            out["evidence"] = [github_repo]
-            return out
-    if chosen == "conda" and (detail.get("channel") == "bioconda"):
-        out["anchor"] = "bioconda-channel"
-        out["evidence"] = ["bioconda is a bioinformatics-only channel"]
-        return out
-    if chosen == "bioconductor":
-        out["anchor"] = "bioconductor"
-        out["evidence"] = ["Bioconductor is a bioinformatics-only repository"]
-        return out
-
-    hits = domain_signal(desc)
-    if hits:
-        out["anchor"] = "domain-terms"
-        out["evidence"] = hits
-        return out
-
-    # NO evidence and CONTRARY evidence are different situations and must not read the
-    # same. "this package says it parses spreadsheets" is a reason to suspect the pick;
-    # "this tier publishes no description" is a reason to suspect our own probe. Saying
-    # "may not be the tool you mean" about a tool we simply couldn't check is the kind of
-    # noise that trains a reader to skip the warning — and a warning that gets skipped is
-    # worth nothing.
-    out["confirmed"] = False
-    out["anchor"] = "none"
-    if not desc:
-        out["reason"] = "no_description"
-        out["note"] = (
-            f"IDENTITY UNCHECKED: the {chosen} tier publishes no description for '{tool}', "
-            f"so there is nothing to check the pick against — this is missing evidence, "
-            f"NOT evidence of a wrong tool. Anchor it with github_repo='owner/repo' if it "
-            f"matters. Nothing downstream re-checks identity: a wrong tool that installs "
-            f"cleanly ships green.")
-        return out
-    out["reason"] = "no_domain_signal"
-    out["note"] = (
-        f"IDENTITY UNCONFIRMED: the {chosen} entry for '{tool}' describes itself as "
-        f'"{desc}" — nothing in it ties it to bioinformatics, and no github_repo was '
-        f"given to anchor it. Same-name packages across registries are common and this "
-        f"may not be the '{tool}' you mean (CRAN's 'cellranger' parses spreadsheet cell "
-        f"ranges; PyPI's 'talos' tunes Keras hyperparameters). Check the description "
-        f"above, then either pass github_repo='owner/repo' to pin the real project, or "
-        f"prefer=<tier> if this entry IS correct. Nothing downstream re-checks this: "
-        f"a wrong tool that installs cleanly ships green.")
-    return out
+    ev = repo_ev or {}
+    repo = detail.get("repo") or ev.get("repo") or github_repo or ""
+    repo_source = (detail.get("repo_source") or ev.get("source")
+                   or ("user" if github_repo else ""))
+    repo_anchored = (bool(github_repo) or bool(detail.get("repo_anchored"))
+                     or bool(ev.get("anchored")))
+    return {
+        "chosen_tier": chosen,
+        "self_description": desc,
+        "has_description": bool(desc),
+        "repo": repo,
+        "repo_source": repo_source,
+        "repo_anchored": repo_anchored,
+        "channel": detail.get("channel") or "",
+    }
 
 
 #: The registry tiers a repo can be scraped FROM, best-vouched first. conda leads because
@@ -834,19 +765,20 @@ def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
         for u in urls:
             m = _GH_REPO_RE.search(u or "")
             if m:
-                # The entry's OWN identity confidence, and the repo inherits exactly it.
-                # Read through domain_signal rather than re-deciding here — one definition,
-                # one reading (Rule 4). This is the surface domain_signal was measured on
-                # (registry prose, <=400 chars), NOT github's 140-char blurbs, where it
-                # cannot carry weight.
-                hits = domain_signal(detail.get("summary") or "")
+                # A repo SCRAPED from pip/cran metadata is a CANDIDATE, never an anchor.
+                # It is only as trustworthy as the entry it came from, and a bare-name
+                # entry may be a different project entirely (PyPI 'dorado' is astronomy;
+                # its metadata repo is Mucephie/DORADO, not ONT's). We used to anchor it
+                # on a word-list hit in the summary; that word-list is gone (Phase 2 —
+                # identity is the ride's judgment, not a regex). So a scraped repo is
+                # surfaced for the ride to CONFIRM (the INVESTIGATE flow) and never
+                # auto-handed to the author tiers, which outrank conda. The safe anchors
+                # remain: a curated conda `dev_url` (above) and an explicit github_repo.
                 return {"repo": f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}",
-                        "source": winner, "anchored": bool(hits),
-                        "detail": (f"the {winner} entry's own metadata; that entry "
-                                   + (f"describes itself with {', '.join(hits)}"
-                                      if hits else
-                                      "has nothing tying it to this domain, so its repo "
-                                      "is no better anchored than the entry itself"))}
+                        "source": winner, "anchored": False,
+                        "detail": (f"the {winner} entry's own metadata — a candidate repo "
+                                   f"for the ride to confirm, not an anchor (a scraped repo "
+                                   f"is no better vouched-for than a bare-name entry)")}
     return {}
 
 
@@ -989,6 +921,57 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "source":
         return f'install_git_repo(env, "https://github.com/{github_repo}", "{tool}", ref="<tag/commit>")'
     return "# no automatable tier — author a manual path (and stage_authored_artifact for any scripts)"
+
+
+def pullable_image(availability: dict[str, dict], tool: str,
+                   version: str = "", timeout: int = 12) -> dict[str, Any]:
+    """The unified "is there a pre-built image/container we can PULL (not build)?" answer.
+
+    Spans the two TRUSTED image sources, in preference order:
+      1. the authors' OWN published image — `availability['author_image']` (ghcr, adopt by
+         digest; provenance = the authors' own namespace, and only for an ANCHORED repo)
+      2. a BioContainer — quay.io/biocontainers, the bioconda auto-build (provenance = the
+         curated biocontainers namespace; nf-core pins these same images per process)
+
+    Returns {found, source, image, image_by_digest, digest, adopt_call, provenance} — a FACT
+    on the decision, unifying "is there a pullable image?" in one place. The authors'-image
+    case is ALSO a `chosen` tier (`author_image`) because adopting their whole env is a
+    distinct route; a bioconda tool's biocontainer is the conda tier's DELIVERY (freeze
+    adopts it by digest for a pure-conda env), so it ENRICHES the conda pick rather than
+    replacing it. Either way the agent sees the pull-don't-build shortcut up front.
+
+    PROVENANCE GUARDRAIL: both sources are trusted by construction — the authors' own repo
+    namespace (anchored) and the curated biocontainers registry. We NEVER surface a random
+    third party's image that merely claims to be the tool (the cellranger-third-party-image
+    trap). And a pulled image is still VALIDATED_IN_IMAGE at freeze — pull, then prove it runs.
+    """
+    def _adopt_call(img: str) -> str:
+        return (f'freeze_from_image(image="{img}", name="{tool}", '
+                f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}], '
+                f'build_method="adopt-image")')
+
+    ai = availability.get("author_image") or {}
+    if ai.get("available"):
+        ref = ai.get("ref") or ai.get("image") or ""
+        return {"found": True, "source": "author_image", "image": ref or None,
+                "image_by_digest": None,   # the ghcr probe confirms pullability, not a digest
+                "digest": None, "adopt_call": _adopt_call(ref or "<author-image-ref>"),
+                "provenance": "the authors' own published image (ghcr, anchored repo)"}
+
+    conda = availability.get("conda") or {}
+    if conda.get("available") and _resolve_biocontainer is not None:
+        spec = conda.get("r_spec") or tool
+        try:
+            bc = _resolve_biocontainer(
+                [(spec, version or conda.get("latest") or None)], timeout=timeout)
+        except Exception:
+            bc = {"found": False}
+        if bc.get("found") and bc.get("image_by_digest"):
+            return {"found": True, "source": "biocontainer",
+                    "image": bc.get("image"), "image_by_digest": bc.get("image_by_digest"),
+                    "digest": bc.get("digest"), "adopt_call": _adopt_call(bc["image_by_digest"]),
+                    "provenance": "quay.io/biocontainers (the bioconda auto-build)"}
+    return {"found": False}
 
 
 def resolve(
@@ -1194,6 +1177,9 @@ def resolve(
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
     unchecked = unchecked_tiers(availability)
+    # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
+    # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
+    pull = pullable_image(availability, tool, version, timeout)
     decision.update({
         "tool": tool,
         "version": version or None,
@@ -1203,7 +1189,16 @@ def resolve(
         "probed": availability,
         "cross_namespace_collisions": cross_namespace_collisions,
         "unchecked_tiers": unchecked,
+        "pullable_image": pull,
     })
+    # When the pick is conda but a pre-built BioContainer exists, name the pull-by-digest
+    # shortcut in the rationale: freeze ADOPTS it (no build), and an agent can go straight to
+    # freeze_from_image and skip building a host env for a single-tool ask. (The author_image
+    # case already IS the pick, so its adopt_call is the install_call — no duplicate note.)
+    if pull.get("found") and pull.get("source") == "biocontainer" and chosen != "author_image":
+        decision["rationale"] = (
+            f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
+            f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
     if cross_namespace_collisions:
         # Surface the rejection prominently so an agent reading the rationale
         # sees WHY pip/cran was disqualified — silence here would mask the very
@@ -1229,15 +1224,14 @@ def resolve(
     decision["identity"] = None
     decision["install_call"] = None
     if chosen:
-        identity = assess_identity(tool, chosen, availability, github_repo)
-        decision["identity"] = identity
+        # FACTS, not a verdict. The resolver surfaces the entry's self-description +
+        # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
+        # `confirmed` or poisons `install_call` with an identity warning (Phase 2 —
+        # judgment moves to the ride). `install_call` stays a clean, runnable one-liner.
+        decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev)
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
-        # NOTE: the identity disclosure is applied LAST, at the end of this function —
-        # every _disclose PREPENDS, so the last one applied is the one a reader sees first,
-        # and "this package describes itself as a spreadsheet parser" outranks every other
-        # caveat we might attach. It is the headline, not a footnote to the gate's status.
 
     # A TIER WE COULD NOT REACH IS NOT A TIER THAT SAID NO. Ranking silently skips an
     # unchecked tier, so the answer reads as "the best there is" while meaning "the best of
@@ -1310,13 +1304,10 @@ def resolve(
         _disclose(decision, decision["prefer_ignored_reason"],
                   f"this is the {decision.get('chosen')} tier, NOT the one you asked for")
 
-    # IDENTITY LEADS. Applied last so it prepends in front of every other caveat: a reader
-    # who stops after one sentence must get "this may not be the tool you mean", not "the
-    # authors' path was not assessed" — the latter is a CONSEQUENCE of the former.
-    # install_call is the field an agent copies and runs; leaving it a clean, confident
-    # one-liner while the doubt sits in a sibling key is how a warning gets skipped.
-    ident = decision.get("identity") or {}
-    if ident and not ident.get("confirmed"):
-        _disclose(decision, ident["note"],
-                  "confirm the above IS the tool you mean before running")
+    # NO identity poisoning of install_call. Identity is the ride's judgment now
+    # (Phase 2); the facts it judges on ride in `decision["identity"]` (self-description
+    # + repo provenance), and install_call stays a clean, runnable one-liner. The
+    # disclosures that DO remain above (authors-path-not-assessed, gate-errored, unchecked
+    # tiers, prefer-ignored) are about the ROUTING being incomplete — a different axis from
+    # "is this the tool you meant", which no longer gets a resolver verdict.
     return decision

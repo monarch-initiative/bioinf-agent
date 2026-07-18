@@ -99,7 +99,7 @@ def _sandbox(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 def _battery():
     from agent.mcp_tools import (bridge_tools as B, data_tools as D, env_tools as E,
-                                 freeze_tools as F, jobs_tools as J,
+                                 freeze_tools as F, intent_tools as I, jobs_tools as J,
                                  observability_tools as O, run_tools as R,
                                  service_tools as S, workflow_tools as W)
     return [
@@ -142,6 +142,12 @@ def _battery():
         # install_pipeline_brief is PURE INFO (returns the protocol brief) — no
         # hostile input, just must not crash.
         ("install_pipeline_brief", D.install_pipeline_brief, dict(name=""), False),
+        # -- intent (the front door) ----------------------------------------
+        # interpret_request is a pure validation/routing QUERY: malformed JSON (or an
+        # invalid intent) comes back as {ok: False, error: …} — interpretable, no crash,
+        # no side effects. Its verdicts (decline/ask/investigate/proceed) are a DIFFERENT
+        # axis from the outcome-tag vocabulary, so no tag is required. Like resolve_tool.
+        ("interpret_request", I.interpret_request, dict(intent_json="not valid json{{"), False),
         # -- env / install (missing env must refuse before subprocess) ------
         # search_package / resolve_tool are QUERIES: an unknown package returns a
         # not-found / no-decision dict (interpretable), tag optional.

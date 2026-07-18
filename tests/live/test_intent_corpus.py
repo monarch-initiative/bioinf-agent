@@ -44,11 +44,16 @@ THE TWO ASSERTIONS PER ROW, and why they differ:
      in prose rots; read it off the grid, which renders it from the corpus.)
 
 THE STABILITY RULE (the one that decides whether anyone trusts this in six months):
-assert ONLY on the DECISION — which tier won, `identity.confirmed`, `ambiguous`. NEVER on
-`latest`, star counts, or description text. A corpus that goes red because a maintainer cut
-a release is a corpus people learn to ignore, and an ignored corpus protects nothing. Rows
-whose only interesting fact is volatile carry `expect.assertable: false` and are skipped
+assert ONLY on the DECISION — which tier won (`chosen`), `ambiguous`, `authors_gate`. NEVER
+on `latest`, star counts, or description text. A corpus that goes red because a maintainer
+cut a release is a corpus people learn to ignore, and an ignored corpus protects nothing.
+Rows whose only interesting fact is volatile carry `expect.assertable: false` and are skipped
 here — an honest "we cannot mechanically check this" beats a flaky assertion.
+
+(`identity.confirmed` used to be a graded decision here; the reverse-theme-park Phase 2
+(2026-07-17) DELETED the resolver's identity verdict — it now surfaces identity FACTS and the
+LLM ride judges — so the corpus no longer grades it. Whether that judgment lands is a declared
+known_gap: it needs an LLM-in-the-loop eval, not a resolve()-probe.)
 """
 
 from __future__ import annotations
@@ -113,7 +118,7 @@ def test_resolver_behaviour_matches_what_the_corpus_recorded(row):
         pytest.skip(f"unassertable: {row['expect'].get('unassertable_reason')}")
     actual = _probe(row["call"])
     recorded = row["actual_today"]
-    for field in ("chosen", "identity_confirmed", "ambiguous"):
+    for field in ("chosen", "ambiguous"):
         if field in recorded:
             assert actual[field] == recorded[field], (
                 f"resolver behaviour DRIFTED for {row['id']}:\n"
@@ -158,8 +163,9 @@ def test_user_intent_reaches_the_outcome_it_deserves(row):
     # uses to write `is_correct_today`. Not reimplemented here.
     #
     # It was reimplemented here, and the fork detonated on this harness's FIRST live run:
-    # `_is_correct` weighed chosen + identity_confirmed + ambiguous; these assertions
-    # weighed only the first two. `false-accusation-noise` has expect.ambiguous=False and
+    # `_is_correct` weighed chosen + ambiguous (+ identity_confirmed, before Phase 2 deleted
+    # the resolver's verdict); these assertions weighed only chosen. `false-accusation-noise`
+    # has expect.ambiguous=False and
     # actual.ambiguous=True, so the builder wrote is_correct_today=False while the test
     # passed — a strict XPASS, red for a reason that had nothing to do with the resolver.
     # The corpus-integrity test could not see it either, because IT calls `_is_correct`
@@ -257,10 +263,10 @@ def test_rows_sharing_a_call_do_not_demand_contradictory_outcomes():
 
     clashes = []
     for call, rows in by_call.items():
-        for field in ("chosen", "identity_confirmed", "ambiguous"):
-            # None means "do not check" for identity_confirmed/ambiguous, so only a
-            # disagreement between two STATED values is a contradiction. `chosen: None` is
-            # itself a demand (REFUSE), so it always counts.
+        for field in ("chosen", "ambiguous"):
+            # None means "do not check" for ambiguous, so only a disagreement between two
+            # STATED values is a contradiction. `chosen: None` is itself a demand (REFUSE),
+            # so it always counts.
             stated = {json.dumps(r["expect"].get(field)) for r in rows
                       if field == "chosen" or r["expect"].get(field) is not None}
             if len(stated) > 1:
@@ -276,20 +282,23 @@ def test_every_assertable_row_agrees_with_what_the_harness_can_actually_check():
 
     Pure — no network — so it runs even when the live tier is skipped.
 
-    This exists because it caught a real hole on the corpus's first assembly. Six rows
+    This exists because it caught a real hole on the corpus's first assembly. Several rows
     have `gap_class=report`: the DECISION is already correct (which is all this harness
-    reads) and the defect is in what identity REPORTS — e.g. `perl-json` is confirmed on
+    reads) and the defect was in what identity REPORTED — e.g. `perl-json` was confirmed on
     the evidence string "bioconda is a bioinformatics-only channel", a proposition its own
-    self_description ("JSON encoder/decoder") disproves on the same screen. No assertion
-    reads `identity.anchor/.evidence/.note`, so `_is_correct` computed True while the row
-    said False. Under `xfail(strict=True)` all six would have XPASSed and turned the suite
+    self_description ("JSON encoder/decoder") disproved on the same screen. No assertion
+    read `identity.anchor/.evidence/.note`, so `_is_correct` computed True while the row
+    said False. Under `xfail(strict=True)` those would have XPASSed and turned the suite
     red for a reason with nothing to do with the defect — the corpus's first act would
     have been to cry wolf, which is exactly how a corpus gets ignored.
 
-    They are now `assertable: false` with a reason naming the field Tier 8 must add. That
-    is the honest state: we can SEE the report gap and we cannot yet MEASURE it. This test
-    keeps the two halves nailed together — add a row whose claim outruns the assertions and
-    it fails HERE, loudly, instead of six months later as a mystery XPASS."""
+    They stay `assertable: false`. Phase 2 (2026-07-17) DELETED the resolver's identity
+    verdict (anchor/evidence/note/confirmed) — so the fabricated-report defect is dissolved,
+    not pending a field — but whether the resolver now reliably SURFACES the facts, and
+    whether the LLM ride's judgment lands, is not yet measured here (see the report-gap
+    entry in known_gaps). This test keeps the two halves nailed together — add a row whose
+    claim outruns the assertions and it fails HERE, loudly, instead of six months later as a
+    mystery XPASS."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -324,7 +333,9 @@ def test_known_gaps_are_declared_not_discovered_later():
        empty/contradicted. `resolve('dorado')` proves the gap is real: github discovery
        fires ONLY at a registry dead-end, and PyPI's astronomy squat counts as a hit, so
        nanoporetech/dorado (849★, exact match) is never looked for.
-    2. The `report` gap is visible but not measurable (see the test above).
+    2. The `report` gap's identity half is DISSOLVED (Phase 2 deleted the fabricated
+       verdict), and its successor — does the resolver surface the facts + does the LLM
+       ride's judgment land — is not yet measured (see the test above).
 
     Declaring them is not bookkeeping. A corpus that shows only what it can measure reads
     as "this is everything", and that is the same lie as a dashboard that doesn't stamp its

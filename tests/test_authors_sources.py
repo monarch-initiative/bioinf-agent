@@ -102,14 +102,15 @@ def test_resolver_call_into_assess_tool_sources_is_signature_compatible():
 # ---------------------------------------------------------------------------
 def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo="", conda_repo="",
                      pip_summary="a genomics variant caller for VCF files"):
-    """`conda_repo` / `pip_summary` are what ANCHOR the scraped repo, and the gate only ever
-    runs on an anchored one.
+    """What ANCHORS a repo (so the gate may run on it) is now ONLY a curated conda `dev_url`
+    (`conda_repo`) or an explicit `github_repo` passed to resolve(). A repo merely SCRAPED
+    from pip/cran metadata is a candidate, never an anchor.
 
-    They default to anchored because these tests are about the GATE, not about identity —
-    but they are parameters, not constants, because the two questions used to be conflated:
-    a repo was handed to the author tiers (which outrank conda) purely because it appeared
-    in some registry's metadata. Live, that pointed the gate at `Mucephie/DORADO` (astronomy)
-    for `dorado` and `ethereum/trinity` for `trinity`. See test_repo_provenance.py."""
+    Phase 2 (2026-07-17) deleted the 86-word domain word-list that used to anchor a scraped
+    pip repo whenever its summary read like bioinformatics — that conflated "did the authors
+    publish this" with "is this a bio tool", and live it pointed the gate at `Mucephie/DORADO`
+    (astronomy) for `dorado` and `ethereum/trinity` for `trinity`. So `pip_summary` no longer
+    anchors anything; identity is the ride's judgment now. See test_repo_provenance.py."""
     cd = {"available": conda, "latest": "1.0", "channel": "bioconda",
           "summary": "a genomics tool"}
     if conda_repo:
@@ -159,11 +160,15 @@ def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = "
 
 
 def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypatch):
-    # tool hits PyPI (would normally be 'pip'), but its repo Dockerfile is incomplete →
-    # the gate fires and authors_recipe outranks pip.
+    # tool hits PyPI (would normally be 'pip'), but its repo's Dockerfile is incomplete →
+    # the gate fires and authors_recipe outranks pip. Phase 2 (2026-07-17): the gate runs on
+    # an ANCHORED repo — here the explicit github_repo the ride confirmed. This IS the Talos
+    # flow: the LLM knows populationgenomics/talos is the rare-disease pipeline (its
+    # Dockerfile compiles a bcftools fork + htslib + echtvar a pip reconstruction drops), not
+    # PyPI's Keras tuner, so it passes the repo and the authors' recipe path fires.
     _stub_registries(monkeypatch, pip=True, pip_repo="populationgenomics/talos")
     _stub_authors_io(monkeypatch, dockerfile=_INCOMPLETE_DF)
-    d = R.resolve("talos")
+    d = R.resolve("talos", github_repo="populationgenomics/talos")
     assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
     assert d["chosen"] == "authors_recipe", d["chosen"]
     # the rendered guidance must match the REAL executor signature (an agent copies it):
@@ -173,6 +178,23 @@ def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypat
     assert call.startswith("build_env_from_authors_recipe(")
     assert "name=" in call and 'tools=[{"name":' in call and '"evidence":' in call
     assert "(env," not in call
+
+
+def test_a_bare_pip_scraped_repo_does_not_auto_fire_the_authors_path(monkeypatch):
+    """Phase 2 SAFETY PROPERTY. Without an explicit github_repo, a repo merely scraped from
+    pip metadata is a candidate the ride must confirm — it is NOT handed to the author tiers
+    (which outrank conda). This is the guard, now enforced without a word-list, that keeps a
+    bare `resolve('dorado')` from adopting an astronomy repo's image at the top tier: the
+    scraped repo is disclosed as NOT ASSESSED, and routing falls back to the registry pick."""
+    _stub_registries(monkeypatch, pip=True, pip_repo="populationgenomics/talos")
+    _stub_authors_io(monkeypatch, dockerfile=_INCOMPLETE_DF)
+    d = R.resolve("talos")
+    assert d["chosen"] == "pip", d["chosen"]
+    assert d["probed"].get("authors_gate_not_assessed"), \
+        "a scraped pip repo must be disclosed as NOT ASSESSED, not silently skipped"
+    assert "authors_recipe" not in d["probed"] and "author_image" not in d["probed"]
+    # the ride is told exactly how to unlock the authors' path: confirm the repo
+    assert "AUTHORS-PATH NOT ASSESSED" in d["install_call"]
 
 
 def test_resolve_keeps_conda_when_reconstruction_is_safe(monkeypatch):
@@ -206,9 +228,97 @@ def test_resolve_no_repo_no_gate_conda_wins(monkeypatch):
         called["n"] += 1
         return {}
     monkeypatch.setattr(R, "probe_authors_sources", _spy)
+    monkeypatch.setattr(R, "_resolve_biocontainer", lambda pkgs, timeout=12: {"found": False})
     d = R.resolve("samtools")
     assert d["chosen"] == "conda"
     assert called["n"] == 0     # gate not even probed without a repo
+
+
+# ---------------------------------------------------------------------------
+# THE OVER-FIRE FIX (2026-07-17): a Dockerfile BUILD never beats a clean conda
+# package. authors_recipe ranks BELOW conda, so a cleanly-bioconda tool goes to
+# conda even when its own Dockerfile is flagged reconstruction-incomplete.
+# ---------------------------------------------------------------------------
+def test_clean_conda_beats_authors_recipe_even_when_recipe_is_incomplete(monkeypatch):
+    """The gatk4/miniprot over-fire, as a regression guard.
+
+    Before: `analyze_recipe_completeness` flagged self-build `make` + a self-source tarball
+    as "incomplete", authors_recipe outranked conda, and cleanly-bioconda tools were routed
+    to a HEAVY Dockerfile build instead of `conda install`. That contradicts the whole point
+    — a package the ecosystem already built + containerized should win.
+
+    Here the recipe is GENUINELY incomplete (Talos-shaped: vendored fork + system + fetched),
+    AND the tool is cleanly on conda. Conda still wins: a clean bioconda package includes its
+    deps, and if it somehow didn't, freeze's VALIDATED_IN_IMAGE catches it. The gate still RAN
+    (authors_recipe is available in `probed`) — it just no longer OUTRANKS a clean package."""
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="org/tool",
+                     conda_repo="org/tool")
+    _stub_authors_io(monkeypatch, dockerfile=_INCOMPLETE_DF)
+    monkeypatch.setattr(R, "_resolve_biocontainer", lambda pkgs, timeout=12: {"found": False})
+    d = R.resolve("tool")
+    assert d["chosen"] == "conda", d["chosen"]
+    # the gate still ran and still SEES the recipe as incomplete — it's just outranked:
+    assert d["probed"].get("authors_recipe", {}).get("available") is True
+    assert R.TIER_ORDER.index("conda") < R.TIER_ORDER.index("authors_recipe")
+
+
+def test_authors_recipe_still_fires_when_there_is_NO_clean_conda_package(monkeypatch):
+    """The demotion must not break Talos. With no conda hit (pip-only), authors_recipe still
+    outranks pip — the reconstruction case the gate exists for."""
+    _stub_registries(monkeypatch, conda=False, pip=True, pip_repo="populationgenomics/talos")
+    _stub_authors_io(monkeypatch, dockerfile=_INCOMPLETE_DF)
+    d = R.resolve("talos", github_repo="populationgenomics/talos")
+    assert d["chosen"] == "authors_recipe", d["chosen"]
+    assert R.TIER_ORDER.index("authors_recipe") < R.TIER_ORDER.index("pip")
+
+
+# ---------------------------------------------------------------------------
+# The unified "is there a pullable image?" fact (pull-don't-build).
+# ---------------------------------------------------------------------------
+def test_pullable_image_surfaces_the_biocontainer_for_a_conda_pick(monkeypatch):
+    """A clean conda pick carries a pullable BioContainer (adopt by digest — pull, no build),
+    so an agent sees the shortcut. Provenance is the curated quay.io/biocontainers namespace,
+    never a third party's image."""
+    _stub_registries(monkeypatch, conda=True)
+    digest_ref = "quay.io/biocontainers/samtools@sha256:" + "a" * 64
+    monkeypatch.setattr(R, "_resolve_biocontainer", lambda pkgs, timeout=12: {
+        "found": True, "image": "quay.io/biocontainers/samtools:1.21--h0",
+        "image_by_digest": digest_ref, "digest": "sha256:" + "a" * 64})
+    d = R.resolve("samtools")
+    assert d["chosen"] == "conda"
+    pull = d["pullable_image"]
+    assert pull["found"] is True and pull["source"] == "biocontainer"
+    assert pull["image_by_digest"] == digest_ref
+    assert 'build_method="adopt-image"' in pull["adopt_call"]
+    assert "biocontainers" in pull["provenance"]
+    # the pull-by-digest shortcut is named in the human-readable rationale too:
+    assert digest_ref in d["rationale"]
+
+
+def test_pullable_image_reports_the_authors_own_image_when_available(monkeypatch):
+    """When the authors publish their own image it IS the pick (author_image tier); the
+    pullable_image fact reports source=author_image so the unified check is truly unified."""
+    _stub_registries(monkeypatch, conda=True, pip=True, pip_repo="org/tool", conda_repo="org/tool")
+    _stub_authors_io(monkeypatch, ghcr_package="tool")
+    monkeypatch.setattr(R, "_resolve_biocontainer", lambda pkgs, timeout=12: {"found": False})
+    d = R.resolve("tool")
+    assert d["chosen"] == "author_image"
+    assert d["pullable_image"]["found"] is True
+    assert d["pullable_image"]["source"] == "author_image"
+
+
+def test_pullable_image_is_not_fabricated_from_a_scraped_unanchored_repo(monkeypatch):
+    """PROVENANCE GUARDRAIL. A bare name whose only repo is scraped from pip metadata does NOT
+    yield a pullable AUTHOR image (the author tiers never run on an unanchored repo — the
+    cellranger-third-party-image trap). Any pullable image here can only be a biocontainer,
+    from the curated namespace — never a stranger's image claiming to be the tool."""
+    _stub_registries(monkeypatch, pip=True, pip_repo="Mucephie/dorado")   # astronomy squat
+    _stub_authors_io(monkeypatch, ghcr_package="dorado")   # a ghcr image EXISTS under that repo
+    monkeypatch.setattr(R, "_resolve_biocontainer", lambda pkgs, timeout=12: {"found": False})
+    d = R.resolve("dorado")
+    # the scraped repo was NOT assessed, so no author image is adopted from it:
+    assert d["pullable_image"]["found"] is False
+    assert "author_image" not in d["probed"]
 
 
 # ---------------------------------------------------------------------------
