@@ -1,0 +1,4 @@
+# Test-only dependencies — the honesty checker (pytest suite). NOT needed at runtime.
+# Self-contained: pulls in the runtime deps so `pip install -r requirements-dev.txt` is enough.
+-r requirements.txt
+pytest>=8.0
