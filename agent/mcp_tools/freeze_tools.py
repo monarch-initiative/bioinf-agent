@@ -735,13 +735,23 @@ def generate_user_guide(
     spec: dict = {},
     freeze_request_key: str = "",
     write: bool = True,
+    overview: str = "",
+    traps: list = [],
 ) -> dict:
-    """Render the Layer-2 user guide for a pipeline (Markdown) from its PASSING,
-    validated run — every command shown was actually executed and its outputs
-    checked (drawn only from validated pipeline_steps + a self-tested
-    usage.command_template). A workflow consumes its env BY DIGEST: the
-    "Get the environment" section is the freeze() Apptainer delivery and
-    provenance pins the content/image digests.
+    """Render the Layer-2 user guide for a pipeline (Markdown) as a hand-holding,
+    copy-pasteable WALKTHROUGH of how to run the tool on the compute resource it was
+    validated against. The SKELETON is DERIVED from the PASSING, validated run —
+    every command shown was actually executed and its outputs checked (drawn only
+    from validated pipeline_steps + a self-tested usage.command_template), the
+    compute-node acquisition (`srun`) and `module load` lines from the recorded
+    cluster placement, and the container from the freeze() Apptainer delivery. A
+    workflow consumes its env BY DIGEST; provenance pins the content/image digests.
+
+    `overview` + `traps` are the OPTIONAL agent-AUTHORED narrative — the "what the
+    tool does" paragraph and the hard-won gotchas that no record can hold. They are
+    rendered in clearly-labelled 'authored, not machine-verified' sections and are
+    omitted entirely when not supplied (never fabricated). This is the reverse-theme-
+    park split in the deliverable: a verified skeleton with a free authored middle.
 
     Pass `pipeline_id` (uses its draft) or a `spec` dict. `freeze_request_key`
     looks the frozen artifact up in the EnvCache (e.g. 'samtools=1.21|linux-64|
@@ -753,7 +763,8 @@ def generate_user_guide(
         return refused("freeze.guide_no_source", success=False,
                        error="provide pipeline_id (with a draft) or a spec dict")
     fr = _ms._env_cache.lookup(freeze_request_key) if freeze_request_key else None
-    md = _ms._user_guide.render_user_guide(s, freeze_record=fr)
+    narrative = {k: v for k, v in (("overview", overview), ("traps", traps)) if v}
+    md = _ms._user_guide.render_user_guide(s, freeze_record=fr, narrative=narrative)
     result = proven(
         "freeze.guide_rendered",
         success=True,

@@ -142,62 +142,177 @@ def _fence(text: str) -> str:
     return f"```\n{text}\n```"
 
 
+# SLURM key → srun flag. Used only to render a runnable "grab a node" line from the
+# placement THIS run actually recorded (cluster_slurm) — recorded facts, not invented.
+_SLURM_FLAG = {
+    "account": "--account", "partition": "--partition", "queue": "--partition",
+    "queue_default": "--partition", "cpus": "--cpus-per-task",
+    "cpus_per_task": "--cpus-per-task", "mem": "--mem", "time": "--time",
+}
+
+
+def _srun_line(sc: Optional[dict]) -> tuple[str, bool]:
+    """Render an interactive `srun … --pty bash` from a recorded SLURM placement.
+    Returns (line, from_record). When the record carries no placement we fall back
+    to a clearly-labelled EXAMPLE the reader sizes to their own job — never passed
+    off as the validated placement."""
+    flags = [f"{_SLURM_FLAG[k]}={v}" for k, v in (sc or {}).items()
+             if k in _SLURM_FLAG and v not in (None, "")]
+    if flags:
+        return "srun " + " ".join(flags) + " --pty bash", True
+    return "srun --cpus-per-task=4 --mem=16g --time=2:00:00 --pty bash", False
+
+
+def _output_files(spec: dict, cmds: list[dict]) -> list[str]:
+    """The files this workflow produces — declared usage.outputs first, else the
+    validated steps' detected outputs. De-duplicated, order preserved."""
+    outs: list[str] = []
+    for o in ((spec.get("usage") or {}).get("outputs") or []):
+        if isinstance(o, dict):
+            f = o.get("files")
+            outs += f if isinstance(f, list) else ([f] if f else [])
+    if not outs:
+        for c in cmds:
+            outs += c.get("outputs") or []
+    return list(dict.fromkeys(str(o) for o in outs if o))
+
+
+def _prereqs_block(spec: dict, freeze_record: Optional[dict]) -> list[str]:
+    """'What you need before you start' — the container, reference DBs, inputs, and a
+    work dir, as a table. Every row is DERIVED from the verified record; nothing is
+    invented. Empty → the section is omitted."""
+    fr = freeze_record or {}
+    rows: list[tuple[str, str]] = []
+    img = fr.get("image") or (spec.get("docker") or {}).get("image_tag")
+    if img:
+        rows.append(("The container", f"the whole tool, frozen — nothing to install · `{img}`"))
+    for r in (spec.get("reference_databases") or []):
+        if isinstance(r, dict) and r.get("name"):
+            v = f" v{r['version']}" if r.get("version") and r["version"] != "unknown" else ""
+            where = f"`{r['local_path']}`" if r.get("local_path") else "external reference data"
+            rows.append((f"Reference — {r['name']}{v}", where))
+    for i in ((spec.get("usage") or {}).get("inputs") or []):
+        if isinstance(i, dict):
+            rows.append((f"Input — {i.get('name', '?')}",
+                         i.get("format") or i.get("description") or "your data"))
+    if not rows:
+        return []
+    rows.append(("A work dir", "an empty scratch directory for this run's outputs"))
+    L = ["## What you need before you start", "", "| # | Thing | What it is |",
+         "|---|-------|------------|"]
+    L += [f"| {n} | **{k}** | {v} |" for n, (k, v) in enumerate(rows, 1)]
+    L.append("")
+    return L
+
+
 def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
-                      valid_digests: Optional[set] = None) -> str:
-    """Render the Markdown user guide. `freeze_record` (from freeze()) supplies
-    the HPC delivery + the image/content digests; without it the guide falls
-    back to the spec's docker info. `valid_digests` (the set of all frozen env
-    digests) makes the shipped-image badge correct for multi-env workflows."""
-    name = spec.get("pipeline_name", "pipeline")
+                      valid_digests: Optional[set] = None,
+                      narrative: Optional[dict] = None) -> str:
+    """Render the Markdown user guide as a hand-holding, copy-pasteable WALKTHROUGH
+    of how to run the tool on the compute resource it was validated against — the
+    shape of the Talos guide, generated honestly.
+
+    Two halves, kept visibly distinct:
+      * the SKELETON is DERIVED from the verified record — the container, the
+        compute-node acquisition (`srun` from the recorded SLURM placement), the
+        `module load` lines, the ordered VALIDATED commands, inputs/outputs,
+        provenance. `executed_commands()` remains the single honesty hook, so a
+        command that never ran can't appear.
+      * the NARRATIVE is agent-AUTHORED and optional — `narrative={'overview': str,
+        'traps': [str, ...]}`. It is the biology/why-prose only a human can write;
+        it is clearly labelled as authored (not machine-verified), and when absent
+        the guide simply omits it rather than fabricate it.
+
+    `freeze_record` supplies the HPC delivery + digests; `valid_digests` makes the
+    shipped-image badge correct for multi-env workflows."""
+    narrative = narrative or {}
+    # A draft carries `pipeline_name`; a sealed WorkflowSpec carries `workflow_name`.
+    # The guide renders from either, so accept both.
+    name = spec.get("pipeline_name") or spec.get("workflow_name") or "pipeline"
     kpkgs = key_packages(spec)
     version = next((v for n, v in kpkgs.items()
                     if n.lower() == name.lower() and v not in ("", "?")), "")
     title = f"{name}" + (f" {version}" if version else "")
     in_shipped = validated_in_shipped_image(spec, freeze_record, valid_digests)
-    L: list[str] = [f"# {title} — user guide", ""]
+    usage = spec.get("usage") or {}
+    hpc = (freeze_record or {}).get("hpc_delivery") or {}
+    steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
+    cluster_steps = [s for s in steps
+                     if s.get("validation_locus") == "cluster"
+                     or (s.get("resource_usage") or {}).get("locus") == "cluster"]
+    cmds = executed_commands(spec)
+    template_cmds = usage_commands(usage) if spec.get("usage_verified") else []
+
+    L: list[str] = [f"# {title} — how to run it", ""]
     if spec.get("description"):
         L += [spec["description"], ""]
+    outs = _output_files(spec, cmds)
+    if outs:
+        L += ["**By the end you have:** " + ", ".join(f"`{o}`" for o in outs) + ".", ""]
     if in_shipped:
-        L += ["> Generated from a run **inside the shipped image** (digest in Provenance) — "
-              "the bytes you run are the bytes we validated. Every command below was executed "
-              "there and its outputs checked. Not hand-written.", ""]
+        L += ["> Every command below was executed **inside the shipped image** (digest in "
+              "Provenance) and its outputs validated — the bytes you run are the bytes we "
+              "checked. Any _italic notes_ are authored explanation, not machine-verified.", ""]
     else:
-        L += ["> Generated from the build's passing, validated run — every command below was "
-              "executed and its outputs checked (provenance at the bottom). Not hand-written.", ""]
+        L += ["> Every command below was executed during the build and its outputs validated "
+              "(provenance at the bottom). Any _italic notes_ are authored explanation, not "
+              "machine-verified.", ""]
 
-    # 1. Get the environment (HPC / Apptainer) — pinned by digest.
-    L += ["## 1. Get the environment", ""]
-    hpc = (freeze_record or {}).get("hpc_delivery") or {}
+    # OVERVIEW — authored ("what the tool does, 30-second version"). Omitted if absent.
+    if narrative.get("overview"):
+        L += [f"## What {name} does", "", str(narrative["overview"]).strip(), ""]
+
+    # PREREQUISITES — derived table.
+    L += _prereqs_block(spec, freeze_record)
+
+    # RUN IT — the walkthrough spine: get onto the compute + load runtime, get the
+    # container, then the validated command sequence. Each numbered step present only
+    # when the record supports it (no fabricated cluster steps for a local-only run).
+    L += ["## Run it", ""]
+    n = 1
+    if cluster_steps:
+        sc = next((s.get("cluster_slurm") for s in cluster_steps if s.get("cluster_slurm")), {}) or {}
+        srun, from_record = _srun_line(sc)
+        tail = "" if from_record else "  # example — size this to your job"
+        L += [f"**{n}. Grab a compute node** — never run compute on the login node:",
+              "", _fence(srun + tail), ""]
+        n += 1
+        mods: list[str] = []
+        for s in cluster_steps:
+            for m in (s.get("cluster_apptainer_module"), s.get("cluster_nextflow_module")):
+                if m and m not in mods:
+                    mods.append(m)
+        if mods:
+            L += [f"**{n}. Load the runtime module(s):**", "",
+                  _fence("\n".join(f"module load {m}" for m in mods)), ""]
+            n += 1
     if hpc.get("get_image"):
-        L += [f"_{hpc.get('source_note','')}_", "", _fence(hpc["get_image"]), ""]
+        note = f" — _{hpc['source_note']}_" if hpc.get("source_note") else ""
+        L += [f"**{n}. Get the container**{note}:", "", _fence(hpc["get_image"]), ""]
+        n += 1
         if hpc.get("run_example"):
-            L += ["Run a command in it:", _fence(hpc["run_example"]), ""]
+            L += ["Run a command inside it with:", "", _fence(hpc["run_example"]), ""]
         if hpc.get("sbatch_template"):
-            L += ["<details><summary>SLURM batch template</summary>", "",
-                  _fence(hpc["sbatch_template"]), "", "</details>", ""]
+            L += ["<details><summary>SLURM batch template (for a non-interactive run)</summary>",
+                  "", _fence(hpc["sbatch_template"]), "", "</details>", ""]
     else:
         docker = spec.get("docker") or {}
         tag = docker.get("image_tag") or f"{name}:{version or 'latest'}"
-        L += ["Pull/convert the image for HPC (Apptainer):",
+        L += [f"**{n}. Get the container** (Apptainer):", "",
               _fence(f"apptainer pull {name}.sif docker://{tag}\n"
                      f"apptainer exec --bind /scratch/$USER/data:/data {name}.sif <command>"), ""]
+        n += 1
 
-    # 2. Run it. The runnable form is the self-tested command_template (container-
-    # agnostic — you fill its {PLACEHOLDER} slots), NOT the build-time host paths.
-    L += ["## 2. Run it", ""]
-    usage = spec.get("usage") or {}
-    cmds = executed_commands(spec)
-    template_cmds = usage_commands(usage) if spec.get("usage_verified") else []
+    order = ("" if len(template_cmds) <= 1
+             else " Run them IN ORDER, from one working directory — the sequence the self-test verified.")
+    L += [f"**{n}. Run the workflow** — the validated command sequence." + order, ""]
     if template_cmds:
-        order = ("" if len(template_cmds) == 1
-                 else " Run them IN ORDER, from one working directory — that is the "
-                      "sequence the self-test verified.")
-        L += ["Fill the `{PLACEHOLDER}` slots with your inputs. Inside the container the "
-              "paths live under the `--bind` mount (e.g. `/data/reads.fastq.gz`)." + order,
+        L += ["Fill the `{PLACEHOLDER}` slots with your inputs. Inside the container the paths "
+              "live under the `--bind` mount (e.g. `/data/reads.fastq.gz`).",
               "", _fence("\n".join(template_cmds)), ""]
     elif cmds:
         for c in cmds:
-            L += [f"_{c['source']}_", _fence(c["command"]), ""]
+            L += [f"_{c['source']}_", "", _fence(c["command"]), ""]
     else:
         L += ["_No validated run command recorded yet — run the tool via run_pipeline_step "
               "and set a verified usage.command_template, then regenerate._", ""]
@@ -229,8 +344,15 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
                   if c["outputs"] else [""])
         L += ["</details>", ""]
 
-    # 3. Environment / driver details (the nf-core gap: record the runner env).
-    L += ["## 3. Environment details", ""]
+    # TRAPS — authored hard-won gotchas ("traps we already hit"). The most valuable
+    # authored section, and one no record can hold; rendered only when supplied, never
+    # fabricated.
+    traps = [t for t in (narrative.get("traps") or []) if str(t).strip()]
+    if traps:
+        L += ["## Traps to avoid", ""] + [f"{i}. {str(t).strip()}" for i, t in enumerate(traps, 1)] + [""]
+
+    # Environment / driver details (the nf-core gap: record the runner env).
+    L += ["## Environment details", ""]
     if spec.get("conda_env"):
         L.append(f"- conda env: `{spec['conda_env']}`")
     if spec.get("python_version"):
@@ -324,5 +446,22 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
                 placement = ", ".join(f"{k}={v}" for k, v in sc.items())
                 L.append(f"  - slurm: {placement}")
         L.append("")
+
+    # TL;DR — the absolute-minimum runnable sequence, derived: the compute preamble
+    # (from the recorded placement/modules) + the validated commands, nothing else.
+    seq = template_cmds or [c["command"] for c in cmds]
+    if seq:
+        pre: list[str] = []
+        if cluster_steps:
+            sc0 = next((s.get("cluster_slurm") for s in cluster_steps if s.get("cluster_slurm")), {}) or {}
+            srun, from_record = _srun_line(sc0)
+            pre.append(srun + ("" if from_record else "   # example — size to your job"))
+            seen: set = set()
+            for s in cluster_steps:
+                for m in (s.get("cluster_apptainer_module"), s.get("cluster_nextflow_module")):
+                    if m and m not in seen:
+                        seen.add(m)
+                        pre.append(f"module load {m}")
+        L += ["## TL;DR", "", "```bash", *pre, *seq, "```", ""]
 
     return "\n".join(L)

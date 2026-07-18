@@ -1905,8 +1905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:757",
-    "end_line": 763,
+    "where": "agent/mcp_tools/freeze_tools.py:768",
+    "end_line": 774,
     "named_in_test": false
   },
   {
@@ -2965,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:753",
-    "end_line": 754,
+    "where": "agent/mcp_tools/freeze_tools.py:763",
+    "end_line": 764,
     "named_in_test": false
   },
   {

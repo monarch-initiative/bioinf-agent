@@ -65,7 +65,37 @@ questions resolve from the system's own principles, not a coin-flip. It lives in
 NOT the tagged `workflow_tools` — an advisory reader's untagged `{ok/error}` returns belong with
 its siblings, not among the honesty primitives, which is what keeps the outcome-tag ratchet
 honest (`tests/test_outcome_tags.py`). Fast suite green. `tests/test_sealed_step_reader.py` (12).
-Phases 6-7 below are still design.
+**Phase 6 LANDED** (2026-07-18) — the checker RELOCATED to neutral infrastructure (§9's
+"adversary property"). `.github/workflows/checker.yml` runs the fast, hermetic honesty tier
+(`-m "not live and not integration_docker"`, 1452 passed / 119 deselected / ~85s) on GitHub's
+runners on every push + PR — anchored by the crown-jewel ratchet
+`test_committed_ledger_matches_a_fresh_sweep_of_the_code`, which RE-DERIVES the committed
+`docs/outcomes_ledger.json` from a fresh AST sweep. Because CI recomputes the ledger FROM SOURCE
+off the agent's machine, a locally-doctored ledger (or coverage overlay) that hides an untagged
+terminal cannot make the gate pass — this is RELOCATION of an existing check beyond edit reach,
+not a new check. The invocation is `-m "not live and not integration_docker"` (explicit, not a
+bare `pytest tests/`) because GitHub runners ship Docker, so the `integration_docker` self-skip
+would NOT fire and the slow tier would run by accident. **Honest scope, per §9's priority**: the
+workflow file lives IN the repo, so it is itself in edit reach — CI makes any weakening of the
+gate VISIBLE IN THE DIFF (tamper-EVIDENT), not tamper-PROOF; the blocking backstop is branch
+protection ("require the `checker` status check" + required review), configured on GitHub, not in
+code. That is exactly the stated posture — mistake-proof for a collaborator, tamper-evident for an
+adversary a distant second. `live` network probes stay opt-in (a gate that reddens on a maintainer's
+release is one people ignore — the corpus's own rule); the hermetic corpus-integrity tests DO run.
+**Phase 7 LANDED** (2026-07-18, user-driven) — the user-facing layer, the LAST numbered phase.
+Three pieces, all rendered purely from the verified record (§10.7). **(a)** a toggleable report
+theme — the two HTML reports share ONE variable-driven stylesheet with cyberpunk (default) + a
+professional/light palette, flipped by an in-page toggle; a test forbids any raw hex below the
+`:root` blocks (a stray literal is a colour that won't switch). **(b)** the user guide restructured
+into a Talos-style copy-pasteable WALKTHROUGH of how to run the tool on the compute resource it was
+validated against (prerequisites → `srun` from the RECORDED placement → `module load` → get-the-
+container → the ordered validated commands → TL;DR), with `executed_commands` still the single
+honesty hook. **(c)** an OPTIONAL agent-authored narrative slot (`generate_user_guide(overview,
+traps)`) for the "what it does"/"traps" prose no record can hold — labelled authored-not-verified,
+omitted (never fabricated) when absent. The reverse-theme-park split applied to the deliverable
+itself: a verified skeleton with a free authored middle. `test_phase7_reports_and_guide.py` (11).
+**All 7 build-sequence phases now LANDED.** The frame is complete; remaining work (intent-grid
+coverage climb, identity-to-disk, cross-cutting L1 checks) is outside the numbered phases.
 The rest of this document is the plan, unchanged.
 Date: 2026-07-18.
 
@@ -286,7 +316,7 @@ Rows 3, 3b, 4, 9 are the thesis in miniature: **structured facts (RESOLVE) + LLM
 
 Priority is **mistake-proof for a collaborator**, tamper-evident-for-an-adversary a distant second. So:
 - Ground-truth verification (real Docker) — **keep, already done.**
-- Relocating the checker out of the agent's edit reach (CI-owned, signed) — **the adversary property; DEFERRED.** Named here so it isn't forgotten, not built now.
+- Relocating the checker out of the agent's edit reach (CI-owned) — **the adversary property; ✅ LANDED (Phase 6, 2026-07-18).** `.github/workflows/checker.yml` runs the fast honesty tier on GitHub's runners on every push + PR, re-deriving `outcomes_ledger.json` from source so a locally-doctored ledger can't pass. Faithful to this priority: it relocates EXECUTION + makes tampering diff-visible (tamper-evident), not tamper-proof — the workflow file is itself in-repo. "Signed" was scoped OUT deliberately: the ledger is a DERIVED artifact and CI re-derives it, so cryptographic signing would defend a threat model ranked "a distant second" with machinery the re-derivation already obviates. The blocking backstop is branch protection (GitHub-side config), not code.
 - Typing the record seams (§2, and the parked "type the nouns" work) — **do this**, because a mistaken agent that scrapes a dict is exactly the collaborator-grade failure we're defending against.
 
 **Decided NON-GOAL — a decision-trace / "build log" of the messy path.** Considered and rejected. The clean, portable **recipe** (`recipe.md`/`.yaml`, already rendered from the verified record and digest-checked by `verify_env_recipe`) is the reproduction artifact — it's the *destination*, and a human never needs the dead-ends to rebuild. The journey has value only when an install *fails* (no recipe exists), and that case is served by an honest failure summary ("what I tried, where it stuck") — not a trajectory-logging subsystem. Recorded here so it isn't re-proposed.
@@ -298,8 +328,8 @@ Priority is **mistake-proof for a collaborator**, tamper-evident-for-an-adversar
 3. **Phase 3 — explicit rails.** Formalize the lifecycle states + legal transitions in `pipeline_state.py`. Wire the seven rails to the router.
 4. **Phase 4 — composition. ✅ LANDED (2026-07-17).** Added `plan.py` (`ExecutionPlan` + `gate_plan`, the I8-at-authoring gate) + `plan_tools.py` (`plan_request`, advisory). The §6 worst case gates GREEN as a 5-node DAG (`tests/test_plan_gate.py`). "Execute a multi-rail plan" is realized the theme-park way — the plan is authored + gated, then WALKED by the agent calling the existing primitives in topo order; auto-dispatch is deferred (it is the forbidden composite primitive; a Phase-5 question the user has not opened). Node vocabulary = `Rail` imported + the 1-element `PlanRide={SEAL}` delta (AUTHOR_PIPELINE folded into the RUN ride); the gate is the runtime I8 lifted (provenance-not-type, single-sourced vocabulary, necessary-not-sufficient).
 5. **Phase 5 — the new rails. ✅ LANDED (2026-07-18).** Re-scoped by grounding the code: DECLINE (scenario 7) IS the Phase-1 completeness gate and router-dispatch-consuming-a-`Rail` IS Phase-4's `plan.py` — both already realized. So the one genuinely-new behaviour is RUN_STEP-of-a-sealed-workflow (scenario 5), built as the FIRST typed read-back of a sealed spec (`spec_writer.load_workflow_spec` / `select_pipeline_step`, the anti-scrape seam) + the advisory `describe_sealed_step` reader (`sealed_tools.py`, the third member of the `interpret_request`/`plan_request` advisory-reader family — dispatches nothing). The agent re-runs the recorded step via the existing `run_step_in_container` IN THE FROZEN IMAGE, fail-fast on a missing input, no auto-materialize.
-6. **Phase 6 (deferred) — relocate the checker to CI.** The adversary property, only if/when wanted.
-7. **Phase 7 (LAST, user-driven) — the user-facing layer: guides + report visual identity.** Deliberately last. The reports render **purely from the verified records** (the principle already holds — a deliverable can't claim what the record doesn't prove), so the visual identity / how-to layout is safe to design *after* the records and rails are solid. Nothing above depends on it; it depends on everything above.
+6. **Phase 6 — relocate the checker to CI. ✅ LANDED (2026-07-18).** The adversary property. `.github/workflows/checker.yml` runs the fast, hermetic honesty tier (`-m "not live and not integration_docker"`) on GitHub's runners on every push + PR. The crown jewel is that CI RE-DERIVES `docs/outcomes_ledger.json` from a fresh source sweep (`test_committed_ledger_matches_a_fresh_sweep_of_the_code`) off the agent's machine — a locally-doctored ledger can't make it pass. Relocation, not a new check. Honest limit (per §9): the workflow is in-repo, so tampering is diff-VISIBLE, not impossible; the merge-blocking backstop is branch protection, configured GitHub-side.
+7. **Phase 7 — the user-facing layer: guides + report visual identity. ✅ LANDED (2026-07-18, user-driven).** Deliberately last; the reports already render **purely from the verified records**, so the visual identity / how-to layout was safe to design after the records and rails were solid. Three pieces, all faithful to that principle. **(a) Toggleable report theme** — the two HTML reports (env report · run dashboard) share ONE stylesheet (`env_report_html._CSS`, imported by `run_dashboard_html`); every colour now flows through CSS variables, with cyberpunk the default palette and a professional/light palette overriding the same names, flipped by an in-page toggle (persisted to localStorage) shared via `_open_page`/`_close_page`. The tidy discipline is a test: NO raw hex below the `:root` blocks (a stray literal is a colour that won't switch). **(b) Talos-style user guide** — `user_guide.render_user_guide` restructured from a terse spec-dump into a copy-pasteable WALKTHROUGH of how to run the tool on the compute resource it was validated against (prerequisites table → grab-a-node `srun` → `module load` → get-the-container → the ordered validated commands → TL;DR). The SKELETON is DERIVED from the record (the `srun` line is the placement the run RECORDED, or a clearly-labelled example when none was; `executed_commands` stays the single honesty hook, so a step that didn't pass can't appear). **(c) The narrative slot** — the guide's warm prose ("what the tool does", "traps we already hit") is agent-AUTHORED and OPTIONAL (`generate_user_guide(overview=…, traps=[…])`), rendered in clearly-labelled 'authored, not machine-verified' sections and OMITTED (never fabricated) when absent. That is the reverse-theme-park split applied to the deliverable itself: a verified skeleton with a free authored middle. `tests/integration/correctness/test_phase7_reports_and_guide.py` (11).
 
 Each phase ships something usable and is independently reversible. No phase requires throwing away working machinery.
 

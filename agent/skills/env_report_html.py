@@ -41,15 +41,38 @@ from agent.skills.env_report_helpers import (
 )
 
 _CSS = """
-:root{
+/* PALETTE — two themes, one structure. EVERY colour flows through these variables;
+   all geometry/layout below is theme-agnostic. Cyberpunk is the default AND the
+   no-JS fallback (:root); the in-page toggle sets :root[data-theme] and the light/
+   professional palette overrides the same names. Rule for edits: keep NO raw hex
+   below the :root blocks — a stray literal is a colour that silently won't switch. */
+:root, :root[data-theme="cyber"]{
   --bg:#0a0c14;--surface:#13151f;--surface-2:#1a1d29;--border:#262a3a;
-  --cyan:#22e3ee;--cyan-soft:rgba(34,227,238,.16);
+  --cyan:#22e3ee;--cyan-soft:rgba(34,227,238,.16);--accent-wash:rgba(34,227,238,.05);
   --yellow:#fff200;--yellow-soft:rgba(255,242,0,.18);
   --ink:#e6e9f0;--muted:#8e98ad;
   --ok:#3ce086;--ok-bg:rgba(60,224,134,.14);
   --bad:#ff4b6e;--bad-bg:rgba(255,75,110,.14);
+  --code-bg:#0e1019;--pre-bg:#0c0e16;--on-accent:#000;--on-bad:#fff;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
+:root[data-theme="light"]{
+  /* professional / print-friendly — calm blue primary, muted amber for the
+     yellow-accent role (headings, links, list markers). Same structure, quiet skin. */
+  --bg:#ffffff;--surface:#f7f9fc;--surface-2:#eef2f7;--border:#d7dee8;
+  --cyan:#0b6bcb;--cyan-soft:rgba(11,107,203,.10);--accent-wash:rgba(11,107,203,.05);
+  --yellow:#a86a00;--yellow-soft:rgba(168,106,0,.12);
+  --ink:#1a2233;--muted:#5b6675;
+  --ok:#1a7f4b;--ok-bg:rgba(26,127,75,.12);
+  --bad:#c0304a;--bad-bg:rgba(192,48,74,.10);
+  --code-bg:#eef2f7;--pre-bg:#f4f7fb;--on-accent:#ffffff;--on-bad:#ffffff;
+}
+/* THEME TOGGLE — presentation only (authors no content); hidden in print. */
+.theme-toggle{position:fixed;top:14px;right:16px;z-index:10;background:var(--surface-2);
+color:var(--muted);border:1px solid var(--border);font:600 11px/1 var(--mono);
+letter-spacing:.10em;text-transform:uppercase;padding:8px 12px;cursor:pointer;border-radius:2px}
+.theme-toggle:hover{color:var(--cyan);border-color:var(--cyan)}
+@media print{.theme-toggle{display:none}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
@@ -63,7 +86,7 @@ font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Ar
    yellow diagonal (top cyan for TL, bottom cyan for BR), with edges sloped to
    match the yellow's diagonal — // matching ends instead of vertical || ends. */
 .head{position:relative;border:2px solid var(--cyan);padding:22px 26px 6px;margin:24px 24px 44px;
-background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 80%)}
+background:linear-gradient(180deg,var(--accent-wash),transparent 80%)}
 .head .cr{position:absolute;background:var(--yellow);pointer-events:none;z-index:2}
 /* TL: block at top:-22 left:-22 → L's outer edge is 22px outside the cyan;
    arm thickness 14px (block y=0..14); 6px gap between L's inner edge (y=14)
@@ -108,9 +131,9 @@ color:var(--cyan);margin:34px 0 12px;padding:0 0 9px 0;border-bottom:1px solid v
 h2 .note{color:var(--muted);font-weight:400;letter-spacing:0;text-transform:none;font-size:12px;margin-left:8px}
 a{color:var(--yellow);text-decoration:none;border-bottom:1px dashed transparent}
 a:hover{border-bottom-color:var(--yellow)}
-code{background:#0e1019;color:var(--cyan);padding:1px 6px;border:1px solid var(--border);
+code{background:var(--code-bg);color:var(--cyan);padding:1px 6px;border:1px solid var(--border);
 border-radius:2px;font:12.5px/1.4 var(--mono);word-break:break-all}
-pre{background:#0c0e16;color:var(--ink);padding:10px 12px;margin:4px 0;border:1px solid var(--border);
+pre{background:var(--pre-bg);color:var(--ink);padding:10px 12px;margin:4px 0;border:1px solid var(--border);
 border-left:3px solid var(--cyan);border-radius:0;overflow-x:auto;
 font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
 .tbl-wrap{overflow-x:auto;margin:4px 0}
@@ -126,9 +149,9 @@ td.k{color:var(--muted);width:225px;background:var(--surface-2);font-weight:500;
 border-right:1px solid var(--border)}
 .pill{display:inline-block;font-size:11px;font-weight:800;padding:3px 12px;
 vertical-align:middle;margin-left:10px;letter-spacing:.14em;text-transform:uppercase;border-radius:0}
-.pill.ok{background:var(--cyan);color:#000}
-.pill.adopt{background:var(--yellow);color:#000}
-.pill.bad{background:var(--bad);color:#fff}
+.pill.ok{background:var(--cyan);color:var(--on-accent)}
+.pill.adopt{background:var(--yellow);color:var(--on-accent)}
+.pill.bad{background:var(--bad);color:var(--on-bad)}
 .pill.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
 .badge{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 9px;border-radius:0;
 margin-right:4px}
@@ -166,7 +189,7 @@ display:flex;align-items:center;gap:10px;flex-wrap:wrap}
    the one this workflow is headlined by (accretion is honest only per-digest). */
 .stale{color:var(--yellow);font-weight:600}
 .how{border:1px solid var(--cyan);border-left:3px solid var(--cyan);
-background:linear-gradient(180deg,rgba(34,227,238,.05),transparent 70%);
+background:linear-gradient(180deg,var(--accent-wash),transparent 70%);
 padding:14px 18px 16px;margin:12px 0}
 """
 
@@ -211,6 +234,55 @@ def _kv_table(rows: list[tuple[str, str]]) -> str:
 
 def _empty(msg: str) -> str:
     return f'<p class="empty">{_e(msg)}</p>'
+
+
+# --- Shared page shell + theme toggle -------------------------------------
+# The two reports (Layer-1 env report, Layer-2 run dashboard) open/close through
+# these so the theme machinery lives in ONE place. Cyberpunk is the default; the
+# toggle flips :root[data-theme] to "light" (professional/print) and persists the
+# choice. Pure presentation — it authors no content field, so the reports' "no
+# field authored by the agent" claim is untouched.
+_THEME_INIT = (  # runs in <head> before paint → no theme flash
+    '<script>try{var t=localStorage.getItem("bioinf-theme");'
+    'document.documentElement.setAttribute("data-theme",t==="light"?"light":"cyber")}'
+    'catch(e){document.documentElement.setAttribute("data-theme","cyber")}</script>'
+)
+_THEME_TOGGLE = ('<button id="__tt" class="theme-toggle" onclick="__toggleTheme()" '
+                 'title="Switch cyberpunk / light theme"></button>')
+_THEME_JS = (  # sets the toggle label to the OTHER theme; flips + persists on click
+    '<script>(function(){'
+    'function lbl(t){return t==="light"?"◐ Cyberpunk":"◑ Light"}'
+    'window.__toggleTheme=function(){'
+    'var c=document.documentElement.getAttribute("data-theme")||"cyber";'
+    'var n=c==="light"?"cyber":"light";'
+    'document.documentElement.setAttribute("data-theme",n);'
+    'try{localStorage.setItem("bioinf-theme",n)}catch(e){}'
+    'var b=document.getElementById("__tt");if(b)b.textContent=lbl(n)};'
+    'var c0=document.documentElement.getAttribute("data-theme")||"cyber";'
+    'var b0=document.getElementById("__tt");if(b0)b0.textContent=lbl(c0)'
+    '})()</script>'
+)
+
+
+def _open_page(tab_title: str) -> str:
+    """Shared shell open: doctype + head (with no-flash theme init) + body + the
+    toggle control + the .wrap container. Both reports call this."""
+    return (
+        '<!DOCTYPE html>'
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'{_THEME_INIT}'
+        f'<title>{_e(tab_title)}</title><style>{_CSS}</style></head><body>'
+        f'{_THEME_TOGGLE}'
+        '<div class="wrap">'
+    )
+
+
+def _close_page(gen_note_html: str = "") -> str:
+    """Shared shell close: an optional generated-by note + the toggle JS + the
+    closing tags. Pass the note here (env report) or append it first and pass ""
+    (run dashboard, which builds its own honest provenance note)."""
+    return f'{gen_note_html}</div>{_THEME_JS}</body></html>'
 
 
 def _header_banner(title_html: str, pill_html: str, rows: list[tuple[str, str]]) -> str:
@@ -339,11 +411,7 @@ def render_env_report_html(record: dict) -> str:
     total = len(verifs)
 
     P: list[str] = []
-    P.append("<!DOCTYPE html>")
-    P.append(f'<html lang="en"><head><meta charset="utf-8">'
-             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-             f'<title>Environment report — {_e(name)}</title><style>{_CSS}</style></head><body>')
-    P.append('<div class="wrap">')
+    P.append(_open_page(f"Environment report — {name}"))
 
     # -- HEADER BANNER ------------------------------------------------------
     # Yellow title "Bioinfo install report — {name}" + status pill, with a small
@@ -635,7 +703,6 @@ def render_env_report_html(record: dict) -> str:
     P.append("</ul>")
     P.append('</div></section>')
 
-    P.append('<p class="gen">Generated deterministically from the freeze record'
-             ' — no field on this page was authored by the agent.</p>')
-    P.append("</div></body></html>")
+    P.append(_close_page('<p class="gen">Generated deterministically from the freeze record'
+                          ' — no field on this page was authored by the agent.</p>'))
     return "\n".join(P)

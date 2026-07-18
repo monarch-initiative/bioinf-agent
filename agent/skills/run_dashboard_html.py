@@ -36,7 +36,7 @@ from typing import Optional
 
 from agent.models.core_data import usage_commands
 from agent.skills.env_report_html import (
-    _CSS, _badge, _e, _empty, _header_banner, _kv_table,
+    _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
 
 
@@ -428,11 +428,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         head_rows.insert(0, ("Workflow", _e(s["description"])))
 
     P: list[str] = []
-    P.append("<!DOCTYPE html>")
-    P.append(f'<html lang="en"><head><meta charset="utf-8">'
-             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-             f'<title>Workflow run report — {_e(name)}</title><style>{_CSS}</style></head><body>')
-    P.append('<div class="wrap">')
+    P.append(_open_page(f"Workflow run report — {name}"))
     P.append(_header_banner(f"Workflow run report — {_e(name)}", pill, head_rows))
     P.append(_render_validated_evidence(s, primary_digest))
     P.append(_render_howto(s))
@@ -454,5 +450,5 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
              'patch_pipeline\'s allowlist); the how-to\'s self-test status above says '
              'whether that command was actually executed. The env report (Layer 1) is a '
              'separate, immutable page.</p>')
-    P.append("</div></body></html>")
+    P.append(_close_page())
     return "\n".join(P)
