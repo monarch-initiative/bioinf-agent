@@ -184,11 +184,12 @@
    },
    "expect": {
     "chosen": null,
-    "assertable": true,
+    "assertable": false,
     "ambiguous": null,
     "note": "MUST refuse \u2014 expect KEPT (it is the strongest refusal row in the set and it does not touch a bioconda-anchored name). Absent from all registries + a single hit whose own words are about spreadsheets is a STRONG fact pattern, not a weak one: the resolver reached chosen='cran' through the SAME code path it uses for a legitimate sole candidate, so 'only one hit' is being read as convergence when here it is evidence of absence. Terminate in a question ('Cell Ranger is a 10x vendor download; supply the tarball path, or confirm you want the R package'), never in install_r_package. ASSERT: chosen is None AND install_call is None AND identity is None \u2014 grounded in the verified Genome_Assembly_Booster template. Backed by measurement (pip/cran-after-conda-missed: 10 names, 9 wrong) and corroborated independently: this exact package is the worked example inside resolver.py's own identity design comment. AMBIGUOUS NULLED (was false): the recorded row made ambiguous=False semantically load-bearing ('disarmed by the collision being maximally severe') and that reading is CORRECT and worth keeping as prose \u2014 but the assertion is still contingent on no PyPI/conda 'cellranger' ever appearing, so it must not be asserted. STABILITY CAVEAT: chosen=null goes red if 10x ever publishes to a public registry. Judged acceptable \u2014 the tool is vendor-gated by business model, not by accident.",
-    "unassertable_reason": null,
-    "refusal_reason": "investigation_contradicted"
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -196,7 +197,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ python3 -c \"... R.resolve(tool='cellranger')\"   # LIVE, re-run 2026-07-16\nchosen    = 'cran'\nambiguous = False                <-- disarmed: nothing to collide WITH\n  author_image   avail=False repo='rsheets/cellranger'   <-- decoy repo harvested from CRAN metadata\n  authors_recipe avail=False repo='rsheets/cellranger'\n  conda avail=False\n  cran  avail=True latest='1.1.0' summary='Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functio...'\n  pip   avail=False\nidentity.confirmed = False | anchor='none' | reason='no_domain_signal'\ninstall_call poisoned = True\nLAST LINE = 'install_r_package(env, \"cellranger\", source=\"cran\")'\nrecommended_repo = None | discovered_repos n = 0\n>> Premise REPRODUCED exactly, including the author tiers harvesting rsheets/cellranger. The decoy wins by being the last candidate standing and the run terminates in a runnable install_r_package.\n\nCORROBORATION (code read, resolver.py identity design comment): this precise case is the codebase's OWN worked example of its worst failure mode \u2014 'resolve_tool(\"cellranger\") -> CRAN cellranger = an R spreadsheet-range parser ... it BUILDs, it is VALIDATED_IN_IMAGE, it is POLICY_CLEAN ... A fully green artifact containing the wrong software.' The expect is not one agent's opinion; it is the codebase's stated intent, unimplemented."
   },
@@ -214,10 +215,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE + ASK: no install_call. cellranger is in no installable registry; the lone hit is CRAN, an R registry, whose own self-description is about spreadsheet cell ranges. Identity IS assessed (a candidate exists) and must come back confirmed=false \u2014 the refusal follows FROM that. Correct answer names the EULA-gated vendor route (download from 10x, then install_release_binary(url=...)) or prefer='cran' to force the R package. IMPLEMENTATION WARNING (added on verify \u2014 do NOT cargo-cult the GAPIT3 row): chosen=null PAIRED WITH identity_confirmed=false is a DESIGN REQUIREMENT, not something that falls out. resolver.py:944 computes identity only `if chosen:`, so every chosen=None path returns identity=null today. The refusal must be BUILT to carry the verdict it refused on. The distinction is principled: here a candidate was assessed and failed (identity present, confirmed=false); in GAPIT3 nothing was assessed (identity absent, null). Both are Rule 2.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -225,7 +227,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ python -c \"from agent.skills import resolver as R; R.resolve(tool='cellranger')\"  (live, core quota 28/60 healthy)\n  chosen: 'cran'   ambiguous: False\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"evidence\": [], \"reason\": \"no_domain_signal\",\n             \"self_description\": \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \\\"A1:D10\\\" style of cell range specification.\"}\n  install_call: '# IDENTITY UNCONFIRMED: the cran entry for \\'cellranger\\' describes itself as \"Translate Spreadsheet Cell Ranges\u2026\" [\u2026]\\n# ---- confirm the above IS the tool you mean before running: ----\\ninstall_r_package(env, \"cellranger\", source=\"cran\")'\n  probed keys: ['author_image','authors_recipe','conda','cran','pip']\n  probed.conda {\"available\": false} | probed.pip {\"available\": false}\n  probed.cran {\"available\": true, \"latest\": \"1.1.0\", \"url\": \"https://github.com/rsheets/cellranger\"}\n  R._github_owner_repo(probed,'') -> 'rsheets/cellranger'\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED.\n\n=== STABILITY EARNED, NOT ASSUMED (new \u2014 this is what separates this row from rows 6 & 8) ===\n$ urllib.request.urlopen stubbed -> HTTPError(403) for api.github.com + ghcr.io ONLY (PyPI/CRAN left live):\n  resolve(tool='cellranger') -> chosen: cran | id_conf: False | poisoned: True | gate_err: null\nBYTE-IDENTICAL asserted surface with the GitHub budget exhausted. The decision comes from CRAN, not GitHub, so this row is NOT a function of the invisible 60/hr quota. assertable=true is earned."
   },
@@ -243,11 +245,12 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE and route to the vendor download. LOAD-BEARING GUARD FOR A FIX NOT YET WRITTEN: chosen must NEVER become 'author_image' via a name-matched image under a namespace unrelated to the tool's anchored repo owner. Adoption requires an OWNERSHIP link (nanoporetech/dorado image \u2190 github.com/nanoporetech/dorado); a name match is provenance, not identity. If a third-party image is surfaced at all it must be labelled unverified + EULA-gated (freeze would need gated=True, licenses=[...], redistributable=False per I13), never entered into the author_image tier. This row shares its `call` with cellranger-registry-decoy BY DESIGN \u2014 same input, different guard: that row asserts the refusal happens, this one asserts the future Docker Hub probe never rescues the wrong tool into the top tier. Both must hold simultaneously; neither subsumes the other, so do not dedupe them.",
     "authors_gate": "not_assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -255,7 +258,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve(tool='cellranger')   (live; same call as cellranger-registry-decoy, different assertion)\n  chosen: 'cran'  | ambiguous: False\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"reason\": \"no_domain_signal\",\n             \"self_description\": \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 \u2026\"}\n  install_call tail: 'install_r_package(env, \"cellranger\", source=\"cran\")'  (behind the # IDENTITY UNCONFIRMED block)\n  probed keys: ['author_image','authors_recipe','conda','cran','pip']\n  probed.author_image: {\"available\": false, \"repo\": \"rsheets/cellranger\",\n     assessment.recommendation: \"no authoring image/recipe found \u2014 route by the registry tiers (conda/pip/...) as usual\"}\n\n=== THE TRAP IS NOT REACHABLE TODAY \u2014 for the WRONG reason (re-verified) ===\n$ grep -rniE 'hub\\.docker|docker\\.io|registry-1|auth\\.docker' agent/skills/   ->  (no hits)\n$ grep -rn 'ghcr' agent/skills/*.py -> only authors_sources.py:186/228/241 \u2014 the ghcr.io/{owner}/{repo} token+manifest probe\n  author_image is unavailable for cellranger because NOTHING IS PROBED, not because ownership was checked.\n  Note the gate is aimed at rsheets/cellranger \u2014 the spreadsheet parser's repo \u2014 so even the ghcr probe that DID\n  run was asking about the wrong project (the talos aiming bug, same shape, second occurrence).\n\n=== THE TRAP'S PREMISE IS LIVE (curl, re-run this pass) ===\n$ curl -s -o /dev/null -w '%{http_code}' https://hub.docker.com/v2/repositories/<ns>/\n  10xgenomics/cellranger      -> 404      <-- the vendor publishes NO official image\n  cumulusprod/cellranger      -> 200      <-- third-party rebuild of a EULA-gated binary\n  litd/docker-cellranger      -> 200      <-- third-party rebuild\n  nanoporetech/dorado         -> 200      <-- (contrast: a REAL author image, ownership-linkable)\n\nSo a by-NAME Docker Hub probe would find images for cellranger and every one of them would be a stranger's rebuild\nof software 10x does not permit redistributing. The guard this row encodes \u2014 chosen \u2209 {author_image} absent an\nownership link \u2014 must hold the moment the Docker Hub probe lands.\n\n=== QUOTA-INVARIANCE (new) === stubbed 403 -> chosen: cran | id_conf: False | poisoned: True. Identical. assertable=true earned.\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED."
   },
@@ -273,10 +276,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE + ASK, and the refusal should NAME the mismatch ('you asked for 9.0.1; the only hit is CRAN, newest 1.1.0, self-described as a spreadsheet parser \u2014 not the same project'). NOTE REWRITTEN ON VERIFY \u2014 the original encoded a rule that would BREAK measured-working behaviour. It said a version mismatch 'must disqualify the tier', UNSCOPED. That rule refuses an identity-CONFIRMED bioconda pick whenever a user pins a version bioconda doesn't carry (bwa=0.7.19 when bioconda has 0.7.18; any typo; anything newer than the recipe) \u2014 i.e. it taxes exactly the 39/39-correct bioconda path the channel short-circuit is measured to get right, to catch a decoy that identity ALREADY catches. CORRECT SCOPE: a version MISS may disqualify a tier ONLY where identity is UNCONFIRMED, as corroboration for a refusal already justified on identity grounds; it may never override an anchored tier. This row's expect.chosen=null therefore stands on cellranger-registry-decoy's grounds alone \u2014 the 8-major gap is corroboration, not the load-bearing reason. SEPARATE, INDEPENDENTLY TRUE CLAIM (verified from source): a pinned version the chosen tier's primitive cannot express must ERROR, never silently drop \u2014 install_r_package (agent/mcp_tools/env_tools.py:798-806) takes (env_name, name, source, pipeline_id, step, deps_first, functional_check) and has NO version param, so '9.0.1' is unrepresentable and vanishes.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -284,7 +288,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve(tool='cellranger', version='9.0.1')   (live)\n  chosen: 'cran'  | ambiguous: False  | version echoed back: '9.0.1'\n  probed.cran: {\"available\": true, \"latest\": \"1.1.0\", \"summary\": \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 \u2026\"}   <-- 8 majors below the request. Nothing compares them.\n  install_call tail: 'install_r_package(env, \"cellranger\", source=\"cran\")'   <-- DROP #2: 9.0.1 is GONE from the call\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"reason\": \"no_domain_signal\"}\nBOTH SILENT DROPS CONFIRMED: byte-identical tier + install_call to the bare `cellranger` run.\n\nDROP #2's CAUSE, READ FROM SOURCE (not inferred):\n$ grep -n 'def install_r_package' -A 12 agent/mcp_tools/env_tools.py\n  798: def install_r_package(env_name, name, source, pipeline_id='', step=0, deps_first=[], functional_check='') -> dict\n  ==> NO version parameter exists. The pin is unrepresentable in the emitted primitive.\n\nDROP #1's CAUSE, VERIFIED AT THE PROBE BOUNDARY:\n$ R.probe_cran('cellranger').keys()  -> ['available','bug_reports','latest','summary','url']   <-- no versions[]; never requested\n$ R.probe_conda('samtools').keys()   -> ['available','channel','latest','summary']             <-- no versions[]\n$ json.load(urlopen('https://api.anaconda.org/package/bioconda/samtools'))['versions'] -> len 41, tail ['1.23','1.23.1','1.24']\n  anaconda DOES return the full list; probe_conda fetches it, feeds _pick_latest, and DISCARDS it. Confirmed as recorded.\n  (This also shows the ORIGINAL unscoped rule was not merely wrong but unimplementable: no probe returns a version LIST to match against.)\n\n=== QUOTA-INVARIANCE (new) === stubbed 403 -> chosen: cran | id_conf: False | poisoned: True. Identical. assertable=true earned.\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED."
   },
@@ -444,10 +448,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE AND ASK: no registry candidate can satisfy 7.0.0 (CRAN cellranger maxes at 1.1.0 and self-describes as a spreadsheet cell-range parser). Return candidates + a next call (github_repo / vendor tarball URL). Separately: the cran branch of _install_call (resolver.py:729) is literally `install_r_package(env, \"{tool}\", source=\"cran\")` \u2014 no version slot exists at all, so a requested version is structurally undroppable-in-silence; that must be a hard error, not a pretend-honored request. Assert on chosen/identity_confirmed/ambiguous only; CRAN's 1.1.0 is a dormant-package fact and is NOT asserted.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -455,7 +460,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='cellranger', version='7.0.0')\"\n  chosen    = 'cran'\n  ambiguous = False\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"evidence\": [], \"self_description\": \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \\\"A1:D10\\\" style of cell range specification.\", \"reason\": \"no_domain_signal\"}\n  poisoned  = True\n  install_call_last = ['install_r_package(env, \"cellranger\", source=\"cran\")']   <-- version='7.0.0' ABSENT\n  probed = conda:{available:false} pip:{available:false} cran:{available:true, latest:'1.1.0'}\n\nCODE GROUND TRUTH (resolver.py:729): `if tier == \"cran\": return f'install_r_package(env, \"{tool}\", source=\"cran\")'` \u2014 the cran branch has NO version parameter.\nREPRODUCED TODAY. Recorded actual_today confirmed on every assertable field."
   },
@@ -585,11 +590,12 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Digitized Observatory Resources for Automated Data Operations', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE + ASK: ONT dorado is in no registry; the lone PyPI hit is astronomy. Load-bearing REPORT assertion: the assessment MUST NOT say 'no authoring image/recipe found' \u2014 the image probe covers ghcr.io ONLY, so it must render Docker Hub/quay as UNCHECKED (Rule 2), exactly as the existing authors_gate_error path already does. Adopting nanoporetech/dorado by digest is only legitimate once an OWNERSHIP link exists (see cellranger-third-party-image-trap); from a bare name there is no anchor, so refuse. Same implementation warning as cellranger-registry-decoy: chosen=null WITH identity_confirmed=false requires the refusal path to carry the identity verdict (resolver.py:944). The 'must not say no authoring image/recipe found' clause is checkable but it is a string in OUR OWN code \u2014 assert it as substring-absence on assessment.recommendation, never against registry text.",
     "authors_gate": "not_assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -597,7 +603,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "report",
    "probe_evidence": "$ R.resolve(tool='dorado')   (live)\n  chosen: 'pip'  | ambiguous: False\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"evidence\": [], \"reason\": \"no_domain_signal\",\n             \"self_description\": \"Digitized Observatory Resources for Automated Data Operations\"}\n  install_call tail: 'install_pip_package(env, \"dorado\", version=\"1.2.0\")'  (behind the # IDENTITY UNCONFIRMED block)\n  probed.pip: {\"available\": true, \"latest\": \"1.2.0\", \"home_page\": \"https://github.com/Mucephie/DORADO\"}\n  R._github_owner_repo(probed,'') -> 'Mucephie/DORADO'          <-- gate aimed at the ASTRONOMY repo\n  probed.author_image: {\"available\": false, \"repo\": \"Mucephie/DORADO\",\n     \"assessment\": {\"author_image\": null, \"authors_recipe\": null, \"env_specs\": [], \"build_scripts\": [],\n                    \"reconstruction_incomplete\": false,\n                    \"recommendation\": \"no authoring image/recipe found \u2014 route by the registry tiers (conda/pip/...) as usual\"}}\n  probed.authors_gate_error: null   <-- nothing errored, so this renders as a CHECKED fact\n\nTHE BLINDNESS, RE-PROVEN TODAY:\n$ grep -rniE 'hub\\.docker|docker\\.io|registry-1|auth\\.docker' agent/skills/   ->  (no hits)\n$ grep -rn 'ghcr' agent/skills/*.py -> authors_sources.py:186 _default_probe_ghcr_image; :228 ghcr.io/token; :241 ghcr.io/v2/{ref}/manifests\n  The ONLY image probe is ghcr.io/{owner}/{repo}. (quay.io appears only in biocontainers.py \u2014 the pure-conda adopt path, not this gate.)\n$ curl -s -o /dev/null -w '%{http_code}' https://hub.docker.com/v2/repositories/nanoporetech/dorado/  -> 200\n  ONT's real image EXISTS and is unreachable by any code path in the repo.\n\n=== QUOTA-INVARIANCE (new) ===\n$ stubbed 403 on api.github.com+ghcr.io: resolve(tool='dorado') -> chosen: pip | id_conf: False | poisoned: True\nIdentical asserted surface; the decision is PyPI's. assertable=true earned.\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED."
   },
@@ -641,11 +647,12 @@
    },
    "expect": {
     "chosen": null,
-    "assertable": true,
+    "assertable": false,
     "ambiguous": null,
     "note": "MUST refuse: conda/cran absent and the ONLY hit's own metadata points at Mucephie/DORADO (astronomy) \u2014 CONTRARY evidence, not missing evidence. Return candidates + demand github_repo/vendor URL, exactly like the verified no-registry-hit template (chosen=None, identity=None, install_call=None, recommended_repo set). No install_call may survive, poisoned or not. ASSERT: chosen is None AND install_call is None AND identity is None. AMBIGUOUS NULLED (was false): it is false only because CRAN happens to have no 'dorado' today \u2014 a third party publishing one flips it with no change to us. Not our decision, not assertable. Backed by measurement: this is the pip-after-conda-missed path, 9/10 wrong.",
-    "unassertable_reason": null,
-    "refusal_reason": "investigation_contradicted"
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Digitized Observatory Resources for Automated Data Operations', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -653,7 +660,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ python3 -c \"import sys; sys.path.insert(0,'/Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent'); from agent.skills import resolver as R; R.resolve(tool='dorado')\"   # LIVE registries, re-run 2026-07-16 by the verifier\nchosen    = 'pip'\nambiguous = False\nprobed keys = ['author_image', 'authors_recipe', 'conda', 'cran', 'pip']\n  author_image     avail=False repo='Mucephie/DORADO'\n  authors_recipe   avail=False repo='Mucephie/DORADO'\n  conda            avail=False\n  cran             avail=False\n  pip              avail=True  latest='1.2.0' summary='Digitized Observatory Resources for Automated Data Operations'\nidentity.confirmed = False | anchor='none' | reason='no_domain_signal'\nidentity.note=='' = False\ninstall_call is None = False | poisoned(startswith '#') = True\nLAST LINE = 'install_pip_package(env, \"dorado\", version=\"1.2.0\")'\nrecommended_repo = None | discovered_repos n = 0\n\n>> actual_today REPRODUCED verbatim, including the author tiers harvesting the decoy repo (Mucephie/DORADO).\n\nTEMPLATE GROUNDING (new \u2014 the recorded row asserted the refusal template without checking it exists):\n$ R.resolve(tool='Genome_Assembly_Booster')\nchosen=None | identity=None | install_call=None | recommended_repo='baumannlab/Genome_Assembly_Booster' | discovered n=1\n>> The shape expect demands is one resolve() ALREADY emits. The expect is a re-route to an existing path, not a new invention."
   },
@@ -671,10 +678,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Digitized Observatory Resources for Automated Data Operations', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE + ASK. Version is a FILTER, never an ANCHOR: a HIT must leave identity unresolved (PyPI's astronomy dorado genuinely ships 1.1.0 \u2014 independent projects reach the same two-digit semver), so the exact-version match must NOT promote pip; fall through and ask for github_repo. Guard: supplying MORE intent must never make the answer more confident and equally wrong. Read WITH cellranger-version-disconfirms-but-is-dropped: that row's MISS-may-disqualify rule is now scoped to identity-UNCONFIRMED tiers only, and THIS row is the reason the HIT half may never act at all. Together: a version may SUBTRACT a tier we already doubt, never ADD confidence to one.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -682,7 +690,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve(tool='dorado', version='1.1.0')   (live)\n  chosen: 'pip'  | ambiguous: False  | version echoed back: '1.1.0'\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"reason\": \"no_domain_signal\",\n             \"self_description\": \"Digitized Observatory Resources for Automated Data Operations\"}\n  install_call tail: 'install_pip_package(env, \"dorado\", version=\"1.1.0\")'\n  probed.pip.latest: '1.2.0'\n\nVERSION NEVER REACHES RANKING \u2014 PROVEN BY DIFF against the bare `dorado` run:\n  chosen, ambiguous, identity, probed.* are ALL byte-identical; the ONLY difference in the entire\n  result is the version string pasted into install_call. It is echoed + pasted, never compared.\n\nTHE COLLISION IS REAL (live PyPI; recorded as context, NOT asserted on \u2014 a release list drifts):\n$ python -c \"json.load(urlopen('https://pypi.org/pypi/dorado/json'))\"\n  '1.1.0' present on the ASTRONOMY package: True\n  info.summary: 'Digitized Observatory Resources for Automated Data Operations'\nSo the user's exact-version signal lands on a REAL release of the WRONG project, and the emitted call pins it.\nThe adversarial 'fix' (treat an exact-version hit as confirmation) would make this WORSE.\n\n=== QUOTA-INVARIANCE (new) === stubbed 403 -> chosen: pip | id_conf: False | poisoned: True. Identical. assertable=true earned.\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED."
   },
@@ -700,10 +708,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'CodeAct-style AI agent framework for Python', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE AND ASK \u2014 'vendor-gated' is a first-class outcome, not a dead end the router falls out of. DRAGEN is in no registry, is licence+hardware bound, and has NO automatable install path; PyPI's 'dragen' is an unrelated AI agent framework. Say that, and ask for the vendor artifact. Per feedback-earn-the-refusal this refusal is EARNED: the registries were probed and what they returned FAILS our conditions (reason (b)) \u2014 it is not a lazy shrug. A poisoned comment is NOT a refusal: the last line is still a runnable pip install of the wrong software.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -711,7 +720,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ python3 -c \"from agent.skills import resolver as R; R.resolve('dragen')\"  # LIVE, 2026-07-16\n  chosen           = 'pip'\n  ambiguous        = False\n  identity         = {'confirmed': False, 'self_description': 'CodeAct-style AI agent framework for Python'}\n  install_call_poisoned = True\n  LAST LINE        = 'install_pip_package(env, \"dragen\", version=\"0.3.1\")'\nRestored by hand: a structure agent dropped this scenario (dragen-guppy-vendor-eula-become-unrelated-software) from its family."
   },
@@ -986,11 +995,12 @@
    },
    "expect": {
     "chosen": null,
-    "assertable": true,
+    "assertable": false,
     "ambiguous": null,
     "note": "MUST refuse. ASSERT ONLY: chosen is None AND install_call is None AND identity is None. SCOPED DOWN from the recorded row: the demand that the resolver 'say why it is PERMANENT / vendor-gated' and 'offer no github_repo prompt' is NOT mechanically checkable \u2014 it needs a hardcoded vendor registry, and no field in this schema expresses prose content. Keep it as design intent, assert only the refusal. AMBIGUOUS NULLED (was false): contingent on no CRAN/conda 'guppy' existing \u2014 third-party state.",
-    "unassertable_reason": null,
-    "refusal_reason": "investigation_contradicted"
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Guppy-PE -- A Python Programming Environment', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -998,7 +1008,7 @@
     "install_call_poisoned": false,
     "authors_gate": "no_repo"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ python3 -c \"... R.resolve(tool='guppy')\"   # LIVE, re-run 2026-07-16\nchosen    = 'pip'\nambiguous = False\nprobed keys = ['conda', 'cran', 'pip']     <-- NO author tiers (no github URL in the decoy's metadata to harvest)\n  conda avail=False\n  cran  avail=False\n  pip   avail=True latest='0.1.11' summary='Guppy-PE -- A Python Programming Environment'\nidentity.confirmed = False | anchor='none' | reason='no_domain_signal'\ninstall_call poisoned = True\nLAST LINE = 'install_pip_package(env, \"guppy\", version=\"0.1.11\")'\nrecommended_repo = None | discovered_repos n = 0\n\n>> actual_today REPRODUCED verbatim, including the structural point: probed has no author_image key at all \u2014 the fallback tier was never constructed, not merely shut."
   },
@@ -1380,10 +1390,11 @@
    "expect": {
     "chosen": null,
     "ambiguous": null,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE AND ASK. Assert chosen is None AND the 'identity' KEY IS ABSENT (assess_identity runs only `if chosen:` \u2014 absence must render as absence, Rule 2; the vep template). Choosing CRAN's spreadsheet helper and warning about it is not a refusal \u2014 the last line of install_call is still an executable install of the wrong tool. Refusal is measurement-backed: cran-chosen-after-conda-missed is 9/10 WRONG, and this is NOT a bioconda-anchored name, so it does not collide with the keep-the-short-circuit constraint. Do NOT assert discovered_repos/recommended_repo (rate-limit-fragile). ambiguous NOT asserted \u2014 false only because PyPI happens to have no 'cellranger' today; registry state, not the row's point.",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "cran",
@@ -1391,7 +1402,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "why_hard": "Today's checker gets this right BY LUCK \u2014 the spreadsheet description happens to contain no word from an 86-word list; that is the absence of a coincidence, not detection.",
    "probe_evidence": "$ python verify_probe.py\n\"registry-fallthrough-obviously-wrong\": {\"kwargs\": {\"tool\": \"cellranger\"}, \"chosen\": \"cran\", \"available\": [\"cran\"], \"ambiguous\": false, \"identity_confirmed\": false, \"identity_anchor\": \"none\", \"identity_reason\": \"no_domain_signal\", \"self_description\": \"Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \\\"A1:D10\\\" style of cell range specification.\", \"install_call_poisoned\": true, \"install_call_last_line\": \"install_r_package(env, \\\"cellranger\\\", source=\\\"cran\\\")\", \"recommended_repo\": \"<ABSENT>\", \"n_discovered\": 0, \"probed_avail\": {\"cran\": \"1.1.0\"}}\n\nDiscovery never ran \u2014 gated on `chosen is None` (resolver.py:876), and a CRAN hit makes that false, so 10XGenomics/cellranger is never surfaced. Recorded routing bug CONFIRMED.\n\nVERDICT: recorded actual_today CONFIRMED verbatim. chosen='cran' != expected None."
@@ -1551,11 +1562,12 @@
    "expect": {
     "chosen": null,
     "ambiguous": false,
-    "assertable": true,
-    "unassertable_reason": null,
+    "assertable": false,
+    "unassertable_reason": "DEFERRED TO THE LLM IDENTITY EVAL (Decision 1, 2026-07-18). resolve() surfaces the identity FACTS (identity.self_description = 'Talos Hyperparameter Tuning for Keras', repo_anchored=false) but the only hit is a VALID, repo-real package in the WRONG DOMAIN. A resolver cannot OBJECTIVELY refuse a real package at a real version \u2014 judging that its domain contradicts the intent is the LLM ride's call, made by READING the surfaced self_description. A resolve()-probe structurally cannot observe that judgment, so this row is graded by the identity eval (not yet built \u2014 see known_gaps), NOT by chosen. expect.chosen=None is PRESERVED unchanged as that eval's target.",
     "note": "MUST REFUSE + ASK ('PyPI talos is a Keras tuner; if you mean a bio pipeline, give me github_repo='). A decoy's metadata must NEVER seed the authors gate: _github_owner_repo() may only return a repo that is independently anchored (user-supplied, or extracted from a registry entry that ALREADY passed identity). With no anchored repo the gate must not run and must report 'authors-path NOT assessed: no anchored repo for talos' \u2014 never 'no authoring image/recipe found', which is a claim about the USER'S tool generated from a different project's files. Same implementation warning as the other refusal rows: chosen=null WITH identity_confirmed=false needs the refusal path to carry the identity verdict (resolver.py:944 gates identity behind `if chosen:` today).",
     "authors_gate": "not_assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "graded_by": "llm_identity_eval"
    },
    "actual_today": {
     "chosen": "pip",
@@ -1563,7 +1575,7 @@
     "install_call_poisoned": true,
     "authors_gate": "not_assessed"
    },
-   "is_correct_today": false,
+   "is_correct_today": null,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve(tool='talos')   (live)\n  chosen: 'pip'  | ambiguous: False\n  identity: {\"confirmed\": false, \"anchor\": \"none\", \"evidence\": [], \"reason\": \"no_domain_signal\",\n             \"self_description\": \"Talos Hyperparameter Tuning for Keras\"}\n  install_call: '# IDENTITY UNCONFIRMED: the pip entry for \\'talos\\' describes itself as \"Talos Hyperparameter Tuning for Keras\" \u2026\\n# ---- confirm the above IS the tool you mean before running: ----\\ninstall_pip_package(env, \"talos\", version=\"1.4\")'\n  probed.pip: {\"available\": true, \"latest\": \"1.4\", \"project_urls\": {\"Download\": \"https://github.com/autonomio/talos/\", \"Homepage\": \"http://autonom.io\"}}\n  probed.conda: {\"available\": false}\n\nTHE AIMING BUG, CONFIRMED:\n  R._github_owner_repo(probed,'') -> 'autonomio/talos'        <-- the DECOY's repo, extracted from PyPI metadata\n  probed.author_image: {\"available\": false, \"repo\": \"autonomio/talos\",\n     \"assessment\": {\"author_image\": null, \"authors_recipe\": null, \"env_specs\": [], \"build_scripts\": [],\n                    \"reconstruction_incomplete\": false,\n                    \"recommendation\": \"no authoring image/recipe found \u2014 route by the registry tiers (conda/pip/...) as usual\"}}\n  probed.authors_recipe.available: False\n  probed.authors_gate_error: None      <-- the gate RAN, cleanly, against the wrong project\n\nSo the entire authors'-recipe reliability gate \u2014 the mechanism that exists BECAUSE populationgenomics/talos's\nDockerfile compiles a bcftools fork a pip reconstruction silently drops \u2014 executed against autonomio/talos and\nreturned a clean, correct, irrelevant negative. Every step's provenance is impeccable; the conclusion is about a\nproject the user never mentioned. reconstruction_incomplete=false is TRUE of the Keras tuner and FALSE of the tool asked for.\n\n=== QUOTA-INVARIANCE (new) === stubbed 403 -> chosen: pip | id_conf: False | poisoned: True. Identical asserted\nsurface: the decision is PyPI's, so this row does not ride the GitHub budget. assertable=true earned.\nREPRODUCES EXACTLY; recorded_verdict=false CONFIRMED."
   },
@@ -1645,12 +1657,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "pip",
+    "chosen": null,
     "ambiguous": false,
-    "install_call_poisoned": true,
-    "authors_gate": "not_assessed"
+    "install_call_poisoned": false,
+    "authors_gate": "not_assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='talos', version='7.0.2')\"\n  chosen    = 'pip'\n  ambiguous = False\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"Talos Hyperparameter Tuning for Keras\", \"reason\": \"no_domain_signal\"}\n  poisoned  = True\n  install_call_last = ['install_pip_package(env, \"talos\", version=\"7.0.2\")']   <-- a version PyPI does not have\n  probed = pip:{available:true, latest:'1.4'}\n\nGROUND TRUTH (live PyPI /pypi/talos/json): releases tail = ['1.2.3','1.3','1.4']; any 7.x -> []  (max = 1.4)\nCODE (resolver.py:706): `v = version or detail.get(\"latest\") or \"\"` \u2014 the requested version is passed through unchecked.\nREPRODUCED TODAY. Recorded verdict False confirmed."
   },
@@ -1691,6 +1704,12 @@
    "detail": "The measurement is BUILT (reverse-theme-park, step-1 of the grid climb): resolve() emits decision.refusal_reason \u2208 {needs_user_input, investigation_empty, investigation_contradicted, investigation_incomplete}, probe() forwards it, _is_correct asserts it INSIDE the chosen==null branch (opt-in, like authors_gate), and all 29 assertable refusal rows now carry expect.refusal_reason. A refusal that names the WRONG reason FAILS \u2014 the 3 rows that refuse today (both vep rows + GAPIT3) are graded EARNED on needs_user_input (discovery FOUND ensembl-vep / candidate repos), not merely on chosen==null; a resolver that refused without investigating would emit the default investigation_empty and go red. The other 26 refusal rows do NOT refuse yet \u2014 they pick a wrong tier (dorado\u2192PyPI-astronomy, ambiguous 'ape'\u2192pip) \u2014 so their expect.refusal_reason is the roadmap TARGET the climb must hit, VISIBLE as red rows, not a blind spot. THE RESIDUAL: the fourth reason, investigation_incomplete, is the honest label for a probe that could not COMPLETE (a rate-limited/unreachable tier, or a failed github discovery). Without a GITHUB_TOKEN the github-backed probes rate-limit, so a refusal that SHOULD be needs_user_input or investigation_contradicted comes back investigation_incomplete \u2014 an earned refusal wearing an unfinished one's face. The corpus cannot separate those in a token-less run, which is why the quota-coupled rows (exomiser; the bcftools 403 case) stay assertable:false.",
    "why_not_fixed_here": "The mechanism landed offline as a pure classifier + plumbing, hermetically tested (tests/test_probe_honesty.py drives the REAL resolve path at the probe seam and proves all four reasons + the unreachable-beats-contradicted precedence). What an offline pass CANNOT do is grade the incomplete-vs-earned boundary: that needs either a GITHUB_TOKEN (so the github-backed probes complete and the reason resolves to its earned value) or a per-row 403 stub (the bcftools pattern) so investigation_incomplete is reproduced DETERMINISTICALLY rather than riding on live quota. Annotating those rows against a token-less probe would bake THIS environment's rate-limit into the corpus \u2014 exactly the volatile-registry-state trap the stability rule forbids.",
    "what_tier_8_must_do": "Re-probe the 29 annotated refusal rows WITH a GITHUB_TOKEN and promote each whose resolver now refuses for its expect.refusal_reason \u2014 that IS the grid climb, and most are interpretation reds today (the wrong tier is picked, so no refusal fires at all). For the quota-coupled rows that can only refuse via an unreachable probe, add a 403 stub (like test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo) so investigation_incomplete is graded deterministically instead of left assertable:false."
+  },
+  {
+   "gap": "12 domain-decoy rows are DEFERRED to an LLM identity eval that does not exist yet \u2014 nothing catches them today",
+   "detail": "Decision 1 (2026-07-18) drew the resolver-vs-LLM boundary: the resolver refuses only OBJECTIVE under-determination (cross-registry ambiguity, a non-existent version) and SURFACES identity FACTS (identity.self_description, repo_anchored) for everything else; judging that a hit is the WRONG DOMAIN is the LLM ride's call. So bare `cellranger` \u2192 CRAN's 'Translate Spreadsheet Cell Ranges' parser, `dorado` \u2192 PyPI's 'Digitized Observatory Resources' astronomy package, `dragen` \u2192 a 'CodeAct-style AI agent framework', `guppy` \u2192 'A Python Programming Environment', bare `talos` \u2192 'Talos Hyperparameter Tuning for Keras' are ALL valid, repo-real packages at real versions. The resolver has no objective basis to refuse any of them, so these 12 rows are marked graded_by='llm_identity_eval', assertable=false, is_correct_today=null \u2014 a THIRD state, out of BOTH the reach-intent and the do-not buckets, and the meter's % is now over the 47 resolve-gradeable rows. expect.chosen=None is PRESERVED unchanged as the eval's target (Rule 3 \u2014 expect is never rewritten).",
+   "why_not_fixed_here": "The grader does not exist. resolve() already emits the disconfirming evidence (identity.self_description = the tool's OWN off-domain words + repo_anchored=false), but nothing reads it and decides 'that is not the tool you meant' \u2014 that is Decision 4, an LLM-in-the-loop eval, deliberately held until Decision 2 (identity-to-disk) persists self_description onto the frozen record it would grade. Until then these 12 ship: a bare `cellranger` resolves to a spreadsheet parser with an install_call, and only a human reading the surfaced description catches it. Marking them deferred is a VISIBLE parking with a stated reason, NOT a pass \u2014 counting them green would be the exact 'green with the wrong tool' lie this corpus exists to expose.",
+   "what_tier_8_must_do": "Build the LLM identity eval (Decision 4): feed the surfaced identity facts (self_description, repo_anchored, channel) to the ride and score whether it refuses-and-asks on a wrong-domain hit. Each row it grades correctly PROMOTES out of the deferred bucket into a real pass. Until it exists, do NOT re-grade these on a resolve()-probe (that reopens the deleted _DOMAIN_TERMS word-list the boundary was drawn to kill), and do NOT count the deferral as coverage \u2014 12 real intents reach the wrong tool today with nothing to stop them."
   },
   {
    "gap": "the identity half of the `report` gap is DISSOLVED, and its replacement is not yet measured",

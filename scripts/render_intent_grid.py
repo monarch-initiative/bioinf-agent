@@ -80,8 +80,9 @@ h2{font-size:15px;margin:30px 0 10px;color:var(--acc);text-transform:uppercase;l
 .m .l{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.07em}
 .bar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:6px 0 24px;border:1px solid var(--line)}
 .bar i{display:block}
-.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .defer{color:var(--acc)}
 .bg-ok{background:var(--ok)} .bg-warn{background:var(--warn)} .bg-bad{background:var(--bad)}
+.bg-defer{background:var(--acc)}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{text-align:left;color:var(--dim);font-weight:400;border-bottom:1px solid var(--line);
 padding:7px 8px;text-transform:uppercase;font-size:10.5px;letter-spacing:.07em}
@@ -108,6 +109,14 @@ def _reason_pill(reason, cls: str = "") -> str:
     return f' <span class="pill {cls}">{_e(reason)}</span>'
 
 
+def _is_deferred(row: dict) -> bool:
+    """A domain-decoy row graded by the LLM identity eval, not the resolve-probe (Decision 1).
+    resolve() surfaces the off-domain identity.self_description; refusing a VALID, repo-real,
+    wrong-domain package is the LLM ride's call, which a resolve()-probe structurally cannot
+    observe. So it is neither a resolve success nor a resolve failure — a third state."""
+    return row.get("expect", {}).get("graded_by") == "llm_identity_eval"
+
+
 def _chain(row: dict) -> str:
     """The row's journey, drawn: what they typed → what we chose → what they meant.
     The whole grid in one cell."""
@@ -120,6 +129,15 @@ def _chain(row: dict) -> str:
     got = row.get("actual_today", {}).get("chosen")
     want = row.get("expect", {}).get("chosen")
     exp_r = row.get("expect", {}).get("refusal_reason")
+    if _is_deferred(row):
+        # NOT red, NOT green: resolve picks a valid but wrong-domain tier; the LLM must catch
+        # it, reading the identity.self_description resolve surfaces. Show that, neutrally.
+        got_s = (f'<span class="defer">picks {_e(got)}</span>'
+                 f'<span class="arrow">·</span>'
+                 f'<span class="pill defer">deferred → identity eval</span>')
+        return (f'<code>{_e(typed)}</code><span class="arrow">→</span>{got_s}'
+                f'<span class="arrow">·want</span>'
+                f'<span class="note">refuse+ask (the LLM\'s call)</span>')
     got_s = f'<span class="bad">{_e(got)}</span>' if got != want else f'<span class="ok">{_e(got)}</span>'
     if got is None:
         # a refusal TODAY — badge the reason it named, green if it matches the earned target
@@ -136,9 +154,17 @@ def _chain(row: dict) -> str:
 def render(corpus: dict) -> str:
     rows = [r for r in corpus.get("rows", []) if isinstance(r, dict)]
     total = len(rows)
-    ok = [r for r in rows if r.get("is_correct_today")]
-    wrong = [r for r in rows if not r.get("is_correct_today")]
-    unassertable = [r for r in rows if not r.get("expect", {}).get("assertable", True)]
+    # THREE states, not two (Decision 1, 2026-07-18). The domain-decoy rows are graded by the
+    # LLM identity eval, not the resolve-probe — resolve cannot OBJECTIVELY refuse a valid,
+    # repo-real, wrong-domain package, so those rows are neither a resolve success nor a
+    # resolve failure. They come out of BOTH ok and wrong; the meter's % is over what the
+    # resolve-probe can actually grade. Counting them as red claimed resolve failed a job
+    # that was never resolve's — the exact dishonesty this re-scope removes.
+    deferred = [r for r in rows if _is_deferred(r)]
+    gradeable = [r for r in rows if not _is_deferred(r)]
+    ok = [r for r in gradeable if r.get("is_correct_today")]
+    wrong = [r for r in gradeable if not r.get("is_correct_today")]
+    unassertable = [r for r in gradeable if not r.get("expect", {}).get("assertable", True)]
 
     by_gap: dict[str, list] = {}
     for r in wrong:
@@ -154,18 +180,27 @@ def render(corpus: dict) -> str:
              'no answer — and a terminal can be green with the wrong tool in it.</p>')
 
     # -- the meter -----------------------------------------------------------
-    pct = (100 * len(ok) // total) if total else 0
+    # % is over GRADEABLE rows — the ones a resolve()-probe can actually judge. The deferred
+    # bucket is shown as its own figure, never folded into a denominator it doesn't belong in.
+    denom = len(gradeable)
+    pct = (100 * len(ok) // denom) if denom else 0
     P.append('<div class="meter">')
     P.append(f'<div class="m"><div class="n">{total}</div><div class="l">scenarios</div></div>')
-    P.append(f'<div class="m"><div class="n ok">{len(ok)}</div><div class="l">reach intent</div></div>')
-    P.append(f'<div class="m"><div class="n bad">{len(wrong)}</div><div class="l">do not</div></div>')
-    P.append(f'<div class="m"><div class="n">{pct}%</div><div class="l">correct today</div></div>')
+    P.append(f'<div class="m"><div class="n ok">{len(ok)}</div>'
+             f'<div class="l">reach intent</div></div>')
+    P.append(f'<div class="m"><div class="n bad">{len(wrong)}</div>'
+             f'<div class="l">gradeable, do not</div></div>')
+    P.append(f'<div class="m"><div class="n">{pct}%</div>'
+             f'<div class="l">correct of {denom} gradeable</div></div>')
+    if deferred:
+        P.append(f'<div class="m"><div class="n defer">{len(deferred)}</div>'
+                 f'<div class="l">deferred → identity eval</div></div>')
     if unassertable:
         P.append(f'<div class="m"><div class="n warn">{len(unassertable)}</div>'
                  f'<div class="l">unassertable</div></div>')
     P.append("</div>")
-    if total:
-        w_ok = 100 * len(ok) // total
+    if denom:
+        w_ok = 100 * len(ok) // denom
         P.append(f'<div class="bar"><i class="bg-ok" style="width:{w_ok}%"></i>'
                  f'<i class="bg-bad" style="width:{100 - w_ok}%"></i></div>')
 
@@ -207,9 +242,10 @@ def render(corpus: dict) -> str:
         P.append("</table></div>")
 
 
-    # -- the rows, worst first ----------------------------------------------
+    # -- the rows, worst first (deferred sink to the bottom — they aren't failures) ---------
     order = {"interpretation": 0, "report": 1, "outcome": 2, "none": 3}
-    rows_sorted = sorted(rows, key=lambda r: (order.get(r.get("gap_class"), 9),
+    rows_sorted = sorted(rows, key=lambda r: (1 if _is_deferred(r) else 0,
+                                              order.get(r.get("gap_class"), 9),
                                               r.get("is_correct_today", False),
                                               r.get("id", "")))
     P.append("<h2>Every scenario</h2>")
@@ -217,15 +253,23 @@ def render(corpus: dict) -> str:
              'the WHY its ask must name (needs_user_input · investigation_empty · '
              'investigation_contradicted · investigation_incomplete). A refusal is EARNED '
              'only when it names the right one; <span class="pill ok">green</span> = the '
-             'resolver refuses today and names it, so chosen=null is not a lazy pass.</p>')
+             'resolver refuses today and names it, so chosen=null is not a lazy pass. '
+             'The <span class="pill defer">deferred → identity eval</span> rows sink to the '
+             'bottom: resolve picks a valid but WRONG-DOMAIN package (a real CRAN/PyPI hit), '
+             'and refusing it is the LLM ride\'s call — reading the '
+             '<code>identity.self_description</code> resolve surfaces — which a resolve()-probe '
+             'cannot observe. Not a resolve failure; a different grader\'s job.</p>')
     P.append('<div class="scroll"><table>')
     P.append("<tr><th>gap</th><th>what the user typed → what we do → what they meant</th>"
              "<th>the intent</th><th>why it's hard</th></tr>")
     for r in rows_sorted:
         gap = r.get("gap_class", "?")
         glyph, cls, _ = GAPS.get(gap, ("?", "warn", ""))
-        flag = "" if r.get("expect", {}).get("assertable", True) else \
-            ' <span class="pill warn">unassertable</span>'
+        if _is_deferred(r):
+            glyph, flag = "⏸", ""
+        else:
+            flag = "" if r.get("expect", {}).get("assertable", True) else \
+                ' <span class="pill warn">unassertable</span>'
         P.append(f'<tr><td>{glyph}</td><td>{_chain(r)}{flag}<br>'
                  f'<span class="note">{_e(r.get("id"))}</span></td>'
                  f'<td class="note">{_e(r.get("intent", ""))[:150]}</td>'
@@ -254,9 +298,12 @@ def main() -> int:
     corpus = json.loads(CORPUS.read_text())
     OUT.write_text(render(corpus))
     rows = corpus.get("rows", [])
+    deferred = sum(1 for r in rows if _is_deferred(r))
+    gradeable = len(rows) - deferred
     ok = sum(1 for r in rows if r.get("is_correct_today"))
-    print(f"  wrote {OUT.relative_to(ROOT)}  ({len(rows)} scenarios · {ok} reach intent · "
-          f"{len(rows) - ok} do not · probed {corpus.get('probed_on', '?')})")
+    print(f"  wrote {OUT.relative_to(ROOT)}  ({len(rows)} scenarios · {ok}/{gradeable} "
+          f"gradeable reach intent · {gradeable - ok} do not · {deferred} deferred → identity "
+          f"eval · probed {corpus.get('probed_on', '?')})")
     return 0
 
 
