@@ -382,3 +382,70 @@ def test_conda_disambiguates_a_pypi_cran_collision_in_context(monkeypatch):
     d = R.resolve("ape")
     assert d["chosen"] == "conda"         # conda is the pick; the pip/cran collision is moot
     assert d["refusal_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# version existence — a requested version the chosen tier does not carry must not ship as
+# a byte-identical unsolvable pin (samtools=9.99 looks exactly like a valid samtools=1.21).
+# ---------------------------------------------------------------------------
+def test_a_requested_version_absent_from_the_chosen_tier_refuses(monkeypatch):
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "versions": ["1.17", "1.19", "1.20", "1.21"],
+                        "summary": "SAM/BAM tools"})
+    d = R.resolve("samtools", version="9.99")
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "investigation_contradicted"
+    assert d["install_call"] is None                       # no byte-identical unsolvable pin
+    assert d["version_absent"]["requested"] == "9.99"
+    assert d["version_absent"]["nearest"]                  # nearest real versions surfaced
+    assert "VERSION NOT FOUND" in d["rationale"]
+
+
+def test_a_real_requested_version_still_resolves(monkeypatch):
+    """THE safety property: a version that DOES exist must never be refused, and the pin
+    must survive into the install_call unchanged."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "versions": ["1.17", "1.19", "1.20", "1.21"],
+                        "summary": "SAM/BAM tools"})
+    d = R.resolve("samtools", version="1.20")
+    assert d["chosen"] == "conda"
+    assert d["refusal_reason"] is None
+    assert "samtools=1.20" in d["install_call"]
+
+
+def test_version_existence_normalises_pep440(monkeypatch):
+    """A request for 1.0 matches a stored 1.0.0 (PyPI normalises) — not a false refusal."""
+    _stub_probes(monkeypatch,
+                 pip={"available": True, "latest": "1.0.0",
+                      "versions": ["0.9.0", "1.0.0"], "summary": "x"})
+    d = R.resolve("somepkg", version="1.0")
+    assert d["chosen"] == "pip"
+    assert d["refusal_reason"] is None
+
+
+def test_a_tier_without_a_version_list_is_not_second_guessed(monkeypatch):
+    """cran surfaces no version list, so a version request there is left ALONE — absence of
+    the list is 'we don't know', never 'the version is missing'."""
+    _stub_probes(monkeypatch,
+                 cran={"available": True, "latest": "5.7", "summary": "phylo in R"})
+    d = R.resolve("someRpkg", version="3.0")
+    assert d["chosen"] == "cran"
+    assert d["refusal_reason"] is None
+    assert "version_absent" not in d
+
+
+def test_probe_pypi_excludes_fully_yanked_versions(monkeypatch):
+    """A version whose files are ALL yanked is not installable, so it must not count as
+    present (anndata 0.12.15 was yanked 'released against wrong branch')."""
+    payload = {"info": {"version": "1.1"}, "releases": {
+        "1.0":   [{"yanked": False}],
+        "1.0.5": [{"yanked": True}, {"yanked": True}],   # fully yanked → absent
+        "1.1":   [{"yanked": False}],
+        "1.2":   [],                                     # no files → absent
+    }}
+    monkeypatch.setattr(R, "_fetch_json", lambda url, t=12: (payload, ""))
+    out = R.probe_pypi("anything")
+    assert out["available"] is True
+    assert set(out["versions"]) == {"1.0", "1.1"}

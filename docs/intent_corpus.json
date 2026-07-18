@@ -308,12 +308,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='hmmlearn', version='0.1.1')\"\n  chosen    = 'conda'\n  ambiguous = False\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"Hidden Markov Models in Python with scikit-learn like API.\", \"reason\": \"no_domain_signal\"}\n  poisoned  = True\n  install_call_last = ['install_conda_packages(env, [{\"spec\": \"hmmlearn=0.1.1\", \"channel\": \"conda-forge\"}])']\n  probed = conda:{available:true, latest:'0.3.3', channel:'conda-forge'} | pip:{latest:'0.3.3'}\n\nGROUND TRUTH (live repodata, fetched myself): bioconda/hmmlearn = ['0.1.1','20151031'] | conda-forge/hmmlearn = ['0.2.0'...'0.3.3']\n  => 0.1.1 exists ONLY on bioconda; the emitted channel is conda-forge. The channel was decided by probe_conda's version race (conda-forge 0.3.3 > bioconda 0.1.1); the requested version was never consulted.\n\nEMITTED SPEC PROVEN IMPOSSIBLE (real solver, linux-64 ship platform):\n  IMPOSSIBLE  hmmlearn=0.1.1  [conda-forge]        linux-64\n  SOLVES      hmmlearn=0.1.1  [bioconda,conda-forge] linux-64 -> bioconda/linux-64::hmmlearn-0.1.1-py27h24bf2e0_0   <-- a PYTHON 2.7 build; 'abandoned' is understated\n  (conda-forge also IMPOSSIBLE on osx-arm64, so the defect is not platform-specific; NB the bioconda repair is linux-64-only \u2014 it does NOT solve on osx-arm64)\nREPRODUCED TODAY."
   },
@@ -762,12 +763,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": true,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='anndata', version='0.12.15')\"\n  chosen    = 'conda'\n  ambiguous = True\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"An annotated data matrix.\", \"reason\": \"no_domain_signal\"}   <-- false accusation on a real bio tool\n  poisoned  = True\n  install_call_last = ['install_conda_packages(env, [{\"spec\": \"anndata=0.12.15\", \"channel\": \"conda-forge\"}])']\n  probed = conda:{available:true, latest:'0.13.2', channel:'conda-forge'} | pip:{latest:'0.13.2'} | cran:{latest:'0.8.0'}\n\nGROUND TRUTH (live, fetched myself):\n  conda-forge/anndata repodata: '0.12.15' present -> False | neighbours ['0.12.13','0.12.14','0.12.16','0.12.17',...]   <-- the yank's hole, sitting there unread\n  PyPI anndata 0.12.15: files=2 | yanked: [True, True] | reason: {'released against wrong branch'}\n\nEMITTED SPEC PROVEN IMPOSSIBLE ON THE SHIP PLATFORM (real solver, classified on PackagesNotFoundError):\n  IMPOSSIBLE  anndata=0.12.15  [conda-forge]  linux-64\n  SOLVES      anndata=0.12.16  [conda-forge]  linux-64 -> conda-forge/noarch::anndata-0.12.16-pyhd8ed1ab_0\n  (also IMPOSSIBLE on osx-arm64 \u2014 not a platform artifact)\nREPRODUCED TODAY."
   },
@@ -788,12 +790,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "$ /Users/ao33/miniforge3/bin/python -c \"from agent.skills import resolver as R; R.resolve('hmmlearn', version='0.1.1')\"\nchosen   = 'conda'\nambiguous= False\nidentity = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"Hidden Markov Models in Python, with scikit-learn like API\", \"reason\": \"no_domain_signal\"}\npoisoned = True\ninstall_call (last non-comment line) = install_conda_packages(env, [{\"spec\": \"hmmlearn=0.1.1\", \"channel\": \"conda-forge\"}])\n\n$ ... R.resolve('hmmlearn', version='20151031')\n  install_call (last non-comment line) = install_conda_packages(env, [{\"spec\": \"hmmlearn=20151031\", \"channel\": \"conda-forge\"}])   <-- same defect\n\nGROUND TRUTH (live): bioconda/hmmlearn = ['20151031', '0.1.1']   |   conda-forge/hmmlearn = ['0.2.0'...'0.3.3']\n  => 0.1.1 exists ONLY on bioconda; the emitted channel is conda-forge. The channel was decided by probe_conda's version race; the requested version was never consulted.\n\nEMITTED SPEC PROVEN IMPOSSIBLE (real solver):\n$ conda create --dry-run -c conda-forge --override-channels 'hmmlearn=0.1.1'\n  Solving environment: ...working... failed\n  PackagesNotFoundError: The following packages are not available from current channels:\n    - hmmlearn=0.1.1*\nCONFIRMS recorded_verdict=False."
   },
@@ -817,12 +820,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve('gatk', version='4.5.0.0')  (live, 2026-07-16) \u2014 REPRODUCED EXACTLY as recorded\n  chosen='conda' | identity.confirmed=True | anchor='bioconda-channel'\n  self_description='The full Genome Analysis Toolkit (GATK) framework, license restricted.'\n  POISONED=False | install_call='install_conda_packages(env, [{\"spec\": \"gatk=4.5.0.0\", \"channel\": \"bioconda\"}])'\n  probed avail={'conda': True, 'pip': False, 'cran': False} | alternatives=[]\n\nTHE SPEC IS UNSATISFIABLE. Live probe (VOLATILE \u2014 evidence only, NOT asserted):\n  probe_conda('gatk4') -> {'available': True, 'channel': 'bioconda', 'latest': '4.6.2.0', 'summary': 'Genome Analysis Toolkit (GATK4)'}\n  bioconda `gatk` version list is 3.x-only (3.5/3.6/3.7/3.8); 4.5.0.0 present only in `gatk4`.\n\nTHE VERSION IS A PURE FORMATTING PARAMETER \u2014 proven live by injecting fiction:\n  $ R.resolve('gatk', version='9.9.9.9')\n    chosen='conda' | identity.confirmed=True | POISONED=False\n    install_call='install_conda_packages(env, [{\"spec\": \"gatk=9.9.9.9\", \"channel\": \"bioconda\"}])'\nA version that exists in NO registry sails through byte-identically, identity CONFIRMED. probe_conda already reads data['versions'] and throws it away; the fix is one `in` check."
   },
@@ -1185,12 +1189,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "THREE live calls; the real and the typo version are BYTE-IDENTICAL except the echoed string:\n\n$ R.resolve('samtools', version='9.99')      <-- typo, DOES NOT EXIST\n  chosen='conda' ambiguous=False identity={\"confirmed\": true, \"anchor\": \"bioconda-channel\", \"evidence\": [\"bioconda is a bioinformatics-only channel\"]} poisoned=False\n  install_call = install_conda_packages(env, [{\"spec\": \"samtools=9.99\", \"channel\": \"bioconda\"}])\n\n$ R.resolve('samtools', version='1.21')      <-- real (CONTROL)\n  chosen='conda' ambiguous=False identity={\"confirmed\": true, \"anchor\": \"bioconda-channel\", ...} poisoned=False\n  install_call = install_conda_packages(env, [{\"spec\": \"samtools=1.21\", \"channel\": \"bioconda\"}])\n\n$ R.resolve('samtools', version='1.21.0')    <-- normalized form, no rewrite shown\n  install_call = install_conda_packages(env, [{\"spec\": \"samtools=1.21.0\", \"channel\": \"bioconda\"}])\n=> identical identity.confirmed=true, identical rationale, no warning on any of the three.\n\nGROUND TRUTH: bioconda/samtools version list -> '1.21' True | '9.99' False | '1.21.0' False\n\nREAL SOLVER (proves the consequence, not inferred):\n$ conda create --dry-run -c bioconda -c conda-forge --override-channels 'samtools=1.21'    -> done;  samtools-1.21-h267f7b9_1\n$ conda create --dry-run -c bioconda -c conda-forge --override-channels 'samtools=9.99'    -> failed; PackagesNotFoundError\n$ conda create --dry-run -c bioconda -c conda-forge --override-channels 'samtools=1.21.0'  -> done;  samtools-1.21-h267f7b9_1   (conda normalizes silently; the rewrite is never disclosed)\nCONFIRMS recorded_verdict=False."
   },
@@ -1214,12 +1219,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='samtools', version='9.99')\"\n  chosen    = 'conda'\n  ambiguous = False\n  identity  = {\"confirmed\": true, \"anchor\": \"bioconda-channel\", \"evidence\": [\"bioconda is a bioinformatics-only channel\"]}\n  poisoned  = False   <-- no warning of any kind on a version that cannot exist\n  install_call_last = ['install_conda_packages(env, [{\"spec\": \"samtools=9.99\", \"channel\": \"bioconda\"}])']\n  probed = conda:{available:true, latest:'1.24', channel:'bioconda'}\n\nBYTE-IDENTICAL TO THE CONTROL except the echoed string \u2014 same chosen, same identity.anchor, same poisoned=False.\nGROUND TRUTH (live bioconda repodata): '9.99' present -> False | '1.21' present -> True\nCODE (resolver.py:706): `v = version or detail.get(\"latest\") or \"\"` \u2014 version is never compared to detail's list.\n\nREAL SOLVER (proves the consequence, not inferred):\n  IMPOSSIBLE  samtools=9.99  [bioconda,conda-forge]  -> PackagesNotFoundError\nREPRODUCED TODAY."
   },
@@ -1668,12 +1674,13 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='hmmlearn', version='20151031')\"\n  chosen    = 'conda'\n  ambiguous = False\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"Hidden Markov Models in Python with scikit-learn like API.\", \"reason\": \"no_domain_signal\"}\n  poisoned  = True\n  install_call_last = ['install_conda_packages(env, [{\"spec\": \"hmmlearn=20151031\", \"channel\": \"conda-forge\"}])']\n\nCODE (resolver.py:100 _looks_like_serial + :122 `pool = [v for v in vs if not _looks_like_serial(v)] or vs`): the serial is correctly excluded when picking `latest`, so bioconda reports 0.1.1 and loses the channel race to conda-forge 0.3.3. The guard works for `latest` and is then bypassed entirely by the version passthrough at :706.\n\nEMITTED SPEC PROVEN IMPOSSIBLE (real solver):\n  IMPOSSIBLE  hmmlearn=20151031  [conda-forge]          linux-64\n  SOLVES      hmmlearn=20151031  [bioconda,conda-forge]  linux-64 -> bioconda/linux-64::hmmlearn-20151031-py36h24bf2e0_2\n  => the serial exists ONLY on bioconda; conda-forge was emitted.\nREPRODUCED TODAY."
   }

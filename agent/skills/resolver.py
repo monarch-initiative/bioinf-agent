@@ -222,6 +222,38 @@ def _pick_latest(versions: list, latest_hint: str = "") -> str:
     return pool[-1] if pool else ""
 
 
+def _version_present(requested: str, versions: list) -> bool:
+    """Is `requested` among `versions`? Compares by PEP440 normalization so a request for
+    `1.0` matches a stored `1.0.0` (PyPI normalises), with an exact-string fallback for
+    versions neither side can parse (serials, odd build strings). Absence of the list is
+    NOT handled here — the caller only asks when it HAS a list, because an unfetched list
+    is 'we don't know', not 'the version is missing'."""
+    if not requested or not versions:
+        return False
+    rk = _version_key(requested)
+    if rk is not None:
+        for v in versions:
+            vk = _version_key(str(v))
+            if vk is not None and vk == rk:
+                return True
+    return str(requested) in {str(v) for v in versions}
+
+
+def _nearest_versions(requested: str, versions: list, n: int = 4) -> list[str]:
+    """The available versions bracketing `requested` by PEP440 order — a 'did you mean'
+    hint for a typo'd/absent pin. Falls back to the latest few when nothing sorts."""
+    parsed = sorted(((k, str(v)) for v in versions if (k := _version_key(str(v))) is not None),
+                    key=lambda kv: kv[0])
+    strs = [s for _, s in parsed]
+    rk = _version_key(requested)
+    if rk is None or not parsed:
+        return [str(v) for v in versions][-n:]
+    import bisect
+    i = bisect.bisect_left([k for k, _ in parsed], rk)
+    lo = max(0, i - n // 2)
+    return strs[lo:lo + n]
+
+
 def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     """Available on bioconda or conda-forge? Probes BOTH channels and picks the one
     with the higher REAL version — guards against an abandoned date-versioned build
@@ -253,9 +285,14 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
                         repo = f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
                         field = f
                         break
-                best = (key, channel, ver, data.get("summary") or "", repo, field)
+                best = (key, channel, ver, data.get("summary") or "", repo, field,
+                        [str(v) for v in data["versions"]])
     if best:
-        out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3]}
+        # `versions` = the WINNING channel's full list, so a version-existence check compares
+        # against the channel actually being emitted (bioconda's abandoned hmmlearn ≠
+        # conda-forge's maintained one — the pick already resolved that, and the list follows it).
+        out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3],
+               "versions": best[6]}
         if best[4]:
             out["repo"] = best[4]
             out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
@@ -283,9 +320,17 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     data, err = _fetch_json(f"https://pypi.org/pypi/{name}/json", timeout)
     if isinstance(data, dict) and data.get("info"):
         info = data["info"]
+        # A version whose files are ALL yanked is effectively absent — installing it fails —
+        # so it must not count as present in a version-existence check (anndata 0.12.15 was
+        # 'released against the wrong branch' and yanked). A version with no files at all is
+        # likewise not installable. releases: {version: [file, ...]}.
+        rel = data.get("releases") or {}
+        versions = [v for v, files in rel.items()
+                    if files and any(not f.get("yanked") for f in files)]
         return {
             "available": True,
             "latest": info.get("version"),
+            "versions": versions,
             "summary": (info.get("summary") or "").strip(),
             "home_page": info.get("home_page") or "",
             "project_urls": info.get("project_urls") or {},
@@ -863,7 +908,9 @@ def _classify_refusal(decision: dict) -> str:
     """
     if decision.get("unchecked_tiers") or decision.get("discovery_error"):
         return "investigation_incomplete"
-    if decision.get("cross_namespace_collisions"):
+    if decision.get("cross_namespace_collisions") or decision.get("version_absent"):
+        # contrary evidence: a same-name hit that isn't the tool, or a requested version the
+        # chosen tier verifiably does not carry — either way the request conflicts with reality.
         return "investigation_contradicted"
     if decision.get("discovered_repos"):
         return "needs_user_input"
@@ -1236,6 +1283,28 @@ def resolve(
     if ambiguous and chosen != "conda":
         chosen = None
         decision["chosen"] = None
+    # VERSION EXISTENCE. A requested version the chosen tier does NOT carry must not be
+    # emitted as a byte-identical pin — `install_conda_packages(samtools=9.99)` looks
+    # exactly like a valid `samtools=1.21` but never solves. Refuse and name the nearest
+    # real versions. Only conda/pip surface a version list; a tier that doesn't (cran /
+    # bioconductor / a probe that couldn't fetch it) is left ALONE — no list is 'we don't
+    # know', never 'the version is missing'. Runs only on a still-live pick, so an already-
+    # refused ambiguous call is not second-guessed.
+    if version and chosen in ("conda", "pip"):
+        vs = availability.get(chosen, {}).get("versions") or []
+        if vs and not _version_present(version, vs):
+            nearest = _nearest_versions(version, vs)
+            decision["version_absent"] = {
+                "tier": chosen, "requested": version,
+                "channel": availability.get(chosen, {}).get("channel", ""),
+                "nearest": nearest}
+            decision["rationale"] = (
+                f"VERSION NOT FOUND on {chosen}: no {tool}=={version} "
+                f"(nearest real: {', '.join(nearest) or '—'}). Emitting it would be a "
+                f"real-looking but UNSOLVABLE pin, byte-identical to a valid one — refuse "
+                f"and pick an existing version. || " + decision.get("rationale", ""))
+            chosen = None
+            decision["chosen"] = None
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
