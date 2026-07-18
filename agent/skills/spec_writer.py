@@ -112,6 +112,57 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     return {"workflow_spec_path": str(yaml_path)}
 
 
+def load_workflow_spec(path: Any) -> Any:
+    """THE typed reader for a sealed ``{name}.workflow.yaml`` — the read-back seam,
+    the exact inverse of ``write_workflow_spec`` (and the WorkflowSpec analog of
+    ``intent.parse_intent`` / ``plan.parse_plan``).
+
+    A sealed spec is validated ONCE, at write (``write_workflow_spec`` →
+    ``WorkflowSpec.model_validate``). Thereafter every read path in this codebase
+    ``yaml.safe_load``-s it into a plain dict and ``.get()``-scrapes summary fields
+    (``agent_status``, ``resources.list_pipelines``, ``pipeline_state.spec_sealed``).
+    That scrape is harmless for an orientation SUMMARY — but re-running a RECORDED
+    step means pulling a command we are about to EXECUTE in the shipped image out of
+    that dict, which is exactly the read where a scrape is dangerous: the
+    bcftools-1.23.1 lesson is that a ``.get``/regex over a record returns the wrong
+    field under a confident name, and "the wrong command in the right container" is a
+    silent, ground-truthed lie. So any consumer that ACTS on a sealed spec reads it
+    back through THIS typed seam — a malformed artifact fails HERE, loudly
+    (``pydantic.ValidationError``), rather than surfacing as a bad command deep in a
+    container run.
+
+    Returns a validated ``WorkflowSpec``. Raises: ``FileNotFoundError`` if ``path``
+    is absent, ``yaml.YAMLError`` on unparseable YAML, ``ValueError`` if the document
+    is not a mapping, ``pydantic.ValidationError`` if the record no longer satisfies
+    the model. (``WorkflowSpec`` is ``extra="allow"``, so the runtime-authored extra
+    keys — ``detected_outputs``, ``container_image_digest``, … — ride back through
+    untouched.)
+    """
+    from agent.models.core_data import WorkflowSpec
+
+    raw = yaml.safe_load(Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"sealed workflow at {path} is not a mapping (got {type(raw).__name__}); "
+            "a WorkflowSpec YAML must be a top-level object")
+    return WorkflowSpec.model_validate(raw)
+
+
+def select_pipeline_step(spec: Any, step_number: int) -> Any:
+    """Pick ONE recorded step out of a typed ``WorkflowSpec`` by its (1-based) ``step``
+    number. Pure — no side effects, no disk. Raises ``ValueError`` naming the
+    available step numbers when ``step_number`` is not present, so a wrong guess
+    self-corrects against the real roster instead of silently selecting nothing (the
+    silent-empty trap the honesty contract exists to close)."""
+    for st in spec.pipeline_steps:
+        if st.step == step_number:
+            return st
+    available = [st.step for st in spec.pipeline_steps]
+    raise ValueError(
+        f"workflow '{spec.workflow_name}' has no pipeline_step number {step_number}; "
+        f"recorded step numbers are {available or '(none)'}")
+
+
 def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None) -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
 

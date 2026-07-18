@@ -624,8 +624,8 @@ def _watch_and_exit_on_change():
 if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
     for _sub in ("bridge_tools", "data_tools", "env_tools", "freeze_tools",
-                 "intent_tools", "plan_tools", "jobs_tools", "observability_tools",
-                 "run_tools", "service_tools", "workflow_tools"):
+                 "intent_tools", "plan_tools", "sealed_tools", "jobs_tools",
+                 "observability_tools", "run_tools", "service_tools", "workflow_tools"):
         _full = f"agent.mcp_tools.{_sub}"
         if _full in sys.modules:
             _importlib.reload(sys.modules[_full])
@@ -682,6 +682,9 @@ from agent.mcp_tools.intent_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.plan_tools import (  # noqa: E402,F401
     plan_request,
+)
+from agent.mcp_tools.sealed_tools import (  # noqa: E402,F401
+    describe_sealed_step,
 )
 from agent.mcp_tools.jobs_tools import (  # noqa: E402,F401
     run_in_background,

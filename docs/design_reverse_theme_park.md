@@ -38,9 +38,36 @@ Project/cluster data is expressed through the existing four kinds — the projec
 new runtime category). (c) **scope** — advisory author-and-gate; it DISPATCHES NOTHING
 (an `execute_plan` loop over freeze/run/seal would be the forbidden composite primitive
 that buries the per-seam gates); the agent WALKS the plan by calling the existing
-primitives. Fast suite green (1437). Phases 5-7 below are still design.
+primitives. Fast suite green (1437).
+**Phase 5 LANDED** (2026-07-18, behaviour-additive) — the new rails, RE-SCOPED by grounding
+the code first: two of the three named pieces were ALREADY realized, so building them again
+would be redundant scaffolding. **DECLINE** (§4 / scenario 7) IS the completeness gate
+(`out_of_scope → decline → DECLINE` + the required `out_of_scope_reason`), built in Phase 1 —
+the §4 table itself calls DECLINE "the gate". **Router dispatch consuming a `Rail`** (deferred
+out of Phase 3, Q2) IS Phase 4's `plan.py` — `_PRODUCES_FOR_ACTION`, `_SOURCE_ACTIONS`, and
+`PlanStep.action` all route over `Rail`; the design never had an auto-executor (that is the
+forbidden composite). So Phase 5's one genuinely-new behaviour is **RUN_STEP-of-a-sealed-workflow**
+(scenario 5). The gap was precise: a sealed `WorkflowSpec` is WRITE-ONLY at the type level
+(authored once at seal, thereafter only `yaml.safe_load`-scraped for summaries), and every run
+primitive takes a hand-written command — so re-running a recorded step meant scraping the YAML
+for a command we then EXECUTE in a shipped image (the bcftools-1.23.1 scrape hazard). The
+deliverable is therefore the FIRST typed read-back of a sealed spec:
+`spec_writer.load_workflow_spec` + `select_pipeline_step` (the anti-scrape seam, the WorkflowSpec
+analog of `parse_intent`/`parse_plan`), surfaced by ONE advisory tool
+`sealed_tools.describe_sealed_step` — the third member of the reverse-theme-park advisory-reader
+family (`interpret_request` · `plan_request` · `describe_sealed_step`), each DISPATCHING NOTHING
+and returning an untagged `{ok}` query dict OFF the honesty namespace. It returns the recorded
+step's runnable facts (command · inputs · `freeze_request_key` · pinned digest · input-existence
+preconditions · pinned-env contract state); the agent re-runs it via the existing
+`run_step_in_container`, IN THE FROZEN IMAGE (validated == shipped), fail-fast on a missing input
+(NO auto-materialize — that cascade would be the forbidden composite). §11's open RUN_STEP
+questions resolve from the system's own principles, not a coin-flip. It lives in its OWN module,
+NOT the tagged `workflow_tools` — an advisory reader's untagged `{ok/error}` returns belong with
+its siblings, not among the honesty primitives, which is what keeps the outcome-tag ratchet
+honest (`tests/test_outcome_tags.py`). Fast suite green. `tests/test_sealed_step_reader.py` (12).
+Phases 6-7 below are still design.
 The rest of this document is the plan, unchanged.
-Date: 2026-07-17.
+Date: 2026-07-18.
 
 ---
 
@@ -112,7 +139,7 @@ Seven kinds, seven rails. This is the *complete* top-level surface — if a requ
 |---|---|---|---|
 | **INSTALL_ENV** | `install_env` | build a new env with 1..N tools, validate, freeze, deliver | ✅ primitives exist |
 | **ADD_TO_ENV** | `add_to_env` | add a tool to an existing (unfrozen) draft, or re-freeze an env with one more tool | ⚠️ partial |
-| **RUN_STEP** | `run_step` | run one step against an existing frozen env — local or cluster | ⚠️ partial (run_step_in_container exists; "step of a *sealed* workflow" is NEW) |
+| **RUN_STEP** | `run_step` | run one step against an existing frozen env — local or cluster | ✅ run_step_in_container; "step of a *sealed* workflow" now built (Phase 5: `describe_sealed_step` reads the recorded step, `run_step_in_container` executes it in the frozen image) |
 | **TRANSFER_DATA** | `transfer_data` | move bytes to/from the cluster, no install at all | ✅ `_ad_hoc` + upload/download exist |
 | **REPRODUCE** | `reproduce` | rebuild an env from a recipe and digest-check it | ✅ `verify_env_recipe` exists |
 | **DECLINE** | `out_of_scope` | explain scope, do nothing | 🆕 new (the gate) |
@@ -270,7 +297,7 @@ Priority is **mistake-proof for a collaborator**, tamper-evident-for-an-adversar
 2. **Phase 2 — shrink RESOLVE.** Delete the heuristics; resolver returns facts only; identity judgment moves into the ride. Prove the scenario catalog rows 3/4/9 pass with judgment, not detection.
 3. **Phase 3 — explicit rails.** Formalize the lifecycle states + legal transitions in `pipeline_state.py`. Wire the seven rails to the router.
 4. **Phase 4 — composition. ✅ LANDED (2026-07-17).** Added `plan.py` (`ExecutionPlan` + `gate_plan`, the I8-at-authoring gate) + `plan_tools.py` (`plan_request`, advisory). The §6 worst case gates GREEN as a 5-node DAG (`tests/test_plan_gate.py`). "Execute a multi-rail plan" is realized the theme-park way — the plan is authored + gated, then WALKED by the agent calling the existing primitives in topo order; auto-dispatch is deferred (it is the forbidden composite primitive; a Phase-5 question the user has not opened). Node vocabulary = `Rail` imported + the 1-element `PlanRide={SEAL}` delta (AUTHOR_PIPELINE folded into the RUN ride); the gate is the runtime I8 lifted (provenance-not-type, single-sourced vocabulary, necessary-not-sufficient).
-5. **Phase 5 — the new rails.** RUN_STEP-of-a-sealed-workflow (scenario 5), DECLINE (scenario 7).
+5. **Phase 5 — the new rails. ✅ LANDED (2026-07-18).** Re-scoped by grounding the code: DECLINE (scenario 7) IS the Phase-1 completeness gate and router-dispatch-consuming-a-`Rail` IS Phase-4's `plan.py` — both already realized. So the one genuinely-new behaviour is RUN_STEP-of-a-sealed-workflow (scenario 5), built as the FIRST typed read-back of a sealed spec (`spec_writer.load_workflow_spec` / `select_pipeline_step`, the anti-scrape seam) + the advisory `describe_sealed_step` reader (`sealed_tools.py`, the third member of the `interpret_request`/`plan_request` advisory-reader family — dispatches nothing). The agent re-runs the recorded step via the existing `run_step_in_container` IN THE FROZEN IMAGE, fail-fast on a missing input, no auto-materialize.
 6. **Phase 6 (deferred) — relocate the checker to CI.** The adversary property, only if/when wanted.
 7. **Phase 7 (LAST, user-driven) — the user-facing layer: guides + report visual identity.** Deliberately last. The reports render **purely from the verified records** (the principle already holds — a deliverable can't claim what the record doesn't prove), so the visual identity / how-to layout is safe to design *after* the records and rails are solid. Nothing above depends on it; it depends on everything above.
 
@@ -280,6 +307,6 @@ Each phase ships something usable and is independently reversible. No phase requ
 
 - ~~Do some requests span two rails?~~ **RESOLVED (§6):** yes — the PLAN ride decomposes one intent into a multi-rail DAG. Open sub-question: does the PLAN ride ever need to *re-plan* mid-execution when a ride fails in a way that changes the itinerary (e.g. a tool can't be installed at all → the pipeline goal is unreachable)? Proposed: a failed ride surfaces to the plan, which may replan or DECLINE — but replanning must itself be gated, not silent.
 - Is `unknowns[]` the right gate input, or does the gate need per-field confidence?
-- RUN_STEP against a *sealed* workflow: do we re-run in the frozen image, or re-materialize inputs? What does "one step" mean when steps chain?
+- ~~RUN_STEP against a *sealed* workflow: do we re-run in the frozen image, or re-materialize inputs? What does "one step" mean when steps chain?~~ **RESOLVED (Phase 5, from the system's own principles):** re-run IN THE FROZEN IMAGE (validated == shipped — the frozen image IS the artifact); do NOT re-materialize inputs (re-running upstream steps is a silent cascade = the forbidden composite), so fail-fast on a missing input with a loud precondition (`all_inputs_present`), mirroring `run_step_on_cluster`'s `remote_paths_exist`; "one step" = exactly one recorded `PipelineStep`, selected by number, and chaining multiple steps is the PLAN layer's job (or the user asks per-step). `describe_sealed_step` surfaces the runnable facts; `run_step_in_container` executes + validates.
 - Multi-tool / multi-env plans (scenarios 2, 15): if tool A resolves to conda but tool B forces a container-native build, does the shared FREEZE still hold? And in a multi-env plan, is the AUTHOR_PIPELINE ride's command-DAG reasoning reliable enough, or does it need its own structured contract? (Believed yes on freeze; the DAG-authoring reliability is the real unknown.)
 - Does the intent + plan model belong in code the agent fills via structured output, or is it a prompt-shaped contract? (Structured output — but confirm the MCP surface supports forcing it.)

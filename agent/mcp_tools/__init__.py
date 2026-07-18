@@ -60,6 +60,7 @@ from . import env_tools            # noqa: F401  (search_package, resolve_tool, 
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)
 from . import intent_tools         # noqa: F401  (interpret_request — the typed front door: RequestIntent → completeness gate → rail)
 from . import plan_tools           # noqa: F401  (plan_request — the composition front door: ExecutionPlan → I8-at-authoring gate → topo walk order)
+from . import sealed_tools         # noqa: F401  (describe_sealed_step — RUN_STEP-of-a-sealed-workflow: the typed reader for re-running one recorded step of a sealed pipeline)
 from . import jobs_tools           # noqa: F401  (run_in_background, check_job, cancel_job, list_jobs)
 from . import observability_tools  # noqa: F401  (agent_status, snapshot_project)
 from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in_container, verify_installation, run_in_env, validate_output)

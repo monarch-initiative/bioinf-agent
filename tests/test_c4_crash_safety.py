@@ -101,7 +101,7 @@ def _battery():
     from agent.mcp_tools import (bridge_tools as B, data_tools as D, env_tools as E,
                                  freeze_tools as F, intent_tools as I, jobs_tools as J,
                                  observability_tools as O, plan_tools as P, run_tools as R,
-                                 service_tools as S, workflow_tools as W)
+                                 sealed_tools as ST, service_tools as S, workflow_tools as W)
     return [
         # -- bridge (auth must refuse before any ssh) -----------------------
         ("upload", B.upload, dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV,
@@ -155,6 +155,13 @@ def _battery():
         # DIFFERENT axis from the outcome-tag vocabulary, so no tag is required. It
         # dispatches NOTHING, so there is no action to gate.
         ("plan_request", P.plan_request, dict(plan_json="not valid json{{"), False),
+        # -- sealed-step reader (RUN_STEP-of-a-sealed-workflow) --------------
+        # describe_sealed_step is a pure typed-read QUERY, the third advisory reader
+        # (sibling of interpret_request/plan_request): a missing workflow / bad step
+        # comes back as {ok: False, error, available_*} — interpretable, no crash, no
+        # side effects, dispatches nothing. Off the outcome-tag axis, so no tag required.
+        ("describe_sealed_step", ST.describe_sealed_step,
+         dict(workflow_name="no_such_workflow_zzz", step=1), False),
         # -- env / install (missing env must refuse before subprocess) ------
         # search_package / resolve_tool are QUERIES: an unknown package returns a
         # not-found / no-decision dict (interpretable), tag optional.
