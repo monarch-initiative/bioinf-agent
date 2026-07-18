@@ -249,6 +249,110 @@ def _render_run_dashboard(wf: dict, env_record: dict, out_dir: Path) -> Optional
     return str(report_path)
 
 
+def _spec_env_identity(spec: dict) -> frozenset:
+    """The frozen-env fingerprint set a WorkflowSpec pins. Two seals of the SAME
+    workflow_name that share this identity are locus ACCRETION (the same env(s),
+    more or updated validated evidence); a DIFFERENT identity means the new seal
+    pins a distinct environment, so overwriting the file would destroy the prior
+    sealed artifact's provenance.
+
+    Uses the shipped `image_digest` of every chained env PLUS the primary env's
+    `content_digest` and `request_key`, so a REBUILT env (same request, new
+    content — a non-reproducible rebuild) reads as DIFFERENT and cannot silently
+    overwrite. (Per the user's ruling: a re-seal against a rebuilt env requires
+    an explicit supersede, not a silent additive update.)"""
+    ids: set[str] = set()
+    for e in spec.get("envs", []) or []:
+        if isinstance(e, dict) and e.get("image_digest"):
+            ids.add(e["image_digest"])
+    for k in ("env_content_digest", "env_request_key"):
+        if spec.get(k):
+            ids.add(spec[k])
+    return frozenset(ids)
+
+
+def _validated_step_count(spec: dict) -> int:
+    """How many pipeline_steps carry real validation evidence. A re-seal that
+    LOWERS this over an existing spec is dropping evidence — not accretion — and
+    must not silently replace the richer artifact."""
+    return sum(1 for s in spec.get("pipeline_steps", []) or []
+               if isinstance(s, dict) and (s.get("validation")
+                                           or s.get("validation_status") == "passed"))
+
+
+def _next_superseded_path(out_dir: Path, wname: str) -> Path:
+    """A non-colliding name to PRESERVE a superseded spec under, rather than
+    destroy it: {wname}.superseded.{n}.workflow.yaml (n = next free integer)."""
+    n = 1
+    while True:
+        p = out_dir / f"{wname}.superseded.{n}.workflow.yaml"
+        if not p.exists():
+            return p
+        n += 1
+
+
+def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[bool, Optional[dict]]:
+    """Phase-3 Piece A — the seal write-guard.
+
+    THE HOLE (audit 2026-07-17): write_workflow_spec overwrites
+    {name}.workflow.yaml with NO exists-check, so re-sealing over an existing
+    sealed spec silently DESTROYS a digest-pinned provenance artifact. The
+    honesty contract already re-validates the NEW spec standalone, so the new
+    file is never a lie — but the SILENT REPLACEMENT of the old one is. The fix
+    is a guard at the terminal WRITE, not a lock on the draft: the 15-site
+    draft-lock the design sketch first proposed would have broken locus
+    accretion, one-env-many-workflows, and every ad-hoc pipeline_id="" call, AND
+    a LEGAL_TRANSITIONS table would have been a second, drifting definition of
+    ordering — the codebase's signature disease.
+
+      - no existing spec           -> write (first seal)
+      - same env identity, no
+        evidence dropped           -> write (locus ACCRETION — the documented
+                                      flow: seal locally, later run on cluster,
+                                      re-seal so the dashboard accretes the locus)
+      - different env identity, or
+        evidence dropped, and no
+        supersede                  -> REFUSE seal.would_clobber_sealed_spec
+      - ...with supersede=True     -> PRESERVE the prior spec under a
+                                      .superseded.N name, stamp a note, write
+
+    Returns (proceed, refusal|None); renames the prior file as a side effect on
+    supersede. Freeze needs no analogous guard: the EnvCache is content-addressed
+    and append-only, so a re-freeze cannot silently clobber a shipped env."""
+    import yaml
+    wname = wf.get("workflow_name", "")
+    path = out_dir / f"{wname}.workflow.yaml"
+    if not path.exists():
+        return True, None
+    try:
+        prior = yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        prior = {}
+    same_env = _spec_env_identity(wf) == _spec_env_identity(prior)
+    drops_evidence = _validated_step_count(wf) < _validated_step_count(prior)
+    if same_env and not drops_evidence:
+        return True, None                       # locus accretion — additive, supersedes nothing
+    if not supersede:
+        return False, refused(
+            "seal.would_clobber_sealed_spec", success=False,
+            error=(f"a sealed WorkflowSpec already exists at {path.name} pinning a "
+                   f"different environment (or richer validated evidence); sealing here "
+                   f"would silently REPLACE it and destroy its provenance. Pass "
+                   f"supersede=True to replace it — the prior spec is preserved "
+                   f"alongside (as {path.stem}.superseded.N.workflow.yaml), not deleted."),
+            existing_spec=str(path),
+            existing_env_identity=sorted(_spec_env_identity(prior)),
+            new_env_identity=sorted(_spec_env_identity(wf)),
+            existing_validated_steps=_validated_step_count(prior),
+            new_validated_steps=_validated_step_count(wf))
+    backup = _next_superseded_path(out_dir, wname)
+    path.rename(backup)
+    wf["superseded"] = {"replaced_spec": backup.name,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "prior_env_identity": sorted(_spec_env_identity(prior))}
+    return True, None
+
+
 @mcp.tool()
 def seal_workflow(
     pipeline_id: str,
@@ -256,6 +360,7 @@ def seal_workflow(
     workflow_name: str = "",
     description: str = "",
     write: bool = True,
+    supersede: bool = False,
 ) -> dict:
     """Seal the Layer-2 WORKFLOW: validate the run-side invariants, PIN the
     frozen environment by digest, render the user guide, write the WorkflowSpec.
@@ -273,6 +378,15 @@ def seal_workflow(
     rendered from the passing run — validated evidence per compute locus plus a
     distinct how-to panel; the env's ENV.html is a separate, immutable Layer-1
     artifact and is not touched here).
+
+    A sealed {workflow_name}.workflow.yaml is a digest-pinned provenance artifact,
+    so re-sealing over an EXISTING one is guarded (Phase-3 Piece A): re-sealing
+    the SAME env with more/updated validated evidence writes through (locus
+    accretion), but sealing a DIFFERENT env (or dropping evidence) over it
+    REFUSES `seal.would_clobber_sealed_spec` unless `supersede=True` — which
+    preserves the prior spec under a `.superseded.N` name rather than destroying
+    it. Freeze is not guarded this way: the EnvCache is content-addressed, so a
+    re-freeze cannot silently overwrite a shipped env.
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
@@ -437,6 +551,17 @@ def seal_workflow(
         commands_shown=len(_ms._user_guide.executed_commands(draft)),
     )
     if write:
+        project_root = Path(__file__).resolve().parents[2]
+        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
+        # Phase-3 Piece A: refuse to silently clobber a prior sealed spec that
+        # pins a DIFFERENT env (locus accretion writes through). See
+        # _guard_spec_overwrite — this is the terminal-WRITE gate, and it fires
+        # BEFORE write_workflow_spec so no digest-pinned provenance is destroyed.
+        proceed, refusal = _guard_spec_overwrite(wf, out_dir, supersede)
+        if not proceed:
+            return refusal
+        if wf.get("superseded"):
+            result["superseded"] = wf["superseded"]
         out = write_workflow_spec(wf, _ms.config)
         if out.get("error"):
             return broke("seal.spec_write_failed", success=False, **out)
@@ -447,8 +572,6 @@ def seal_workflow(
         # is left untouched: it is immutable post-freeze and never claims the
         # cluster-worthiness this dashboard carries. Non-fatal — a render hiccup
         # never fails a verified seal.
-        project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
         report_path = _render_run_dashboard(wf, fr, out_dir)
         if report_path:
             result["run_report_path"] = report_path

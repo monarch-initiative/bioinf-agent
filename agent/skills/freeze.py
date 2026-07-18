@@ -533,6 +533,14 @@ class EnvCache:
         """
         self._validate_shape(record)
         data = self._load()
+        # Keyed by request_key (the REQUEST's content address): re-freezing an
+        # identical request refreshes its own cache entry with an equivalent record
+        # — a solve-once refresh, not provenance loss. What a sealed WorkflowSpec
+        # actually depends on is the env IMAGE, pinned BY DIGEST (immutable in the
+        # Docker daemon), independent of this cache. So Layer 1 needs no analog of
+        # the seal write-guard here; Layer-2 provenance is protected at the seal
+        # WRITE (workflow_tools._guard_spec_overwrite), where re-sealing over a
+        # DIFFERENT-digest env is the real silent-replacement risk (Phase-3 Piece A).
         data[key] = record
         self._save(data)
         return record
