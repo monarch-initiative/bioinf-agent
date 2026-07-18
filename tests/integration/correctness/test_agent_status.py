@@ -100,14 +100,14 @@ def test_agent_status_include_repo_adds_repo_key(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
-def test_drafts_summary_extracts_useful_fields():
+def test_drafts_summary_extracts_useful_fields(tmp_path):
     """Per-draft entry has the fields a user wants for orientation:
-    pipeline_id, what tool, counts of install_steps / pipeline_steps / etc."""
+    pipeline_id, what tool, counts of install_steps / pipeline_steps / etc.,
+    and the re-earned lifecycle `state` (Phase-3 Piece B). This draft has a
+    conda env + install steps and no frozen/sealed pointer, so state=env_built."""
     ps = _FakePipelineState({
         "dorado_install": {
             "description": "Install dorado for nanopore basecalling",
-            "env_status": "in_progress",
-            "pipeline_status": "in_progress",
             "conda_env": "bioinf_dorado",
             "install_steps": [{"step": 1}, {"step": 2}],
             "pipeline_steps": [],
@@ -115,22 +115,23 @@ def test_drafts_summary_extracts_useful_fields():
             "verifications": {"dorado": {"verify_output": "2.0.0"}},
         },
     })
-    rows = _drafts_summary(ps)
+    rows = _drafts_summary(ps, _FakeEnvCache(), tmp_path)
     assert len(rows) == 1
     r = rows[0]
     assert r["pipeline_id"] == "dorado_install"
-    assert r["env_status"] == "in_progress"
+    assert r["state"] == "env_built"          # the dead env_status stamp is gone
+    assert "env_status" not in r and "pipeline_status" not in r
     assert r["conda_env"] == "bioinf_dorado"
     assert r["install_steps"] == 2
     assert r["verifications"] == 1
 
 
 @pytest.mark.integration
-def test_drafts_summary_fault_tolerant():
+def test_drafts_summary_fault_tolerant(tmp_path):
     """A PipelineState-like object without `_drafts` should NOT crash the
     whole call — degrades to `[]` (empty list)."""
     obj = MagicMock(spec=[])   # no attrs
-    rows = _drafts_summary(obj)
+    rows = _drafts_summary(obj, _FakeEnvCache(), tmp_path)
     # Either empty (graceful) or {error: ...} — both are tolerated by the
     # higher-level call. We just require it's a list.
     assert isinstance(rows, list)

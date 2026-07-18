@@ -39,7 +39,7 @@ def _docker_up() -> bool:
         return False
 
 
-def test_real_build_from_tools_is_honest_and_validated_in_image():
+def test_real_build_is_honest_and_validated_in_image():
     """A genuine container-native build of `pigz` must come back BUILT +
     VALIDATED_IN_IMAGE + POLICY_CLEAN — the honesty contract passing on real
     bytes, not a mock. This is the literal validated==shipped guarantee, and it
@@ -50,7 +50,8 @@ def test_real_build_from_tools_is_honest_and_validated_in_image():
     from agent.skills import env_freeze
     from agent.skills.env_honesty import check_build
 
-    res = env_freeze.build_env_from_tools(name="bioinf_l15_realbuild", tools=["pigz"])
+    res = env_freeze.build_env_image({}, name="bioinf_l15_realbuild",
+                                     conda_deps=["pigz"], primary_tools=["pigz"])
 
     # BUILT — a real image handle + content id resolved. (The BuildResult is a raw
     # result dict carrying `success`, not an outcome-tagged return.)

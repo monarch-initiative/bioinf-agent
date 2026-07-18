@@ -1,8 +1,9 @@
 """
 Resource listing utilities — manifests and pipeline specs.
 
-Read the on-disk genome / test-data manifests and the env_reports/ pipeline
-specs into structured dicts for the MCP tools list_available_resources and
+Read the on-disk genome / test-data manifests, and the two layers of built
+artifacts (frozen envs from the EnvCache + sealed WorkflowSpecs), into
+structured dicts for the MCP tools list_available_resources and
 list_installed_pipelines.
 """
 
@@ -10,7 +11,6 @@ from pathlib import Path
 
 import yaml
 
-from agent.models.core_data import PipelineSpec
 
 
 def list_resources(inputs: dict, config: dict) -> dict:
@@ -155,45 +155,126 @@ def list_resources(inputs: dict, config: dict) -> dict:
     return result
 
 
-def list_pipelines(config: dict) -> dict:
-    """Read all finalized pipeline spec YAMLs from env_reports/ and return
-    summary dicts. *.draft.yaml files (in-progress drafts from the pipeline
-    state accumulator) are skipped."""
-    pipelines_dir = Path(config["paths"]["pipelines_dir"])
-    pipelines = []
+def _semantic_versions(record: dict) -> list[dict]:
+    """The REQUESTED tools with human-readable semantic versions — the string a user
+    cites in a paper. Never image/build hashes.
 
-    for spec_file in sorted(pipelines_dir.glob("*.yaml")):
-        if spec_file.name.endswith(".draft.yaml"):
+    Delegates to `env_report_helpers._resolved_version`, THE definition, which the
+    ENV report also uses. This function originally forked that chain and read only its
+    first rung (the SBOM), which meant `list_installed_pipelines` reported
+    `bcftools: null` for the authors'-image env while the ENV report claimed `1.23.1`
+    — one fact, two readings, disagreeing, both wrong. The SBOM cannot see a tool
+    installed outside the package manager (a source-compiled binary carries no
+    metadata anywhere), so a SBOM-only read is structurally blind on exactly the
+    long-tail tiers this project prefers. Rule 4: one definition, read at every use.
+    """
+    from agent.skills.env_report_helpers import (
+        _pkg_index, _resolved_version, _verif_index)
+
+    pidx = _pkg_index(record.get("resolved_packages") or [])
+    vidx = _verif_index(record.get("verifications") or [])
+    shipped = record.get("shipped_binaries") or []
+    out = []
+    for spec in (record.get("requested_tools") or []):
+        name = str(spec).split("=")[0].strip()
+        if not name:
             continue
-        try:
-            pspec = PipelineSpec.from_yaml(spec_file)
-            docker = pspec.docker
-            pipelines.append({
-                "name": pspec.pipeline_name,
-                "description": pspec.description,
-                "conda_env": pspec.conda_env,
-                "env_status": pspec.env_status,
-                "pipeline_status": pspec.pipeline_status,
-                "created_at": pspec.created_at,
-                "docker_image": docker.image_tag if docker else None,
-                "docker_built": docker.build_success if docker else False,
-                "packages": [
-                    {"name": p.name, "version": p.resolved_version or p.requested_version}
-                    for p in pspec.packages if p.name != "conda-pack"
-                ],
-                "install_steps_total": len(pspec.install_steps),
-                "install_steps_failed": sum(
-                    1 for s in pspec.install_steps if s.returncode not in (None, 0)
-                ),
-                "pipeline_steps_validated": sum(
-                    1 for s in pspec.pipeline_steps if s.validation_status == "passed"
-                ),
-                "pipeline_steps_ran_clean": sum(
-                    1 for s in pspec.pipeline_steps if s.returncode == 0
-                ),
-                "pipeline_steps_total": len(pspec.pipeline_steps),
-            })
-        except Exception as e:
-            pipelines.append({"file": spec_file.name, "error": str(e)})
+        pinned = str(spec).split("=", 1)[1].strip() if "=" in str(spec) else ""
+        resolved = _resolved_version(name, pidx.get(name.lower()), vidx.get(name.lower()), shipped)
+        # `pinned` is what the USER ASKED FOR, not what shipped — a last resort, and
+        # only when nothing observed the real thing. None stays None: absence of a
+        # version is a fact about our record, and must not render as a version.
+        out.append({"tool": name, "version": resolved or pinned or None})
+    return out
 
-    return {"pipelines": pipelines, "count": len(pipelines)}
+
+def list_pipelines(config: dict, env_cache=None) -> dict:
+    """Inventory of what has ALREADY been built, in both layers.
+
+    Layer 1 — `envs`: the frozen, content-addressed envs in the EnvCache. These
+    are the reusable "solved components": ask for one of these tools again and
+    freeze serves it by digest instead of re-solving.
+    Layer 2 — `workflows`: the sealed WorkflowSpecs (`*.workflow.yaml`), each
+    pinning its env BY DIGEST.
+
+    HONESTY: every env is re-anchored against the full contract before it is
+    listed (`EnvCache.contract_violations`, the same check freeze/run/stage/seal
+    ask at serve time), so `contract_ok: False` means "on disk but would NOT be
+    served today". Listing a record as though it were usable when the serving
+    paths would refuse it is exactly the false green tier 5 closed.
+
+    Rewritten in tier 7. It previously parsed every `*.yaml` in env_reports/ as a
+    `PipelineSpec` — a model whose producer (finalize_pipeline/save_pipeline_spec)
+    was RETIRED in the re-spine. So it matched only WorkflowSpec/recipe yamls,
+    every parse raised, a try/except turned each into an `{file, error}` dict, and
+    the tool returned `count: 7` having understood exactly none of them. Broken
+    for real users, and green in the suite: the disease in a user-facing tool.
+    """
+    pipelines_dir = Path(config["paths"]["pipelines_dir"])
+
+    # --- Layer 1: frozen envs ------------------------------------------------
+    envs: list[dict] = []
+    if env_cache is None:
+        from agent.skills.freeze import EnvCache
+        env_cache = EnvCache(pipelines_dir / "_env_cache.json")
+    for key, rec in sorted((env_cache.all() or {}).items()):
+        if not isinstance(rec, dict):
+            continue
+        violations = env_cache.contract_violations(rec)
+        envs.append({
+            "request_key":      key,
+            "name":             rec.get("name"),
+            "tools":            _semantic_versions(rec),
+            "image":            rec.get("image"),
+            "image_digest":     rec.get("image_digest"),
+            "content_digest":   rec.get("content_digest"),
+            # `build_method` is the real field ("adopt-image" / "authors-dockerfile" /
+            # container-native); `mode` is the coarse two-valued sibling ("adopt" /
+            # "build") that predates it. Reading `mode` here reported the authors'-
+            # Dockerfile env as a generic "build" — erasing, in the inventory, the one
+            # fact that distinguishes the authors'-own-machinery path this project
+            # prefers. Fall back to `mode` only for records frozen before build_method.
+            "build_method":     rec.get("build_method") or rec.get("mode"),
+            "platform":         rec.get("platform"),
+            "validation_locus": rec.get("validation_locus"),
+            "created_at":       rec.get("created_at"),
+            "license_gated":    bool(rec.get("license_gated")),
+            # The green is EARNED here, not remembered from freeze time.
+            "contract_ok":          not violations,
+            "contract_violations":  violations,
+        })
+
+    # --- Layer 2: sealed workflows -------------------------------------------
+    workflows: list[dict] = []
+    for spec_file in sorted(pipelines_dir.glob("*.workflow.yaml")):
+        try:
+            d = yaml.safe_load(spec_file.read_text()) or {}
+            steps = d.get("pipeline_steps") or []
+            workflows.append({
+                "workflow_name":  d.get("workflow_name"),
+                "description":    d.get("description"),
+                "created_at":     d.get("created_at"),
+                "env_request_key":    d.get("env_request_key"),
+                "env_image":          d.get("env_image"),
+                "env_content_digest": d.get("env_content_digest"),
+                "envs":               d.get("envs") or [],
+                "validated_in_shipped_image": bool(d.get("validated_in_shipped_image")),
+                "usage_verified":             bool(d.get("usage_verified")),
+                "steps_total":     len(steps),
+                "steps_validated": sum(
+                    1 for s in steps
+                    if isinstance(s, dict) and s.get("validation_status") == "passed"),
+                "path": str(spec_file),
+            })
+        except Exception as e:      # a malformed artifact is reported, never swallowed
+            workflows.append({"file": spec_file.name, "error": str(e)})
+
+    return {
+        "envs": envs,
+        "workflows": workflows,
+        "counts": {
+            "envs": len(envs),
+            "envs_contract_ok": sum(1 for e in envs if e.get("contract_ok")),
+            "workflows": len(workflows),
+        },
+    }

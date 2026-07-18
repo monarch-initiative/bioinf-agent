@@ -1,7 +1,7 @@
 """env_tools — research + install primitives + verify + raw install runner.
 
 This is the install-side surface of the agent: one tool per *ecosystem*
-(conda / git-source / spack / release-binary / perl / cargo / go / jar /
+(conda / git-source / release-binary / perl / cargo / go / jar /
 R / pip / pre-built BioContainer via synth) plus `search_package` and
 `resolve_tool` for pre-install research, plus `run_install_command` for the
 arbitrary-shell escape hatch when no primitive fits.
@@ -80,24 +80,69 @@ def resolve_tool(
     language: str = "",
 ) -> dict:
     """Decide WHICH install tier to use for `tool`, and record WHY (the
-    ResolutionDecision). Probes availability independently per tier
-    (conda/bioconda, PyPI, CRAN — plus release-binary/source when github_repo is
-    given) and ranks by the preference order conda > pip/cran/bioconductor >
-    binary > source > manual (reproducibility + clean containerization + least
-    build fragility).
+    ResolutionDecision). Probes availability independently per tier and ranks by:
 
-    Returns {chosen, install_call, rationale, alternatives, ambiguous, probed,
-    …}: the concrete install primitive call to make, why it was chosen over the
-    others, and the rejected-but-available alternatives.
+        PULL AN EXISTING IMAGE  >  clean registry package  >  build from source
+        author_image > conda > authors_recipe > pip/cran/bioconductor
+                     > binary > synthesis > source > manual
+
+    PULL-AN-EXISTING-IMAGE FIRST. Prefer using what already exists over building anything.
+    `author_image` (the authors' OWN published image, adopted by digest — a pull, not a
+    build) tops the order; then a clean conda/bioconda package, which itself ships as a
+    pre-built BioContainer freeze ADOPTS by digest (so "conda wins" already means "pull an
+    image" downstream). Check the **`pullable_image`** field: it unifies "is there a pullable
+    image?" across both sources ({found, source: author_image|biocontainer, image_by_digest,
+    adopt_call, provenance}) — when found, `adopt_call` is the freeze_from_image shortcut that
+    skips building a host env entirely. Provenance is guaranteed (the authors' own anchored
+    repo, or the curated quay.io/biocontainers namespace — never a stranger's image claiming
+    to be the tool), and a pulled image is still VALIDATED_IN_IMAGE at freeze (pull, then
+    prove it runs).
+
+    RELIABILITY GATE — `authors_recipe` is the LAST resort, not a shortcut. BUILDING the
+    authors' Dockerfile ranks BELOW conda: a build never beats a package the ecosystem
+    already built + containerized. It fires only when there is no pullable image AND no clean
+    conda package AND the registry route is a genuine RECONSTRUCTION that would silently DROP
+    deps (compiled/vendored/system/binary) — a pip/CRAN-only tool like Talos whose Dockerfile
+    compiles a bcftools fork + htslib + echtvar a pip reconstruction drops. For a cleanly
+    bioconda-packaged tool the gate stays SHUT and conda wins. (This corrected an over-fire
+    where self-build `make` / a self-source tarball read as "incomplete" and routed cleanly-
+    packaged tools like gatk4/miniprot to a heavy Dockerfile build.)
+
+    Returns {chosen, install_call, rationale, identity, pullable_image, alternatives,
+    ambiguous, probed, …}: the concrete install primitive call to make, why it was chosen
+    over the others, and the rejected-but-available alternatives. `install_call` names the
+    real executor for the chosen tier — for the author tiers that is `freeze_from_image` /
+    `build_env_from_authors_recipe`, which do the whole env (no separate freeze needed).
+    If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
+    ranking below it is registry-only — it is not evidence the authors ship nothing.
+
+    IDENTITY — YOU are the judge; these are the FACTS. `identity` answers nothing on its
+    own: it hands YOU the evidence to decide "is this registry entry the tool I MEANT?",
+    which nothing else in this system checks (every other gate verifies integrity — it
+    builds, it runs, it ships as validated — so a wrong-but-working tool passes all of them
+    and ships green with a digest and an attestation). The resolver does NOT stamp a verdict
+    and does NOT poison `install_call`; you know the context is bioinformatics and are a far
+    better judge of "ONT's dorado, not the PyPI astronomy package" than any word-list. The
+    facts: `self_description` (the entry's OWN words — the single strongest signal: CRAN's
+    `cellranger` says "Translate Spreadsheet Cell Ranges", PyPI's `talos` says "Tuning for
+    Keras"), `has_description` (false = the tier published nothing to read — MISSING
+    evidence, never confuse it with contrary evidence), `channel` (`bioconda`/`bioconductor`
+    membership is bio-only, weigh it heavily), and `repo` + `repo_source` + `repo_anchored`
+    (an anchored repo — a curated conda `dev_url` or your explicit `github_repo` — was safe
+    to auto-adopt; a scraped `pip`/`cran` repo is a CANDIDATE, `repo_anchored: false`, that
+    you confirm with `github_repo='owner/repo'` before trusting). Read the facts; if they
+    point at the tool, proceed (the honesty contract downstream catches a mechanical error);
+    if you genuinely cannot tell even after investigating, ASK.
 
     DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
     CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one
     ecosystem; with no hint, a name found in both PyPI and CRAN comes back
     `ambiguous: true`. `prefer` forces a tier when available. `github_repo`
-    ('owner/repo') unlocks the binary/source tiers.
+    ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
+    reliability gate — pass it whenever you know the tool's repo.
 
     Query-only: it does NOT install. Use the returned install_call with the
-    matching primitive, then freeze().
+    matching primitive, then freeze() (except the author tiers, which freeze themselves).
     """
     return _ms._resolver.resolve(tool, version=version, github_repo=github_repo,
                              prefer=(prefer or None), language=language)
@@ -492,60 +537,6 @@ def synth_build(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
     return _ms._shrink_stdio_for_response(result, label=f"synth.{env_name}.{tool_name}")
-
-
-@mcp.tool()
-def install_spack_package(
-    env_name: str,
-    tool_name: str,
-    package: str = "",
-    spack_ref: str = "v0.22.1",
-    evidence: str = "",
-    pipeline_id: str = "",
-    step: int = 0,
-) -> dict:
-    """Declare a Spack package (the HPC from-source registry — thousands of curated
-    community recipes) for a tool not on conda/pip/cran. A DECLARE primitive: it
-    records the install_method (type='spack') into the draft; the actual build +
-    validation happen at freeze() INSIDE the ship image (Spack on the host is
-    impractical, and container-native is where 'validated == shipped' holds anyway).
-
-    freeze() bootstraps Spack with its store under /opt/tools (so the dep-closure
-    RPATHs resolve in the slim runtime), builds `package` (default = tool_name) from
-    source with the build container's gcc, trims build-only deps, and symlinks the
-    tool onto PATH — then the honesty contract proves the tool RUNS in the shipped
-    image via `evidence`. NOTE: from-source builds are slow; this tier is practical
-    on a NATIVE amd64 host. Pass an `evidence` that RUNS the tool (e.g.
-    'samtools --version') — `command -v` alone can't catch a mis-relocated binary.
-    `spack_ref` pins Spack (default v0.22.1; v1.0 split builtin packages out).
-
-    Returns {success, install_method, pipeline_merge?}."""
-    install_method = {
-        "type":      "spack",
-        "package":   package or tool_name,
-        "spack_ref": spack_ref,
-        "evidence":  evidence or f"command -v {tool_name}",
-        "source":    f"spack:{package or tool_name}@{spack_ref}",
-    }
-    result: dict = proven("install.spack_declared", success=True, tool_name=tool_name,
-                    install_method=install_method,
-                    note="declared — Spack builds + validates at freeze() in the ship image "
-                            "(best on a native amd64 host; from-source is slow under emulation)")
-    if pipeline_id:
-        ip_record = {"name": tool_name, "channel": "spack",
-                     "source": install_method["source"], "install_method": install_method}
-        step_data = {
-            "tool": "spack", "subcommand": "install",
-            "purpose": f"Declare {tool_name} via Spack ({package or tool_name}@{spack_ref})",
-            "command": f"spack install {package or tool_name}",
-            "returncode": 0, "installed_packages": [ip_record],
-        }
-        idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
-        result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
-            if idx is not None else
-            {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id})
-    return _ms._shrink_stdio_for_response(result, label=f"spack.{env_name}.{tool_name}")
 
 
 @mcp.tool()

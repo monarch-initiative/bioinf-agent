@@ -58,6 +58,14 @@ def _make_repo(tmp_path: Path) -> tuple[str, str]:
                    capture_output=True)
     subprocess.run(["git", "-C", str(work), "push", "origin", "HEAD:main"],
                    check=True, capture_output=True)
+    # Point the bare repo's HEAD at the branch we pushed. Without this, a clone
+    # that passes NO ref (the install_git_repo path several tests exercise)
+    # checks out the bare's default HEAD — which is `master` on a machine whose
+    # git `init.defaultBranch` is unset (a clean CI runner), a branch we never
+    # pushed. That leaves the clone on a dangling HEAD and `rev-parse HEAD`
+    # fails. Hermetic fix: make the fixture repo's HEAD track its only branch.
+    subprocess.run(["git", "-C", str(bare), "symbolic-ref", "HEAD",
+                    "refs/heads/main"], check=True, capture_output=True)
     head = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
                           capture_output=True, text=True, check=True).stdout.strip()
     return str(bare), head

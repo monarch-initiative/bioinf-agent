@@ -87,6 +87,8 @@ from agent.skills import env_freeze as _env_freeze
 from agent.skills import env_honesty as _env_honesty
 from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
+from agent.skills import intent as _intent
+from agent.skills import plan as _plan
 from agent.skills import user_guide as _user_guide
 from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
@@ -94,6 +96,7 @@ from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
 from agent.skills import provenance as _prov
 from agent.skills import env_recipe as _env_recipe
+from agent.skills import container_build as _container_build
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
 from agent.skills.core_test_data import add_core_test_data as _add_core_test_data
 from agent.skills.core_test_data import add_core_pod5_data as _add_core_pod5_data
@@ -529,7 +532,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 #                        download_reference_database, install_pipeline_brief
 # env_tools            — search_package, resolve_tool, create_conda_env,
 #                        install_conda_packages, install_git_repo, synth_fetch,
-#                        synth_build, install_spack_package,
+#                        synth_build,
 #                        install_release_binary, install_perl_package,
 #                        install_cargo_tool, install_go_tool, install_jar_tool,
 #                        install_r_package, install_pip_package,
@@ -621,8 +624,8 @@ def _watch_and_exit_on_change():
 if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
     for _sub in ("bridge_tools", "data_tools", "env_tools", "freeze_tools",
-                 "jobs_tools", "observability_tools", "run_tools",
-                 "service_tools", "workflow_tools"):
+                 "intent_tools", "plan_tools", "sealed_tools", "jobs_tools",
+                 "observability_tools", "run_tools", "service_tools", "workflow_tools"):
         _full = f"agent.mcp_tools.{_sub}"
         if _full in sys.modules:
             _importlib.reload(sys.modules[_full])
@@ -660,7 +663,6 @@ from agent.mcp_tools.env_tools import (  # noqa: E402,F401
     install_git_repo,
     synth_fetch,
     synth_build,
-    install_spack_package,
     install_release_binary,
     install_perl_package,
     install_cargo_tool,
@@ -674,6 +676,15 @@ from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
     verify_env_recipe,
     generate_user_guide,
+)
+from agent.mcp_tools.intent_tools import (  # noqa: E402,F401
+    interpret_request,
+)
+from agent.mcp_tools.plan_tools import (  # noqa: E402,F401
+    plan_request,
+)
+from agent.mcp_tools.sealed_tools import (  # noqa: E402,F401
+    describe_sealed_step,
 )
 from agent.mcp_tools.jobs_tools import (  # noqa: E402,F401
     run_in_background,

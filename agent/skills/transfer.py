@@ -311,21 +311,6 @@ def _scp_argv(env: dict, src: str, dst: str) -> list[str]:
     return ["scp", "-o", "BatchMode=yes", "-p", src, dst]
 
 
-def _build_remote_target(env: dict, abs_remote_path: str) -> str:
-    """`user@host:/abs/path` for scp. Path is NOT shell-quoted; scp
-    treats it as one argv element and the remote scp daemon does its
-    own minimal interpretation. We've already rejected metacharacters
-    + whitespace in _validate_remote_abs_path."""
-    if " " in abs_remote_path or "\t" in abs_remote_path:
-        raise TransferError(
-            f"resolved remote path contains whitespace: "
-            f"{abs_remote_path!r}")
-    host = env["host"]
-    user = env.get("user")
-    target_host = f"{user}@{host}" if user else host
-    return f"{target_host}:{abs_remote_path}"
-
-
 def _local_mkdir_parent(remote_abs_path: Path) -> None:
     """Create parent dirs for a local-mode "remote" path. Idempotent."""
     remote_abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,8 +517,6 @@ def _clean_error(msg: Optional[str]) -> Optional[str]:
 _OUTCOME_VERB = {
     ("success",  "upload"):   "uploaded",
     ("success",  "download"): "downloaded",
-    ("pending",  "upload"):   "submitted",
-    ("pending",  "download"): "submitted",
     ("refused",  "upload"):   "refused",
     ("refused",  "download"): "refused",
     ("error",    "upload"):   "failed",
@@ -543,7 +526,6 @@ _OUTCOME_VERB = {
 _VERIFIED_PHRASE = {
     "sha256_round_trip": "sha256 matched on both ends",
     "globus_end_to_end": "Globus end-to-end checksum (task SUCCEEDED)",
-    "globus_pending":    "pending — Globus verifies on completion",
 }
 
 
@@ -651,96 +633,12 @@ def _summarize(*, outcome: str, direction: str, transport: Optional[str],
     if outcome == "downloaded":
         return (f"Downloaded {fname}{size_part} from {compute_env}"
                 f"{via_part}.")
-    if outcome == "submitted":
-        tail = (f" Poll task {task_id[:8]}… to confirm it completed."
-                if task_id else "")
-        return (f"Submitted a Globus {direction} of {fname}{size_part} "
-                f"to {compute_env}.{tail}")
     if outcome == "refused":
         return (f"Refused: {reason or 'precondition not met'}. "
                 f"({direction} of {fname} to {compute_env})")
     # failed
     return (f"Failed to {direction} {fname} to {compute_env}: "
             f"{reason or 'see logs'}.")
-
-
-# ---------------------------------------------------------------------------
-# Async confirmation — reconcile a `submitted` manifest to its real outcome
-# ---------------------------------------------------------------------------
-
-def _find_manifest_by_task_id(task_id: str) -> Optional[Path]:
-    """Locate the transfer manifest carrying `globus_task_id == task_id`.
-    Scans transfer_history newest-first (filenames are timestamped).
-    Returns the path or None."""
-    root = _repo_root() / "transfer_history"
-    if not root.exists():
-        return None
-    for p in sorted(root.rglob("*.json"), reverse=True):
-        try:
-            rec = json.loads(p.read_text())
-        except (OSError, ValueError):
-            continue
-        if rec.get("globus_task_id") == task_id:
-            return p
-    return None
-
-
-def finalize_manifest_for_task(task_id: str, *, status: str,
-                               bytes_transferred: Optional[int] = None,
-                               error: Optional[str] = None) -> Optional[Path]:
-    """Reconcile the async-submit manifest for `task_id` to the observed
-    terminal Globus state, so a `submitted` record durably becomes the
-    truth: `uploaded`/`downloaded` (SUCCEEDED — Globus end-to-end
-    checksum) or `failed` (FAILED). Idempotent — a no-op when there's no
-    matching manifest, it's already finalized, or the task isn't terminal.
-    Returns the manifest path (updated or not) or None.
-
-    THIS is what protects downstream steps from half-baked transfers:
-    after one poll observes SUCCEEDED, the manifest says `uploaded` and a
-    later consumer can trust the record instead of guessing whether a
-    `submitted` transfer ever landed."""
-    if status not in ("SUCCEEDED", "FAILED"):
-        return None
-    mpath = _find_manifest_by_task_id(task_id)
-    if mpath is None:
-        return None
-    try:
-        rec = json.loads(mpath.read_text())
-    except (OSError, ValueError):
-        return None
-    if rec.get("outcome") != "submitted":
-        return mpath  # already finalized, or not an async-submit record
-
-    direction = rec.get("direction", "upload")
-    side = rec.get("to") if direction == "upload" else rec.get("from")
-    env = side.split(":", 1)[0] if isinstance(side, str) and ":" in side else ""
-    env = env or "the compute env"
-
-    if status == "SUCCEEDED":
-        rec["outcome"] = "uploaded" if direction == "upload" else "downloaded"
-        if bytes_transferred:
-            rec["size"] = _human_size(bytes_transferred)
-        size_part = f" ({rec['size']})" if rec.get("size") else ""
-        verb = "Uploaded" if direction == "upload" else "Downloaded"
-        prep = "to" if direction == "upload" else "from"
-        rec["verified"] = "Globus end-to-end checksum (task SUCCEEDED)"
-        rec["summary"] = (f"{verb} {rec.get('file', 'file')}{size_part} "
-                          f"{prep} {env} via Globus — confirmed SUCCEEDED.")
-    else:  # FAILED
-        rec["outcome"] = "failed"
-        rec.pop("verified", None)
-        reason = _clean_error(error) or "Globus task FAILED"
-        rec["reason"] = reason
-        rec["summary"] = (f"Failed to {direction} {rec.get('file', 'file')} "
-                          f"{('to' if direction == 'upload' else 'from')} "
-                          f"{env}: {reason}.")
-    rec["confirmed_at"] = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC")
-    try:
-        mpath.write_text(json.dumps(rec, indent=2))
-    except OSError:
-        pass
-    return mpath
 
 
 # ---------------------------------------------------------------------------
@@ -787,30 +685,6 @@ def _remote_mkdir_parent_ssh(env: dict, abs_remote: str,
     return None
 
 
-def _remote_sha256_ssh(env: dict, abs_remote: str,
-                        timeout: int) -> dict:
-    """Read sha256 of a remote file via ssh. Returns {sha: hex} or
-    {error: str}."""
-    from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
-    sh_argv = _ssh_argv(env, _remote_sha256_cmd(abs_remote))
-    sh = subprocess.run(sh_argv, capture_output=True, text=True,
-                         timeout=timeout)
-    if sh.returncode != 0:
-        hint = _ssh_failure_hint(sh.stderr or "", env.get("host", "?"))
-        out = {"error":
-            f"remote sha256sum failed (rc={sh.returncode}): "
-            f"{(sh.stderr or '').strip()[:300]}"}
-        if hint:
-            out["hint"] = hint
-        return out
-    remote = _parse_sha256sum_output(sh.stdout or "")
-    if not remote:
-        return broke("transfer.remote_sha256_unparseable", error=
-            f"remote sha256sum stdout unparseable: "
-            f"{(sh.stdout or '').strip()[:300]!r}")
-    return {"sha": remote}
-
-
 # ---------------------------------------------------------------------------
 # upload — the unified primitive
 # ---------------------------------------------------------------------------
@@ -820,7 +694,6 @@ def upload(project_name: str,
            local_path: str,
            remote_abs_path: str,
            *,
-           async_globus: bool = False,
            access_path: Optional[str] = None,
            timeout: int = 600) -> dict:
     """Push `local_path` from this laptop to `remote_abs_path` on
@@ -842,7 +715,6 @@ def upload(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_abs_path=remote_abs_path,
-        async_globus=async_globus,
         access_path=access_path,
         timeout=timeout,
     )
@@ -853,7 +725,6 @@ def download(project_name: str,
              remote_abs_path: str,
              local_path: str,
              *,
-             async_globus: bool = False,
              access_path: Optional[str] = None,
              timeout: int = 600) -> dict:
     """Pull `remote_abs_path` from `compute_env_name` to `local_path`
@@ -868,7 +739,6 @@ def download(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_abs_path=remote_abs_path,
-        async_globus=async_globus,
         access_path=access_path,
         timeout=timeout,
     )
@@ -879,7 +749,6 @@ def _do_transfer(*, direction: str,
                   compute_env_name: str,
                   local_path: str,
                   remote_abs_path: str,
-                  async_globus: bool,
                   access_path: Optional[str],
                   timeout: int) -> dict:
     """Shared body for upload + download. Direction-specific branches
@@ -1035,13 +904,11 @@ def _do_transfer(*, direction: str,
             pr = provider.upload_one(
                 env=env, local_path=lp, abs_remote_path=normed_remote,
                 local_sha256=local_sha, timeout=timeout,
-                async_return=async_globus,
                 label=f"upload {project_name} {Path(normed_remote).name}")
         else:
             pr = provider.download_one(
                 env=env, abs_remote_path=normed_remote,
                 local_path=lp, timeout=timeout,
-                async_return=async_globus,
                 label=f"download {project_name} {Path(normed_remote).name}")
         if "error" in pr:
             mpath = _journal(result="error", zone=zone,
@@ -1051,20 +918,6 @@ def _do_transfer(*, direction: str,
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
             return broke("transfer.provider_failed", **out)
-
-        # Async submit — no bytes yet; manifest reflects submitted state.
-        if pr.get("verified_method") == "globus_pending":
-            mpath = _journal(result="pending", zone=zone,
-                transport=pr["provider"], command=pr.get("command"),
-                bytes_transferred=(size_bytes if direction == "upload"
-                                   else None),
-                task_id=pr.get("task_id"),
-                verified_method=pr["verified_method"])
-            return loop("transfer.submitted_async",
-                    **pr, manifest=str(mpath),
-                    project=project_name, compute_env=compute_env_name,
-                    zone=zone, remote_abs_path=normed_remote,
-                    local_path=str(lp))
 
         # Sync success.
         bytes_done = pr.get("bytes", size_bytes if direction == "upload"
@@ -1118,6 +971,17 @@ def _do_transfer(*, direction: str,
         return refused("transfer.config_error",
                 error=f"ConfigError: {e}",
                 manifest=str(mpath))
+    except FileNotFoundError as e:
+        # load_access() raises this when projects_access.yaml is ABSENT (a
+        # malformed manifest is ConfigError, above). It's the ONLY
+        # FileNotFoundError source in this body — the local-path validators
+        # raise TransferError, not this. A missing access manifest is an
+        # interpretable refusal (no manifest ⇒ nothing to authorize against),
+        # never an uncaught crash the agent can't branch on (C4).
+        mpath = _journal(result="error", zone="?",
+                          error_msg=f"access manifest not found: {e}")
+        return refused("transfer.access_config_missing",
+                error=str(e), manifest=str(mpath))
     except KeyError as e:
         # get_project / get_compute_env raise KeyError for an unknown name.
         # A hostile/typo'd project or env is a clean auth failure, not a crash

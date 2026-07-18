@@ -1,0 +1,70 @@
+# The honesty checker — relocated to neutral infrastructure (Phase 6: the "adversary property").
+#
+# WHAT THIS IS. The repo's honesty gates run HERE, on GitHub's runners, on every push and
+# PR — not only when someone remembers to run pytest locally. That tier is anchored by the
+# outcome-tag ratchet (tests/test_outcome_tags.py) plus every Layer-1 / Layer-2 invariant
+# test (env_honesty.check_build, check_workflow_invariants, the seam-reader tests, ...).
+#
+# WHY IT MATTERS (docs/design_reverse_theme_park.md §9). The crown-jewel gate is
+# test_committed_ledger_matches_a_fresh_sweep_of_the_code: it RE-DERIVES the committed
+# docs/outcomes_ledger.json from a fresh AST sweep of the source and fails if they differ.
+# Because CI recomputes the ledger FROM SOURCE on a machine the agent does not run on, an
+# agent editing this repo cannot make the gate pass by locally doctoring the committed
+# ledger (or the coverage overlay) to hide an untagged terminal — the derivation is redone
+# off its machine. Relocation, not a new check: the same test, now beyond edit reach.
+#
+# WHAT IT DOES NOT CLAIM. This file lives IN the repo, so it is itself within the agent's
+# edit reach. CI relocates EXECUTION onto neutral infra and makes any weakening of the gate
+# VISIBLE IN THE DIFF (tamper-EVIDENT) — it is not tamper-PROOF. The blocking backstop is
+# branch protection, configured on GitHub (not in code):
+#   Settings -> Branches -> Branch protection rules -> Require status checks to pass -> "checker",
+# ideally with "Require a pull request before merging" + a required review so a diff that
+# weakens this workflow can't self-merge. That matches the stated posture exactly:
+# mistake-proof for a collaborator; tamper-evident for an adversary a distant second.
+#
+# SCOPE — the fast, hermetic tier only (`-m "not live and not integration_docker"`):
+#   * live               = real registry probes (PyPI / CRAN / anaconda / GitHub). Network-
+#                          volatile; a gate that reddens because a maintainer cut a release
+#                          is one people learn to ignore (the corpus's own rule). Stays
+#                          opt-in (`pytest -m live`), never a blocking gate. Its HERMETIC
+#                          corpus-integrity tests (not @pytest.mark.live) DO run here — they
+#                          are what stops the intent corpus rotting.
+#   * integration_docker = real env builds / biocontainer pulls. Slow, need a live Docker
+#                          daemon + a warm EnvCache; kept a local / opt-in ground-truth
+#                          check, not a blocking gate (a flaky required gate gets ignored).
+#
+# The invocation is the repo's canonical fast-suite command, made DETERMINISTIC for CI:
+# `-m "not live and not integration_docker"` explicitly deselects both slow tiers rather
+# than relying on integration_docker self-skipping when Docker is absent — GitHub runners
+# ship Docker, so that self-skip would not fire and the slow tier would run by accident.
+name: checker
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run — don't burn minutes on stale commits.
+concurrency:
+  group: checker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # config/agent_config.yaml: python_version
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt   # runtime deps (-r requirements.txt) + pytest
+
+      - name: Run the honesty checker (hermetic tier)
+        # `python -m pytest` (not bare `pytest`) puts the repo root on sys.path so `agent`
+        # imports resolve — the same reason the local fast-suite command uses it.
+        run: python -m pytest tests/ -m "not live and not integration_docker" -q -p no:cacheprovider

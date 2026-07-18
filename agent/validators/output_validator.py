@@ -479,31 +479,6 @@ class OutputValidator:
             return []
 
     @staticmethod
-    def infer_type(filename: str) -> str:
-        """Return the expected_type string for a filename based on its extension."""
-        name = filename.lower()
-        if name.endswith(".bam"):       return "bam"
-        if name.endswith(".bam.bai"):   return "bai"
-        if name.endswith(".bai"):       return "bai"
-        if name.endswith(".sam"):       return "sam"
-        if name.endswith(".vcf") or name.endswith(".vcf.gz"): return "vcf"
-        if name.endswith(".bcf"):       return "bcf"
-        if name.endswith(".fastq.gz") or name.endswith(".fastq") or name.endswith(".fq"): return "fastq"
-        if name.endswith(".fasta") or name.endswith(".fa") or name.endswith(".fna"): return "fasta"
-        if name.endswith(".bed"):       return "bed"
-        if name.endswith(".bw") or name.endswith(".bigwig"): return "bigwig"
-        if name.endswith(".gtf") or name.endswith(".gtf.gz"): return "gtf"
-        if name.endswith(".gff") or name.endswith(".gff3"):   return "gff"
-        if name.endswith(".gfa"):       return "gfa"
-        if name.endswith(".gaf"):       return "gaf"
-        if name.endswith(".bim"):       return "bim"
-        if name.endswith(".fam"):       return "fam"
-        if name.endswith(".log"):       return "log"
-        if name.endswith(".txt"):       return "log"
-        if name.endswith(".tsv"):       return "log"
-        return "any"
-
-    @staticmethod
     def _parse_seqkit_stats(stdout: str) -> dict | None:
         """Parse `seqkit stats -T` TSV: file format type num_seqs sum_len min_len avg_len max_len"""
         lines = stdout.strip().splitlines()

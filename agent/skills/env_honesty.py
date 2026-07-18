@@ -46,6 +46,11 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+# The declared shape of the sub-records WELL_FORMED asserts. core_data is a leaf
+# (pydantic/yaml only) so this keeps the module import-cycle-free; it is no longer
+# stdlib-pure, which is the price of the contract knowing what a record IS.
+from agent.models import core_data as _core_data
+
 # ---------------------------------------------------------------------------
 # The anti-echo-cheat shape rule (carried from evidence.py / env_manager.verify).
 #
@@ -99,47 +104,93 @@ def _references_tool(evidence: str, tool: str) -> bool:
     return False
 
 
-#: evidence depths, weakest → strongest. 'version'/'import'/'help' prove the tool is
-#: PRESENT/loads; 'smoke'/'functional' prove it RUNS. The first three are "shallow".
-EVIDENCE_DEPTHS = ("version", "import", "help", "smoke", "functional")
-_SHALLOW_DEPTHS = frozenset({"version", "import", "help"})
+#: evidence depths, weakest → strongest. 'presence' proves only that the tool is INSTALLED
+#: (a PATH/metadata lookup that never executes it); 'version'/'import'/'help' prove it
+#: loads/answers; 'smoke'/'functional' prove it RUNS. Everything up to 'help' is "shallow".
+#: 'unknown' is not on the scale — it means the classifier declined to guess.
+EVIDENCE_DEPTHS = ("presence", "version", "import", "help", "smoke", "functional")
+_SHALLOW_DEPTHS = frozenset({"presence", "version", "import", "help"})
+
+#: Output plumbing — pipes/redirects that shape a command's OUTPUT and say nothing about
+#: what it does. These must be stripped before the "reads/writes → functional" rule, or a
+#: single `| cat` promotes any probe to 'functional'.
+_PLUMBING = re.compile(
+    r"\s*(\|\s*(cat|head|tail|grep|sed|awk|tr|cut|wc|sort|uniq)\b[^|]*"
+    r"|\d?>>?\s*/dev/null|\d?>&\d|2>&1)", re.I)
+
+
+def _strip_plumbing(ev: str) -> str:
+    prev = None
+    out = ev
+    while prev != out:
+        prev, out = out, _PLUMBING.sub(" ", out)
+    return out.strip()
 
 
 def evidence_depth(evidence: str, tool: str = "") -> str:
-    """Classify how deeply an evidence command exercises the tool — DISCLOSURE, not a
-    gate. A shallow proof ('samtools --version' resolves the binary) must not read as a
-    functional proof ('samtools sort' actually processes a BAM). This is the lever the
-    Talos reconstruction slipped past: it imported clean but didn't RUN. Ordered
-    version < import < help < smoke < functional; returns one of EVIDENCE_DEPTHS.
+    """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
 
-    Heuristic (honest about being approximate): version/help flags and language imports
-    are recognized structurally; a command that reads/writes a path, pipes, or redirects
-    is treated as functional; anything else that invokes the tool is a 'smoke' run."""
-    ev = (evidence or "").strip()
+    NOTHING GATES ON THIS, and nothing should. A string cannot tell you what a command
+    does at runtime; this reads structure and is wrong often enough that gating on it was
+    measured (audit 2026-07-16 Tier 2) to refuse the CORRECT artifact and the known-broken
+    one identically — `talos_authors` (which really does carry the bcftools fork) is
+    [help, version, version] and the broken `talos_v11` reconstruction is [import]: all
+    shallow, zero discriminating power on the very war story depth was proposed to catch.
+    Its job is to make a report honest, not to refuse a build.
+
+    Returns one of EVIDENCE_DEPTHS, or 'unknown' when the shape is not recognizable —
+    guessing 'smoke' for anything unparsed was itself a small lie.
+
+    Three defects this rule set fixes, each of which made the DISCLOSURE wrong:
+      - `command -v samtools` read as 'version' (the regex matched the `-v` of `command -v`)
+        when it is the weakest evidence there is: a PATH lookup that never runs the tool.
+        It now has its own, honest name: 'presence'.
+      - `_conda_presence_check(...)` — freeze's own auto-generated probe, and therefore the
+        evidence on nearly every real record — read as 'functional' because the path
+        `/opt/conda/envs/*/conda-meta/pigz-*.json` matched "reads a file". A presence probe
+        was reporting as the strongest possible proof.
+      - `samtools --version | head -1` read as 'functional': one pipe outranked the thing
+        being piped. Plumbing is stripped first, and version/help are decided before the
+        reads-a-path rule rather than after it.
+    """
+    raw = (evidence or "").strip()
+    if not raw:
+        return "unknown"          # nothing to classify; the shape check refuses it anyway
+    ev = _strip_plumbing(raw)
     low = ev.lower()
-    if not ev:
-        return "version"   # empty → weakest (the shape check rejects it anyway)
-    # language load-only probes
-    if re.search(r"import\s+\w|importlib\.metadata|requirenamespace|library\s*\(|-m\w*\s*[A-Za-z]", low) \
-            and not re.search(r"[<>|]|/\w+\.\w+", ev):
-        if re.search(r"\bimport\b|importlib|requirenamespace|library\s*\(|perl\s+-m", low):
-            return "import"
-    # version-only
-    if re.search(r"(--version|-version|\bversion\b|\s-v\b|\s-V\b)", ev) and \
-            not re.search(r"[<>|]|/\w+\.\w+", ev):
+
+    # -- presence: resolves the tool on PATH / in package metadata, never runs it. The
+    #    weakest evidence, and (via _conda_presence_check) by far the commonest.
+    if re.search(r"\b(command\s+-v|which|type\s+-p|hash)\b", low) or \
+            re.search(r"conda-meta|importlib\.metadata|_m\.version\(|installed\.packages\(", low):
+        return "presence"
+    # -- version / help: the tool EXECUTES and answers. Decided BEFORE both the import rule
+    #    and the path rule: `python -m talos.validate_moi --help` RUNS the module's
+    #    entrypoint (→ 'help'), which is a strictly stronger claim than "it imported", and
+    #    `tool --version /etc/x.cfg` must not be promoted by an incidental path operand.
+    if re.search(r"(--version|-version|\bversion\b|\s-V\b)", ev):
         return "version"
-    # help/usage-only
-    if re.search(r"(--help|\s-h\b|\busage\b)", ev) and not re.search(r"[<>|]", ev):
+    if re.search(r"(--help|\s-h\b|\busage\b)", ev):
         return "help"
-    # functional — reads/writes a real path, pipes, or redirects (processes data)
+    # -- import / load-only: the module loads. Proves more than presence, still not a run.
+    if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m|-m\w*\s*[a-z]", low):
+        return "import"
+    # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
+    #    a file path operand, or an explicit -i/-o.
     if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:
         return "functional"
-    return "smoke"
+    # -- a bare invocation of the tool with no recognizable shape.
+    if tool and _references_tool(ev, tool):
+        return "smoke"
+    return "unknown"
 
 
 def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
-    """True if the evidence only proves presence/loads (version/import/help), not that
-    the tool RUNS. Used for a soft advisory — never a hard refusal."""
+    """True if the evidence only proves the tool is present/loads, not that it RUNS.
+
+    DISCLOSURE ONLY — never a refusal, and never a gate. See evidence_depth: gating on
+    this was measured to refuse the correct artifact and the broken one identically.
+    'unknown' is NOT shallow — declining to classify is not evidence of shallowness."""
     return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
 
 
@@ -279,6 +330,23 @@ def check_build(result: dict) -> list[dict]:
     """
     violations: list[dict] = []
 
+    # -- WELL_FORMED -----------------------------------------------------
+    # Layer-1's shape-sanity clause — the analog of Layer-2's I0, and asserted here
+    # (the SERVING question) as well as at EnvCache.register (the WRITING question),
+    # because tier 5's lesson is that a gate only at the producer leaves every record
+    # frozen before it existed grandfathered in. A record whose sub-records don't
+    # conform cannot be READ, so it cannot be honestly rendered or served: freeze /
+    # run / stage / seal all refuse it and name this clause, and it is re-earned by a
+    # re-freeze rather than a backfill ([[feedback-existing-installs-not-precious]]).
+    try:
+        _core_data.shipped_binaries(result)
+    except Exception as e:
+        violations.append({"invariant": "WELL_FORMED.shipped_binaries",
+                           "where": "shipped_binaries",
+                           "message": f"shipped_binaries does not conform to the declared "
+                                      f"ShippedBinary shape, so its contents cannot be read "
+                                      f"without guessing: {e}"})
+
     # -- BUILT -----------------------------------------------------------
     # The image existing is the structural anchor for I1/I9/I11/I14: every RUN
     # (each with its inline sha256/commit/bake anchor) returned 0, else there is
@@ -329,51 +397,22 @@ def check_build(result: dict) -> list[dict]:
     return violations
 
 
-def check_adopt(result: dict) -> list[dict]:
-    """The MODE-AWARE Layer-1 contract for an ADOPTED public biocontainer.
-
-    Adopt mode differs from build mode in ONE structural way: we DID NOT validate
-    in-locus (the biocontainer's contents are trusted by their published manifest
-    digest). So VALIDATED_IN_IMAGE → ADOPTED_BY_DIGEST and verifications are not
-    expected.
-
-    But everything ELSE in the honesty contract still applies — POLICY_CLEAN most
-    of all. The policy WE declare on the artifact (accelerator type / toolkit, the
-    gated-license firewall) is OURS to honor regardless of who built the bytes
-    inside; rendering the badge without checking the policy was the dorado-stress
-    "the artifact lies" bug. Specifically:
-
-      ADOPTED_BY_DIGEST — the image handles resolve (BUILT, structurally)
-      POLICY_CLEAN      — I12 (accelerator honesty) + I13 (license firewall) pass
-
-    Refuses (returns violations) when the adopted record claims an accelerator
-    without the required metadata or a gated artifact without licenses[].
-
-    Symmetric with check_build so the same gate fires at the same point of the
-    freeze surface — never let a record render its "POLICY_CLEAN" badge without
-    the underlying policy check having actually run.
-    """
-    violations: list[dict] = []
-
-    # -- ADOPTED_BY_DIGEST -----------------------------------------------
-    # The structural BUILT analog: an adopted image must resolve to a tag + a
-    # manifest digest (the immutable handle). Without those, the adoption did
-    # not actually pin anything.
-    if not (result.get("image") or "").strip():
-        violations.append({"invariant": "ADOPTED_BY_DIGEST.image_present", "where": "image",
-                           "message": "no adopted image ref — the biocontainer lookup did not bind "
-                                      "to an image we can pull."})
-    if not (result.get("image_digest") or "").strip():
-        violations.append({"invariant": "ADOPTED_BY_DIGEST.digest_resolved", "where": "image_digest",
-                           "message": "adopted image has no manifest digest — without it the artifact "
-                                      "is not content-addressed and the 'pull by digest' guarantee fails."})
-
-    # -- POLICY_CLEAN ----------------------------------------------------
-    # The bytes are BioContainers' to provide; the policy we render on the artifact
-    # is ours to honor. The previous build vs adopt split rendered POLICY_CLEAN on
-    # adopt without ever checking the policy — that produced the dorado-stress
-    # "samtools=1.21|linux-64|cuda → CPU biocontainer with POLICY_CLEAN" lie.
-    violations.extend(_check_accelerator(result.get("accelerator")))
-    violations.extend(_check_license(result))
-
-    return violations
+# check_adopt is DELETED (audit 2026-07-16 Tier 2).
+#
+# It was the mode-aware Layer-1 contract for an adopted BioContainer: BUILT (as
+# ADOPTED_BY_DIGEST) + POLICY_CLEAN, with VALIDATED_IN_IMAGE deliberately skipped because
+# "the biocontainer's contents are trusted by their published manifest digest".
+#
+# That reasoning answered the wrong question. Nobody suspected bioconda of lying about its
+# own bytes; the real risk is that WE bind the WRONG image — a mulled tag resolving to a
+# package set that doesn't contain the tool — and only running the tool can catch it. The
+# cost of finding out was ~0.25s per tool against an image freeze had already pulled to
+# read its SBOM. Meanwhile adopt is the DEFAULT for pure-conda envs, so the single
+# unvalidated path was also the busiest: `samtools=1.21` registered with
+# `verifications: []` and two sealed workflows rest on it, while its ENV report and
+# attestation presented it as a solved component.
+#
+# freeze() now generates the same presence evidence the build path uses, runs it in the
+# adopted image, and answers `check_build` — one contract for both modes. Its I13 clause
+# was dead regardless: `can_adopt` requires `not gated`, so a gated artifact never reached
+# it. Anything that needs "is this record an adopt?" should read `record["mode"]`.

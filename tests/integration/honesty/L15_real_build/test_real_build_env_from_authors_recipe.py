@@ -101,13 +101,74 @@ def test_real_build_from_authors_recipe_clones_builds_and_freezes(tmp_path):
     assert src["tag"] == "v1"
     assert len(src["commit"]) == 40, src
     assert "debian:bookworm-slim" in src["dockerfile"]
+    # The executor USED these to build; it must RECORD them, or the rendered recipe rebuilds
+    # a different image (the root Dockerfile, with the Dockerfile's own ARG defaults).
+    assert src["recipe_path"] == "Dockerfile"
+    assert src["build_args"] == {}
+    assert src["platform"]
 
     # all four deliverables render from the verified record; the human recipe records the path
     for f in ("l15_bar.ENV.html", "l15_bar.attestation.json",
               "l15_bar.recipe.yaml", "l15_bar.recipe.md"):
         assert (reports / f).is_file(), f"missing deliverable {f}"
     md = (reports / "l15_bar.recipe.md").read_text()
-    assert "git checkout v1" in md
+    # PIN TO THE COMMIT — a tag is mutable, so `git checkout v1` only looks like a pin.
+    # This is the REAL 40-char sha the real clone resolved, so the recipe is followable
+    # from the record alone.
+    assert f"git checkout {src['commit']}" in md
+    assert "v1" in md                                    # the tag still names it for a human
+    assert "NOT REPRODUCIBLE" not in md
+
+
+def test_a_real_build_records_the_dockerfile_path_and_build_args_it_used(tmp_path):
+    """S4 on real bytes: build with a NON-root Dockerfile and a --build-arg, and prove both
+    survive to the rendered recipe. Before this, `recipe` and `build_args` were used by the
+    executor and dropped at the disk seam, so every recipe said `docker build .` — a human
+    following it rebuilt the wrong file with the wrong args and got a different image, with
+    nothing flagging it."""
+    if not _docker_up():
+        pytest.skip("no Docker daemon / buildx / git — L15 real-build tier is opt-in")
+    from agent.skills import freeze_from_image as F
+
+    root = tmp_path / "argrepo"
+    (root / "docker").mkdir(parents=True)
+    (root / "docker" / "Dockerfile.custom").write_text(
+        "FROM debian:bookworm-slim\n"
+        "ARG TOOL_VERSION=0.0.0-default\n"
+        'RUN printf "#!/bin/sh\\necho mytool $TOOL_VERSION\\n" > /usr/local/bin/mytool '
+        "&& chmod +x /usr/local/bin/mytool\n")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"],
+                 ["git", "commit", "-q", "-m", "init"], ["git", "tag", "v9"]):
+        r = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**__import__("os").environ, **env})
+        assert r.returncode == 0, r.stderr
+
+    reports = tmp_path / "reports2"
+    cache = _Cache()
+    out = F.build_from_authors_recipe(
+        repo=f"file://{root}", ref="v9", name="l15_args", version="1.0",
+        recipe="docker/Dockerfile.custom", build_args={"TOOL_VERSION": "9.9.9"},
+        tools=[{"name": "mytool", "evidence": "mytool"}],
+        env_cache=cache, reports_dir=reports)
+    if out["outcome"] == "broke" and "build" in out.get("code", ""):
+        pytest.skip(f"docker build unavailable: {out.get('error', '')[:200]}")
+    assert out["outcome"] == "proven", out
+
+    rec = list(cache.registered.values())[0]
+    src = rec["dockerfile_source"]
+    assert src["recipe_path"] == "docker/Dockerfile.custom"
+    assert src["build_args"] == {"TOOL_VERSION": "9.9.9"}
+    # the build arg REALLY took effect — the Dockerfile's default would say 0.0.0-default,
+    # which is exactly the drift an unrecorded --build-arg reintroduces on a hand rebuild
+    evidence_out = " ".join(v.get("out", "") for v in rec["verifications"])
+    assert "9.9.9" in evidence_out, evidence_out
+    assert "0.0.0-default" not in evidence_out
+
+    md = (reports / "l15_args.recipe.md").read_text()
+    assert "-f docker/Dockerfile.custom" in md
+    assert "--build-arg TOOL_VERSION=9.9.9" in md
 
 
 def test_real_build_from_authors_recipe_refuses_non_running_evidence(tmp_path):

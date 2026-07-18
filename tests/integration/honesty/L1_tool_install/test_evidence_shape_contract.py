@@ -110,21 +110,55 @@ from agent.skills.env_honesty import evidence_depth, is_shallow_evidence  # noqa
     ("mytool --help", "mytool", "help"),
     ("python -m talos.validate_moi --help", "talos", "help"),
     ("samtools sort -o /tmp/out.bam /data/in.bam", "samtools", "functional"),
-    ("bwa 2>&1 | head", "bwa", "functional"),
     ("seqkit stats /data/reads.fq", "seqkit", "functional"),
     ("mytool", "mytool", "smoke"),
+    ("", "mytool", "unknown"),          # decline to guess rather than assume 'smoke'
+    ("tool --frobnicate", "other", "unknown"),
 ])
 def test_evidence_depth_classifies(ev, tool, expected):
     assert evidence_depth(ev, tool) == expected
 
 
+@pytest.mark.parametrize("ev,tool", [
+    ("command -v samtools", "samtools"),          # PATH lookup — never runs the tool
+    ("which bwa", "bwa"),
+    ('python -c "import importlib.metadata as _m; _m.version(\'cyvcf2\')"', "cyvcf2"),
+])
+def test_presence_probes_are_named_presence_not_promoted(ev, tool):
+    """A PATH/metadata lookup is the WEAKEST evidence there is and must say so.
+
+    `command -v samtools` used to classify as 'version' — the regex matched the `-v` of
+    `command -v` — and `_conda_presence_check(...)`, which is freeze's own auto-generated
+    probe and therefore the evidence on nearly every real record, classified as
+    'functional' because the path `/opt/conda/envs/*/conda-meta/*.json` matched "reads a
+    file". The weakest evidence in the system was reporting as the strongest.
+    """
+    assert evidence_depth(ev, tool) == "presence"
+    assert is_shallow_evidence(ev, tool) is True
+
+
+@pytest.mark.parametrize("ev,tool,expected", [
+    ("samtools --version | head -1", "samtools", "version"),
+    ("samtools --version 2>&1", "samtools", "version"),
+    ("bwa 2>&1 | head", "bwa", "smoke"),          # a bare invocation + plumbing is a smoke
+    ("mytool --help | cat", "mytool", "help"),
+    ("pigz --version > /dev/null", "pigz", "version"),
+])
+def test_output_plumbing_does_not_promote_depth(ev, tool, expected):
+    """`| head`, `| cat`, `2>&1`, `> /dev/null` shape a command's OUTPUT and say nothing
+    about what it does. They used to promote anything to 'functional' — one pipe
+    outranking the thing being piped, and a one-character bypass for any depth rule."""
+    assert evidence_depth(ev, tool) == expected
+
+
 def test_shallow_flags_presence_only_not_functional():
-    # version/import/help prove PRESENCE; smoke/functional prove it RUNS.
+    # presence/version/import/help prove the tool is there; smoke/functional prove it RUNS.
     assert is_shallow_evidence("samtools --version", "samtools") is True
     assert is_shallow_evidence('python -c "import x"', "x") is True
     assert is_shallow_evidence("tool --help", "tool") is True
     assert is_shallow_evidence("samtools view -c /data/in.bam", "samtools") is False
-    assert is_shallow_evidence("bwa 2>&1 | head", "bwa") is False
+    # 'unknown' is NOT shallow — declining to classify is not evidence of shallowness.
+    assert is_shallow_evidence("", "mytool") is False
 
 
 def test_depth_is_disclosure_not_a_gate():
@@ -132,3 +166,39 @@ def test_depth_is_disclosure_not_a_gate():
     # The two checks are orthogonal: shape rejects cheats; depth discloses thinness.
     assert evidence_shape_violation("samtools --version", "samtools") is None
     assert is_shallow_evidence("samtools --version", "samtools") is True
+
+
+def test_freezes_own_auto_generated_evidence_is_classified_honestly():
+    """The depth of freeze's OWN probes decides whether the disclosure means anything —
+    they are the evidence on nearly every real record, so getting them wrong makes the
+    report wrong for almost every env.
+
+    This also pins WHY depth must never become a gate: the conda probe reports 'presence'
+    (weakest) and the pip probe reports 'presence' too. A gate on shallow would refuse
+    freeze's own defaults on pip while passing conda — no benefit where it matters,
+    breakage where it doesn't.
+    """
+    from agent.skills.env_freeze import _conda_presence_check, _pip_presence_check
+    assert evidence_depth(_conda_presence_check("pigz"), "pigz") == "presence"
+    assert evidence_depth(_pip_presence_check("cyvcf2"), "cyvcf2") == "presence"
+
+
+def test_nothing_in_the_contract_gates_on_depth():
+    """check_build must NOT refuse on shallow evidence. Measured (audit 2026-07-16 Tier 2):
+    a depth gate refuses the flagship-CORRECT artifact and the known-BROKEN one
+    identically — `talos_authors` (which really does carry the bcftools fork) is
+    [help, version, version] and the broken `talos_v11` reconstruction is [import]: all
+    shallow. Zero discriminating power on the exact war story depth was proposed to catch.
+    """
+    from agent.skills.env_honesty import check_build
+    record = {
+        "image": "x:1", "image_digest": "sha256:abc",
+        # the real talos_authors evidence set — all shallow, and CORRECT
+        "verifications": [
+            {"label": "talos", "tool": "talos", "check": "python -m talos.validate_moi --help", "passed": True},
+            {"label": "bcftools", "tool": "bcftools", "check": "bcftools --version", "passed": True},
+            {"label": "echtvar", "tool": "echtvar", "check": "echtvar --version", "passed": True},
+        ],
+    }
+    assert all(is_shallow_evidence(v["check"], v["tool"]) for v in record["verifications"])
+    assert check_build(record) == [], "shallow evidence must not refuse a build"

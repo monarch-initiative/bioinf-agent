@@ -76,6 +76,84 @@ def _load_dashboard():
 
 
 @pytest.mark.integration
+def test_committed_ledger_matches_a_fresh_sweep_of_the_code():
+    """The committed ledger must equal what a fresh AST sweep of the code yields.
+
+    THE BUG THIS EXISTS FOR (found in tier 7, real, and it had been live for two
+    commits): docs/outcomes_ledger.json is a CACHE OF THE CODE, and nothing
+    re-derived it from the code. Every other test here reads the checked-in JSON
+    and joins it to the checked-in overlay — so the two stayed consistent WITH
+    EACH OTHER while both drifted from reality, and the suite stayed green.
+
+    Measured at the time: the ledger listed 3 terminals that no longer existed
+    (ADOPTED_BY_DIGEST.digest_resolved/image_present, env_build.cache_hit — dead
+    since tier 5) and OMITTED 3 that did exist: run_container/seal/stage
+    .env_contract_violated. Those three are the tier-5 cache gates — the checks
+    that stop a stale env being SERVED. The instrument that measures the honesty
+    contract did not know the contract's most important gate existed, and the
+    dashboard rendered a fiction with full confidence.
+
+    Stale-in-both-directions, invisible to CI, in the audit's own instrument. So:
+    regenerating the ledger is not housekeeping you may skip. It is this test.
+
+    Fix when this fails:  python scripts/extract_outcomes.py
+    (then re-render the dashboard, which is a pure projection of the ledger).
+    """
+    import json
+    ex = _load_extractor()
+    committed = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
+
+    fresh = ex.sweep()
+    corpus = ex.test_corpus()
+    for e in fresh:
+        e["named_in_test"] = (e["code"] in corpus) if e["code"] else None
+    fresh = sorted(fresh, key=lambda e: (not e["tagged"], e["outcome"], e["where"]))
+
+    def ident(entries):
+        return {(e["code"], e["where"]) for e in entries}
+
+    phantom = ident(committed) - ident(fresh)   # in the ledger, not in the code
+    missing = ident(fresh) - ident(committed)   # in the code, not in the ledger
+    assert not phantom, (
+        f"{len(phantom)} ledger terminal(s) no longer exist in the code — the "
+        f"dashboard is rendering ghosts. Run scripts/extract_outcomes.py. {sorted(phantom)[:5]}")
+    assert not missing, (
+        f"{len(missing)} real terminal(s) are ABSENT from the ledger — they are "
+        f"invisible to the dashboard and to the seaworthy meter, so a gate can "
+        f"exist and be uncounted. Run scripts/extract_outcomes.py. {sorted(missing)[:5]}")
+    assert committed == fresh, (
+        "ledger metadata drifted from a fresh sweep (outcome/source/func/"
+        "named_in_test/end_line). Run scripts/extract_outcomes.py")
+
+
+@pytest.mark.integration
+def test_coverage_overlay_keys_resolve_against_the_ledger():
+    """The overlay joins to the ledger on `where` (file:line). That key MOVES on
+    any edit above a terminal, so a ledger regen without a coverage re-measure
+    silently makes every join miss — and a missed join reads as `dark`, i.e. the
+    meter quietly under-reports instead of erroring.
+
+    (Tier 7 asked whether to re-key this by `code` instead. Measured: `code` is
+    NOT unique — 18 codes appear at 2+ sites, and even file+code+func collides 7
+    times, because one function can emit the same code twice. There is no stable
+    unique natural key, so the honest fix is not a different key: it is asserting
+    the two artifacts were generated from the same sweep. That is this test.)"""
+    import json
+    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
+    overlay = json.loads((ROOT / "docs" / "terminal_coverage.json").read_text())["by_where"]
+    ledger_keys = {e["where"] for e in ledger}
+    stale = set(overlay) - ledger_keys
+    unmeasured = ledger_keys - set(overlay)
+    assert not stale, (
+        f"{len(stale)} overlay key(s) point at no ledger terminal — the overlay "
+        f"predates the ledger. Run scripts/measure_terminal_coverage.py. {sorted(stale)[:5]}")
+    assert not unmeasured, (
+        f"{len(unmeasured)} ledger terminal(s) have no overlay entry, so they "
+        f"read as dark without ever being measured. Run "
+        f"scripts/measure_terminal_coverage.py. {sorted(unmeasured)[:5]}")
+
+
+@pytest.mark.integration
 def test_dashboard_renders_every_terminal_deterministically():
     """The health panel (docs/outcomes_dashboard.html) must be a faithful,
     self-contained projection of the ledger: every terminal present, no CDN, no
@@ -217,7 +295,6 @@ FULLY_TAGGED = [
     "agent/skills/env_build.py",
     "agent/skills/docker_builder.py",
     "agent/skills/env_recipe.py",
-    "agent/skills/env_vendor.py",
     "agent/mcp_tools/workflow_tools.py",
     "agent/skills/core_test_data.py",
     "agent/skills/test_runner.py",
@@ -268,8 +345,8 @@ def test_rewrapping_a_tagged_result_does_not_double_tag():
     # a proven re-wrap flips the class of a formerly-broke inner.
     up = proven("run.ok", **broke("inner.fail", x=1))
     assert up["outcome"] == "proven" and up["code"] == "run.ok" and up["x"] == 1
-    # loop too (async submit re-wrap path).
-    lp = loop("transfer.submitted_async", **inner, manifest="/m")
+    # loop too (the poll-again re-wrap path).
+    lp = loop("transfer.task_still_running", **inner, manifest="/m")
     assert lp["outcome"] == "loop" and lp["manifest"] == "/m"
 
 

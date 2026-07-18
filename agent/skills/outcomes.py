@@ -9,11 +9,12 @@ an `outcome` class + a stable `code`. This does DOUBLE DUTY:
      English error string. `refused` → fix inputs and retry; `broke` → likely
      rebuild; `proven` → proceed.
   2. A reconciled system model — scripts/extract_outcomes.py harvests these tags
-     straight from the source (AST, no execution), so the decision-surface model
-     (docs/scenario_decision_tree.*) is DERIVED from the code and cannot silently
-     drift. tests/test_outcome_tags.py makes an untagged terminal a build failure.
+     straight from the source (AST, no execution) into docs/outcomes_ledger.json,
+     rendered to docs/outcomes_dashboard.html. That model is DERIVED from the code,
+     so it cannot silently drift. tests/test_outcome_tags.py makes an untagged
+     terminal a build failure.
 
-The six classes mirror the decision-tree legend (docs/scenario_decision_tree.md):
+The six classes:
 
     proven    ✅  honest green — a validated success
     refused   ⛔  a gate said no, loudly & recoverably, before writing anything

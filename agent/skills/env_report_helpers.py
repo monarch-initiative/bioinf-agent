@@ -28,8 +28,28 @@ from typing import Optional
 _VER_RE = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)*(?:[-_]?r?\d+)?)\b")
 
 
+def _first_line(text: str) -> str:
+    """A tool's `--version` prints ITS OWN version on the first line; every later
+    line is about something else — its dependencies, its copyright, its usage.
+
+    Scraping the whole blob is what made the ENV report cite `bcftools 1.23.1`, a
+    version bcftools does not have: the real banner is
+
+        bcftools 9cef4057            <- the populationgenomics csq fork's commit
+        Using htslib 1.23.1          <- a DIFFERENT PROJECT's version
+
+    and `9cef4057` is not version-shaped, so a whole-text regex skipped line 1 and
+    confidently returned HTSLIB's version under bcftools' name. Restricting to line 1
+    is deliberately NARROWER, not smarter: when the tool's own version isn't a
+    version-shaped token we now return '' (absence — rendered as "unrecorded") rather
+    than wander down the output and find a number that belongs to someone else.
+    Making the regex cleverer cannot fix this; only the producer capturing the version
+    can, and until it does, absence beats a confident lie."""
+    return (text or "").strip().split("\n", 1)[0]
+
+
 def _extract_version(text: str) -> str:
-    m = _VER_RE.search(text or "")
+    m = _VER_RE.search(_first_line(text))
     return m.group(1) if m else ""
 
 
@@ -51,7 +71,7 @@ def _tier_from_purpose(purpose: str) -> str:
 def _version_from_purpose(purpose: str) -> str:
     """Pull the version anchor (commit / release / version) from a long-tail
     purpose string. `install_commands` generators emit `name (<tier> @ <ref>)`
-    for source / synthesized / script-repo / spack tiers — the ref IS the pinned
+    for source / synthesized / script-repo tiers — the ref IS the pinned
     install identity captured by the build. Returns '' if no anchor present."""
     if not purpose:
         return ""
@@ -72,25 +92,41 @@ def _version_from_banner(banner: str) -> str:
     synthesized from a sanitized tool token inside container_build, no agent text
     reaches the shell). Looks for explicit 'Version: X.Y.Z' first (the high-
     confidence shape), then a bare version-shaped token. Returns '' if nothing
-    matches the strict shape — agent can't smuggle arbitrary text into this cell."""
+    matches the strict shape — agent can't smuggle arbitrary text into this cell.
+
+    FIRST LINE ONLY — see `_first_line`. A version-shaped token further down the
+    banner belongs to a dependency, not to this tool."""
     if not banner:
         return ""
-    m = re.search(r"[Vv]ersion[: ]+[Vv]?(\d+\.\d+[A-Za-z0-9._-]*)", banner)
+    head = _first_line(banner)
+    m = re.search(r"[Vv]ersion[: ]+[Vv]?(\d+\.\d+[A-Za-z0-9._-]*)", head)
     if m:
         return m.group(1)
-    m = _VER_TOKEN.search(banner)
+    m = _VER_TOKEN.search(head)
     return m.group(1) if m else ""
 
 
 def _install_anchor(tool: str, shipped: Optional[list]) -> str:
-    """The pinned commit / ref / tag freeze recorded in the long-tail purpose for
-    this tool (the install identity for source / synthesized / script-repo tiers).
-    Empty for conda / pip / binary tiers (their purpose doesn't carry `@ <ref>`)."""
+    """This tool's recorded version, else the pinned commit/ref/tag from its long-tail
+    provenance (the install identity for source / synthesized / script-repo tiers).
+    Empty for conda / pip / binary tiers (their provenance carries no `@ <ref>`).
+
+    `shipped` holds `ShippedBinary`-shaped dicts. Matching is on the `tool` field —
+    the exact PATH command the generator recorded — NOT a substring scan of prose.
+    The old `s.get("name") or s.get("purpose")` read a key one of the two producers
+    never wrote, so this rung never fired for authors'-image envs and the banner
+    scraper below won by default (audit 2026-07-16)."""
     low = (tool or "").lower()
+    if not low:
+        return ""
     for s in shipped or []:
-        purpose = s.get("name") or s.get("purpose") or ""
-        if low and low in purpose.lower():
-            return _version_from_purpose(purpose)
+        if not isinstance(s, dict) or (s.get("tool") or "").lower() != low:
+            continue
+        # The producer's captured version outranks any anchor we could parse: it is
+        # recorded, not inferred. None means NOT CAPTURED — fall through to the ref.
+        if s.get("version"):
+            return str(s["version"])
+        return _version_from_purpose(s.get("provenance") or "")
     return ""
 
 
@@ -103,20 +139,33 @@ def _is_sha(s: str) -> bool:
 
 def _resolved_version(tool: str, pkg: Optional[dict], v: Optional[dict],
                       shipped: Optional[list]) -> str:
-    """The single source of truth for a tool's installed-version cell. Honesty-
-    ordered:
+    """THE single definition of a tool's installed-version cell — used by every
+    renderer, so the views can't disagree. (They did: `resources._semantic_versions`
+    forked this chain in tier 7, read only rung 1, and reported `bcftools: null`
+    while the ENV report said `1.23.1`. Two readings of one fact, both wrong,
+    disagreeing. Add a consumer? Call THIS. Don't fork it.)
 
-      1. conda/pip metadata version — authoritative for the conda layer
-      2. banner version — what the shipped binary itself prints (non-fakeable,
-         captured by validate_in_image's tool probe)
-      3. evidence-check `out` version — same shipped binary, but the evidence
-         command itself CAN be agent-supplied via install primitives
-      4. install anchor — pinned commit / release / tag from the long-tail purpose
+    Ordered RECORDED-BEFORE-SCRAPED, which is the honesty ordering:
 
-    Returns '' when none resolves to a strict version-shaped token."""
+      1. conda/pip metadata version   — RECORDED by the package manager
+      2. shipped_binaries[].version   — RECORDED by the long-tail producer
+      3. banner version, first line    — SCRAPED from what the binary printed
+      4. evidence `out`, first line    — SCRAPED; the evidence command is agent-supplied
+      5. install anchor (`@ <ref>`)    — the build-time pin from the provenance string
+
+    1-2 are facts someone wrote down. 3-4 are inferences from prose, and an inference
+    is exactly what cited htslib's version for bcftools — so anything recorded must
+    outrank them. This ordering used to put the banner second, which meant a scraped
+    guess beat a captured fact whenever both existed.
+
+    Returns '' when nothing resolves — and '' means UNRECORDED. Render it as absence.
+    Never let a caller substitute a plausible number for it (Rule 2)."""
     cv = (pkg or {}).get("version", "")
     if cv:
         return cv
+    rv = _recorded_version(tool, shipped)
+    if rv:
+        return rv
     bv = _version_from_banner((v or {}).get("banner", ""))
     if bv:
         return bv
@@ -124,6 +173,19 @@ def _resolved_version(tool: str, pkg: Optional[dict], v: Optional[dict],
     if ev:
         return ev
     return _install_anchor(tool, shipped)
+
+
+def _recorded_version(tool: str, shipped: Optional[list]) -> str:
+    """This tool's version as CAPTURED by its long-tail producer — a fact, not a
+    parse. '' when the producer did not capture one (which several tiers currently do
+    not; that is a known gap, and stating it beats guessing)."""
+    low = (tool or "").lower()
+    if not low:
+        return ""
+    for s in shipped or []:
+        if isinstance(s, dict) and (s.get("tool") or "").lower() == low and s.get("version"):
+            return str(s["version"])
+    return ""
 
 
 def _verif_index(verifications: list[dict]) -> dict[str, dict]:
@@ -171,13 +233,18 @@ def requested_versions(record: dict) -> dict[str, str]:
 
 
 def _install_method(name: str, pkg: Optional[dict], shipped: list[dict]) -> str:
+    """How this tool got into the image. Matches on the recorded `tool` field, not a
+    substring scan of prose — `low in purpose` also matched any tool whose name was a
+    substring of another's provenance line."""
     if pkg:
         return "pip (PyPI)" if pkg.get("kind") == "pypi" else "conda"
     low = name.lower()
     for s in shipped or []:
-        purpose = (s.get("name") or s.get("purpose") or "").lower()
-        if low in purpose:
-            return _tier_from_purpose(purpose)
+        if not isinstance(s, dict) or (s.get("tool") or "").lower() != low:
+            continue
+        if s.get("tier"):                    # the tier disclosed itself — believe it
+            return str(s["tier"])
+        return _tier_from_purpose((s.get("provenance") or "").lower())
     return "—"
 
 

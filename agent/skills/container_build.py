@@ -166,6 +166,45 @@ def image_present(ref: str) -> bool:
     return p.returncode == 0
 
 
+def registry_manifest_digest(ref: str) -> str:
+    """The PULLABLE manifest digest of an image we obtained from a registry —
+    `sha256:…` as it appears in `<repo>@sha256:…`. "" when the image isn't local or
+    carries no repo digest (e.g. it was built here, never pushed).
+
+    THIS IS NOT `.Id`, and the difference is a real bug we shipped. `.Id` is the
+    daemon's local content id; under the classic overlay2 store it is the image's
+    *config blob* digest, which is NOT what anyone can `docker pull`. It happens to
+    equal the manifest digest under the containerd snapshotter — which is what this
+    project's dev Mac runs, so `verify_env_recipe`'s adopt branch compared `.Id`
+    against a recorded manifest digest and PASSED, locally, by luck. On a normal
+    overlay2 daemon (most Linux, most CI, most users) it reported "recipe not
+    reproduced" for every adopt recipe ever written (audit 2026-07-16 §14/Tier 6).
+
+    So `image_digest` and this are not two copies of one concept to be unified —
+    they answer two different questions and both are needed:
+        image_digest(x)             → "what are these bytes, locally?"  (we BUILT it)
+        registry_manifest_digest(x) → "what would anyone else pull?"    (we ADOPTED it)
+    Conflating them under one name is the same disease as duplicating a definition:
+    one name, two meanings, and the wrong one silently in the load path."""
+    if not ref:
+        return ""
+    p = subprocess.run(
+        ["docker", "image", "inspect", "--format",
+         "{{range .RepoDigests}}{{println .}}{{end}}", ref],
+        capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return ""
+    repo = ref.split("@", 1)[0].split(":")[0] if "@" in ref else ref.split(":")[0]
+    digests = [ln.strip() for ln in (p.stdout or "").splitlines() if "@sha256:" in ln]
+    # Prefer the entry for the repo we asked about; an image can carry repo digests
+    # for several repos (same bytes, mirrored), and picking another repo's digest
+    # would be a different pullable reference.
+    for d in digests:
+        if d.split("@", 1)[0] == repo:
+            return d.split("@", 1)[1]
+    return digests[0].split("@", 1)[1] if digests else ""
+
+
 # ---------------------------------------------------------------------------
 # EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
 # ---------------------------------------------------------------------------
@@ -648,36 +687,21 @@ class ContainerBuild:
             self.has_env_layer = True
         return res
 
-    # -- DECLARE: an authored file (patch / config / wrapper) --------------
-    def write_file(self, path: str, content: str, *, mode: str = "",
-                   purpose: str = "") -> dict[str, Any]:
-        """Capture an agent-authored file (a patched Makefile, a config, a wrapper
-        script) INTO the build — written now in the container AND recorded as a
-        base64 RUN so freeze bakes its exact bytes. Replaces stage_authored_artifact
-        + I9 hashing: the content lives in the recorded build, so there is no host
-        orphan to trace (the container is the captured state)."""
-        import base64
-        import shlex as _shlex
-        b64 = base64.b64encode(content.encode()).decode()
-        q = _shlex.quote(path)
-        cmd = f'mkdir -p "$(dirname {q})"; echo {b64} | base64 -d > {q}'
-        if mode:
-            cmd += f"; chmod {mode} {q}"
-        r = self.exec(cmd, timeout=120)
-        if r["returncode"] != 0:
-            return broke("container_build.write_file_failed", success=False, stderr=(r["stderr"] or "")[-400:])
-        self.longtail.append({"command": cmd, "purpose": purpose or f"authored file {path}",
-                              "evidence": f"test -f {q}"})
-        self.log.append(f"write_file {path} ({len(content)}B)")
-        return proven("container_build.write_file_ok", success=True, path=path)
-
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
-    def run(self, command: str, evidence: str, purpose: str = "",
+    def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
             timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
         baking; `evidence` is re-run in the built image at freeze.
+
+        `tool` is the command this step puts on PATH (`seqtk`) — DISTINCT from
+        `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every one of
+        the ten install_commands generators already computes it; it used to be dropped
+        right here, one line before it would have been recorded, after which
+        `_install_anchor` tried to scrape it back out of the prose. That round trip is
+        why the ENV report labelled four binaries "tool" and cited htslib's version for
+        bcftools. The producer knows the name — record it (audit 2026-07-16, Rule 1).
 
         engine_coupled: the command (and evidence) need the engine env active — the
         BUILD uses an engine-provided toolchain (rust/go/perl) or the artifact lives
@@ -698,7 +722,7 @@ class ContainerBuild:
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
-        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd}
+        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd, "tool": tool}
         if provenance:                       # synthesis tier: carry the per-command
             rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
         self.longtail.append(rec)
@@ -706,10 +730,14 @@ class ContainerBuild:
         return proven("container_build.run_ok", success=True, evidence_output=(ev["stdout"] or "").strip()[:200])
 
     def install(self, spec: dict, timeout: int = 1800) -> dict[str, Any]:
-        """Run an install_commands generator's spec ({command, evidence, purpose,
+        """Run an install_commands generator's spec ({command, evidence, tool, purpose,
         engine_coupled?}). The single entry point for every long-tail tier — the
-        generator carries the per-tier knowledge; the locus just runs+bakes it."""
+        generator carries the per-tier knowledge; the locus just runs+bakes it.
+
+        `spec["tool"]` is emitted by ALL TEN generators and was dropped here until the
+        2026-07-16 audit — see `run()`'s docstring for what that cost downstream."""
         return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
+                        tool=spec.get("tool", ""),
                         engine_coupled=spec.get("engine_coupled", False),
                         provenance=spec.get("provenance"), timeout=timeout)
 
@@ -808,7 +836,12 @@ class ContainerBuild:
         return broke("container_build.validation_in_image_failed", success=False, checks=results, banners=banners)
 
     def image_digest(self, image: str) -> str:
-        """The built image's content id (sha256), the local shipping handle."""
+        """The built image's content id (sha256), the local shipping handle.
+
+        `.Id` is the RIGHT answer here and only here: an image we just BUILT has no
+        registry manifest digest until it is pushed, so its daemon content id is the
+        only id it has. For an image we PULLED, the question is different and so is
+        the answer — see `registry_manifest_digest`."""
         r = self._sh(["docker", "image", "inspect", "--format", "{{index .Id}}", image])
         return (r["stdout"] or "").strip() if r["returncode"] == 0 else ""
 

@@ -42,12 +42,11 @@ _C = "a" * 40   # a full 40-hex commit
     ("cargo",       {},                                 ("built_unpinned", False)),
     ("go",          {"version": "v1.2.3"},              ("built_pinned", True)),
     ("go",          {"version": "latest"},              ("built_unpinned", False)),
-    # perl / r / spack: TOFU (no immutable content anchor we reproduce)
+    # perl / r: TOFU (no immutable content anchor we reproduce)
     ("perl",        {},                                 ("cpan_tofu", False)),
     ("r_install",   {"source": "github:o/r", "commit_sha": _C}, ("commit_pinned", True)),
     ("r_install",   {"source": "cran"},                 ("repo_tofu", False)),
     ("r_install",   {"source": "github:o/r", "ref": "main"},    ("repo_tofu", False)),
-    ("spack",       {},                                 ("spec_pinned_tofu", False)),
     # flag-bearing pip: literal command, not lock-representable
     ("pip",         {},                                 ("command_pinned", False)),
 ])
@@ -81,7 +80,7 @@ _EMITTED = {
     "authenticated", "pinned_tofu", "unanchored_cross_platform", "unanchored",  # binary/jar
     "commit_pinned", "ref_pinned_tofu", "unpinned",                             # source/synth/r
     "built_pinned", "built_unpinned",                                           # cargo/go
-    "cpan_tofu", "repo_tofu", "spec_pinned_tofu", "command_pinned",             # perl/r/spack/pip
+    "cpan_tofu", "repo_tofu", "command_pinned",                                 # perl/r/pip
 }
 _VERIFIED_ASSURANCES = {"authenticated", "commit_pinned", "built_pinned", "lock_pinned"}
 
@@ -137,14 +136,34 @@ def test_map_install_perl_discloses_cpan_tofu():
 
 # ── 4. the freeze record copies assurance for any tier ─────────────────────
 def test_shipped_binary_entry_carries_assurance_for_non_binary_tier():
-    step = {"purpose": "install mytool", "command": "git clone ... && make",
+    step = {"tool": "mytool", "purpose": "install mytool", "command": "git clone ... && make",
             "provenance": {"tier": "source", "verified": True, "assurance": "commit_pinned"}}
     e = _shipped_binary_entry(step)
     assert e["tier"] == "source"
     assert e["verified"] is True
     assert e["assurance"] == "commit_pinned"
+    # the tool is NAMED, and separately from both the prose and the shell line — the
+    # three used to share two keys with drifting meanings
+    assert e["tool"] == "mytool"
+    assert e["install_command"] == "git clone ... && make"
 
 
-def test_shipped_binary_entry_without_provenance_is_bare():
-    e = _shipped_binary_entry({"purpose": "p", "command": "c"})
-    assert e == {"name": "p", "command": "c"}     # nothing to disclose → unchanged
+def test_shipped_binary_entry_without_provenance_discloses_absence():
+    """A step with nothing to disclose still produces the FULL declared shape, with
+    each absent fact stated as None rather than omitted. Omission is what let four
+    readers each invent a different default for a missing key."""
+    e = _shipped_binary_entry({"tool": "seqtk", "purpose": "p", "command": "c"})
+    assert e == {"tool": "seqtk", "version": None, "provenance": "p",
+                 "install_command": "c", "tier": None, "verified": None,
+                 "assurance": None}
+
+
+def test_shipped_binary_entry_refuses_a_step_with_no_tool_name():
+    """REINTRODUCE-THE-BUG. `tool` is what every reader keys on. A step that lost it
+    used to yield a record labelled with prose (or the literal string "tool"), and the
+    ENV report rendered `<b>tool</b>` four times for the authors'-image env. An
+    unnameable binary must fail at the producer, not render as a blank cell."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+    with _pytest.raises(ValidationError, match="tool"):
+        _shipped_binary_entry({"purpose": "p", "command": "c"})

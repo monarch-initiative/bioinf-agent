@@ -252,34 +252,6 @@ class EnvManager:
             returncode=m["returncode"],
         )
 
-    def install_pip(self, env_name: str, pip_specs: list[str]) -> dict[str, Any]:
-        env_path = self.envs_dir / env_name
-        pip_bin = env_path / "bin" / "pip"
-
-        cmd = [str(pip_bin), "install"] + pip_specs
-        m = self.apply(
-            env_name, cmd, in_env=False,
-            timeout=self.config["agent"]["install_timeout_seconds"],
-        )
-
-        if m["success"]:
-            return proven(
-                "env_manager.pip_installed",
-                success=True,
-                env_name=env_name,
-                packages_requested=pip_specs,
-                stdout=m["stdout"][-2000:],
-                stderr=m["stderr"][-2000:],
-            )
-        return broke(
-            "env_manager.pip_install_failed",
-            success=False,
-            env_name=env_name,
-            packages_requested=pip_specs,
-            stdout=m["stdout"][-2000:],
-            stderr=m["stderr"][-2000:],
-        )
-
     def apply(
         self,
         env_name: str,
@@ -293,8 +265,8 @@ class EnvManager:
         capture it as a Mutation.
 
         This is the single chokepoint the install re-spine routes through:
-        install()/install_pip() (and, as the re-spine proceeds, every other
-        install tier) delegate execution here so the capture shape — command,
+        install() (and, as the re-spine proceeds, every other
+        install tier) delegates execution here so the capture shape — command,
         returncode, success, stdout/stderr, and (in-env) resource usage +
         detected outputs — is produced in exactly ONE place rather than
         re-derived per method. Pairing a Mutation with an evidence strategy
@@ -1410,109 +1382,6 @@ class EnvManager:
     # what's actually installed against what the draft thinks is installed.
     # -----------------------------------------------------------------------
 
-    def list_conda_packages(self, env_name: str) -> dict[str, str]:
-        """Return {package_name: version} for everything conda knows about in the env.
-
-        Source of truth for resolved_version of conda packages — search_package
-        records the channel's 'latest' but the solver may pin differently based
-        on co-installed packages' constraints (e.g. multtest downgraded for r-base 4.4).
-        """
-        return {n: rec["version"] for n, rec in self.list_conda_package_records(env_name).items()}
-
-    def list_conda_package_records(self, env_name: str) -> dict[str, dict]:
-        """Return {name: {version, channel, build_string}} from `conda list --json`.
-
-        The channel field on each record is conda's authoritative answer to "where
-        did this package come from" — the spec's PackageRecord.channel should be
-        derived from here, not from whatever the agent passed to install_conda_packages
-        (which is the channel hint, not the resolved channel).
-        """
-        env_path = self.envs_dir / env_name
-        if not env_path.exists():
-            return {}
-        result = self._run(
-            [self._conda_exe, "list", "--prefix", str(env_path), "--json"],
-            cwd=str(self.project_root),
-            timeout=120,
-        )
-        if result["returncode"] != 0:
-            return {}
-        import json
-        try:
-            entries = json.loads(result["stdout"])
-        except Exception:
-            return {}
-        records = {}
-        for e in entries:
-            name = e.get("name", "")
-            if not name:
-                continue
-            records[name] = {
-                "version":       e.get("version", ""),
-                "channel":       e.get("channel", ""),
-                "build_string":  e.get("build_string", ""),
-            }
-        return records
-
-    def list_pip_packages(self, env_name: str) -> dict[str, str]:
-        """Return {package_name: version} for pip-installed packages in the env.
-
-        Source of truth for resolved_version when an install_step did `pip install X`
-        without pinning a version — pip's catalog is authoritative. Names are
-        returned in their canonical pip form (open-cravat, not opencravat).
-        Falls back to empty dict on any failure.
-        """
-        env_path = self.envs_dir / env_name
-        pip_bin = env_path / "bin" / "pip"
-        if not pip_bin.exists():
-            return {}
-        try:
-            result = self._run(
-                [str(pip_bin), "list", "--format=json"],
-                cwd=str(self.project_root),
-                timeout=60,
-            )
-        except Exception:
-            return {}
-        if result.get("returncode") != 0:
-            return {}
-        import json
-        try:
-            entries = json.loads(result["stdout"])
-        except Exception:
-            return {}
-        return {e.get("name", ""): e.get("version", "") for e in entries if e.get("name")}
-
-    def list_explicit_conda_packages(self, env_name: str) -> set[str]:
-        """Return the *explicitly-requested* package names from conda's history db.
-
-        Distinct from list_conda_packages, which returns every installed package
-        (including transitive deps). This is the set conda export --from-history
-        would dump — what the user actually asked for. The right filter for the
-        spec's `packages` field, which should be the tool list, not the closure.
-
-        Returns an empty set on failure.
-        """
-        env_yml = self.export_environment_yml(env_name, from_history=True)
-        if not env_yml:
-            return set()
-        import yaml as _yaml
-        try:
-            data = _yaml.safe_load(env_yml) or {}
-        except Exception:
-            return set()
-        names: set[str] = set()
-        for entry in data.get("dependencies", []) or []:
-            if isinstance(entry, str):
-                # conda spec like "r-base=4.4" or "samtools" — keep the bare name
-                names.add(entry.split("=", 1)[0].split(" ", 1)[0])
-            elif isinstance(entry, dict) and "pip" in entry:
-                # nested pip block: list of pip spec strings
-                for pip_spec in entry["pip"] or []:
-                    if isinstance(pip_spec, str):
-                        names.add(pip_spec.split("=", 1)[0].split("<", 1)[0].split(">", 1)[0].strip())
-        return names
-
     def export_environment_yml(self, env_name: str, from_history: bool = True) -> str:
         """Return the conda environment definition as YAML text.
 
@@ -1559,29 +1428,11 @@ class EnvManager:
             # If post-processing fails for any reason, fall back to the raw conda output.
             return result["stdout"]
 
-    def export_explicit_lock(self, env_name: str) -> str:
-        """Return a `conda list --explicit` lock file content (URL-pinned).
-
-        Recreating the env from this lock guarantees the *exact* same package
-        builds. Architecture-coupled (osx-arm64 vs linux-64 etc.) but
-        bombproof for the platform it was generated on.
-        """
-        env_path = self.envs_dir / env_name
-        if not env_path.exists():
-            return ""
-        result = self._run(
-            [self._conda_exe, "list", "--prefix", str(env_path), "--explicit"],
-            cwd=str(self.project_root),
-            timeout=120,
-        )
-        return result["stdout"] if result["returncode"] == 0 else ""
-
     def generate_conda_lock(
         self, env_name: str, platforms: list[str] | None = None, out_path: str | None = None,
     ) -> dict[str, Any]:
         """Produce a MULTI-PLATFORM conda-lock.yml from the env's
-        environment.yml — the portable lock artifact (vs export_explicit_lock,
-        which is bit-exact but single-arch). conda-lock re-solves per platform;
+        environment.yml — the portable lock artifact. conda-lock re-solves per platform;
         the default target is linux-64 (the HPC arch). A platform that can't
         solve is reported, not fatal. Requires conda-lock on PATH.
         """
@@ -1652,35 +1503,6 @@ class EnvManager:
         return refused("env_manager.no_lock_engine",
                        success=False, engine="none", lockfile=None,
                        error="no lock engine (pixi/conda-lock) on PATH")
-
-    def r_package_version(self, env_name: str, package_name: str) -> str:
-        """Return the version `packageVersion('X')` reports for an R package,
-        or '' if not installed / not loadable.
-
-        Used to reconcile resolved_version for run_install_command packages
-        (BiocManager / install_github / CRAN install.packages) where the conda
-        list doesn't know them, and where the R-package intrinsic version is
-        what users actually want to see.
-        """
-        env_path = self.envs_dir / env_name
-        if not env_path.exists():
-            return ""
-        # Escape single quotes in package name (defensive — R package names
-        # don't normally contain them, but the input crosses a tool boundary).
-        safe_name = package_name.replace("'", "\\'")
-        rscript = (
-            f"v <- tryCatch(as.character(packageVersion('{safe_name}')),"
-            f" error=function(e) ''); cat(v)"
-        )
-        result = self._run(
-            [self._conda_exe, "run", "--prefix", str(env_path), "--no-capture-output",
-             "Rscript", "-e", rscript],
-            cwd=str(self.project_root),
-            timeout=60,
-        )
-        if result["returncode"] != 0:
-            return ""
-        return result["stdout"].strip()
 
     def start_service(
         self,

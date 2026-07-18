@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.skills.freeze import record_is_gated as _record_is_gated
+
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 SLSA_PREDICATE = "https://slsa.dev/provenance/v1"
 BUILD_TYPE = "https://github.com/bioinf-agent/container-native-build/v1"
@@ -70,15 +72,41 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                   "passed": bool(v.get("passed"))}
                  for v in (r.get("verifications") or []) if isinstance(v, dict)]
 
-    # The honesty guarantees are MODE-DEPENDENT and must not over-claim: a
-    # container-native BUILD ran the contract (BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN);
-    # an ADOPTED public biocontainer is TRUSTED BY ITS PUBLISHED DIGEST — it is NOT
-    # built or validated in-locus, so claiming VALIDATED_IN_IMAGE (with an empty
-    # evidence list) would be a false provenance assertion.
+    # The honesty guarantees are MODE-DEPENDENT and must not over-claim. The distinction
+    # that survives is about PROVENANCE, not validation: a container-native BUILD made the
+    # bytes (BUILT); an ADOPTED public biocontainer's bytes are BioContainers', pinned by
+    # their published manifest digest (ADOPTED_BY_DIGEST). That claim is unchanged and
+    # still exactly true.
+    #
+    # What changed (audit 2026-07-16 Tier 2): adopt now RUNS each tool's evidence inside
+    # the adopted image, so VALIDATED_IN_IMAGE is a claim it earns rather than one it must
+    # omit. It is asserted off the evidence actually present — never as a mode default —
+    # so an adopt record that somehow carries no verifications cannot claim it. (Before,
+    # adopt validated nothing at all: the omission was honest, and the hole was real.)
     if r.get("mode") == "adopt":
-        guarantees = ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+        guarantees = ["ADOPTED_BY_DIGEST"]
+        if validated:
+            guarantees.append("VALIDATED_IN_IMAGE")
+        guarantees.append("POLICY_CLEAN")
     else:
         guarantees = ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+
+    # WHAT WAS THIS BUILT FROM? For the two authors' paths the answer used to be nowhere in
+    # the document: externalParameters carried {requested_tools, platform, conda_specs}, and
+    # an authors-dockerfile env has NO conda specs — so the provenance said "build_method:
+    # authors-dockerfile" without saying WHOSE Dockerfile, at which commit. SLSA's
+    # externalParameters is exactly the slot for inputs the requester controlled, and the
+    # repo/commit/recipe/build-args are precisely that. Emitted only when present: a key
+    # whose value is a fabricated blank is worse than an absent key (the ShippedBinary rule).
+    ds = r.get("dockerfile_source") or {}
+    source: dict = {}
+    if ds:
+        source["authors_recipe"] = {
+            k: v for k, v in (("repo", ds.get("repo")), ("commit", ds.get("commit")),
+                              ("tag", ds.get("tag")), ("recipe_path", ds.get("recipe_path")),
+                              ("build_args", ds.get("build_args"))) if v}
+    if r.get("image_by_digest"):
+        source["adopted_image"] = r["image_by_digest"]
 
     predicate = {
         "buildDefinition": {
@@ -87,6 +115,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "requested_tools": r.get("requested_tools", []),
                 "platform": r.get("platform", ""),
                 "conda_specs": r.get("conda_specs", []),
+                **source,
             },
             "internalParameters": {
                 "engine": r.get("engine", ""),
@@ -96,7 +125,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "validation_locus": r.get("validation_locus", ""),
                 "honesty_contract": guarantees,
                 "validated_in_image": validated,        # validated == shipped, per tool (build only)
-                "redistributable": r.get("redistributable", not r.get("gated")),
+                "redistributable": r.get("redistributable", not _record_is_gated(r)),
                 # F4 fix (Batch 2): the gated/license firewall (I13) is verified
                 # at build time; the attestation must CARRY the declared licenses
                 # forward so a downstream verifier / cosign-attest consumer can
@@ -105,7 +134,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # against what". Recorded alongside `redistributable` (the
                 # boolean firewall flag) since they're a unit — gated=True means
                 # redistributable=False AND licenses[] names the terms.
-                "license_gated": bool(r.get("license_gated", r.get("gated", False))),
+                "license_gated": _record_is_gated(r),
                 "licenses": list(r.get("licenses") or []),
                 # The accelerator policy that gated POLICY_CLEAN (I12). Pure
                 # metadata pass-through — the contract already enforces shape.

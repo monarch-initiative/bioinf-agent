@@ -108,54 +108,6 @@ def compute_content_digest(parts: dict) -> str:
     return "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
 
 
-def content_digest_parts(spec: dict) -> dict:
-    """Extract the identity-determining parts of a spec/draft. Kept separate
-    from the hash so tests (and debugging) can see exactly what feeds the
-    digest. Every component is something the runtime captured, not an
-    agent assertion: lock_sha256 (conda list --explicit), source commit_shas
-    (I11), binary sha256s (I14), authored-artifact sha256s (I9)."""
-    pkgs = [p for p in (spec.get("packages") or []) if isinstance(p, dict)]
-
-    def _im(p):
-        im = p.get("install_method")
-        return im if isinstance(im, dict) else {}
-
-    sources = sorted(
-        [[p.get("name", ""), _im(p).get("commit_sha", "")]
-         for p in pkgs if _im(p).get("type") == "source"]
-    )
-    binaries = sorted(
-        [[p.get("name", ""), _im(p).get("sha256", "")]
-         for p in pkgs if _im(p).get("type") == "binary"]
-    )
-    artifacts = sorted(
-        a.get("sha256", "") for a in (spec.get("authored_artifacts") or [])
-        if isinstance(a, dict)
-    )
-    docker = spec.get("docker") if isinstance(spec.get("docker"), dict) else {}
-    accel = spec.get("accelerator") if isinstance(spec.get("accelerator"), dict) else {}
-    return {
-        "lock":      spec.get("lock_sha256") or "",
-        "sources":   sources,
-        "binaries":  binaries,
-        "artifacts": artifacts,
-        "platform":  (docker or {}).get("platform") or "",
-        "accel":     (accel or {}).get("type") or "none",
-    }
-
-
-def content_digest_from_spec(spec: dict) -> str:
-    """Content digest of an env from its FINALIZED spec dict (packages[] + lock_sha256).
-
-    NOTE: this reads derived/finalized fields (packages[], lock_sha256) that a LIVE
-    DRAFT does not carry — a draft holds install_steps[].installed_packages and has
-    no lock yet. On a draft it therefore collapses to a constant (empty parts → one
-    digest for every env), so it must NOT be used as the freeze record's anchor on
-    the container-native path. Use record_content_digest() with the EnvBuild digest
-    instead — see that function."""
-    return compute_content_digest(content_digest_parts(spec))
-
-
 def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: str = "",
                           fallback: str = "") -> str:
     """The AUTHORITATIVE 'what was GOT' content anchor for a frozen env, by mode:
@@ -167,10 +119,15 @@ def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: st
               registry, reproducible by re-pull).
 
     `fallback` (a request-based hash) is used only if the mode-specific digest is
-    missing. This replaces content_digest_from_spec(draft) on the freeze path, which
-    read finalized-only fields a live draft lacks and so produced ONE constant digest
-    for every container-native build (a false content collision across distinct
-    envs)."""
+    missing.
+
+    WHY THIS SHAPE (a real regression, kept as a warning): the superseded
+    finalized-spec digest read packages[]/lock_sha256 — fields a live draft does
+    not have — so it hashed the same empty view for every container-native build
+    and returned ONE constant digest for four distinct envs. A content anchor that
+    collides is worse than none: it silently declares different envs identical.
+    Anchor on what was actually GOT (the build/adopt digest), never on fields the
+    caller may not have populated yet."""
     if mode == "build" and build_digest:
         return build_digest
     if mode == "adopt" and adopt_digest:
@@ -295,33 +252,16 @@ def non_conda_installs(spec: dict) -> list[dict]:
     for p in installed_packages(spec):
         im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
         t = im.get("type") or "conda"
-        if t not in ("conda", "docker_pull"):
+        if t != "conda":
             out.append({"name": p.get("name", ""), "type": t, "install_method": im})
     return out
-
-
-def has_conda_packages(spec: dict) -> bool:
-    """True if any TOOL was installed via conda (so the recipe build needs a
-    conda layer). The bootstrap python from create_conda_env is scaffolding, not
-    a tool — it lands in the 'conda create' step and must NOT trigger a conda
-    layer. So we look for a real 'conda install' step (install_conda_packages),
-    or, in a finalized spec, a package with install_method.type == conda."""
-    for st in (spec.get("install_steps") or []):
-        if (isinstance(st, dict) and st.get("tool") == "conda"
-                and st.get("subcommand") == "install" and st.get("installed_packages")):
-            return True
-    for p in _packages(spec):
-        im = p.get("install_method") if isinstance(p.get("install_method"), dict) else {}
-        if im.get("type") == "conda":
-            return True
-    return False
 
 
 def requested_conda_specs(spec: dict) -> list[str]:
     """The conda specs the agent EXPLICITLY asked for — install_conda_packages
     steps (tool==conda, subcommand==install) as 'name=version' / 'name'. EXCLUDES
     the bootstrap python from create_conda_env (a 'create' step: scaffolding, not a
-    requested tool), matching has_conda_packages's view. This is the TOP-LEVEL
+    requested tool). This is the TOP-LEVEL
     request the container-native build re-solves from via the engine — not the full
     dependency closure (the engine resolves that; the in-image lock content-addresses
     what was actually got).
@@ -440,6 +380,18 @@ def apptainer_delivery(
     }
 
 
+def record_is_gated(record: dict) -> bool:
+    """Is this EnvCache record a license-gated artifact (I13)?
+
+    Reads the canonical `license_gated`, falling back to the legacy `gated` key that
+    records written before the 2026-07-16 unification carry on disk. Every consumer of
+    "is this gated" goes through here so the two names can never drift apart again —
+    drifting apart is exactly how I13 stopped firing on the authors'-image path."""
+    if "license_gated" in record:
+        return bool(record.get("license_gated"))
+    return bool(record.get("gated", False))
+
+
 def freeze_record(
     *,
     request_key: str,
@@ -467,7 +419,14 @@ def freeze_record(
         "image":           image,
         "image_digest":    image_digest,
         "platform":        platform,
-        "gated":           gated,
+        # CANONICAL NAME: `license_gated` — the same key env_honesty._check_license reads
+        # and the same field name on the pydantic model (core_data.PipelineSpec). This used
+        # to be emitted as `gated`, which silently disabled I13 on the ONE path that hands
+        # the cache record straight to check_build (freeze_from_image / the authors' path):
+        # the contract read `license_gated`, the record only had `gated`, so a gated
+        # artifact with no licenses[] registered clean (audit 2026-07-16). One concept,
+        # one name. Records written before this carry `gated` — read via record_is_gated().
+        "license_gated":   gated,
         "redistributable": not gated,
         "lock":            lock_path,
         "conda_lock":      conda_lock_path,
@@ -501,26 +460,99 @@ class EnvCache:
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)
 
+    def contract_violations(self, record: dict) -> list[dict]:
+        """The Layer-1 honesty contract, re-run against a STORED record.
+
+        The contract is a pure function of the record, so the question "would this
+        artifact be accepted if we froze it today?" is answerable at any time — and
+        must be, because a cache record is a claim that outlives the event that
+        made it. Kept here (not inlined at each call site) so there is exactly ONE
+        answer to "is this cached artifact trustworthy?"; the audit's whole finding
+        was one concept re-derived in N places and drifting in N-1 of them."""
+        from agent.skills import env_honesty   # re + typing + models (leaf); no import cycle
+        return env_honesty.check_build(record)
+
     def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
-        """A cache hit RE-ANCHORED against reality: returns the record only if its
-        image is still present per `image_present(ref) -> bool`. The cache spans
-        events (unlike EnvBuild.run(), which verifies on live calls in one pass), so
-        a hit is a claim until re-checked — the container-native analog of anchoring
-        docker_status to `docker image inspect` at finalize. An evicted image is
-        treated as a MISS (None) so the caller rebuilds rather than shipping a
-        dangling reference. `image_present` is injected to keep this module network-
-        free (a face supplies the docker-backed check)."""
+        """A cache hit RE-ANCHORED against reality: the record is returned only if
+        it still satisfies the SAME contract a fresh freeze must satisfy — BUILT
+        (its image is still present per `image_present(ref) -> bool`) AND
+        VALIDATED_IN_IMAGE AND POLICY_CLEAN. Anything else is a MISS (None), so the
+        caller rebuilds rather than serving a claim it can no longer support.
+
+        The cache spans events (unlike EnvBuild.run(), which verifies on live calls
+        in one pass), so a hit is a claim until re-checked. This used to re-check
+        only image PRESENCE, which made the contract retroactively unenforceable:
+        `samtools=1.21` was registered pre-Tier-2 with `verifications: []`, fails
+        `check_build` today, and was still served as `proven` on every hit — the
+        adopt-path validation gate was live in the code and absent in effect for
+        every env that already existed (audit 2026-07-16).
+
+        Re-anchoring the FULL contract is what makes a strengthened gate apply to
+        artifacts frozen before it existed: a record that can no longer earn its
+        green is simply re-earned by a rebuild. `image_present` is injected to keep
+        this module network-free (a face supplies the docker-backed check)."""
         rec = self.lookup(key)
         if not rec:
             return None
         ref = rec.get("image") or rec.get("image_digest") or ""
-        return rec if (ref and image_present(ref)) else None
+        if not (ref and image_present(ref)):
+            return None
+        return None if self.contract_violations(rec) else rec
+
+    def lookup_verified(self, key: str) -> tuple[Optional[dict], list[dict]]:
+        """The SERVING question — "is there a record here I can honestly hand out?"
+
+        Returns (record, violations). `lookup()` answers a different question ("is
+        there a record?") and stays raw for diagnostics/listing, which must show
+        what is really on disk. Consumers that RUN, SHIP, or PIN an env ask this
+        one instead, and report `violations` rather than pretending the record was
+        missing — a refusal that misnames its own reason is the same disease.
+        Presence of the image is not re-checked here: these callers touch the image
+        directly and fail loudly on their own when it is gone."""
+        rec = self.lookup(key)
+        if not rec:
+            return None, []
+        violations = self.contract_violations(rec)
+        return (None, violations) if violations else (rec, [])
 
     def register(self, key: str, record: dict) -> dict:
+        """Write a freeze record to the cache — and the ONE place Layer 1 asserts the
+        record's SHAPE, the analog of `spec_writer.py`'s `model_validate` for Layer 2.
+
+        This used to be a pure passthrough (`data[key] = record; self._save(data)`),
+        and that is precisely how three producers came to write three key-dialects of
+        `shipped_binaries` that four readers each mis-read differently. Every write
+        path — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe` —
+        converges here, so a declaration here binds all of them at once.
+
+        RAISES on a malformed record rather than returning a violation: a producer
+        emitting a shape it never declared is OUR bug, not a user's env failing a
+        policy gate. It must be loud at the seam and impossible to serve. Records that
+        FAIL policy still register (that is what `contract_violations` is for) — this
+        gate is strictly about "can this record be read at all".
+        """
+        self._validate_shape(record)
         data = self._load()
+        # Keyed by request_key (the REQUEST's content address): re-freezing an
+        # identical request refreshes its own cache entry with an equivalent record
+        # — a solve-once refresh, not provenance loss. What a sealed WorkflowSpec
+        # actually depends on is the env IMAGE, pinned BY DIGEST (immutable in the
+        # Docker daemon), independent of this cache. So Layer 1 needs no analog of
+        # the seal write-guard here; Layer-2 provenance is protected at the seal
+        # WRITE (workflow_tools._guard_spec_overwrite), where re-sealing over a
+        # DIFFERENT-digest env is the real silent-replacement risk (Phase-3 Piece A).
         data[key] = record
         self._save(data)
         return record
+
+    @staticmethod
+    def _validate_shape(record: dict) -> None:
+        """Sub-records with a declared model must conform BEFORE they reach disk.
+        Kept separate from `contract_violations` (policy, returns violations) because
+        this is a producer bug and must raise. Patch `_save` — the I/O — in tests, not
+        `register`; patching `register` patches out the contract itself."""
+        from agent.models.core_data import shipped_binaries
+        shipped_binaries(record)   # raises ValidationError on an undeclared dialect
 
     def all(self) -> dict:
         return self._load()

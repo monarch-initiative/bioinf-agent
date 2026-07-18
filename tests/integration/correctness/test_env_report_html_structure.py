@@ -29,6 +29,8 @@ import re
 
 import pytest
 
+from env_records import shipped_binary as _shipped_binary
+
 from agent.skills.env_report_html import render_env_report_html
 
 
@@ -153,7 +155,8 @@ def _build_record() -> dict:
             {"name": "bcftools", "passed": True, "version": "1.21"},
         ],
         "shipped_binaries": [
-            {"name": "samtools (conda)", "command": "conda install ..."},
+            _shipped_binary("samtools", provenance="samtools (conda)",
+                            install_command="conda install ..."),
         ],
         "conda_specs": ["samtools=1.21", "bcftools=1.21"],
         "validation_locus": "native",

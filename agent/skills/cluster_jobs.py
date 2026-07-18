@@ -295,20 +295,36 @@ def _parse_hhmmss(t: str) -> float:
         return 0.0
 
 
-def _parse_max_rss_mb(rss: str) -> float:
-    """Parse SLURM's MaxRSS (`123456K` / `1.5G` / `0`) into MB."""
-    if not isinstance(rss, str) or not rss or rss == "0":
-        return 0.0
+def _parse_max_rss_mb(rss: str) -> Optional[float]:
+    """Parse SLURM's MaxRSS (`123456K` / `1.5G`) into MB, or None when sacct accounted
+    NOTHING (empty / any spelling of zero / unparseable).
+
+    None vs 0.0 is the honesty distinction (audit 2026-07-16): every "we don't know" case
+    used to collapse to 0.0, which is indistinguishable from a real observation of zero —
+    and no process that actually ran has a zero peak RSS. On a cluster without cgroup
+    memory accounting that fabricated a 0.0 that I7 then sealed as honest cost data.
+    Callers must translate None into an explicit `sacct_error`, never into a number.
+
+    The zero test is NUMERIC and happens after the parse, because a cluster with no
+    memory accounting writes `0K` / `0M` / `0.00M`, not `0`. The first cut of this fix
+    compared string literals (`"" | "0"`), so `0K` — the shape a real SLURM actually
+    emits — still parsed to 0.0 with no error marker and sealed straight through I7:
+    the very defect this function exists to close, surviving in its own fix. Compare
+    the value, never its spelling."""
+    if not isinstance(rss, str) or not rss.strip():
+        return None
     rss = rss.strip()
     suffix = rss[-1] if rss[-1].isalpha() else ""
     num = rss[:-1] if suffix else rss
     try:
         v = float(num)
     except (ValueError, TypeError):
-        return 0.0
+        return None
     mult = {"K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}.get(
         suffix.upper(), 1 / 1024 if not suffix else 1)
-    return round(v * mult, 1)
+    mb = round(v * mult, 1)
+    # <= 0 is not a measurement. A negative is nonsense; a zero means unaccounted.
+    return mb if mb > 0 else None
 
 
 def cluster_job_resources(project_name: str,
@@ -393,10 +409,16 @@ def cluster_job_resources(project_name: str,
 
         # The batch row is the source of truth for MaxRSS. Some SLURM
         # builds emit it as `<id>.batch`, others as `<id>.0`. Take the
-        # last row with MaxRSS != 0; if none, fall back to the
+        # last row carrying a REAL MaxRSS; if none, fall back to the
         # job-summary row's Elapsed-only evidence.
+        #
+        # "Real" is decided by the parser, not by string equality: this used to read
+        # `!= "0"`, which accepted `0K` — the spelling a cluster with no cgroup memory
+        # accounting actually emits — and promoted that row to authoritative, handing
+        # I7 a fabricated zero. One definition of "did sacct measure this?", and it
+        # lives in _parse_max_rss_mb.
         batch = next((r for r in reversed(rows)
-                      if r["max_rss"] and r["max_rss"] != "0"), rows[-1])
+                      if _parse_max_rss_mb(r["max_rss"]) is not None), rows[-1])
         summary = rows[0]
 
         wall_seconds = _parse_hhmmss(batch["elapsed"] or summary["elapsed"])
@@ -406,14 +428,26 @@ def cluster_job_resources(project_name: str,
             round((ave_cpu_seconds / wall_seconds) * 100.0, 1)
             if wall_seconds > 0 else 0.0)
 
-        return {
+        out = {
             "wall_seconds":    wall_seconds,
-            "peak_rss_mb":     peak_rss_mb,
+            # a placeholder ONLY when paired with the sacct_error below — the schema
+            # types this float, so "unknown" is carried by the marker, not by the number.
+            "peak_rss_mb":     peak_rss_mb if peak_rss_mb is not None else 0.0,
             "max_cpu_percent": max_cpu_percent,
             "locus":           "cluster",
             "sacct_job_id":    norm_id,
             "sacct_rows":      rows,
         }
+        if peak_rss_mb is None:
+            # No row carried a usable MaxRSS (the `batch` pick above fell back to the
+            # summary row). Say so LOUDLY rather than reporting 0.0 as an observation:
+            # I7 already refuses to seal a step carrying a sacct_error, which is exactly
+            # the right outcome — we have no honest peak-RSS evidence for this job.
+            out["sacct_error"] = (
+                f"sacct returned no MaxRSS for job {norm_id} (cgroup memory accounting "
+                f"disabled on this cluster, or no batch/step row reported it) — peak RSS "
+                f"is a placeholder zero, not an observation")
+        return out
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:

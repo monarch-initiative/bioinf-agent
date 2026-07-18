@@ -130,7 +130,7 @@ install commands.
 
 | Cheat | Guard |
 |---|---|
-| L10.a — AGENT_AUTHORED commands with no corpus references | `check_grounding` requires `external_refs` to be present in the fetched corpus — `tests/test_provenance.py` |
+| L10.a — AGENT_AUTHORED commands with no corpus references | `synthesis.validate_submission` grounds every AGENT_AUTHORED command against the fetched corpus — `tests/test_synthesis.py::test_validate_submission_grounds_authored_command` |
 | L10.b — EXTRACTED commands that aren't actually in the named file | `synth_build` re-checks verbatim presence against the runtime's fetched bytes — `tests/test_synthesis.py` |
 
 ## L11 — Universal file-type-agnostic lineage

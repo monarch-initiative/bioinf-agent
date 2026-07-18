@@ -103,17 +103,13 @@ class TransferProvider:
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
-                   async_return: bool = False,
                    label: Optional[str] = None) -> dict:
-        """Provider-side upload. `async_return` is meaningful only for
-        async-capable providers (Globus): when True, submit-and-return
-        a task_id immediately instead of waiting for SUCCEEDED. Non-
-        async providers ignore the flag."""
+        """Provider-side upload. Blocks until the bytes are moved AND
+        verified; `verified_method` records how the provider knows."""
         raise NotImplementedError
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     async_return: bool = False,
                      label: Optional[str] = None) -> dict:
         raise NotImplementedError
 
@@ -133,8 +129,10 @@ def _now_iso() -> str:
 # Existing logic factored into a class. The wire is scp+ssh+sha256sum
 # round-trip. Helpers (_scp_argv, _ssh_argv, _compute_local_sha256,
 # _remote_sha256_cmd, _parse_sha256sum_output, _ssh_failure_hint) still
-# live in scratch.py / snapshot.py — we import them here so this is
-# strictly a packaging change, not a duplication.
+# live in scratch.py / snapshot.py and are imported here rather than copied.
+# NB: the remote-target and remote-sha256 steps are written INLINE below
+# instead — the extraction duplicated them and orphaned the originals, which
+# were deleted in tier 7. Inline is the only copy; keep it that way.
 # ---------------------------------------------------------------------------
 
 class ScpHeadNodeProvider(TransferProvider):
@@ -162,9 +160,8 @@ class ScpHeadNodeProvider(TransferProvider):
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
-                   async_return: bool = False,
                    label: Optional[str] = None) -> dict:
-        # scp is synchronous by nature; async_return + label are ignored.
+        # scp is synchronous by nature; label is ignored.
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
         from agent.skills.transfer import (
@@ -244,9 +241,8 @@ class ScpHeadNodeProvider(TransferProvider):
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     async_return: bool = False,
                      label: Optional[str] = None) -> dict:
-        # async_return + label ignored — scp is sync-only.
+        # label ignored — scp is sync-only.
         from agent.skills.transfer import (
             _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
             _compute_local_sha256)
@@ -357,10 +353,9 @@ class ScpHeadNodeProvider(TransferProvider):
 #                Loop with sleep until SUCCEEDED (success) or FAILED
 #                (error with `fatal_error.code/description` exposed).
 #
-# With async_return=True we return immediately after submit with the
-# task_id; the caller polls later via the globus_task_status MCP tool.
-# This is the escape hatch for huge transfers that exceed the agent's
-# stream-watchdog (~10 min silent kill).
+# The wait is capped (_SYNC_WAIT_S_DEFAULT). Past the cap we STOP WAITING but
+# Globus does NOT stop transferring — the task runs on server-side, and
+# globus_task_status(task_id) is how the caller finds out how it ended.
 #
 # PERMISSION_DENIED diagnosis — Globus surfaces this nice_status for
 # at least three root causes that demand DIFFERENT fixes:
@@ -424,8 +419,10 @@ class GlobusProvider(TransferProvider):
     # this. The poll cadence is what matters for the watchdog.
     _SUBMIT_TIMEOUT_S = 60
     _POLL_INTERVAL_S = 10
-    # Hard ceiling on the sync wait. Anything longer → caller should
-    # set async_return=True and poll via globus_task_status themselves.
+    # Hard ceiling on the sync wait — bounded so the agent's stream-watchdog
+    # (~600s silent kill) never takes the whole call down with no record. Past
+    # it we return globus_sync_wait_exceeded WITH the task_id; the transfer is
+    # still running server-side and globus_task_status resolves it.
     _SYNC_WAIT_S_DEFAULT = 540
 
     def __init__(self, globus_block: dict):
@@ -440,25 +437,24 @@ class GlobusProvider(TransferProvider):
 
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
-                   timeout: int, async_return: bool = False,
+                   timeout: int,
                    label: Optional[str] = None) -> dict:
         return self._run_transfer(
             src_ep=self._local_ep, src_path=str(local_path),
             dst_ep=self._remote_ep, dst_path=abs_remote_path,
             direction="upload",
             local_path=local_path, local_sha256=local_sha256,
-            timeout=timeout, async_return=async_return, label=label)
+            timeout=timeout, label=label)
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     async_return: bool = False,
                      label: Optional[str] = None) -> dict:
         return self._run_transfer(
             src_ep=self._remote_ep, src_path=abs_remote_path,
             dst_ep=self._local_ep, dst_path=str(local_path),
             direction="download",
             local_path=local_path, local_sha256="",
-            timeout=timeout, async_return=async_return, label=label)
+            timeout=timeout, label=label)
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
@@ -532,7 +528,7 @@ class GlobusProvider(TransferProvider):
     def _run_transfer(self, *, src_ep: str, src_path: str,
                       dst_ep: str, dst_path: str, direction: str,
                       local_path: Path, local_sha256: str,
-                      timeout: int, async_return: bool,
+                      timeout: int,
                       label: Optional[str]) -> dict:
         started = time.perf_counter()
 
@@ -547,24 +543,7 @@ class GlobusProvider(TransferProvider):
         task_id = sub["task_id"]
         command = sub.get("command")
 
-        # 2) Either return immediately (async) or poll to terminal (sync).
-        if async_return:
-            return loop("transfer.globus_submitted_async",
-                success=          True,
-                provider=         self.name,
-                command=          command,
-                task_id=          task_id,
-                verified_method=  "globus_pending",
-                direction=        direction,
-                src=              f"{src_ep}:{src_path}",
-                dst=              f"{dst_ep}:{dst_path}",
-                submitted_at=     _now_iso(),
-                note= (
-                    "Async submission — poll completion via "
-                    f"globus_task_status(task_id='{task_id}') and "
-                    "verify SUCCEEDED before relying on the destination."),
-            )
-
+        # 2) Poll to terminal.
         # Sync — block until terminal or watchdog ceiling.
         wait_cap = min(timeout, self._SYNC_WAIT_S_DEFAULT)
         wait_started = time.perf_counter()
@@ -600,14 +579,19 @@ class GlobusProvider(TransferProvider):
                 return broke("transfer.globus_sync_wait_exceeded",
                     error=
                         f"Globus task {task_id} did not reach a terminal "
-                        f"state within {wait_cap}s sync-wait cap. The "
-                        f"task is still {status.get('status')!r}; pass "
-                        f"async_return=True to submit-and-walk-away on "
-                        f"transfers of this size, then poll via "
-                        f"globus_task_status.",
+                        f"state within the {wait_cap}s sync-wait cap. The "
+                        f"task is still {status.get('status')!r} — WE stopped "
+                        f"waiting; Globus did NOT stop transferring. It keeps "
+                        f"running server-side, so the bytes may well land. "
+                        f"Poll it with globus_task_status(task_id="
+                        f"'{task_id}') until SUCCEEDED/FAILED (or "
+                        f"`globus task wait {task_id}` by hand). Do NOT assume "
+                        f"the transfer failed, and do NOT re-run it blind — a "
+                        f"second transfer of the same bytes races the first.",
                     provider=self.name,
                     task_id= task_id,
-                    hint=    "use async_return=True for big transfers",
+                    hint=    f"still running server-side — poll "
+                             f"globus_task_status(task_id='{task_id}')",
                 )
             time.sleep(self._POLL_INTERVAL_S)
 
@@ -1011,24 +995,28 @@ class GlobusProvider(TransferProvider):
 def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     """Look up the current state of a Globus transfer task by ID.
 
-    Pairs with the async_return=True flag on upload_to_X /
-    download_from_X. The caller submits (returns immediately with a
-    task_id) and polls THIS function until status in {SUCCEEDED,
-    FAILED}. The poll cadence is the caller's choice; this function
-    is a single CLI query, not a loop.
+    WHERE THE task_id COMES FROM: the SYNC transfer path. Every successful
+    globus upload/download journals its `globus_task_id` into the transfer
+    manifest (transfer.py's _journal), so any transfer record is a valid input
+    here. This is NOT an async-only tool — async submit was removed in tier 7
+    (it never once ran across 92 real transfers); 80 of those 92 records carry
+    a live task_id, all minted synchronously.
 
-    Returns the decoded `globus task show --format json` object —
-    contains `status`, `nice_status`, `bytes_transferred`,
-    `files_transferred`, `fatal_error`, etc. {"error": "..."} on
-    failure.
+    THE FAILURE IT ANSWERS: a sync wait is capped at _SYNC_WAIT_S_DEFAULT and
+    `timeout` is not on the MCP surface, so a transfer past that cap returns
+    `globus_sync_wait_exceeded` while the task KEEPS RUNNING server-side. This
+    is the only way to ask "did it finish after all?" — and that cap has bound
+    in real usage.
 
-    Reconciliation: when the observed state is terminal (SUCCEEDED /
-    FAILED), this ALSO rewrites the async-submit manifest for `task_id`
-    from `submitted` to its true outcome (`uploaded`/`downloaded` or
-    `failed`). That's what lets a downstream consumer trust the
-    transfer record instead of guessing whether a `submitted` upload
-    ever landed — the defense against half-baked transfers. The
-    reconciled manifest path is returned in `manifest` when found."""
+    Returns the decoded `globus task show --format json` fields: `status`,
+    `nice_status`, `bytes_transferred`, `files_transferred`, `fatal_error`.
+
+    The outcome tag reflects the TASK's state, not merely the query's:
+      SUCCEEDED        → proven  (success=True)
+      FAILED           → broke   (success=False) — a task that failed must never
+                         read as green; the caller branches on this to decide
+                         whether the bytes are actually there
+      ACTIVE/INACTIVE  → loop    (success=False) — not done yet, poll again"""
     if env.get("type") != "ssh":
         return refused("transfer.task_status_not_ssh", error=
             "globus_task_status is only for ssh-mode envs; got "
@@ -1054,7 +1042,6 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
         return obj
     status = obj.get("status")
     out = {
-        "success":            True,
         "task_id":            task_id,
         "status":             status,
         "nice_status":        obj.get("nice_status"),
@@ -1065,19 +1052,20 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
         "type":               obj.get("type"),
         "captured_at":        _now_iso(),
     }
-    # Terminal → reconcile the local `submitted` manifest to reality.
-    if status in ("SUCCEEDED", "FAILED"):
-        from agent.skills import transfer as _transfer
+    # The QUERY succeeding says nothing about the TASK succeeding. Reporting
+    # success=True on a FAILED task is a false green in the one place a caller
+    # asks "are my bytes there?" — so branch on the observed status.
+    if status == "SUCCEEDED":
+        return proven("transfer.task_status_ok", success=True, **out)
+    if status == "FAILED":
         fe = obj.get("fatal_error") or {}
-        mp = _transfer.finalize_manifest_for_task(
-            task_id, status=status,
-            bytes_transferred=obj.get("bytes_transferred"),
-            error=(fe.get("description") or fe.get("code")) if fe else None)
-        if mp is not None:
-            out["manifest"] = str(mp)
-            out["manifest_outcome"] = ("uploaded/downloaded"
-                                       if status == "SUCCEEDED" else "failed")
-    return proven("transfer.task_status_ok", **out)
+        return broke("transfer.task_failed", success=False,
+                     error=(fe.get("description") or fe.get("code")
+                            or "globus reports the task FAILED"), **out)
+    # ACTIVE / INACTIVE — still running server-side; recoverable by polling again.
+    return loop("transfer.task_still_running", success=False,
+                hint=f"task {task_id} is {status}; poll again "
+                     f"(or `globus task wait {task_id}` by hand)", **out)
 
 
 # ---------------------------------------------------------------------------

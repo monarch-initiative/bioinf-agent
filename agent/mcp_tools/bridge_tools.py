@@ -16,7 +16,7 @@ Today the surface is:
   run_step_on_cluster            — validation/seal run in scratch
   cluster_job_status             — sacct job-state poll
   cluster_module_avail           — Lmod discovery
-  globus_task_status             — async-Globus poll
+  globus_task_status             — poll a Globus task to its real end state
 
 Four transfer auth zones coexist (intentional), routed by where the
 absolute remote path falls on the env:
@@ -73,8 +73,7 @@ def _resolve_access_path() -> str | None:
 def upload(project_name: str,
            compute_env_name: str,
            local_path: str,
-           remote_abs_path: str,
-           async_globus: bool = False) -> dict:
+           remote_abs_path: str) -> dict:
     """Push a local file to an ABSOLUTE path on a compute env. The auth
     family is auto-routed by where the path falls — agent scratch
     sandbox, env's shared common_data zone, or one of the project's
@@ -96,9 +95,11 @@ def upload(project_name: str,
         entry MUST include `upload` in its permissions)
 
     Wire protocol: dispatched by the env's `data_transfer.type` —
-    `scp_head_node` (default) or `globus` (when configured). Pass
-    `async_globus=True` to return immediately with a task_id instead of
-    waiting for SUCCEEDED; poll completion via `globus_task_status`.
+    `scp_head_node` (default) or `globus` (when configured). The call
+    BLOCKS until the bytes are verified. A globus transfer past the
+    sync-wait cap returns `globus_sync_wait_exceeded` WITH its task_id —
+    the transfer keeps running server-side; resolve it with
+    `globus_task_status`, do not assume it failed.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -120,7 +121,6 @@ def upload(project_name: str,
         compute_env_name=compute_env_name,
         local_path=local_path,
         remote_abs_path=remote_abs_path,
-        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -129,8 +129,7 @@ def upload(project_name: str,
 def download(project_name: str,
              compute_env_name: str,
              remote_abs_path: str,
-             local_path: str,
-             async_globus: bool = False) -> dict:
+             local_path: str) -> dict:
     """Pull a file from an ABSOLUTE path on a compute env to this laptop.
     Symmetric to `upload`: same zone routing (auto-classified by where
     remote_abs_path falls), same auth (the matched zone must declare
@@ -152,7 +151,6 @@ def download(project_name: str,
         compute_env_name=compute_env_name,
         remote_abs_path=remote_abs_path,
         local_path=local_path,
-        async_globus=async_globus,
         access_path=_resolve_access_path(),
     )
 
@@ -195,10 +193,16 @@ def globus_task_status(project_name: str,
                        task_id: str) -> dict:
     """Query the current state of a Globus transfer task.
 
-    Pairs with `async_globus=True` on the upload/download primitives:
-    those return immediately with a `task_id`; this primitive polls
-    that task's status. Pure-read — runs ONE `globus task show <id>
-    --format json` invocation; no submission.
+    Every successful globus upload/download records its `globus_task_id`
+    in the transfer manifest, so any transfer record is a valid input.
+    Pure-read — runs ONE `globus task show <id> --format json`
+    invocation; no submission.
+
+    Reach for this when `upload`/`download` returned
+    `globus_sync_wait_exceeded`: we stopped waiting, but Globus did not
+    stop transferring. This answers how the task actually ended. The
+    outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
+    ACTIVE/INACTIVE -> loop (poll again).
 
     Authorization: project must have a `compute_env_access` entry for
     the env, AND the env must declare `data_transfer.type: globus`.

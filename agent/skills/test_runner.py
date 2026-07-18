@@ -175,25 +175,6 @@ class TestRunner:
         self._index_fasta(out_dir, fasta_path)
         return proven("test_runner.ecoli_built", success=True, path=str(out_dir), fasta=str(fasta_path))
 
-    def _find_available_genome_fasta(self, compatible_builds: list[str]) -> Path | None:
-        """Find a FASTA in any core_test_data dir matching compatible builds."""
-        for core_dir in sorted(self.data_dir.glob("core_test_data_*")):
-            manifest_path = core_dir / "manifest.yaml"
-            if not manifest_path.exists():
-                continue
-            with open(manifest_path) as f:
-                m = yaml.safe_load(f) or {}
-            build = m.get("genome_build", "")
-            if compatible_builds and not any(b in build for b in compatible_builds):
-                continue
-            ginfo = m.get("genome", {})
-            if not ginfo:
-                continue
-            fasta = core_dir / ginfo.get("fasta", "")
-            if fasta.exists() and fasta.stat().st_size > 0:
-                return fasta
-        return None
-
     def _index_fasta(self, out_dir: Path, fasta_path: Path):
         samtools = self._resolve_tool("samtools")
         subprocess.run(f"{samtools} faidx {fasta_path}", shell=True, capture_output=True)

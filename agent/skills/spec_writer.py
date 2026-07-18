@@ -29,14 +29,62 @@ import yaml
 from agent.models.core_data import (
     AssemblyInput, BamInput, GenomeRef, GenotypeArrayInput, OutputFile,
     PedigreeInput, PhenotypeInput, Provenance, QuantitativeTraitInput,
-    ReadInput, VcfInput,
+    ReadInput, VcfInput, usage_commands,
 )
 from agent.skills.outcomes import refused
 
 
 # ---------------------------------------------------------------------------
+# I8 external-source vocabulary — SINGLE-SOURCED.
+#
+# The Layer-2 composition-coherence law (I8): every pipeline_step input must
+# trace to a prior step's output OR one of these external-source categories.
+# Defined ONCE, here, so the runtime seal-time check (_check_composition_coherence
+# below) and the Phase-4 plan-authoring gate (agent/skills/plan.py — the SAME law
+# lifted to authoring time) read the identical set and the identical sentence,
+# instead of two copies that drift (this repo's signature disease). Adding a 5th
+# category here flows to BOTH checks automatically. The set is exactly the fields
+# _check_composition_coherence seeds its external universe from (test_data /
+# reference_databases.local_path / runtime_configs.path / authored_artifacts.path).
+# ---------------------------------------------------------------------------
+I8_STATEMENT = "every input traces to a prior step's output OR an external source"
+
+EXTERNAL_SOURCE_KINDS = frozenset({
+    "test_data", "reference_databases", "runtime_configs", "authored_artifacts",
+})
+
+
+# ---------------------------------------------------------------------------
 # Pipeline spec persistence
 # ---------------------------------------------------------------------------
+
+def derive_pipeline_status(steps: list) -> str:
+    """The real run status of a set of pipeline_steps, per the PipelineStatus
+    Literal (core_data.py). ONE definition — seal STORES it on the WorkflowSpec
+    and the renderer READS the stored value, so there is no forked derivation.
+
+    Replaces the fabricated `pipeline_status = "in_progress"` default that seal
+    used to stamp into every spec regardless of the run (the draft's dead nominal
+    stamp propagated straight through). Now the producer STATES the truth:
+        failed              — any step exited non-zero
+        fully_validated     — every step's outputs passed validate_output
+        partially_validated — some validated, some ran-but-unvalidated
+        complete            — all ran cleanly, none validated
+        in_progress         — no steps yet
+    """
+    steps = [s for s in (steps or []) if isinstance(s, dict)]
+    if not steps:
+        return "in_progress"
+    if any(s.get("returncode") not in (None, 0) for s in steps):
+        return "failed"
+    validated = [s for s in steps
+                 if s.get("validation") or s.get("validation_status") == "passed"]
+    if len(validated) == len(steps):
+        return "fully_validated"
+    if validated:
+        return "partially_validated"
+    return "complete"
+
 
 def write_workflow_spec(workflow: dict, config: dict) -> dict:
     """Validate + write a Layer-2 WorkflowSpec as YAML.
@@ -64,6 +112,57 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     return {"workflow_spec_path": str(yaml_path)}
 
 
+def load_workflow_spec(path: Any) -> Any:
+    """THE typed reader for a sealed ``{name}.workflow.yaml`` — the read-back seam,
+    the exact inverse of ``write_workflow_spec`` (and the WorkflowSpec analog of
+    ``intent.parse_intent`` / ``plan.parse_plan``).
+
+    A sealed spec is validated ONCE, at write (``write_workflow_spec`` →
+    ``WorkflowSpec.model_validate``). Thereafter every read path in this codebase
+    ``yaml.safe_load``-s it into a plain dict and ``.get()``-scrapes summary fields
+    (``agent_status``, ``resources.list_pipelines``, ``pipeline_state.spec_sealed``).
+    That scrape is harmless for an orientation SUMMARY — but re-running a RECORDED
+    step means pulling a command we are about to EXECUTE in the shipped image out of
+    that dict, which is exactly the read where a scrape is dangerous: the
+    bcftools-1.23.1 lesson is that a ``.get``/regex over a record returns the wrong
+    field under a confident name, and "the wrong command in the right container" is a
+    silent, ground-truthed lie. So any consumer that ACTS on a sealed spec reads it
+    back through THIS typed seam — a malformed artifact fails HERE, loudly
+    (``pydantic.ValidationError``), rather than surfacing as a bad command deep in a
+    container run.
+
+    Returns a validated ``WorkflowSpec``. Raises: ``FileNotFoundError`` if ``path``
+    is absent, ``yaml.YAMLError`` on unparseable YAML, ``ValueError`` if the document
+    is not a mapping, ``pydantic.ValidationError`` if the record no longer satisfies
+    the model. (``WorkflowSpec`` is ``extra="allow"``, so the runtime-authored extra
+    keys — ``detected_outputs``, ``container_image_digest``, … — ride back through
+    untouched.)
+    """
+    from agent.models.core_data import WorkflowSpec
+
+    raw = yaml.safe_load(Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"sealed workflow at {path} is not a mapping (got {type(raw).__name__}); "
+            "a WorkflowSpec YAML must be a top-level object")
+    return WorkflowSpec.model_validate(raw)
+
+
+def select_pipeline_step(spec: Any, step_number: int) -> Any:
+    """Pick ONE recorded step out of a typed ``WorkflowSpec`` by its (1-based) ``step``
+    number. Pure — no side effects, no disk. Raises ``ValueError`` naming the
+    available step numbers when ``step_number`` is not present, so a wrong guess
+    self-corrects against the real roster instead of silently selecting nothing (the
+    silent-empty trap the honesty contract exists to close)."""
+    for st in spec.pipeline_steps:
+        if st.step == step_number:
+            return st
+    available = [st.step for st in spec.pipeline_steps]
+    raise ValueError(
+        f"workflow '{spec.workflow_name}' has no pipeline_step number {step_number}; "
+        f"recorded step numbers are {available or '(none)'}")
+
+
 def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None) -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
 
@@ -86,19 +185,44 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
       Each per-trial result has: name, ok, command_run, substitutions,
       produced_files, scratch_dir, [reason, missing_outputs, stderr_tail].
     """
+    # THREE-STATE, not a bool. `ok: False` used to mean two utterly different things —
+    # "the how-to was tested and it FAILED" and "the how-to was never tested at all" —
+    # and seal recorded both as usage_verified=False, which the dashboard then rendered as
+    # a verdict. Since seal REFUSES on a genuine failure, every usage_verified=False that
+    # reached disk provably meant "never attempted": a fabricated verdict, absence of data
+    # rendering as data (audit 2026-07-16). `status` says which:
+    #   verified      — every declared trial ran and produced validated outputs
+    #   failed        — a trial ran and did not (seal refuses; never reaches disk)
+    #   not_attempted — we had no way to run it; `reason` says why. NOT a judgement of the
+    #                   how-to, and must never be rendered as one.
+    def _not_attempted(reason: str) -> dict:
+        return {"ok": False, "status": "not_attempted", "reason": reason, "trials": []}
+
     usage = spec.get("usage")
     if not usage or not isinstance(usage, dict):
-        return {"ok": False, "reason": "no usage block to self-test", "trials": []}
-    template = (usage.get("command_template") or "").strip()
-    if not template:
-        return {"ok": False, "reason": "usage.command_template is empty", "trials": []}
+        return _not_attempted("no usage block to self-test")
+    # ONE reading of command_template (str or list[str]) — see core_data.usage_commands.
+    commands = usage_commands(usage)
+    if not commands:
+        return _not_attempted("usage.command_template is empty")
+    template = "\n".join(commands)   # placeholder scanning spans every command
+    # A runner is either injected (the frozen image — validated == shipped) or taken from
+    # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
+    # what silently disabled I4 for every container-native env.
     env_name = spec.get("conda_env")
-    if not env_name:
-        return {"ok": False, "reason": "no conda_env on spec — cannot run self-test", "trials": []}
+    if env_manager is None:
+        return _not_attempted("no runner available — neither a frozen env image nor a host "
+                              "conda env could execute the how-to")
+    if getattr(env_manager, "is_image_runner", False):
+        env_name = env_name or "<frozen image>"
+    elif not env_name:
+        return _not_attempted(
+            "no conda_env on spec and no frozen env image supplied — nothing to run the "
+            "how-to in. Freeze the env and re-seal to self-test against the shipped bytes.")
 
     placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
     if not placeholders:
-        return {"ok": False, "reason": "command_template has no {PLACEHOLDER} slots", "trials": []}
+        return _not_attempted("command_template has no {PLACEHOLDER} slots")
 
     declared_trials = usage.get("trials") or []
     inputs_spec     = usage.get("inputs", [])  or []
@@ -116,6 +240,19 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     else:
         # Backward-compatible single inferred trial.
         inferred = _infer_substitutions(spec, placeholders, inputs_spec)
+        # An INCOMPLETE inference cannot be run — the command would still carry literal
+        # `{PEDIGREE}` text. Running it anyway reports "failed", which reads as a verdict
+        # on the how-to when the truth is we never managed to build a trial for it. Real
+        # case: talos_validate_moi declares no trials and inference fills 2 of its 5 slots,
+        # so it self-tested as FAILED and (once I4 gates the seal) became unsealable — the
+        # how-to was fine; our trial was not.
+        missing = sorted(p for p in placeholders
+                         if not _is_output_slot(p) and p not in inferred)
+        if missing:
+            return _not_attempted(
+                f"could not infer a value for {', '.join('{'+m+'}' for m in missing)} from "
+                f"pipeline_steps[*].inputs, so no runnable trial could be built. Declare "
+                f"usage.trials with explicit substitutions to self-test this how-to.")
         trial_plans = [{
             "name":          "auto",
             "substitutions": inferred,
@@ -123,13 +260,15 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
         }]
 
     trial_results = [
-        _run_one_trial(plan, template, placeholders, outputs_spec, env_manager, env_name, spec, validator)
+        _run_one_trial(plan, commands, placeholders, outputs_spec, env_manager, env_name, spec, validator)
         for plan in trial_plans
     ]
 
     overall_ok = bool(trial_results) and all(t.get("ok") for t in trial_results)
     return {
         "ok":     overall_ok,
+        "status": "verified" if overall_ok else "failed",
+        "locus":  "image" if getattr(env_manager, "is_image_runner", False) else "host",
         "trials": trial_results,
         "trial_count": len(trial_results),
         "passed":      sum(1 for t in trial_results if t.get("ok")),
@@ -206,10 +345,17 @@ def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> di
 
 
 def _run_one_trial(
-    plan: dict, template: str, placeholders: set, outputs_spec: list,
+    plan: dict, commands: list[str], placeholders: set, outputs_spec: list,
     env_manager: Any, env_name: str, spec: dict, validator: Optional[Any],
 ) -> dict:
-    """Execute one trial: substitute, run in fresh scratch, verify outputs.
+    """Execute one trial: substitute, run EVERY command in order in one fresh
+    scratch dir, verify outputs.
+
+    `commands` is the normalized usage.command_template (see core_data.usage_commands):
+    a multi-command how-to runs in sequence, sharing the scratch dir, so command 2 can
+    consume command 1's output — which is what makes a Phase A→B→C pipeline self-testable
+    at all. The FIRST non-zero rc fails the trial and stops: continuing past a failure
+    would let a later command produce the declared outputs and paper over a broken step.
 
     The trial passes only when EVERY pattern in usage.outputs[*].files matched
     a produced file AND every matched file passes type-aware validate_output.
@@ -237,20 +383,35 @@ def _run_one_trial(
             "substitutions": subs,
         }
 
-    command = template
-    for slot, val in subs.items():
-        command = command.replace("{" + slot + "}", str(val))
+    def _fill(cmd: str) -> str:
+        for slot, val in subs.items():
+            cmd = cmd.replace("{" + slot + "}", str(val))
+        return cmd
 
-    result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
-    rc = result.get("returncode")
-    if rc != 0:
-        return {
-            "name": trial_name, "ok": False,
-            "reason": f"command_template execution failed (rc={rc})",
-            "command_run": command, "scratch_dir": str(scratch),
-            "stderr_tail": (result.get("stderr") or "")[-500:],
-            "substitutions": subs,
-        }
+    ran: list[str] = []
+    for i, raw in enumerate(commands, start=1):
+        command = _fill(raw)
+        ran.append(command)
+        result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
+        rc = result.get("returncode")
+        if rc != 0:
+            # Stop at the first failure — a later command must never be allowed to
+            # produce the declared outputs on top of a broken earlier one.
+            step = (f"command {i} of {len(commands)}" if len(commands) > 1
+                    else "command_template")
+            return {
+                "name": trial_name, "ok": False,
+                "reason": f"{step} execution failed (rc={rc})",
+                "command_run": command, "commands_run": ran,
+                "failed_index": i, "scratch_dir": str(scratch),
+                "stderr_tail": (result.get("stderr") or "")[-500:],
+                "substitutions": subs,
+            }
+
+    # Every command succeeded. From here on the trial is judged on its OUTPUTS, and
+    # what "ran" means is the whole sequence — reporting only the last command would
+    # misname the thing that was tested the moment a how-to has more than one step.
+    command_run = "\n".join(ran)
 
     produced = []
     for p in scratch.rglob("*"):
@@ -287,7 +448,7 @@ def _run_one_trial(
             "missing_outputs": missing_outputs,
             "produced_files": produced[:20],
             "recognized_output_slots": recognized,
-            "command_run": command, "scratch_dir": str(scratch),
+            "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
             "substitutions": subs,
         }
         if not produced:
@@ -332,13 +493,13 @@ def _run_one_trial(
                 "failed_validations": failed[:10],
                 "validation_results": validation_results[:20],
                 "produced_files": produced[:20],
-                "command_run": command, "scratch_dir": str(scratch),
+                "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
                 "substitutions": subs,
             }
 
     return {
         "name": trial_name, "ok": True,
-        "command_run": command, "substitutions": subs,
+        "command_run": command_run, "commands_run": ran, "substitutions": subs,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
         "validation_results": validation_results[:20],
         "description": plan.get("description"),
@@ -456,21 +617,28 @@ def check_invariants(spec: dict) -> list[dict]:
         # as it PASSING. The runtime records passed:False for a malformed BAM /
         # empty VCF / bad JSON — but seal used to accept any record. That let a
         # spec claim "outputs checked" over a step whose outputs demonstrably
-        # failed their type-aware check. An explicit mark_step_validated=passed
-        # is the only sanctioned override (it re-anchors by other means and
-        # itself refuses to pass an outputs-empty step).
+        # failed their type-aware check.
+        #
+        # THIS CLAUSE IS NOT OVERRIDABLE (audit 2026-07-16, re-audit). It used to honour
+        # `mark_step_validated=passed`, which made the agent's assertion outrank the
+        # runtime's own measurement — the exact thing CLAUDE.md's opening promise rules
+        # out ("nothing is taken on faith from the agent"). The other I3 clauses are about
+        # ABSENT evidence, where an agent saying "I checked it another way" adds
+        # information. This one is about evidence that EXISTS and says FAILED; an
+        # assertion cannot un-fail a measurement, it can only hide it. If the validator is
+        # wrong, fix the validator or re-run the step — don't let the spec outrank the run.
         failed_validations = [
             fn for fn, v in validation.items()
             if isinstance(v, dict) and v.get("passed") is False
         ]
-        if failed_validations and s.get("validation_status") != "passed":
+        if failed_validations:
             violations.append({
                 "invariant": "I3.validation_passed",
                 "message":   f"pipeline_step {step_n} has {len(failed_validations)} output(s) "
                              f"whose validate_output result is passed=False — the run recorded "
                              f"that these outputs FAILED type-aware validation. A spec cannot seal "
-                             f"over a failed output check (use mark_step_validated only when the "
-                             f"output was genuinely verified by other means).",
+                             f"over a failed output check, and mark_step_validated cannot override "
+                             f"this: re-run the step, or fix the validator if it is wrong.",
                 "where":     f"pipeline_steps[step={step_n}].validation",
                 "failed_files": failed_validations[:5],
             })
@@ -542,7 +710,10 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     usage = spec.get("usage") if isinstance(spec.get("usage"), dict) else None
     if usage:
-        template = (usage.get("command_template") or "").strip()
+        # Scan EVERY command (str or list[str]) through the one reader — an undeclared
+        # placeholder in command 3 of a multi-step how-to is exactly as broken as one in
+        # command 1, and re-reading the raw field here would have seen only the first.
+        template = "\n".join(usage_commands(usage))
         if template:
             template_placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
             declared_input_names = {
@@ -608,6 +779,19 @@ def check_invariants(spec: dict) -> list[dict]:
             })
         elif (float(ru.get("peak_rss_mb") or 0) <= 0
               and float(ru.get("wall_seconds") or 0) <= 0):
+            # DELIBERATELY `and` — an ALL-zeros record is the "monitor captured nothing"
+            # shape. It is tempting to reject either-zero (the audit-2026-07-16 draft did,
+            # since this rule's message says a real process has nonzero RSS *and* wall),
+            # but a value-level check CANNOT tell fabrication from a sampling limit:
+            #   - host locus: _run_monitored polls the process tree every 0.3s, so any step
+            #     faster than that (`samtools --version` → rc=0, wall=0.01, peak_rss_mb=0.0)
+            #     legitimately reports zero RSS. Rejecting it would refuse a real, green run.
+            #   - cluster locus: a zero from sacct genuinely IS fabrication.
+            # Only the PRODUCER knows which it is, so that is where the distinction lives:
+            # cluster_jobs._parse_max_rss_mb returns None for "sacct accounted nothing" and
+            # cluster_job_resources attaches an explicit `sacct_error`, which the branch
+            # above already refuses. Fix the producer that fabricates; don't blind-tighten
+            # a checker that can't see the difference.
             violations.append({
                 "invariant": "I7.resource_usage_captured",
                 "message":   f"pipeline_step {step_n} resource_usage is all zeros "
@@ -1132,8 +1316,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             violations.append({
                 "invariant": "I8.composition_coherence",
                 "message":   f"pipeline_step {step_n} input '{p}' has no producing source — "
-                             f"not in test_data, reference_databases, runtime_configs, "
-                             f"or any prior step's outputs",
+                             f"{I8_STATEMENT}; recognized external kinds are "
+                             f"{', '.join(sorted(EXTERNAL_SOURCE_KINDS))}",
                 "where":     f"pipeline_steps[step={step_n}].inputs",
                 "orphan_path": p,
             })

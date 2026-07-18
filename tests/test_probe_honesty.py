@@ -1,0 +1,243 @@
+"""Probe honesty — ABSENT and UNCHECKED are different facts and must not share a value.
+
+Every tier's `available: False` is built on one return value at the bottom of the stack.
+That value used to be `None` for BOTH "the registry answered: no such package" and "we
+never got an answer", because `_get_json` caught `(URLError, HTTPError, OSError,
+ValueError)` and returned None for all of them.
+
+That collapse silently rewrote the routing decision. Measured on the live resolver before
+the fix: with a single transient 403 on api.anaconda.org — and NOTHING about the tool
+changed — `resolve('samtools')` stopped returning `conda` + a pinned
+`install_conda_packages(samtools=1.21)` and instead returned `binary`, recorded
+`conda: {available: False}` on disk, and announced:
+
+    "AUTO-DISCOVERED + adopted samtools/samtools (1928*, exact-name) — no registry hit,
+     but a dominant exact-name repo; proceeding without a human."
+
+There WAS a registry hit. We could not reach it. Every clause of that sentence was false,
+stated with full confidence, and the whole tier ladder slid a rung on a network blip —
+producing a different build method, a different recipe, and a different image, all
+reported as intentional.
+
+These tests stub at the urlopen I/O SEAM and drive the REAL probe + resolve path, rather
+than replacing the probes with doubles. Replacing the function is how the call-signature
+drift of audit 2026-07-16 stayed invisible behind nine green tests.
+"""
+
+from __future__ import annotations
+
+import urllib.error
+import urllib.request
+
+import pytest
+
+from agent.skills import resolver as R
+
+
+def _http_error(url: str, code: int, *, rate_limited: bool = False) -> urllib.error.HTTPError:
+    hdrs = {"X-RateLimit-Remaining": "0"} if rate_limited else {}
+    return urllib.error.HTTPError(url, code, "boom", hdrs, None)
+
+
+def _seal(monkeypatch, failing_host: str, *, code: int = 403, rate_limited: bool = True):
+    """Make exactly one host fail; every other request raises so a test can never
+    silently reach the real network."""
+    def fake(req, *a, **k):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if failing_host in url:
+            raise _http_error(url, code, rate_limited=rate_limited)
+        raise AssertionError(f"unstubbed network call to {url}")
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+
+# ---------------------------------------------------------------------------
+# the seam itself
+# ---------------------------------------------------------------------------
+def test_a_404_is_a_checked_absence_and_carries_no_error(monkeypatch):
+    """The registry ANSWERED. 'No such package' is a fact about the tool."""
+    _seal(monkeypatch, "example.test", code=404, rate_limited=False)
+    data, err = R._fetch_json("https://example.test/x")
+    assert data is None
+    assert err == ""          # empty error == the probe reached a conclusion
+
+
+def test_a_rate_limit_is_unchecked_and_names_itself(monkeypatch):
+    """403-with-quota-exhausted says nothing about the tool, and must not pretend to."""
+    _seal(monkeypatch, "example.test", code=403, rate_limited=True)
+    data, err = R._fetch_json("https://example.test/x")
+    assert data is None
+    assert err == "rate_limited"
+
+
+def test_a_real_403_is_not_mistaken_for_a_rate_limit(monkeypatch):
+    """GitHub returns 403 for BOTH an exhausted quota and a genuine denial. They mean
+    opposite things ('come back later' vs 'this is private'), so they must not merge."""
+    _seal(monkeypatch, "example.test", code=403, rate_limited=False)
+    _, err = R._fetch_json("https://example.test/x")
+    assert err == "HTTP 403 (forbidden)"
+
+
+def test_an_unreachable_host_is_unchecked(monkeypatch):
+    def fake(req, *a, **k):
+        raise urllib.error.URLError("no route to host")
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    data, err = R._fetch_json("https://example.test/x")
+    assert data is None
+    assert "unreachable" in err
+
+
+# ---------------------------------------------------------------------------
+# the probes carry it through
+# ---------------------------------------------------------------------------
+def test_conda_probe_reports_an_unreachable_channel_rather_than_absence(monkeypatch):
+    _seal(monkeypatch, "anaconda.org")
+    probe = R.probe_conda("samtools")
+    assert probe["available"] is False          # fail CLOSED — unchecked never means yes
+    assert "rate_limited" in probe["probe_error"]
+
+
+def test_conda_probe_stays_silent_on_a_genuine_miss(monkeypatch):
+    """A clean 404 from both channels is a finding. It must NOT be decorated with an
+    error, or every honest miss would read as a broken probe and the signal would rot."""
+    _seal(monkeypatch, "anaconda.org", code=404, rate_limited=False)
+    probe = R.probe_conda("definitely-not-a-package")
+    assert probe == {"available": False}
+
+
+def test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo(monkeypatch):
+    """binary, source AND synthesis all rest on this one call, so a 403 here silently
+    deletes three tiers from the ladder."""
+    _seal(monkeypatch, "api.github.com")
+    probe = R.probe_github("nanoporetech/dorado")
+    assert probe["repo_exists"] is False        # fail closed
+    assert probe["probe_error"] == "rate_limited"
+
+
+def test_github_search_does_not_report_a_rate_limit_as_no_candidates(monkeypatch):
+    """Search is the tightest quota on the API (10/min unauthenticated) and it is the
+    INVESTIGATION's own probe: a caller refusing on an empty result would be reporting a
+    rate limit as a finding about the world."""
+    _seal(monkeypatch, "api.github.com")
+    out = R.probe_github_search("dorado")
+    assert out["found"] is False
+    assert out["candidates"] == []
+    assert out["probe_error"] == "rate_limited"
+
+
+def test_a_github_token_is_sent_when_the_environment_offers_one(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    assert R._headers("https://api.github.com/x")["Authorization"] == "Bearer ghp_secret"
+    # ...and never leaks to a non-github host
+    assert "Authorization" not in R._headers("https://pypi.org/pypi/x/json")
+
+
+def test_no_token_is_not_an_error(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert "Authorization" not in R._headers("https://api.github.com/x")
+
+
+# ---------------------------------------------------------------------------
+# the decision CONSUMES it — a recorded error nobody reads is the bug, not the fix
+# ---------------------------------------------------------------------------
+def _stub_probes(monkeypatch, **tiers):
+    for fn, key in (("probe_conda", "conda"), ("probe_pypi", "pip"),
+                    ("probe_cran", "cran"), ("probe_bioconductor", "bioconductor")):
+        monkeypatch.setattr(R, fn, lambda n, t=12, _k=key: tiers.get(_k, {"available": False}))
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+
+
+def test_an_unreachable_registry_does_not_become_a_dead_end(monkeypatch):
+    """THE REGRESSION. Discovery's whole warrant is 'the registries dead-ended'. An
+    unreachable registry is not a dead end — we did not investigate, we failed to ask.
+    Auto-adopting a repo on that basis is reaching for the nuclear option first."""
+    _stub_probes(monkeypatch, conda={"available": False, "probe_error": "rate_limited"})
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: pytest.fail("discovery fired on an UNCHECKED dead-end"))
+    d = R.resolve("samtools")
+    assert d["chosen"] is None
+    assert d["install_call"] is None
+    assert d["unchecked_tiers"] == {"conda": "rate_limited"}
+    # and it must not read as a refusal: a refusal is a conclusion, and we reached none
+    assert "NOT A REFUSAL" in d["rationale"]
+
+
+def test_a_genuine_dead_end_still_reaches_discovery(monkeypatch):
+    """The guard above must not disarm discovery for the case it exists to serve
+    (GAPIT3 lives at jiabowang/GAPIT3 and on no registry)."""
+    _stub_probes(monkeypatch)          # every tier: a clean, checked miss
+    called = []
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: called.append(1) or {"found": False, "candidates": []})
+    R.resolve("gapit3")
+    assert called, "a CHECKED dead-end must still be investigated"
+
+
+def test_an_unchecked_higher_tier_is_disclosed_in_the_install_call(monkeypatch):
+    """A warning parked in a sibling key is a warning that gets skipped — install_call is
+    the field an agent copies and runs."""
+    _stub_probes(monkeypatch,
+                 conda={"available": False, "probe_error": "rate_limited"},
+                 pip={"available": True, "latest": "1.0", "summary": "fast vcf parsing with htslib"})
+    d = R.resolve("cyvcf2")
+    assert d["chosen"] == "pip"
+    assert d["unchecked_tiers"] == {"conda": "rate_limited"}
+    assert "UNCHECKED TIER(S) RANKED ABOVE THIS PICK" in d["install_call"]
+    assert "GITHUB_TOKEN" not in d["install_call"]      # not a github quota; don't misadvise
+
+
+def test_an_unchecked_tier_BELOW_the_pick_is_not_noise(monkeypatch):
+    """A tier that could not have won anyway is not worth a warning. Alarm fatigue is how
+    a real warning gets skipped, so the disclosure must stay scarce enough to be read."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "summary": "Tools for dealing with SAM, BAM and CRAM files"},
+                 cran={"available": False, "probe_error": "rate_limited"})
+    d = R.resolve("samtools")
+    assert d["chosen"] == "conda"
+    assert "UNCHECKED" not in (d["install_call"] or "")
+    assert d["unchecked_tiers"] == {"cran": "rate_limited"}   # recorded, just not shouted
+
+
+def test_a_refusal_states_its_absent_fields_rather_than_omitting_them(monkeypatch):
+    """`None` is a value a producer must STATE (the ShippedBinary rule, one layer over).
+    An absent key cannot be told apart from a producer that forgot, and every disclosure
+    below hangs off reading these."""
+    _stub_probes(monkeypatch)
+    monkeypatch.setattr(R, "probe_github_search", lambda *a, **k: {"found": False, "candidates": []})
+    d = R.resolve("nope-not-a-tool")
+    assert d["chosen"] is None
+    assert "install_call" in d and d["install_call"] is None
+    assert "identity" in d and d["identity"] is None
+
+
+def test_a_broken_authors_gate_still_reaches_a_caller_who_got_REFUSED(monkeypatch):
+    """The gate's own comment claims 'either reported as fired or reported as errored;
+    there is no third state'. That was false for every refusal: the note was attached only
+    to install_call, which does not exist when chosen is None — so the caller was told the
+    registries dead-ended while the gate had crashed. A refusal is the outcome where 'we
+    could not check the authors' path' matters MOST, and it was the one that dropped it."""
+    _stub_probes(monkeypatch)                       # every registry: a clean, checked miss
+    monkeypatch.setattr(R, "probe_github", lambda r, t=12: {"repo_exists": False,
+                                                            "has_release_assets": False,
+                                                            "assets": []})
+    def boom(*a, **k):
+        raise TypeError("simulated call-signature drift")
+    monkeypatch.setattr(R, "probe_authors_sources", boom)
+    d = R.resolve("thing", github_repo="acme/thing")
+    assert d["chosen"] is None                      # a REFUSAL — the case that dropped it
+    assert d["install_call"] is None
+    assert "AUTHORS-PATH GATE FAILED" in d["rationale"]
+    assert "simulated call-signature drift" in d["rationale"]
+
+
+def test_a_failed_discovery_probe_is_not_reported_as_an_unfindable_tool(monkeypatch):
+    _stub_probes(monkeypatch)
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": False, "candidates": [],
+                                         "probe_error": "rate_limited"})
+    d = R.resolve("gapit3")
+    assert d["chosen"] is None
+    assert d["discovery_error"] == "rate_limited"
+    assert "we established nothing" in d["rationale"]
+    assert "GITHUB_TOKEN" in d["rationale"]      # the actionable next step, not just blame

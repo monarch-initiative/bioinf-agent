@@ -14,13 +14,11 @@ subprocess; we mock it carefully to pin:
     than spinning forever.
   - `globus` CLI not on PATH surfaces a clear actionable error
     rather than a stack trace.
-  - async_return=True returns the task_id IMMEDIATELY without
-    polling, with verified_method="globus_pending" and a hint
-    pointing the caller at globus_task_status.
   - Endpoint UUIDs from the validated config thread into argv
     correctly (local→remote for upload, remote→local for download).
   - globus_task_status (the public poll primitive) refuses smuggled
-    metacharacters in task_id BEFORE any subprocess.
+    metacharacters in task_id BEFORE any subprocess, and reports the
+    TASK's real state — a FAILED task must never read as success.
 """
 from __future__ import annotations
 
@@ -60,24 +58,36 @@ def _provider() -> transfer_providers.GlobusProvider:
 # Argv shape — the most security-relevant pin
 # ===========================================================================
 
+def _fake_run_submit_then_succeeded(captured):
+    """Drive the REAL sync path: answer `globus transfer` with a task_id, then
+    answer the first `globus task show` poll with SUCCEEDED so the loop exits
+    on iteration one. (This used to pass async_return=True to skip the poll —
+    that flag is gone, and skipping the poll was never the point: these tests
+    exist to pin the argv shape of the LIVE sync transfer.)"""
+    def fake_run(argv, *a, **kw):
+        captured.append(argv)
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stderr = ""
+        if "transfer" in argv[:2]:
+            mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+        else:                                   # `globus task show <id>`
+            mock.stdout = ('{"status": "SUCCEEDED", "bytes_transferred": 2, '
+                           '"files_transferred": 1, "nice_status": null}')
+        return mock
+    return fake_run
+
+
 class TestSubmitArgvShape:
     @pytest.mark.integration
     def test_upload_argv_is_local_to_remote(self, monkeypatch, tmp_path):
         captured = []
-        def fake_run(argv, *a, **kw):
-            captured.append(argv)
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
-            mock.stderr = ""
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "run", _fake_run_submit_then_succeeded(captured))
         f = tmp_path / "x.txt"
         f.write_text("hi")
-        # async_return so we exit after submit (no poll)
         out = _provider().upload_one(
             env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
-            local_sha256="0"*64, timeout=60, async_return=True)
+            local_sha256="0"*64, timeout=60)
         assert "error" not in out, out
         assert captured, "no subprocess call recorded"
         argv = captured[0]
@@ -97,18 +107,12 @@ class TestSubmitArgvShape:
     @pytest.mark.integration
     def test_download_argv_is_remote_to_local(self, monkeypatch, tmp_path):
         captured = []
-        def fake_run(argv, *a, **kw):
-            captured.append(argv)
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
-            mock.stderr = ""
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "run", _fake_run_submit_then_succeeded(captured))
         out_path = tmp_path / "fetched.bam"
+        out_path.write_bytes(b"landed")   # SUCCEEDED → the sync path sha256s what arrived
         out = _provider().download_one(
             env=_env_ssh(), abs_remote_path="/work/u/in.bam",
-            local_path=out_path, timeout=60, async_return=True)
+            local_path=out_path, timeout=60)
         assert "error" not in out, out
         argv = captured[0]
         # Source is REMOTE, destination is LOCAL.
@@ -576,33 +580,6 @@ class TestGlobusPreflightIsSshFree:
 # Async return — no polling, immediate task_id
 # ===========================================================================
 
-class TestAsyncReturn:
-    @pytest.mark.integration
-    def test_async_return_skips_polling(self, monkeypatch, tmp_path):
-        polls = {"n": 0}
-        def fake_run(argv, *a, **kw):
-            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            if argv[1] == "transfer":
-                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
-            else:
-                polls["n"] += 1
-                mock.stdout = '{"status": "ACTIVE"}'
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        f = tmp_path / "x.txt"; f.write_text("hi")
-        out = _provider().upload_one(
-            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
-            local_sha256="0"*64, timeout=60, async_return=True)
-        assert out["success"] is True
-        assert out["task_id"] == _TASK_ID
-        assert out["verified_method"] == "globus_pending"
-        # We did NOT call globus task show — the whole point of async.
-        assert polls["n"] == 0
-        # The note must steer the caller at globus_task_status.
-        assert "globus_task_status" in out.get("note", "")
-
-
 # ===========================================================================
 # CLI-missing / auth / consent — actionable hints
 # ===========================================================================
@@ -640,113 +617,9 @@ class TestCliMissing:
 
 
 # ===========================================================================
-# Async confirmation — poll reconciles the `submitted` manifest to reality
-# ===========================================================================
-
-class TestManifestReconciliation:
-    """The half-baked-transfer defense: an async submit writes a
-    `submitted` manifest; when a later poll observes a terminal state,
-    globus_task_status rewrites that manifest to `uploaded`/`failed` so a
-    downstream consumer can trust the record."""
-
-    def _write_submitted(self, tmp_path):
-        from agent.skills import transfer
-        return transfer._write_transfer_manifest(
-            direction="upload", project_name="_ad_hoc",
-            compute_env_name="hpc", zone="container_upload",
-            transport="globus",
-            local_path="/local/x.tar",
-            remote_abs_path="/work/u/CONTAINERS/x.tar",
-            command="globus transfer a:/local/x.tar b:/work/u/CONTAINERS/x.tar",
-            result="pending", bytes_transferred=100,
-            duration_s=1.0, sha256=None, task_id=_TASK_ID,
-            verified_method="globus_pending", error_msg=None)
-
-    @pytest.mark.integration
-    def test_succeeded_finalizes_submitted_to_uploaded(
-            self, monkeypatch, tmp_path):
-        import json as _json
-        from agent.skills import transfer
-        mpath = self._write_submitted(tmp_path)
-        # Sanity: starts as submitted.
-        assert _json.loads(mpath.read_text())["outcome"] == "submitted"
-
-        def fake_run(argv, *a, **kw):
-            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            mock.stdout = _json.dumps({
-                "DATA_TYPE": "task", "task_id": _TASK_ID,
-                "status": "SUCCEEDED", "bytes_transferred": 100,
-                "files_transferred": 1, "fatal_error": None,
-                "nice_status": None})
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        env = {**_env_ssh(),
-               "data_transfer": {"type": "globus", "globus": _globus_block()}}
-        out = transfer_providers.globus_task_status(env, _TASK_ID)
-        assert out["status"] == "SUCCEEDED"
-        assert out["manifest_outcome"] == "uploaded/downloaded"
-        # The manifest is now durably `uploaded`.
-        rec = _json.loads(transfer._find_manifest_by_task_id(
-            _TASK_ID).read_text())
-        assert rec["outcome"] == "uploaded"
-        assert "SUCCEEDED" in rec["verified"]
-        assert rec["confirmed_at"]
-
-    @pytest.mark.integration
-    def test_failed_finalizes_submitted_to_failed(
-            self, monkeypatch, tmp_path):
-        import json as _json
-        from agent.skills import transfer
-        self._write_submitted(tmp_path)
-
-        def fake_run(argv, *a, **kw):
-            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            mock.stdout = _json.dumps({
-                "DATA_TYPE": "task", "task_id": _TASK_ID,
-                "status": "FAILED",
-                "fatal_error": {"code": "ENDPOINT_ERROR",
-                                "description": "destination quota exceeded"},
-                "nice_status": None})
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        env = {**_env_ssh(),
-               "data_transfer": {"type": "globus", "globus": _globus_block()}}
-        out = transfer_providers.globus_task_status(env, _TASK_ID)
-        assert out["status"] == "FAILED"
-        rec = _json.loads(transfer._find_manifest_by_task_id(
-            _TASK_ID).read_text())
-        assert rec["outcome"] == "failed"
-        assert "quota exceeded" in rec["reason"]
-        assert "verified" not in rec
-
-    @pytest.mark.integration
-    def test_active_poll_leaves_manifest_submitted(
-            self, monkeypatch, tmp_path):
-        # A non-terminal poll must NOT finalize — the transfer is still
-        # in flight, so the record honestly stays `submitted`.
-        import json as _json
-        from agent.skills import transfer
-        self._write_submitted(tmp_path)
-
-        def fake_run(argv, *a, **kw):
-            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            mock.stdout = _json.dumps({
-                "DATA_TYPE": "task", "task_id": _TASK_ID,
-                "status": "ACTIVE", "nice_status": "OK"})
-            return mock
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        env = {**_env_ssh(),
-               "data_transfer": {"type": "globus", "globus": _globus_block()}}
-        out = transfer_providers.globus_task_status(env, _TASK_ID)
-        assert out["status"] == "ACTIVE"
-        assert "manifest" not in out
-        rec = _json.loads(transfer._find_manifest_by_task_id(
-            _TASK_ID).read_text())
-        assert rec["outcome"] == "submitted"
-
-
-# ===========================================================================
-# globus_task_status — the public async-poll primitive
+# globus_task_status — the public poll primitive. Its task_ids come from the
+# SYNC path (every successful globus transfer journals one), and it is the only
+# way to resolve a transfer that outlived the sync-wait cap.
 # ===========================================================================
 
 class TestTaskStatusPrimitive:
@@ -770,9 +643,48 @@ class TestTaskStatusPrimitive:
                                   "globus": _globus_block()}}
         out = transfer_providers.globus_task_status(env, _TASK_ID)
         assert out["success"] is True
+        assert out["outcome"] == "proven"
         assert out["status"] == "SUCCEEDED"
         assert out["bytes_transferred"] == 99999
         assert out["files_transferred"] == 3
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("status,expect_outcome", [
+        ("FAILED",   "broke"),
+        ("ACTIVE",   "loop"),
+        ("INACTIVE", "loop"),
+    ])
+    def test_task_status_never_reports_a_non_succeeded_task_as_success(
+            self, monkeypatch, status, expect_outcome):
+        """The QUERY succeeding says nothing about the TASK succeeding.
+
+        This primitive answers exactly one question — "are my bytes there?" — and
+        it used to answer `success: True` + `proven` for EVERY status it could
+        parse, FAILED included. That is a false green in the one place a caller
+        cannot afford one: the whole reason to poll is that a transfer outlived
+        the sync-wait cap, so the caller has no other evidence to fall back on.
+        A FAILED task must read as broke; a still-running one as loop."""
+        import json as _json
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({
+                "DATA_TYPE": "task", "task_id": _TASK_ID, "status": status,
+                "bytes_transferred": 0, "files_transferred": 0,
+                "fatal_error": ({"code": "ENDPOINT_ERROR",
+                                 "description": "remote path readonly"}
+                                if status == "FAILED" else None),
+            })
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        env = {**_env_ssh(),
+               "data_transfer": {"type": "globus", "globus": _globus_block()}}
+        out = transfer_providers.globus_task_status(env, _TASK_ID)
+        assert out["success"] is False, \
+            f"a {status} task must never report success=True"
+        assert out["outcome"] == expect_outcome, out
+        assert out["status"] == status
+        if status == "FAILED":
+            assert "readonly" in out["error"]
 
     @pytest.mark.integration
     @pytest.mark.parametrize("bad_task_id", [

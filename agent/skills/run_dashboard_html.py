@@ -34,8 +34,9 @@ from __future__ import annotations
 
 from typing import Optional
 
+from agent.models.core_data import usage_commands
 from agent.skills.env_report_html import (
-    _CSS, _badge, _e, _empty, _header_banner, _kv_table,
+    _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
 
 
@@ -193,24 +194,78 @@ def _render_validated_evidence(spec: dict, primary_digest: Optional[str]) -> str
 # How-to — the DISTINCT panel (the auto-generated user guide, no markdown).
 # ---------------------------------------------------------------------------
 
+def _usage_status(spec: dict) -> str:
+    """The I4 self-test state — "verified" | "failed" | "not_attempted" | "".
+
+    THREE STATES, not a bool. `usage_verified: False` conflates "tested and it failed"
+    with "never tested" — and since seal REFUSES the former, False on disk always meant
+    the latter, while the page rendered it as a verdict. `usage_verification` carries
+    the truth + the reason; the bool is the fallback for specs sealed before it existed.
+
+    One derivation, read by every panel. The head table used to re-derive it as the raw
+    bool, so the same page said "Usage self-tested: False" above the fold and
+    "not attempted — <reason>" below it. Two answers to one question is the bug this
+    whole audit is about."""
+    uv = spec.get("usage_verification") or {}
+    return uv.get("status") or ("verified" if spec.get("usage_verified") else "")
+
+
+#: How each I4 state reads in a one-line summary cell.
+_USAGE_LABEL = {
+    "verified":      "yes",
+    "failed":        "NO — self-test failed",
+    "not_attempted": "not attempted",
+    "":              "not attempted",
+}
+
+
 def _render_howto(spec: dict) -> str:
     usage = spec.get("usage")
     P = ['<section class="bx">']
-    verified = spec.get("usage_verified")
-    tag = ('<span class="pill ok">✓ self-tested</span>' if verified
-           else '<span class="pill na">not self-tested</span>')
-    P.append('<h2>How to run it '
-             '<span class="note">the runnable command, self-tested against every '
-             'declared input shape (I4)</span></h2>')
+    uv = spec.get("usage_verification") or {}
+    status = _usage_status(spec)
+    verified = status == "verified"
+    locus = uv.get("locus") or ""
+    if verified:
+        where = " in the shipped image" if locus == "image" else ""
+        tag = f'<span class="pill ok">✓ self-tested{_e(where)}</span>'
+    elif status == "not_attempted":
+        tag = '<span class="pill na">not self-tested — not attempted</span>'
+    else:
+        tag = '<span class="pill na">not self-tested</span>'
+    # The subtitle used to assert "self-tested against every declared input shape (I4)"
+    # UNCONDITIONALLY — on every dashboard, including one with no usage block at all, and
+    # directly above a pill reading "not self-tested". Two contradictory claims in one
+    # panel. It now describes what this page actually knows.
+    sub = ("the runnable command, self-tested against every declared input shape (I4)"
+           if verified else
+           "the runnable command as authored — see below for whether it was self-tested")
+    P.append(f'<h2>How to run it <span class="note">{_e(sub)}</span></h2>')
     P.append('<div class="bx-body">')
-    if not isinstance(usage, dict) or not (usage.get("command_template") or "").strip():
+    # ONE reading of command_template (str or list[str]) — core_data.usage_commands.
+    cmds = usage_commands(usage) if isinstance(usage, dict) else []
+    if not cmds:
         P.append(_empty("(no usage.command_template on this workflow — nothing to run)"))
         P.append("</div></section>")
         return "".join(P)
-    P.append(f'<div class="how"><div class="run-title">Command {tag}</div>')
+    label = "Command" if len(cmds) == 1 else f"Commands ({len(cmds)}, run in order)"
+    P.append(f'<div class="how"><div class="run-title">{label} {tag}</div>')
+    if status == "not_attempted" and uv.get("reason"):
+        # WHY it wasn't tested. Without this the reader is left to assume the how-to is
+        # suspect, when the real reason is usually about our runner (inputs live on the
+        # cluster; no local image), not about the command.
+        P.append('<p class="note"><b>Not self-tested here:</b> '
+                 f'{_e(uv["reason"])} — this is missing evidence about the command, '
+                 'not evidence against it.</p>')
     if usage.get("description"):
         P.append(f'<p class="note">{_e(usage["description"])}</p>')
-    P.append(f'<pre>{_e(usage["command_template"].strip())}</pre>')
+    # Numbered when there's more than one, because the ORDER is part of the contract:
+    # the self-test runs them in sequence sharing a working dir, so a reader who runs
+    # them out of order is not running what was verified.
+    if len(cmds) == 1:
+        P.append(f'<pre>{_e(cmds[0])}</pre>')
+    else:
+        P.append("<pre>" + "\n".join(f"{i}. {_e(c)}" for i, c in enumerate(cmds, 1)) + "</pre>")
     ins = [i for i in (usage.get("inputs") or []) if isinstance(i, dict)]
     if ins:
         P.append('<p class="note"><b>Inputs</b></p>')
@@ -232,8 +287,12 @@ def _render_howto(spec: dict) -> str:
                  + rows + '</table></div>')
     trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
     if trials:
-        P.append(f'<p class="note">Self-tested against {len(trials)} declared input '
-                 'shape(s):</p><ul class="foot">')
+        # Guarded by `verified`. This line used to render unconditionally, so a dashboard
+        # could say "not self-tested" and "Self-tested against 1 declared input shape(s)"
+        # in the same panel — cluster_refdata_validation did exactly that.
+        lead = (f'Self-tested against {len(trials)} declared input shape(s):' if verified
+                else f'{len(trials)} declared input shape(s) (NOT self-tested — see above):')
+        P.append(f'<p class="note">{lead}</p><ul class="foot">')
         for t in trials:
             P.append(f'<li><b>{_e(t.get("name","trial"))}</b>'
                      + (f' — {_e(t.get("description"))}' if t.get("description") else "")
@@ -363,17 +422,13 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         ("Env image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
         ("Env content digest",
          f'<code>{_e(s.get("env_content_digest","—"))}</code>' if s.get("env_content_digest") else "—"),
-        ("Usage self-tested", _e(s.get("usage_verified"))),
+        ("Usage self-tested", _e(_USAGE_LABEL.get(_usage_status(s), _usage_status(s)))),
     ]
     if s.get("description"):
         head_rows.insert(0, ("Workflow", _e(s["description"])))
 
     P: list[str] = []
-    P.append("<!DOCTYPE html>")
-    P.append(f'<html lang="en"><head><meta charset="utf-8">'
-             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-             f'<title>Workflow run report — {_e(name)}</title><style>{_CSS}</style></head><body>')
-    P.append('<div class="wrap">')
+    P.append(_open_page(f"Workflow run report — {name}"))
     P.append(_header_banner(f"Workflow run report — {_e(name)}", pill, head_rows))
     P.append(_render_validated_evidence(s, primary_digest))
     P.append(_render_howto(s))
@@ -381,9 +436,19 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     inputs = _render_inputs(s)
     if inputs:
         P.append(inputs)
-    P.append('<p class="gen">Generated deterministically from the sealed '
-             'WorkflowSpec — no field on this page was authored by the agent. The '
-             'how-to is the auto-generated user guide; the env report (Layer 1) is '
-             'a separate, immutable page.</p>')
-    P.append("</div></body></html>")
+    # HONEST PROVENANCE. This used to claim "no field on this page was authored by the
+    # agent", which is false and was false when written: the description, the usage
+    # description, and the command_template are all rendered here and all sit in
+    # patch_pipeline's agent-authored allowlist (CLAUDE.md). A page that overstates its own
+    # purity is the same defect class it exists to prevent — so it now says which parts are
+    # machine-observed and which are authored, and lets the reader weigh them differently.
+    P.append('<p class="gen">Generated deterministically from the sealed WorkflowSpec. '
+             'The <b>evidence</b> — commands run, exit codes, outputs, validations, '
+             'digests, resource usage — is machine-observed and cannot be authored by the '
+             'agent. The <b>prose</b> — this workflow\'s description, the how-to '
+             'description, and the command template itself — IS agent-authored (it is in '
+             'patch_pipeline\'s allowlist); the how-to\'s self-test status above says '
+             'whether that command was actually executed. The env report (Layer 1) is a '
+             'separate, immutable page.</p>')
+    P.append(_close_page())
     return "\n".join(P)

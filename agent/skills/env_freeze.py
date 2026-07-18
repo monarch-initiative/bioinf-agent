@@ -115,18 +115,60 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     `conda-meta/{name}-*.json` glob, satisfying env_honesty.evidence_shape's
     anchor rule.
 
-    Looks under both `/opt/conda/envs/*/conda-meta/` (pixi-managed envs)
-    and `/opt/conda/conda-meta/` (base-env installs) so it tolerates either
-    engine layout. The conda-meta JSON is well-formed enough that a
-    `sed -nE` over `\"bin/...\"` strings finds the bin entries reliably."""
+    Looks under `/opt/conda/envs/*/conda-meta/` (pixi-managed envs),
+    `/opt/conda/conda-meta/` (base-env installs) AND `/usr/local/conda-meta/`
+    (BioContainers' prefix) so it tolerates every layout we ship or adopt. The
+    conda-meta JSON is well-formed enough that a `sed -nE` over `\"bin/...\"`
+    strings finds the bin entries reliably.
+
+    `/usr/local` is load-bearing for the ADOPT path: a published BioContainer
+    installs its conda prefix at /usr/local, NOT /opt/conda. Without that glob the
+    probe cannot see any adopted package whose binary name differs from its package
+    name, and gating adopt on it false-refuses healthy envs — measured on real
+    images: gatk4 rc=1, htslib rc=127, perl-bioperl rc=1, all perfectly fine
+    packages (audit 2026-07-16 Tier 2)."""
     # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
     # interpolate directly into the subshell body.
     body = (
         f'for f in /opt/conda/envs/*/conda-meta/{name}-*.json '
-        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'/opt/conda/conda-meta/{name}-*.json '
+        f'/usr/local/conda-meta/{name}-*.json; do '
         f'[ -e "$f" ] || continue; '
         f'for b in $(sed -nE \'s|.*"bin/([^"/]+)".*|\\1|p\' "$f" | sort -u); do '
         f'command -v "$b" >/dev/null 2>&1 && exit 0; '
+        f'done; '
+        f'done; '
+        f'exit 1'
+    )
+    return f"( {body} )"
+
+
+def _perl_module_check_sh(name: str) -> str:
+    """A SUBSHELL that LOADS the Perl module a `perl-*` conda package installs.
+
+    A pure Perl module library (perl-bio-db-hts) ships NO bin/ entry, so neither
+    `command -v perl-bio-db-hts` nor the conda-meta bin probe can ever find it — the
+    package is healthy and the probe says rc=1. Gating adopt on that false-refuses an env
+    CLAUDE.md itself routes to conda ("Prefer conda when the module is on bioconda (e.g.
+    perl-bio-db-hts…)").
+
+    The module NAME is not derivable from the package name — `perl-bio-db-hts` capitalizes
+    to `Bio::DB::HTS`, which no mechanical rule produces (Bio::Db::Hts is wrong). So we
+    don't guess: we read the .pm paths out of the package's OWN conda-meta record
+    (`lib/perl5/5.32/site_perl/Bio/DB/HTS.pm`) and turn the path into the module
+    (`Bio::DB::HTS`). The package tells us its own module names; we just ask.
+
+    Bounded to the first few modules — bioperl ships hundreds, and one successful load is
+    the proof we need. The package name appears as a word-boundary token in the
+    conda-meta glob, so env_honesty's evidence_shape anchor rule is satisfied."""
+    body = (
+        f'for f in /usr/local/conda-meta/{name}-*.json '
+        f'/opt/conda/envs/*/conda-meta/{name}-*.json '
+        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'[ -e "$f" ] || continue; '
+        f'for m in $(sed -nE \'s|.*"lib/perl5/[^"]*site_perl/([A-Za-z][^"]*)\\.pm".*|\\1|p\' "$f" '
+        f'| sed \'s|/|::|g\' | sort -u | head -5); do '
+        f'perl -M"$m" -e1 >/dev/null 2>&1 && exit 0; '
         f'done; '
         f'done; '
         f'exit 1'
@@ -160,6 +202,16 @@ def _conda_presence_check(name: str) -> str:
     Route those to the R-aware Rscript installed.packages() check first."""
     if name.startswith("bioconductor-") or name.startswith("r-"):
         return _r_presence_check(name)
+    if name.startswith("perl-"):
+        # Same detour as R, same reason: a `perl-*` package is a Perl module library and
+        # the three generic clauses cannot see one that ships no binary. The module probe
+        # goes LAST so a perl package that DOES ship a binary (perl-bioperl) still
+        # short-circuits on the cheap clauses.
+        return (
+            f"command -v {name} || "
+            f"{_conda_pkg_bin_check_sh(name)} || "
+            f"{_perl_module_check_sh(name)}"
+        )
     return (
         f"command -v {name} || "
         f"{_conda_pkg_bin_check_sh(name)} || "
@@ -222,8 +274,6 @@ def _replay_assurance(tier: str, im: dict) -> tuple[str, bool]:
         if src.startswith("github:") and _is_commit_sha(ref):
             return "commit_pinned", True
         return "repo_tofu", False
-    if tier == "spack":
-        return "spec_pinned_tofu", False
     if tier == "pip":   # only flag-bearing pip reaches a longtail step (flagless → engine lock)
         return "command_pinned", False
     return "unanchored", False
@@ -327,11 +377,6 @@ def _map_install_spec(
                                        engine_coupled=im.get("engine_coupled", False),
                                        repo=im.get("source") or "",
                                        commit=im.get("commit_sha") or "")}
-
-    if t == "spack":
-        return {"spec": ic.spack(name, package=im.get("package") or name,
-                                 spack_ref=im.get("spack_ref") or "v0.22.1",
-                                 evidence=im.get("evidence") or "")}
 
     if t == "cargo":
         return {"spec": ic.cargo(name, im.get("crate") or name, version=im.get("version") or "",
@@ -638,98 +683,3 @@ def build_env_image(
     return result
 
 
-# R needs its toolchain (compile C/C++/Fortran source pkgs) — the resolver-tier
-# names for R, mapped to the engine specs (build_env_image uses the install_method
-# 'r_install' key; this is the resolve→route path's equivalent).
-_R_TIERS = {"cran", "bioconductor"}
-
-
-def build_env_from_tools(
-    name: str,
-    tools: list[str],
-    *,
-    github_repos: Optional[dict] = None,
-    languages: Optional[dict] = None,
-    prefers: Optional[dict] = None,
-    version: str = "",
-    channels: Optional[list[str]] = None,
-    platform: str = "linux/amd64",
-    accelerator: Optional[dict] = None,
-    license_gated: bool = False,
-    licenses: Optional[list[str]] = None,
-    redistributable: bool = True,
-    engine=None,
-    resolve_fn: Callable[..., dict] = _resolver.resolve,
-) -> dict[str, Any]:
-    """Declarative container-native build straight from TOOL NAMES — no host install.
-
-    For each requested tool: resolve() the best tier, route() it to an EnvBuild
-    action, and build the image (gated by env_honesty.check_build). This is the
-    'call once per tool, get a trustworthy artifact' entry point — the container-
-    native alternative to the host install→draft→freeze flow (and the Phase-E
-    enabler). Covers the resolvable tiers (conda/pip/cran/bioconductor/binary/
-    source); cargo/go/perl come via their install primitives → build_env_image.
-
-    `github_repos`/`languages`/`prefers` are per-tool {tool: value} hints passed to
-    resolve(). `resolve_fn` is injectable for testing. Refuses (success=False) on an
-    ambiguous resolve or a tier with no container-native route, BEFORE building."""
-    github_repos, languages, prefers = github_repos or {}, languages or {}, prefers or {}
-    conda_specs: list[str] = []
-    conda_verify: list[tuple[str, str]] = []
-    pip_specs: list[str] = []
-    pip_verify: list[tuple[str, str]] = []
-    tool_actions: list[dict] = []
-    needs_r = False
-
-    for ts in tools:
-        tool, _, ver = ts.replace("==", "=").partition("=")
-        tool, ver = tool.strip(), ver.strip()
-        d = resolve_fn(tool, version=ver, github_repo=github_repos.get(tool, ""),
-                       language=languages.get(tool, ""), prefer=prefers.get(tool, ""))
-        if d.get("ambiguous"):
-            return refused("build.resolve_ambiguous", success=False,
-                           stage="resolve", tool=tool, reason=d.get("rationale"))
-        action = _resolver.route(d, platform)
-        kind = action.get("kind")
-        if kind == "conda":
-            # Honor an EXPLICIT user pin (samtools=1.21); otherwise add the BARE
-            # name and let the solver co-resolve compatible versions. Pinning every
-            # auto-resolved package to its independent latest over-constrains the
-            # co-solve (e.g. numpy=latest vs numba's older-numpy requirement →
-            # python_abi conflict). The lock still records exact versions, so
-            # reproducibility is preserved; bare names just hand the SAT problem to
-            # the solver instead of pre-deciding it wrong.
-            base = action["spec"].split("=")[0]
-            conda_specs.append(f"{base}={ver}" if ver else base)
-            conda_verify.append((tool, _conda_presence_check(tool)))
-        elif kind == "pip":
-            pip_specs.append(action["spec"])
-            pip_verify.append((tool, _pip_presence_check(tool)))
-        elif kind == "tool":
-            tool_actions.append(action)
-            if action.get("tier") in _R_TIERS:
-                needs_r = True
-        else:  # defer / no automatable tier
-            return refused("build.route_no_tier", success=False,
-                           stage="route", tool=tool,
-                           reason=action.get("reason"), decision=d)
-
-    if needs_r:  # R toolchain for the engine (compiles source CRAN/Bioc pkgs)
-        for s in _TOOLCHAIN_SPECS["r_install"]:
-            if s not in conda_specs:
-                conda_specs.append(s)
-
-    conda_specs = ensure_python_for_pip(conda_specs, bool(pip_specs))
-    eb = EnvBuild(name, version, platform=platform, engine=engine, channels=channels,
-                  accelerator=accelerator, license_gated=license_gated,
-                  licenses=licenses, redistributable=redistributable)
-    if conda_specs:
-        eb.add_conda(conda_specs, verify=conda_verify)
-    if pip_specs:
-        eb.add_pip(pip_specs, verify=pip_verify)
-    for action in tool_actions:
-        eb.add_tool(action["spec"])
-
-    result = eb.run()
-    result["request_key"] = eb.request_key()
-    return result

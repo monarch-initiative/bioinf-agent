@@ -98,7 +98,28 @@ def _outcome_bar(entries) -> str:
     return f'<div class="bar">{"".join(segs)}</div>'
 
 
-def render(entries: list[dict], overlay: dict | None) -> str:
+def _source_stamp() -> str:
+    """The commit this page describes, + whether the tree was dirty when it was
+    rendered. A number with no idea what code it refers to is how docs rot: the
+    ledger is a CACHE of the code, and a stale cache renders a confident fiction
+    (tier 7 caught the ledger listing 3 terminals that no longer existed while
+    omitting 3 live cache-gates). The stamp lets a reader check, instead of
+    trusting. Kept OUT of render() so render stays pure + deterministic."""
+    import subprocess
+    def _git(*a):
+        try:
+            return subprocess.run(["git", *a], cwd=ROOT, capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except Exception:
+            return ""
+    sha = _git("rev-parse", "--short", "HEAD")
+    if not sha:
+        return "source commit UNKNOWN (not a git checkout)"
+    dirty = bool(_git("status", "--porcelain"))
+    return f"rendered from {sha}{' + uncommitted changes' if dirty else ''}"
+
+
+def render(entries: list[dict], overlay: dict | None, source_stamp: str = "") -> str:
     total = len(entries)
     for e in entries:
         e["_cov"] = _cover_state(e, overlay)
@@ -238,6 +259,7 @@ def render(entries: list[dict], overlay: dict | None) -> str:
         verified=verified, exercised=exercised, dark=dark,
         cbar=cbar, banner=banner, seaworthy=seaworthy, tiles=tiles_html, tally=tally_html,
         legend_out=legend_out, legend_cov=legend_cov, cards="".join(cards),
+        source_stamp=_e(source_stamp or "source commit not stamped"),
         measured=("measured" if measured else "NOT measured"))
 
 
@@ -366,7 +388,11 @@ refuses, or fails. Nothing is hand-drawn.</p>
 <p class="foot">Cards are ordered by <b>hardening priority</b>: most DARK failure
 paths (broke/vanished never executed) first. The <b>v·e·d</b> column is
 verified·exercised·dark per subsystem. Regenerate:
-<code>python scripts/extract_outcomes.py &amp;&amp; python scripts/measure_terminal_coverage.py</code></p>
+<code>python scripts/extract_outcomes.py &amp;&amp; python scripts/measure_terminal_coverage.py</code><br>
+<b>{source_stamp}</b> — this page describes THAT code and nothing else. If it is
+stale, every count above is a confident fiction; the ledger is a cache of the
+source, so regenerate before believing it.
+(<code>tests/test_outcome_tags.py</code> makes staleness a build failure.)</p>
 <script>
 function toggleDark(btn){{
   document.body.classList.toggle('only-dark');
@@ -397,7 +423,7 @@ def main() -> int:
     overlay = None
     if OVERLAY.exists():
         overlay = json.loads(OVERLAY.read_text()).get("by_where")
-    OUT.write_text(render(entries, overlay))
+    OUT.write_text(render(entries, overlay, _source_stamp()))
     if overlay is None:
         print(f"  wrote {OUT.relative_to(ROOT)}  (coverage NOT measured — grep only; "
               f"run measure_terminal_coverage.py)")

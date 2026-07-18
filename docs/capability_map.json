@@ -7,10 +7,22 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "The BWA read mapper.",
+        "has_description": true,
+        "repo": "lh3/bwa",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
         "conda",
-        "pip",
-        "spack"
+        "pip"
       ],
       "note": "conda sanity"
     },
@@ -21,9 +33,21 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Tools for dealing with SAM, BAM and CRAM files",
+        "has_description": true,
+        "repo": "samtools/samtools",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
-        "conda",
-        "spack"
+        "conda"
       ],
       "note": "conda sanity"
     },
@@ -34,6 +58,19 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Trim adapters from high-throughput sequencing reads",
+        "has_description": true,
+        "repo": "marcelm/cutadapt",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
         "conda",
         "pip"
@@ -47,6 +84,19 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Model Based Analysis for ChIP-Seq data",
+        "has_description": true,
+        "repo": "macs3-project/MACS",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
         "conda",
         "pip"
@@ -60,8 +110,22 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Genome Analysis Toolkit (GATK4)",
+        "has_description": true,
+        "repo": "broadinstitute/gatk",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
-        "conda"
+        "conda",
+        "authors_recipe"
       ],
       "note": "jar-class, on bioconda"
     },
@@ -72,8 +136,22 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Miniprot aligns a protein sequence against a genome with affine gap penalty, splicing and frameshift. It is primarily intended for annotating protein-coding genes in a new species using known genes from other species.",
+        "has_description": true,
+        "repo": "lh3/miniprot",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
-        "conda"
+        "conda",
+        "authors_recipe"
       ],
       "note": "aligner"
     },
@@ -84,6 +162,19 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Plotting suite for long read sequencing data and alignments.",
+        "has_description": true,
+        "repo": "wdecoster/NanoPlot",
+        "repo_source": "conda",
+        "repo_anchored": true,
+        "channel": "bioconda"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
         "conda",
         "pip"
@@ -97,6 +188,19 @@
       "chosen": "bioconductor",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "bioconductor",
+        "self_description": "",
+        "has_description": false,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": ""
+      },
+      "expect": {
+        "bucket": "ROUTED:bioconductor"
+      },
+      "violations": [],
       "available": [
         "bioconductor"
       ],
@@ -109,6 +213,19 @@
       "chosen": "bioconductor",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "bioconductor",
+        "self_description": "",
+        "has_description": false,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": ""
+      },
+      "expect": {
+        "bucket": "ROUTED:bioconductor"
+      },
+      "violations": [],
       "available": [
         "bioconductor"
       ],
@@ -121,10 +238,22 @@
       "chosen": "pip",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "pip",
+        "self_description": "A Productive Environment - make/rake/ant/fab-like system with support for FOSD",
+        "has_description": true,
+        "repo": "henzk/ape",
+        "repo_source": "pip",
+        "repo_anchored": false,
+        "channel": ""
+      },
+      "expect": {
+        "bucket": "AMBIGUOUS"
+      },
+      "violations": [],
       "available": [
         "pip",
-        "cran",
-        "spack"
+        "cran"
       ],
       "note": "name collision (PyPI ape != CRAN ape)"
     },
@@ -135,12 +264,24 @@
       "chosen": "conda",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "conda",
+        "self_description": "Functions for reading, writing, plotting, and manipulating phylogenetic trees, analyses of comparative data in a phylogenetic framework, ancestral character analyses, analyses of diversification and macroevolution, computing distances from DNA sequences, reading and writing nucleotide sequences as well as importing from BioConductor, and several tools such as Mantel's test, generalized skyline plots, graphical exploration of phylogenetic data (alex, trex, kronoviz), estimation of absolute evolutionary rates and clock-like trees using mean path lengths and penalized likelihood, dating trees with non-contemporaneous sequences, translating DNA into AA sequences, and assessing sequence alignments. Phylogeny estimation can be done with the NJ, BIONJ, ME, MVR, SDM, and triangle methods, and several methods handling incomplete distance matrices (NJ*, BIONJ*, MVR*, and the corresponding triangle method). Some functions call external applications (PhyML, Clustal, T-Coffee, Muscle) whose results are returned into R.",
+        "has_description": true,
+        "repo": "",
+        "repo_source": "",
+        "repo_anchored": false,
+        "channel": "conda-forge"
+      },
+      "expect": {
+        "bucket": "ROUTED:conda"
+      },
+      "violations": [],
       "available": [
         "conda",
-        "cran",
-        "spack"
+        "cran"
       ],
-      "note": "disambiguated -> CRAN"
+      "note": "disambiguated -> the R phylogenetics pkg (conda r-ape)"
     },
     {
       "tool": "GAPIT",
@@ -149,6 +290,17 @@
       "chosen": "r_github",
       "recommended_repo": "jiabowang/GAPIT",
       "auto_adoptable": true,
+      "identity": {
+        "chosen_tier": "r_github",
+        "self_description": "",
+        "has_description": false,
+        "repo": "jiabowang/GAPIT",
+        "repo_source": "user",
+        "repo_anchored": true,
+        "channel": ""
+      },
+      "expect": {},
+      "violations": [],
       "available": [
         "r_github",
         "synthesis",
@@ -163,6 +315,9 @@
       "chosen": null,
       "recommended_repo": "Aria-Dolatabadian/GAPIT3",
       "auto_adoptable": false,
+      "identity": null,
+      "expect": {},
+      "violations": [],
       "available": [],
       "note": "REPO-ONLY variant name"
     },
@@ -173,11 +328,21 @@
       "chosen": "cran",
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": {
+        "chosen_tier": "cran",
+        "self_description": "Translate Spreadsheet Cell Ranges to Rows and Columns \u2014 Helper functions to work with spreadsheets and the \"A1:D10\" style of cell range specification.",
+        "has_description": true,
+        "repo": "rsheets/cellranger",
+        "repo_source": "cran",
+        "repo_anchored": false,
+        "channel": ""
+      },
+      "expect": {},
+      "violations": [],
       "available": [
-        "cran",
-        "spack"
+        "cran"
       ],
-      "note": "COLLISION: CRAN cellranger != 10x cellranger"
+      "note": "COLLISION: CRAN cellranger != 10x cellranger \u2014 identity is the ride's call now"
     },
     {
       "tool": "zzz_no_such_tool_xyz",
@@ -186,6 +351,11 @@
       "chosen": null,
       "recommended_repo": null,
       "auto_adoptable": null,
+      "identity": null,
+      "expect": {
+        "bucket": "DEAD-END"
+      },
+      "violations": [],
       "available": [],
       "note": "genuine dead-end"
     }

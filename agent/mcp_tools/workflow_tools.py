@@ -80,6 +80,101 @@ def _refresh_reference_databases(rdbs: list) -> list:
     return out
 
 
+class _ImageUsageRunner:
+    """An env_manager-shaped runner that executes the I4 self-test INSIDE a frozen env
+    image, so the how-to is proven against the exact bytes the user runs.
+
+    It exists to satisfy ONE call — `env_manager.run_in_env(env, cmd, timeout, watch_dir)`
+    — which is the only thing self_test_usage asks of its runner. That seam was already
+    injectable; nothing in spec_writer needed to learn about containers.
+
+    Mounts are bound at their OWN host paths so the trial's absolute substitutions resolve
+    verbatim inside the image (the same trick run_step_in_container uses), and outputs land
+    back on the host where OutputValidator can read them.
+    """
+    is_image_runner = True
+
+    def __init__(self, image: str, platform: str, mounts: list):
+        self.image, self.platform, self.mounts = image, platform, mounts
+
+    def run_in_env(self, env_name, command, timeout=600, watch_dir=None, **_):
+        mounts = list(self.mounts)
+        if watch_dir:
+            mounts.append((str(watch_dir), str(watch_dir)))
+        return _ms._docker.run_in_container(
+            self.image, command, mounts=mounts, workdir=str(watch_dir) if watch_dir else None,
+            platform=self.platform, timeout=timeout)
+
+
+def _image_usage_runner(fr: dict, draft: dict):
+    """Build an _ImageUsageRunner for this frozen env, or None when the how-to can't be
+    self-tested in-image here.
+
+    Returns None (→ seal records not_attempted + reason) rather than raising, because
+    "we couldn't run it" is missing evidence, not a broken how-to. Preconditions, each of
+    which is a real case on disk:
+      - the image must resolve locally. An ADOPTED biocontainer is a remote ref that may
+        need a pull; offline, that is not the workflow's fault.
+      - every path-valued substitution must EXIST on this host. talos_validate_moi's inputs
+        are /work/... on the cluster — unreachable here, and failing it for that would be
+        refusing the environment, not the artifact.
+    Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths, so a
+    non-path param can't silently disable the self-test. Output slots are skipped — they
+    are overwritten with the trial's fresh scratch dir and are not expected to pre-exist.
+
+    The substitutions are resolved EXACTLY as self_test_usage resolves them — declared
+    trials if any, else inferred from pipeline_steps[*].inputs. Checking only `usage.trials`
+    looked right and was wrong: talos_validate_moi declares `trials: []`, so the check
+    inspected an empty set, waved through a run whose inferred inputs are all on the
+    cluster, and turned a legitimately-unrunnable-here workflow into a hard seal refusal.
+    A precondition must inspect the same values the runner will use, or it guards nothing.
+    """
+    from pathlib import Path
+    from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
+    image = (fr.get("image") or "").strip()
+    if not image:
+        return None
+    usage = draft.get("usage") or {}
+    # ONE reading of command_template (str or list[str]) — core_data.usage_commands. This
+    # precondition MUST see the same placeholders self_test_usage will resolve, across
+    # every command; reading only the first would re-create the tier-2 bug where a
+    # precondition inspected something other than what the runner actually uses.
+    from agent.models.core_data import usage_commands
+    template = "\n".join(usage_commands(usage))
+    if not template:
+        return None
+    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
+    if trials:
+        subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
+    else:
+        subs_sets = [_infer_substitutions(draft, placeholders, usage.get("inputs") or [])]
+
+    mounts: list[tuple[str, str]] = []
+    for subs in subs_sets:
+        for slot, val in subs.items():
+            if _is_output_slot(slot):
+                continue                       # replaced by the per-trial scratch dir
+            s = str(val)
+            if not s.startswith("/"):
+                continue                       # not a path — a scalar param
+            p = Path(s)
+            if not p.exists():
+                return None                    # cluster-locus / missing input → not_attempted
+            d = str(p.parent if p.is_file() else p)
+            if d == "/":
+                continue                       # never bind-mount the host root
+            if (d, d) not in mounts:
+                mounts.append((d, d))
+    try:
+        if not _ms._docker.image_digest(image):
+            return None                        # not resolvable locally (adopted, or no daemon)
+    except Exception:
+        return None
+    platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(fr.get("platform", ""), "linux/amd64")
+    return _ImageUsageRunner(image, platform, mounts)
+
+
 def _derive_step_dependencies(pipeline_steps: list) -> list:
     """Materialize each step's `depends_on` (prior step numbers it consumes an
     output of) into the sealed spec.
@@ -154,6 +249,110 @@ def _render_run_dashboard(wf: dict, env_record: dict, out_dir: Path) -> Optional
     return str(report_path)
 
 
+def _spec_env_identity(spec: dict) -> frozenset:
+    """The frozen-env fingerprint set a WorkflowSpec pins. Two seals of the SAME
+    workflow_name that share this identity are locus ACCRETION (the same env(s),
+    more or updated validated evidence); a DIFFERENT identity means the new seal
+    pins a distinct environment, so overwriting the file would destroy the prior
+    sealed artifact's provenance.
+
+    Uses the shipped `image_digest` of every chained env PLUS the primary env's
+    `content_digest` and `request_key`, so a REBUILT env (same request, new
+    content — a non-reproducible rebuild) reads as DIFFERENT and cannot silently
+    overwrite. (Per the user's ruling: a re-seal against a rebuilt env requires
+    an explicit supersede, not a silent additive update.)"""
+    ids: set[str] = set()
+    for e in spec.get("envs", []) or []:
+        if isinstance(e, dict) and e.get("image_digest"):
+            ids.add(e["image_digest"])
+    for k in ("env_content_digest", "env_request_key"):
+        if spec.get(k):
+            ids.add(spec[k])
+    return frozenset(ids)
+
+
+def _validated_step_count(spec: dict) -> int:
+    """How many pipeline_steps carry real validation evidence. A re-seal that
+    LOWERS this over an existing spec is dropping evidence — not accretion — and
+    must not silently replace the richer artifact."""
+    return sum(1 for s in spec.get("pipeline_steps", []) or []
+               if isinstance(s, dict) and (s.get("validation")
+                                           or s.get("validation_status") == "passed"))
+
+
+def _next_superseded_path(out_dir: Path, wname: str) -> Path:
+    """A non-colliding name to PRESERVE a superseded spec under, rather than
+    destroy it: {wname}.superseded.{n}.workflow.yaml (n = next free integer)."""
+    n = 1
+    while True:
+        p = out_dir / f"{wname}.superseded.{n}.workflow.yaml"
+        if not p.exists():
+            return p
+        n += 1
+
+
+def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[bool, Optional[dict]]:
+    """Phase-3 Piece A — the seal write-guard.
+
+    THE HOLE (audit 2026-07-17): write_workflow_spec overwrites
+    {name}.workflow.yaml with NO exists-check, so re-sealing over an existing
+    sealed spec silently DESTROYS a digest-pinned provenance artifact. The
+    honesty contract already re-validates the NEW spec standalone, so the new
+    file is never a lie — but the SILENT REPLACEMENT of the old one is. The fix
+    is a guard at the terminal WRITE, not a lock on the draft: the 15-site
+    draft-lock the design sketch first proposed would have broken locus
+    accretion, one-env-many-workflows, and every ad-hoc pipeline_id="" call, AND
+    a LEGAL_TRANSITIONS table would have been a second, drifting definition of
+    ordering — the codebase's signature disease.
+
+      - no existing spec           -> write (first seal)
+      - same env identity, no
+        evidence dropped           -> write (locus ACCRETION — the documented
+                                      flow: seal locally, later run on cluster,
+                                      re-seal so the dashboard accretes the locus)
+      - different env identity, or
+        evidence dropped, and no
+        supersede                  -> REFUSE seal.would_clobber_sealed_spec
+      - ...with supersede=True     -> PRESERVE the prior spec under a
+                                      .superseded.N name, stamp a note, write
+
+    Returns (proceed, refusal|None); renames the prior file as a side effect on
+    supersede. Freeze needs no analogous guard: the EnvCache is content-addressed
+    and append-only, so a re-freeze cannot silently clobber a shipped env."""
+    import yaml
+    wname = wf.get("workflow_name", "")
+    path = out_dir / f"{wname}.workflow.yaml"
+    if not path.exists():
+        return True, None
+    try:
+        prior = yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        prior = {}
+    same_env = _spec_env_identity(wf) == _spec_env_identity(prior)
+    drops_evidence = _validated_step_count(wf) < _validated_step_count(prior)
+    if same_env and not drops_evidence:
+        return True, None                       # locus accretion — additive, supersedes nothing
+    if not supersede:
+        return False, refused(
+            "seal.would_clobber_sealed_spec", success=False,
+            error=(f"a sealed WorkflowSpec already exists at {path.name} pinning a "
+                   f"different environment (or richer validated evidence); sealing here "
+                   f"would silently REPLACE it and destroy its provenance. Pass "
+                   f"supersede=True to replace it — the prior spec is preserved "
+                   f"alongside (as {path.stem}.superseded.N.workflow.yaml), not deleted."),
+            existing_spec=str(path),
+            existing_env_identity=sorted(_spec_env_identity(prior)),
+            new_env_identity=sorted(_spec_env_identity(wf)),
+            existing_validated_steps=_validated_step_count(prior),
+            new_validated_steps=_validated_step_count(wf))
+    backup = _next_superseded_path(out_dir, wname)
+    path.rename(backup)
+    wf["superseded"] = {"replaced_spec": backup.name,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "prior_env_identity": sorted(_spec_env_identity(prior))}
+    return True, None
+
+
 @mcp.tool()
 def seal_workflow(
     pipeline_id: str,
@@ -161,6 +360,7 @@ def seal_workflow(
     workflow_name: str = "",
     description: str = "",
     write: bool = True,
+    supersede: bool = False,
 ) -> dict:
     """Seal the Layer-2 WORKFLOW: validate the run-side invariants, PIN the
     frozen environment by digest, render the user guide, write the WorkflowSpec.
@@ -178,18 +378,37 @@ def seal_workflow(
     rendered from the passing run — validated evidence per compute locus plus a
     distinct how-to panel; the env's ENV.html is a separate, immutable Layer-1
     artifact and is not touched here).
+
+    A sealed {workflow_name}.workflow.yaml is a digest-pinned provenance artifact,
+    so re-sealing over an EXISTING one is guarded (Phase-3 Piece A): re-sealing
+    the SAME env with more/updated validated evidence writes through (locus
+    accretion), but sealing a DIFFERENT env (or dropping evidence) over it
+    REFUSES `seal.would_clobber_sealed_spec` unless `supersede=True` — which
+    preserves the prior spec under a `.superseded.N` name rather than destroying
+    it. Freeze is not guarded this way: the EnvCache is content-addressed, so a
+    re-freeze cannot silently overwrite a shipped env.
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
         return refused("seal.unknown_pipeline_id", success=False,
                        error=f"unknown pipeline_id: {pipeline_id}")
-    fr = _ms._env_cache.lookup(freeze_request_key)
+    # A WorkflowSpec PINS this env by digest and asserts Layer-2 on top of Layer-1.
+    # Sealing against a record that can no longer earn its Layer-1 green would make
+    # the spec's own foundation unverifiable — so ask the serving question, and say
+    # which clause failed rather than reporting it as absent.
+    fr, env_violations = _ms._env_cache.lookup_verified(freeze_request_key)
+    if env_violations:
+        return refused("seal.env_contract_violated", success=False,
+                       error=f"the frozen env '{freeze_request_key}' no longer satisfies the "
+                             f"Layer-1 honesty contract — re-run freeze() before sealing",
+                       honesty_violations=env_violations,
+                       violation_count=len(env_violations))
     if not fr:
         return refused("seal.no_frozen_env", success=False,
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
 
-    from agent.skills.spec_writer import (check_workflow_invariants, self_test_usage,
-                                          write_workflow_spec)
+    from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status,
+                                          self_test_usage, write_workflow_spec)
     violations = check_workflow_invariants(draft)
     if violations:
         return refused("seal.workflow_invariants", success=False,
@@ -206,18 +425,40 @@ def seal_workflow(
     # otherwise the guide would publish a runnable form that doesn't actually
     # run. Previously `usage_verified` was computed then rendered cosmetically
     # while the seal proceeded regardless; that let a broken usage template
-    # ship with a "verified" badge. A draft with NO usage block seals without
-    # the badge (usage is the run contract only when the agent authored one).
+    # ship with a "verified" badge.
+    #
+    # THE LOCUS FIX (audit 2026-07-16): this gate used to read
+    # `if draft.get("usage") and draft.get("conda_env")`. self_test_usage needs a runner,
+    # and the only runner it knew was a HOST conda env — but the architecture moved
+    # container-native, so the primary path has no host env and the gate SILENTLY SKIPPED.
+    # Every one of the 4 sealed workflows on disk has conda_env=None; 3 carry
+    # usage_verified=False that means "never attempted" while rendering as a verdict.
+    # We now prefer the FROZEN IMAGE as the runner (validated == shipped: the how-to is
+    # tested against the exact bytes the user runs), fall back to the host env for the
+    # pre-freeze path, and when neither can run it we record not_attempted + WHY rather
+    # than fabricating a False.
     usage_ok = False
     usage_detail: dict | None = None
-    if draft.get("usage") and draft.get("conda_env"):
+    if draft.get("usage"):
+        runner = _image_usage_runner(fr, draft) or (_ms._env_mgr if draft.get("conda_env") else None)
         try:
-            usage_detail = self_test_usage(draft, _ms._env_mgr, validator=_ms._validator)
+            usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
             usage_ok = bool(usage_detail.get("ok"))
         except Exception as e:
             usage_ok = False
-            usage_detail = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        if not usage_ok:
+            usage_detail = {"ok": False, "status": "not_attempted",
+                            "reason": f"the self-test runner raised: {type(e).__name__}: {e}"}
+        # Refuse ONLY on a real failure. `not_attempted` is missing evidence, not a
+        # broken how-to — refusing it would make legitimately unsealable-here workflows
+        # (cluster-locus inputs, no frozen image locally) permanently unsealable.
+        #
+        # FAIL CLOSED on an unrecognized shape: a result with ok=False and no `status` is
+        # read as "failed", never waved through. Reading a missing status as "not failed"
+        # would turn absence of data into a pass — and it is not hypothetical: it silently
+        # disarmed this very gate for any caller still returning the pre-three-state shape.
+        status = usage_detail.get("status") or ("verified" if usage_ok else "failed")
+        usage_detail["status"] = status
+        if status == "failed":
             return refused(
                 "seal.usage_self_test_failed", success=False, stage="usage_self_test",
                 error="I4: usage.command_template failed its self-test — it did not "
@@ -266,8 +507,21 @@ def seal_workflow(
         # is for the guide's get-the-image step. Each step also carries its own
         # container_image_digest, so a reader can map step → env.
         "envs":               envs_used,
-        "pipeline_status":    draft.get("pipeline_status", "in_progress"),
+        # DERIVED from the run, not the draft's dead stamp — the producer states
+        # the real status (fully_validated / partially_validated / …). See
+        # spec_writer.derive_pipeline_status; the model field is now required.
+        "pipeline_status":    derive_pipeline_status(draft.get("pipeline_steps", [])),
         "usage_verified":     usage_ok,
+        # The three-state truth behind the bool. `usage_verified: False` alone cannot
+        # distinguish "tested and broken" from "never tested", and since seal refuses the
+        # former, False on disk ALWAYS meant the latter — a verdict nobody reached.
+        # Renderers must read this, not the bool, before saying anything about the how-to.
+        "usage_verification": ({"status": usage_detail.get("status", "not_attempted"),
+                                "reason": usage_detail.get("reason", ""),
+                                "locus":  usage_detail.get("locus", ""),
+                                "trial_count": usage_detail.get("trial_count", 0),
+                                "passed": usage_detail.get("passed", 0)}
+                               if usage_detail else None),
         "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),
@@ -300,18 +554,34 @@ def seal_workflow(
         commands_shown=len(_ms._user_guide.executed_commands(draft)),
     )
     if write:
+        project_root = Path(__file__).resolve().parents[2]
+        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
+        # Phase-3 Piece A: refuse to silently clobber a prior sealed spec that
+        # pins a DIFFERENT env (locus accretion writes through). See
+        # _guard_spec_overwrite — this is the terminal-WRITE gate, and it fires
+        # BEFORE write_workflow_spec so no digest-pinned provenance is destroyed.
+        proceed, refusal = _guard_spec_overwrite(wf, out_dir, supersede)
+        if not proceed:
+            return refusal
+        if wf.get("superseded"):
+            result["superseded"] = wf["superseded"]
         out = write_workflow_spec(wf, _ms.config)
         if out.get("error"):
             return broke("seal.spec_write_failed", success=False, **out)
         result.update(out)
+        # Orientation pointer (Phase-3 Piece B): record that this pipeline sealed
+        # `wname`, so current_state can RE-EARN SEALED. Best-effort — a pointer
+        # hiccup must never fail a verified seal.
+        try:
+            _ms._pipeline_state.append_sealed_pointer(pipeline_id, wname)
+        except Exception:
+            pass
         # Layer-2 deliverable: render THIS workflow's run dashboard
         # ({workflow_name}.RUN.html) from the verified spec — validated evidence
         # per compute locus + a distinct how-to panel. The env's ENV.html (Layer 1)
         # is left untouched: it is immutable post-freeze and never claims the
         # cluster-worthiness this dashboard carries. Non-fatal — a render hiccup
         # never fails a verified seal.
-        project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
         report_path = _render_run_dashboard(wf, fr, out_dir)
         if report_path:
             result["run_report_path"] = report_path
@@ -396,8 +666,29 @@ def write_pipeline_provenance(
 
 @mcp.tool()
 def list_installed_pipelines() -> dict:
-    """List all pipelines installed and validated, with Docker tags and validation status."""
-    return _ms._list_pipelines(_ms.config)
+    """What has ALREADY been built here — check this before solving a tool again.
+
+    Returns both layers:
+      `envs[]`     — Layer 1: the frozen, content-addressed envs in the EnvCache.
+                     These are the reusable "solved components": ask for one of
+                     these tools again and freeze serves it BY DIGEST instead of
+                     rebuilding. Each carries its REQUESTED tools with semantic
+                     versions (from the shipped image's SBOM), image_digest,
+                     content_digest, build_method (adopt/build/authors-dockerfile)
+                     and validation_locus.
+      `workflows[]`— Layer 2: the sealed WorkflowSpecs, each pinning its env by
+                     digest, with steps_validated / validated_in_shipped_image /
+                     usage_verified.
+
+    **`contract_ok` is earned, not remembered.** Every env is re-anchored against
+    the full honesty contract AS YOU ASK (`env_honesty.check_build`, the same
+    question freeze/run/stage/seal ask at serve time). `contract_ok: False` means
+    "on disk, but the serving paths would REFUSE it today" — a record whose green
+    has expired, e.g. because a gate got stronger since it was frozen. Read
+    `contract_violations[]` for the failing clause. An inventory that showed a
+    stale record as usable would be precisely the false green tier 5 closed.
+    """
+    return _ms._list_pipelines(_ms.config, env_cache=_ms._env_cache)
 
 
 # ---------------------------------------------------------------------------
@@ -621,10 +912,15 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
             for s in pipeline_steps
             if not (s.get("detected_outputs") or s.get("outputs") or s.get("validation"))
         ]
+        # ONE lifecycle answer, re-earned from the artifacts — replaces the dead
+        # env_status/pipeline_status nominal stamps that were never transitioned
+        # (Phase-3 Piece B). state_checks binds the re-earned frozen/sealed checks.
+        from agent.skills.pipeline_state import current_state, state_checks
+        _reports_dir = Path(__file__).resolve().parents[2] / _ms.config["paths"]["pipelines_dir"]
+        _state = current_state(draft, **state_checks(_ms._env_cache, _reports_dir))
         r["summary"] = {
             "conda_env":              draft.get("conda_env"),
-            "env_status":             draft.get("env_status"),
-            "pipeline_status":        draft.get("pipeline_status"),
+            "state":                  _state,
             "install_steps_count":    len(install_steps),
             "install_steps_failed":   sum(1 for s in install_steps if s.get("returncode") not in (None, 0)),
             "pipeline_steps_count":   len(pipeline_steps),

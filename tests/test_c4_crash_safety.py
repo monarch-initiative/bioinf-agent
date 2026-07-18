@@ -99,9 +99,9 @@ def _sandbox(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 def _battery():
     from agent.mcp_tools import (bridge_tools as B, data_tools as D, env_tools as E,
-                                 freeze_tools as F, jobs_tools as J,
-                                 observability_tools as O, run_tools as R,
-                                 service_tools as S, workflow_tools as W)
+                                 freeze_tools as F, intent_tools as I, jobs_tools as J,
+                                 observability_tools as O, plan_tools as P, run_tools as R,
+                                 sealed_tools as ST, service_tools as S, workflow_tools as W)
     return [
         # -- bridge (auth must refuse before any ssh) -----------------------
         ("upload", B.upload, dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV,
@@ -142,6 +142,26 @@ def _battery():
         # install_pipeline_brief is PURE INFO (returns the protocol brief) — no
         # hostile input, just must not crash.
         ("install_pipeline_brief", D.install_pipeline_brief, dict(name=""), False),
+        # -- intent (the front door) ----------------------------------------
+        # interpret_request is a pure validation/routing QUERY: malformed JSON (or an
+        # invalid intent) comes back as {ok: False, error: …} — interpretable, no crash,
+        # no side effects. Its verdicts (decline/ask/investigate/proceed) are a DIFFERENT
+        # axis from the outcome-tag vocabulary, so no tag is required. Like resolve_tool.
+        ("interpret_request", I.interpret_request, dict(intent_json="not valid json{{"), False),
+        # -- plan (the composition front door) ------------------------------
+        # plan_request is a pure validation/gating QUERY, exactly like interpret_request:
+        # malformed JSON (or an invalid plan) comes back as {ok: False, error: …} —
+        # interpretable, no crash, no side effects. Its verdict (plan_ready) is a
+        # DIFFERENT axis from the outcome-tag vocabulary, so no tag is required. It
+        # dispatches NOTHING, so there is no action to gate.
+        ("plan_request", P.plan_request, dict(plan_json="not valid json{{"), False),
+        # -- sealed-step reader (RUN_STEP-of-a-sealed-workflow) --------------
+        # describe_sealed_step is a pure typed-read QUERY, the third advisory reader
+        # (sibling of interpret_request/plan_request): a missing workflow / bad step
+        # comes back as {ok: False, error, available_*} — interpretable, no crash, no
+        # side effects, dispatches nothing. Off the outcome-tag axis, so no tag required.
+        ("describe_sealed_step", ST.describe_sealed_step,
+         dict(workflow_name="no_such_workflow_zzz", step=1), False),
         # -- env / install (missing env must refuse before subprocess) ------
         # search_package / resolve_tool are QUERIES: an unknown package returns a
         # not-found / no-decision dict (interpretable), tag optional.
@@ -154,7 +174,6 @@ def _battery():
          dict(env_name=BAD_ENV, repo_url="not://url", tool_name="t"), True),
         ("synth_fetch", E.synth_fetch, dict(repo_url="not://url"), True),
         ("synth_build", E.synth_build, dict(env_name=BAD_ENV, repo_url="not://url", tool_name="t"), True),
-        ("install_spack_package", E.install_spack_package, dict(env_name=BAD_ENV, tool_name="t"), True),
         ("install_release_binary", E.install_release_binary,
          dict(env_name=BAD_ENV, tool_name="t", url="not://url"), True),
         ("install_perl_package", E.install_perl_package, dict(env_name=BAD_ENV, module="Mod"), True),

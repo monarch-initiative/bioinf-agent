@@ -278,6 +278,72 @@ def test_upload_permission_does_not_satisfy_snapshot_via_gate():
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("escape", [
+    "/proj/safe/../../etc/passwd",
+    "/proj/safe/../../../root/.ssh/id_rsa",
+    "/proj/safe/./../../etc/shadow",
+    "/proj/safe/sub/../../../etc/passwd",
+])
+def test_check_permission_refuses_traversal_out_of_an_authorized_dir(escape):
+    """check_permission must hold ON ITS OWN — it is the security boundary its
+    own docstring says every primitive calls first.
+
+    The bug (tier 7): it prefix-matched the RAW string, so '/proj/safe/../../
+    etc/passwd' was AUTHORIZED against a '/proj/safe' grant — the string does
+    start with the prefix, even though the path it names is /etc/passwd. Nothing
+    exploited it, because all three callers happen to pre-validate with a
+    SEPARATE checker. That is precisely the trap this audit keeps finding: the
+    gate that claims authority was leaning on a check it does not own, and one
+    caller forgetting that check is a full escape out of the sandbox."""
+    project = {
+        "name": "p", "compute_env_access": [
+            {"compute_env": "e", "directories": [
+                {"path": "/proj/safe", "permissions": ["upload", "download", "exec"]},
+            ]},
+        ],
+    }
+    with pytest.raises(PermissionDenied) as exc:
+        compute_access.check_permission(project, "e", escape, "upload")
+    assert "traversal" in str(exc.value)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", [
+    "/proj/safe/f.txt",
+    "/proj/safe/./f.txt",       # a '.' segment must still resolve, not refuse
+    "/proj/safe//sub//f.txt",   # duplicate slashes are benign
+    "/proj/safe/",
+])
+def test_check_permission_still_allows_benign_nonliteral_paths(path):
+    """The traversal guard must not become alarm-noise: normalizing is not
+    refusing. '.' segments and duplicate slashes name the same real path, so
+    they stay authorized."""
+    project = {
+        "name": "p", "compute_env_access": [
+            {"compute_env": "e", "directories": [
+                {"path": "/proj/safe", "permissions": ["upload"]},
+            ]},
+        ],
+    }
+    assert compute_access.check_permission(project, "e", path, "upload")["path"] == "/proj/safe"
+
+
+@pytest.mark.integration
+def test_check_permission_prefix_must_not_straddle_a_name_boundary():
+    """'/proj/safe_evil' must NOT match a '/proj/safe' grant — a prefix match on
+    strings would let an attacker-named sibling dir inherit the grant."""
+    project = {
+        "name": "p", "compute_env_access": [
+            {"compute_env": "e", "directories": [
+                {"path": "/proj/safe", "permissions": ["upload"]},
+            ]},
+        ],
+    }
+    with pytest.raises(PermissionDenied):
+        compute_access.check_permission(project, "e", "/proj/safe_evil/f.txt", "upload")
+
+
+@pytest.mark.integration
 def test_multiple_permissions_on_same_dir_satisfies_both():
     """A directory declared `permissions: [file_name_only, upload]` MUST
     satisfy BOTH operations. The list-based shape's whole point."""

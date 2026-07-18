@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 _shq = shlex.quote
 
+from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills import env_recipe, env_recipe_render
 from agent.skills.outcomes import proven, refused, broke
 
@@ -138,14 +139,25 @@ def freeze_from_image(
                               "depth": _eh.evidence_depth(ev, tname)})
 
     # -- SBOM captured FROM the shipped image (can't be faked) --
+    # A capture FAILURE must not look like an image with no dependencies: an empty
+    # resolved_packages renders as "0 along for the ride" in the ENV report and as an
+    # empty package list in the attestation — absence of data reading as data. So each
+    # probe records WHY it came back empty, the same way the authors gate records
+    # authors_gate_error and cluster accounting records sacct_error. Not a refusal: some
+    # images legitimately carry no conda prefix and no apt layer.
     resolved_packages: list[dict] = []
     system_packages: list[dict] = []
+    sbom_errors: list[str] = []
+    from agent.skills.container_build import ContainerBuild as _CB
     try:
-        from agent.skills.container_build import ContainerBuild as _CB
         resolved_packages = _CB.conda_sbom_from_image(image, platform) or []
+    except Exception as e:
+        sbom_errors.append(f"conda: {type(e).__name__}: {e}")
+    try:
+        # separate try — an apt failure must not also discard a good conda closure
         system_packages = _CB.apt_sbom_from_image(image, platform) or []
-    except Exception:
-        pass
+    except Exception as e:
+        sbom_errors.append(f"apt: {type(e).__name__}: {e}")
     # pip-only / venv images (no conda prefix) — best-effort importlib.metadata SBOM,
     # as a single-line `python -c` (a heredoc through `docker run bash -c` is fragile).
     if not resolved_packages:
@@ -176,14 +188,29 @@ def freeze_from_image(
     record["verifications"] = verifications
     record["resolved_packages"] = resolved_packages
     record["system_packages"] = system_packages
+    if sbom_errors and not resolved_packages:
+        # only surfaced when the SBOM is ACTUALLY empty — a conda probe that failed on an
+        # image the importlib fallback then read successfully is not a gap worth flagging.
+        record["sbom_error"] = "; ".join(sbom_errors)
     record["accelerator"] = accelerator
     record["licenses"] = list(licenses or [])
     record["redistributable"] = not gated
     if dockerfile_source:
         record["dockerfile_source"] = dict(dockerfile_source)
+    # The authors' image: we ADOPTED these bytes, we did not build them — so there is
+    # no `install_command` to show and no tier assurance to disclose, and saying so
+    # explicitly is the record. `version` is None because this path does not probe the
+    # binary for one; a reader must render that as "unrecorded" rather than scrape a
+    # number out of the evidence output (scraping bcftools' banner is what produced
+    # htslib's version under bcftools' name — see ShippedBinary).
     record["shipped_binaries"] = [
-        {"command": t["name"],
-         "provenance": f"validated in the {build_method} image (evidence: {t['evidence'][:60]})"}
+        _ShippedBinary(
+            tool=t["name"],
+            version=None,
+            provenance=f"validated in the {build_method} image (evidence: {t['evidence'][:60]})",
+            install_command=None,
+            tier=None, verified=None, assurance=None,
+        ).model_dump()
         for t in tools]
 
     from agent.skills import env_honesty
@@ -196,13 +223,35 @@ def freeze_from_image(
 
     # -- register + deliverables (rendered purely from the record) --
     env_cache.register(rkey, record)
+    # ADOPT MUST RECORD WHAT SOMEONE ELSE CAN PULL, NOT WHAT WE HAPPEN TO CALL IT.
+    # This passed `image` through verbatim — a MUTABLE TAG — while the rendered recipe
+    # printed it under "pulling that image BY DIGEST (content-addressed — the digest
+    # guarantees identical bytes)". The tag moves; the sentence doesn't. `freeze()`'s adopt
+    # path has always done this correctly (`adopt.get("image_by_digest", image)`), so this
+    # was one concept with two implementations and the wrong one under the top tier.
+    # `.Id` is NOT the answer either: it is the daemon's LOCAL content id, not a pullable
+    # reference (see container_build.registry_manifest_digest — the same confusion already
+    # shipped once and reported "recipe not reproduced" for every adopt recipe on any
+    # overlay2 daemon). When no repo digest exists the image was never pulled from a
+    # registry, so there is nothing to pin: say so rather than emit an unpullable string.
+    adopt_ref = ""
+    if build_method == "adopt-image":
+        from agent.skills.container_build import registry_manifest_digest
+        md = registry_manifest_digest(image)
+        adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{md}" if md else ""
+        if adopt_ref:
+            record["image_by_digest"] = adopt_ref
+        else:
+            record["adopt_pin_error"] = (
+                f"{image} carries no registry manifest digest — it was not pulled from a "
+                f"registry, so it cannot be pinned or re-pulled by anyone else")
     recipe = env_recipe.extract_recipe(
         None, name=name, version=version, conda_deps=[],
         primary_tools=[t["name"] for t in tools], platform=platform,
         accelerator=accelerator, license_gated=gated, licenses=licenses,
         redistributable=not gated, content_digest=digest,
         build_method=("authors-dockerfile" if build_method == "authors-dockerfile" else "adopt"),
-        adopt_image=(image if build_method == "adopt-image" else ""),
+        adopt_image=adopt_ref,
         dockerfile_source=dockerfile_source or {})
     recipe["shipped_binaries"] = record["shipped_binaries"]
 
@@ -228,7 +277,10 @@ def freeze_from_image(
     # SOFT advisory (never a refusal): requested tools whose evidence only proved
     # presence/loads, not that the tool RUNS. Surfaced so the agent can strengthen the
     # evidence — the honest nudge against a shallow proof reading as functional.
-    shallow = [v["tool"] for v in verifications if v.get("depth") in ("version", "import", "help")]
+    # Read the depth set from the classifier that defines it — a second stale copy of
+    # _SHALLOW_DEPTHS here omitted `presence` and silently under-reported the advisory.
+    shallow = [v["tool"] for v in verifications
+               if v.get("depth") in env_honesty._SHALLOW_DEPTHS or v.get("depth") == "unknown"]
     advisory = ""
     if shallow:
         advisory = ("shallow evidence (proves presence, not function) for: "
@@ -310,6 +362,16 @@ def build_from_authors_recipe(
     return freeze_from_image(
         image=tag, tools=[dict(t) for t in tools], name=name, version=version,
         platform=platform, build_method="authors-dockerfile",
-        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "", "dockerfile": dockerfile_text},
+        # RECORD WHAT WE ACTUALLY RAN. `recipe` and `build_args` were used two lines up
+        # (`-f {td}/{recipe}`, `--build-arg`) and then dropped here, so the rendered recipe
+        # always emitted a bare `docker build .` — rebuilding the ROOT Dockerfile for a
+        # `recipe="docker/Dockerfile.gpu"` build, with every --build-arg silently reverting
+        # to the Dockerfile's ARG defaults. Talos's own Dockerfile carries
+        # `ARG BCFTOOLS_VERSION=1.23.1` and `ARG ECHTVAR_VERSION=v0.2.2` — precisely the
+        # knobs whose drift this project exists to prevent. The executor had both facts in
+        # hand; the record simply had nowhere to put them (Rule 1: fix the PRODUCER).
+        dockerfile_source={"repo": url, "commit": commit, "tag": ref or "",
+                           "recipe_path": recipe, "build_args": dict(build_args or {}),
+                           "platform": platform, "dockerfile": dockerfile_text},
         gated=gated, licenses=list(licenses or []), pull_if_absent=False,
         env_cache=env_cache, reports_dir=reports_dir)

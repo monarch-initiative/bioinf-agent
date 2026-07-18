@@ -20,23 +20,66 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.outcomes import proven, refused, broke
 
 
+def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dict]:
+    """Run each tool's presence evidence INSIDE `image` and return the verification rows
+    env_honesty.check_build consumes: [{label, tool, check, rc, passed, out}].
+
+    Extracted for the ADOPT path, which previously validated nothing at all. It generates
+    the SAME probe the build path uses (env_freeze._conda_presence_check) and runs it in
+    the SAME way — so "adopted" and "built" are held to one contract rather than two, and
+    an adopted image proves it carries the tool instead of being taken on the registry's
+    word.
+
+    Extracted rather than routed through freeze_from_image on purpose: that function
+    computes its own request_key from tools[0] (dropping the policy facets this key folds
+    in), writes no hpc_delivery, and records no validation_locus — reusing it would have
+    quietly regressed the adopt record's shape to buy code-sharing.
+    """
+    rows: list[dict] = []
+    for tool in tools:
+        check = _ms._env_freeze._conda_presence_check(tool)
+        try:
+            r = _ms._docker.run_in_container(image, check, platform=platform, timeout=300)
+            rc = r.get("returncode", 1)
+            out = (r.get("stdout") or r.get("stderr") or "")[:400]
+        except Exception as e:
+            rc, out = 1, f"{type(e).__name__}: {e}"
+        rows.append({"label": tool, "tool": tool, "check": check,
+                     "rc": rc, "passed": rc == 0, "out": out})
+    return rows
+
+
 def _shipped_binary_entry(step: dict) -> dict:
-    """One `shipped_binaries[]` record from a baked long-tail step. The baked
-    command IS the tool's provenance; C5 additionally surfaces the per-tool SHIP
-    assurance (verified/assurance/tier) whenever the tier disclosed one — so the
-    ENV report states HOW each shipped tool is anchored across ALL tiers, not just
-    binary. A step with no assurance (nothing to disclose) carries name+command
-    only, unchanged."""
-    entry = {"name": step.get("purpose", ""), "command": step.get("command", "")}
+    """One `shipped_binaries[]` record from a baked long-tail step, as the declared
+    `ShippedBinary` shape. The baked command IS this tier's provenance; C5 surfaces
+    the per-tool SHIP assurance (verified/assurance/tier) whenever the tier disclosed
+    one — so the ENV report states HOW each shipped tool is anchored across ALL tiers,
+    not just binary.
+
+    Fields state absence explicitly rather than defaulting it (see `ShippedBinary`):
+    `version` is None because this tier does not probe the built binary for one —
+    "we did not capture it" is the honest record, and a reader must render it as
+    absence, never scrape a number out of a banner to fill the hole.
+
+    `tool` (the PATH command) and `install_command` (the literal baked shell line)
+    used to share one `command` key with opposite meanings across the two producers,
+    which is what rendered `bcftools` inside a <pre> shell block under the label
+    "tool". `purpose` stays as the human label; `step["tool"]` is now carried from the
+    generator that computed it (audit 2026-07-16)."""
     prov = step.get("provenance") or {}
-    if prov.get("assurance"):
-        entry["tier"]      = prov.get("tier", "")
-        entry["verified"]  = bool(prov.get("verified"))
-        entry["assurance"] = prov.get("assurance", "")
-    return entry
+    return _ShippedBinary(
+        tool=step.get("tool") or "",
+        version=None,
+        provenance=step.get("purpose") or None,
+        install_command=step.get("command") or None,
+        tier=prov.get("tier") if prov.get("assurance") else None,
+        verified=bool(prov.get("verified")) if prov.get("assurance") else None,
+        assurance=prov.get("assurance") or None,
+    ).model_dump()
 
 
 @mcp.tool()
@@ -195,6 +238,14 @@ def freeze(
     # record on disk keeps the full lists for env_report/attestation rendering.
     cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
     if cached:
+        # Orientation pointer (Phase-3 Piece B) on the REUSE-BY-HASH branch too —
+        # a cache hit is still a freeze, so current_state must read ENV_FROZEN for
+        # it. Best-effort; a pointer hiccup never fails a freeze.
+        if pipeline_id:
+            try:
+                _ms._pipeline_state.set_frozen_pointer(pipeline_id, rkey)
+            except Exception:
+                pass
         return _ms._summarize_sbom_in_response(
             # merge (not kwargs) so a business key already in `cached` (e.g.
             # request_key) can't collide with an explicit kwarg → TypeError.
@@ -205,9 +256,9 @@ def freeze(
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
     # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
     # for a build, the biocontainer manifest digest for an adopt) via
-    # _ms._freeze.record_content_digest. The old content_digest_from_spec(draft) read
-    # finalized-only fields (packages[]/lock_sha256) a live draft lacks, collapsing
-    # to one constant for every container-native build.
+    # _ms._freeze.record_content_digest. The superseded finalized-spec digest read
+    # fields (packages[]/lock_sha256) a live draft lacks, collapsing to one constant
+    # for every container-native build — see record_content_digest's docstring.
     content_digest = _ms._freeze.compute_content_digest({
         "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
         "platform": platform, "accel": accel,
@@ -273,29 +324,24 @@ def freeze(
         # ADOPT — pure-conda env with a published biocontainer. The biocontainer
         # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
-        # MODE-AWARE HONESTY (D2 fix): adopt skips VALIDATED_IN_IMAGE (BioContainers'
-        # bytes are trusted by their published digest, not validated in-locus) but
-        # POLICY_CLEAN STILL MUST PASS — accelerator honesty (I12) and the license
-        # firewall (I13) describe what WE declare on this artifact, not who built it.
-        # The previous freeze code path adopted+returned without ever calling the
-        # contract, so the report rendered "POLICY_CLEAN — I12 passed" without I12
-        # ever running. dorado-stress demonstrated this with a CPU-only samtools
-        # biocontainer happily emitted under `accel=cuda`. We now refuse here.
-        adopt_check_input = {
-            "image": image, "image_digest": image_digest,
-            "accelerator": effective_accel,
-            "license_gated": gated, "licenses": list(licenses or []),
-            "redistributable": not gated,
-        }
-        adopt_violations = _ms._env_honesty.check_adopt(adopt_check_input)
-        if adopt_violations:
-            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
-                    request_key=rkey, adopt_attempt=adopt,
-                    honesty_violations=adopt_violations,
-                    violation_count=len(adopt_violations))
+        # ONE CONTRACT, not two (audit 2026-07-16 Tier 2). This branch used to call
+        # `check_adopt`, a mode-aware variant that asserted BUILT + POLICY_CLEAN and
+        # deliberately skipped VALIDATED_IN_IMAGE — "the biocontainer's bytes are trusted
+        # by their published digest". That answered the wrong question. The risk was never
+        # that bioconda lies about its own bytes; it is that WE bound the wrong image, and
+        # only running the tool catches that. Adopt is also the DEFAULT for pure-conda, i.e.
+        # the commonest env this system produces, so the one unvalidated path was also the
+        # busiest one: `samtools=1.21` shipped with `verifications: []` and two sealed
+        # workflows rest on it.
+        #
+        # Evidence is generated + run against the adopted image further down (where the
+        # image has already been pulled for the SBOM), and check_build — the SAME contract
+        # the build path answers to — is applied to the completed record. check_adopt is
+        # deleted; its I13 clause was dead anyway, since `can_adopt` requires `not gated`.
         hpc = _ms._freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
-        validation_locus = "adopted"   # we trust the published digest, not an in-locus run
+        # stays "unknown" until the in-image evidence has actually run (below), at which
+        # point it takes the real native/emulated locus the build path records.
 
     else:
         # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
@@ -467,7 +513,46 @@ def freeze(
         except Exception:
             record["resolved_packages"] = record.get("resolved_packages", [])
             record["system_packages"] = record.get("system_packages", [])
+
+        # VALIDATED_IN_IMAGE for the ADOPT path (audit 2026-07-16 Tier 2). Adopt was the
+        # ONE path that shipped an env nobody had ever run a tool in: check_adopt
+        # deliberately skipped validation and `samtools=1.21` registered with
+        # `verifications: []` — while the ENV report and the attestation carried it as a
+        # solved component, and two sealed workflows depend on it. "The biocontainer's
+        # bytes are trusted by their published digest" answers the wrong question: the risk
+        # was never that bioconda lies, it is that WE adopted the wrong image (a mulled tag
+        # resolving to a package set that doesn't contain the tool). Running the evidence
+        # is what catches that, and it is the same probe the build path uses.
+        #
+        # Affordable: the pull is already paid for by the SBOM reads above, and the
+        # marginal cost is ~0.25s per tool (measured). The fast path stays fast.
+        record["verifications"] = _validate_tools_in_image(
+            image, _adopt_platform, [n for n, _ in parsed])
+        # A real locus now — the evidence genuinely ran somewhere. `validation_locus:
+        # "adopted"` was the honest name for "we validated nowhere"; with evidence it
+        # would be a lie by omission (native vs emulated decides whether I7 timings are
+        # authoritative), so it takes the same value the build path records.
+        record["validation_locus"] = _ms._locus.detect_locus(_adopt_platform)["locus"]
+
+        # THE CONTRACT, on the completed record. It runs here (not at the adopt decision)
+        # because BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN read image + verifications +
+        # accelerator + licenses, and the last of those only land once the record is
+        # assembled — gating earlier would have checked a record that didn't exist yet.
+        adopt_violations = _ms._env_honesty.check_build(record)
+        if adopt_violations:
+            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
+                    request_key=rkey, adopt_attempt=adopt,
+                    honesty_violations=adopt_violations,
+                    violation_count=len(adopt_violations),
+                    verifications=record.get("verifications"))
     _ms._env_cache.register(rkey, record)
+    # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
+    # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.
+    if pipeline_id:
+        try:
+            _ms._pipeline_state.set_frozen_pointer(pipeline_id, rkey)
+        except Exception:
+            pass
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):
     # the human env report (HTML headline + Markdown for diff/parse) + a standard
@@ -577,9 +662,15 @@ def verify_env_recipe(recipe_path: str) -> dict:
             return refused("freeze.recipe_adopt_no_image", success=False,
                            error="adopt recipe has no adopt_image to re-pull")
         pull = subprocess.run(["docker", "pull", img], capture_output=True, text=True, timeout=1800)
-        insp = subprocess.run(["docker", "image", "inspect", "--format", "{{index .Id}}", img],
-                              capture_output=True, text=True, timeout=60)
-        got = (insp.stdout or "").strip()
+        # The REGISTRY MANIFEST digest — the thing `expected` actually is (an adopt's
+        # content_digest is the biocontainer's published manifest digest, visible right
+        # there in `adopt_image: repo@sha256:…`). This read `{{index .Id}}`, the daemon's
+        # LOCAL content id, and matched only because this project's dev Mac runs the
+        # containerd snapshotter, where the two coincide. On a classic overlay2 daemon
+        # `.Id` is the config blob digest, so this branch reported "recipe not reproduced"
+        # for EVERY adopt recipe, for every normal user — a verification tool that passed
+        # by accident of one machine's docker config (audit 2026-07-16 Tier 6).
+        got = _ms._container_build.registry_manifest_digest(img)
         match = bool(expected) and got == expected
         rf = dict(success=pull.returncode == 0, content_digest_match=match,
                   rebuilt_content_digest=got, expected_content_digest=expected,
@@ -587,16 +678,33 @@ def verify_env_recipe(recipe_path: str) -> dict:
                          "(content-addressed — identical bytes). Not a from-source rebuild.")
         return proven("freeze.recipe_verified", **rf) if match else broke("freeze.recipe_not_reproduced", **rf)
     if method in ("authors-dockerfile", "freeze-from-image"):
-        # Reproduced by re-running build_env_from_authors_recipe at the pinned commit —
-        # NOT by a container-native rebuild from conda specs (there are none). Report
-        # honestly rather than run the wrong build and emit a false 'not reproduced'.
+        # NOT VERIFIED — and it must not be tagged as though it were. This returned
+        # `proven(success=True, content_digest_match=None)` for a check that runs NOTHING:
+        # an agent branching on `success` concludes the recipe was verified, and the only
+        # tell is a None buried in a sibling key. Declining to rebuild is right (a
+        # Dockerfile build is not bit-reproducible — apt mirrors, timestamps and upstream
+        # tags all move — so digest convergence would fail for a CORRECT recipe and emit a
+        # false 'not reproduced'). Declining is not the same as passing, and `refused` is
+        # the tag that exists for exactly this.
         ds = recipe.get("dockerfile_source") or {}
-        return proven("freeze.recipe_verify_manual", success=True, content_digest_match=None,
-                      expected_content_digest=expected,
-                      proves=f"AUTHORS-DOCKERFILE: reproduce by re-building the pinned source "
-                             f"(repo={ds.get('repo','?')} @ {ds.get('commit') or ds.get('tag','?')}) "
-                             f"via build_env_from_authors_recipe. A generic conda rebuild does NOT "
-                             f"apply to this env, so verify-by-rebuild is not run here.")
+        pin = ds.get("commit") or ""
+        missing = [n for n, v in (("repo", ds.get("repo")), ("commit", pin)) if not v]
+        return refused(
+            "freeze.recipe_verify_unavailable", success=False, content_digest_match=None,
+            expected_content_digest=expected,
+            verifiable=not missing,
+            error=(f"this recipe cannot be verified by rebuild: its source is unpinned "
+                   f"(missing {', '.join(missing)}), so there is nothing to rebuild FROM"
+                   if missing else
+                   "an authors-Dockerfile build is not bit-reproducible, so digest "
+                   "convergence cannot prove it — no check was run"),
+            proves="NOTHING WAS VERIFIED HERE. To reproduce by hand: re-run "
+                   f"build_env_from_authors_recipe(repo={ds.get('repo') or '?'!r}, "
+                   f"ref={pin or '?'!r}"
+                   + (f", recipe={ds['recipe_path']!r}" if ds.get("recipe_path") else "")
+                   + (f", build_args={ds['build_args']!r}" if ds.get("build_args") else "")
+                   + ") and compare the tools' evidence output. A generic conda rebuild does "
+                     "not apply to this env.")
 
     res = _ms._env_recipe.rebuild_from_recipe(recipe)
     # Outcome is runtime-conditional: only a rebuild that SUCCEEDED and converged
@@ -627,13 +735,23 @@ def generate_user_guide(
     spec: dict = {},
     freeze_request_key: str = "",
     write: bool = True,
+    overview: str = "",
+    traps: list = [],
 ) -> dict:
-    """Render the Layer-2 user guide for a pipeline (Markdown) from its PASSING,
-    validated run — every command shown was actually executed and its outputs
-    checked (drawn only from validated pipeline_steps + a self-tested
-    usage.command_template). A workflow consumes its env BY DIGEST: the
-    "Get the environment" section is the freeze() Apptainer delivery and
-    provenance pins the content/image digests.
+    """Render the Layer-2 user guide for a pipeline (Markdown) as a hand-holding,
+    copy-pasteable WALKTHROUGH of how to run the tool on the compute resource it was
+    validated against. The SKELETON is DERIVED from the PASSING, validated run —
+    every command shown was actually executed and its outputs checked (drawn only
+    from validated pipeline_steps + a self-tested usage.command_template), the
+    compute-node acquisition (`srun`) and `module load` lines from the recorded
+    cluster placement, and the container from the freeze() Apptainer delivery. A
+    workflow consumes its env BY DIGEST; provenance pins the content/image digests.
+
+    `overview` + `traps` are the OPTIONAL agent-AUTHORED narrative — the "what the
+    tool does" paragraph and the hard-won gotchas that no record can hold. They are
+    rendered in clearly-labelled 'authored, not machine-verified' sections and are
+    omitted entirely when not supplied (never fabricated). This is the reverse-theme-
+    park split in the deliverable: a verified skeleton with a free authored middle.
 
     Pass `pipeline_id` (uses its draft) or a `spec` dict. `freeze_request_key`
     looks the frozen artifact up in the EnvCache (e.g. 'samtools=1.21|linux-64|
@@ -645,7 +763,8 @@ def generate_user_guide(
         return refused("freeze.guide_no_source", success=False,
                        error="provide pipeline_id (with a draft) or a spec dict")
     fr = _ms._env_cache.lookup(freeze_request_key) if freeze_request_key else None
-    md = _ms._user_guide.render_user_guide(s, freeze_record=fr)
+    narrative = {k: v for k, v in (("overview", overview), ("traps", traps)) if v}
+    md = _ms._user_guide.render_user_guide(s, freeze_record=fr, narrative=narrative)
     result = proven(
         "freeze.guide_rendered",
         success=True,

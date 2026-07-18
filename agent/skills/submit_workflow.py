@@ -82,7 +82,18 @@ _JOB_ID_RE = re.compile(r"^\d{1,12}$")
 # Local manifest root. submit_workflow_job writes one
 # job_submissions/<project>/<workflow_name>_<job_id>.submission.json per
 # successful submission so the user can find the job later by name or id.
+#
+# Anchored to the REPO ROOT (via transfer._repo_root, the same anchor the transfer
+# manifests use), not to the process CWD. A CWD-relative root meant the manifest —
+# the production-side deliverable whose whole job is to be findable later — landed
+# wherever the agent happened to be invoked from, and it let an un-chdir'd test write
+# a `fake.example.edu` submission into the user's live audit trail (audit 2026-07-16).
+# One anchor for both manifest kinds also means test isolation patches one function.
 _MANIFEST_ROOT = "job_submissions"
+
+
+def _manifest_root() -> Path:
+    return transfer._repo_root() / _MANIFEST_ROOT
 
 
 # Where the rendered workflow files are staged locally before upload. MUST live
@@ -269,14 +280,13 @@ def _write_submission_manifest(*, project_name: str, workflow_name: str,
     """Write the submission manifest to
     job_submissions/<project_name>/<workflow_name>_<job_id>.submission.json.
 
-    Path is relative to the agent's working directory (the repo root in
-    normal use). Returns the manifest path as a string for the caller's
-    return payload.
+    Anchored to the repo root (see _manifest_root), NOT to the process CWD.
+    Returns the manifest path as a string for the caller's return payload.
 
     The manifest is the production-side deliverable: the user (or a
     future agent invocation) can find a submitted job by name or id
     without remembering the terminal output."""
-    out_dir = Path(_MANIFEST_ROOT) / project_name
+    out_dir = _manifest_root() / project_name
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{workflow_name}_{job_id}.submission.json"
     out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
