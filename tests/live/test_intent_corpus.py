@@ -118,7 +118,7 @@ def test_resolver_behaviour_matches_what_the_corpus_recorded(row):
         pytest.skip(f"unassertable: {row['expect'].get('unassertable_reason')}")
     actual = _probe(row["call"])
     recorded = row["actual_today"]
-    for field in ("chosen", "ambiguous"):
+    for field in ("chosen", "ambiguous", "refusal_reason"):
         if field in recorded:
             assert actual[field] == recorded[field], (
                 f"resolver behaviour DRIFTED for {row['id']}:\n"
@@ -263,10 +263,10 @@ def test_rows_sharing_a_call_do_not_demand_contradictory_outcomes():
 
     clashes = []
     for call, rows in by_call.items():
-        for field in ("chosen", "ambiguous"):
-            # None means "do not check" for ambiguous, so only a disagreement between two
-            # STATED values is a contradiction. `chosen: None` is itself a demand (REFUSE),
-            # so it always counts.
+        for field in ("chosen", "ambiguous", "refusal_reason"):
+            # None means "do not check" for ambiguous/refusal_reason, so only a disagreement
+            # between two STATED values is a contradiction. `chosen: None` is itself a demand
+            # (REFUSE), so it always counts.
             stated = {json.dumps(r["expect"].get(field)) for r in rows
                       if field == "chosen" or r["expect"].get(field) is not None}
             if len(stated) > 1:
@@ -324,15 +324,18 @@ def test_every_assertable_row_agrees_with_what_the_harness_can_actually_check():
 def test_known_gaps_are_declared_not_discovered_later():
     """The corpus must state what it CANNOT check. Pure — runs on every push.
 
-    Two are live right now and both are load-bearing:
+    Three are declared; all are load-bearing:
 
-    1. It cannot tell an EARNED refusal from a LAZY one. 32 rows expect `chosen: null`
-       and the harness asserts exactly that — which a refusal that never investigated
-       satisfies perfectly. The user's rule is that a refusal is legitimate only AFTER
-       investigating, naming reason (a) too-little-input or (b) we-looked-and-came-up-
-       empty/contradicted. `resolve('dorado')` proves the gap is real: github discovery
-       fires ONLY at a registry dead-end, and PyPI's astronomy squat counts as a hit, so
-       nanoporetech/dorado (849★, exact match) is never looked for.
+    1. Earned-vs-lazy is now GRADED (`decision.refusal_reason`, forwarded by probe() and
+       asserted inside the chosen==null branch of `_is_correct`; all 29 assertable refusal
+       rows carry `expect.refusal_reason`). The RESIDUAL is narrower: the fourth reason,
+       `investigation_incomplete`, is token-dependent — without a GITHUB_TOKEN a
+       github-backed probe rate-limits, so an earned refusal (needs_user_input /
+       contradicted) can come back wearing an unfinished one's face, and the corpus cannot
+       separate the two in a token-less run. `resolve('dorado')` is still the standing
+       example of the CLIMB the grading now enforces: discovery fires only at a registry
+       dead-end and PyPI's astronomy squat counts as a hit, so nanoporetech/dorado is
+       never looked for — dorado picks pip instead of refusing, a red interpretation row.
     2. The `report` gap's identity half is DISSOLVED (Phase 2 deleted the fabricated
        verdict), and its successor — does the resolver surface the facts + does the LLM
        ride's judgment land — is not yet measured (see the test above).

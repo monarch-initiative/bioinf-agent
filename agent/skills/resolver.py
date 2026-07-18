@@ -825,6 +825,55 @@ def unchecked_tiers(availability: dict[str, dict]) -> dict[str, str]:
     return out
 
 
+#: The refusal taxonomy. resolve() sets decision["refusal_reason"] to exactly one of these
+#: whenever `chosen` is None — the machine-readable WHY behind an ask, so a caller (and the
+#: intent corpus's earned-vs-lazy check) can tell an EARNED refusal from a lazy one. The three
+#: EARNED reasons map to the user's rule (feedback-earn-the-refusal): investigate first, then
+#: name (a) the user gave too little, or (b) we looked and came up empty / found contradicting
+#: evidence. The fourth, `investigation_incomplete`, is the honest state the (a)/(b) dichotomy
+#: omits: a probe we could NOT reach is not a probe that said no. Calling that
+#: `investigation_empty` would be the same lie the `unchecked_tiers` disclosure exists to
+#: prevent ("we did not find that there is nothing; we failed to look"), so it gets its own
+#: value — and the corpus leaves those rows unassertable rather than demand a settled reason
+#: for an unsettled investigation.
+REFUSAL_REASONS = ("needs_user_input", "investigation_empty",
+                   "investigation_contradicted", "investigation_incomplete")
+
+
+def _classify_refusal(decision: dict) -> str:
+    """Name WHY resolve() is refusing (chosen is None), from the structured signals the
+    resolve() body has already recorded on `decision`. Pure; reads only those keys.
+
+    Precedence is deliberate and load-bearing:
+
+    1. UNREACHABLE first. A tier whose probe never answered (`unchecked_tiers`) or a github
+       fallback search that itself failed (`discovery_error`) means the investigation did not
+       COMPLETE — no earned verdict is available. This outranks everything below because a
+       contradiction found on tier X does not make an UNREACHED tier Y known-absent; the
+       answer is still unsettled. It matches the resolve() body, which stamps exactly this
+       case 'NOT A REFUSAL — UNRESOLVED' rather than 'nothing found'.
+    2. CONTRADICTED. A same-name registry hit was disqualified because its metadata does not
+       reference the caller's authoritative repo (`cross_namespace_collisions`) — positive
+       contrary evidence, stronger than a bare empty.
+    3. NEEDS_USER_INPUT. Discovery surfaced candidate repos but none dominant enough to
+       auto-adopt (`discovered_repos`); the collision risk means we refuse to guess and ask
+       the user to confirm one.
+    4. EMPTY. Every reachable tier answered AND discovery reached and found nothing — the one
+       genuine dead end.
+    """
+    if decision.get("unchecked_tiers") or decision.get("discovery_error"):
+        return "investigation_incomplete"
+    if decision.get("cross_namespace_collisions"):
+        return "investigation_contradicted"
+    if decision.get("discovered_repos"):
+        return "needs_user_input"
+    if decision.get("ambiguous"):
+        # a bare name that resolves on BOTH PyPI and CRAN — two ecosystems, no basis to
+        # choose. The user must name one (language=/prefer=); same class as discovered_repos.
+        return "needs_user_input"
+    return "investigation_empty"
+
+
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
     """Pure: given per-tier availability, pick the tier and explain. `prefer`
     forces a tier when it is available. Returns chosen tier (or None), the
@@ -1176,6 +1225,17 @@ def resolve(
 
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
+    # GENUINE AMBIGUITY IS A REFUSAL, not a quiet guess. A bare name that resolves on BOTH
+    # PyPI and CRAN is two different packages in two ecosystems (PyPI `ape` build-system ≠
+    # CRAN `ape` phylogenetics). With no language/prefer hint and no conda pick to
+    # disambiguate in-context, tipping to pip is exactly the confident-wrong-ecosystem pick
+    # that ships the wrong tool green — so null it and ASK (refusal_reason=needs_user_input;
+    # the AMBIGUOUS rationale below already says how). conda winning IS a disambiguator (the
+    # bioinformatics-channel package), so only a pip/cran pick is nulled; `available` keeps
+    # BOTH tiers so the caller sees the two options it must choose between.
+    if ambiguous and chosen != "conda":
+        chosen = None
+        decision["chosen"] = None
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
@@ -1195,7 +1255,7 @@ def resolve(
     # shortcut in the rationale: freeze ADOPTS it (no build), and an agent can go straight to
     # freeze_from_image and skip building a host env for a single-tool ask. (The author_image
     # case already IS the pick, so its adopt_call is the install_call — no duplicate note.)
-    if pull.get("found") and pull.get("source") == "biocontainer" and chosen != "author_image":
+    if chosen and pull.get("found") and pull.get("source") == "biocontainer" and chosen != "author_image":
         decision["rationale"] = (
             f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
             f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
@@ -1223,6 +1283,7 @@ def resolve(
     # and therefore vanished on every refusal — the one outcome where it matters most).
     decision["identity"] = None
     decision["install_call"] = None
+    decision["refusal_reason"] = None
     if chosen:
         # FACTS, not a verdict. The resolver surfaces the entry's self-description +
         # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
@@ -1232,6 +1293,13 @@ def resolve(
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
+    else:
+        # chosen is None ⇒ a refusal (install_call is None IFF chosen is None). STATE the
+        # machine-readable WHY, not just the absence — so a reader, and the intent corpus's
+        # earned-vs-lazy check, gets the reason behind the ask. Read from the signals the
+        # body already recorded above (unchecked_tiers @ update, discovery_error, collisions,
+        # discovered_repos); the auto-adopt early-return threads its own via the recursion.
+        decision["refusal_reason"] = _classify_refusal(decision)
 
     # A TIER WE COULD NOT REACH IS NOT A TIER THAT SAID NO. Ranking silently skips an
     # unchecked tier, so the answer reads as "the best there is" while meaning "the best of

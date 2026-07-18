@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 # no confirm/flag boolean to observe. `install_call_poisoned` survives and now means ONLY
 # routing-disclosure poisoning (gate_error / unchecked_tiers / not_assessed / prefer_ignored);
 # identity no longer poisons the install_call.
-_OBSERVED = ("chosen", "ambiguous", "install_call_poisoned")
+_OBSERVED = ("chosen", "ambiguous", "install_call_poisoned", "refusal_reason")
 
 
 def probe(call: dict) -> dict:
@@ -67,6 +67,9 @@ def probe(call: dict) -> dict:
         # a verdict; judging them is the LLM ride's job, unmeasurable by a resolve()-probe.
         "install_call_poisoned": install.lstrip().startswith("#"),
         "authors_gate": _authors_gate(d),
+        # The machine-readable WHY behind a refusal (None on a successful pick). This is what
+        # lets a chosen=null row be graded EARNED vs lazy — see _is_correct + known_gaps[0].
+        "refusal_reason": d.get("refusal_reason"),
     }
 
 
@@ -104,6 +107,14 @@ def _is_correct(expect: dict, actual: dict) -> bool:
     if expect.get("chosen") is None:
         if actual.get("chosen") is not None:
             return False
+        # EARNED-vs-lazy (feedback-earn-the-refusal): a refusal must name the RIGHT reason,
+        # not merely BE a refusal — a resolver that refuses without investigating satisfies
+        # chosen=null perfectly. Opt-in on expect (like authors_gate), so annotating one row
+        # cannot silently re-grade the rest; and checked ONLY inside this refusal branch, so
+        # a non-refusal row (which never gets here) is untouched.
+        if expect.get("refusal_reason") is not None:
+            if actual.get("refusal_reason") != expect.get("refusal_reason"):
+                return False
     elif actual.get("chosen") != expect.get("chosen"):
         return False
     if expect.get("ambiguous") is not None:

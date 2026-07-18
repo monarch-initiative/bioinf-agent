@@ -101,6 +101,13 @@ def _e(s) -> str:
     return html.escape(str(s if s is not None else ""))
 
 
+def _reason_pill(reason, cls: str = "") -> str:
+    """A refusal's machine-readable WHY, as a badge. Earned-vs-lazy made visible."""
+    if not reason:
+        return ""
+    return f' <span class="pill {cls}">{_e(reason)}</span>'
+
+
 def _chain(row: dict) -> str:
     """The row's journey, drawn: what they typed → what we chose → what they meant.
     The whole grid in one cell."""
@@ -112,12 +119,18 @@ def _chain(row: dict) -> str:
         typed += f" +repo"
     got = row.get("actual_today", {}).get("chosen")
     want = row.get("expect", {}).get("chosen")
+    exp_r = row.get("expect", {}).get("refusal_reason")
     got_s = f'<span class="bad">{_e(got)}</span>' if got != want else f'<span class="ok">{_e(got)}</span>'
     if got is None:
-        got_s = '<span class="ok">refuses+asks</span>'
+        # a refusal TODAY — badge the reason it named, green if it matches the earned target
+        act_r = row.get("actual_today", {}).get("refusal_reason")
+        rcls = "ok" if (act_r and act_r == exp_r) else ("bad" if exp_r else "")
+        got_s = f'<span class="ok">refuses+asks</span>{_reason_pill(act_r, rcls)}'
     want_s = "refuse+ask" if want is None else _e(want)
+    # a refusal row names the reason its ask SHOULD carry (the earned target)
+    want_pill = _reason_pill(exp_r) if want is None else ""
     return (f'<code>{_e(typed)}</code><span class="arrow">→</span>{got_s}'
-            f'<span class="arrow">·want</span><span class="note">{want_s}</span>')
+            f'<span class="arrow">·want</span><span class="note">{want_s}</span>{want_pill}')
 
 
 def render(corpus: dict) -> str:
@@ -200,6 +213,11 @@ def render(corpus: dict) -> str:
                                               r.get("is_correct_today", False),
                                               r.get("id", "")))
     P.append("<h2>Every scenario</h2>")
+    P.append('<p class="sub">A refusal row carries a <span class="pill">reason</span> pill — '
+             'the WHY its ask must name (needs_user_input · investigation_empty · '
+             'investigation_contradicted · investigation_incomplete). A refusal is EARNED '
+             'only when it names the right one; <span class="pill ok">green</span> = the '
+             'resolver refuses today and names it, so chosen=null is not a lazy pass.</p>')
     P.append('<div class="scroll"><table>')
     P.append("<tr><th>gap</th><th>what the user typed → what we do → what they meant</th>"
              "<th>the intent</th><th>why it's hard</th></tr>")

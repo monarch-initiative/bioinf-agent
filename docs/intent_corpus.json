@@ -74,7 +74,8 @@
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK (show-facts-and-ask): surface that both gatk and gatk4 exist, name the major-version gap, demand a disambiguator. ambiguous=true is the sibling-name tie \u2014 a generalization of today's pip-AND-cran flag (contrast gatk@4.5.0.0, where the version ROUTES and ambiguous stays false). DEFENSIBILITY (this is the one row that brushes the 'never refuse a bioconda-anchored name' rule): the exemption is narrow and name-specific, NOT 'always ask' \u2014 it fires only where a numbered sibling package exists on the SAME channel and the asked name's latest is a stale major. It does not touch bwa/fastqc/hmmer/macs2/etc., which have no such sibling. SECOND FIX, no schema slot: bioconda's own summary says 'license restricted'; parse it and route into freeze's `gated=` as a PROPOSED default. Today I13 arms only if an LLM happens to read the prose \u2014 a miss pushes a license-restricted artifact to a shared registry and a .sif onto a multi-user cluster. Assert on the `gated`/`license_gated` key once it exists; never on latest-version strings."
+    "note": "MUST REFUSE AND ASK (show-facts-and-ask): surface that both gatk and gatk4 exist, name the major-version gap, demand a disambiguator. ambiguous=true is the sibling-name tie \u2014 a generalization of today's pip-AND-cran flag (contrast gatk@4.5.0.0, where the version ROUTES and ambiguous stays false). DEFENSIBILITY (this is the one row that brushes the 'never refuse a bioconda-anchored name' rule): the exemption is narrow and name-specific, NOT 'always ask' \u2014 it fires only where a numbered sibling package exists on the SAME channel and the asked name's latest is a stale major. It does not touch bwa/fastqc/hmmer/macs2/etc., which have no such sibling. SECOND FIX, no schema slot: bioconda's own summary says 'license restricted'; parse it and route into freeze's `gated=` as a PROPOSED default. Today I13 arms only if an LLM happens to read the prose \u2014 a miss pushes a license-restricted artifact to a shared registry and a .sif onto a multi-user cluster. Assert on the `gated`/`license_gated` key once it exists; never on latest-version strings.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
     "chosen": "conda",
@@ -102,7 +103,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "HARD ERROR, emit no install_call: when a version is supplied the binary tier must query releases/tags/{version} (v-prefixed and bare) instead of releases/latest \u2014 resolve_linux_asset already does exactly this at resolver.py:408 while probe_github hardcodes releases/latest at resolver.py:258, so the two siblings are simply inconsistent. If the tag has no release/asset: say so and stop, never substitute another version's bytes. TEST PRECONDITION (REWRITTEN \u2014 the original 'guard on rate_limit.remaining > 0' is RACY and WRONG: resolve() spends several GH calls after the check, and the remaining-count is itself a GH call). Use the deterministic self-check instead: skip the row unless `resolver.probe_github('brentp/somalier')['repo_exists'] is True`. That consults the exact code path resolve() uses, so there is no interpretive gap. Rationale is measured, not theoretical \u2014 see probe_evidence: with GH budget exhausted _get_json swallows the 403 (resolver.py:86) and the row silently becomes chosen='conda', which would make the post-fix assertion cry wolf. This is the ONLY row in the corpus needing authenticated-scale GitHub budget; every other row hits PyPI/CRAN/anaconda.org, which are effectively unlimited."
+    "note": "HARD ERROR, emit no install_call: when a version is supplied the binary tier must query releases/tags/{version} (v-prefixed and bare) instead of releases/latest \u2014 resolve_linux_asset already does exactly this at resolver.py:408 while probe_github hardcodes releases/latest at resolver.py:258, so the two siblings are simply inconsistent. If the tag has no release/asset: say so and stop, never substitute another version's bytes. TEST PRECONDITION (REWRITTEN \u2014 the original 'guard on rate_limit.remaining > 0' is RACY and WRONG: resolve() spends several GH calls after the check, and the remaining-count is itself a GH call). Use the deterministic self-check instead: skip the row unless `resolver.probe_github('brentp/somalier')['repo_exists'] is True`. That consults the exact code path resolve() uses, so there is no interpretive gap. Rationale is measured, not theoretical \u2014 see probe_evidence: with GH budget exhausted _get_json swallows the 403 (resolver.py:86) and the row silently becomes chosen='conda', which would make the post-fix assertion cry wolf. This is the ONLY row in the corpus needing authenticated-scale GitHub budget; every other row hits PyPI/CRAN/anaconda.org, which are effectively unlimited.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "binary",
@@ -185,7 +187,8 @@
     "assertable": true,
     "ambiguous": null,
     "note": "MUST refuse \u2014 expect KEPT (it is the strongest refusal row in the set and it does not touch a bioconda-anchored name). Absent from all registries + a single hit whose own words are about spreadsheets is a STRONG fact pattern, not a weak one: the resolver reached chosen='cran' through the SAME code path it uses for a legitimate sole candidate, so 'only one hit' is being read as convergence when here it is evidence of absence. Terminate in a question ('Cell Ranger is a 10x vendor download; supply the tarball path, or confirm you want the R package'), never in install_r_package. ASSERT: chosen is None AND install_call is None AND identity is None \u2014 grounded in the verified Genome_Assembly_Booster template. Backed by measurement (pip/cran-after-conda-missed: 10 names, 9 wrong) and corroborated independently: this exact package is the worked example inside resolver.py's own identity design comment. AMBIGUOUS NULLED (was false): the recorded row made ambiguous=False semantically load-bearing ('disarmed by the collision being maximally severe') and that reading is CORRECT and worth keeping as prose \u2014 but the assertion is still contingent on no PyPI/conda 'cellranger' ever appearing, so it must not be asserted. STABILITY CAVEAT: chosen=null goes red if 10x ever publishes to a public registry. Judged acceptable \u2014 the tool is vendor-gated by business model, not by accident.",
-    "unassertable_reason": null
+    "unassertable_reason": null,
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -213,7 +216,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE + ASK: no install_call. cellranger is in no installable registry; the lone hit is CRAN, an R registry, whose own self-description is about spreadsheet cell ranges. Identity IS assessed (a candidate exists) and must come back confirmed=false \u2014 the refusal follows FROM that. Correct answer names the EULA-gated vendor route (download from 10x, then install_release_binary(url=...)) or prefer='cran' to force the R package. IMPLEMENTATION WARNING (added on verify \u2014 do NOT cargo-cult the GAPIT3 row): chosen=null PAIRED WITH identity_confirmed=false is a DESIGN REQUIREMENT, not something that falls out. resolver.py:944 computes identity only `if chosen:`, so every chosen=None path returns identity=null today. The refusal must be BUILT to carry the verdict it refused on. The distinction is principled: here a candidate was assessed and failed (identity present, confirmed=false); in GAPIT3 nothing was assessed (identity absent, null). Both are Rule 2."
+    "note": "MUST REFUSE + ASK: no install_call. cellranger is in no installable registry; the lone hit is CRAN, an R registry, whose own self-description is about spreadsheet cell ranges. Identity IS assessed (a candidate exists) and must come back confirmed=false \u2014 the refusal follows FROM that. Correct answer names the EULA-gated vendor route (download from 10x, then install_release_binary(url=...)) or prefer='cran' to force the R package. IMPLEMENTATION WARNING (added on verify \u2014 do NOT cargo-cult the GAPIT3 row): chosen=null PAIRED WITH identity_confirmed=false is a DESIGN REQUIREMENT, not something that falls out. resolver.py:944 computes identity only `if chosen:`, so every chosen=None path returns identity=null today. The refusal must be BUILT to carry the verdict it refused on. The distinction is principled: here a candidate was assessed and failed (identity present, confirmed=false); in GAPIT3 nothing was assessed (identity absent, null). Both are Rule 2.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -242,7 +246,8 @@
     "assertable": true,
     "unassertable_reason": null,
     "note": "MUST REFUSE and route to the vendor download. LOAD-BEARING GUARD FOR A FIX NOT YET WRITTEN: chosen must NEVER become 'author_image' via a name-matched image under a namespace unrelated to the tool's anchored repo owner. Adoption requires an OWNERSHIP link (nanoporetech/dorado image \u2190 github.com/nanoporetech/dorado); a name match is provenance, not identity. If a third-party image is surfaced at all it must be labelled unverified + EULA-gated (freeze would need gated=True, licenses=[...], redistributable=False per I13), never entered into the author_image tier. This row shares its `call` with cellranger-registry-decoy BY DESIGN \u2014 same input, different guard: that row asserts the refusal happens, this one asserts the future Docker Hub probe never rescues the wrong tool into the top tier. Both must hold simultaneously; neither subsumes the other, so do not dedupe them.",
-    "authors_gate": "not_assessed"
+    "authors_gate": "not_assessed",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -270,7 +275,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE + ASK, and the refusal should NAME the mismatch ('you asked for 9.0.1; the only hit is CRAN, newest 1.1.0, self-described as a spreadsheet parser \u2014 not the same project'). NOTE REWRITTEN ON VERIFY \u2014 the original encoded a rule that would BREAK measured-working behaviour. It said a version mismatch 'must disqualify the tier', UNSCOPED. That rule refuses an identity-CONFIRMED bioconda pick whenever a user pins a version bioconda doesn't carry (bwa=0.7.19 when bioconda has 0.7.18; any typo; anything newer than the recipe) \u2014 i.e. it taxes exactly the 39/39-correct bioconda path the channel short-circuit is measured to get right, to catch a decoy that identity ALREADY catches. CORRECT SCOPE: a version MISS may disqualify a tier ONLY where identity is UNCONFIRMED, as corroboration for a refusal already justified on identity grounds; it may never override an anchored tier. This row's expect.chosen=null therefore stands on cellranger-registry-decoy's grounds alone \u2014 the 8-major gap is corroboration, not the load-bearing reason. SEPARATE, INDEPENDENTLY TRUE CLAIM (verified from source): a pinned version the chosen tier's primitive cannot express must ERROR, never silently drop \u2014 install_r_package (agent/mcp_tools/env_tools.py:798-806) takes (env_name, name, source, pipeline_id, step, deps_first, functional_check) and has NO version param, so '9.0.1' is unrepresentable and vanishes."
+    "note": "MUST REFUSE + ASK, and the refusal should NAME the mismatch ('you asked for 9.0.1; the only hit is CRAN, newest 1.1.0, self-described as a spreadsheet parser \u2014 not the same project'). NOTE REWRITTEN ON VERIFY \u2014 the original encoded a rule that would BREAK measured-working behaviour. It said a version mismatch 'must disqualify the tier', UNSCOPED. That rule refuses an identity-CONFIRMED bioconda pick whenever a user pins a version bioconda doesn't carry (bwa=0.7.19 when bioconda has 0.7.18; any typo; anything newer than the recipe) \u2014 i.e. it taxes exactly the 39/39-correct bioconda path the channel short-circuit is measured to get right, to catch a decoy that identity ALREADY catches. CORRECT SCOPE: a version MISS may disqualify a tier ONLY where identity is UNCONFIRMED, as corroboration for a refusal already justified on identity grounds; it may never override an anchored tier. This row's expect.chosen=null therefore stands on cellranger-registry-decoy's grounds alone \u2014 the 8-major gap is corroboration, not the load-bearing reason. SEPARATE, INDEPENDENTLY TRUE CLAIM (verified from source): a pinned version the chosen tier's primitive cannot express must ERROR, never silently drop \u2014 install_r_package (agent/mcp_tools/env_tools.py:798-806) takes (env_name, name, source, pipeline_id, step, deps_first, functional_check) and has NO version param, so '9.0.1' is unrepresentable and vanishes.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -298,7 +304,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST SHOW THE CHANNEL SPLIT AND ASK. probe_conda (resolver.py:131) collapses bioconda+conda-forge into ONE `best` tuple by version key and DISCARDS the loser's version list, so the requested version can never be checked against the channel actually returned. Required: per-channel availability for the REQUESTED version \u2014 '0.1.1 exists ONLY on bioconda (abandoned; the linux-64 build is py27); conda-forge carries 0.2.0-0.3.3 but not 0.1.1. Abandoned bioconda 0.1.1, or maintained conda-forge 0.2.0?'. The right question is never 'does this version exist on the internet' but 'does it exist in the tier AND channel I am about to emit'. Split out from the original bundled row: one row = one literal call, so a plain pytest can execute it."
+    "note": "MUST SHOW THE CHANNEL SPLIT AND ASK. probe_conda (resolver.py:131) collapses bioconda+conda-forge into ONE `best` tuple by version key and DISCARDS the loser's version list, so the requested version can never be checked against the channel actually returned. Required: per-channel availability for the REQUESTED version \u2014 '0.1.1 exists ONLY on bioconda (abandoned; the linux-64 build is py27); conda-forge carries 0.2.0-0.3.3 but not 0.1.1. Abandoned bioconda 0.1.1, or maintained conda-forge 0.2.0?'. The right question is never 'does this version exist on the internet' but 'does it exist in the tier AND channel I am about to emit'. Split out from the original bundled row: one row = one literal call, so a plain pytest can execute it.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -438,7 +445,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK: no registry candidate can satisfy 7.0.0 (CRAN cellranger maxes at 1.1.0 and self-describes as a spreadsheet cell-range parser). Return candidates + a next call (github_repo / vendor tarball URL). Separately: the cran branch of _install_call (resolver.py:729) is literally `install_r_package(env, \"{tool}\", source=\"cran\")` \u2014 no version slot exists at all, so a requested version is structurally undroppable-in-silence; that must be a hard error, not a pretend-honored request. Assert on chosen/identity_confirmed/ambiguous only; CRAN's 1.1.0 is a dormant-package fact and is NOT asserted."
+    "note": "MUST REFUSE AND ASK: no registry candidate can satisfy 7.0.0 (CRAN cellranger maxes at 1.1.0 and self-describes as a spreadsheet cell-range parser). Return candidates + a next call (github_repo / vendor tarball URL). Separately: the cran branch of _install_call (resolver.py:729) is literally `install_r_package(env, \"{tool}\", source=\"cran\")` \u2014 no version slot exists at all, so a requested version is structurally undroppable-in-silence; that must be a hard error, not a pretend-honored request. Assert on chosen/identity_confirmed/ambiguous only; CRAN's 1.1.0 is a dormant-package fact and is NOT asserted.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -548,7 +556,8 @@
     "ambiguous": null,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST NOT auto-adopt on star dominance alone. Assert chosen is None AND 'identity' key ABSENT. ***MANDATORY PRECONDITION \u2014 WITHOUT IT THIS ROW IS A FALSE-GREEN GENERATOR***: the test MUST first assert discovery actually RAN (len(discovered_repos)>0) and pytest.skip() otherwise \u2014 it must NEVER pass on an empty search. PROVEN: under a github rate limit this call ALREADY returns chosen=None TODAY with the hijack fully present, so a bare `assert chosen is None` goes GREEN on a network hiccup while the bug ships. Do not assert repo_auto_adoptable/discovered_repos CONTENT or star counts. ambiguous NOT asserted \u2014 language='r' short-circuits _is_ambiguous to False by construction (resolver.py:467), so asserting it tests a tautology. Post-fix (remove star-dominance) chosen=None holds at ANY star ratio."
+    "note": "MUST NOT auto-adopt on star dominance alone. Assert chosen is None AND 'identity' key ABSENT. ***MANDATORY PRECONDITION \u2014 WITHOUT IT THIS ROW IS A FALSE-GREEN GENERATOR***: the test MUST first assert discovery actually RAN (len(discovered_repos)>0) and pytest.skip() otherwise \u2014 it must NEVER pass on an empty search. PROVEN: under a github rate limit this call ALREADY returns chosen=None TODAY with the hijack fully present, so a bare `assert chosen is None` goes GREEN on a network hiccup while the bug ships. Do not assert repo_auto_adoptable/discovered_repos CONTENT or star counts. ambiguous NOT asserted \u2014 language='r' short-circuits _is_ambiguous to False by construction (resolver.py:467), so asserting it tests a tautology. Post-fix (remove star-dominance) chosen=None holds at ANY star ratio.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
     "chosen": "author_image",
@@ -578,7 +587,8 @@
     "assertable": true,
     "unassertable_reason": null,
     "note": "MUST REFUSE + ASK: ONT dorado is in no registry; the lone PyPI hit is astronomy. Load-bearing REPORT assertion: the assessment MUST NOT say 'no authoring image/recipe found' \u2014 the image probe covers ghcr.io ONLY, so it must render Docker Hub/quay as UNCHECKED (Rule 2), exactly as the existing authors_gate_error path already does. Adopting nanoporetech/dorado by digest is only legitimate once an OWNERSHIP link exists (see cellranger-third-party-image-trap); from a bare name there is no anchor, so refuse. Same implementation warning as cellranger-registry-decoy: chosen=null WITH identity_confirmed=false requires the refusal path to carry the identity verdict (resolver.py:944). The 'must not say no authoring image/recipe found' clause is checkable but it is a string in OUR OWN code \u2014 assert it as substring-absence on assessment.recommendation, never against registry text.",
-    "authors_gate": "not_assessed"
+    "authors_gate": "not_assessed",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -633,7 +643,8 @@
     "assertable": true,
     "ambiguous": null,
     "note": "MUST refuse: conda/cran absent and the ONLY hit's own metadata points at Mucephie/DORADO (astronomy) \u2014 CONTRARY evidence, not missing evidence. Return candidates + demand github_repo/vendor URL, exactly like the verified no-registry-hit template (chosen=None, identity=None, install_call=None, recommended_repo set). No install_call may survive, poisoned or not. ASSERT: chosen is None AND install_call is None AND identity is None. AMBIGUOUS NULLED (was false): it is false only because CRAN happens to have no 'dorado' today \u2014 a third party publishing one flips it with no change to us. Not our decision, not assertable. Backed by measurement: this is the pip-after-conda-missed path, 9/10 wrong.",
-    "unassertable_reason": null
+    "unassertable_reason": null,
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -661,7 +672,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE + ASK. Version is a FILTER, never an ANCHOR: a HIT must leave identity unresolved (PyPI's astronomy dorado genuinely ships 1.1.0 \u2014 independent projects reach the same two-digit semver), so the exact-version match must NOT promote pip; fall through and ask for github_repo. Guard: supplying MORE intent must never make the answer more confident and equally wrong. Read WITH cellranger-version-disconfirms-but-is-dropped: that row's MISS-may-disqualify rule is now scoped to identity-UNCONFIRMED tiers only, and THIS row is the reason the HIT half may never act at all. Together: a version may SUBTRACT a tier we already doubt, never ADD confidence to one."
+    "note": "MUST REFUSE + ASK. Version is a FILTER, never an ANCHOR: a HIT must leave identity unresolved (PyPI's astronomy dorado genuinely ships 1.1.0 \u2014 independent projects reach the same two-digit semver), so the exact-version match must NOT promote pip; fall through and ask for github_repo. Guard: supplying MORE intent must never make the answer more confident and equally wrong. Read WITH cellranger-version-disconfirms-but-is-dropped: that row's MISS-may-disqualify rule is now scoped to identity-UNCONFIRMED tiers only, and THIS row is the reason the HIT half may never act at all. Together: a version may SUBTRACT a tier we already doubt, never ADD confidence to one.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -689,7 +701,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK \u2014 'vendor-gated' is a first-class outcome, not a dead end the router falls out of. DRAGEN is in no registry, is licence+hardware bound, and has NO automatable install path; PyPI's 'dragen' is an unrelated AI agent framework. Say that, and ask for the vendor artifact. Per feedback-earn-the-refusal this refusal is EARNED: the registries were probed and what they returned FAILS our conditions (reason (b)) \u2014 it is not a lazy shrug. A poisoned comment is NOT a refusal: the last line is still a runnable pip install of the wrong software."
+    "note": "MUST REFUSE AND ASK \u2014 'vendor-gated' is a first-class outcome, not a dead end the router falls out of. DRAGEN is in no registry, is licence+hardware bound, and has NO automatable install path; PyPI's 'dragen' is an unrelated AI agent framework. Say that, and ask for the vendor artifact. Per feedback-earn-the-refusal this refusal is EARNED: the registries were probed and what they returned FAILS our conditions (reason (b)) \u2014 it is not a lazy shrug. A poisoned comment is NOT a refusal: the last line is still a runnable pip install of the wrong software.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -745,7 +758,8 @@
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST SHOW THE FACTS AND REFUSE. Two defects: (1) the version must be checked against the tier ACTUALLY CHOSEN \u2014 0.12.15 is absent from conda-forge (0.12.14 -> 0.12.16) yet is emitted anyway; (2) yank status is a first-class fact PyPI hands us free and we discard \u2014 report 'PyPI has 0.12.15 but it is YANKED (reason: released against wrong branch)'. Then ask: 0.12.16, or the pin as written? CAVEAT ON expect.ambiguous=true \u2014 this asserts BEHAVIOUR, not semantics. CRAN's 'anndata' is an R wrapper around this same Python project, so _is_ambiguous is firing a benign FALSE POSITIVE. I assert true anyway because the heuristic is name-based by design and cannot know that; asserting false would demand a fix that is out of scope and arguably wrong. The refusal here is driven by the yank + tier-absence facts, NOT by the ambiguity flag. Side-note: anndata is also the false-ACCUSE case \u2014 a real bio tool gets an unwarranted IDENTITY UNCONFIRMED while the actually-retracted version gets no warning; both layers misfire in opposite directions on one call."
+    "note": "MUST SHOW THE FACTS AND REFUSE. Two defects: (1) the version must be checked against the tier ACTUALLY CHOSEN \u2014 0.12.15 is absent from conda-forge (0.12.14 -> 0.12.16) yet is emitted anyway; (2) yank status is a first-class fact PyPI hands us free and we discard \u2014 report 'PyPI has 0.12.15 but it is YANKED (reason: released against wrong branch)'. Then ask: 0.12.16, or the pin as written? CAVEAT ON expect.ambiguous=true \u2014 this asserts BEHAVIOUR, not semantics. CRAN's 'anndata' is an R wrapper around this same Python project, so _is_ambiguous is firing a benign FALSE POSITIVE. I assert true anyway because the heuristic is name-based by design and cannot know that; asserting false would demand a fix that is out of scope and arguably wrong. The refusal here is driven by the yank + tier-absence facts, NOT by the ambiguity flag. Side-note: anndata is also the false-ACCUSE case \u2014 a real bio tool gets an unwarranted IDENTITY UNCONFIRMED while the actually-retracted version gets no warning; both layers misfire in opposite directions on one call.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -770,7 +784,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST SHOW THE CHANNEL SPLIT AND ASK. probe_conda collapses bioconda+conda-forge into ONE winner by version and throws the loser away, so the requested version can never be checked against the channel actually returned. Required: per-channel availability for the REQUESTED version \u2014 '0.1.1 exists ONLY on bioconda (newest build the 2015 serial 20151031 \u2014 abandoned); conda-forge carries 0.2.0-0.3.3 but not 0.1.1. Abandoned bioconda 0.1.1, or maintained conda-forge 0.2.0?'. For version='20151031' keep _looks_like_serial's judgement and force an explicit override \u2014 never let the version request auto-defeat the guard. The right question is never 'does this version exist on the internet' but 'does it exist in the tier AND channel I am about to emit'."
+    "note": "MUST SHOW THE CHANNEL SPLIT AND ASK. probe_conda collapses bioconda+conda-forge into ONE winner by version and throws the loser away, so the requested version can never be checked against the channel actually returned. Required: per-channel availability for the REQUESTED version \u2014 '0.1.1 exists ONLY on bioconda (newest build the 2015 serial 20151031 \u2014 abandoned); conda-forge carries 0.2.0-0.3.3 but not 0.1.1. Abandoned bioconda 0.1.1, or maintained conda-forge 0.2.0?'. For version='20151031' keep _looks_like_serial's judgement and force an explicit override \u2014 never let the version request auto-defeat the guard. The right question is never 'does this version exist on the internet' but 'does it exist in the tier AND channel I am about to emit'.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -798,7 +813,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK. 4.5.0.0 is absent from bioconda `gatk` and present in `gatk4` \u2014 the supplied version single-handedly routes the name. Correct: do not emit an unsatisfiable spec; propose gatk4=4.5.0.0, show both version lists, proceed on confirm. Explicitly NOT ambiguous=true \u2014 this is a ROUTE, not a tie (contrast bare-gatk, which IS a tie). Assert ONLY chosen=None + identity absent; never assert the version LISTS. Once implemented, an exact hit on the asked name proceeds silently with anchor='exact_version' \u2014 a real machine-checked anchor. NOTE this is NOT the 'refuse on a bioconda-anchored name' anti-pattern: the pick here is UNSATISFIABLE (the install hard-fails), so refusing taxes no working path. STABILITY CAVEAT: chosen=None is derived from registry state (4.5.0.0 absent from `gatk`). It would flip only if bioconda published a 4.x under the archived v3 `gatk` package \u2014 the rename is the entire reason gatk4 exists, so this is stable in practice."
+    "note": "MUST REFUSE AND ASK. 4.5.0.0 is absent from bioconda `gatk` and present in `gatk4` \u2014 the supplied version single-handedly routes the name. Correct: do not emit an unsatisfiable spec; propose gatk4=4.5.0.0, show both version lists, proceed on confirm. Explicitly NOT ambiguous=true \u2014 this is a ROUTE, not a tie (contrast bare-gatk, which IS a tie). Assert ONLY chosen=None + identity absent; never assert the version LISTS. Once implemented, an exact hit on the asked name proceeds silently with anchor='exact_version' \u2014 a real machine-checked anchor. NOTE this is NOT the 'refuse on a bioconda-anchored name' anti-pattern: the pick here is UNSATISFIABLE (the install hard-fails), so refusing taxes no working path. STABILITY CAVEAT: chosen=None is derived from registry state (4.5.0.0 absent from `gatk`). It would flip only if bioconda published a 4.x under the archived v3 `gatk` package \u2014 the rename is the entire reason gatk4 exists, so this is stable in practice.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -882,13 +898,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": "Scoping note (assertable=true stands; this records what is deliberately NOT asserted): the row's residual defect \u2014 the 'Recommended: Aria-Dolatabadian/GAPIT3 (1\u2605)' line \u2014 is prose over volatile inputs (star counts, GitHub search ranking), so no assertion is made about WHICH repo is recommended or whether it clears a floor. Only the decision surface (chosen, identity, repo_auto_adoptable, install_call) is asserted. MEASURED DRIFT BOUNDARY for that surface (resolver.py:883-886): auto_adoptable = exact_name_match AND stars >= 10 AND (sole candidate OR second candidate is not an exact-name match). Aria-Dolatabadian/GAPIT3 sits at 1\u2605, so 9 more stars from strangers would flip chosen to non-null and turn this row red \u2014 and that red would be a CORRECT alarm, because silently adopting a 10\u2605 namesake of a renamed canonical project is precisely the regression this row exists to catch. Red-on-drift is only a wolf-cry when the drift is not the bug; here it IS the bug.",
-    "note": "REFUSE + ASK is correct and is the corpus TEMPLATE: chosen=None, identity absent (nothing was assessed because no tier was chosen), real candidates returned, repo_auto_adoptable=False, install_call=None. This row is the REGRESSION GUARD that GAPIT3 must never silently auto-adopt a weak exact-name repo. CAUTION for whoever implements the refusal rows (cellranger/dorado/talos): this row's identity=null is correct HERE because no candidate was ever assessed \u2014 it is NOT the template for those rows, where a candidate WAS assessed and failed and the verdict must be carried into the refusal."
+    "note": "REFUSE + ASK is correct and is the corpus TEMPLATE: chosen=None, identity absent (nothing was assessed because no tier was chosen), real candidates returned, repo_auto_adoptable=False, install_call=None. This row is the REGRESSION GUARD that GAPIT3 must never silently auto-adopt a weak exact-name repo. CAUTION for whoever implements the refusal rows (cellranger/dorado/talos): this row's identity=null is correct HERE because no candidate was ever assessed \u2014 it is NOT the template for those rows, where a candidate WAS assessed and failed and the verdict must be carried into the refusal.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
     "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": "needs_user_input"
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -909,15 +927,17 @@
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "DEMAND A DISAMBIGUATOR: assert ambiguous==true (right today, must stay) AND chosen is None AND 'identity' key ABSENT \u2014 refuse to choose rather than choose-and-warn. Today the flag is raised while the operative last line still installs the Python build system. This is the boundary where asking IS correct and does NOT collide with the anti-'always ask' constraint: the question is SPECIFIC ('python or r?'), the answer CHEAP, and it fires only on a real cross-registry collision."
+    "note": "DEMAND A DISAMBIGUATOR: assert ambiguous==true (right today, must stay) AND chosen is None AND 'identity' key ABSENT \u2014 refuse to choose rather than choose-and-warn. Today the flag is raised while the operative last line still installs the Python build system. This is the boundary where asking IS correct and does NOT collide with the anti-'always ask' constraint: the question is SPECIFIC ('python or r?'), the answer CHEAP, and it fires only on a real cross-registry collision.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
-    "chosen": "pip",
+    "chosen": null,
     "ambiguous": true,
-    "install_call_poisoned": true,
-    "authors_gate": "not_assessed"
+    "install_call_poisoned": false,
+    "authors_gate": "not_assessed",
+    "refusal_reason": "needs_user_input"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "why_hard": "One `ambiguous` mechanism, three behaviours across the corpus: correct here, silently disabled on seurat (crandb case), false-positive on anndata (same project in both registries) \u2014 the 'one truth defined in N places' disease in miniature.",
    "probe_evidence": "$ python verify_probe.py\n\"genuinely-ambiguous-demand-disambiguator\": {\"kwargs\": {\"tool\": \"ape\"}, \"chosen\": \"pip\", \"available\": [\"pip\",\"cran\"], \"ambiguous\": true, \"identity_confirmed\": false, \"identity_anchor\": \"none\", \"identity_reason\": \"no_domain_signal\", \"self_description\": \"A Productive Environment - make/rake/ant/fab-like system with support for FOSD\", \"install_call_poisoned\": true, \"install_call_last_line\": \"install_pip_package(env, \\\"ape\\\", version=\\\"0.4.0\\\")\", \"probed_avail\": {\"pip\": \"0.4.0\", \"cran\": \"5.8-1\"}}\n\nThe real tool, re-probed live \u2014 textbook bio description, ranked BELOW the build system:\n$ python -c \"from agent.skills import resolver as R; print(R.probe_cran('ape'))\"\n  {'available': True, 'latest': '5.8-1', 'summary': 'Analyses of Phylogenetics and Evolution \u2014 Functions for reading, writing, plotting, and manipulating phylogenetic trees...', 'url': 'https://github.com/emmanuelparadis/ape'}\nTIER_ORDER puts pip above cran, so a phylogeneticist gets make/rake/ant.\n\nVERDICT: recorded actual_today CONFIRMED verbatim. ambiguous=true fires correctly (right shape, keep it), but chosen='pip' != expected None."
@@ -965,7 +985,8 @@
     "assertable": true,
     "ambiguous": null,
     "note": "MUST refuse. ASSERT ONLY: chosen is None AND install_call is None AND identity is None. SCOPED DOWN from the recorded row: the demand that the resolver 'say why it is PERMANENT / vendor-gated' and 'offer no github_repo prompt' is NOT mechanically checkable \u2014 it needs a hardcoded vendor registry, and no field in this schema expresses prose content. Keep it as design intent, assert only the refusal. AMBIGUOUS NULLED (was false): contingent on no CRAN/conda 'guppy' existing \u2014 third-party state.",
-    "unassertable_reason": null
+    "unassertable_reason": null,
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -1076,13 +1097,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "REGRESSION GUARD on the refusal SHAPE \u2014 this row's assertable fields are the corpus's template and already pass: chosen=None + identity absent (absence renders as absence, Rule 2) + real candidates + a concrete next call, NO fabricated confidence. Lock that in. *** I REFUTE THE RECORDED PROPOSED ASSERTION. *** Recorded: \"'ensembl-vep' must appear in the decision (candidates/rationale). That substring IS stable and mechanically checkable\". That assertion is WORTHLESS \u2014 it is ALREADY GREEN TODAY while the bug is fully live: `'ensembl-vep' in str(decision)` -> True right now, because recommended_repo='Ensembl/ensembl-vep' and the rationale names the GITHUB REPO. A substring test cannot tell 'we offered the bioconda package' from 'we offered a source build of the same project', which is the entire defect. CORRECTED assertion for the real fix: assert a CONDA/registry CANDIDATE exists whose package NAME == 'ensembl-vep' (a structured candidate entry with a channel + self-description), NOT a substring match on the decision blob. Fix: before returning empty, run a normalized/near-name registry search (PEP 503 [-_.]+ -> '-' for PyPI; conda has no normalization, so probe both '-' and '_' variants) and return the candidates WITH self-descriptions."
+    "note": "REGRESSION GUARD on the refusal SHAPE \u2014 this row's assertable fields are the corpus's template and already pass: chosen=None + identity absent (absence renders as absence, Rule 2) + real candidates + a concrete next call, NO fabricated confidence. Lock that in. *** I REFUTE THE RECORDED PROPOSED ASSERTION. *** Recorded: \"'ensembl-vep' must appear in the decision (candidates/rationale). That substring IS stable and mechanically checkable\". That assertion is WORTHLESS \u2014 it is ALREADY GREEN TODAY while the bug is fully live: `'ensembl-vep' in str(decision)` -> True right now, because recommended_repo='Ensembl/ensembl-vep' and the rationale names the GITHUB REPO. A substring test cannot tell 'we offered the bioconda package' from 'we offered a source build of the same project', which is the entire defect. CORRECTED assertion for the real fix: assert a CONDA/registry CANDIDATE exists whose package NAME == 'ensembl-vep' (a structured candidate entry with a channel + self-description), NOT a substring match on the decision blob. Fix: before returning empty, run a normalized/near-name registry search (PEP 503 [-_.]+ -> '-' for PyPI; conda has no normalization, so probe both '-' and '_' variants) and return the candidates WITH self-descriptions.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
     "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": "needs_user_input"
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -1103,13 +1126,15 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "THE TEMPLATE ROW \u2014 already correct, must stay green. Assert ONLY: chosen is None AND the 'identity' KEY IS ABSENT (absence renders as absence, Rule 2). Do NOT assert repo_auto_adoptable==false, discovered_repos non-empty, recommended_repo, or star counts \u2014 PROVEN that a github rate limit makes all of those keys VANISH while chosen=None survives. The recorded note contradicted itself: it said 'assert the DECISION only' and then demanded non-empty discovered_repos, the exact rate-limit-fragile assertion that would make this row cry wolf."
+    "note": "THE TEMPLATE ROW \u2014 already correct, must stay green. Assert ONLY: chosen is None AND the 'identity' KEY IS ABSENT (absence renders as absence, Rule 2). Do NOT assert repo_auto_adoptable==false, discovered_repos non-empty, recommended_repo, or star counts \u2014 PROVEN that a github rate limit makes all of those keys VANISH while chosen=None survives. The recorded note contradicted itself: it said 'assert the DECISION only' and then demanded non-empty discovered_repos, the exact rate-limit-fragile assertion that would make this row cry wolf.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
     "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": "needs_user_input"
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1156,7 +1181,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK, naming the nearest real versions ('bioconda samtools has 1.17-1.24; 9.99 does not exist \u2014 typo?'). Never silently install 1.24 as the 'best match' for 9.99. This is the enabling fix the whole family depends on: resolve() must COMPARE the requested version against the chosen tier's probed version list and report it as a first-class field (version_match: exact | normalized | absent). CONTROL (asserted separately, must stay green): version='1.21' -> chosen='conda', identity_confirmed=true, unpoisoned. And do not overcorrect \u2014 an exact version match does NOT pin bytes (bioconda samtools 1.21 is two distinct linux-64 builds), so it must never be reported as if it did; only the freeze digest pins bytes. The version signal is a WEAK CORROBORATOR that can DISQUALIFY far more reliably than it can CONFIRM."
+    "note": "MUST REFUSE AND ASK, naming the nearest real versions ('bioconda samtools has 1.17-1.24; 9.99 does not exist \u2014 typo?'). Never silently install 1.24 as the 'best match' for 9.99. This is the enabling fix the whole family depends on: resolve() must COMPARE the requested version against the chosen tier's probed version list and report it as a first-class field (version_match: exact | normalized | absent). CONTROL (asserted separately, must stay green): version='1.21' -> chosen='conda', identity_confirmed=true, unpoisoned. And do not overcorrect \u2014 an exact version match does NOT pin bytes (bioconda samtools 1.21 is two distinct linux-64 builds), so it must never be reported as if it did; only the freeze digest pins bytes. The version signal is a WEAK CORROBORATOR that can DISQUALIFY far more reliably than it can CONFIRM.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -1184,7 +1210,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK, naming the nearest real versions ('bioconda samtools has 1.17-1.24; 9.99 does not exist \u2014 typo?'). This is the enabling fix the whole family depends on: resolve() must COMPARE the requested version against the chosen tier+channel's probed list and report it as a first-class field (version_match: exact | normalized | absent). CRITICAL \u2014 this refusal is VERSION-driven, not identity-driven: it must NOT touch the bioconda channel short-circuit (measured 39 names, 0 wrong), which stays intact and keeps identity_confirmed=true on the sibling control row. Do not overcorrect: an exact version match does NOT pin bytes (bioconda samtools 1.21 is two distinct linux-64 builds), so it must never be reported as if it did; only the freeze digest pins bytes. The version signal is a WEAK CORROBORATOR that DISQUALIFIES far more reliably than it CONFIRMS. The control and the normalized form are now SEPARATE executable rows (they were bundled into this row's note, where no pytest could reach them)."
+    "note": "MUST REFUSE AND ASK, naming the nearest real versions ('bioconda samtools has 1.17-1.24; 9.99 does not exist \u2014 typo?'). This is the enabling fix the whole family depends on: resolve() must COMPARE the requested version against the chosen tier+channel's probed list and report it as a first-class field (version_match: exact | normalized | absent). CRITICAL \u2014 this refusal is VERSION-driven, not identity-driven: it must NOT touch the bioconda channel short-circuit (measured 39 names, 0 wrong), which stays intact and keeps identity_confirmed=true on the sibling control row. Do not overcorrect: an exact version match does NOT pin bytes (bioconda samtools 1.21 is two distinct linux-64 builds), so it must never be reported as if it did; only the freeze digest pins bytes. The version signal is a WEAK CORROBORATOR that DISQUALIFIES far more reliably than it CONFIRMS. The control and the normalized form are now SEPARATE executable rows (they were bundled into this row's note, where no pytest could reach them).",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -1349,7 +1376,8 @@
     "ambiguous": null,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK. Assert chosen is None AND the 'identity' KEY IS ABSENT (assess_identity runs only `if chosen:` \u2014 absence must render as absence, Rule 2; the vep template). Choosing CRAN's spreadsheet helper and warning about it is not a refusal \u2014 the last line of install_call is still an executable install of the wrong tool. Refusal is measurement-backed: cran-chosen-after-conda-missed is 9/10 WRONG, and this is NOT a bioconda-anchored name, so it does not collide with the keep-the-short-circuit constraint. Do NOT assert discovered_repos/recommended_repo (rate-limit-fragile). ambiguous NOT asserted \u2014 false only because PyPI happens to have no 'cellranger' today; registry state, not the row's point."
+    "note": "MUST REFUSE AND ASK. Assert chosen is None AND the 'identity' KEY IS ABSENT (assess_identity runs only `if chosen:` \u2014 absence must render as absence, Rule 2; the vep template). Choosing CRAN's spreadsheet helper and warning about it is not a refusal \u2014 the last line of install_call is still an executable install of the wrong tool. Refusal is measurement-backed: cran-chosen-after-conda-missed is 9/10 WRONG, and this is NOT a bioconda-anchored name, so it does not collide with the keep-the-short-circuit constraint. Do NOT assert discovered_repos/recommended_repo (rate-limit-fragile). ambiguous NOT asserted \u2014 false only because PyPI happens to have no 'cellranger' today; registry state, not the row's point.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "cran",
@@ -1433,15 +1461,17 @@
     "ambiguous": true,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK for language='r'|'python'. ambiguous must STAY true \u2014 a version match in one or both ecosystems adds zero information and must never suppress the ambiguity flag or tip the choice. Refusing here is NARROW and does not tax the bioconda majority: _is_ambiguous (resolver.py:463) fires only when pip AND cran both hit AND no language hint \u2014 samtools/bwa/fastqc have no CRAN entry, so the measured 39-name bioconda short-circuit is untouched. Today ambiguous is computed and then IGNORED, which is the defect: the flag is raised and pip is handed back anyway."
+    "note": "MUST REFUSE AND ASK for language='r'|'python'. ambiguous must STAY true \u2014 a version match in one or both ecosystems adds zero information and must never suppress the ambiguity flag or tip the choice. Refusing here is NARROW and does not tax the bioconda majority: _is_ambiguous (resolver.py:463) fires only when pip AND cran both hit AND no language hint \u2014 samtools/bwa/fastqc have no CRAN entry, so the measured 39-name bioconda short-circuit is untouched. Today ambiguous is computed and then IGNORED, which is the defect: the flag is raised and pip is handed back anyway.",
+    "refusal_reason": "needs_user_input"
    },
    "actual_today": {
-    "chosen": "pip",
+    "chosen": null,
     "ambiguous": true,
-    "install_call_poisoned": true,
-    "authors_gate": "not_assessed"
+    "install_call_poisoned": false,
+    "authors_gate": "not_assessed",
+    "refusal_reason": "needs_user_input"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "probe_evidence": "$ PYTHONPATH=. python -c \"from agent.skills import resolver as R; R.resolve(tool='ape', version='0.2.0')\"\n  chosen    = 'pip'\n  ambiguous = True    <-- correctly flagged, but NOT acted on\n  identity  = {\"confirmed\": false, \"anchor\": \"none\", \"self_description\": \"A Productive Environment - make/rake/ant/fab-like system with support for FOSD\", \"reason\": \"no_domain_signal\"}\n  poisoned  = True\n  install_call_last = ['install_pip_package(env, \"ape\", version=\"0.2.0\")']   <-- the build system, not phylogenetics\n  probed = pip:{available:true, latest:'0.4.0'} | cran:{available:true, latest:'5.8-1'}\n\nGROUND TRUTH (live): PyPI 'ape' '0.2.0' present: True | summary: 'A Productive Environment - make/rake/ant/fab-like system wit...'\n                     CRAN 'ape' -> {'available': True, 'latest': '5.8-1'}\nCODE (resolver.py:463 _is_ambiguous): returns pip.available AND cran.available when language is falsy \u2014 name-based, stable.\nREPRODUCED TODAY. chosen should be None, not 'pip'."
   },
@@ -1518,7 +1548,8 @@
     "assertable": true,
     "unassertable_reason": null,
     "note": "MUST REFUSE + ASK ('PyPI talos is a Keras tuner; if you mean a bio pipeline, give me github_repo='). A decoy's metadata must NEVER seed the authors gate: _github_owner_repo() may only return a repo that is independently anchored (user-supplied, or extracted from a registry entry that ALREADY passed identity). With no anchored repo the gate must not run and must report 'authors-path NOT assessed: no anchored repo for talos' \u2014 never 'no authoring image/recipe found', which is a claim about the USER'S tool generated from a different project's files. Same implementation warning as the other refusal rows: chosen=null WITH identity_confirmed=false needs the refusal path to carry the identity verdict (resolver.py:944 gates identity behind `if chosen:` today).",
-    "authors_gate": "not_assessed"
+    "authors_gate": "not_assessed",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -1575,7 +1606,8 @@
     "assertable": true,
     "ambiguous": null,
     "unassertable_reason": null,
-    "note": "CORRECTED ambiguous: true->null. `ambiguous` is a DEDICATED field with ONE meaning \u2014 _is_ambiguous() = pip AND cran both hit with no language hint. pyranges is not on CRAN, so it is False today and would REMAIN False under a correct fix; asserting true would force a second meaning onto one field, which is this codebase's named disease (one truth in N places). The refusal is expressed by chosen==null ALONE. MUST REFUSE AND ASK, template = the no-registry-hit/discovery path (chosen=None + identity=null + real candidates + a next call). DERIVABLE: bioconda declares dev_url=endrebak/pyranges (canon-> pyranges0); user says pyranges1 (canon-> pyranges1, a distinct 200). Two declared repos that never converge \u21d2 true mismatch. NOT a description heuristic and NOT a tax on the measured bioconda names: it fires only when BOTH sides declare a repo and they diverge. Assert chosen is None; do NOT assert version strings."
+    "note": "CORRECTED ambiguous: true->null. `ambiguous` is a DEDICATED field with ONE meaning \u2014 _is_ambiguous() = pip AND cran both hit with no language hint. pyranges is not on CRAN, so it is False today and would REMAIN False under a correct fix; asserting true would force a second meaning onto one field, which is this codebase's named disease (one truth in N places). The refusal is expressed by chosen==null ALONE. MUST REFUSE AND ASK, template = the no-registry-hit/discovery path (chosen=None + identity=null + real candidates + a next call). DERIVABLE: bioconda declares dev_url=endrebak/pyranges (canon-> pyranges0); user says pyranges1 (canon-> pyranges1, a distinct 200). Two declared repos that never converge \u21d2 true mismatch. NOT a description heuristic and NOT a tax on the measured bioconda names: it fires only when BOTH sides declare a repo and they diverge. Assert chosen is None; do NOT assert version strings.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -1603,7 +1635,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND ASK, using the miss as the reason: requested 7.0.2 exceeds the only candidate's max (PyPI talos = 1.4) AND identity is unconfirmed \u2014 that PAIR is a composite signal the candidate is the wrong project. Report both facts, demand github_repo. Must NOT auto-adopt, must NOT fall back to github discovery (that path reaches siderolabs/talos, a third wrong tool, without a human). NOTE the conjunction is load-bearing: version-miss ALONE must not refuse, or the samtools-1.21.0 normalized row breaks. The refusal shape already exists (verified: R.resolve('zzzznotarealtool9931') -> chosen=None, identity key ABSENT, install_call='')."
+    "note": "MUST REFUSE AND ASK, using the miss as the reason: requested 7.0.2 exceeds the only candidate's max (PyPI talos = 1.4) AND identity is unconfirmed \u2014 that PAIR is a composite signal the candidate is the wrong project. Report both facts, demand github_repo. Must NOT auto-adopt, must NOT fall back to github discovery (that path reaches siderolabs/talos, a third wrong tool, without a human). NOTE the conjunction is load-bearing: version-miss ALONE must not refuse, or the samtools-1.21.0 normalized row breaks. The refusal shape already exists (verified: R.resolve('zzzznotarealtool9931') -> chosen=None, identity key ABSENT, install_call='').",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "pip",
@@ -1631,7 +1664,8 @@
     "ambiguous": false,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "MUST REFUSE AND FORCE AN EXPLICIT OVERRIDE \u2014 keep _looks_like_serial's judgement (resolver.py:100: a bare 8+ digit integer is a date/serial from an abandoned build, not a semver) and never let a version request auto-defeat it. Today it is worse than defeated: the serial is pasted onto conda-forge, which has no serial builds at all, so the emitted spec is impossible on every platform. Split out from the original bundled hmmlearn row \u2014 the note there asserted this second call's behaviour, which no plain pytest could execute. STABLE: bioconda/hmmlearn has been frozen since 2015 and conda-forge will not retroactively publish a 2015 serial."
+    "note": "MUST REFUSE AND FORCE AN EXPLICIT OVERRIDE \u2014 keep _looks_like_serial's judgement (resolver.py:100: a bare 8+ digit integer is a date/serial from an abandoned build, not a semver) and never let a version request auto-defeat it. Today it is worse than defeated: the serial is pasted onto conda-forge, which has no serial builds at all, so the emitted spec is impossible on every platform. Split out from the original bundled hmmlearn row \u2014 the note there asserted this second call's behaviour, which no plain pytest could execute. STABLE: bioconda/hmmlearn has been frozen since 2015 and conda-forge will not retroactively publish a 2015 serial.",
+    "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
     "chosen": "conda",
@@ -1646,10 +1680,10 @@
  ],
  "known_gaps": [
   {
-   "gap": "the corpus cannot yet tell an EARNED refusal from a LAZY one",
-   "detail": "32 rows expect `chosen: null` (REFUSE AND ASK) and the harness asserts exactly that \u2014 which a refusal that never investigated satisfies perfectly. The user's ruling of 2026-07-16 (memory: feedback-earn-the-refusal) says a refusal is legitimate ONLY after investigating, and must NAME which reason: (a) the user gave too little, or (b) our own investigation came up empty / what it found fails our conditions. This corpus was mined BEFORE that ruling, so no row encodes it.",
-   "why_not_fixed_here": "The obvious patch \u2014 assert the refusal carries candidates \u2014 is WRONG for the vendor-gated rows: `dragen` is in no registry and has no installable repo, so an empty candidate list IS the honest reason (b). The correct assertion needs a `refusal_reason` field on the decision, which does not exist yet. Inventing a field to assert against would make the corpus agree with itself while drifting from the code \u2014 the disease this whole audit is about.",
-   "what_tier_8_must_do": "Add `decision.refusal_reason` \u2208 {needs_user_input, investigation_empty, investigation_contradicted} + the evidence that backs it, extend `probe()` to read it, add `expect.refusal_reason` to these 32 rows, and promote them. THEN this gap closes. Live proof it is real: `resolve('dorado')` never runs github discovery at all (probe_github_search fires ONLY at a registry dead-end, and PyPI's astronomy package counts as a hit) \u2014 so nanoporetech/dorado, 849 stars, exact name match, is never even looked for. That refusal would not be earned."
+   "gap": "earned-vs-lazy is now GRADED; the residual is that an INCOMPLETE investigation can masquerade as an earned one without a GITHUB_TOKEN",
+   "detail": "The measurement is BUILT (reverse-theme-park, step-1 of the grid climb): resolve() emits decision.refusal_reason \u2208 {needs_user_input, investigation_empty, investigation_contradicted, investigation_incomplete}, probe() forwards it, _is_correct asserts it INSIDE the chosen==null branch (opt-in, like authors_gate), and all 29 assertable refusal rows now carry expect.refusal_reason. A refusal that names the WRONG reason FAILS \u2014 the 3 rows that refuse today (both vep rows + GAPIT3) are graded EARNED on needs_user_input (discovery FOUND ensembl-vep / candidate repos), not merely on chosen==null; a resolver that refused without investigating would emit the default investigation_empty and go red. The other 26 refusal rows do NOT refuse yet \u2014 they pick a wrong tier (dorado\u2192PyPI-astronomy, ambiguous 'ape'\u2192pip) \u2014 so their expect.refusal_reason is the roadmap TARGET the climb must hit, VISIBLE as red rows, not a blind spot. THE RESIDUAL: the fourth reason, investigation_incomplete, is the honest label for a probe that could not COMPLETE (a rate-limited/unreachable tier, or a failed github discovery). Without a GITHUB_TOKEN the github-backed probes rate-limit, so a refusal that SHOULD be needs_user_input or investigation_contradicted comes back investigation_incomplete \u2014 an earned refusal wearing an unfinished one's face. The corpus cannot separate those in a token-less run, which is why the quota-coupled rows (exomiser; the bcftools 403 case) stay assertable:false.",
+   "why_not_fixed_here": "The mechanism landed offline as a pure classifier + plumbing, hermetically tested (tests/test_probe_honesty.py drives the REAL resolve path at the probe seam and proves all four reasons + the unreachable-beats-contradicted precedence). What an offline pass CANNOT do is grade the incomplete-vs-earned boundary: that needs either a GITHUB_TOKEN (so the github-backed probes complete and the reason resolves to its earned value) or a per-row 403 stub (the bcftools pattern) so investigation_incomplete is reproduced DETERMINISTICALLY rather than riding on live quota. Annotating those rows against a token-less probe would bake THIS environment's rate-limit into the corpus \u2014 exactly the volatile-registry-state trap the stability rule forbids.",
+   "what_tier_8_must_do": "Re-probe the 29 annotated refusal rows WITH a GITHUB_TOKEN and promote each whose resolver now refuses for its expect.refusal_reason \u2014 that IS the grid climb, and most are interpretation reds today (the wrong tier is picked, so no refusal fires at all). For the quota-coupled rows that can only refuse via an unreachable probe, add a 403 stub (like test_github_repo_probe_does_not_report_a_rate_limit_as_a_missing_repo) so investigation_incomplete is graded deterministically instead of left assertable:false."
   },
   {
    "gap": "the identity half of the `report` gap is DISSOLVED, and its replacement is not yet measured",
