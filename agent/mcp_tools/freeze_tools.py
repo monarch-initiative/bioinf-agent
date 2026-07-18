@@ -238,6 +238,14 @@ def freeze(
     # record on disk keeps the full lists for env_report/attestation rendering.
     cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
     if cached:
+        # Orientation pointer (Phase-3 Piece B) on the REUSE-BY-HASH branch too —
+        # a cache hit is still a freeze, so current_state must read ENV_FROZEN for
+        # it. Best-effort; a pointer hiccup never fails a freeze.
+        if pipeline_id:
+            try:
+                _ms._pipeline_state.set_frozen_pointer(pipeline_id, rkey)
+            except Exception:
+                pass
         return _ms._summarize_sbom_in_response(
             # merge (not kwargs) so a business key already in `cached` (e.g.
             # request_key) can't collide with an explicit kwarg → TypeError.
@@ -538,6 +546,13 @@ def freeze(
                     violation_count=len(adopt_violations),
                     verifications=record.get("verifications"))
     _ms._env_cache.register(rkey, record)
+    # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
+    # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.
+    if pipeline_id:
+        try:
+            _ms._pipeline_state.set_frozen_pointer(pipeline_id, rkey)
+        except Exception:
+            pass
 
     # Layer-1 deliverables, rendered PURELY from the verified record (can't be faked):
     # the human env report (HTML headline + Markdown for diff/parse) + a standard

@@ -1218,8 +1218,12 @@ class WorkflowSpec(BaseModel):
     env_content_digest: str
     env_image:          str                       # adopt/built shipping handle (by digest)
     env_hpc_delivery:   dict = {}                  # how to get the env onto the HPC
-    # The validated run.
-    pipeline_status:    PipelineStatus = "in_progress"
+    # The validated run. REQUIRED, no default: the producer (seal) must DERIVE and
+    # STATE the real run status from the steps — a defaulted "in_progress" stamped
+    # into every sealed spec is the "permissive model with defaults authors drift"
+    # anti-pattern (the outputs: list[str]=[] lesson). seal computes it via
+    # spec_writer.derive_pipeline_status; a spec that omits it fails model_validate.
+    pipeline_status:    PipelineStatus
     usage_verified:     bool = False
     # WHY usage_verified is what it is. The bool alone conflates "tested and it FAILED"
     # with "never tested" — and since seal REFUSES the former, every usage_verified=False

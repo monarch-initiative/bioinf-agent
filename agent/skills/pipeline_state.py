@@ -63,11 +63,13 @@ class PipelineState:
                 "draft_path": str(self._draft_path(pipeline_name)),
                 "resumed": True,
             }
+        # No env_status/pipeline_status stamp: they were written 'in_progress' here
+        # and NEVER transitioned, so they answered nothing while LOOKING like a
+        # state machine. `current_state()` derives the real lifecycle position from
+        # the artifacts on every read instead (Phase-3 Piece B).
         self._drafts[pipeline_name] = {
             "pipeline_name":   pipeline_name,
             "description":     description,
-            "env_status":      "in_progress",
-            "pipeline_status": "in_progress",
             "packages":        [],
             "install_steps":   [],
             "pipeline_steps":  [],
@@ -94,6 +96,29 @@ class PipelineState:
     def pop_for_finalize(self, pipeline_id: str) -> Optional[dict]:
         """Remove the in-memory draft and return it. Caller deletes the file."""
         return self._drafts.pop(pipeline_id, None)
+
+    def set_frozen_pointer(self, pipeline_id: str, request_key: str) -> None:
+        """Record which frozen env (by request_key) this pipeline produced, so
+        `current_state` can RE-EARN ENV_FROZEN via the honesty contract. A best-
+        effort ORIENTATION pointer — never authoritative (current_state re-checks
+        it) and never allowed to fail the freeze that calls it."""
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return
+        draft["frozen_as"] = request_key
+        self._persist(pipeline_id)
+
+    def append_sealed_pointer(self, pipeline_id: str, workflow_name: str) -> None:
+        """Record which workflow(s) this pipeline has sealed. A LIST — one draft
+        may seal many workflows (seal does not pop the draft). Orientation only;
+        `current_state` re-earns SEALED by matching the spec to this pipeline."""
+        draft = self._drafts.get(pipeline_id)
+        if draft is None:
+            return
+        sealed = draft.setdefault("sealed_as", [])
+        if workflow_name not in sealed:
+            sealed.append(workflow_name)
+        self._persist(pipeline_id)
 
     def delete_draft_file(self, pipeline_id: str) -> None:
         path = self._draft_path(pipeline_id)
@@ -392,6 +417,10 @@ class PipelineState:
         "usage_verified", "lock_sha256",
         "authored_artifacts",      # owned by stage_authored_artifact (sha256-anchored)
         "service_dependencies",    # owned by start_service / verify_service_dependency (I10 probe-anchored)
+        # Lifecycle POINTERS — written only by freeze / seal (set_frozen_pointer /
+        # append_sealed_pointer). Hand-supplying one would forge a lifecycle claim;
+        # current_state re-earns it anyway, but block the patch as defense-in-depth.
+        "frozen_as", "sealed_as",
     })
 
     def patch(self, pipeline_id: str, patches: dict) -> dict:
@@ -527,3 +556,107 @@ def _merge_step_keyed_list(target: list, source: list) -> None:
             target.append(entry)
             if step is not None:
                 by_step[step] = len(target) - 1
+
+
+# ---------------------------------------------------------------------------
+# Rail lifecycle — the ONE answer to "where is this pipeline?" (Phase-3 Piece B)
+# ---------------------------------------------------------------------------
+#
+# Before this, the answer was SCATTERED across four unlinked places (draft
+# key-population + the EnvCache record + a digest-membership walk + a
+# {name}.workflow.yaml on disk), and the two fields that LOOKED like the state
+# machine — draft['env_status'] / draft['pipeline_status'] — were stamped
+# 'in_progress' at birth and NEVER transitioned, so they answered nothing. This
+# collapses the scatter into one deriver, computed EVERY read from the artifacts
+# that already own the truth — never a stored boolean.
+
+ABSENT     = "absent"        # no draft in the store for this pipeline_id
+DRAFT      = "draft"         # a draft exists; nothing installed yet
+ENV_BUILT  = "env_built"     # a host conda env + at least one install step
+ENV_FROZEN = "env_frozen"    # a frozen env, RE-EARNED against the honesty contract
+SEALED     = "sealed"        # a WorkflowSpec that matches this pipeline + pins a live env
+
+# Ordering low→high, for a caller that wants to compare progress.
+LIFECYCLE_ORDER = (ABSENT, DRAFT, ENV_BUILT, ENV_FROZEN, SEALED)
+
+
+def current_state(draft: Optional[dict], *, verify_frozen, spec_sealed) -> str:
+    """The pipeline's highest reached lifecycle state, RE-EARNED from artifacts.
+
+    Re-earned, never trusted-because-stored: the draft carries `frozen_as` /
+    `sealed_as` POINTERS (written by freeze / seal), but this asks the injected
+    checks to CONFIRM them every read — so a forged pointer, an evicted env, or a
+    hand-edited spec self-heals DOWN to the highest state that still verifies (the
+    same posture freeze/seal/run take when they re-anchor a cache hit).
+
+    The two checks are REQUIRED (no default): an unwired call RAISES rather than
+    silently assuming a state — a permissive default would be the 'gate present in
+    code, absent in effect' disease this codebase is defined by. Callers build
+    them once via `state_checks(...)`.
+        verify_frozen(request_key) -> bool   # EnvCache.lookup_verified is green
+        spec_sealed(draft)         -> bool   # a sealed spec matches THIS pipeline
+                                             #   AND still pins a live env digest
+
+    RUN_VALIDATED is deliberately NOT a state here: this deriver is ORIENTATION,
+    not a gate (the only Phase-3 enforcement is the seal write-guard), so the
+    frozen-vs-sealed distinction is what a reader needs; run-in-shipped-image is a
+    per-run quality axis carried by WorkflowSpec.pipeline_status, not a lifecycle
+    position. (Dropping it also keeps this free of a user_guide dependency.)"""
+    if not draft:
+        return ABSENT
+    if draft.get("sealed_as") and spec_sealed(draft):
+        return SEALED
+    if draft.get("frozen_as") and verify_frozen(draft["frozen_as"]):
+        return ENV_FROZEN
+    if draft.get("conda_env") and (draft.get("install_steps") or []):
+        return ENV_BUILT
+    return DRAFT
+
+
+def state_checks(env_cache, reports_dir) -> dict:
+    """Build current_state's two RE-EARNED checks, bound to the live deps. ONE
+    definition, injected by every caller — so agent_status and the resume summary
+    ask the IDENTICAL question rather than forking the derivation (this codebase's
+    signature defect). `reports_dir` is where {name}.workflow.yaml lives."""
+    reports_dir = Path(reports_dir)
+
+    def verify_frozen(request_key: str) -> bool:
+        try:
+            rec, violations = env_cache.lookup_verified(request_key)
+            return bool(rec) and not violations
+        except Exception:
+            return False
+
+    def spec_sealed(draft: dict) -> bool:
+        # SEALED re-earns like ENV_FROZEN — never a bare os.stat. A named sealed
+        # spec must (a) exist, (b) IDENTITY-match this pipeline (its
+        # env_request_key equals the draft's frozen_as — because workflow_name is
+        # caller-overridable, so two pipelines can collide on one filename), and
+        # (c) still pin an env image_digest that's in the EnvCache.
+        names = draft.get("sealed_as") or []
+        if not names:
+            return False
+        try:
+            live_digests = {r.get("image_digest") for r in (env_cache.all() or {}).values()
+                            if r.get("image_digest")}
+        except Exception:
+            live_digests = set()
+        frozen_key = draft.get("frozen_as")
+        for nm in names:
+            p = reports_dir / f"{nm}.workflow.yaml"
+            if not p.exists():
+                continue
+            try:
+                spec = yaml.safe_load(p.read_text()) or {}
+            except Exception:
+                continue
+            if frozen_key and spec.get("env_request_key") and spec.get("env_request_key") != frozen_key:
+                continue                              # a different pipeline's spec on a colliding name
+            spec_digests = {e.get("image_digest") for e in (spec.get("envs") or [])
+                            if isinstance(e, dict) and e.get("image_digest")}
+            if spec_digests and not (spec_digests & live_digests):
+                continue                              # the env it pinned is gone from the cache
+            return True
+        return False
+
+    return {"verify_frozen": verify_frozen, "spec_sealed": spec_sealed}

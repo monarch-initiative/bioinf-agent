@@ -279,8 +279,12 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
     validated = [s for s in steps
                  if s.get("validation") or s.get("validation_status") == "passed"]
-    run_status = ("fully_validated" if steps and len(validated) == len(steps)
-                  else (spec.get("pipeline_status") or "in_progress"))
+    # Prefer the status the producer STATED on the spec (self-describing); derive
+    # from the steps only if absent (pre-fix specs). ONE definition —
+    # spec_writer.derive_pipeline_status — shared with the seal that wrote it, so
+    # the stored value and any fallback can never disagree.
+    from agent.skills.spec_writer import derive_pipeline_status
+    run_status = spec.get("pipeline_status") or derive_pipeline_status(steps)
     rows = [
         ("content digest", fr.get("content_digest")),
         ("image", fr.get("image")),

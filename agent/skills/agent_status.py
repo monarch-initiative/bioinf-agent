@@ -37,12 +37,17 @@ from agent.skills.outcomes import broke
 # Per-subsystem queries (private; each is fault-tolerant)
 # ---------------------------------------------------------------------------
 
-def _drafts_summary(pipeline_state) -> list[dict]:
+def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
     """In-progress pipeline drafts the agent has been building. Reads the
     `PipelineState._drafts` dict directly — every entry is a draft that
-    hasn't been sealed (or discarded) yet."""
+    hasn't been discarded yet (a sealed draft persists — seal doesn't pop it —
+    so `state` may read 'sealed')."""
+    from agent.skills.pipeline_state import current_state, state_checks
     try:
         out: list[dict] = []
+        # ONE lifecycle answer per draft, re-earned from the artifacts — replaces
+        # the dead env_status/pipeline_status nominal stamps (Phase-3 Piece B).
+        checks = state_checks(env_cache, reports_dir)
         # Best-effort access to the internal map; defensive in case the
         # PipelineState API gains a public accessor later.
         drafts = getattr(pipeline_state, "_drafts", {}) or {}
@@ -51,8 +56,7 @@ def _drafts_summary(pipeline_state) -> list[dict]:
             row = {
                 "pipeline_id":     pid,
                 "description":     (draft.get("description") or "")[:120],
-                "env_status":      draft.get("env_status"),
-                "pipeline_status": draft.get("pipeline_status"),
+                "state":           current_state(draft, **checks),
                 "conda_env":       draft.get("conda_env"),
                 "install_steps":   len(draft.get("install_steps") or []),
                 "pipeline_steps":  len(draft.get("pipeline_steps") or []),
@@ -346,7 +350,7 @@ def agent_status(
     env_reports_dir = project_root / "env_reports"
 
     out: dict[str, Any] = {
-        "drafts":            _drafts_summary(pipeline_state),
+        "drafts":            _drafts_summary(pipeline_state, env_cache, env_reports_dir),
         "envs_on_disk":      _envs_on_disk_summary(envs_root),
         "frozen_envs":       _frozen_envs_summary(env_cache, env_reports_dir),
         "sealed_workflows":  _sealed_workflows_summary(env_reports_dir),

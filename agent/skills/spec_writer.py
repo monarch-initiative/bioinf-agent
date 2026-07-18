@@ -38,6 +38,34 @@ from agent.skills.outcomes import refused
 # Pipeline spec persistence
 # ---------------------------------------------------------------------------
 
+def derive_pipeline_status(steps: list) -> str:
+    """The real run status of a set of pipeline_steps, per the PipelineStatus
+    Literal (core_data.py). ONE definition — seal STORES it on the WorkflowSpec
+    and the renderer READS the stored value, so there is no forked derivation.
+
+    Replaces the fabricated `pipeline_status = "in_progress"` default that seal
+    used to stamp into every spec regardless of the run (the draft's dead nominal
+    stamp propagated straight through). Now the producer STATES the truth:
+        failed              — any step exited non-zero
+        fully_validated     — every step's outputs passed validate_output
+        partially_validated — some validated, some ran-but-unvalidated
+        complete            — all ran cleanly, none validated
+        in_progress         — no steps yet
+    """
+    steps = [s for s in (steps or []) if isinstance(s, dict)]
+    if not steps:
+        return "in_progress"
+    if any(s.get("returncode") not in (None, 0) for s in steps):
+        return "failed"
+    validated = [s for s in steps
+                 if s.get("validation") or s.get("validation_status") == "passed"]
+    if len(validated) == len(steps):
+        return "fully_validated"
+    if validated:
+        return "partially_validated"
+    return "complete"
+
+
 def write_workflow_spec(workflow: dict, config: dict) -> dict:
     """Validate + write a Layer-2 WorkflowSpec as YAML.
 

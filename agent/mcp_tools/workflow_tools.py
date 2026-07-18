@@ -407,8 +407,8 @@ def seal_workflow(
         return refused("seal.no_frozen_env", success=False,
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
 
-    from agent.skills.spec_writer import (check_workflow_invariants, self_test_usage,
-                                          write_workflow_spec)
+    from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status,
+                                          self_test_usage, write_workflow_spec)
     violations = check_workflow_invariants(draft)
     if violations:
         return refused("seal.workflow_invariants", success=False,
@@ -507,7 +507,10 @@ def seal_workflow(
         # is for the guide's get-the-image step. Each step also carries its own
         # container_image_digest, so a reader can map step → env.
         "envs":               envs_used,
-        "pipeline_status":    draft.get("pipeline_status", "in_progress"),
+        # DERIVED from the run, not the draft's dead stamp — the producer states
+        # the real status (fully_validated / partially_validated / …). See
+        # spec_writer.derive_pipeline_status; the model field is now required.
+        "pipeline_status":    derive_pipeline_status(draft.get("pipeline_steps", [])),
         "usage_verified":     usage_ok,
         # The three-state truth behind the bool. `usage_verified: False` alone cannot
         # distinguish "tested and broken" from "never tested", and since seal refuses the
@@ -566,6 +569,13 @@ def seal_workflow(
         if out.get("error"):
             return broke("seal.spec_write_failed", success=False, **out)
         result.update(out)
+        # Orientation pointer (Phase-3 Piece B): record that this pipeline sealed
+        # `wname`, so current_state can RE-EARN SEALED. Best-effort — a pointer
+        # hiccup must never fail a verified seal.
+        try:
+            _ms._pipeline_state.append_sealed_pointer(pipeline_id, wname)
+        except Exception:
+            pass
         # Layer-2 deliverable: render THIS workflow's run dashboard
         # ({workflow_name}.RUN.html) from the verified spec — validated evidence
         # per compute locus + a distinct how-to panel. The env's ENV.html (Layer 1)
@@ -902,10 +912,15 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
             for s in pipeline_steps
             if not (s.get("detected_outputs") or s.get("outputs") or s.get("validation"))
         ]
+        # ONE lifecycle answer, re-earned from the artifacts — replaces the dead
+        # env_status/pipeline_status nominal stamps that were never transitioned
+        # (Phase-3 Piece B). state_checks binds the re-earned frozen/sealed checks.
+        from agent.skills.pipeline_state import current_state, state_checks
+        _reports_dir = Path(__file__).resolve().parents[2] / _ms.config["paths"]["pipelines_dir"]
+        _state = current_state(draft, **state_checks(_ms._env_cache, _reports_dir))
         r["summary"] = {
             "conda_env":              draft.get("conda_env"),
-            "env_status":             draft.get("env_status"),
-            "pipeline_status":        draft.get("pipeline_status"),
+            "state":                  _state,
             "install_steps_count":    len(install_steps),
             "install_steps_failed":   sum(1 for s in install_steps if s.get("returncode") not in (None, 0)),
             "pipeline_steps_count":   len(pipeline_steps),
