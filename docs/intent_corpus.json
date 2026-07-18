@@ -886,14 +886,15 @@
     "note": "CORRECTED chosen: source->synthesis. LOAD-BEARING ASSERTION is `chosen NOT IN {conda,pip,cran}` \u2014 a supplied repo whose fork/parent edge shows ahead_by>0 is a HARD PIN disqualifying the registry tiers (they build the PARENT). But the row must then name the tier that ACTUALLY wins: TIER_ORDER is binary>synthesis>source, the fork has has_release_assets=False (binary unavailable), so synthesis wins \u2014 `source` is unreachable and the row would have gone RED against a CORRECT fix. Prefer asserting `chosen not in ('conda','pip','cran')` over the literal 'synthesis'. Does NOT threaten the measured bioconda short-circuit: bare `bcftools` with no repo still routes to conda; the pin fires only on an explicit fork-edge repo. Fork facts are structural GitHub edges (behind_by=33 DRIFTS \u2014 never assert it)."
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": "synthesis",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
-   "probe_evidence": "$ gh api repos/populationgenomics/bcftools --jq '{fork,parent:.parent.full_name}'\n{\"fork\":true,\"parent\":\"samtools/bcftools\"}\n$ gh api repos/samtools/bcftools/compare/develop...populationgenomics:develop --jq '{ahead_by,behind_by,status}'\n{\"ahead_by\":1,\"behind_by\":33,\"status\":\"diverged\"}\n\nLIVE (miniforge 3.10, packaging 24.0; rate_limit before=28 after=26 \u2014 quota REMAINING, not a 403 artifact):\n$ R.resolve(tool='bcftools', github_repo='populationgenomics/bcftools')\n  chosen      : 'conda'\n  install_call: 'install_conda_packages(env, [{\"spec\": \"bcftools=1.24\", \"channel\": \"bioconda\"}])'\n  identity    : {\"confirmed\": true, \"anchor\": \"bioconda-channel\", \"evidence\": [\"bioconda is a bioinformatics-only channel\"], \"note\": \"\"}\n  collisions  : []\n  available   : ['conda', 'synthesis', 'source']\n=> actual_today REPRODUCED EXACTLY. Stock bcftools (built from the PARENT) wins; the fork appears nowhere in identity and is recorded as NO rejected alternative.\n\nCORRECTION EVIDENCE (why 'source' was wrong):\n$ R.probe_github('populationgenomics/bcftools')\n  {'repo_exists': True, 'has_release_assets': False}\n$ [t for t in R.TIER_ORDER if t in ('binary','synthesis','source')]\n  ['binary', 'synthesis', 'source']\n=> no release assets => binary unavailable => SYNTHESIS wins, not source. The recorded expect.chosen='source' was unreachable."
+   "probe_evidence": "FORK-ANCHOR (2026-07-18): probe_github now captures the fork edge it used to discard.\n$ R.probe_github('populationgenomics/bcftools')\n  {'repo_exists':True,'is_fork':True,'parent':'samtools/bcftools','default_branch':'develop','has_release_assets':False}\n$ R._fork_diverges('samtools/bcftools','populationgenomics/bcftools','develop') -> (True,'')\n  # compare develop...develop status='diverged' (STATUS only; ahead_by/behind_by DRIFT and are never read)\n$ R.resolve(tool='bcftools', github_repo='populationgenomics/bcftools')\n  chosen: 'synthesis'  (conda/pip/cran disqualified via fork_divergence)\n  fork_divergence: {'fork':'populationgenomics/bcftools','parent':'samtools/bcftools','status':'diverged'}\n=> the fork is a HARD PIN: the registry tiers build the PARENT, so they are disqualified and the fork's\n   own build wins. binary unavailable (no release assets) => synthesis, per TIER_ORDER binary>synthesis>source.\nUNCHECKED-safe: if _fork_diverges had rate-limited (None,err) it keeps conda + discloses, never reroutes."
   },
   {
    "id": "gapit3-discovery-recommends-a-stranger-repo",
@@ -1628,14 +1629,15 @@
     "refusal_reason": "investigation_contradicted"
    },
    "actual_today": {
-    "chosen": "conda",
+    "chosen": null,
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": "investigation_contradicted"
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
-   "probe_evidence": "CANONICALIZATION PROVES THE SPLIT (curl -sI):\n  pyranges/pyranges1 -> 200 (canonical, distinct)\n  pyranges/pyranges0 -> 200 (canonical, distinct)\n  pyranges/pyranges  -> 301 -> pyranges/pyranges0\n=> pyranges1 NEVER converges to pyranges0.\n\nLIVE (miniforge; rate_limit before=26 after=24 \u2014 quota REMAINING):\n$ R.resolve(tool='pyranges', github_repo='pyranges/pyranges1')\n  chosen      : 'conda'\n  install_call: 'install_conda_packages(env, [{\"spec\": \"pyranges=0.1.4\", \"channel\": \"bioconda\"}])'\n  identity    : {\"confirmed\": true, \"anchor\": \"bioconda-channel\", \"note\": \"\"}\n  ambiguous   : False\n  collisions  : [{... \"does not reference github_repo 'pyranges/pyranges1'; likely a same-name unrelated package.\"}]\n\nBYTE-COMPARE vs the pyranges0 row, both run live this session: both chosen='conda', both install pyranges=0.1.4, both identity {confirmed:true, anchor:'bioconda-channel', note:''}, both emit the same collision. ONLY the echoed repo string differs => the resolver provably cannot distinguish 'the user is right' from 'the user asked for different software', and ships the v0 API to someone who asked for v1.\n\nDERIVABILITY: conda/bioconda pyranges dev_url='https://github.com/endrebak/pyranges' -> 301 -> pyranges0 != pyranges1. The refusal is implementable from data already fetched."
+   "probe_evidence": "FORK-ANCHOR (2026-07-18): declared-repo contradiction via LIVE canonicalization.\n$ R.probe_github('pyranges/pyranges1') -> {'repo_exists':True,'is_fork':False}  # a distinct v1 rewrite, NOT a fork of pyranges0\n$ R._canon_repo('endrebak/pyranges') -> ('pyranges/pyranges0','ok')  # bioconda dev_url, 301-followed\n  user canon 'pyranges/pyranges1' != conda canon 'pyranges/pyranges0', and no fork edge => distinct live lineages\n$ R.resolve(tool='pyranges', github_repo='pyranges/pyranges1')\n  chosen: None ; refusal_reason: 'investigation_contradicted'\n  declared_repo_contradiction: {'user_repo':'pyranges/pyranges1','registry_repo':'pyranges/pyranges0','registry_tier':'conda'}\n=> REFUSE AND ASK. UNCHECKED-safe: had canon(conda_repo) rate-limited (status 'error') it keeps conda +\n   discloses rather than manufacturing this contradiction \u2014 the Rule-2 guard against rendering unchecked as fact."
   },
   {
    "id": "version-miss-is-the-signal-not-a-gap",
