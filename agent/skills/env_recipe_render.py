@@ -21,14 +21,29 @@ Pure assembly — no docker, no network, no clock. Deterministic given its input
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from agent.models.core_data import shipped_binaries as _shipped_binaries
+from agent.models.core_data import tool_identities as _tool_identities
 
 
 # ---------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------
+def _md_inline(s: str) -> str:
+    """Neutralize an UNTRUSTED registry blurb for safe INLINE Markdown. This module writes
+    raw Markdown (no HTML-escaping layer, unlike the ENV report), so a registry-controlled
+    package summary must not break out of plain prose. Collapse whitespace, defuse backticks
+    (a code-span toggle), and backslash-escape the link/image/inline-HTML metacharacters
+    `[ ] ( ) ! < >` — otherwise a Summary like `![x](http://attacker/t.png)` renders as an
+    auto-loading image (viewer-IP leak) and `[click](http://attacker/x.sh)` as a live link
+    in a doc we ship as reproducible-by-anyone. Backslash-escaping is valid CommonMark and
+    renders the literal characters."""
+    t = re.sub(r"\s+", " ", (s or "")).strip().replace("`", "'")
+    return re.sub(r"([\[\]()!<>])", r"\\\1", t)
+
+
 def _fence(lines: list[str], lang: str = "bash") -> list[str]:
     return [f"```{lang}", *lines, "```", ""]
 
@@ -368,6 +383,20 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
         L += [f"**SBOM:** {len(rp)} resolved packages (conda/pip closure) · "
               f"{len(syp)} system (apt) packages — full versioned list in the "
               "`*.attestation.json` / `_env_cache_entry.json`.", ""]
+
+    # IDENTITY DISCLOSURE (audit #8) — the tool's OWN words, self-described + UNVERIFIED.
+    # Prefer the recipe's copy (travels with the reproduction bytes); fall back to the record.
+    idents = _tool_identities(recipe) or _tool_identities(record)
+    described = [i for i in idents if i.self_description]
+    if described:
+        L += ["**What each tool says it is** — *self-described, unverified.* Each line is the "
+              "package's OWN one-line description from the registry it shipped from: a claim to "
+              "READ, not a validated capability. It is here so a wrong-domain match is catchable "
+              "(a `cellranger` that turns out to be a spreadsheet-range parser).", ""]
+        for i in described:
+            src = f" _({i.source})_" if i.source else ""
+            L += [f"- `{i.tool}`{src}: {_md_inline(i.self_description)}"]
+        L += [""]
 
     # Verify
     L += ["## Verify what you rebuilt", "",

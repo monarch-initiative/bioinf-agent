@@ -222,6 +222,38 @@ def _pick_latest(versions: list, latest_hint: str = "") -> str:
     return pool[-1] if pool else ""
 
 
+def _version_present(requested: str, versions: list) -> bool:
+    """Is `requested` among `versions`? Compares by PEP440 normalization so a request for
+    `1.0` matches a stored `1.0.0` (PyPI normalises), with an exact-string fallback for
+    versions neither side can parse (serials, odd build strings). Absence of the list is
+    NOT handled here — the caller only asks when it HAS a list, because an unfetched list
+    is 'we don't know', not 'the version is missing'."""
+    if not requested or not versions:
+        return False
+    rk = _version_key(requested)
+    if rk is not None:
+        for v in versions:
+            vk = _version_key(str(v))
+            if vk is not None and vk == rk:
+                return True
+    return str(requested) in {str(v) for v in versions}
+
+
+def _nearest_versions(requested: str, versions: list, n: int = 4) -> list[str]:
+    """The available versions bracketing `requested` by PEP440 order — a 'did you mean'
+    hint for a typo'd/absent pin. Falls back to the latest few when nothing sorts."""
+    parsed = sorted(((k, str(v)) for v in versions if (k := _version_key(str(v))) is not None),
+                    key=lambda kv: kv[0])
+    strs = [s for _, s in parsed]
+    rk = _version_key(requested)
+    if rk is None or not parsed:
+        return [str(v) for v in versions][-n:]
+    import bisect
+    i = bisect.bisect_left([k for k, _ in parsed], rk)
+    lo = max(0, i - n // 2)
+    return strs[lo:lo + n]
+
+
 def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     """Available on bioconda or conda-forge? Probes BOTH channels and picks the one
     with the higher REAL version — guards against an abandoned date-versioned build
@@ -253,9 +285,14 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
                         repo = f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
                         field = f
                         break
-                best = (key, channel, ver, data.get("summary") or "", repo, field)
+                best = (key, channel, ver, data.get("summary") or "", repo, field,
+                        [str(v) for v in data["versions"]])
     if best:
-        out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3]}
+        # `versions` = the WINNING channel's full list, so a version-existence check compares
+        # against the channel actually being emitted (bioconda's abandoned hmmlearn ≠
+        # conda-forge's maintained one — the pick already resolved that, and the list follows it).
+        out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3],
+               "versions": best[6]}
         if best[4]:
             out["repo"] = best[4]
             out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
@@ -283,9 +320,17 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     data, err = _fetch_json(f"https://pypi.org/pypi/{name}/json", timeout)
     if isinstance(data, dict) and data.get("info"):
         info = data["info"]
+        # A version whose files are ALL yanked is effectively absent — installing it fails —
+        # so it must not count as present in a version-existence check (anndata 0.12.15 was
+        # 'released against the wrong branch' and yanked). A version with no files at all is
+        # likewise not installable. releases: {version: [file, ...]}.
+        rel = data.get("releases") or {}
+        versions = [v for v, files in rel.items()
+                    if files and any(not f.get("yanked") for f in files)]
         return {
             "available": True,
             "latest": info.get("version"),
+            "versions": versions,
             "summary": (info.get("summary") or "").strip(),
             "home_page": info.get("home_page") or "",
             "project_urls": info.get("project_urls") or {},
@@ -369,8 +414,18 @@ def _cran_anchored_to_repo(probe: dict, github_repo: str) -> bool:
 
 def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     """For a github 'owner/repo': does it exist (→ source tier) and does its
-    latest release carry downloadable assets (→ binary tier)?"""
-    out = {"repo_exists": False, "has_release_assets": False, "assets": []}
+    latest release carry downloadable assets (→ binary tier)?
+
+    Also captures the fork lineage the response ALREADY carries but used to discard —
+    `is_fork` / `parent` (immediate) / `upstream` (GitHub's `source`, the fork-chain
+    ROOT) / `full_name` (canonical, after the 301 a renamed/transferred repo issues) /
+    `default_branch`. These feed the fork-anchor in resolve(): a user who names a
+    divergent fork must not silently receive the registry's build of the PARENT. Free —
+    no extra call. (`source` is renamed to `upstream` to avoid colliding with the
+    `source` install-TIER concept.)"""
+    out = {"repo_exists": False, "has_release_assets": False, "assets": [],
+           "is_fork": False, "parent": "", "upstream": "", "full_name": "",
+           "default_branch": ""}
     if not repo or "/" not in repo:
         return out
     data, err = _fetch_json(f"https://api.github.com/repos/{repo}", timeout)
@@ -384,6 +439,11 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     if data is None:
         return out                               # GitHub answered: no such repo
     out["repo_exists"] = True
+    out["is_fork"] = bool(data.get("fork"))
+    out["parent"] = ((data.get("parent") or {}).get("full_name") or "")
+    out["upstream"] = ((data.get("source") or {}).get("full_name") or "")
+    out["full_name"] = (data.get("full_name") or repo)   # canonical (301 followed)
+    out["default_branch"] = (data.get("default_branch") or "")
     rel, rel_err = _fetch_json(
         f"https://api.github.com/repos/{repo}/releases/latest", timeout)
     if rel_err:
@@ -395,6 +455,69 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
         out["assets"] = assets[:10]
         out["tag"] = rel.get("tag_name")
     return out
+
+
+def _canon_repo(repo: str, timeout: int = 12) -> tuple[str, str]:
+    """Canonicalize an 'owner/repo' to GitHub's own `full_name`, following the 301 a
+    renamed/transferred repo issues (endrebak/pyranges → pyranges/pyranges0;
+    theislab/scanpy → scverse/scanpy). Returns `(canonical_lower, status)` where status is:
+
+      "ok"     — a 200; canonical_lower is the authoritative full_name, lowercased.
+      "absent" — GitHub answered 404; the repo does not exist under that name (a FACT).
+      "error"  — the probe never answered (rate-limit/timeout); UNCHECKED.
+
+    The status is the whole point: the fork-anchor may only call a repo mismatch a
+    CONTRADICTION when BOTH sides are "ok". An "absent" or "error" canon means we could
+    not establish a distinct live lineage, so the caller degrades to keep-conda-and-
+    disclose — never a refuse. (Rendering UNCHECKED as a contradiction is the exact
+    Rule-2 violation this seam exists to prevent; a bare raw-lowercase fallback would do
+    precisely that under the 60/hr quota.)"""
+    norm = (repo or "").strip().strip("/").lower()
+    if not norm or "/" not in norm:
+        return norm, "absent"
+    data, err = _fetch_json(f"https://api.github.com/repos/{repo.strip().strip('/')}", timeout)
+    if err:
+        return norm, "error"
+    if data is None:
+        return norm, "absent"
+    return (data.get("full_name") or norm).lower(), "ok"
+
+
+def _fork_diverges(parent_repo: str, fork_full_name: str, fork_default: str,
+                   timeout: int = 12) -> tuple[Optional[bool], str]:
+    """Does `fork_full_name` carry commits its `parent_repo` does not? Compares each
+    side's ACTUAL default branch (a fork on `main` vs a parent on `master` is the common
+    trap that makes a naive default...default compare 404). Returns `(diverged, error)`:
+
+      (True,  "")      — GitHub compare status is "ahead" or "diverged": the fork has its
+                         own commits. The user who named it opted into that divergence.
+      (False, "")      — status "identical" or "behind": a pristine fork adds nothing, so
+                         the registry's build of the parent is equivalent — keep conda.
+      (None,  <err>)   — the parent lookup or the compare never answered (or 404'd on an
+                         unrelated-history/branch-name mismatch): UNCHECKED. The caller
+                         discloses and keeps conda; it never treats unchecked as pristine.
+
+    Reads the qualitative `status` ONLY — never ahead_by/behind_by, which drift."""
+    if not parent_repo or "/" not in parent_repo or not fork_full_name:
+        return None, "no_parent"
+    pdata, perr = _fetch_json(f"https://api.github.com/repos/{parent_repo}", timeout)
+    if perr:
+        return None, perr
+    if pdata is None:
+        return None, "parent_absent"
+    parent_default = pdata.get("default_branch") or "master"
+    parent_owner = parent_repo.split("/", 1)[0]
+    fork_owner = fork_full_name.split("/", 1)[0]
+    head_branch = fork_default or "master"
+    base = f"{parent_owner}:{parent_default}"
+    head = f"{fork_owner}:{head_branch}"
+    cmp_data, cmp_err = _fetch_json(
+        f"https://api.github.com/repos/{parent_repo}/compare/{base}...{head}", timeout)
+    if cmp_err:
+        return None, cmp_err
+    if not isinstance(cmp_data, dict) or not cmp_data.get("status"):
+        return None, "compare_unavailable"     # 404 = no common ancestor / bad branch name
+    return (cmp_data.get("status") in ("ahead", "diverged")), ""
 
 
 def probe_github_search(name: str, timeout: int = 12, limit: int = 5) -> dict[str, Any]:
@@ -576,6 +699,157 @@ def resolve_linux_asset(
                 "available": [url]}
     return {"found": True, "url": pick, "tag": "", "repo": "",
             "asset_name": pick.rsplit("/", 1)[-1]}
+
+
+# ---------------------------------------------------------------------------
+# BINARY-VERSION ANCHOR. A version-pinned request routed to the binary tier must
+# resolve to THAT version's release asset — never the LATEST release's bytes under
+# the requested version's name (the somalier 0.2.15→v0.3.3 bite: every integrity
+# signal passes while the WRONG version ships, sha256 + SLSA + .sif and all). The
+# probe_github fact the binary tier is built on reads releases/latest, so the
+# pinned version is invisible to it. These helpers locate the pinned release
+# DIRECTLY and drive both binary-tier availability and the emitted asset from it.
+# ---------------------------------------------------------------------------
+
+# mmseqs2 '15-6f452a0' — a bare version, a '-'/'_', then a git short hash. The separator is
+# '-'/'_' ONLY, NEVER '.': a DOTTED suffix is a minor version, not a build hash, and since
+# [0-9a-f] admits every decimal digit, '.' here would read '1.234567' (version 1.234567) as
+# "version 1 + build-hash 234567" — a silent over-match shipping a different release's bytes.
+_TAG_BUILDHASH_RE = re.compile(r"^(\d+)[-_][0-9a-f]{6,}$", re.I)   # e.g. mmseqs2 '15-6f452a0'
+
+
+def _strip_tag_prefix(tag: str, tool: str = "") -> str:
+    """Reduce a release tag to its version core: strip a leading 'v', a
+    '{tool}-'/'{tool}_'/'{tool}.'(+optional 'v') prefix, or a generic
+    'release-'/'rel-' prefix. 'Trinity-v2.15.1' → '2.15.1'; 'v0.2.15' → '0.2.15';
+    '15-6f452a0' → '15-6f452a0' (no alpha prefix — the build-hash matcher handles
+    it). Longest tool-prefix tried first so 'v' never wins over '{tool}-v'."""
+    s = (tag or "").strip()
+    low = s.lower()
+    prefixes: list[str] = []
+    t = (tool or "").lower().strip()
+    if t:
+        for sep in ("-", "_", "."):
+            prefixes += [f"{t}{sep}v", f"{t}{sep}"]
+    prefixes += ["release-", "release_", "rel-", "rel_", "v"]
+    for p in prefixes:
+        if low.startswith(p):
+            return s[len(p):]
+    return s
+
+
+def _tag_matches(requested: str, tag: str, tool: str = "") -> bool:
+    """Does release `tag` denote version `requested`? Layered, each rule SAFE
+    against OVER-match (the false-green risk — requesting '1' must never match
+    '1.2.3'; '2' must never match 'v2.28'; '0.2' must never match 'v0.2.15'):
+
+      1. raw equality
+      2. prefix-stripped equality  ('Trinity-v2.15.1' vs '2.15.1')
+      3. PEP440 equality           ('1.10' vs 'v1.10.0' — the normalization PyPI
+                                     and git tags disagree on)
+      4. bare-number ↔ 'N-<githash>'  (mmseqs2 '15' vs '15-6f452a0', ONLY when the
+                                     suffix is a sha-like hash — never a dotted minor)
+      5. separator-normalized equality, but ONLY for the build-hash form where NEITHER
+         side is PEP440-parseable ('15-6f452' vs requested '15.6f452') — a bare '15' can
+         never collapse into a dotted tag it isn't. If EITHER side parses as a real
+         version, rule 3's PEP440 verdict is authoritative and stands: '1.2-3' is
+         1.2.post3, a DIFFERENT release than '1.2.3', so normalizing '-'→'.' must not forge
+         a match rule 3 already refused."""
+    if not requested or not tag:
+        return False
+    req = str(requested).strip()
+    if tag == req:
+        return True
+    norm = _strip_tag_prefix(tag, tool)
+    if norm == req:
+        return True
+    rk, nk = _version_key(req), _version_key(norm)
+    if rk is not None and nk is not None and rk == nk:
+        return True
+    m = _TAG_BUILDHASH_RE.match(norm)
+    if m and m.group(1) == req:
+        return True
+    # Rule 5 is the LAST resort and only for the genuinely un-PEP440-parseable build-hash
+    # form. Gating on `rk is None and nk is None` is load-bearing: a request like '1.2.3'
+    # parses, so it must NEVER reach the crude '-'/'_'→'.' normalization that would equate it
+    # to '1.2-3' (=1.2.post3) or '1.2_3'. Both-None is exactly the '15.6f452'/'15-6f452' case
+    # rule 4 can't reach (the hash is <6 chars).
+    if (rk is None and nk is None
+            and any(c in req for c in "-_.") and any(c in norm for c in "-_.")
+            and norm.replace("-", ".").replace("_", ".")
+                == req.replace("-", ".").replace("_", ".")):
+        return True
+    return False
+
+
+def _release_for_version(repo: str, version: str, tool: str = "",
+                         target_os: str = "linux", target_arch: str = "amd64",
+                         timeout: int = 12) -> dict[str, Any]:
+    """Locate the GitHub release for a PINNED `version` in `repo` and its
+    ship-platform asset — the binary tier's honesty anchor. Answers "does THIS
+    repo ship THIS version as a downloadable {os}/{arch} binary?" so a pin is
+    never silently served the latest release's bytes. Returns {status, ...}:
+
+      match      {tag, asset, asset_name} — resolves to a real platform binary;
+                 PROCEED, pin this asset.
+      no_asset   {tag, assets}           — the release exists but ships no
+                 {os}/{arch} binary (source-only / foreign-OS / sidecars only);
+                 cannot honor the pin on this tier — refuse, don't substitute.
+      absent     {nearest, tags}         — no release matches across the fully-seen
+                 list (the somalier==9.99 analog for the binary tier).
+      incomplete {tags}                  — not on the newest 100 AND a direct tag
+                 lookup missed; page 2+ MAY hold it. UNCHECKED — disclose, never
+                 rendered as 'absent'.
+      error      {error}                 — the release list never fetched
+                 (rate-limit/timeout). UNCHECKED — never a refuse, never a
+                 latest-substitution ((payload,error) seam).
+
+    ONE GitHub call on the common path; a bounded ≤4 more only when the first page
+    is full (100) and misses — the >100-release repo. Only ever called on the
+    already-narrow version+github_repo path."""
+    if not repo or "/" not in repo or not version:
+        return {"status": "error", "error": "no repo/version"}
+    data, err = _fetch_json(
+        f"https://api.github.com/repos/{repo}/releases?per_page=100", timeout)
+    if err:
+        return {"status": "error", "error": err}
+    if not isinstance(data, list):
+        return {"status": "error", "error": "unexpected releases payload"}
+
+    def _asset_result(rel: dict) -> Optional[dict]:
+        assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
+                  if a.get("browser_download_url")]
+        pick = _pick_platform_asset(assets, target_os, target_arch)
+        if pick:
+            return {"status": "match", "tag": rel.get("tag_name") or "",
+                    "asset": pick, "asset_name": pick.rsplit("/", 1)[-1]}
+        return {"status": "no_asset", "tag": rel.get("tag_name") or "",
+                "assets": [a.rsplit("/", 1)[-1] for a in assets][:10]}
+
+    pairs = [(r.get("tag_name") or "", r) for r in data if isinstance(r, dict)]
+    for tag, rel in pairs:
+        if _tag_matches(version, tag, tool):
+            return _asset_result(rel)
+    # Not on page 1. A FULL page means older releases exist beyond it — try a
+    # bounded direct tag lookup for the common forms before giving up (resolves
+    # the >100-release exact-tag case without walking every page).
+    if len(data) >= 100:
+        cands = [version, f"v{version}"]
+        if tool:
+            cands += [f"{tool}-{version}", f"{tool}-v{version}"]
+        for cand in cands:
+            rel, terr = _fetch_json(
+                f"https://api.github.com/repos/{repo}/releases/tags/{cand}", timeout)
+            if terr:
+                return {"status": "error", "error": terr}
+            if isinstance(rel, dict) and rel.get("tag_name"):
+                return _asset_result(rel)
+        return {"status": "incomplete",
+                "tags": [_strip_tag_prefix(t, tool) for t, _ in pairs][:8]}
+    norms = [_strip_tag_prefix(t, tool) for t, _ in pairs if t]
+    return {"status": "absent",
+            "nearest": _nearest_versions(version, norms),
+            "tags": norms[:8]}
 
 
 def sha256_of_url(url: str, timeout: int = 600) -> dict[str, Any]:
@@ -825,6 +1099,63 @@ def unchecked_tiers(availability: dict[str, dict]) -> dict[str, str]:
     return out
 
 
+#: The refusal taxonomy. resolve() sets decision["refusal_reason"] to exactly one of these
+#: whenever `chosen` is None — the machine-readable WHY behind an ask, so a caller (and the
+#: intent corpus's earned-vs-lazy check) can tell an EARNED refusal from a lazy one. The three
+#: EARNED reasons map to the user's rule (feedback-earn-the-refusal): investigate first, then
+#: name (a) the user gave too little, or (b) we looked and came up empty / found contradicting
+#: evidence. The fourth, `investigation_incomplete`, is the honest state the (a)/(b) dichotomy
+#: omits: a probe we could NOT reach is not a probe that said no. Calling that
+#: `investigation_empty` would be the same lie the `unchecked_tiers` disclosure exists to
+#: prevent ("we did not find that there is nothing; we failed to look"), so it gets its own
+#: value — and the corpus leaves those rows unassertable rather than demand a settled reason
+#: for an unsettled investigation.
+REFUSAL_REASONS = ("needs_user_input", "investigation_empty",
+                   "investigation_contradicted", "investigation_incomplete")
+
+
+def _classify_refusal(decision: dict) -> str:
+    """Name WHY resolve() is refusing (chosen is None), from the structured signals the
+    resolve() body has already recorded on `decision`. Pure; reads only those keys.
+
+    Precedence is deliberate and load-bearing:
+
+    1. UNREACHABLE first. A tier whose probe never answered (`unchecked_tiers`) or a github
+       fallback search that itself failed (`discovery_error`) means the investigation did not
+       COMPLETE — no earned verdict is available. This outranks everything below because a
+       contradiction found on tier X does not make an UNREACHED tier Y known-absent; the
+       answer is still unsettled. It matches the resolve() body, which stamps exactly this
+       case 'NOT A REFUSAL — UNRESOLVED' rather than 'nothing found'.
+    2. CONTRADICTED. A same-name registry hit was disqualified because its metadata does not
+       reference the caller's authoritative repo (`cross_namespace_collisions`) — positive
+       contrary evidence, stronger than a bare empty.
+    3. NEEDS_USER_INPUT. Discovery surfaced candidate repos but none dominant enough to
+       auto-adopt (`discovered_repos`); the collision risk means we refuse to guess and ask
+       the user to confirm one.
+    4. EMPTY. Every reachable tier answered AND discovery reached and found nothing — the one
+       genuine dead end.
+    """
+    if (decision.get("unchecked_tiers") or decision.get("discovery_error")
+            or decision.get("binary_version_unchecked")):
+        # ...including a version pin the registry tier lacks whose pin-honoring binary tier
+        # we could NOT reach (rate-limit / >100-release pagination): the version might exist
+        # there, so the investigation did not COMPLETE — not a settled contradiction.
+        return "investigation_incomplete"
+    if (decision.get("cross_namespace_collisions") or decision.get("version_absent")
+            or decision.get("declared_repo_contradiction")):
+        # contrary evidence: a same-name hit that isn't the tool, a requested version the
+        # chosen tier verifiably does not carry, or a user-named repo that is a distinct live
+        # lineage from the one the registry builds — the request conflicts with reality.
+        return "investigation_contradicted"
+    if decision.get("discovered_repos"):
+        return "needs_user_input"
+    if decision.get("ambiguous"):
+        # a bare name that resolves on BOTH PyPI and CRAN — two ecosystems, no basis to
+        # choose. The user must name one (language=/prefer=); same class as discovered_repos.
+        return "needs_user_input"
+    return "investigation_empty"
+
+
 def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -> dict[str, Any]:
     """Pure: given per-tier availability, pick the tier and explain. `prefer`
     forces a tier when it is available. Returns chosen tier (or None), the
@@ -912,7 +1243,17 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "r_github":
         return f'install_r_package(env, "{tool}", source="github:{github_repo}")'
     if tier == "binary":
-        asset = (detail.get("assets") or ["<release-asset-url>"])[0]
+        # Prefer the version-anchored asset (the PINNED release's linux binary); else a
+        # platform-selected asset (never a raw assets[0], which can be a .sha256 sidecar or
+        # a foreign-OS build); else, when the version lookup was UNCHECKED, a loud
+        # verify-manually placeholder rather than latest's bytes masquerading as version v.
+        asset = detail.get("resolved_asset")
+        if not asset and version and detail.get("binary_version_unverified"):
+            asset = (f"<{tool} {version} linux asset — UNVERIFIED: enumerate "
+                     f"https://github.com/{github_repo}/releases; do NOT use latest>")
+        if not asset:
+            asset = (_pick_platform_asset(detail.get("assets") or [])
+                     or (detail.get("assets") or ["<release-asset-url>"])[0])
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
     if tier == "synthesis":
         url = f"https://github.com/{github_repo}" if github_repo else "<repo-or-archive-url>"
@@ -1013,6 +1354,7 @@ def resolve(
         availability["pip"]   = probe_pypi(tool, timeout)
         availability["cran"]  = probe_cran(tool, timeout)
 
+    binary_ver: Optional[dict] = None   # BINARY-VERSION ANCHOR (set below when version + repo)
     if github_repo:
         gh = probe_github(github_repo, timeout)
         availability["binary"]    = {"available": gh["has_release_assets"], **gh}
@@ -1026,6 +1368,29 @@ def resolve(
         # bare github repo could be anything); ranks above synthesis via TIER_ORDER.
         if language == "r":
             availability["r_github"] = {"available": gh["repo_exists"], **gh}
+        # BINARY-VERSION ANCHOR. probe_github read releases/LATEST, so a version pin is
+        # invisible to it — the binary tier would ship latest's bytes under the requested
+        # version's name (somalier 0.2.15→v0.3.3, fully green). When a version is pinned,
+        # decide the binary tier from the PINNED release instead of latest: available (with
+        # the exact asset) IFF that version ships a linux binary here; NOT available if it
+        # doesn't (so the tier can't win and then substitute); latest-derived but FLAGGED
+        # when the lookup was UNCHECKED (so the emitted call never claims latest IS version X).
+        if version and gh.get("repo_exists") and not gh.get("probe_error"):
+            binary_ver = _release_for_version(github_repo, version, tool, timeout=timeout)
+            if binary_ver["status"] == "match":
+                availability["binary"] = {
+                    **availability["binary"], "available": True,
+                    "resolved_asset": binary_ver["asset"],
+                    "resolved_tag": binary_ver["tag"], "binary_version": binary_ver}
+            elif binary_ver["status"] in ("absent", "no_asset"):
+                availability["binary"] = {
+                    **availability["binary"], "available": False,
+                    "binary_version": binary_ver}
+            else:   # error / incomplete → UNCHECKED: keep the latest-derived availability
+                    # but flag it, so _install_call emits a verify-manually placeholder rather
+                    # than latest's asset masquerading as the pinned version.
+                availability["binary"] = {
+                    **availability["binary"], "binary_version_unverified": binary_ver}
 
     # AUTHORS' OWN RESOURCES (the reliability gate). Find the tool's repo — explicit or
     # extracted from registry metadata — and ask: does the tool publish an image, and
@@ -1113,6 +1478,58 @@ def resolve(
                                         "available": False,
                                         "cross_namespace_collision": True}
 
+    # FORK-ANCHOR / DECLARED-REPO RECONCILIATION. A user-supplied github_repo is
+    # authoritative intent. If a registry tier would build a DIFFERENT project than the one
+    # named, it must not win silently. Three outcomes, split by the fork edge:
+    #   • a DIVERGENT FORK of a packaged tool → the user opted into the fork's changes (the
+    #     Talos bcftools-csq bite), so disqualify the registry tiers and route to the fork's
+    #     own build (synthesis/source);
+    #   • a DISTINCT same-name lineage (not a fork) → a contradiction we REFUSE and ask about;
+    #   • CONVERGENCE (same repo after a 301-follow) → inert, conda wins as today.
+    # UNCHECKED (a probe that never answered) NEVER refuses and NEVER reroutes: it discloses
+    # and keeps conda, because rendering "we could not look" as "the repos conflict" is the
+    # Rule-2 lie the (payload,error) seam exists to prevent. Costs at most two GitHub calls
+    # (canon(conda_repo) + one compare), and only on the already-narrow github_repo path.
+    fork_divergence: dict = {}
+    declared_repo_contradiction: dict = {}
+    fork_disclosure = ""
+    if github_repo and gh.get("repo_exists") and not gh.get("probe_error"):
+        cu = (gh.get("full_name") or github_repo).strip().strip("/").lower()
+        conda_av = availability.get("conda", {})
+        r_conda = conda_av.get("repo", "") if conda_av.get("available") else ""
+        cc, cc_status = _canon_repo(r_conda, timeout) if r_conda else ("", "none")
+        if r_conda and cc_status == "ok" and cu == cc:
+            pass                                       # CONVERGE — conda builds this repo.
+        elif gh.get("is_fork"):
+            # Reroute ONLY on a CONFIRMED divergence from the fork's own parent (independent of
+            # whether conda declared a repo — a divergent fork is a hard pin either way).
+            parent = gh.get("parent") or gh.get("upstream")
+            diverged, div_err = _fork_diverges(
+                parent, gh.get("full_name") or github_repo, gh.get("default_branch"), timeout)
+            if diverged is True:
+                fork_divergence = {"fork": cu, "parent": parent, "status": "diverged",
+                                   "registry_repo": (cc if cc_status == "ok" else r_conda) or None}
+                for t in ("conda", "pip", "cran", "bioconductor"):
+                    if availability.get(t, {}).get("available"):
+                        availability[t] = {**availability[t], "available": False,
+                                           "fork_divergence_disqualified": True}
+            elif div_err:
+                fork_disclosure = (
+                    f"you named a fork ({cu}); its divergence from {parent or 'its parent'} could "
+                    f"not be verified ({div_err}) — keeping conda; re-run, or pass "
+                    f"prefer='synthesis' if the fork's changes are the point.")
+            # diverged is False → a pristine fork adds nothing; conda's build is equivalent.
+        elif r_conda and cc_status == "ok" and cu != cc:
+            # NOT a fork, both repos live, canonicals differ → distinct same-name lineages that
+            # nothing reconciles. Refuse and ASK (handled by the nuller after rank_decision).
+            declared_repo_contradiction = {"user_repo": cu, "registry_repo": cc,
+                                           "registry_tier": "conda"}
+        elif r_conda and cc_status in ("error", "absent") and cu != (cc or ""):
+            fork_disclosure = (
+                f"the conda recipe names {r_conda} but you named {cu}; whether they are the same "
+                f"project could not be verified ({cc_status}) — keeping conda; re-run or pass "
+                f"prefer='synthesis' to build the repo you named.")
+
     decision = rank_decision(availability, prefer=prefer)
 
     # DISCOVERY: the registries dead-ended and no repo was supplied. Instead of
@@ -1176,6 +1593,147 @@ def resolve(
 
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
+    # GENUINE AMBIGUITY IS A REFUSAL, not a quiet guess. A bare name that resolves on BOTH
+    # PyPI and CRAN is two different packages in two ecosystems (PyPI `ape` build-system ≠
+    # CRAN `ape` phylogenetics). With no language/prefer hint and no conda pick to
+    # disambiguate in-context, tipping to pip is exactly the confident-wrong-ecosystem pick
+    # that ships the wrong tool green — so null it and ASK (refusal_reason=needs_user_input;
+    # the AMBIGUOUS rationale below already says how). conda winning IS a disambiguator (the
+    # bioinformatics-channel package), so only a pip/cran pick is nulled; `available` keeps
+    # BOTH tiers so the caller sees the two options it must choose between.
+    if ambiguous and chosen != "conda":
+        chosen = None
+        decision["chosen"] = None
+    # VERSION EXISTENCE. A requested version the chosen tier does NOT carry must not be
+    # emitted as a byte-identical pin — `install_conda_packages(samtools=9.99)` looks
+    # exactly like a valid `samtools=1.21` but never solves. Refuse and name the nearest
+    # real versions. Only conda/pip surface a version list; a tier that doesn't (cran /
+    # bioconductor / a probe that couldn't fetch it) is left ALONE — no list is 'we don't
+    # know', never 'the version is missing'. Runs only on a still-live pick, so an already-
+    # refused ambiguous call is not second-guessed.
+    if version and chosen in ("conda", "pip"):
+        vs = availability.get(chosen, {}).get("versions") or []
+        if vs and not _version_present(version, vs):
+            if binary_ver and binary_ver.get("status") == "match":
+                # conda/pip does NOT carry this version, but the user-named repo ships it as
+                # a binary — route there rather than refuse a version that plainly EXISTS
+                # (bioconda skips somalier 0.2.16 while brentp/somalier ships v0.2.16). NOT a
+                # silent switch: the reroute is disclosed and rests on a 200 + a real asset.
+                prior = chosen
+                chosen = "binary"
+                decision["chosen"] = "binary"
+                decision["binary_version_reroute"] = {
+                    "from": prior, "requested": version, "resolved_tag": binary_ver["tag"]}
+                decision["rationale"] = (
+                    f"{prior.upper()} LACKS {tool}=={version}, but {github_repo} ships it as a "
+                    f"binary (release {binary_ver['tag']}) — routing to the binary tier to honor "
+                    f"the pin. || " + decision.get("rationale", ""))
+            else:
+                nearest = _nearest_versions(version, vs)
+                # If the named repo was ALSO checked and can't deliver the pin, say so — the
+                # refusal then reflects the whole investigation, not just the registry tier.
+                # But an error/incomplete release lookup is UNCHECKED, NOT a "checked": it must
+                # not be rendered as a settled fact (binary_checked stays False), it gets its own
+                # UNCHECKED disclosure, and it is recorded so _classify_refusal downgrades the
+                # refusal to investigation_incomplete — a pin-honoring tier we could NOT reach
+                # does not make the version known-absent (the UNREACHABLE-first doctrine).
+                bstat = binary_ver.get("status") if binary_ver else None
+                also = ""
+                if bstat in ("absent", "no_asset"):
+                    also = (f" The named repo {github_repo} was also checked: "
+                            + ("no release matches this version."
+                               if bstat == "absent"
+                               else f"release {binary_ver.get('tag','')} exists but ships no "
+                                    f"linux/amd64 binary."))
+                elif bstat in ("error", "incomplete"):
+                    why = binary_ver.get("error", "release list truncated at 100; page 2+ may hold it")
+                    also = (f" The named repo {github_repo} could NOT be checked for this version "
+                            f"({why}) — UNCHECKED, not absent; {version} may ship there as a binary.")
+                    decision["binary_version_unchecked"] = binary_ver
+                decision["version_absent"] = {
+                    "tier": chosen, "requested": version,
+                    "channel": availability.get(chosen, {}).get("channel", ""),
+                    # TRUE only when the release lookup actually CONCLUDED (a 'match' would have
+                    # rerouted above, so absent/no_asset are the only concluded states here).
+                    "nearest": nearest, "binary_checked": bstat in ("absent", "no_asset")}
+                tail = ("Emitting it would be a real-looking but UNSOLVABLE pin, byte-identical "
+                        "to a valid one — refuse and pick an existing version."
+                        if bstat not in ("error", "incomplete") else
+                        f"conda/pip lacks it and the binary tier that could carry it was "
+                        f"UNCHECKED — re-run (or fetch the {version} asset explicitly) rather "
+                        f"than silently switching to a nearby version.")
+                decision["rationale"] = (
+                    f"VERSION NOT FOUND on {chosen}: no {tool}=={version} "
+                    f"(nearest real: {', '.join(nearest) or '—'}).{also} {tail} || "
+                    + decision.get("rationale", ""))
+                chosen = None
+                decision["chosen"] = None
+    # FORK-ANCHOR outcomes (computed before rank_decision; applied to the ranked decision).
+    if fork_divergence:
+        decision["fork_divergence"] = fork_divergence
+        decision["rationale"] = (
+            f"FORK PIN: you named {fork_divergence['fork']}, which DIVERGES from its parent "
+            f"{fork_divergence['parent']} — the registry tiers build the parent, so they were "
+            f"disqualified; routing to the fork's own build. || " + decision.get("rationale", ""))
+    if declared_repo_contradiction and chosen in ("conda", "pip", "cran", "bioconductor"):
+        # A distinct same-name lineage the user did NOT name. Refuse and ASK rather than
+        # silently build the other project (investigation_contradicted via _classify_refusal).
+        decision["declared_repo_contradiction"] = declared_repo_contradiction
+        decision["rationale"] = (
+            f"DECLARED-REPO CONTRADICTION: you named "
+            f"{declared_repo_contradiction['user_repo']}, but the "
+            f"{declared_repo_contradiction['registry_tier']} package is built from "
+            f"{declared_repo_contradiction['registry_repo']} — distinct same-name projects with "
+            f"no fork edge between them. Refusing rather than building the other one: proceed via "
+            f"{declared_repo_contradiction['registry_tier']} for the packaged line, or pass "
+            f"prefer='synthesis'/language= to build the repo you named. || "
+            + decision.get("rationale", ""))
+        chosen = None
+        decision["chosen"] = None
+    if fork_disclosure:
+        decision["rationale"] = decision.get("rationale", "") + "  NOTE: " + fork_disclosure
+    # BINARY-VERSION disclosures. Two honest-non-refusal cases the version pin creates:
+    if binary_ver:
+        bstat = binary_ver.get("status")
+        if chosen == "binary" and bstat in ("error", "incomplete"):
+            # UNCHECKED: we kept the binary pick (no silent tier switch) but could NOT confirm
+            # the pinned version's asset. The install_call carries a verify-manually placeholder,
+            # not latest's bytes — say why, and that this is NOT a claim the version is absent.
+            why = binary_ver.get("error", "release list truncated at 100; the version may be older")
+            decision["binary_version_unverified"] = binary_ver
+            decision["rationale"] = (
+                f"BINARY VERSION UNVERIFIED: could not confirm {tool}=={version} in "
+                f"{github_repo}'s releases ({why}) — NOT using latest's bytes; fetch the "
+                f"{version} asset from https://github.com/{github_repo}/releases and pass it "
+                f"explicitly. This is UNCHECKED, not 'version absent'. || "
+                + decision.get("rationale", ""))
+        elif bstat in ("error", "incomplete") and chosen in ("synthesis", "source"):
+            # UNCHECKED and binary did NOT win: latest ships no linux asset (a CHECKED fact →
+            # tier unavailable-from-latest) AND the pinned-release lookup did not complete. The
+            # CHECKED-absent fallthrough below IS disclosed, so staying silent on this
+            # strictly-weaker-knowledge case is a backwards asymmetry — and a prefer='binary'
+            # here is reported merely 'not available', which is UNCHECKED for this pin, not
+            # settled. Disclose + surface the fact machine-readably (mirroring the chosen==binary
+            # path). No tier/bytes change — the unchecked lookup can only PROMOTE binary, never
+            # demote it, so synthesis was the pick regardless; this only names what we couldn't see.
+            why = binary_ver.get("error", "release list truncated at 100; the version may be older")
+            decision["binary_version_unverified"] = binary_ver
+            decision["rationale"] = (
+                f"NOTE: the binary tier was UNCHECKED for {tool}=={version} ({why}) — "
+                f"{github_repo}'s latest release ships no linux/amd64 binary AND the pinned "
+                f"release could not be reached, so a {version} binary MAY exist there; {chosen} "
+                f"builds from a repo ref instead. UNCHECKED, not 'no binary' — re-run to confirm. "
+                f"|| " + decision.get("rationale", ""))
+        elif bstat in ("absent", "no_asset") and chosen in ("synthesis", "source"):
+            # The pin isn't deliverable as a binary, so the binary tier went unavailable and we
+            # fell to synthesis/source — which build a REF, not this version's release asset.
+            # Disclose so the fallthrough isn't silent (the reader may want a different version).
+            decision["rationale"] = (
+                f"NOTE: {github_repo} has no linux/amd64 binary for {tool}=={version} "
+                + ("(no release matches this version)" if bstat == "absent"
+                   else f"(release {binary_ver.get('tag','')} ships no such asset)")
+                + f" — the binary tier is unavailable for this pin; {chosen} builds from a repo "
+                f"ref, so confirm it targets {version}. || " + decision.get("rationale", ""))
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
@@ -1195,7 +1753,7 @@ def resolve(
     # shortcut in the rationale: freeze ADOPTS it (no build), and an agent can go straight to
     # freeze_from_image and skip building a host env for a single-tool ask. (The author_image
     # case already IS the pick, so its adopt_call is the install_call — no duplicate note.)
-    if pull.get("found") and pull.get("source") == "biocontainer" and chosen != "author_image":
+    if chosen and pull.get("found") and pull.get("source") == "biocontainer" and chosen != "author_image":
         decision["rationale"] = (
             f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
             f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
@@ -1223,6 +1781,7 @@ def resolve(
     # and therefore vanished on every refusal — the one outcome where it matters most).
     decision["identity"] = None
     decision["install_call"] = None
+    decision["refusal_reason"] = None
     if chosen:
         # FACTS, not a verdict. The resolver surfaces the entry's self-description +
         # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
@@ -1232,6 +1791,13 @@ def resolve(
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
+    else:
+        # chosen is None ⇒ a refusal (install_call is None IFF chosen is None). STATE the
+        # machine-readable WHY, not just the absence — so a reader, and the intent corpus's
+        # earned-vs-lazy check, gets the reason behind the ask. Read from the signals the
+        # body already recorded above (unchecked_tiers @ update, discovery_error, collisions,
+        # discovered_repos); the auto-adopt early-return threads its own via the recursion.
+        decision["refusal_reason"] = _classify_refusal(decision)
 
     # A TIER WE COULD NOT REACH IS NOT A TIER THAT SAID NO. Ranking silently skips an
     # unchecked tier, so the answer reads as "the best there is" while meaning "the best of

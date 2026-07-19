@@ -241,3 +241,211 @@ def test_a_failed_discovery_probe_is_not_reported_as_an_unfindable_tool(monkeypa
     assert d["discovery_error"] == "rate_limited"
     assert "we established nothing" in d["rationale"]
     assert "GITHUB_TOKEN" in d["rationale"]      # the actionable next step, not just blame
+
+
+# ---------------------------------------------------------------------------
+# refusal_reason — the machine-readable WHY behind an ask (feedback-earn-the-refusal)
+#
+# `chosen: None` alone cannot tell an EARNED refusal from a LAZY one — a refusal that
+# never investigated satisfies it perfectly. So a refusal now names its reason from the
+# structured signals the resolve() body already recorded. These drive the REAL resolve
+# path (stubbed only at the probe seam) so the classifier is tested against the decision
+# the code actually builds, not a hand-made dict. The load-bearing distinction is
+# UNREACHABLE (investigation_incomplete) vs ABSENT (investigation_empty): the same
+# "we failed to look" ≠ "there is nothing" that the whole probe-honesty file exists for.
+# ---------------------------------------------------------------------------
+def test_refusal_reason_is_empty_when_every_tier_answered_and_found_nothing(monkeypatch):
+    """The one genuine dead end: reachable tiers all missed AND discovery reached and
+    found nothing. Only here may we claim 'we looked and there is nothing'."""
+    _stub_probes(monkeypatch)          # every registry: a clean, CHECKED miss
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": False, "candidates": []})
+    d = R.resolve("nope-not-a-tool")
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "investigation_empty"
+
+
+def test_refusal_reason_is_incomplete_when_a_higher_tier_was_unreachable(monkeypatch):
+    """An unreachable probe is not a probe that said no. Calling that 'empty' is the exact
+    lie this file exists to prevent, so it gets its own reason — never investigation_empty."""
+    _stub_probes(monkeypatch, conda={"available": False, "probe_error": "rate_limited"})
+    # discovery is skipped on an UNCHECKED dead-end, so no need to stub probe_github_search
+    d = R.resolve("samtools")
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "investigation_incomplete"
+
+
+def test_refusal_reason_is_incomplete_when_the_discovery_probe_itself_failed(monkeypatch):
+    """The github fallback search failing is also an incomplete investigation — 'found
+    nothing' is unavailable as a claim when the search never answered."""
+    _stub_probes(monkeypatch)
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": False, "candidates": [],
+                                         "probe_error": "rate_limited"})
+    d = R.resolve("gapit3")
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "investigation_incomplete"
+
+
+def test_refusal_reason_is_contradicted_when_a_same_name_hit_is_disqualified(monkeypatch):
+    """github_repo is authoritative intent. A same-name PyPI hit whose metadata does not
+    reference it is positive CONTRARY evidence — stronger than a bare empty."""
+    _stub_probes(monkeypatch,
+                 pip={"available": True, "latest": "1.0",
+                      "summary": "an unrelated same-name package"})
+    monkeypatch.setattr(R, "probe_github",
+                        lambda r, t=12: {"repo_exists": False,
+                                         "has_release_assets": False, "assets": []})
+    d = R.resolve("thing", github_repo="acme/thing")
+    assert d["chosen"] is None
+    assert d["cross_namespace_collisions"], "the collision guard must have fired"
+    assert d["refusal_reason"] == "investigation_contradicted"
+
+
+def test_refusal_reason_is_needs_user_input_when_discovery_found_only_weak_candidates(monkeypatch):
+    """Discovery surfaced candidate repos but none dominant enough to auto-adopt (the
+    same-name-repo-is-still-a-guess risk). We refuse to guess and ask the user to confirm."""
+    _stub_probes(monkeypatch)
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": True,
+                                         "candidates": [{"repo": "stranger/thinglike",
+                                                         "stars": 3,
+                                                         "exact_name_match": False}]})
+    d = R.resolve("gapit3")
+    assert d["chosen"] is None
+    assert d["discovered_repos"], "discovery must have surfaced candidates"
+    assert d["refusal_reason"] == "needs_user_input"
+
+
+def test_refusal_reason_unreachable_outranks_contradicted(monkeypatch):
+    """Precedence: a contradiction found on one tier does not make an UNREACHED tier
+    known-absent — the answer is still unsettled, so incomplete wins."""
+    _stub_probes(monkeypatch,
+                 conda={"available": False, "probe_error": "rate_limited"},
+                 pip={"available": True, "latest": "1.0",
+                      "summary": "an unrelated same-name package"})
+    monkeypatch.setattr(R, "probe_github",
+                        lambda r, t=12: {"repo_exists": False,
+                                         "has_release_assets": False, "assets": []})
+    d = R.resolve("thing", github_repo="acme/thing")
+    assert d["chosen"] is None
+    assert d["unchecked_tiers"] and d["cross_namespace_collisions"]
+    assert d["refusal_reason"] == "investigation_incomplete"
+
+
+def test_a_non_refusal_carries_no_refusal_reason(monkeypatch):
+    """refusal_reason is stated (None) on a successful pick, never omitted — the same
+    STATE-the-absence rule the identity/install_call fields follow one block over."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "summary": "Tools for dealing with SAM, BAM and CRAM files"})
+    d = R.resolve("samtools")
+    assert d["chosen"] == "conda"
+    assert "refusal_reason" in d and d["refusal_reason"] is None
+
+
+def test_a_pypi_cran_name_collision_refuses_instead_of_tipping_to_pip(monkeypatch):
+    """A bare name on BOTH PyPI and CRAN is two different packages (PyPI `ape`
+    build-system ≠ CRAN `ape` phylogenetics). With no language hint and no conda pick,
+    tipping to pip is a confident wrong-ecosystem guess — refuse and ASK."""
+    _stub_probes(monkeypatch,
+                 pip={"available": True, "latest": "0.7", "summary": "a python build tool"},
+                 cran={"available": True, "latest": "5.7", "summary": "phylogenetics in R"})
+    d = R.resolve("ape")
+    assert d["chosen"] is None            # NOT pip — the collision is unresolved
+    assert d["ambiguous"] is True
+    assert d["refusal_reason"] == "needs_user_input"
+    assert d["install_call"] is None      # no wrong-ecosystem call handed to the caller
+    # both options stay visible so the caller knows what to disambiguate between
+    assert "language" in d["rationale"]
+
+
+def test_a_language_hint_dissolves_the_collision_and_picks(monkeypatch):
+    """The ask is cheap and specific; supplying it must PROCEED, not keep refusing."""
+    _stub_probes(monkeypatch,
+                 pip={"available": True, "latest": "0.7", "summary": "a python build tool"},
+                 cran={"available": True, "latest": "5.7", "summary": "phylogenetics in R"})
+    d = R.resolve("ape", language="python")
+    assert d["chosen"] == "pip"
+    assert d["ambiguous"] is False
+    assert d["refusal_reason"] is None
+
+
+def test_conda_disambiguates_a_pypi_cran_collision_in_context(monkeypatch):
+    """conda winning is itself the disambiguator — the bioinformatics-channel package is
+    the in-context answer, so an ambiguous name that resolved to conda PROCEEDS."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "5.7",
+                        "summary": "Analyses of Phylogenetics and Evolution"},
+                 pip={"available": True, "latest": "0.7", "summary": "a python build tool"},
+                 cran={"available": True, "latest": "5.7", "summary": "phylogenetics in R"})
+    d = R.resolve("ape")
+    assert d["chosen"] == "conda"         # conda is the pick; the pip/cran collision is moot
+    assert d["refusal_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# version existence — a requested version the chosen tier does not carry must not ship as
+# a byte-identical unsolvable pin (samtools=9.99 looks exactly like a valid samtools=1.21).
+# ---------------------------------------------------------------------------
+def test_a_requested_version_absent_from_the_chosen_tier_refuses(monkeypatch):
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "versions": ["1.17", "1.19", "1.20", "1.21"],
+                        "summary": "SAM/BAM tools"})
+    d = R.resolve("samtools", version="9.99")
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "investigation_contradicted"
+    assert d["install_call"] is None                       # no byte-identical unsolvable pin
+    assert d["version_absent"]["requested"] == "9.99"
+    assert d["version_absent"]["nearest"]                  # nearest real versions surfaced
+    assert "VERSION NOT FOUND" in d["rationale"]
+
+
+def test_a_real_requested_version_still_resolves(monkeypatch):
+    """THE safety property: a version that DOES exist must never be refused, and the pin
+    must survive into the install_call unchanged."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "bioconda", "latest": "1.21",
+                        "versions": ["1.17", "1.19", "1.20", "1.21"],
+                        "summary": "SAM/BAM tools"})
+    d = R.resolve("samtools", version="1.20")
+    assert d["chosen"] == "conda"
+    assert d["refusal_reason"] is None
+    assert "samtools=1.20" in d["install_call"]
+
+
+def test_version_existence_normalises_pep440(monkeypatch):
+    """A request for 1.0 matches a stored 1.0.0 (PyPI normalises) — not a false refusal."""
+    _stub_probes(monkeypatch,
+                 pip={"available": True, "latest": "1.0.0",
+                      "versions": ["0.9.0", "1.0.0"], "summary": "x"})
+    d = R.resolve("somepkg", version="1.0")
+    assert d["chosen"] == "pip"
+    assert d["refusal_reason"] is None
+
+
+def test_a_tier_without_a_version_list_is_not_second_guessed(monkeypatch):
+    """cran surfaces no version list, so a version request there is left ALONE — absence of
+    the list is 'we don't know', never 'the version is missing'."""
+    _stub_probes(monkeypatch,
+                 cran={"available": True, "latest": "5.7", "summary": "phylo in R"})
+    d = R.resolve("someRpkg", version="3.0")
+    assert d["chosen"] == "cran"
+    assert d["refusal_reason"] is None
+    assert "version_absent" not in d
+
+
+def test_probe_pypi_excludes_fully_yanked_versions(monkeypatch):
+    """A version whose files are ALL yanked is not installable, so it must not count as
+    present (anndata 0.12.15 was yanked 'released against wrong branch')."""
+    payload = {"info": {"version": "1.1"}, "releases": {
+        "1.0":   [{"yanked": False}],
+        "1.0.5": [{"yanked": True}, {"yanked": True}],   # fully yanked → absent
+        "1.1":   [{"yanked": False}],
+        "1.2":   [],                                     # no files → absent
+    }}
+    monkeypatch.setattr(R, "_fetch_json", lambda url, t=12: (payload, ""))
+    out = R.probe_pypi("anything")
+    assert out["available"] is True
+    assert set(out["versions"]) == {"1.0", "1.1"}

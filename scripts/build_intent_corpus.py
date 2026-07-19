@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -45,7 +46,7 @@ sys.path.insert(0, str(ROOT))
 # no confirm/flag boolean to observe. `install_call_poisoned` survives and now means ONLY
 # routing-disclosure poisoning (gate_error / unchecked_tiers / not_assessed / prefer_ignored);
 # identity no longer poisons the install_call.
-_OBSERVED = ("chosen", "ambiguous", "install_call_poisoned")
+_OBSERVED = ("chosen", "ambiguous", "install_call_poisoned", "refusal_reason")
 
 
 def probe(call: dict) -> dict:
@@ -59,6 +60,14 @@ def probe(call: dict) -> dict:
 
     d = R.resolve(**{k: v for k, v in call.items() if v is not None})
     install = d.get("install_call") or ""
+    req_v = call.get("version")
+    # Does the emitted install_call actually PIN the requested version? A stable boolean, so
+    # a version-substitution defect the chosen-tier is blind to becomes visible: chosen='binary'
+    # is identical for a somalier v0.2.15 (correct) or v0.3.3 (the bug) asset — only THIS fact
+    # tells them apart. The version must appear as a delimited token (optionally v-prefixed), so
+    # a request for 0.2.1 never counts as pinned by a v0.2.15 URL. Opt-in in _is_correct.
+    pins_version = bool(req_v) and re.search(
+        r"(?<![\w.])v?" + re.escape(str(req_v)) + r"(?![\w.])", install) is not None
     return {
         "chosen": d.get("chosen"),
         "ambiguous": bool(d.get("ambiguous")),
@@ -67,6 +76,10 @@ def probe(call: dict) -> dict:
         # a verdict; judging them is the LLM ride's job, unmeasurable by a resolve()-probe.
         "install_call_poisoned": install.lstrip().startswith("#"),
         "authors_gate": _authors_gate(d),
+        # The machine-readable WHY behind a refusal (None on a successful pick). This is what
+        # lets a chosen=null row be graded EARNED vs lazy — see _is_correct + known_gaps[0].
+        "refusal_reason": d.get("refusal_reason"),
+        "pins_requested_version": pins_version,
     }
 
 
@@ -104,6 +117,14 @@ def _is_correct(expect: dict, actual: dict) -> bool:
     if expect.get("chosen") is None:
         if actual.get("chosen") is not None:
             return False
+        # EARNED-vs-lazy (feedback-earn-the-refusal): a refusal must name the RIGHT reason,
+        # not merely BE a refusal — a resolver that refuses without investigating satisfies
+        # chosen=null perfectly. Opt-in on expect (like authors_gate), so annotating one row
+        # cannot silently re-grade the rest; and checked ONLY inside this refusal branch, so
+        # a non-refusal row (which never gets here) is untouched.
+        if expect.get("refusal_reason") is not None:
+            if actual.get("refusal_reason") != expect.get("refusal_reason"):
+                return False
     elif actual.get("chosen") != expect.get("chosen"):
         return False
     if expect.get("ambiguous") is not None:
@@ -115,6 +136,13 @@ def _is_correct(expect: dict, actual: dict) -> bool:
     # behaviour cannot fail, and a test that cannot fail is decoration.
     if expect.get("authors_gate") is not None:
         if actual.get("authors_gate") != expect.get("authors_gate"):
+            return False
+    # Opt-in, same discipline as authors_gate: only a row whose intent is byte-level version
+    # reproducibility carries this. It reads the ONE fact `chosen` can't — that the install_call
+    # pins the REQUESTED version, not another release's bytes under its name (somalier 0.2.15 vs
+    # the v0.3.3-latest substitution). Adding it cannot re-grade the other rows.
+    if expect.get("pins_requested_version") is not None:
+        if actual.get("pins_requested_version") != expect.get("pins_requested_version"):
             return False
     return True
 

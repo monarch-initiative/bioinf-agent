@@ -118,7 +118,7 @@ def test_resolver_behaviour_matches_what_the_corpus_recorded(row):
         pytest.skip(f"unassertable: {row['expect'].get('unassertable_reason')}")
     actual = _probe(row["call"])
     recorded = row["actual_today"]
-    for field in ("chosen", "ambiguous"):
+    for field in ("chosen", "ambiguous", "refusal_reason"):
         if field in recorded:
             assert actual[field] == recorded[field], (
                 f"resolver behaviour DRIFTED for {row['id']}:\n"
@@ -263,10 +263,10 @@ def test_rows_sharing_a_call_do_not_demand_contradictory_outcomes():
 
     clashes = []
     for call, rows in by_call.items():
-        for field in ("chosen", "ambiguous"):
-            # None means "do not check" for ambiguous, so only a disagreement between two
-            # STATED values is a contradiction. `chosen: None` is itself a demand (REFUSE),
-            # so it always counts.
+        for field in ("chosen", "ambiguous", "refusal_reason"):
+            # None means "do not check" for ambiguous/refusal_reason, so only a disagreement
+            # between two STATED values is a contradiction. `chosen: None` is itself a demand
+            # (REFUSE), so it always counts.
             stated = {json.dumps(r["expect"].get(field)) for r in rows
                       if field == "chosen" or r["expect"].get(field) is not None}
             if len(stated) > 1:
@@ -321,18 +321,63 @@ def test_every_assertable_row_agrees_with_what_the_harness_can_actually_check():
         f"an expectation edited to match reality is not an expectation.")
 
 
+def test_deferred_rows_are_a_clean_third_state_not_a_hidden_failure():
+    """The domain-decoy rows are graded by the LLM identity eval, not the resolve-probe
+    (Decision 1, 2026-07-18). Pure — runs on every push.
+
+    resolve() cannot OBJECTIVELY refuse a valid, repo-real, wrong-domain package (CRAN's
+    `cellranger` is a real spreadsheet parser at a real version); refusing it is a DOMAIN
+    judgment the LLM ride makes by reading the `identity.self_description` resolve surfaces,
+    which a resolve()-probe structurally cannot observe. So those rows are neither a resolve
+    success nor a resolve failure — a THIRD state. This test nails that state down so it
+    cannot rot into a silent pass (green with the wrong tool) or a silent red (claiming
+    resolve failed a job that was never resolve's).
+
+    A deferred row MUST:
+      - carry graded_by == 'llm_identity_eval'  — the discriminator the grid buckets on
+      - be assertable=false                     — the resolve-probe does NOT grade it, so it
+                                                  is skipped by the change detector + ratchet
+      - carry a non-empty unassertable_reason   — mark with a reason, never silently
+      - have is_correct_today is None           — not True, not False; nobody has graded it
+      - PRESERVE expect.chosen is None          — the reviewed target the eval will hit; Rule
+                                                  3, expect is never rewritten to match today
+    """
+    deferred = [r for r in _rows()
+                if r.get("expect", {}).get("graded_by") == "llm_identity_eval"]
+    assert deferred, (
+        "no rows are deferred to the identity eval — expected the domain-decoy set "
+        "(cellranger/dorado/guppy/dragen/talos-bare). Did a re-probe silently drop graded_by?")
+    bad = []
+    for r in deferred:
+        e = r["expect"]
+        if e.get("assertable", True) is not False:
+            bad.append((r["id"], "assertable is not False — the probe would grade it"))
+        if not e.get("unassertable_reason"):
+            bad.append((r["id"], "no unassertable_reason — a silent deferral"))
+        if r.get("is_correct_today") is not None:
+            bad.append((r["id"], f"is_correct_today={r.get('is_correct_today')!r}, want None"))
+        if e.get("chosen") is not None:
+            bad.append((r["id"], f"expect.chosen={e.get('chosen')!r}, want None (target kept)"))
+    assert not bad, (
+        "deferred rows are malformed — a deferred row that isn't a clean third state either "
+        "hides a failure or fakes a pass:\n" + "\n".join(f"  {i}: {w}" for i, w in bad))
+
+
 def test_known_gaps_are_declared_not_discovered_later():
     """The corpus must state what it CANNOT check. Pure — runs on every push.
 
-    Two are live right now and both are load-bearing:
+    Three are declared; all are load-bearing:
 
-    1. It cannot tell an EARNED refusal from a LAZY one. 32 rows expect `chosen: null`
-       and the harness asserts exactly that — which a refusal that never investigated
-       satisfies perfectly. The user's rule is that a refusal is legitimate only AFTER
-       investigating, naming reason (a) too-little-input or (b) we-looked-and-came-up-
-       empty/contradicted. `resolve('dorado')` proves the gap is real: github discovery
-       fires ONLY at a registry dead-end, and PyPI's astronomy squat counts as a hit, so
-       nanoporetech/dorado (849★, exact match) is never looked for.
+    1. Earned-vs-lazy is now GRADED (`decision.refusal_reason`, forwarded by probe() and
+       asserted inside the chosen==null branch of `_is_correct`; all 29 assertable refusal
+       rows carry `expect.refusal_reason`). The RESIDUAL is narrower: the fourth reason,
+       `investigation_incomplete`, is token-dependent — without a GITHUB_TOKEN a
+       github-backed probe rate-limits, so an earned refusal (needs_user_input /
+       contradicted) can come back wearing an unfinished one's face, and the corpus cannot
+       separate the two in a token-less run. `resolve('dorado')` is still the standing
+       example of the CLIMB the grading now enforces: discovery fires only at a registry
+       dead-end and PyPI's astronomy squat counts as a hit, so nanoporetech/dorado is
+       never looked for — dorado picks pip instead of refusing, a red interpretation row.
     2. The `report` gap's identity half is DISSOLVED (Phase 2 deleted the fabricated
        verdict), and its successor — does the resolver surface the facts + does the LLM
        ride's judgment land — is not yet measured (see the test above).
@@ -361,10 +406,16 @@ def test_the_ratchet_meter_is_visible():
     number rather than burying it in xfail noise — the same reason the dashboard leads
     with its real coverage figure instead of a comfortable one."""
     rows = _rows()
-    wrong = [r for r in rows if not r.get("is_correct_today")]
+    # The deferred rows (graded by the LLM identity eval, not the resolve-probe) are a THIRD
+    # state — is_correct_today is None. They must NOT be counted as "do not reach intent": the
+    # meter is over what the resolve-probe can actually grade. Reported as their own figure.
+    deferred = [r for r in rows if r.get("expect", {}).get("graded_by") == "llm_identity_eval"]
+    gradeable = [r for r in rows if r not in deferred]
+    wrong = [r for r in gradeable if not r.get("is_correct_today")]
     by_gap: dict[str, int] = {}
     for r in wrong:
         by_gap[r.get("gap_class", "?")] = by_gap.get(r.get("gap_class", "?"), 0) + 1
-    print(f"\nINTENT CORPUS: {len(rows) - len(wrong)}/{len(rows)} reach the user's intent; "
-          f"{len(wrong)} do not — by gap: {by_gap}")
+    print(f"\nINTENT CORPUS: {len(gradeable) - len(wrong)}/{len(gradeable)} resolve-gradeable "
+          f"rows reach the user's intent; {len(wrong)} do not — by gap: {by_gap}; "
+          f"{len(deferred)} deferred → LLM identity eval")
     assert rows

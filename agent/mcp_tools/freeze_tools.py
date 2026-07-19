@@ -545,6 +545,26 @@ def freeze(
                     honesty_violations=adopt_violations,
                     violation_count=len(adopt_violations),
                     verifications=record.get("verifications"))
+    # IDENTITY DISCLOSURE (audit #8): what each requested tool says it IS, read from the
+    # registry the shipped package actually came from (matched via the in-image SBOM).
+    # Agent-asserted, best-effort — a probe miss yields self_description=None and NEVER
+    # fails a freeze; the record's ToolIdentity shape is enforced at register.
+    from agent.skills import tool_identity as _ti
+    try:
+        # A tool installed from a non-registry tier (binary/source/jar/cargo/go/perl) is not
+        # its own provider in the SBOM closure — pass those so capture() gives them honest
+        # silence instead of a same-named transitive dep's identity.
+        _nonreg = [p.get("name", "") for p in
+                   (_ms._freeze.non_conda_installs(draft) if draft else [])]
+        record["tool_identities"] = _ti.capture(
+            record.get("requested_tools") or [], record.get("resolved_packages") or [],
+            nonregistry_tools=_nonreg)
+    except Exception:
+        record["tool_identities"] = []
+    # Carry the disclosure into the machine recipe too, so a rebuild's context ("what
+    # this is") travels with the reproduction bytes. Extra key; ignored by rebuild.
+    if isinstance(env_recipe_dict, dict):
+        env_recipe_dict["tool_identities"] = record["tool_identities"]
     _ms._env_cache.register(rkey, record)
     # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
     # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.

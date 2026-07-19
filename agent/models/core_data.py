@@ -943,6 +943,64 @@ def shipped_binaries(record: dict) -> list[ShippedBinary]:
     return [ShippedBinary.model_validate(b) for b in (record.get("shipped_binaries") or [])]
 
 
+class ToolIdentity(BaseModel):
+    """What a requested tool says it IS — its OWN self-description, captured at freeze
+    from the registry that ships it. This is the audit's finding #8 ("identity never
+    reaches disk"): the Layer-1 contract proves a tool WORKS (VALIDATED_IN_IMAGE) but
+    never that it is the tool you MEANT. A human reading ENV.html could not tell
+    `cellranger`-the-Cell-Ranger from CRAN's `cellranger`, "Translate Spreadsheet Cell
+    Ranges". Persisting the resolved package's own words is what lets them.
+
+    AGENT-ASSERTED, NEVER runtime-verified. `self_description` is the registry's words,
+    fetched at freeze — a claim to READ, not a validated capability. It is the same
+    category as `notes`/`description`: honestly labelled, explicitly OUTSIDE the verified
+    surface. It gates nothing (a bad description never fails a freeze); it discloses.
+
+    Tied to the INSTALL, not a bare-name guess. `source` is the registry the shipped
+    package actually came from (learned from the in-image SBOM), so a correctly-installed
+    ONT `dorado` binary is NOT mislabelled with astronomy-PyPI's summary — a tool with no
+    registry package in the image gets `self_description: None` and honest silence, never
+    a borrowed identity.
+
+    Same seam discipline as `ShippedBinary`: `extra="forbid"` + NO fabricating defaults —
+    every field REQUIRED, `None` a value the producer must STATE. Validated at BOTH ends
+    (`EnvCache.register` on write, `check_build` WELL_FORMED on serve)."""
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1)
+    """The REQUESTED tool name, as the user asked for it. Non-empty: an identity record
+    for a tool nobody can name discloses nothing."""
+
+    self_description: Optional[str]
+    """The package's OWN one-line words, verbatim from the registry (conda `about.summary`,
+    PyPI `Summary`). `None` = NOT CAPTURED — either the tool ships from a non-registry tier
+    (binary/source/jar: there is no registry blurb) or the published entry carried none, or
+    the freeze-time probe failed. Absence is a fact; readers render it as "(no self-
+    description)", never as an empty capability claim."""
+
+    source: Optional[str]
+    """Which registry the description was read from and which the shipped package came from:
+    `conda` | `pypi` | `None`. `None` pairs with `self_description=None` — no registry
+    package was matched in the image, so there is nothing to attribute and nothing is."""
+
+    package: Optional[str]
+    """The exact installed package name the description belongs to (`r-seurat`,
+    `pysam`) — may differ from `tool`. `None` when no registry package matched."""
+
+    version: Optional[str]
+    """The installed version of `package`, from the in-image SBOM. `None` when unmatched."""
+
+
+def tool_identities(record: dict) -> list[ToolIdentity]:
+    """THE reader for `record["tool_identities"]` — the ToolIdentity analog of
+    `shipped_binaries`. Every consumer (ENV.html, attestation, recipe) goes through here,
+    so the disclosure has ONE definition read at every use (Rule 4). STRICT: raises
+    `pydantic.ValidationError` on a record whose shape does not conform, so a record we
+    cannot read is never rendered. Absent key ⇒ `[]` (records frozen before identity-to-
+    disk existed are grandfathered, not backfilled — [[feedback-existing-installs-not-precious]])."""
+    return [ToolIdentity.model_validate(t) for t in (record.get("tool_identities") or [])]
+
+
 class TestDataRef(BaseModel):
     """Reference to the test dataset used during pipeline validation."""
     model_config = ConfigDict(extra="allow")
