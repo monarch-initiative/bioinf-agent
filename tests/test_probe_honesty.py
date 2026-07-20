@@ -425,6 +425,23 @@ def test_version_existence_normalises_pep440(monkeypatch):
     assert d["refusal_reason"] is None
 
 
+def test_version_existence_normalises_conda_underscore_revision(monkeypatch):
+    """conda encodes an R revision separator as '_' — R's `5.8-1` ships on conda-forge as
+    `5.8_1`, which PEP440 CANNOT parse, so a request for `5.8.1` was falsely refused as
+    version-absent even though that release exists (the ape regression). The three forms of
+    one release must unify."""
+    _stub_probes(monkeypatch,
+                 conda={"available": True, "channel": "conda-forge", "latest": "5.8",
+                        "versions": ["5.7", "5.7_1", "5.8", "5.8_1"], "summary": "phylo in R"})
+    d = R.resolve("ape", version="5.8.1")
+    assert d["chosen"] == "conda"
+    assert d["refusal_reason"] is None
+    assert "5.8.1" in d["install_call"]
+    # and it must NOT become a false-positive escape hatch: a genuinely absent version still
+    # refuses (5.9 is not 5.8_1).
+    assert R._version_present("5.9", ["5.7", "5.8", "5.8_1"]) is False
+
+
 def test_a_tier_without_a_version_list_is_not_second_guessed(monkeypatch):
     """cran surfaces no version list, so a version request there is left ALONE — absence of
     the list is 'we don't know', never 'the version is missing'."""
@@ -449,3 +466,165 @@ def test_probe_pypi_excludes_fully_yanked_versions(monkeypatch):
     out = R.probe_pypi("anything")
     assert out["available"] is True
     assert set(out["versions"]) == {"1.0", "1.1"}
+
+
+# ---------------------------------------------------------------------------
+# BIOCONDUCTOR — the field's core R stats tools (DESeq2, edgeR, limma) live ONLY on bioconda
+# under a `bioconductor-{name}` prefix: never the bare name, and not on CRAN. Without a
+# bioconductor-aware conda probe, a bare `deseq2` misses every registry and slides to github
+# synthesis, `edger` resolves to a same-name junk PyPI package ("Redirect Microsoft Edge to
+# your preferred browser") — a clean-green install of the WRONG tool — and `limma` refuses as
+# an unresolved pip/cran collision. The fold routes the hit INTO the conda tier so it wins at
+# conda's rank AND disambiguates in context. These drive the REAL resolve() path, stubbed only
+# at the probe functions with a NAME-AWARE conda so bare-vs-`bioconductor-` is distinguishable.
+# ---------------------------------------------------------------------------
+def _bioc_stubs(monkeypatch, *, on_bioconda=frozenset(), bare_conda=None,
+                pip=None, cran=None, bioc_error=None):
+    """Name-aware probe stubs for the bioconductor→conda fold. Bare `<name>` conda MISSES
+    (unless `bare_conda` given); `bioconductor-<name>` HITS iff <name> in `on_bioconda`, a
+    clean 404 miss otherwise — or an ERROR when `bioc_error` is set (the transient-blip case)."""
+    def fake_conda(name, t=12):
+        low = name.lower()
+        if low.startswith("bioconductor-"):
+            if bioc_error is not None:
+                return {"available": False, "probe_error": bioc_error}
+            if low[len("bioconductor-"):] in on_bioconda:
+                return {"available": True, "channel": "bioconda", "latest": "1.42.0",
+                        "versions": ["1.40.0", "1.42.0"],
+                        "summary": f"Bioconductor package {low}"}
+            return {"available": False}
+        return dict(bare_conda) if bare_conda else {"available": False}
+    monkeypatch.setattr(R, "probe_conda", fake_conda)
+    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: dict(pip) if pip else {"available": False})
+    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: dict(cran) if cran else {"available": False})
+    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    # a conda hit is a SETTLED decision — discovery must never fire. Overridden per-test where
+    # a genuine dead-end SHOULD reach discovery.
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: pytest.fail("discovery fired despite a conda answer"))
+
+
+def test_deseq2_routes_to_the_bioconda_bioconductor_package(monkeypatch):
+    """The headline case: a bare `deseq2` must resolve to the curated bioconda package, not
+    slide to a github-source synthesis of the devel branch."""
+    _bioc_stubs(monkeypatch, on_bioconda={"deseq2"})
+    d = R.resolve("deseq2")
+    assert d["chosen"] == "conda"
+    assert d["probed"]["conda"]["bioc_spec"] == "bioconductor-deseq2"
+    assert '"spec": "bioconductor-deseq2=1.42.0"' in d["install_call"]
+    assert '"channel": "bioconda"' in d["install_call"]
+    assert d["refusal_reason"] is None
+    # NAME-MAPPING HONESTY: the caller typed `deseq2`, the call installs `bioconductor-deseq2`
+    # — the rationale must say so up front, never a silent substitution.
+    assert d["rationale"].startswith("BIOCONDUCTOR:")
+    assert "bioconductor-deseq2" in d["rationale"]
+    # deseq2 is NOT on CRAN (no cran stub) — the "not on CRAN" clause is TRUE here and present.
+    assert "not on CRAN" in d["rationale"]
+
+
+def test_edger_beats_a_same_name_junk_pypi_package(monkeypatch):
+    """The wrong-tool-green trap: PyPI `edger` is a browser-redirect utility. bioconda's
+    `bioconductor-edger` must win over it — conda outranks pip."""
+    _bioc_stubs(monkeypatch, on_bioconda={"edger"},
+                pip={"available": True, "latest": "0.1.3",
+                     "summary": "Redirect Microsoft Edge to your preferred browser"})
+    d = R.resolve("edger")
+    assert d["chosen"] == "conda"                       # NOT pip — the wrong tool
+    assert "bioconductor-edger" in d["install_call"]
+    assert "install_pip_package" not in d["install_call"]
+
+
+def test_limma_resolves_instead_of_refusing_as_ambiguous(monkeypatch):
+    """bare `limma` is a pip∧cran collision (a junk PyPI ESP8266 controller vs the real CRAN
+    mirror) → today a needs_user_input refusal. A `bioconductor-limma` conda hit disambiguates
+    in context, exactly as conda does for the `ape` collision."""
+    _bioc_stubs(monkeypatch, on_bioconda={"limma"},
+                pip={"available": True, "latest": "0.2.5", "summary": "an ESP8266 controller"},
+                cran={"available": True, "latest": "2.10.7",
+                      "summary": "Linear Models for Microarray Data"})
+    d = R.resolve("limma")
+    assert d["chosen"] == "conda"
+    assert "bioconductor-limma" in d["install_call"]
+    assert d["refusal_reason"] is None                  # NOT needs_user_input
+    # a name we RESOLVED must not carry a "pass a hint to disambiguate" instruction for a pick
+    # already made — that gated note is the report-honesty lie this exists to kill.
+    assert "disambiguate" not in d["rationale"]
+    assert d["rationale"].startswith("BIOCONDUCTOR:")
+    # limma IS on CRAN (an archived mirror) — the note must NOT hardcode "not on CRAN" and
+    # contradict the `cran` it lists as a lower-priority alternative on the same line.
+    assert "not on CRAN" not in d["rationale"]
+
+
+def test_a_non_bioconductor_miss_stays_a_clean_dead_end(monkeypatch):
+    """The fold must be a CHECKED probe, not a guess: a tool on neither bare conda nor
+    `bioconductor-*` gains no phantom conda hit (bioconductor-samtools 404s), and still
+    reaches discovery like any other genuine dead-end."""
+    _bioc_stubs(monkeypatch, on_bioconda=frozenset())   # nothing on bioconda
+    reached = []
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: reached.append(1) or {"found": False, "candidates": []})
+    d = R.resolve("not-a-bioc-tool")
+    assert d["probed"]["conda"]["available"] is False
+    assert d["chosen"] is None
+    assert reached, "a CHECKED dead-end must still be investigated"
+
+
+def test_language_python_hint_suppresses_the_bioconductor_fallback(monkeypatch):
+    """An explicit `language='python'` means the caller wants the PyPI package — do NOT
+    rescue it into a bioconda R package behind their back."""
+    _bioc_stubs(monkeypatch, on_bioconda={"deseq2"},
+                pip={"available": True, "latest": "1.0", "summary": "a python package"})
+    d = R.resolve("deseq2", language="python")
+    assert d["chosen"] == "pip"
+    assert "bioconductor" not in (d["install_call"] or "")
+
+
+def test_a_transient_bioconductor_probe_error_is_disclosed_not_swallowed(monkeypatch):
+    """ABSENT ≠ UNCHECKED. When the `bioconductor-{name}` probe ERRORS (a transient anaconda
+    403, not 'answered no'), bioconda is NOT cleanly ruled out — the conda tier must land in
+    unchecked_tiers and the disclosure must reach the install_call, never silently ship the
+    same-name junk pip package. Measured live: one blip on this exact probe routed `edger` to
+    install_pip_package(edger) — the wrong tool, green."""
+    _bioc_stubs(monkeypatch, bioc_error="rate_limited",
+                pip={"available": True, "latest": "0.1.3",
+                     "summary": "Redirect Microsoft Edge to your preferred browser"})
+    d = R.resolve("edger")
+    assert d["chosen"] == "pip"                          # pip is the only AVAILABLE tier...
+    assert d["unchecked_tiers"] == {"conda": "rate_limited"}   # ...but conda wasn't ruled out
+    assert "UNCHECKED TIER(S) RANKED ABOVE THIS PICK" in d["install_call"]
+
+
+def test_language_r_hint_also_reaches_the_bioconductor_fold(monkeypatch):
+    """The `language='r'` branch probes conda as `r-{name}` (misses for a Bioconductor tool),
+    so the fold must apply there too — a hinted `deseq2` still gets the bioconda package, not
+    the github r_github fallback."""
+    _bioc_stubs(monkeypatch, on_bioconda={"deseq2"})
+    d = R.resolve("deseq2", language="r")
+    assert d["chosen"] == "conda"
+    assert "bioconductor-deseq2" in d["install_call"]
+
+
+def test_a_forced_non_conda_pick_does_not_advertise_the_conda_biocontainer(monkeypatch):
+    """The fold makes availability['conda'] available even when conda is NOT the pick (e.g.
+    prefer='pip'). The conda biocontainer must then NOT be surfaced — else the decision
+    advertises a `bioconductor-edger` adopt_call beside an `install_pip_package(edger)` (PyPI's
+    edger is a browser-redirect utility): one decision naming two different tools."""
+    _bioc_stubs(monkeypatch, on_bioconda={"edger"},
+                pip={"available": True, "latest": "0.1.3",
+                     "summary": "Redirect Microsoft Edge to your preferred browser"})
+    # a biocontainer DOES exist for bioconductor-edger — the guard is `chosen`, not existence.
+    monkeypatch.setattr(R, "_resolve_biocontainer",
+                        lambda specs, timeout=12: {
+                            "found": True, "image": "quay.io/biocontainers/bioconductor-edger:x",
+                            "image_by_digest": "quay.io/biocontainers/bioconductor-edger@sha256:dead",
+                            "digest": "sha256:dead"})
+    d = R.resolve("edger", prefer="pip")
+    assert d["chosen"] == "pip"
+    assert d["pullable_image"]["found"] is False        # NOT the bioconductor-edger image
+    assert "BioContainer" not in d["rationale"]
+    # control: without the prefer override, conda IS the pick and DOES surface its biocontainer.
+    d2 = R.resolve("edger")
+    assert d2["chosen"] == "conda"
+    assert d2["pullable_image"]["found"] is True
+    assert d2["pullable_image"]["source"] == "biocontainer"

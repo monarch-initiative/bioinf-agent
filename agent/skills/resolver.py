@@ -230,10 +230,22 @@ def _version_present(requested: str, versions: list) -> bool:
     is 'we don't know', not 'the version is missing'."""
     if not requested or not versions:
         return False
-    rk = _version_key(requested)
+
+    def _key(v):
+        # conda encodes a revision separator as '_' — R's native `5.8-1` ships on conda-forge
+        # as `5.8_1`, which PEP440 cannot parse at all (InvalidVersion → None), so it silently
+        # never matches a user's `5.8.1` and a version that DOES exist is falsely refused
+        # (the ape 5.8.1 regression). Retry with '_'→'.' ONLY on a parse failure, so a
+        # parseable version's PEP440 semantics (e.g. a real `-1` post-release) stay untouched.
+        k = _version_key(v)
+        if k is None:
+            k = _version_key(str(v).replace("_", "."))
+        return k
+
+    rk = _key(requested)
     if rk is not None:
         for v in versions:
-            vk = _version_key(str(v))
+            vk = _key(str(v))
             if vk is not None and vk == rk:
                 return True
     return str(requested) in {str(v) for v in versions}
@@ -1231,7 +1243,11 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
                 f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
                 f'  # build the authors\' {path}, don\'t reconstruct')
     if tier == "conda":
-        base = detail.get("r_spec") or tool          # r-{name} when resolving an R tool via conda
+        # bioc_spec: `bioconductor-{name}` when a bare Bioconductor name resolved via the
+        # bioconda fallback; r_spec: `r-{name}` for an R tool via conda. Either overrides the
+        # bare tool name so the emitted call names the package that ACTUALLY exists on the
+        # channel (bioconda has no `deseq2`, only `bioconductor-deseq2`).
+        base = detail.get("bioc_spec") or detail.get("r_spec") or tool
         spec = f"{base}={v}" if v else base
         return f'install_conda_packages(env, [{{"spec": "{spec}", "channel": "{detail.get("channel","bioconda")}"}}])'
     if tier == "pip":
@@ -1265,7 +1281,8 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
 
 
 def pullable_image(availability: dict[str, dict], tool: str,
-                   version: str = "", timeout: int = 12) -> dict[str, Any]:
+                   version: str = "", timeout: int = 12,
+                   chosen: Optional[str] = None) -> dict[str, Any]:
     """The unified "is there a pre-built image/container we can PULL (not build)?" answer.
 
     Spans the two TRUSTED image sources, in preference order:
@@ -1280,6 +1297,12 @@ def pullable_image(availability: dict[str, dict], tool: str,
     distinct route; a bioconda tool's biocontainer is the conda tier's DELIVERY (freeze
     adopts it by digest for a pure-conda env), so it ENRICHES the conda pick rather than
     replacing it. Either way the agent sees the pull-don't-build shortcut up front.
+
+    The biocontainer is surfaced ONLY when `chosen == "conda"`: it is the conda pick's image,
+    and since the bioconductor->conda fold can make `availability["conda"]` available even
+    when conda is NOT the pick (e.g. `prefer='pip'` forced pip), advertising it otherwise would
+    name a DIFFERENT package than the install_call installs — a `bioconductor-{tool}` adopt_call
+    beside an `install_pip_package({tool})` (which for `edger` is a browser-redirect utility).
 
     PROVENANCE GUARDRAIL: both sources are trusted by construction — the authors' own repo
     namespace (anchored) and the curated biocontainers registry. We NEVER surface a random
@@ -1300,8 +1323,8 @@ def pullable_image(availability: dict[str, dict], tool: str,
                 "provenance": "the authors' own published image (ghcr, anchored repo)"}
 
     conda = availability.get("conda") or {}
-    if conda.get("available") and _resolve_biocontainer is not None:
-        spec = conda.get("r_spec") or tool
+    if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
+        spec = conda.get("bioc_spec") or conda.get("r_spec") or tool
         try:
             bc = _resolve_biocontainer(
                 [(spec, version or conda.get("latest") or None)], timeout=timeout)
@@ -1353,6 +1376,38 @@ def resolve(
         availability["conda"] = probe_conda(tool, timeout)
         availability["pip"]   = probe_pypi(tool, timeout)
         availability["cran"]  = probe_cran(tool, timeout)
+
+    # BIOCONDUCTOR. The field's core R stats tools — DESeq2, edgeR, limma — live ONLY on
+    # bioconda under a `bioconductor-{name}` prefix: never the bare name, and not on CRAN.
+    # Without this fallback a bare `deseq2` misses every registry and slides to github
+    # discovery/synthesis, and `edger` resolves to a same-name junk PyPI package ("Redirect
+    # Microsoft Edge") — a clean-green install of the WRONG tool. Fold the hit INTO the conda
+    # tier (it IS an `install_conda_packages` from bioconda) so it inherits conda's top rank
+    # AND conda's standing as the pip/cran ambiguity disambiguator: an ambiguous name that
+    # resolved to conda PROCEEDS (see rank_decision + `if ambiguous and chosen != "conda"`),
+    # so `limma` resolves instead of refusing. It is a real CHECKED probe (bioconductor-samtools
+    # 404s), never a guess. Fires only when the bare-name conda probe already missed, and never
+    # under an explicit `language='python'` (that hint means "the PyPI package", not an R tool).
+    # It DOES fire under `language='r'` (where the r-branch probed conda as `r-{tool}` and missed):
+    # that is DELIBERATE — the pinned bioconda `bioconductor-{name}` beats the dedicated
+    # `bioconductor` tier's unpinned BiocManager build, so conda-first wins there too.
+    if language != "python" and not availability.get("conda", {}).get("available"):
+        bioc = probe_conda(f"bioconductor-{tool}", timeout)
+        if bioc.get("available"):
+            bioc["bioc_spec"] = f"bioconductor-{tool.lower()}"
+            availability["conda"] = bioc
+        elif bioc.get("probe_error") and not availability.get("conda", {}).get("probe_error"):
+            # ABSENT ≠ UNCHECKED (the whole point of test_probe_honesty.py). The
+            # bioconductor-variant probe ERRORED — a transient anaconda 403, not "answered
+            # no" — so bioconda has NOT been cleanly ruled out. Carry the error onto the conda
+            # tier so `unchecked_tiers` DISCLOSES it. This does not change the pick (a same-name
+            # junk PyPI package like edgeR's `edger` — a browser-redirect utility — may still be
+            # the only available tier and win), but it stops that win from being SILENT: conda
+            # is reported unchecked-and-ranked-above, not cleanly ruled out, so the install_call
+            # carries the UNCHECKED-TIER disclosure instead of a bare `install_pip_package`.
+            # Measured live: one transient blip on this exact probe routed `edger` to pip.
+            availability["conda"] = {**availability.get("conda", {}),
+                                     "probe_error": bioc["probe_error"]}
 
     binary_ver: Optional[dict] = None   # BINARY-VERSION ANCHOR (set below when version + repo)
     if github_repo:
@@ -1737,7 +1792,7 @@ def resolve(
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
-    pull = pullable_image(availability, tool, version, timeout)
+    pull = pullable_image(availability, tool, version, timeout, chosen=chosen)
     decision.update({
         "tool": tool,
         "version": version or None,
@@ -1757,6 +1812,20 @@ def resolve(
         decision["rationale"] = (
             f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
             f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
+    # NAME-MAPPING HONESTY. When the pick came via the bioconductor→conda fold, the emitted
+    # call names `bioconductor-{tool}`, not the `{tool}` the caller typed — say so up front so
+    # a reader sees requested-vs-installed at a glance, never a silent substitution.
+    _bioc_spec = availability.get("conda", {}).get("bioc_spec") if chosen == "conda" else None
+    if _bioc_spec:
+        # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror), so
+        # hardcoding "not on CRAN" would contradict the resolver's own probe (and the `cran`
+        # that appears in this same rationale as a lower-priority alternative) — a report lie.
+        _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
+        decision["rationale"] = (
+            f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
+            f"'{_bioc_spec}' (not the bare name{_cran_clause}). "
+            + decision.get("rationale", "")
+        )
     if cross_namespace_collisions:
         # Surface the rejection prominently so an agent reading the rationale
         # sees WHY pip/cran was disqualified — silence here would mask the very
@@ -1768,7 +1837,11 @@ def resolve(
             f"whose registry metadata does NOT reference github_repo '{github_repo}'. "
             f"Trust the user-supplied repo: " + decision["rationale"]
         )
-    if ambiguous:
+    if ambiguous and chosen is None:
+        # Only a still-unresolved collision gets the disambiguate-me note. A name that
+        # RESOLVED to conda (the bioinformatics-channel package, incl. the bioconductor fold)
+        # has already been disambiguated in context — telling the caller to pass a hint for a
+        # pick we already made would be a lie of the kind the report-honesty work exists to kill.
         decision["rationale"] = (
             f"AMBIGUOUS: '{tool}' exists on BOTH PyPI (python) and CRAN (R) — likely "
             f"different packages. Pass language='python'|'r' (or prefer=) to disambiguate. "
