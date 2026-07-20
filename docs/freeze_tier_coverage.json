@@ -1,6 +1,6 @@
 {
-  "measured_on": "2026-07-20T20:34:54Z",
-  "git_sha": "1e97729",
+  "measured_on": "2026-07-20T21:21:00Z",
+  "git_sha": "fe648e1",
   "platform": "linux/amd64",
   "host_arch": "arm64",
   "docker_available": true,
@@ -15,8 +15,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:39525d601f8a93e6f82475ee6552e56ae477fd13a4a4f63a6841ca415e0bac61",
-      "content_digest": "sha256:a3225aea96cc0805df287f9910309b6b7bd3aa8dcc198f999516b492b7d2f8bc",
+      "image_digest": "sha256:5dd2184bd583eab53de0afb79412798b69388a9ac4ab892c7c642101c6a456a5",
+      "content_digest": "sha256:63059ee94694c9eee84c38cdf44f530c95779a0a35a235e900bbfdab87b452c9",
       "validation_locus": "emulated",
       "last_error": null
     },
@@ -28,8 +28,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:f75889dc0a46886d2f2163a3b1aa398cfb8e5cb895ccef730d623987458c004e",
-      "content_digest": "sha256:df003e4d031738e261e2070807bc9a2687d2c2b384925902626d6a589ab7a7ad",
+      "image_digest": "sha256:dc04906f693bb55903e442b29b8d8ade0625944e3d50f98bbf4ba5fa1524205c",
+      "content_digest": "sha256:08e5dfc4b54eee85f3998397f683156e53c5cec9038af5616068177be8d1fc38",
       "validation_locus": "emulated",
       "last_error": null
     },

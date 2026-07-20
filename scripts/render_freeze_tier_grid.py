@@ -46,8 +46,11 @@ def _e(s) -> str:
 
 
 def _rate(rec: dict) -> float | None:
+    # .get defaults so a partially-written / hand-edited / merge-conflicted record
+    # degrades to a muted row rather than crashing the whole page (this module's
+    # thesis is "a projection that can't flatter us" — a hard KeyError blanks it).
     if rec.get("attempts"):
-        return rec["passed"] / rec["attempts"]
+        return rec.get("passed", 0) / rec["attempts"]
     return None
 
 
@@ -56,11 +59,12 @@ def _row_class(tier: str, rec: dict) -> str:
     tier that reads unmeasured is also suspect (a floor should be earned)."""
     floor = ft.FLOORS.get(tier, 0.0)
     r = _rate(rec)
-    if rec["status"] == "proven" and (r is None or r >= floor):
+    st = rec.get("status", "unmeasured")
+    if st == "proven" and (r is None or r >= floor):
         return "ok"
-    if rec["status"] == "broke":
+    if st == "broke":
         return "bad"
-    if rec["status"] == "unmeasured" and floor > 0:
+    if st == "unmeasured" and floor > 0:
         return "bad"          # claims a floor but has no measurement backing it
     if r is not None and r < floor:
         return "bad"
@@ -71,7 +75,7 @@ def render(data: dict, current_sha: str = "") -> str:
     tiers = data.get("tiers") or {}
     install = [t for t in ft.INSTALL_TIERS if t in tiers]
     methods = [t for t in ft.BUILD_METHODS if t in tiers]
-    proven_install = sum(1 for t in install if tiers[t]["status"] == "proven")
+    proven_install = sum(1 for t in install if tiers[t].get("status") == "proven")
     total_install = len(ft.INSTALL_TIERS)
 
     measured_sha = data.get("git_sha") or "unknown"
@@ -103,7 +107,8 @@ def render(data: dict, current_sha: str = "") -> str:
         out = []
         for t in names:
             rec = tiers[t]
-            g, cls, _ = STATUS.get(rec["status"], ("?", "muted", ""))
+            st = rec.get("status", "unmeasured")
+            g, cls, _ = STATUS.get(st, ("?", "muted", ""))
             floor = ft.FLOORS.get(t, 0.0)
             r = _rate(rec)
             rate_txt = "—" if r is None else f"{r:.0%}"
@@ -115,7 +120,7 @@ def render(data: dict, current_sha: str = "") -> str:
                 f'<tr class="{_row_class(t, rec)}">'
                 f'<td class="tier"><span class="g">{g}</span>{_e(t)}</td>'
                 f'<td class="probe">{_e(probe)}</td>'
-                f'<td class="status {cls}">{_e(rec["status"])}{locus_txt}</td>'
+                f'<td class="status {cls}">{_e(st)}{locus_txt}</td>'
                 f'<td class="ratecell">{_bar(t, rec)}<span class="ratenum">{rate_txt}'
                 f'</span></td>'
                 f'<td class="floor">{floor:g}</td>'

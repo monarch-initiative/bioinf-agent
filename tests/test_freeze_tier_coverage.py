@@ -22,12 +22,20 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "docs" / "freeze_tier_coverage.json"
+GRID_HTML = ROOT / "docs" / "freeze_tier_grid.html"
+
+# A page is self-contained iff it FETCHES nothing external — the real property.
+# NOT "the string 'https://' never appears": a broke tier's last_error routinely
+# carries a URL (clone/download timeout — the tiers this grid exists to prove), and
+# that harmless escaped text must not false-red the check (the #5 substring-proxy trap).
+_EXTERNAL_FETCH = re.compile(r'<script[^>]+\bsrc=|<link\b|@import|url\(\s*["\']?https?:', re.I)
 
 
 def _load(name: str):
@@ -183,21 +191,82 @@ def test_generator_never_records_a_docker_less_green():
 
 @pytest.mark.integration
 def test_render_is_deterministic_self_contained_and_present():
-    import re
-    ft = _ft()
     rd = _render_mod()
     data = _data()
     html1 = rd.render(data, current_sha=data["git_sha"])
     html2 = rd.render(data, current_sha=data["git_sha"])
     assert html1 == html2, "render is not deterministic"
-    assert "http://" not in html1 and "https://" not in html1, \
+    assert not _EXTERNAL_FETCH.search(html1), \
         "grid must be self-contained (no external/CDN resources)"
-    assert "src=" not in html1.lower()
     assert not re.search(r"\{[a-z_]+\}", html1), "unfilled format placeholder leaked"
     for t in data["tiers"]:
         assert f">{t}<" in html1, f"tier '{t}' missing from the grid"
     # not stale when the render sha matches the measured sha
     assert "measured at" not in html1
+
+
+@pytest.mark.integration
+def test_render_row_status_matches_the_record():
+    """The #5 lesson applied to the human-facing artifact: the grid must PAINT each
+    tier by its real record, not merely mention its name. The old presence check
+    (`>{t}<`) is a name proxy — a mutation that greens every row would sail through
+    it. This maps each record's status → its rendered row class + glyph, so an
+    'unmeasured' tier can never render as a green ✅ 'proven' undetected."""
+    rd = _render_mod()
+    data = _data()
+    html = rd.render(data, current_sha=data["git_sha"])
+    rows = {tier: (cls, glyph) for cls, glyph, tier in re.findall(
+        r'<tr class="([^"]+)"><td class="tier"><span class="g">(.*?)</span>([\w\-]+)</td>', html)}
+    assert set(rows) == set(data["tiers"]), \
+        f"rows parsed ({sorted(rows)}) != records ({sorted(data['tiers'])})"
+    for tier, rec in data["tiers"].items():
+        cls, glyph = rows[tier]
+        st = rec["status"]
+        if st == "proven":
+            assert "ok" in cls and glyph == "✅", f"{tier} proven but row=({cls!r},{glyph!r})"
+        elif st == "unmeasured":
+            assert cls == "muted" and glyph != "✅", f"{tier} unmeasured but row=({cls!r},{glyph!r})"
+        elif st == "broke":
+            assert "bad" in cls and glyph == "💥", f"{tier} broke but row=({cls!r},{glyph!r})"
+    # directly guard the green-everything mutation: at least one non-proven row exists
+    # and is NOT painted proven.
+    assert any(c != "ok" for c, _ in rows.values()), \
+        "every row is painted 'ok' — an unmeasured tier is rendering as proven"
+
+
+@pytest.mark.integration
+def test_a_url_in_an_error_message_does_not_trip_self_containment():
+    """A broke tier's last_error routinely contains a URL (the clone/download
+    timeout that is the routine failure of exactly the tiers this grid proves). The
+    self-containment check must assert NO external fetch, so a harmless escaped URL
+    in the error text does not false-red CI."""
+    rd = _render_mod()
+    data = json.loads(DATA_PATH.read_text())
+    data["tiers"]["binary"] = {
+        "kind": "install", "probe_tool": "mosdepth", "note": "n",
+        "attempts": 1, "passed": 0, "status": "broke", "rate": 0.0,
+        "image_digest": None, "content_digest": None, "validation_locus": None,
+        "last_error": "curl: (28) Failed to connect to "
+                      "https://github.com/brentp/mosdepth: Connection timed out"}
+    html = rd.render(data, current_sha=data["git_sha"])
+    assert "github.com/brentp/mosdepth" in html, "the error text should be shown"
+    assert not _EXTERNAL_FETCH.search(html), \
+        "a URL inside escaped error text must not count as an external resource"
+
+
+@pytest.mark.integration
+def test_render_degrades_on_a_malformed_record_instead_of_crashing():
+    """A partially-written / hand-edited / merge-conflicted record (missing 'status'
+    or 'passed') must render a muted '?' row, not raise KeyError and blank the page."""
+    rd = _render_mod()
+    r1 = rd.render({"git_sha": "abc1234",
+                    "tiers": {"conda": {"kind": "install", "probe_tool": "pigz", "attempts": 1}}},
+                   current_sha="abc1234")
+    assert ">conda<" in r1 and "?" in r1               # missing 'status' → muted '?'
+    r2 = rd.render({"git_sha": "abc1234",
+                    "tiers": {"conda": {"kind": "install", "status": "proven", "attempts": 1}}},
+                   current_sha="abc1234")
+    assert ">conda<" in r2                             # missing 'passed' → no crash
 
 
 @pytest.mark.integration
@@ -210,3 +279,42 @@ def test_render_loudly_flags_staleness_and_emptiness():
     # empty data ⇒ a NOT-measured banner, no crash.
     empty = rd.render({"tiers": {}, "git_sha": "unknown"}, current_sha="abc1234")
     assert "NOT measured" in empty
+
+
+@pytest.mark.integration
+def test_committed_html_is_a_faithful_render_of_the_committed_json():
+    """The committed HTML must equal a render of the committed JSON at the JSON's own
+    measured sha — so neither can be hand-edited without the other, and the page a
+    human opens can't diverge from the measurements it claims to project."""
+    rd = _render_mod()
+    data = _data()
+    expected = rd.render(data, current_sha=data["git_sha"])
+    committed = GRID_HTML.read_text()
+    assert committed == expected, (
+        "docs/freeze_tier_grid.html is out of sync with freeze_tier_coverage.json — "
+        "re-run scripts/measure_freeze_tier_coverage.py (or render_freeze_tier_grid.py).")
+
+
+@pytest.mark.integration
+def test_a_docker_less_run_refuses_to_overwrite_the_committed_grid(tmp_path, monkeypatch):
+    """The write-boundary honesty guard: a Docker-less run measures nothing, so it
+    must refuse to touch the committed grid (no silent clobber, no laundering a stale
+    green). --force writes a deliberate all-unmeasured file (which reddens the ratchet)."""
+    gen = _gen()
+    canonical = (tmp_path / "freeze_tier_coverage.json").resolve()
+    canonical.write_text(DATA_PATH.read_text())        # a real prior with proven tiers
+    before = canonical.read_text()
+    monkeypatch.setattr(gen, "OUT", canonical)
+    monkeypatch.setattr(gen, "_docker_up", lambda: False)
+    monkeypatch.setattr(gen, "_render", lambda data: None)   # don't touch real docs/
+
+    rc = gen.main(["--out", str(canonical)])
+    assert rc == 1, "a docker-less canonical write must refuse"
+    assert canonical.read_text() == before, "the committed grid must be left untouched"
+
+    rc2 = gen.main(["--out", str(canonical), "--force"])
+    assert rc2 == 0, "--force must write a deliberate all-unmeasured file"
+    forced = json.loads(canonical.read_text())
+    assert all(r["status"] == "unmeasured" for r in forced["tiers"].values()), \
+        "a forced docker-less run must record every tier unmeasured — never proven"
+    assert forced["install_tiers_proven"] == 0

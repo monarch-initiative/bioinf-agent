@@ -18,13 +18,14 @@ build code (container_build.py / env_build.py / env_freeze.py / install_commands
 
     python scripts/measure_freeze_tier_coverage.py              # all wired tiers
     python scripts/measure_freeze_tier_coverage.py --only source
-    python scripts/measure_freeze_tier_coverage.py --keep       # keep prior tiers' measurements
 
 HONESTY. A tier is only ever recorded `proven` when a real build returned success
 AND check_build was clean. No Docker daemon → the tier is `unmeasured` (attempts
 0), NEVER passed — a docker-less green would be a lie (the trap L15 already guards
 via _docker_up). `tier_record()` is a PURE function so the hermetic test can prove
-that guard without Docker.
+that guard without Docker; and a docker-less run REFUSES to overwrite the committed
+grid at all (pass --force to write a deliberate all-unmeasured file), so no code
+path can launder a stale or absent measurement into the committed artifact.
 """
 from __future__ import annotations
 
@@ -145,6 +146,13 @@ def _git(*a) -> str:
         return ""
 
 
+def _rel(p) -> str:
+    """Repo-relative display path, tolerant of a path outside ROOT (e.g. a --out
+    override or a monkeypatched OUT) — never raises."""
+    p = Path(p)
+    return str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+
+
 def _render(data: dict) -> None:
     spec = importlib.util.spec_from_file_location(
         "render_freeze_tier_grid", ROOT / "scripts" / "render_freeze_tier_grid.py")
@@ -156,12 +164,13 @@ def _render(data: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", default="", help="comma-separated tiers to (re)build")
-    ap.add_argument("--keep", action="store_true",
-                    help="keep prior measurements for tiers not built this run "
-                         "(default: unbuilt tiers reset to unmeasured)")
     ap.add_argument("--out", default=str(OUT), help="output JSON path")
+    ap.add_argument("--force", action="store_true",
+                    help="write even with no Docker daemon (produces an all-"
+                         "'unmeasured' file — this deliberately reddens the ratchet)")
     args = ap.parse_args(argv)
     out_path = Path(args.out)
+    is_canonical = out_path.resolve() == OUT   # any spelling of the committed target
 
     docker = _docker_up()
     only = {t.strip() for t in args.only.split(",") if t.strip()}
@@ -171,10 +180,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! unknown tier(s): {sorted(unknown)}", file=sys.stderr)
             return 2
 
-    prior = {}
-    if args.keep and out_path.exists():
-        prior = (json.loads(out_path.read_text()).get("tiers") or {})
-
+    # HONESTY GUARD: a Docker-less run can MEASURE NOTHING, so it must never be
+    # allowed to overwrite the committed grid — doing so would silently erase the
+    # proven tiers (a footgun that reddens the ratchet with no obvious cause), and a
+    # carry-forward path would let a stale green be re-stamped as current. Refuse the
+    # canonical write unless the operator explicitly --forces an all-unmeasured file
+    # (which then reddens the ratchet in CI, as it should). This is the same
+    # posture as tier_record's per-tier guard, applied at the write boundary so no
+    # code path can route around it (the exact seam a self-review flagged).
+    if not docker and is_canonical and not args.force:
+        print(f"  ! no Docker daemon — refusing to overwrite the committed "
+              f"{_rel(OUT)} (a docker-less run measures nothing). Re-run "
+              f"with Docker up; or pass --force to write an all-unmeasured file "
+              f"deliberately; or --out <path> to write elsewhere.", file=sys.stderr)
+        return 1
     if not docker:
         print("  ! no Docker daemon — every tier will record 'unmeasured' "
               "(a docker-less green would be a lie).", file=sys.stderr)
@@ -189,8 +208,6 @@ def main(argv: list[str] | None = None) -> int:
             tiers[name] = tier_record(spec, outcome, docker)
             print(f"    → {tiers[name]['status']}"
                   + (f" ({tiers[name]['last_error']})" if tiers[name]["last_error"] else ""))
-        elif args.keep and name in prior:
-            tiers[name] = prior[name]          # carry forward a prior measurement
         else:
             tiers[name] = tier_record(spec, None, docker)
 
@@ -207,9 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         "tiers": tiers,
     }
     out_path.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"\n  wrote {out_path.relative_to(ROOT) if out_path.is_relative_to(ROOT) else out_path}"
+    print(f"\n  wrote {_rel(out_path)}"
           f"  ({proven}/{len(ft.INSTALL_TIERS)} install tiers proven by a real build)")
-    if out_path == OUT:
+    if is_canonical:
         _render(data)
         print(f"  rendered {(ROOT / 'docs' / 'freeze_tier_grid.html').relative_to(ROOT)}")
     return 0
