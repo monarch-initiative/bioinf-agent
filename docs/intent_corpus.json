@@ -1,5 +1,5 @@
 {
- "probed_on": "2026-07-17",
+ "probed_on": "2026-07-20",
  "source": "Mined by workflow wf_432b6933-fcf (6 scenario families, live-probed against real registries), structured + adversarially verified by wf_dea34e43-d9d. Every row's actual_today was reproduced against the live resolver; expectations survived a refutation pass that rewrote 79 things and killed several rows outright.",
  "rows": [
   {
@@ -24,7 +24,9 @@
     "chosen": "conda",
     "ambiguous": true,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -52,7 +54,9 @@
     "chosen": "conda",
     "ambiguous": true,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -81,7 +85,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -171,7 +177,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -350,7 +358,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -375,12 +384,14 @@
     "note": "Probe BOTH conda naming conventions for R: r-{tool} (CRAN-derived, mostly conda-forge) AND bioconductor-{tool.lower()} (Bioconductor-derived, bioconda). bioconductor-edger is on bioconda, so conda must win over the bioconductor tier. Report WHICH convention hit \u2014 a hit on bioconductor-{name} is machine-checkable provenance, worth more than any word list. Routing-quality fix, not a safety fix: today it degrades silently from one pinned conda package to BiocManager resolving at image-build time (unpinned, network-dependent at build). Do not assert the resolved version."
    },
    "actual_today": {
-    "chosen": "bioconductor",
+    "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "PREMISE CONFIRMED IN SOURCE at resolver.py:768-774 \u2014 with language='r', conda is probed ONLY as r-{tool}:\n    if language == \"r\":\n        rconda = probe_conda(f\"r-{tool}\", timeout)   # <-- single convention\n        availability[\"cran\"]         = probe_cran(tool, timeout)\n        availability[\"bioconductor\"] = probe_bioconductor(tool, timeout)\n\n$ R.resolve('edgeR', language='r')  (live, 2026-07-16) \u2014 REPRODUCED EXACTLY as recorded\n  chosen='bioconductor' | identity.confirmed=True | anchor='bioconductor'\n  evidence=['Bioconductor is a bioinformatics-only repository']\n  self_description=''            <-- probe_bioconductor contributes ZERO evidence (it is a HEAD request; see resolver.py probe_bioconductor -> _head_ok)\n  install_call='install_r_package(env, \"edgeR\", source=\"bioconductor\")'\n  probed avail={'conda': False, 'cran': False, 'bioconductor': True}\n                          ^^^^^ conda reported ABSENT for a package that IS on bioconda\n\nREAL probe_conda() against api.anaconda.org (live) \u2014 the convention is registry-dependent:\n  r-edgeR                     available=False\n  r-limma                     available=False\n  bioconductor-edger          available=True  chan=bioconda latest=4.8.2\n  bioconductor-limma          available=True  chan=bioconda latest=3.66.0\n  bioconductor-deseq2         available=True  chan=bioconda latest=1.50.2\n  r-ape                       available=True  chan=conda-forge          <-- convention DOES work for CRAN-derived\nNothing in the output distinguishes 'genuinely absent' from 'we guessed the wrong prefix'. (Versions listed as evidence only \u2014 NOT asserted.)"
   },
@@ -406,7 +417,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": true
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -424,19 +437,21 @@
     "language": "r"
    },
    "expect": {
-    "chosen": "bioconductor",
-    "ambiguous": true,
+    "chosen": "conda",
+    "ambiguous": null,
     "assertable": true,
     "unassertable_reason": null,
-    "note": "THREE assertable fixes. (1) ambiguous must be registry-pair-agnostic: CRAN and Bioconductor BOTH claim 'graph', so the flag must fire \u2014 today `if language: return False` (resolver.py:468, confirmed in source) switches off the one signal designed to say 'we cannot tell' precisely when the R-vs-R collision becomes visible. Flag-and-still-rank is the existing design (pip/cran does exactly this), so ambiguous=true composes with chosen='bioconductor'. VERIFIED NOT TO CRY WOLF: of 6 R names probed live, only 'graph' is on both registries (survival/Matrix/ape/ggplot2/dplyr are CRAN-only), so the flag fires on the collision and stays silent elsewhere. (2) Bioconductor must outrank CRAN on a shared name for bio work (or the tie is shown and asked \u2014 chosen=null is the acceptable weaker form). (3) identity.confirmed must be true with anchor='biocViews' \u2014 NOT a false accusation. Assert the flag/tier/verdict, never the version strings."
+    "note": "FIXED 2026-07-20 (P2 breadth): the bioconductor->conda fold. `graph` is the GraphsAndNetworks Bioconductor package; CRAN carries only a 2011 ARCHIVE of the same project (biocViews='GraphsAndNetworks'), and bioconda ships the CURRENT release as `bioconductor-graph`. With language='r' the fold probes `bioconductor-graph` after `r-graph` misses and routes to conda (install_conda_packages(bioconductor-graph, channel=bioconda)) \u2014 the current, pinned version of exactly the project meant \u2014 instead of CRAN's stale archive (which outranks the BiocManager `bioconductor` tier and used to win). ASSERT chosen=='conda'. The R-vs-R ambiguity concern this row originally tracked is DISSOLVED: conda winning IS the in-context disambiguator (the same trinity/limma precedent), so `ambiguous` is left unasserted rather than demanded true. The orthogonal `_is_ambiguous` design point \u2014 `if language: return False` suppresses the flag for a bare R-vs-R collision where NEITHER side is on bioconda \u2014 is no longer exercised by `graph` and would need its own row with such a tool. WAS chosen='bioconductor', ambiguous=true."
    },
    "actual_today": {
-    "chosen": "cran",
+    "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "probe_evidence": "$ R.resolve('graph', language='r')  (live, 2026-07-16) \u2014 REPRODUCED EXACTLY; all three claimed failures fire simultaneously:\n  chosen='cran'                     <-- (2) wrong registry wins\n  ambiguous=False                   <-- (1) cannot fire: `if language: return False`\n  identity.confirmed=False          <-- (3) FALSE ACCUSATION\n  identity.anchor='none' | identity.reason='no_domain_signal'\n  self_description='graph: A package to handle graph data structures \u2014 A package that implements some simple graph handling<U+000a>capabilities.'\n  POISONED=True\n  probed avail={'conda': False, 'cran': True, 'bioconductor': True}\n  alternatives=[{'tier':'bioconductor', 'detail': {'available': True}}]\n\n*** I CONFIRM THE RECORDED CORRECTION: THIS IS NOT A NAME COLLISION. *** It is a 15-year-stale MIRROR of the SAME project. Fetched with the resolver's OWN fetcher (R._get_json \u2014 the exact bytes probe_cran parses; a naive urllib call 403s without the UA header, which is how a probe can wrongly 'disprove' this):\n  graph      crandb=YES ver=1.30.0  pub=2011-04-26  repo=CRAN  biocViews='GraphsAndNetworks'   <-- Bioconductor pkg archived on CRAN\n  survival   crandb=YES ver=3.8-9   pub=2026-07-08  repo=CRAN  biocViews=<ABSENT>              <-- genuine CRAN\n  Matrix     crandb=YES ver=1.7-5   pub=2026-03-21  repo=CRAN  biocViews=<ABSENT>              <-- genuine CRAN\n  ape        crandb=YES ver=5.8-1   pub=2024-12-16  repo=CRAN  biocViews=<ABSENT>              <-- genuine CRAN\n  Biobase    crandb=NO (no record)                                                              <-- Bioconductor-only\n  annotate   crandb=NO (no record)                                                              <-- Bioconductor-only\n  DESeq2     crandb=NO (no record)                                                              <-- Bioconductor-only\nSO THE FINDING IS SHARPER THAN THE SCENARIO PREDICTED. correct_outcome asked probe_bioconductor to fetch biocViews from the Bioconductor page \u2014 but biocViews is ALREADY IN THE BYTES probe_cran FETCHES AND DISCARDS (resolver.py:176-195 extracts only Title/Description/URL/BugReports). The resolver prints 'nothing in it ties it to bioinformatics' about a payload it just parsed that carries a Bioconductor taxonomy term. biocViews presence is a free, 100%-precision discriminator on this sample (4/4 genuine-CRAN absent, 1/1 Bioconductor-mirror present). A CRAN-native package would never carry biocViews. Installing the CRAN pick hands the user a 2011 graph and breaks RBGL/Rgraphviz. (Versions/dates = evidence only, NOT asserted.)"
   },
@@ -462,7 +477,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": true
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -519,7 +536,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -572,12 +591,14 @@
     "note": "bioconductor-deseq2 IS on bioconda. *** ASSERT THE NEGATIVE FORM, NOT chosen=='conda' EQUALITY *** \u2014 actual_today here is GitHub-rate-limit dependent (see probe_evidence), so the ONLY rate-limit-robust guard is: chosen NOT IN ('synthesis','source') AND (identity is None OR identity.anchor != 'repo'). That guard holds green under BOTH a healthy limit (today: chosen='synthesis' \u2192 correctly RED) and an exhausted one (chosen=None, identity absent \u2192 correctly not-red), and goes green only when the real fix lands. The identity clause MUST tolerate identity=None or the row crashes rather than fails under rate-limit exhaustion. chosen='conda' is the END STATE once both fixes land (always-probe-Bioconductor + the bioconductor-{tool.lower()} conda probe); 'bioconductor' is acceptable if only the former lands (conda outranks bioconductor in TIER_ORDER); a refusal listing the near-miss candidate is the acceptable weaker form. The auto-confirm for repo-ish tiers (resolver.py:564-569) is what launders a routing failure into a green badge \u2014 'has a repo' is provenance, not identity."
    },
    "actual_today": {
-    "chosen": "synthesis",
+    "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "outcome",
    "probe_evidence": "*** THIS ROW CONFIRMS THE RECORDED CORRECTION, AND ADDS A STABILITY WARNING THE RECORDED PASS MISSED. ***\nSANITY (my probe is uncontaminated): curl api.github.com/rate_limit -> core {'limit':60,'remaining':38}, search {'limit':10,'remaining':10}.\n\n$ R.resolve('deseq2')  (live, 2026-07-16, HEALTHY rate limit)\n  chosen='synthesis'          <-- NOT null. Confidently auto-adopted.\n  identity.confirmed=True | anchor='repo' | evidence=['thelovelab/DESeq2'] | self_description=''\n  POISONED=False\n  install_call='synth_fetch(\"https://github.com/thelovelab/DESeq2\")  # read its build files, then synth_build(...)'\n  probed avail={'conda': False, 'pip': False, 'cran': False, 'binary': False, 'synthesis': True, 'source': True, 'author_image': False, 'authors_recipe': False}\n  alternatives=[{'tier':'source', ...}]\nThe most-used R package in bioinformatics routes to a hand-built git clone, identity CONFIRMED, install_call clean and unpoisoned.\n\n*** STABILITY WARNING (NEW \u2014 this is why the expect is written negatively). *** actual_today.chosen is a FUNCTION OF THE GITHUB RATE LIMIT, which is 60/hr unauthenticated. The recorded pass observed chosen=None because its limit was exhausted (remaining:0 forced probe_github->repo_exists=False, suppressing auto-adopt); I observe chosen='synthesis' with remaining:38. Same code, two different actual_today values, one hour apart. An equality assertion on 'synthesis' WILL flap in CI without a token. The negative guard in expect.note is immune to the flip \u2014 use it.\n\nWHAT IT IS STEERING AWAY FROM (live, same session):\n  probe_conda('bioconductor-deseq2') -> {'available': True, 'channel': 'bioconda', 'latest': '1.50.2', 'summary': 'Differential gene expression analysis based on the negative binomial distribution'}\n  probe_conda('deseq2')              -> {'available': False}\n  probe_bioconductor('DESeq2')       -> {'available': True}    <-- case-SENSITIVE\n  probe_bioconductor('deseq2')       -> {'available': False}\nAnd bioconductor is never probed at all on this path: resolver.py:778-781, the no-language branch probes only conda/pip/cran (verified in source)."
   },
@@ -603,7 +624,9 @@
     "chosen": "author_image",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -810,7 +833,8 @@
     "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -837,7 +861,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -867,7 +892,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -894,7 +920,9 @@
     "chosen": "conda",
     "ambiguous": true,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": false,
    "gap_class": "report",
@@ -924,7 +952,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": null
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -954,7 +983,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo",
-    "refusal_reason": "needs_user_input"
+    "refusal_reason": "needs_user_input",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -983,7 +1013,8 @@
     "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "not_assessed",
-    "refusal_reason": "needs_user_input"
+    "refusal_reason": "needs_user_input",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -1059,19 +1090,21 @@
     "language": null
    },
    "expect": {
-    "chosen": "bioconductor",
+    "chosen": "conda",
     "assertable": true,
     "ambiguous": null,
-    "note": "EXPECT REWRITTEN \u2014 the recorded expect (chosen=null, refuse on a bioc+pip collision) is REFUTED by this corpus's OWN trinity row. Bioconductor is a bioinformatics-only repository and assess_identity already treats membership as a domain anchor (resolver.py:581, identical argument to bioconda). trinity establishes the precedent and the brief blesses it: a bio-channel anchor (bioconda trinity) beats a same-name PyPI squat (ethereum/trinity) WITHOUT asking, and that is scored correct. bioc limma vs PyPI 'limma' (an ESP8266 controller) is the same fact pattern; refusing it while auto-picking trinity is incoherent. Nobody typing 'limma' at a bioinformatics agent means an ESP8266 controller or CRAN's archived 2008 limma 2.10.7. ASSERT: 'bioconductor' in probed AND chosen=='bioconductor' AND identity.confirmed is True. The first conjunct is the row's real load-bearing fact and survives the rewrite intact: a registry never asked cannot be ranked, and its absence is indistinguishable from a miss. NOTE the fix is two-part \u2014 probe bioconductor for every bare name, AND rank it above a pip/cran hit it out-anchors (TIER_ORDER currently puts bioconductor BELOW cran, so probing alone still yields pip). STABILITY: chosen=='bioconductor' holds whether or not the ESP8266 squat or the CRAN archive survive. AMBIGUOUS NULLED (was true).",
+    "note": "FIXED 2026-07-20 (P2 breadth): the bioconductor->conda fold. bioconda ships limma as `bioconductor-limma` (never the bare name, not on CRAN), so a bare `limma` now resolves to conda with install_conda_packages(bioconductor-limma, channel=bioconda) \u2014 the current release, pinned, containerizable \u2014 instead of the junk PyPI `limma` (an ESP8266 controller). The fold routes the hit INTO the conda tier (it IS a conda install), so it inherits conda's top rank AND conda's role as the pip/cran ambiguity disambiguator: `ambiguous` still fires (pip and cran both carry a same-name package) but a conda pick is NOT nulled, exactly the ape/trinity precedent this corpus already blesses. ASSERT chosen=='conda'. The bioconda-channel anchor confirms identity for free (self_description 'Linear Models for Microarray and Omics Data'). AMBIGUOUS left unasserted (it fires true; the load-bearing fact is the tier). Sibling `stale-registry-right-project-wrong-decade` stays parked (its staleness concern needs a field that does not exist). WAS chosen='bioconductor' \u2014 the recorded target anticipated a separate bioconductor-tier rerank; the conda fold is the better end-state (pinned bioconda package vs unpinned BiocManager) and its deseq2 sibling already targets 'conda'.",
     "unassertable_reason": null
    },
    "actual_today": {
-    "chosen": "pip",
+    "chosen": "conda",
     "ambiguous": true,
-    "install_call_poisoned": true,
-    "authors_gate": "not_assessed"
+    "install_call_poisoned": false,
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
-   "is_correct_today": false,
+   "is_correct_today": true,
    "gap_class": "interpretation",
    "probe_evidence": "$ python3 -c \"... R.resolve(tool='limma')\"   # LIVE, re-run 2026-07-16\nchosen    = 'pip'\nambiguous = True    (fires on pip+cran \u2014 but the cran hit is the 2008 archive; right flag, wrong pair)\nprobed keys = ['author_image', 'authors_recipe', 'conda', 'cran', 'pip']   <-- NO 'bioconductor' KEY. NEVER ASKED.\n  author_image   avail=False repo='firoziya/limma'   <-- repo harvested from the ESP8266 project's metadata\n  authors_recipe avail=False repo='firoziya/limma'\n  conda avail=False\n  cran  avail=True latest='2.10.7' summary='Linear Models for Microarray Data \u2014 Data analysis, linear models and d...'\n  pip   avail=True latest='0.2.5'  summary='Language Interface Model for Machine Automation - A Python framework f...'\nidentity.confirmed = False | anchor='none' | reason='no_domain_signal'\nLAST LINE = 'install_pip_package(env, \"limma\", version=\"0.2.5\")'\n\nSUPPORTING PROBES (live):\n$ R.probe_bioconductor('limma') -> {'available': True}     <-- reachable the whole time; resolve() never calls it without language='r'\n$ R.domain_signal('Linear Models for Microarray Data \u2014 Data analysis, linear models and differential expression for microarray data.') -> []\n\nCODE READ backing the rewrite:\nresolver.py:774  availability['bioconductor'] = probe_bioconductor(tool, timeout)   # inside the `language == 'r'` branch ONLY\nresolver.py:581  if chosen == 'bioconductor': out['anchor']='bioconductor'  # 'Bioconductor is a bioinformatics-only repository'\nresolver.py:55   TIER_ORDER = ... 'conda','pip','cran','bioconductor',...    # bioc ranks BELOW cran -> probing alone is not enough\n>> Premises CONFIRMED including the compound one (the word-list scores the REAL limma's own description at ZERO \u2014 'microarray' is not a listed term, so the right entry would earn an IDENTITY UNCONFIRMED accusation). That compound finding is precisely why the fix must be the bioconductor ANCHOR, not the word-list."
   },
@@ -1097,7 +1130,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -1154,7 +1189,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo",
-    "refusal_reason": "needs_user_input"
+    "refusal_reason": "needs_user_input",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -1183,7 +1219,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "no_repo",
-    "refusal_reason": "needs_user_input"
+    "refusal_reason": "needs_user_input",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1238,7 +1275,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -1268,7 +1306,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
@@ -1296,7 +1335,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": true
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1351,7 +1392,9 @@
     "chosen": "pip",
     "ambiguous": false,
     "install_call_poisoned": true,
-    "authors_gate": "not_assessed"
+    "authors_gate": "not_assessed",
+    "refusal_reason": null,
+    "pins_requested_version": true
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1491,7 +1534,9 @@
     "chosen": "synthesis",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "assessed"
+    "authors_gate": "assessed",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "report",
@@ -1521,7 +1566,8 @@
     "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "not_assessed",
-    "refusal_reason": "needs_user_input"
+    "refusal_reason": "needs_user_input",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -1549,7 +1595,9 @@
     "chosen": "pip",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": false,
    "gap_class": "interpretation",
@@ -1569,7 +1617,7 @@
     "chosen": null,
     "ambiguous": true,
     "assertable": false,
-    "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None for {tool: limma}; `limma-bioconductor-never-probed-without-language-hint` demands chosen='bioconductor' for the same call via an explicit verify-pass rewrite citing THIS corpus's trinity precedent (a bio-channel anchor beats a same-name PyPI squat WITHOUT asking, and that is scored correct; Bioconductor membership is a domain anchor by the identical argument to bioconda). Both cannot pass. This row's UNIQUE content is STALENESS ('right project, wrong decade') \u2014 a different concern from identity, and no field exposes it. Restore when one does.",
+    "unassertable_reason": "UNASSERTABLE \u2014 CONTRADICTS ITS OWN SIBLING ON AN IDENTICAL CALL. This row demands chosen=None (refuse the pip/cran collision) for {tool: limma}; `limma-bioconductor-never-probed-without-language-hint` demands chosen='conda' for the same call (the bioconductor->conda fold: bioconda's `bioconductor-limma` is the current release and the in-context disambiguator, the trinity precedent). Both cannot pass. This row's UNIQUE content is STALENESS ('right project, wrong decade' \u2014 CRAN's 2008 limma 2.10.7) \u2014 a concern orthogonal to routing, and no decision field exposes it. Restore when one does.",
     "note": "MUST REFUSE AND ASK: PyPI's ESP8266 IoT framework is not limma. Assert chosen is None AND 'identity' key ABSENT AND ambiguous==true (already fires correctly \u2014 keep green). Refusal, not choose-and-warn. Do NOT assert any version string: the point is a decade-stale artifact, but '2.10.7'/'0.2.5' are registry state."
    },
    "actual_today": {
@@ -1637,7 +1685,9 @@
     "chosen": "conda",
     "ambiguous": false,
     "install_call_poisoned": false,
-    "authors_gate": "no_repo"
+    "authors_gate": "no_repo",
+    "refusal_reason": null,
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "none",
@@ -1667,7 +1717,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -1697,7 +1748,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "not_assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "interpretation",
@@ -1727,7 +1779,8 @@
     "ambiguous": false,
     "install_call_poisoned": false,
     "authors_gate": "assessed",
-    "refusal_reason": "investigation_contradicted"
+    "refusal_reason": "investigation_contradicted",
+    "pins_requested_version": false
    },
    "is_correct_today": true,
    "gap_class": "outcome",
