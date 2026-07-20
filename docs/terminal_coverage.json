@@ -524,9 +524,9 @@
     "agent/skills/acquire_data.py:605": false,
     "agent/skills/authors_sources.py:232": true,
     "agent/skills/authors_sources.py:253": false,
-    "agent/skills/resolver.py:811": false,
-    "agent/skills/resolver.py:815": false,
-    "agent/skills/resolver.py:817": false,
-    "agent/skills/resolver.py:844": false
+    "agent/skills/resolver.py:823": false,
+    "agent/skills/resolver.py:827": false,
+    "agent/skills/resolver.py:829": false,
+    "agent/skills/resolver.py:856": false
   }
 }
