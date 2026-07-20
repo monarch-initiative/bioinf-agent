@@ -409,6 +409,67 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
     }
 
 
+def _check_docker_available() -> Optional[dict]:
+    """Returns a freeze()/run refusal dict if the Docker daemon can't be reached,
+    else None. The single upfront guard for every container-native entrypoint —
+    freeze(), freeze_from_image(), build_env_from_authors_recipe(),
+    run_step_in_container().
+
+    Each of those reaches docker through a DIFFERENT low-level wrapper with a
+    different exception discipline, so a missing/stopped daemon surfaced
+    inconsistently: a raw FileNotFoundError from one path (container_build._sh
+    catches only TimeoutExpired; three direct subprocess.run sites have no
+    try/except at all), a structured-but-MISLABELED broke from another
+    ('image_pull_failed', 'authors_recipe.build_failed') — sometimes only after a
+    git clone had already run. This converts all of that into ONE honest,
+    correctly-named refusal BEFORE any clone / cache lookup / build spin-up, the
+    same fast-refuse posture as _check_disk_failsafe.
+
+    The probe hits the SERVER, not just the client: `docker version` (with a
+    Server template) fails when the daemon is down, whereas `docker --version`
+    (client only) succeeds even then. BIOINF_SKIP_DOCKER_PREFLIGHT=1 bypasses (a
+    dev/ops escape hatch, mirroring BIOINF_FREEZE_MIN_DISK_GB=0); the test suite
+    monkeypatches this function directly, matching how it stubs _check_disk_failsafe."""
+    if os.environ.get("BIOINF_SKIP_DOCKER_PREFLIGHT") == "1":
+        return None
+    try:
+        r = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, text=True, timeout=20)
+    except FileNotFoundError:
+        return {
+            "success": False, "outcome": "refused",
+            "stage": "docker_preflight", "code": "docker.not_installed",
+            "message": (
+                "refusing to start — the `docker` CLI was not found on PATH. This "
+                "operation builds/adopts and validates a container image and needs a "
+                "working Docker daemon. Install Docker (or Docker Desktop) and make "
+                "sure `docker` is on PATH, then retry."),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False, "outcome": "refused",
+            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
+            "message": (
+                "refusing to start — `docker version` timed out probing the daemon "
+                "(20s). The Docker daemon appears unresponsive; start or restart it "
+                "and retry."),
+        }
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        detail = detail[0][:300] if detail else "(no diagnostic)"
+        return {
+            "success": False, "outcome": "refused",
+            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
+            "message": (
+                "refusing to start — the `docker` CLI is installed but the daemon "
+                "could not be reached (is Docker running?). This operation builds/"
+                "adopts and validates a container image and needs a live daemon.\n"
+                f"  docker said: {detail}"),
+        }
+    return None
+
+
 def _prune_buildkit_after_failure() -> dict:
     """Best-effort `docker builder prune -af` after a failed container-native
     build. The build that failed leaves dangling intermediate layers; the next

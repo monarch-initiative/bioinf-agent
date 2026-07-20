@@ -158,6 +158,14 @@ def freeze(
     _disk_refusal = _ms._check_disk_failsafe()
     if _disk_refusal:
         return _disk_refusal
+    # Docker preflight: every path below (cache re-anchor's image-present probe,
+    # adopt-by-digest, container-native build) needs a live daemon. Refuse ONCE
+    # here with a correctly-named reason rather than let a missing daemon surface
+    # as a raw FileNotFoundError (the cache re-anchor's docker inspect is an
+    # unguarded subprocess) or a mislabeled 'container_build_failed'.
+    _docker_refusal = _ms._check_docker_available()
+    if _docker_refusal:
+        return _docker_refusal
     parsed = _ms._freeze.parse_tools(tools)
     # F1 fix (Batch 2): the licenses surface has TWO entry points — the freeze()
     # `licenses=[...]` kwarg AND patch_pipeline({licenses, license_gated, …}) on
@@ -840,6 +848,9 @@ def freeze_from_image(
     {repo, commit, tag} so the recipe records the pinned source). Writes the four Layer-1
     deliverables (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from
     the verified record. Docker required."""
+    _docker_refusal = _ms._check_docker_available()
+    if _docker_refusal:
+        return _docker_refusal
     from agent.skills import freeze_from_image as _ffi
     return _ffi.freeze_from_image(
         image=image, tools=[dict(t) for t in tools], name=name, version=version,
@@ -876,6 +887,11 @@ def build_env_from_authors_recipe(
     (honesty contract + deliverables). `tools`: [{name, evidence}] — evidence must RUN each
     tool in-image. The recipe records the pinned source so the build is reproducible.
     Docker + git (+ network for a remote repo) required."""
+    # Guard BEFORE the git clone (which happens inside build_from_authors_recipe),
+    # so a docker-down machine is told "docker unavailable", never "clone failed".
+    _docker_refusal = _ms._check_docker_available()
+    if _docker_refusal:
+        return _docker_refusal
     from agent.skills import freeze_from_image as _ffi
     return _ffi.build_from_authors_recipe(
         repo=repo, tools=[dict(t) for t in tools], name=name, recipe=recipe, ref=ref,

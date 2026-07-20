@@ -8,10 +8,11 @@ Why this earns its place:
   - Phase 2 launchers ship `module load apptainer/<v>` + `module load
     nextflow/<v>` lines. The version strings can't be hardcoded; they
     drift as the cluster's module tree evolves.
-  - The user CAN configure them statically in `slurm.module_loads`,
-    but discoverability matters too: a fresh project asking "what
-    nextflow versions are available?" should get an answer without
-    the user having to ssh in and grep.
+  - Those versions are chosen per-run (the apptainer_module /
+    nextflow_module args to the submit primitives), so discoverability
+    matters: a fresh project asking "what nextflow versions are
+    available?" should get an answer without the user having to ssh in
+    and grep.
   - cluster_module_avail is read-only, ssh-only, doesn't submit jobs.
     Same trust posture as snapshot_project.
 

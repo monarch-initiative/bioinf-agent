@@ -1566,6 +1566,7 @@ def test_freeze_cache_hit_returns_proven_artifact_by_hash(monkeypatch):
     from agent import mcp_server as _ms
     digest = "sha256:" + "a" * 64
     monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+    monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
     monkeypatch.setattr(_ms._env_cache, "lookup_anchored",
                         lambda rkey, present: {"image": "img", "image_digest": digest,
                                                "content_digest": digest, "mode": "build"})
@@ -1591,6 +1592,7 @@ def test_freeze_adopt_honesty_refuses_policy_violating_biocontainer(monkeypatch)
                                              "image_by_digest": f"quay.io/biocontainers/samtools@{digest}"})
     monkeypatch.setattr(_ms._env_cache, "lookup_anchored", lambda rkey, present: None)
     monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+    monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
 
     out = freeze_tools.freeze(env_name="bioinf_st_adopt_unit",
                               tools=["samtools=1.21"], accel="cuda")   # cuda, NO toolkit_version
@@ -1739,9 +1741,12 @@ def test_env_cache_roundtrip(tmp_path):
     again = EnvCache(tmp_path / "env_cache.json")
     assert again.lookup(key) == rec
     assert key in again.all()
-    # Corrupt file degrades to empty, never raises.
+    # A corrupt file must FAIL LOUD, not silently degrade to empty (which would let
+    # the next register() overwrite it and lose every recorded env). This is the
+    # fail-loud half of the durability fix — see tests/test_envcache_durability.py.
     (tmp_path / "env_cache.json").write_text("{ not json")
-    assert EnvCache(tmp_path / "env_cache.json").lookup(key) is None
+    with pytest.raises(RuntimeError):
+        EnvCache(tmp_path / "env_cache.json").lookup(key)
 
 
 # ---------------------------------------------------------------------------
@@ -4842,6 +4847,10 @@ def test_mcp_freeze_evicted_image_falls_through_to_rebuild(monkeypatch, tmp_path
     monkeypatch.setattr(m, "subprocess",
                         type("SP", (), {"run": staticmethod(
                             lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})())})())
+    # Docker IS available here (only the specific image was evicted); bypass the
+    # preflight — whose own `docker version` probe would otherwise hit the rc=1 stub
+    # above — so the test reaches the cache-miss/rebuild path it's actually about.
+    monkeypatch.setattr(m, "_check_docker_available", lambda: None)
     monkeypatch.setattr(m, "_env_cache", cache)
     monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
     # force the build path to refuse so we get a clear post-cache signal that the
@@ -6470,6 +6479,94 @@ def test_check_disk_failsafe_honors_env_override(monkeypatch):
     # higher threshold trips at 1 GB
     monkeypatch.setenv("BIOINF_FREEZE_MIN_DISK_GB", "5")
     assert ms._check_disk_failsafe() is not None
+
+
+# --- Docker preflight (P1 — front door / honest floor) ---------------------
+# One upfront guard so a missing/stopped daemon surfaces as ONE correctly-named
+# refusal, instead of a raw FileNotFoundError from one path and a mislabeled
+# 'image_pull_failed' from another. Probes the SERVER (docker version), not the
+# client, because `docker --version` succeeds even with the daemon down.
+
+def _fake_completed(returncode, stdout="", stderr=""):
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
+
+
+def test_check_docker_available_none_when_daemon_healthy(monkeypatch):
+    import agent.mcp_server as ms
+    import subprocess
+    monkeypatch.delenv("BIOINF_SKIP_DOCKER_PREFLIGHT", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_completed(0, "27.0.3"))
+    assert ms._check_docker_available() is None
+
+
+def test_check_docker_available_refuses_when_binary_missing(monkeypatch):
+    """No `docker` on PATH → a correctly-named refusal, not a raw FileNotFoundError
+    bubbling out of a build."""
+    import agent.mcp_server as ms
+    import subprocess
+    monkeypatch.delenv("BIOINF_SKIP_DOCKER_PREFLIGHT", raising=False)
+
+    def _raise(*a, **k):
+        raise FileNotFoundError("docker")
+    monkeypatch.setattr(subprocess, "run", _raise)
+    r = ms._check_docker_available()
+    assert r is not None and r["success"] is False
+    assert r["stage"] == "docker_preflight"
+    assert r["code"] == "docker.not_installed"
+
+
+def test_check_docker_available_refuses_when_daemon_down(monkeypatch):
+    """CLI present but daemon unreachable (rc!=0) → a daemon_unavailable refusal that
+    carries the daemon's own diagnostic, not a mislabeled 'image pull failed'."""
+    import agent.mcp_server as ms
+    import subprocess
+    monkeypatch.delenv("BIOINF_SKIP_DOCKER_PREFLIGHT", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_completed(
+        1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."))
+    r = ms._check_docker_available()
+    assert r is not None and r["code"] == "docker.daemon_unavailable"
+    assert "Cannot connect to the Docker daemon" in r["message"]
+
+
+def test_check_docker_available_refuses_on_timeout(monkeypatch):
+    import agent.mcp_server as ms
+    import subprocess
+    monkeypatch.delenv("BIOINF_SKIP_DOCKER_PREFLIGHT", raising=False)
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="docker version", timeout=20)
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    r = ms._check_docker_available()
+    assert r is not None and r["code"] == "docker.daemon_unavailable"
+
+
+def test_check_docker_available_honors_skip_env(monkeypatch):
+    """BIOINF_SKIP_DOCKER_PREFLIGHT=1 bypasses the probe entirely (a dev/ops escape
+    hatch mirroring BIOINF_FREEZE_MIN_DISK_GB=0). subprocess is NOT called."""
+    import agent.mcp_server as ms
+    import subprocess
+
+    def _boom(*a, **k):
+        raise AssertionError("subprocess.run must not run when the skip env is set")
+    monkeypatch.setattr(subprocess, "run", _boom)
+    monkeypatch.setenv("BIOINF_SKIP_DOCKER_PREFLIGHT", "1")
+    assert ms._check_docker_available() is None
+
+
+def test_freeze_refuses_early_when_docker_unavailable(monkeypatch):
+    """The freeze() entrypoint returns the docker preflight refusal BEFORE any
+    cache/parse/build work — the single upfront guard for a docker-down machine."""
+    from agent.mcp_tools import freeze_tools
+    from agent import mcp_server as _ms
+    monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+    monkeypatch.setattr(_ms, "_check_docker_available",
+                        lambda: {"success": False, "outcome": "refused",
+                                 "stage": "docker_preflight",
+                                 "code": "docker.daemon_unavailable",
+                                 "message": "docker down"})
+    out = freeze_tools.freeze(env_name="bioinf_docker_down_zzz", tools=["samtools=1.21"])
+    assert out.get("stage") == "docker_preflight", out
+    assert out.get("code") == "docker.daemon_unavailable", out
 
 
 def test_check_disk_failsafe_safe_on_disk_usage_failure(monkeypatch):

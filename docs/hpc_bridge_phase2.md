@@ -247,8 +247,6 @@ def submit_cluster_job(
   (template is curl-only, no `&&`)
 - `job_type="data_acquisition"` with destination outside refdata → refused
 - `job_type="diagnostic"` with `command="squeue && cat /etc/shadow"` → refused
-- `cores=999` exceeds `slurm.max_cores_per_job` → refused
-- queue not in `slurm.allowed_queues` → refused
 - attempt to set `--mail-user=evil@badguy.com` via job_name with newline injection → refused
 - attempt to set `--export=ALL` (env leak) → forced to empty `--export=NONE`
 - the SBATCH script can't include `srun -interactive` or `salloc`
@@ -382,14 +380,10 @@ compute_envs:
         permissions: [upload, exec]
         description: "gnomAD v4 vcfs (50GB)"
 
-    # NEW (Phase 2): SLURM submission constraints
+    # SLURM scheduler policy (all keys optional; see projects_access.yaml.example)
     slurm:
-      queue_default: "general"
-      allowed_queues: ["general", "interact"]
       account: "tislab"
-      max_cores_per_job: 16
-      max_mem_gb_per_job: 64
-      max_time_hours_per_job: 24
+      partition: "general"
       # Globus deferred (Q1)
 ```
 

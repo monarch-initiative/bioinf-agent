@@ -104,14 +104,16 @@ OPERATION_REQUIRES: dict[str, str] = {
 }
 
 # The batch scheduler a compute env runs jobs through, declared via `job_manager`.
-# A CONTROLLED enum:
-#   slurm — an sbatch launcher submitted via `sbatch`, polled via `sacct` (a real
-#           cluster with a batch scheduler).
-#   bash  — a plain shell script run directly, no scheduler (a local machine, or a
-#           node you drive by hand). "Just a shell script instead of a slurm script."
-# A third scheduler (pbs, lsf, …) gets added here AND gets its submit/poll wiring
-# in the SAME change — never a pre-declared value with no implementation behind it.
-VALID_JOB_MANAGERS: tuple[str, ...] = ("slurm", "bash")
+# A CONTROLLED enum. The rule this enum lives by: "a value gets added here AND gets
+# its submit/poll wiring in the SAME change — never a pre-declared value with no
+# implementation behind it."
+#   slurm — an sbatch launcher submitted via `sbatch`, polled via `sacct`. The one
+#           implemented path (the bridge hardcodes sbatch/sacct).
+# A second scheduler (bash/local, pbs, lsf, …) gets added here TOGETHER with its
+# submit/poll wiring. `bash` was listed here but never had an execution path — it was
+# removed 2026-07-20 to honor the rule above (the field itself stays, defaulting to
+# slurm; only the un-implemented value is gone).
+VALID_JOB_MANAGERS: tuple[str, ...] = ("slurm",)
 
 class PermissionDenied(Exception):
     """The agent attempted an operation on a path it isn't authorized for."""
@@ -389,25 +391,27 @@ def _validate_dir_block(block: object, where: str, path: Path,
 # Phase 2 — env-level block validators
 # ---------------------------------------------------------------------------
 
-# The closed key set for the slurm block. Unknown keys are rejected at load
-# time — silent typos (`max_corees_per_job: 9999`) would otherwise let the
-# agent submit jobs exceeding the user's intended cap. The values here are
-# the FENCEPOSTS — every submit_cluster_job call validates against them.
-# The env-level `slurm:` block is the HPC's SCHEDULER POLICY — the constants for
-# THIS cluster that render_workflow_files merges into every job's header. EVERY
-# key is OPTIONAL: an HPC like Longleaf (no partition selection, no account for
-# CPU jobs) can omit the whole block. Email is NOT here — it's the env-level
-# `email:` field. Unknown keys still rejected (closed-key discipline).
+# The closed key set for the slurm block. Unknown keys are rejected at load time —
+# a silently-accepted key we never read is a setting that does nothing. The env-level
+# `slurm:` block is the HPC's SCHEDULER POLICY — the constants for THIS cluster that
+# _resolve_slurm_and_email (submit_workflow) merges into every job's header. EVERY key
+# is OPTIONAL: an HPC like Longleaf (no partition selection, no account for CPU jobs)
+# can omit the whole block. Email is NOT here — it's the env-level `email:` field.
 #   account      (str)  → --account on every job (omit ⇒ none, e.g. Longleaf)
 #   partition    (str)  → default --partition for CPU jobs (omit ⇒ scheduler default)
 #   gpu          (map)  → this HPC's GPU convention {partition, qos}; present ⇒ GPU
 #                         jobs supported (a gpus>0 request renders -p/--qos/--gres)
-#   max_cores_per_job / max_mem_gb_per_job / max_time_hours_per_job (pos int) caps
-#   module_loads (list[str]) → extra `module load X` lines in the launcher
+#
+# REMOVED 2026-07-20: `max_cores_per_job` / `max_mem_gb_per_job` / `max_time_hours_per_job`
+# and `module_loads`. All four were accepted + validated here but NEVER consumed — the
+# caps were never compared against any job (three comments/docs falsely claimed "every
+# submit validates against them"; there is no such enforcement), and module_loads was
+# never emitted into a launcher. Accepting a knob that does nothing is the exact
+# "gate present, absent in effect" anti-pattern. Real ENFORCED per-env resource caps are
+# a production guardrail deferred to the scale phase (they belong wired into
+# _resolve_slurm_and_email, not merely accepted here); see the roadmap.
 _SLURM_ALLOWED_KEYS: frozenset[str] = frozenset({
     "account", "partition", "gpu",
-    "max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job",
-    "module_loads",
 })
 _SLURM_GPU_KEYS: frozenset[str] = frozenset({"partition", "qos"})
 # Shell-metacharacter set forbidden in any slurm value that reaches an SBATCH line.
@@ -461,33 +465,8 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
                 raise ConfigError(f"{path}: {where}.{k} contains shell metacharacters "
                                   f"(SBATCH header injection); refused")
 
-    # caps — optional positive ints (bool is an int subclass; exclude it).
-    for k in ("max_cores_per_job", "max_mem_gb_per_job", "max_time_hours_per_job"):
-        if k in blk:
-            v = blk[k]
-            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
-                raise ConfigError(
-                    f"{path}: {where}.{k} must be a positive integer (got {v!r})")
-
     if "gpu" in blk:
         _validate_slurm_gpu_block(blk["gpu"], f"{where}.gpu", path)
-
-    if "module_loads" in blk:
-        ml = blk["module_loads"]
-        if not isinstance(ml, list) or not all(
-                isinstance(x, str) and x for x in ml):
-            raise ConfigError(
-                f"{path}: {where}.module_loads must be a list of non-empty "
-                f"strings (got {ml!r})")
-        # Each entry becomes `module load <X>` in the launcher. Refuse
-        # shell metacharacters that would break out of that line. Module
-        # names canonically match [A-Za-z0-9_+\-./], so anything outside
-        # that set is forbidden.
-        for item in ml:
-            if any(c in item for c in "\x00\n\r\t ;|&$`<>(){}[]*?\"'\\"):
-                raise ConfigError(
-                    f"{path}: {where}.module_loads entry {item!r} contains "
-                    f"forbidden character (newline/space/shell metachar)")
 
 
 # --- data_transfer block --------------------------------------------------
@@ -708,10 +687,10 @@ def get_container_upload_target(env: dict) -> Optional[dict]:
 
 def get_slurm_config(env: dict) -> Optional[dict]:
     """Return the OPTIONAL slurm policy block for this env, or None if undeclared.
-    All keys optional (see _SLURM_ALLOWED_KEYS): account, partition, the gpu
-    convention {partition, qos}, the max_* caps, module_loads. render_workflow_files
-    merges these into each job's header. An HPC like Longleaf (no partition, no
-    account for CPU jobs) legitimately has no block at all."""
+    All keys optional (see _SLURM_ALLOWED_KEYS): account, partition, and the gpu
+    convention {partition, qos}. _resolve_slurm_and_email (submit_workflow) merges
+    account/partition/gpu into each job's header. An HPC like Longleaf (no partition,
+    no account for CPU jobs) legitimately has no block at all."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None
 

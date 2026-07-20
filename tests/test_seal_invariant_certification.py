@@ -122,6 +122,7 @@ def test_i13_early_gate_refuses_gated_without_license(monkeypatch):
     from agent.mcp_tools import freeze_tools
     from agent import mcp_server as _ms
     monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
+    monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
     res = freeze_tools.freeze(env_name="bioinf_gated_zzz", tools=["cellranger"],
                               gated=True, licenses=[])
     assert res.get("outcome") == "refused", res

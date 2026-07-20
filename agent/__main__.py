@@ -31,7 +31,19 @@ from agent.mcp_server import (
     mcp,
 )
 
-_reap_orphan_service_pids()
-if os.environ.get("BIOINF_MCP_AUTO_RELOAD") == "1":
-    _watch_and_exit_on_change()
-mcp.run()
+
+def main() -> None:
+    """Canonical server startup. Exposed as a function so it can back the
+    `bioinf-mcp` console_scripts entry point (pyproject.toml) as well as
+    `python -m agent`. The module-level call below is guarded by
+    `__name__ == "__main__"` so importing `agent.__main__` (which is what the
+    console-script wrapper does) does NOT start the server on import and then
+    a second time when it calls main()."""
+    _reap_orphan_service_pids()
+    if os.environ.get("BIOINF_MCP_AUTO_RELOAD") == "1":
+        _watch_and_exit_on_change()
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

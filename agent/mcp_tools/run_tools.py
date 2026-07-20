@@ -237,6 +237,14 @@ def run_step_in_container(
     if not image:
         return refused("run_container.no_image_handle",
                        error=f"freeze record for '{freeze_request_key}' has no image handle")
+    # Docker preflight: the inspect/pull and the container run below all need a live
+    # daemon; without this a stopped daemon surfaces as a mislabeled
+    # 'image_pull_failed'. Placed after the cheap record checks so an unfrozen env
+    # still gets its own clear error first. (A reachable-but-REMOTE daemon passes the
+    # probe and is caught by the daemon_is_remote() refusal just below.)
+    _docker_refusal = _ms._check_docker_available()
+    if _docker_refusal:
+        return _docker_refusal
     if _ms._locus.daemon_is_remote():
         # This step bind-mounts LOCAL test data; a remote daemon (DOCKER_HOST) can't
         # see local paths, so outputs would never land back here for validation.
