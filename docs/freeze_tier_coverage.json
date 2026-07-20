@@ -1,11 +1,11 @@
 {
-  "measured_on": "2026-07-20T22:13:06Z",
-  "git_sha": "f376a6b",
+  "measured_on": "2026-07-20T23:44:59Z",
+  "git_sha": "328518c",
   "platform": "linux/amd64",
   "host_arch": "arm64",
   "docker_available": true,
   "install_tiers_total": 10,
-  "install_tiers_proven": 4,
+  "install_tiers_proven": 5,
   "tiers": {
     "conda": {
       "kind": "install",
@@ -15,8 +15,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:4fcfe6c01679ea4e0a3f3804637953d4905d32889445a4820ac6511542fe1c52",
-      "content_digest": "sha256:211757474e4fad6ad9cfa16ee66fb51283eb2085514e2a12583f7c17e723d4d6",
+      "image_digest": "sha256:a897eb50bd24447bb27f69baa8d288dee95b3ca46af7c20de3095070935e5e2d",
+      "content_digest": "sha256:6c6c79dec07b363155923d06e0cc224a6ec85519bf6b7b055142e0cd5f075536",
       "validation_locus": "emulated",
       "last_error": null
     },
@@ -28,8 +28,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:ec666d65b133412db5fe06b8f085c4a21f2098ff24edd26bc867f2a5ff9c3472",
-      "content_digest": "sha256:fc92040c4c4155576686a9f6d1bfbaa391dd8305dd9cacbf2234a0b88d1e19f5",
+      "image_digest": "sha256:24ca6a7e5dc56d59ba2bd52af7524d83dc5a9a3b5a57562828e439e294481192",
+      "content_digest": "sha256:c86502329ac8134c48f5ad5f8cbc2b0e5cf9ac1c7dc4365f2a734ba32a92ce05",
       "validation_locus": "emulated",
       "last_error": null
     },
@@ -41,23 +41,23 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:11ffc628df0f8e3e1a46025c78f39eb901ba552f49e6fb3b6dcb88226a4943f9",
-      "content_digest": "sha256:c7878ec99d4711848ffa2d42ddedff2a96feaf54f657e957c7fc84414ec7d52c",
+      "image_digest": "sha256:4e89e8f3102abcf0d87a26e7a76e63fb96bb389acb013367155fb3a9a01e03fb",
+      "content_digest": "sha256:0b358dfced8339f58f3bd6f0f0c2c6ff3fbffa09ac78ccbdb55268b8b4651c1a",
       "validation_locus": "emulated",
       "last_error": null
     },
     "r_install": {
       "kind": "install",
-      "probe_tool": null,
-      "note": "cran / bioconductor / github:owner/repo \u2192 Rscript install + requireNamespace||stop() evidence. Mapping unit only today.",
-      "attempts": 0,
-      "passed": 0,
-      "status": "unmeasured",
-      "rate": null,
-      "image_digest": null,
-      "content_digest": null,
-      "validation_locus": null,
-      "last_error": "no real-build probe wired yet (declared row)"
+      "probe_tool": "BiocGenerics",
+      "note": "cran / bioconductor / github \u2192 Rscript install + requireNamespace||stop() load-or-die. Rides the SAME shared ContainerBuild long-tail executor as source/binary, but as an ENGINE-COUPLED tool (like cargo/go/perl \u2014 the command runs with the conda r-base active) via a DISTINCT install-command generator (ic.r_package \u2192 BiocManager), so it adds genuinely new coverage over the source tier. Proven 2026-07-20 via BiocGenerics (BIOCONDUCTOR branch: BioC_mirror pin + BiocManager bootstrap). VALIDATED_IN_IMAGE evidence is the DEFAULT IMPORT-LEVEL check \u2014 library(BiocGenerics) (namespace load, executes R in the shipped image) + packageVersion() version capture \u2014 NOT a functional_evidence run-on-data smoke; a functional_check would strengthen it to validated==ran (future hardening). The r-base + c/cxx/fortran-compiler + zlib toolchain is auto-injected (plan_conda) and IS engine-lock-anchored, but the R PACKAGE itself is Rscript-installed at build time \u2014 NOT in the pixi lock and NOT sha-pinned, so its point-version floats with the current Bioc release (weaker reproducibility than conda/pip/source/binary; a snapshot-repo / explicit-version pin is future hardening). The cran + github sub-sources ride the SAME generator's other branches, not separately baked this slice.",
+      "attempts": 1,
+      "passed": 1,
+      "status": "proven",
+      "rate": 1.0,
+      "image_digest": "sha256:3344165a93f4f24a4411f892fd3cdf57681568215a4a8a8bbb4064fca79e592c",
+      "content_digest": "sha256:ce591176353b5adac522bae4e81d03318ec90ecff78cae65d3abe339da58bd75",
+      "validation_locus": "emulated",
+      "last_error": null
     },
     "binary": {
       "kind": "install",
@@ -67,8 +67,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:cb843461d128e8a66feef91707d081abd758d9c57881694cdaf08d707c55150c",
-      "content_digest": "sha256:229a173090b75437c9af2a99cd003944e926f1fb7b256b6dfc70400e2708a530",
+      "image_digest": "sha256:60dc89329dae567191291347a9b4c6e4c37243198f075ceb2e00d9c55b6c4dfd",
+      "content_digest": "sha256:0b3e5deac4c66fbe17b73138073209142fcb7e6300acb8cce37bfaab0d8a4f2e",
       "validation_locus": "emulated",
       "last_error": null
     },
