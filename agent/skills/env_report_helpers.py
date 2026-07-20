@@ -232,6 +232,58 @@ def requested_versions(record: dict) -> dict[str, str]:
     return out
 
 
+def _version_core(s: str) -> str:
+    """The comparable version CORE of a version string — the leading vN.N(.N…)
+    token, stripping a `=`/`v` prefix and any trailing build suffix (a biocontainer
+    tag `1.21--h50ea8bc_0` → `1.21`; a conda build `1.9-hd...` → `1.9`). '' when no
+    version-shaped token leads the string (a mulled hash, a commit sha) — which the
+    divergence check reads as 'cannot compare', never as a mismatch."""
+    return _extract_version(s or "")
+
+
+def versions_diverge(requested: str, installed: str) -> bool:
+    """True ONLY when both sides carry a clear, DIFFERING version core.
+
+    Deliberately CONSERVATIVE: a report crying a false mismatch is itself a lie, so
+    anything we cannot confidently compare returns False — either side absent /
+    unpinned / unparseable, or one core a dotted-prefix of the other (requested
+    `1.21` vs installed `1.21.0`, or a biocontainer core). A False here is NOT a
+    claim of agreement; the two raw values are always shown side by side so a human
+    still sees them. It only suppresses the ⚠, which must fire on real divergence
+    alone."""
+    rq, inst = _version_core(requested), _version_core(installed)
+    if not rq or not inst or rq == inst:
+        return False
+    if inst.startswith(rq + ".") or rq.startswith(inst + "."):
+        return False
+    return True
+
+
+def version_divergences(record: dict) -> list[dict]:
+    """[{tool, requested, installed}] for every REQUESTED tool whose OBSERVED
+    installed version diverges from what was requested. THE single divergence
+    computation (Rule 4): the ENV report, the attestation, and list_installed all
+    read THIS, so a mismatch flagged on one surface is flagged on all.
+
+    `installed` is `_resolved_version` — an observation of the shipped image (SBOM /
+    recorded binary / the version the tool PRINTED), never the request. Empty when
+    nothing diverges or nothing can be confidently compared."""
+    req = requested_versions(record)
+    pidx = _pkg_index(record.get("resolved_packages") or [])
+    vidx = _verif_index(record.get("verifications") or [])
+    shipped = record.get("shipped_binaries") or []
+    out: list[dict] = []
+    for tool in (record.get("requested_tools") or []):
+        name = str(tool).split("=")[0].strip()
+        if not name:
+            continue
+        rq = req.get(name) or req.get(str(tool).strip()) or ""
+        inst = _resolved_version(name, pidx.get(name.lower()), vidx.get(name.lower()), shipped)
+        if versions_diverge(rq, inst):
+            out.append({"tool": name, "requested": rq, "installed": inst})
+    return out
+
+
 def _install_method(name: str, pkg: Optional[dict], shipped: list[dict]) -> str:
     """How this tool got into the image. Matches on the recorded `tool` field, not a
     substring scan of prose — `low in purpose` also matched any tool whose name was a

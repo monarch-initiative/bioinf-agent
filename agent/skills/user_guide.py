@@ -24,9 +24,18 @@ from agent.models.core_data import shipped_binaries as _shipped_binaries, usage_
 
 
 def _version_of(pkg: dict) -> str:
-    """Best-known version of a package record, with fallbacks for tiers that
-    don't carry a plain `version` (a release binary records its version only in
-    the release tag of binary_url; conda/pip carry it in the spec string)."""
+    """Best-known INSTALLED version of a package record. `version` is what the
+    package manager recorded installing; a release binary records its version only
+    in the release tag of `binary_url` — the asset actually downloaded, an install
+    fact, so it stays.
+
+    It must NOT scrape the `conda_spec` / `pip_spec` string (audit 2026-07-19, W3):
+    that string is the REQUESTED constraint (`samtools=1.21`, or even `>=1.10`), not
+    what resolved — when conda actually installs it, the resolved version lands in
+    `version`. Returning the spec here printed the requested number as installed on
+    exactly the tiers that don't capture a version. Absence returns '?' (unknown),
+    which the title filters out and the key-packages line shows as unknown — never a
+    borrowed request."""
     v = pkg.get("version")
     if v:
         return str(v)
@@ -35,10 +44,6 @@ def _version_of(pkg: dict) -> str:
     m = re.search(r"/releases/download/([^/]+)/", url)   # .../download/v2.13.0/asset
     if m:
         return m.group(1).lstrip("vV")
-    for key in ("conda_spec", "pip_spec"):
-        mm = re.search(r"[=@]{1,2}([0-9][\w.\-]*)", im.get(key) or "")
-        if mm:
-            return mm.group(1)
     return "?"
 
 
@@ -55,6 +60,43 @@ def key_packages(spec: dict) -> dict[str, str]:
     for p in spec.get("packages", []) or []:
         if isinstance(p, dict) and p.get("name"):
             out[p["name"]] = _version_of(p)
+    return out
+
+
+def _observed_versions(freeze_record: dict) -> dict[str, str]:
+    """name_lower → OBSERVED installed version, read from the shipped image, for EVERY
+    package the image reveals — the full SBOM closure PLUS each requested tool via the
+    shared `_resolved_version` (which also catches a source-compiled tool that prints
+    its version only in an in-image banner). THE definition the ENV report uses, so the
+    guide cites the same numbers.
+
+    Covers dependencies, not just requested tools (audit 2026-07-20): the guide's
+    key-packages line shows dependency versions too, and those come from a REQUEST-
+    derived install-step record (`install_conda_packages` writes the parsed spec pin,
+    not conda's resolved output). When the image is available its SBOM is the truth, so
+    an observed version here overrides the request-pin everywhere the caller shows a
+    package version. A package the image doesn't reveal is OMITTED (absence is not a
+    version) — the caller never substitutes the request for it."""
+    from agent.skills.env_report_helpers import (
+        _pkg_index, _resolved_version, _verif_index)
+    resolved = freeze_record.get("resolved_packages") or []
+    pidx = _pkg_index(resolved)
+    vidx = _verif_index(freeze_record.get("verifications") or [])
+    shipped = freeze_record.get("shipped_binaries") or []
+    out: dict[str, str] = {}
+    # the full observed SBOM closure — every package the shipped image actually holds
+    for p in resolved:
+        if isinstance(p, dict) and p.get("name") and p.get("version"):
+            out[p["name"].lower()] = str(p["version"])
+    # each requested tool through the shared resolver (banner/shipped-binary fallbacks
+    # a bare SBOM row can't provide, e.g. a source-compiled primary tool)
+    for tool in (freeze_record.get("requested_tools") or []):
+        nm = str(tool).split("=")[0].strip()
+        if not nm:
+            continue
+        v = _resolved_version(nm, pidx.get(nm.lower()), vidx.get(nm.lower()), shipped)
+        if v:
+            out[nm.lower()] = v
     return out
 
 
@@ -230,6 +272,21 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     # The guide renders from either, so accept both.
     name = spec.get("pipeline_name") or spec.get("workflow_name") or "pipeline"
     kpkgs = key_packages(spec)
+    # When a frozen env is pinned, EVERY version this guide cites must be OBSERVED in the
+    # shipped image, not the requested spec (audit 2026-07-19 W3 / 2026-07-20 hunt): the
+    # draft's install-step `installed_packages[].version` is the parsed REQUEST pin
+    # (install_conda_packages writes the spec, not conda's resolved output), so the title,
+    # key-packages line, AND dependency rows would otherwise show the request. The image
+    # SBOM is the truth — an observed version overrides the request-pin per package; a
+    # package the image doesn't reveal is left as-is (never a substituted request), and
+    # requested tools the image reveals are added so the title/key-packages can cite them.
+    obs = _observed_versions(freeze_record) if freeze_record else {}
+    if obs:
+        kpkgs = {n: obs.get(n.lower(), v) for n, v in kpkgs.items()}
+        for tool in (freeze_record.get("requested_tools") or []):
+            nm = str(tool).split("=")[0].strip()
+            if nm and nm.lower() in obs and not any(k.lower() == nm.lower() for k in kpkgs):
+                kpkgs[nm] = obs[nm.lower()]
     version = next((v for n, v in kpkgs.items()
                     if n.lower() == name.lower() and v not in ("", "?")), "")
     title = f"{name}" + (f" {version}" if version else "")
@@ -355,8 +412,14 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     L += ["## Environment details", ""]
     if spec.get("conda_env"):
         L.append(f"- conda env: `{spec['conda_env']}`")
-    if spec.get("python_version"):
-        L.append(f"- python: {spec['python_version']}")
+    # `python_version` on the spec is the env-CREATION request (or a config default),
+    # never re-observed. When the shipped image is pinned, its SBOM carries the real
+    # python — show THAT (audit 2026-07-20 hunt: the guide printed the requested 3.11
+    # while the image shipped 3.10.14). Without an image there is nothing to contradict
+    # the created python, so the draft value stands.
+    py = obs.get("python") or spec.get("python_version")
+    if py:
+        L.append(f"- python: {py}")
     if kpkgs:
         listed = ", ".join(f"{n}={v}" for n, v in list(kpkgs.items())[:12])
         L += [f"- key packages: {listed}" + (" …" if len(kpkgs) > 12 else "")]
