@@ -1281,7 +1281,8 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
 
 
 def pullable_image(availability: dict[str, dict], tool: str,
-                   version: str = "", timeout: int = 12) -> dict[str, Any]:
+                   version: str = "", timeout: int = 12,
+                   chosen: Optional[str] = None) -> dict[str, Any]:
     """The unified "is there a pre-built image/container we can PULL (not build)?" answer.
 
     Spans the two TRUSTED image sources, in preference order:
@@ -1296,6 +1297,12 @@ def pullable_image(availability: dict[str, dict], tool: str,
     distinct route; a bioconda tool's biocontainer is the conda tier's DELIVERY (freeze
     adopts it by digest for a pure-conda env), so it ENRICHES the conda pick rather than
     replacing it. Either way the agent sees the pull-don't-build shortcut up front.
+
+    The biocontainer is surfaced ONLY when `chosen == "conda"`: it is the conda pick's image,
+    and since the bioconductor->conda fold can make `availability["conda"]` available even
+    when conda is NOT the pick (e.g. `prefer='pip'` forced pip), advertising it otherwise would
+    name a DIFFERENT package than the install_call installs — a `bioconductor-{tool}` adopt_call
+    beside an `install_pip_package({tool})` (which for `edger` is a browser-redirect utility).
 
     PROVENANCE GUARDRAIL: both sources are trusted by construction — the authors' own repo
     namespace (anchored) and the curated biocontainers registry. We NEVER surface a random
@@ -1316,7 +1323,7 @@ def pullable_image(availability: dict[str, dict], tool: str,
                 "provenance": "the authors' own published image (ghcr, anchored repo)"}
 
     conda = availability.get("conda") or {}
-    if conda.get("available") and _resolve_biocontainer is not None:
+    if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
         spec = conda.get("bioc_spec") or conda.get("r_spec") or tool
         try:
             bc = _resolve_biocontainer(
@@ -1381,6 +1388,9 @@ def resolve(
     # so `limma` resolves instead of refusing. It is a real CHECKED probe (bioconductor-samtools
     # 404s), never a guess. Fires only when the bare-name conda probe already missed, and never
     # under an explicit `language='python'` (that hint means "the PyPI package", not an R tool).
+    # It DOES fire under `language='r'` (where the r-branch probed conda as `r-{tool}` and missed):
+    # that is DELIBERATE — the pinned bioconda `bioconductor-{name}` beats the dedicated
+    # `bioconductor` tier's unpinned BiocManager build, so conda-first wins there too.
     if language != "python" and not availability.get("conda", {}).get("available"):
         bioc = probe_conda(f"bioconductor-{tool}", timeout)
         if bioc.get("available"):
@@ -1390,10 +1400,12 @@ def resolve(
             # ABSENT ≠ UNCHECKED (the whole point of test_probe_honesty.py). The
             # bioconductor-variant probe ERRORED — a transient anaconda 403, not "answered
             # no" — so bioconda has NOT been cleanly ruled out. Carry the error onto the conda
-            # tier so `unchecked_tiers` discloses it: a blip here must never let a same-name
-            # junk PyPI package (edgeR's `edger` on PyPI is a browser-redirect utility) win as
-            # though bioconda had said no. Measured live: one transient blip on this exact
-            # probe routed `edger` to `install_pip_package(edger)` — the wrong tool, green.
+            # tier so `unchecked_tiers` DISCLOSES it. This does not change the pick (a same-name
+            # junk PyPI package like edgeR's `edger` — a browser-redirect utility — may still be
+            # the only available tier and win), but it stops that win from being SILENT: conda
+            # is reported unchecked-and-ranked-above, not cleanly ruled out, so the install_call
+            # carries the UNCHECKED-TIER disclosure instead of a bare `install_pip_package`.
+            # Measured live: one transient blip on this exact probe routed `edger` to pip.
             availability["conda"] = {**availability.get("conda", {}),
                                      "probe_error": bioc["probe_error"]}
 
@@ -1780,7 +1792,7 @@ def resolve(
     unchecked = unchecked_tiers(availability)
     # UNIFIED "is there a pullable image?" — a fact spanning the authors' own image and a
     # BioContainer. Pull-don't-build is the least-resistance path; surface it up front.
-    pull = pullable_image(availability, tool, version, timeout)
+    pull = pullable_image(availability, tool, version, timeout, chosen=chosen)
     decision.update({
         "tool": tool,
         "version": version or None,
@@ -1805,9 +1817,13 @@ def resolve(
     # a reader sees requested-vs-installed at a glance, never a silent substitution.
     _bioc_spec = availability.get("conda", {}).get("bioc_spec") if chosen == "conda" else None
     if _bioc_spec:
+        # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror), so
+        # hardcoding "not on CRAN" would contradict the resolver's own probe (and the `cran`
+        # that appears in this same rationale as a lower-priority alternative) — a report lie.
+        _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
         decision["rationale"] = (
             f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
-            f"'{_bioc_spec}' (not the bare name, and not on CRAN). "
+            f"'{_bioc_spec}' (not the bare name{_cran_clause}). "
             + decision.get("rationale", "")
         )
     if cross_namespace_collisions:

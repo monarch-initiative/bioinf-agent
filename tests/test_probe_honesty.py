@@ -519,6 +519,8 @@ def test_deseq2_routes_to_the_bioconda_bioconductor_package(monkeypatch):
     # — the rationale must say so up front, never a silent substitution.
     assert d["rationale"].startswith("BIOCONDUCTOR:")
     assert "bioconductor-deseq2" in d["rationale"]
+    # deseq2 is NOT on CRAN (no cran stub) — the "not on CRAN" clause is TRUE here and present.
+    assert "not on CRAN" in d["rationale"]
 
 
 def test_edger_beats_a_same_name_junk_pypi_package(monkeypatch):
@@ -549,6 +551,9 @@ def test_limma_resolves_instead_of_refusing_as_ambiguous(monkeypatch):
     # already made — that gated note is the report-honesty lie this exists to kill.
     assert "disambiguate" not in d["rationale"]
     assert d["rationale"].startswith("BIOCONDUCTOR:")
+    # limma IS on CRAN (an archived mirror) — the note must NOT hardcode "not on CRAN" and
+    # contradict the `cran` it lists as a lower-priority alternative on the same line.
+    assert "not on CRAN" not in d["rationale"]
 
 
 def test_a_non_bioconductor_miss_stays_a_clean_dead_end(monkeypatch):
@@ -598,3 +603,28 @@ def test_language_r_hint_also_reaches_the_bioconductor_fold(monkeypatch):
     d = R.resolve("deseq2", language="r")
     assert d["chosen"] == "conda"
     assert "bioconductor-deseq2" in d["install_call"]
+
+
+def test_a_forced_non_conda_pick_does_not_advertise_the_conda_biocontainer(monkeypatch):
+    """The fold makes availability['conda'] available even when conda is NOT the pick (e.g.
+    prefer='pip'). The conda biocontainer must then NOT be surfaced — else the decision
+    advertises a `bioconductor-edger` adopt_call beside an `install_pip_package(edger)` (PyPI's
+    edger is a browser-redirect utility): one decision naming two different tools."""
+    _bioc_stubs(monkeypatch, on_bioconda={"edger"},
+                pip={"available": True, "latest": "0.1.3",
+                     "summary": "Redirect Microsoft Edge to your preferred browser"})
+    # a biocontainer DOES exist for bioconductor-edger — the guard is `chosen`, not existence.
+    monkeypatch.setattr(R, "_resolve_biocontainer",
+                        lambda specs, timeout=12: {
+                            "found": True, "image": "quay.io/biocontainers/bioconductor-edger:x",
+                            "image_by_digest": "quay.io/biocontainers/bioconductor-edger@sha256:dead",
+                            "digest": "sha256:dead"})
+    d = R.resolve("edger", prefer="pip")
+    assert d["chosen"] == "pip"
+    assert d["pullable_image"]["found"] is False        # NOT the bioconductor-edger image
+    assert "BioContainer" not in d["rationale"]
+    # control: without the prefer override, conda IS the pick and DOES surface its biocontainer.
+    d2 = R.resolve("edger")
+    assert d2["chosen"] == "conda"
+    assert d2["pullable_image"]["found"] is True
+    assert d2["pullable_image"]["source"] == "biocontainer"
