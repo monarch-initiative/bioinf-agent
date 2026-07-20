@@ -24,9 +24,18 @@ from agent.models.core_data import shipped_binaries as _shipped_binaries, usage_
 
 
 def _version_of(pkg: dict) -> str:
-    """Best-known version of a package record, with fallbacks for tiers that
-    don't carry a plain `version` (a release binary records its version only in
-    the release tag of binary_url; conda/pip carry it in the spec string)."""
+    """Best-known INSTALLED version of a package record. `version` is what the
+    package manager recorded installing; a release binary records its version only
+    in the release tag of `binary_url` — the asset actually downloaded, an install
+    fact, so it stays.
+
+    It must NOT scrape the `conda_spec` / `pip_spec` string (audit 2026-07-19, W3):
+    that string is the REQUESTED constraint (`samtools=1.21`, or even `>=1.10`), not
+    what resolved — when conda actually installs it, the resolved version lands in
+    `version`. Returning the spec here printed the requested number as installed on
+    exactly the tiers that don't capture a version. Absence returns '?' (unknown),
+    which the title filters out and the key-packages line shows as unknown — never a
+    borrowed request."""
     v = pkg.get("version")
     if v:
         return str(v)
@@ -35,10 +44,6 @@ def _version_of(pkg: dict) -> str:
     m = re.search(r"/releases/download/([^/]+)/", url)   # .../download/v2.13.0/asset
     if m:
         return m.group(1).lstrip("vV")
-    for key in ("conda_spec", "pip_spec"):
-        mm = re.search(r"[=@]{1,2}([0-9][\w.\-]*)", im.get(key) or "")
-        if mm:
-            return mm.group(1)
     return "?"
 
 
@@ -55,6 +60,31 @@ def key_packages(spec: dict) -> dict[str, str]:
     for p in spec.get("packages", []) or []:
         if isinstance(p, dict) and p.get("name"):
             out[p["name"]] = _version_of(p)
+    return out
+
+
+def _observed_key_packages(freeze_record: dict) -> dict[str, str]:
+    """name → OBSERVED installed version for the frozen env's requested tools, read
+    from the shipped image (SBOM / recorded binary / the version the tool PRINTED)
+    via the shared `_resolved_version` — THE definition the ENV report uses, so the
+    guide and the env report cite the same number.
+
+    A tool the image doesn't reveal a version for is OMITTED (absence is not a
+    version): the caller keeps the draft value or renders it unknown, never the
+    requested spec string. Never scrapes the request (audit 2026-07-19, W3)."""
+    from agent.skills.env_report_helpers import (
+        _pkg_index, _resolved_version, _verif_index)
+    pidx = _pkg_index(freeze_record.get("resolved_packages") or [])
+    vidx = _verif_index(freeze_record.get("verifications") or [])
+    shipped = freeze_record.get("shipped_binaries") or []
+    out: dict[str, str] = {}
+    for tool in (freeze_record.get("requested_tools") or []):
+        nm = str(tool).split("=")[0].strip()
+        if not nm:
+            continue
+        v = _resolved_version(nm, pidx.get(nm.lower()), vidx.get(nm.lower()), shipped)
+        if v:
+            out[nm] = v
     return out
 
 
@@ -230,6 +260,14 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     # The guide renders from either, so accept both.
     name = spec.get("pipeline_name") or spec.get("workflow_name") or "pipeline"
     kpkgs = key_packages(spec)
+    # When a frozen env is pinned, the versions this guide cites must be OBSERVED in the
+    # shipped image, not derived from the requested spec (audit 2026-07-19, W3): the
+    # title + key-packages line otherwise printed e.g. "talos 7.0.2" straight from the
+    # request even when the image shipped something else. Observed versions (read through
+    # the shared _resolved_version) win; a tool the image doesn't reveal keeps the draft's
+    # install-step value (still `installed_packages`, not the request) or shows as unknown.
+    if freeze_record:
+        kpkgs = {**kpkgs, **_observed_key_packages(freeze_record)}
     version = next((v for n, v in kpkgs.items()
                     if n.lower() == name.lower() and v not in ("", "?")), "")
     title = f"{name}" + (f" {version}" if version else "")

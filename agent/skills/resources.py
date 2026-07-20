@@ -159,32 +159,51 @@ def _semantic_versions(record: dict) -> list[dict]:
     """The REQUESTED tools with human-readable semantic versions — the string a user
     cites in a paper. Never image/build hashes.
 
-    Delegates to `env_report_helpers._resolved_version`, THE definition, which the
-    ENV report also uses. This function originally forked that chain and read only its
-    first rung (the SBOM), which meant `list_installed_pipelines` reported
-    `bcftools: null` for the authors'-image env while the ENV report claimed `1.23.1`
-    — one fact, two readings, disagreeing, both wrong. The SBOM cannot see a tool
-    installed outside the package manager (a source-compiled binary carries no
-    metadata anywhere), so a SBOM-only read is structurally blind on exactly the
-    long-tail tiers this project prefers. Rule 4: one definition, read at every use.
+    Each entry: `{tool, requested, installed, version, diverges}`.
+      - `installed` is OBSERVED (via `_resolved_version` — the shared definition the
+        ENV report also uses), or None = unrecorded.
+      - `requested` is what the user asked for (or None if unpinned).
+      - `version` == `installed`, kept for back-compat with readers of the old shape.
+      - `diverges` flags requested ≠ installed (the shared divergence check, W5).
+
+    This function originally forked `_resolved_version` and read only its first rung
+    (the SBOM), so `list_installed_pipelines` reported `bcftools: null` for the
+    authors'-image env while the ENV report claimed `1.23.1` — one fact, two readings,
+    disagreeing. The SBOM cannot see a tool installed outside the package manager (a
+    source-compiled binary carries no metadata anywhere), so a SBOM-only read is
+    structurally blind on exactly the long-tail tiers this project prefers. Rule 4:
+    one definition, read at every use.
+
+    `installed` must NEVER fall back to the requested/pinned version (audit 2026-07-19,
+    W6): the old `resolved or pinned or None` printed the REQUESTED version under the
+    key a reader treats as installed — the same silent lie the ENV report carried. When
+    nothing observed the real thing, `installed` is None; absence is a fact about our
+    record, not a version to fabricate. The requested value lives in its OWN key.
     """
     from agent.skills.env_report_helpers import (
-        _pkg_index, _resolved_version, _verif_index)
+        _pkg_index, _resolved_version, _verif_index, requested_versions,
+        versions_diverge)
 
     pidx = _pkg_index(record.get("resolved_packages") or [])
     vidx = _verif_index(record.get("verifications") or [])
     shipped = record.get("shipped_binaries") or []
+    req = requested_versions(record)
     out = []
     for spec in (record.get("requested_tools") or []):
         name = str(spec).split("=")[0].strip()
         if not name:
             continue
-        pinned = str(spec).split("=", 1)[1].strip() if "=" in str(spec) else ""
-        resolved = _resolved_version(name, pidx.get(name.lower()), vidx.get(name.lower()), shipped)
-        # `pinned` is what the USER ASKED FOR, not what shipped — a last resort, and
-        # only when nothing observed the real thing. None stays None: absence of a
-        # version is a fact about our record, and must not render as a version.
-        out.append({"tool": name, "version": resolved or pinned or None})
+        requested = (req.get(name) or req.get(str(spec).strip())
+                     or (str(spec).split("=", 1)[1].strip() if "=" in str(spec) else ""))
+        installed = _resolved_version(name, pidx.get(name.lower()),
+                                      vidx.get(name.lower()), shipped) or None
+        out.append({
+            "tool": name,
+            "requested": requested or None,
+            "installed": installed,
+            "version": installed,          # back-compat alias for `installed`
+            "diverges": versions_diverge(requested, installed or ""),
+        })
     return out
 
 

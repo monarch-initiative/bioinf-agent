@@ -6937,9 +6937,12 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
     r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache)
 
     assert r["counts"] == {"envs": 1, "envs_contract_ok": 1, "workflows": 1}
-    # Layer 1 — the frozen env, with a HUMAN-READABLE version off the SBOM
+    # Layer 1 — the frozen env, with a HUMAN-READABLE version off the SBOM. Each tool
+    # carries requested vs OBSERVED-installed + a divergence flag (audit 2026-07-19,
+    # W5/W6); `version` is kept as a back-compat alias for `installed`.
     (env,) = r["envs"]
-    assert env["tools"] == [{"tool": "samtools", "version": "1.21"}]
+    assert env["tools"] == [{"tool": "samtools", "requested": "1.21",
+                             "installed": "1.21", "version": "1.21", "diverges": False}]
     assert env["contract_ok"] is True and env["contract_violations"] == []
     # Layer 2 — the sealed workflow, counted honestly (1 of 2 steps validated)
     (wf,) = r["workflows"]

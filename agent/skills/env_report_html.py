@@ -39,6 +39,7 @@ from agent.models.core_data import tool_identities as _tool_identities
 from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
+    version_divergences as _version_divergences,
 )
 
 _CSS = """
@@ -353,32 +354,30 @@ def _assurance_badge(s: dict) -> str:
 
 
 def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[dict],
-                       req_v: str, shipped: Optional[list] = None,
+                       shipped: Optional[list] = None,
                        adopt_source: Optional[dict] = None,
                        image_digest: str = "") -> str:
-    """ADOPT: prefer the biocontainer tag (carries the human version, e.g.
-    `1.21--h50ea8bc_0` for samtools), fall back to the requested version. The
-    biocontainer manifest digest binds it to exactly that bioconda build —
-    'installed == requested' is honest, no in-locus probe. The digest lives
-    in the header KV table; we don't echo it here too.
+    """THE installed-version cell — sourced ONLY from observations of the shipped
+    image, NEVER from what was requested.
 
-    BUILD: defer to _resolved_version (conda/pip > banner > out > anchor) —
-    shared with the .md renderer so the two views stay aligned."""
-    if is_adopt:
-        # Prefer the per-tool version from the SBOM (resolved_packages, read from
-        # the shipped image) — human-readable AND consistent across tools. The
-        # adopt tag is a shared mulled hash (`2d1a988…-0`) for a multi-tool
-        # biocontainer, identical on every tool and useless for citing a version.
-        # A single-tool biocontainer's tag (`1.21--h50ea8bc_0`) is human-readable
-        # but still noisier than the clean `1.21` the SBOM gives. Tag is the
-        # fallback only when the SBOM couldn't be read.
-        if pkg and pkg.get("version"):
-            return pkg["version"]
-        if adopt_source and adopt_source.get("tag"):
-            return adopt_source["tag"]
-        if req_v:
-            return req_v
-        return ""
+    Both modes defer to `_resolved_version` (SBOM version > recorded binary version >
+    the version the tool PRINTED in its in-image evidence, first-line-narrowed against
+    the htslib trap > install anchor). ADOPT gets ONE extra rung ahead of the printed
+    banner: the biocontainer tag, which the manifest digest binds to exactly that
+    bioconda build (`1.21--h50ea8bc_0` for samtools) — an observation of the shipped
+    bytes, not a request echo. The tag is a shared mulled hash for a MULTI-tool
+    biocontainer, so it is used only when the SBOM couldn't give a per-tool version.
+
+    It must NEVER fall back to the requested version. When an author-image adopt ships
+    a tool compiled from source in the authors' Dockerfile, that tool is absent from
+    the SBOM and has no biocontainer tag; the OLD code returned `req_v` here — printing
+    the REQUESTED version in the Installed column, unlabelled, on a green validated row
+    (audit 2026-07-19, W1: "says 1.21, ships 1.19"). The honest value is what the image
+    yields, or '' = unrecorded; the renderer shows absence and the requested number
+    stays in its own column."""
+    if (is_adopt and not (pkg and pkg.get("version"))
+            and adopt_source and adopt_source.get("tag")):
+        return adopt_source["tag"]
     return _resolved_version(t, pkg, v, shipped)
 
 
@@ -406,6 +405,11 @@ def render_env_report_html(record: dict) -> str:
     image_digest_raw = r.get("image_digest") or ""
     vidx, pidx = _verif_index(verifs), _pkg_index(resolved)
     req_versions = _requested_versions(r)
+    # VERSION DIVERGENCE (audit 2026-07-19, W5): the tools whose OBSERVED installed
+    # version differs from what was requested — computed ONCE here (the shared
+    # definition), flagged ⚠ in the Tools table below AND carried into the attestation
+    # + list_installed so a mismatch shows up identically wherever both numbers appear.
+    diverging = {d["tool"].lower(): d for d in _version_divergences(r)}
     # IDENTITY DISCLOSURE (audit #8): the tool's OWN self-description, keyed by tool name.
     # Rendered as a labelled, clearly-UNVERIFIED sub-line under each tool row — the record
     # already parsed at register/check_build, but degrade gracefully rather than crash a
@@ -451,6 +455,14 @@ def render_env_report_html(record: dict) -> str:
         ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
+    # A loud, dedicated header line when any observed version diverges from the request —
+    # so the mismatch is unmissable before the reader even scrolls to the Tools table (W5).
+    if diverging:
+        parts = ", ".join(f'{_e(d["tool"])} (requested {_e(d["requested"])} → '
+                          f'installed {_e(d["installed"])})' for d in diverging.values())
+        head_rows.append(("Version check",
+                          f'<span class="pill bad">⚠ {len(diverging)} '
+                          f'requested ≠ installed</span> {parts}'))
     # Shared header banner (the TL+BR corner-accent cyberpunk frame) — same
     # helper the Layer-2 run dashboard uses, so the two reports are one family.
     P.append(_header_banner(f"Bioinfo install report — {_e(name)}", pill, head_rows))
@@ -469,7 +481,7 @@ def render_env_report_html(record: dict) -> str:
             v = vidx.get(t.lower())
             req_v = req_versions.get(t, "")
             req_cell = f"={_e(req_v)}" if req_v else '<span class="muted">(any)</span>'
-            inst_v = _installed_version(t, is_adopt, pkg, v, req_v, shipped,
+            inst_v = _installed_version(t, is_adopt, pkg, v, shipped,
                                          adopt_source=adopt_source,
                                          image_digest=image_digest_raw)
             anchor = _install_anchor(t, shipped)
@@ -482,8 +494,21 @@ def render_env_report_html(record: dict) -> str:
                              f"(commit {_e(anchor[:12])})</span>")
             elif inst_v:
                 inst_cell = _e(inst_v)
+            elif is_adopt:
+                # Author-image adopt of a tool absent from the SBOM with no tag and no
+                # printed version — we adopted the bytes by digest and did not observe a
+                # version. Say exactly that; NEVER echo the requested number (W1).
+                inst_cell = ('<span class="muted" title="image adopted by digest — '
+                             'no version observed in the shipped image">not recorded</span>')
             else:
                 inst_cell = '<span class="muted">—</span>'
+            # DIVERGENCE ⚠ (W5): observed installed ≠ requested. Append a loud pill so a
+            # human catches the mismatch AT A GLANCE, not by diffing two columns.
+            if t.lower() in diverging:
+                d = diverging[t.lower()]
+                inst_cell += (f' <span class="pill bad" title="requested {_e(d["requested"])}'
+                              f', installed {_e(d["installed"])}">⚠ ≠ requested '
+                              f'{_e(d["requested"])}</span>')
             tier_cell = _e(_tier_for(t, is_adopt, pkg, shipped))
             if v and (v or {}).get("check"):
                 # Real in-image evidence exists — show it (with its depth). A

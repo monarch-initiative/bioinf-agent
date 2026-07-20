@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.skills.env_report_helpers import version_divergences as _version_divergences
 from agent.skills.freeze import record_is_gated as _record_is_gated
 
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
@@ -147,6 +148,14 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # downstream verifier reads it to catch a wrong-domain adoption; it
                 # gates nothing. Pass-through: register validated the ToolIdentity shape.
                 "tool_identities": r.get("tool_identities") or [],
+                # VERSION DIVERGENCE (audit 2026-07-19, W5): requested ≠ OBSERVED
+                # installed, per tool. Derived from resolvedDependencies vs the request
+                # via the ONE shared divergence check the ENV report + list_installed
+                # also read, so a downstream verifier sees the same mismatch the human
+                # report shows. Empty when every requested version matches (or can't be
+                # compared) — a fabricated-blank key is worse than an absent one, so it
+                # carries [] only when the record has requested tools at all.
+                "versionMismatch": _version_divergences(r),
             },
             "resolvedDependencies": resolved,
         },
