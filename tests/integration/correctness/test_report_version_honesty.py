@@ -194,6 +194,80 @@ def test_guide_cites_observed_version_not_the_request():
         "the requested version was cited as installed (W3)")
 
 
+# ── W4: the build recipe carries + shows OBSERVED contents, flags divergence ────
+
+def _recipe_for(record: dict) -> dict:
+    """The machine recipe as the freeze seam assembles it — with the observed SBOM
+    grafted on (W4), mirroring freeze_tools / freeze_from_image."""
+    from agent.skills.env_recipe import extract_recipe
+    rk = record.get("request_key", "")
+    ver = rk.split("=", 1)[1].split("|")[0] if "=" in rk else ""
+    r = extract_recipe(
+        None, name=record["name"], version=ver,
+        conda_deps=record.get("conda_specs") or [],
+        primary_tools=record["requested_tools"],
+        platform=record["platform"], build_method=record.get("build_method", "adopt"),
+        content_digest=record.get("content_digest", ""))
+    r["installed_packages"] = record.get("resolved_packages") or []
+    r["system_packages"] = record.get("system_packages") or []
+    r["shipped_binaries"] = record.get("shipped_binaries") or []
+    return r
+
+
+def _talos_installed_cell(md: str) -> str:
+    m = re.search(r"\|\s*`talos`\s*\|\s*([^|]*)\|\s*([^|]*)\|", md)
+    assert m, f"no talos row in recipe:\n{md}"
+    return m.group(2).strip()
+
+
+@pytest.mark.integration
+def test_recipe_md_shows_observed_installed_and_flags_divergence():
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    rec = _authors_image_adopt_observed_differs()
+    md = render_recipe_markdown(_recipe_for(rec), rec)
+    assert "Requested vs installed" in md, "recipe must show requested-vs-installed"
+    assert "7.0.1" in md, "recipe must show the OBSERVED installed version"
+    assert "⚠" in md and "differs from requested" in md, "recipe must flag divergence"
+
+
+@pytest.mark.integration
+def test_recipe_md_never_prints_request_as_installed_when_unobserved():
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    rec = _authors_image_adopt_no_observed_version()
+    md = render_recipe_markdown(_recipe_for(rec), rec)
+    cell = _talos_installed_cell(md)
+    assert "not recorded" in cell and "7.0.2" not in cell, (
+        f"the requested version leaked into the recipe's installed cell: {cell!r}")
+
+
+@pytest.mark.integration
+def test_recipe_yaml_is_self_contained_for_sbom_visible_tools():
+    """The machine recipe carries the observed SBOM, so a standalone render (no record)
+    still cites SBOM-visible installed versions and never cries a false mismatch (W4)."""
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    recipe = _recipe_for(_clean_build_record())   # samtools 1.21 in resolved_packages
+    md = render_recipe_markdown(recipe, None)
+    assert "1.21" in md
+    # the ⚠ glyph legitimately appears in the table's explanatory prose; the row-level
+    # divergence signal is "differs from requested", which must be absent when they match.
+    assert "differs from requested" not in md, "false mismatch flagged standalone"
+
+
+@pytest.mark.integration
+def test_recipe_banner_only_version_is_record_evidence_not_the_recipe():
+    """The HONEST RESIDUAL: a source-compiled tool prints its version only at runtime
+    (a --version banner in the freeze record's `verifications`), which is NOT part of the
+    reproducible recipe/SBOM. The delivered recipe.md (rendered WITH the record) shows it;
+    a standalone render from the yaml alone honestly shows 'not recorded' — never the
+    substituted request."""
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    rec = _authors_image_adopt_observed_differs()
+    recipe = _recipe_for(rec)
+    assert "7.0.1" in render_recipe_markdown(recipe, rec)         # with the record
+    cell = _talos_installed_cell(render_recipe_markdown(recipe, None))  # standalone
+    assert cell == "not recorded" or ("7.0.1" not in cell and "7.0.2" not in cell)
+
+
 def test_version_of_does_not_scrape_the_request_spec():
     # only the requested conda_spec is present (no resolved `version`) — the honest
     # answer is 'unknown', never the request constraint parsed back out.

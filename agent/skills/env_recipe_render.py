@@ -318,6 +318,56 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 # top-level render
 # ---------------------------------------------------------------------------
+def _installed_versions_table(recipe: dict, record: dict) -> list[str]:
+    """A requested-vs-OBSERVED-installed row per primary tool, ⚠ on divergence — the
+    same at-a-glance honesty the ENV report carries, so the recipe never implies the
+    REQUESTED version is what shipped (audit 2026-07-19, W4).
+
+    Reads through the shared `_resolved_version` / `version_divergences` (Rule 4), so
+    this table and the ENV report cite the same numbers. The observed SBOM comes from
+    the record, falling back to the recipe's own `installed_packages` so a standalone
+    recipe still shows it. Installed is OBSERVED or 'not recorded' — never the request."""
+    from agent.skills.env_report_helpers import (
+        _pkg_index, _resolved_version, _verif_index, requested_versions,
+        version_divergences)
+    src = {
+        "requested_tools": record.get("requested_tools") or recipe.get("primary_tools") or [],
+        "request_key": record.get("request_key", ""),
+        "conda_specs": record.get("conda_specs") or recipe.get("conda_deps") or [],
+        "resolved_packages": (record.get("resolved_packages")
+                              or recipe.get("installed_packages") or []),
+        "verifications": record.get("verifications") or [],
+        "shipped_binaries": (record.get("shipped_binaries")
+                             or recipe.get("shipped_binaries") or []),
+    }
+    tools = src["requested_tools"]
+    if not tools:
+        return []
+    req = requested_versions(src)
+    pidx = _pkg_index(src["resolved_packages"])
+    vidx = _verif_index(src["verifications"])
+    shipped = src["shipped_binaries"]
+    diverging = {d["tool"].lower() for d in version_divergences(src)}
+    rows: list[str] = []
+    for t in tools:
+        name = str(t).split("=")[0].strip()
+        if not name:
+            continue
+        rq = req.get(name) or req.get(str(t).strip()) or "(any)"
+        inst = _resolved_version(name, pidx.get(name.lower()), vidx.get(name.lower()), shipped)
+        cell = (f"⚠ {inst} — differs from requested" if name.lower() in diverging
+                else (inst or "not recorded"))
+        rows.append(f"| `{name}` | {_md_inline(rq)} | {_md_inline(cell)} |")
+    if not rows:
+        return []
+    return (["**Requested vs installed** — the requested version is what you asked for; "
+             "the installed version is what the shipped image actually holds. A ⚠ marks a "
+             "divergence; *not recorded* means no version was observed (e.g. a tool built "
+             "from source), never a silent substitution of the request.", "",
+             "| Tool | Requested | Installed (observed) |", "|---|---|---|"]
+            + rows + [""])
+
+
 def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     """Render a build recipe dict into a runnable, human-readable Markdown guide.
 
@@ -365,6 +415,9 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
 
     # Provenance
     L += ["## What's inside (provenance)", ""]
+    # Requested vs OBSERVED-installed, per primary tool (W4) — leads the section so the
+    # version honesty is the first thing read, matching the ENV report.
+    L += _installed_versions_table(recipe, record)
     sb = _shipped_binaries(record)
     if sb:
         L += ["**Long-tail binaries baked in** (the pieces a package manager wouldn't give you):", ""]
@@ -377,12 +430,13 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
                   + (f"({b.version})" if b.version else "(version unrecorded)")
                   + (f" — {b.provenance}" if b.provenance else "")]
         L += [""]
-    rp = record.get("resolved_packages") or []
-    syp = record.get("system_packages") or []
+    rp = record.get("resolved_packages") or recipe.get("installed_packages") or []
+    syp = record.get("system_packages") or recipe.get("system_packages") or []
     if rp or syp:
         L += [f"**SBOM:** {len(rp)} resolved packages (conda/pip closure) · "
               f"{len(syp)} system (apt) packages — full versioned list in the "
-              "`*.attestation.json` / `_env_cache_entry.json`.", ""]
+              "`*.attestation.json` / `_env_cache_entry.json` (also carried in this "
+              "recipe's `installed_packages`).", ""]
 
     # IDENTITY DISCLOSURE (audit #8) — the tool's OWN words, self-described + UNVERIFIED.
     # Prefer the recipe's copy (travels with the reproduction bytes); fall back to the record.

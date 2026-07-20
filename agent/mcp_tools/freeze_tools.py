@@ -565,6 +565,12 @@ def freeze(
     # this is") travels with the reproduction bytes. Extra key; ignored by rebuild.
     if isinstance(env_recipe_dict, dict):
         env_recipe_dict["tool_identities"] = record["tool_identities"]
+        # Carry the OBSERVED SBOM (what actually shipped) beside conda_deps (the rebuild
+        # INPUTS) so the machine recipe is self-describing about its installed contents,
+        # not only how to reconstruct them (audit 2026-07-19, W4). Descriptive; the
+        # rebuild ignores these keys.
+        env_recipe_dict["installed_packages"] = record.get("resolved_packages") or []
+        env_recipe_dict["system_packages"] = record.get("system_packages") or []
     _ms._env_cache.register(rkey, record)
     # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
     # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.

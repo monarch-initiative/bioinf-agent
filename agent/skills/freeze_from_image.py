@@ -275,6 +275,10 @@ def freeze_from_image(
         dockerfile_source=dockerfile_source or {})
     recipe["shipped_binaries"] = record["shipped_binaries"]
     recipe["tool_identities"] = record.get("tool_identities") or []
+    # Carry the OBSERVED SBOM (what actually shipped) beside conda_deps so the machine
+    # recipe is self-describing about its installed contents (audit 2026-07-19, W4).
+    recipe["installed_packages"] = record.get("resolved_packages") or []
+    recipe["system_packages"] = record.get("system_packages") or []
 
     out_paths: dict[str, str] = {}
     for label, fname, render in (
