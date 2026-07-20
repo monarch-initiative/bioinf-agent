@@ -208,7 +208,7 @@ def _recipe_for(record: dict) -> dict:
         primary_tools=record["requested_tools"],
         platform=record["platform"], build_method=record.get("build_method", "adopt"),
         content_digest=record.get("content_digest", ""))
-    r["installed_packages"] = record.get("resolved_packages") or []
+    r["resolved_packages"] = record.get("resolved_packages") or []
     r["system_packages"] = record.get("system_packages") or []
     r["shipped_binaries"] = record.get("shipped_binaries") or []
     return r
@@ -266,6 +266,87 @@ def test_recipe_banner_only_version_is_record_evidence_not_the_recipe():
     assert "7.0.1" in render_recipe_markdown(recipe, rec)         # with the record
     cell = _talos_installed_cell(render_recipe_markdown(recipe, None))  # standalone
     assert cell == "not recorded" or ("7.0.1" not in cell and "7.0.2" not in cell)
+
+
+# ── residual lies found by the 2026-07-20 adversarial hunt (ww2nplfug) ──────────
+
+@pytest.mark.integration
+def test_guide_key_packages_dependency_version_reads_observed_not_request():
+    """Hunt finding 1: install_steps[].installed_packages[].version is the parsed
+    REQUEST pin (install_conda_packages writes the spec, not conda's resolved output).
+    With a freeze_record present, the guide's key-packages line must cite the OBSERVED
+    SBOM version for dependencies too, not just the requested tools."""
+    from agent.skills.user_guide import render_user_guide
+    spec = {
+        "pipeline_name": "variant_calling",
+        "install_steps": [{"tool": "conda", "subcommand": "install", "returncode": 0,
+                           "installed_packages": [{"name": "bcftools", "version": "1.19",
+                                                   "channel": "bioconda"}]}],
+    }
+    fr = {"requested_tools": ["samtools"],
+          "resolved_packages": [{"name": "bcftools", "version": "1.21"}],
+          "verifications": [], "shipped_binaries": []}
+    md = render_user_guide(spec, freeze_record=fr)
+    assert "bcftools=1.21" in md, "dependency version must be the OBSERVED 1.21"
+    assert "bcftools=1.19" not in md, "the requested pin 1.19 leaked as installed"
+
+
+@pytest.mark.integration
+def test_guide_python_line_reads_observed_not_created_request():
+    """Hunt finding 2: spec['python_version'] is the env-creation request (or a config
+    default), never re-observed. With an image pinned, the Environment-details python
+    line must show the SBOM's python, not the request."""
+    from agent.skills.user_guide import render_user_guide
+    spec = {"pipeline_name": "vc", "python_version": "3.11"}
+    fr = {"requested_tools": [],
+          "resolved_packages": [{"name": "python", "version": "3.10.14"}],
+          "verifications": [], "shipped_binaries": []}
+    md = render_user_guide(spec, freeze_record=fr)
+    assert "- python: 3.10.14" in md, "must show the OBSERVED python"
+    assert "- python: 3.11" not in md, "the requested/created python 3.11 leaked as installed"
+
+
+@pytest.mark.integration
+def test_recipe_md_h1_title_carries_no_requested_version():
+    """Hunt finding 3: the recipe H1 announced the REQUESTED version as the env's
+    version (read first, at a glance) while the observed-installed table below showed
+    the truth. The H1 must carry no version (matching the ENV report); the request is
+    kept only as an explicitly-labelled metadata row."""
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    rec = {
+        "name": "talos", "mode": "adopt", "build_method": "adopt-image",
+        "request_key": "talos=11.0.0|linux/amd64|none",
+        "requested_tools": ["talos"], "platform": "linux/amd64",
+        "content_digest": "sha256:" + "de" * 32,
+        "resolved_packages": [{"name": "talos", "version": "10.5.0"}],
+        "verifications": [{"label": "talos", "tool": "talos", "check": "talos --version",
+                           "rc": 0, "passed": True, "out": "talos, version 10.5.0"}],
+    }
+    md = render_recipe_markdown(_recipe_for(rec), rec)
+    first_line = md.splitlines()[0]
+    assert first_line == "# Environment build recipe — talos", first_line
+    assert "11.0.0" not in first_line, "the requested version leaked into the H1"
+    # kept, but explicitly labelled as requested (not installed)
+    assert "Requested version" in md and "11.0.0" in md
+    assert "10.5.0" in md, "the observed installed version is shown in the table"
+
+
+@pytest.mark.integration
+def test_recipe_yaml_observed_sbom_uses_resolved_packages_not_a_colliding_key():
+    """Hunt finding 4: the machine recipe's OBSERVED SBOM must live under
+    `resolved_packages` (the record's observed-closure name), NOT `installed_packages`,
+    which collides with install_steps[].installed_packages (the parsed request pin)."""
+    from agent.skills.env_recipe import extract_recipe
+    r = extract_recipe(
+        None, name="aln", version="1.21", conda_deps=["samtools=1.21"],
+        primary_tools=["samtools"], platform="linux/amd64",
+        build_method="container-native", content_digest="sha256:abc")
+    # mirror the freeze seam graft
+    record = _clean_build_record()
+    r["resolved_packages"] = record["resolved_packages"]
+    assert "resolved_packages" in r and r["resolved_packages"], "observed SBOM missing"
+    assert "installed_packages" not in r, (
+        "top-level installed_packages collides with the per-step request pin")
 
 
 def test_version_of_does_not_scrape_the_request_spec():

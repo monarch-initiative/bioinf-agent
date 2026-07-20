@@ -325,7 +325,7 @@ def _installed_versions_table(recipe: dict, record: dict) -> list[str]:
 
     Reads through the shared `_resolved_version` / `version_divergences` (Rule 4), so
     this table and the ENV report cite the same numbers. The observed SBOM comes from
-    the record, falling back to the recipe's own `installed_packages` so a standalone
+    the record, falling back to the recipe's own `resolved_packages` so a standalone
     recipe still shows it. Installed is OBSERVED or 'not recorded' — never the request."""
     from agent.skills.env_report_helpers import (
         _pkg_index, _resolved_version, _verif_index, requested_versions,
@@ -335,7 +335,7 @@ def _installed_versions_table(recipe: dict, record: dict) -> list[str]:
         "request_key": record.get("request_key", ""),
         "conda_specs": record.get("conda_specs") or recipe.get("conda_deps") or [],
         "resolved_packages": (record.get("resolved_packages")
-                              or recipe.get("installed_packages") or []),
+                              or recipe.get("resolved_packages") or []),
         "verifications": record.get("verifications") or [],
         "shipped_binaries": (record.get("shipped_binaries")
                              or recipe.get("shipped_binaries") or []),
@@ -378,6 +378,11 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     recipe = recipe or {}
     record = record or {}
     name = recipe.get("name") or record.get("name") or "env"
+    # `ver` is the REQUESTED version arg (extract_recipe/freeze pass it straight through;
+    # no path populates it from the SBOM). It must NOT lead the H1 as if it were the env's
+    # version — the sibling ENV report deliberately titles with no version for exactly this
+    # reason, and the observed-installed table below carries the real number (audit
+    # 2026-07-20 hunt). Kept only as an explicitly-labelled "Requested version" metadata row.
     ver = recipe.get("version") or record.get("version") or ""
     platform = recipe.get("platform") or record.get("platform") or "linux/amd64"
     method = (recipe.get("build_method") or record.get("build_method")
@@ -386,9 +391,13 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     tools = recipe.get("primary_tools") or record.get("requested_tools") or []
 
     L: list[str] = []
-    L += [f"# Environment build recipe — {name}" + (f" {ver}" if ver else ""), ""]
+    L += [f"# Environment build recipe — {name}", ""]
     L += ["| | |", "|---|---|",
-          f"| **Primary tools** | {', '.join(tools) if tools else '(none recorded)'} |",
+          f"| **Primary tools** | {', '.join(tools) if tools else '(none recorded)'} |"]
+    if ver:
+        L += [f"| **Requested version** | {_md_inline(ver)} (as requested — see the "
+              f"observed-installed table below for what shipped) |"]
+    L += [
           f"| **Build method** | `{method}` |",
           f"| **Platform** | `{platform}` |",
           f"| **Content digest** | `{_short(content_digest)}` |", ""]
@@ -430,13 +439,13 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
                   + (f"({b.version})" if b.version else "(version unrecorded)")
                   + (f" — {b.provenance}" if b.provenance else "")]
         L += [""]
-    rp = record.get("resolved_packages") or recipe.get("installed_packages") or []
+    rp = record.get("resolved_packages") or recipe.get("resolved_packages") or []
     syp = record.get("system_packages") or recipe.get("system_packages") or []
     if rp or syp:
         L += [f"**SBOM:** {len(rp)} resolved packages (conda/pip closure) · "
               f"{len(syp)} system (apt) packages — full versioned list in the "
               "`*.attestation.json` / `_env_cache_entry.json` (also carried in this "
-              "recipe's `installed_packages`).", ""]
+              "recipe's `resolved_packages`).", ""]
 
     # IDENTITY DISCLOSURE (audit #8) — the tool's OWN words, self-described + UNVERIFIED.
     # Prefer the recipe's copy (travels with the reproduction bytes); fall back to the record.
