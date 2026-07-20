@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bioinf-agent"
+version = "0.1.0"
+description = "Installs bioinformatics tools into isolated conda envs, validates them INSIDE the image they ship, packages them as HPC-shippable containers, and emits a machine-verified spec."
+readme = "README.md"
+# The agent RUNTIME floor. The launcher (scripts/start_mcp_server.sh) and the
+# bootstrap wrapper both require 3.10+ (they avoid the macOS system 3.9), and the
+# agent is run on the miniforge base (3.10 today). This is distinct from the 3.11 that
+# CI tests on and that config/agent_config.yaml uses for the tool-environments the
+# agent BUILDS — that is the built envs' python, not this process's.
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Aaron", email = "aaron@tislab.org" }]
+keywords = ["bioinformatics", "conda", "docker", "reproducibility", "hpc", "mcp", "provenance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Mirror of requirements.txt — kept in sync deliberately (that file remains the
+# canonical `pip install -r` surface; this list is what `pip install -e .` pulls).
+dependencies = [
+    "fastmcp>=2.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "pydantic>=2.0",
+    "psutil>=5.9",
+    "conda-lock>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/monarch-initiative/bioinf-agent"
+Repository = "https://github.com/monarch-initiative/bioinf-agent"
+
+# `python -m agent` is the canonical launch (routed through agent/__main__.py so the
+# FastMCP app is loaded exactly once — see that file's docstring). This console
+# script is the same entry point under a friendlier name.
+[project.scripts]
+bioinf-mcp = "agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+# NOTE: this is a WORKSPACE-ROOTED service, not a site-packages library. It reads and
+# writes config/, data/, env_reports/, envs/, docker_images/, drafts/ relative to the
+# repo root (agent/mcp_server.py resolves PROJECT_ROOT from the source tree). Install
+# EDITABLE from the checkout — `pip install -e .` — and launch from the repo root. A
+# plain `pip install .` into site-packages would relocate the code away from those
+# runtime directories and config loading would fail. See README.md.
