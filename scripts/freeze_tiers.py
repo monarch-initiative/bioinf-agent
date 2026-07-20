@@ -93,10 +93,43 @@ FREEZE_TIERS: list[dict] = [
                 "`pip` binary). Proven 2026-07-20 (pyfaidx). Flag-bearing pip is a "
                 "distinct engine-coupled longtail RUN, not yet separately baked.",
     },
-    # ── declared, not yet baked on real bytes (floor 0 until their slice) ──────
-    {"tier": "r_install", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "cran / bioconductor / github:owner/repo → Rscript install + "
-             "requireNamespace||stop() evidence. Mapping unit only today."},
+    {
+        "tier": "r_install", "kind": "install", "builder": "container_native",
+        "probe_tool": "BiocGenerics",
+        "build": {
+            "install_method": {
+                "type": "r_install", "name": "BiocGenerics",
+                # `source` is the R expression install_r_package records; the freeze
+                # reads 'BiocManager' → the bioconductor branch (BioC_mirror pin +
+                # BiocManager bootstrap + BiocManager::install). BiocGenerics is the
+                # FOUNDATIONAL, pure-R Bioconductor package (no compiled code,
+                # minimal deps) → a reliable emulated build that still exercises the
+                # real BiocManager path, not a toy.
+                "source": 'BiocManager::install("BiocGenerics", ask=FALSE, update=FALSE)',
+            },
+            "primary_tools": ["BiocGenerics"],
+        },
+        "note": "cran / bioconductor / github → Rscript install + "
+                "requireNamespace||stop() load-or-die. Rides the SAME shared "
+                "ContainerBuild long-tail executor as source/binary, but as an "
+                "ENGINE-COUPLED tool (like cargo/go/perl — the command runs with the "
+                "conda r-base active) via a DISTINCT install-command generator "
+                "(ic.r_package → BiocManager), so it adds genuinely new coverage over "
+                "the source tier. Proven 2026-07-20 via BiocGenerics (BIOCONDUCTOR "
+                "branch: BioC_mirror pin + BiocManager bootstrap). VALIDATED_IN_IMAGE "
+                "evidence is the DEFAULT IMPORT-LEVEL check — library(BiocGenerics) "
+                "(namespace load, executes R in the shipped image) + packageVersion() "
+                "version capture — NOT a functional_evidence run-on-data smoke; a "
+                "functional_check would strengthen it to validated==ran (future "
+                "hardening). The r-base + c/cxx/fortran-compiler + zlib toolchain is "
+                "auto-injected (plan_conda) and IS engine-lock-anchored, but the R "
+                "PACKAGE itself is Rscript-installed at build time — NOT in the pixi "
+                "lock and NOT sha-pinned, so its point-version floats with the current "
+                "Bioc release (weaker reproducibility than conda/pip/source/binary; a "
+                "snapshot-repo / explicit-version pin is future hardening). The cran + "
+                "github sub-sources ride the SAME generator's other branches, not "
+                "separately baked this slice.",
+    },
     {
         "tier": "binary", "kind": "install", "builder": "container_native",
         "probe_tool": "mosdepth",
@@ -162,7 +195,7 @@ FLOORS: dict[str, float] = {
     "source": 1.0,   # seqtk v1.4 — proven 2026-07-20 (P2 slice 2)
     "pip":    1.0,   # pyfaidx  — proven 2026-07-20 (P2 slice 3, pixi --pypi)
     "binary": 1.0,   # mosdepth v0.3.8 — proven 2026-07-20 (P2 slice 3, F2 firewall)
-    "r_install":          0.0,
+    "r_install": 1.0,   # BiocGenerics — proven 2026-07-20 (P2 slice 4, BiocManager path)
     "jar":                0.0,
     "cargo":              0.0,
     "go":                 0.0,
