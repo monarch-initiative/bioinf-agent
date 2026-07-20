@@ -1,11 +1,11 @@
 {
-  "measured_on": "2026-07-20T21:21:00Z",
-  "git_sha": "fe648e1",
+  "measured_on": "2026-07-20T22:13:06Z",
+  "git_sha": "f376a6b",
   "platform": "linux/amd64",
   "host_arch": "arm64",
   "docker_available": true,
   "install_tiers_total": 10,
-  "install_tiers_proven": 2,
+  "install_tiers_proven": 4,
   "tiers": {
     "conda": {
       "kind": "install",
@@ -15,8 +15,8 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:5dd2184bd583eab53de0afb79412798b69388a9ac4ab892c7c642101c6a456a5",
-      "content_digest": "sha256:63059ee94694c9eee84c38cdf44f530c95779a0a35a235e900bbfdab87b452c9",
+      "image_digest": "sha256:4fcfe6c01679ea4e0a3f3804637953d4905d32889445a4820ac6511542fe1c52",
+      "content_digest": "sha256:211757474e4fad6ad9cfa16ee66fb51283eb2085514e2a12583f7c17e723d4d6",
       "validation_locus": "emulated",
       "last_error": null
     },
@@ -28,23 +28,23 @@
       "passed": 1,
       "status": "proven",
       "rate": 1.0,
-      "image_digest": "sha256:dc04906f693bb55903e442b29b8d8ade0625944e3d50f98bbf4ba5fa1524205c",
-      "content_digest": "sha256:08e5dfc4b54eee85f3998397f683156e53c5cec9038af5616068177be8d1fc38",
+      "image_digest": "sha256:ec666d65b133412db5fe06b8f085c4a21f2098ff24edd26bc867f2a5ff9c3472",
+      "content_digest": "sha256:fc92040c4c4155576686a9f6d1bfbaa391dd8305dd9cacbf2234a0b88d1e19f5",
       "validation_locus": "emulated",
       "last_error": null
     },
     "pip": {
       "kind": "install",
-      "probe_tool": null,
-      "note": "flagless \u2192 pixi engine (in-lock); flag-bearing \u2192 engine-coupled longtail RUN. Mocked-only today.",
-      "attempts": 0,
-      "passed": 0,
-      "status": "unmeasured",
-      "rate": null,
-      "image_digest": null,
-      "content_digest": null,
-      "validation_locus": null,
-      "last_error": "no real-build probe wired yet (declared row)"
+      "probe_tool": "pyfaidx",
+      "note": "flagless pip \u2192 declared THROUGH the pixi engine (`pixi add --pypi` \u2192 uv, in-lock); reproducible via the engine lock. In-image evidence = importlib.metadata.version (the pixi/uv env ships no `pip` binary). Proven 2026-07-20 (pyfaidx). Flag-bearing pip is a distinct engine-coupled longtail RUN, not yet separately baked.",
+      "attempts": 1,
+      "passed": 1,
+      "status": "proven",
+      "rate": 1.0,
+      "image_digest": "sha256:11ffc628df0f8e3e1a46025c78f39eb901ba552f49e6fb3b6dcb88226a4943f9",
+      "content_digest": "sha256:c7878ec99d4711848ffa2d42ddedff2a96feaf54f657e957c7fc84414ec7d52c",
+      "validation_locus": "emulated",
+      "last_error": null
     },
     "r_install": {
       "kind": "install",
@@ -61,16 +61,16 @@
     },
     "binary": {
       "kind": "install",
-      "probe_tool": null,
-      "note": "re-fetch + sha256 firewall + wrapper. Mocked-only. A darwin\u2192linux asset is a CORRECT unanchored_cross_platform refusal, not a fail.",
-      "attempts": 0,
-      "passed": 0,
-      "status": "unmeasured",
-      "rate": null,
-      "image_digest": null,
-      "content_digest": null,
-      "validation_locus": null,
-      "last_error": "no real-build probe wired yet (declared row)"
+      "probe_tool": "mosdepth",
+      "note": "re-fetch + sha256 firewall (F2) + PATH wrapper. Proven 2026-07-20 (mosdepth v0.3.8). A darwin\u2192linux asset is a CORRECT unanchored_cross_platform disclosure, not a fail.",
+      "attempts": 1,
+      "passed": 1,
+      "status": "proven",
+      "rate": 1.0,
+      "image_digest": "sha256:cb843461d128e8a66feef91707d081abd758d9c57881694cdaf08d707c55150c",
+      "content_digest": "sha256:229a173090b75437c9af2a99cd003944e926f1fb7b256b6dfc70400e2708a530",
+      "validation_locus": "emulated",
+      "last_error": null
     },
     "jar": {
       "kind": "install",
@@ -127,7 +127,7 @@
     "synthesized": {
       "kind": "install",
       "probe_tool": null,
-      "note": "provenance-gated command sequence via the shared longtail executor. Fully wired, zero real-docker coverage \u2014 ranked highest, least proven.",
+      "note": "provenance-gated command sequence via the shared longtail executor. A 2026-07-20 real bake BUILT the image but check_build correctly REFUSED it (PROVENANCE_CLEAN.untagged_command) \u2014 its honest probe must drive the real synth_fetch + validate_submission machinery so every command is EXTRACTED (repo file + sha256) or grounded AGENT_AUTHORED, NOT hand-tagged. Deferred to its own slice.",
       "attempts": 0,
       "passed": 0,
       "status": "unmeasured",

@@ -80,16 +80,46 @@ FREEZE_TIERS: list[dict] = [
                 "leverage single build. Proving it is necessary-but-not-"
                 "sufficient for those siblings (each has its own spec/toolchain).",
     },
+    {
+        "tier": "pip", "kind": "install", "builder": "container_native",
+        "probe_tool": "pyfaidx",
+        "build": {
+            "install_method": {"type": "pip", "name": "pyfaidx"},
+            "primary_tools": ["pyfaidx"],
+        },
+        "note": "flagless pip → declared THROUGH the pixi engine (`pixi add --pypi` "
+                "→ uv, in-lock); reproducible via the engine lock. In-image "
+                "evidence = importlib.metadata.version (the pixi/uv env ships no "
+                "`pip` binary). Proven 2026-07-20 (pyfaidx). Flag-bearing pip is a "
+                "distinct engine-coupled longtail RUN, not yet separately baked.",
+    },
     # ── declared, not yet baked on real bytes (floor 0 until their slice) ──────
-    {"tier": "pip", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "flagless → pixi engine (in-lock); flag-bearing → engine-coupled "
-             "longtail RUN. Mocked-only today."},
     {"tier": "r_install", "kind": "install", "builder": None, "probe_tool": "",
      "note": "cran / bioconductor / github:owner/repo → Rscript install + "
              "requireNamespace||stop() evidence. Mapping unit only today."},
-    {"tier": "binary", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "re-fetch + sha256 firewall + wrapper. Mocked-only. A darwin→linux "
-             "asset is a CORRECT unanchored_cross_platform refusal, not a fail."},
+    {
+        "tier": "binary", "kind": "install", "builder": "container_native",
+        "probe_tool": "mosdepth",
+        "build": {
+            "install_method": {
+                "type": "binary", "name": "mosdepth",
+                # a GitHub release-download URL → resolve_linux_asset picks the
+                # linux/amd64 asset of THAT tag; the freeze re-fetches + sha256-
+                # anchors it. v0.3.8's `mosdepth` asset is a static x86_64 linux
+                # binary. asset_sha256 is the REAL install-time hash of that asset,
+                # so the freeze exercises the INSTALL→SHIP integrity firewall (F2)
+                # for real (freeze re-fetch == install sha ⇒ chain_intact,
+                # disclosed `pinned_tofu`) — not just the sha-anchoring of shipped
+                # bytes. A mutated asset would REFUSE (build.binary_integrity_mismatch).
+                "binary_url": "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth",
+                "asset_sha256": "107eb3cdb4d4b48be6df4c7f5cc7c077134fdeca8c7c06f713b63f68549dd86c",
+            },
+            "primary_tools": ["mosdepth"],
+        },
+        "note": "re-fetch + sha256 firewall (F2) + PATH wrapper. Proven 2026-07-20 "
+                "(mosdepth v0.3.8). A darwin→linux asset is a CORRECT "
+                "unanchored_cross_platform disclosure, not a fail.",
+    },
     {"tier": "jar", "kind": "install", "builder": None, "probe_tool": "",
      "note": "JRE-ensure + jar download + java -jar wrapper. No build test today."},
     {"tier": "cargo", "kind": "install", "builder": None, "probe_tool": "",
@@ -100,7 +130,11 @@ FREEZE_TIERS: list[dict] = [
      "note": "cpanm --notest + xlocale shim for XS against conda perl. Unit only."},
     {"tier": "synthesized", "kind": "install", "builder": None, "probe_tool": "",
      "note": "provenance-gated command sequence via the shared longtail executor. "
-             "Fully wired, zero real-docker coverage — ranked highest, least proven."},
+             "A 2026-07-20 real bake BUILT the image but check_build correctly "
+             "REFUSED it (PROVENANCE_CLEAN.untagged_command) — its honest probe "
+             "must drive the real synth_fetch + validate_submission machinery so "
+             "every command is EXTRACTED (repo file + sha256) or grounded "
+             "AGENT_AUTHORED, NOT hand-tagged. Deferred to its own slice."},
     # ── build methods (adopt / authors — no container-native reconstruction) ──
     {"tier": "adopt-biocontainer", "kind": "build_method", "builder": None,
      "probe_tool": "",
@@ -125,10 +159,10 @@ ALL_TIERS: list[str] = [t["tier"] for t in FREEZE_TIERS]
 # ── reviewed floors (the ratchet — raised by a human, never by the generator) ─
 FLOORS: dict[str, float] = {
     "conda":  1.0,   # L15/pigz + the generator
-    "source": 1.0,   # seqtk v1.4 — proven 2026-07-20 (this slice)
-    "pip":                0.0,
+    "source": 1.0,   # seqtk v1.4 — proven 2026-07-20 (P2 slice 2)
+    "pip":    1.0,   # pyfaidx  — proven 2026-07-20 (P2 slice 3, pixi --pypi)
+    "binary": 1.0,   # mosdepth v0.3.8 — proven 2026-07-20 (P2 slice 3, F2 firewall)
     "r_install":          0.0,
-    "binary":             0.0,
     "jar":                0.0,
     "cargo":              0.0,
     "go":                 0.0,
