@@ -1,0 +1,90 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Freeze Tier Coverage — real container-build breadth</title>
+<style>
+:root{
+  --bg:#0a0c14;--surface:#13151f;--surface-2:#1a1d29;--border:#262a3a;
+  --cyan:#22e3ee;--yellow:#fff200;--ink:#e6e9f0;--muted:#8e98ad;
+  --ok:#3ce086;--bad:#ff4b6e;--warn:#ffa940;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);padding:26px 24px 60px}
+h1{font-size:22px;font-weight:800;color:var(--yellow);letter-spacing:.02em;margin:0 0 4px}
+.sub{color:var(--muted);font-size:12px;margin:0 0 18px;max-width:900px} .sub b{color:var(--cyan)}
+.warn{border:1px solid var(--warn);color:var(--warn);background:rgba(255,169,64,.08);
+  padding:10px 14px;margin:0 0 18px;font-size:12px} .warn code{color:var(--ink)} .warn b{color:var(--ink)}
+.stats{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 22px}
+.big{border:1px solid var(--border);background:var(--surface);padding:14px 18px;min-width:120px}
+.big .n{font-size:30px;font-weight:800;color:var(--cyan);line-height:1}
+.big .n b{color:var(--ok)}
+.big .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);margin-top:6px}
+.meta{flex:1;min-width:280px;border:1px solid var(--border);background:var(--surface);padding:14px 18px;font-size:12px;color:var(--muted)}
+.meta b{color:var(--ink)}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:22px 0 8px;font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
+  padding:6px 10px;border-bottom:1px solid var(--border);font-weight:600}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr.ok .tier{color:var(--ok)} tr.bad .tier{color:var(--bad)} tr.muted .tier{color:var(--muted)}
+.tier{font-weight:700;white-space:nowrap} .g{margin-right:7px}
+.probe{color:var(--ink)}
+.status{white-space:nowrap;font-size:12px}
+.status.ok{color:var(--ok)} .status.bad{color:var(--bad)} .status.muted{color:var(--muted)}
+.ratecell{min-width:180px}
+.bar{position:relative;height:12px;background:var(--surface-2);overflow:hidden;display:inline-block;
+  width:130px;vertical-align:middle;margin-right:8px}
+.fill{display:block;height:100%} .fill.ok{background:var(--ok)} .fill.bad{background:var(--bad)}
+.fill.muted{background:var(--surface-2)}
+.floormark{position:absolute;top:-2px;height:16px;width:2px;background:var(--yellow)}
+.ratenum{font-size:12px;color:var(--muted)}
+.floor{text-align:center;color:var(--muted)}
+.detail{color:var(--muted);font-size:11.5px;max-width:520px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0 0;font-size:11.5px;color:var(--muted)}
+.legend b{color:var(--ink)}
+.foot{color:var(--muted);font-size:11px;margin-top:26px;border-top:1px solid var(--border);padding-top:14px;max-width:900px}
+.foot code{color:var(--ink)}
+</style></head><body>
+<h1>Freeze Tier Coverage</h1>
+<p class="sub">The freeze BREADTH map — for every install tier + build method, has a
+<b>real container-native docker build</b> baked it and passed the honesty contract
+(<b>check_build == BUILT · VALIDATED_IN_IMAGE · POLICY_CLEAN</b>)? This is a
+projection of measured build results, not the intent grid (resolver decisions) or
+the outcomes dashboard (terminal coverage). The meter that matters: <b>tiers with a
+real green bake</b>.</p>
+
+<div class="stats">
+  <div class="big"><div class="n"><b>2</b> / 10</div>
+    <div class="l">install tiers proven by a real build</div></div>
+  <div class="big"><div class="n">3</div>
+    <div class="l">adopt / authors build methods</div></div>
+  <div class="meta">
+    measured <b>2026-07-20T20:34:54Z</b> @ <b>1e97729</b><br>
+    platform <b>linux/amd64</b> · host arch <b>arm64</b> · Docker at measure time: <b>yes</b><br>
+    The yellow tick on a bar is the tier's reviewed <b>floor</b> (the ratchet — it only rises).
+  </div>
+</div>
+<h2>Install tiers — proven by a container-native build</h2>
+<table>
+<tr><th>tier</th><th>probe tool</th><th>status</th><th>pass-rate · floor</th><th>floor</th><th>detail / last error</th></tr>
+<tr class="ok"><td class="tier"><span class="g">✅</span>conda</td><td class="probe">pigz</td><td class="status ok">proven · emulated</td><td class="ratecell"><div class="bar"><span class="fill ok" style="width:100.0%"></span><span class="floormark" style="left:100.0%" title="floor 1"></span></div><span class="ratenum">100%</span></td><td class="floor">1</td><td class="detail">pixi engine lock (URL + sha256). The proven seed (also L15/test_real_container_build.py).</td></tr><tr class="ok"><td class="tier"><span class="g">✅</span>source</td><td class="probe">seqtk</td><td class="status ok">proven · emulated</td><td class="ratecell"><div class="bar"><span class="fill ok" style="width:100.0%"></span><span class="floormark" style="left:100.0%" title="floor 1"></span></div><span class="ratenum">100%</span></td><td class="floor">1</td><td class="detail">the SHARED long-tail ContainerBuild.run executor that binary / jar / cargo / go / perl / synthesized also ride — highest leverage single build. Proving it is necessary-but-not-sufficient for those siblings (each has its own spec/toolchain).</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>pip</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>r_install</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>binary</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>jar</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>cargo</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>go</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>perl</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>synthesized</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr>
+</table>
+<h2>Build methods — adopt / authors (no reconstruction)</h2>
+<table>
+<tr><th>method</th><th>probe tool</th><th>status</th><th>pass-rate · floor</th><th>floor</th><th>detail / last error</th></tr>
+<tr class="muted"><td class="tier"><span class="g">·</span>adopt-biocontainer</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>adopt-image</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr><tr class="muted"><td class="tier"><span class="g">·</span>authors-dockerfile</td><td class="probe">—</td><td class="status muted">unmeasured</td><td class="ratecell"><div class="bar"><span class="fill muted" style="width:0.0%"></span></div><span class="ratenum">—</span></td><td class="floor">0</td><td class="detail">no real-build probe wired yet (declared row)</td></tr>
+</table>
+<div class="legend">
+  <span><b>✅ proven</b> — real build baked it + check_build clean</span>
+  <span><b>💥 broke</b> — real build failed the contract</span>
+  <span><b>· unmeasured</b> — no real build yet (declared row, or Docker down)</span>
+</div>
+<p class="foot">A tier is <b>proven</b> only when a real docker build returned success
+AND <code>env_honesty.check_build</code> returned no violations — never on a
+Docker-less run (that would read green while proving nothing). Floors are a reviewed
+ratchet in <code>scripts/freeze_tiers.py</code> (raised by a human, never by the
+generator); <code>tests/test_freeze_tier_coverage.py</code> asserts
+<code>floor ≤ measured</code> and makes an unbacked floor a build failure. Regenerate:
+<code>python scripts/measure_freeze_tier_coverage.py</code>. Real builds can't run in
+CI, so if the measured sha above isn't HEAD, re-run before trusting these bars.</p>
+</body></html>
