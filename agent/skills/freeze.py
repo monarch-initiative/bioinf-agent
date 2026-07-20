@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -445,17 +447,68 @@ class EnvCache:
         self.path = Path(path)
 
     def _load(self) -> dict:
+        """Read the cache, FAILING LOUD on a corrupt file rather than swallowing it
+        to {}. A missing file is a legitimate empty cache and returns {}; a file that
+        EXISTS but doesn't parse is corruption, and must stop the world.
+
+        Silently returning {} here was the second half of a silent-data-loss bug: a
+        corrupt read → {} → the next register() writes {only_the_new_key} over the
+        (now-empty) in-memory dict and every previously frozen env record is gone,
+        with no exception ever raised. `solve once, pull by digest` cannot rest on a
+        store that erases itself on the first bad byte. Refusing here (paired with the
+        atomic _save below, which prevents our own writes from ever producing the bad
+        byte) means a corrupt cache is surfaced for a human to inspect — never
+        rewritten out from under the records it still holds."""
         if not self.path.exists():
             return {}
         try:
-            data = json.loads(self.path.read_text())
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            return {}
+            raw = self.path.read_text()
+        except OSError as e:
+            raise RuntimeError(
+                f"EnvCache: cannot read the frozen-env cache at {self.path}: {e}. "
+                f"Refusing to proceed rather than treat it as empty (which would "
+                f"overwrite it on the next freeze and lose every recorded env)."
+            ) from e
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"EnvCache: the frozen-env cache at {self.path} is corrupt / not "
+                f"valid JSON ({e}). Inspect or remove it before continuing — "
+                f"proceeding would rewrite it with only the next env and silently "
+                f"lose the rest of the recorded envs."
+            ) from e
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"EnvCache: the frozen-env cache at {self.path} parsed to a "
+                f"{type(data).__name__}, not a JSON object. Inspect or remove it "
+                f"before continuing."
+            )
+        return data
 
     def _save(self, data: dict) -> None:
+        """Write the cache ATOMICALLY: a crash mid-write must never truncate the live
+        file. We write a sibling temp file, fsync it, then os.replace() into place —
+        an atomic rename on POSIX, so any reader (including a concurrent freeze) sees
+        either the whole old file or the whole new file, never a half-written one.
+        The plain write_text() this replaced could leave a truncated/corrupt file if
+        the process died between truncate and full write."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True))
+        payload = json.dumps(data, indent=2, sort_keys=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(self.path.parent), prefix=self.path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)

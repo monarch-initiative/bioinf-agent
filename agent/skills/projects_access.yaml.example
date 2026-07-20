@@ -58,9 +58,6 @@
 #                                       (omit ⇒ scheduler default, no line)
 #         gpu: {partition, qos}         this HPC's GPU convention; a gpus>0 job
 #                                       renders -p <partition> --qos <qos> --gres
-#         max_cores_per_job             positive int cap
-#         max_mem_gb_per_job            positive int cap
-#         max_time_hours_per_job        positive int cap
 #       email                           OPTIONAL env-level field → --mail-type=END
 #                                       + --mail-user on every job (omit ⇒ no mail)
 #
@@ -119,11 +116,10 @@ compute_envs:
     type: ssh
     host: hpc-login.example.edu
     user: alice                                  # ssh-agent handles auth; NO creds stored
-    job_manager: slurm                           # controlled enum: slurm | bash.
-                                                 #   slurm — sbatch launcher, polled via sacct (a real cluster)
-                                                 #   bash  — a plain shell script run directly, no scheduler
-                                                 # OPTIONAL: default follows `type` (ssh→slurm, local→bash),
-                                                 # so a local machine never silently claims slurm.
+    job_manager: slurm                           # OPTIONAL. Only 'slurm' is wired — the bridge submits via
+                                                 # sbatch and polls via sacct. Documents the env's scheduler;
+                                                 # nothing reads it to dispatch (slurm is the sole implemented
+                                                 # path), so omit it for a local machine.
     email: alice@example.edu                     # OPTIONAL: when set, every job header emits
                                                  # --mail-type=END + --mail-user=<this>. Omit ⇒ no mail.
 
@@ -159,9 +155,6 @@ compute_envs:
       gpu:                                       # optional → this HPC's GPU convention. Present ⇒
         partition: a100-gpu                      #   a gpus>0 job renders  -p a100-gpu
         qos: gpu_access                          #   --qos gpu_access --gres=gpu:N
-      max_cores_per_job: 16                      # optional positive-int caps
-      max_mem_gb_per_job: 64
-      max_time_hours_per_job: 24
 
   # ─────────────────────────────────────────────────────────────────────────
   # LOCAL MODE — this laptop / wherever the agent process runs.

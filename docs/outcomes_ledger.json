@@ -15,8 +15,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:402",
-    "end_line": 404,
+    "where": "agent/mcp_tools/freeze_tools.py:410",
+    "end_line": 412,
     "named_in_test": false
   },
   {
@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:707",
-    "end_line": 707,
+    "where": "agent/mcp_tools/freeze_tools.py:715",
+    "end_line": 715,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:753",
-    "end_line": 753,
+    "where": "agent/mcp_tools/freeze_tools.py:761",
+    "end_line": 761,
     "named_in_test": true
   },
   {
@@ -45,8 +45,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:255",
-    "end_line": 256,
+    "where": "agent/mcp_tools/run_tools.py:263",
+    "end_line": 264,
     "named_in_test": false
   },
   {
@@ -215,8 +215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_module_avail",
-    "where": "agent/skills/cluster_modules.py:210",
-    "end_line": 213,
+    "where": "agent/skills/cluster_modules.py:211",
+    "end_line": 214,
     "named_in_test": false
   },
   {
@@ -225,8 +225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_module_avail",
-    "where": "agent/skills/cluster_modules.py:231",
-    "end_line": 231,
+    "where": "agent/skills/cluster_modules.py:232",
+    "end_line": 232,
     "named_in_test": false
   },
   {
@@ -1865,8 +1865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:252",
-    "end_line": 253,
+    "where": "agent/mcp_tools/freeze_tools.py:260",
+    "end_line": 261,
     "named_in_test": true
   },
   {
@@ -1875,8 +1875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:634",
-    "end_line": 635,
+    "where": "agent/mcp_tools/freeze_tools.py:642",
+    "end_line": 643,
     "named_in_test": false
   },
   {
@@ -1885,8 +1885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:707",
-    "end_line": 707,
+    "where": "agent/mcp_tools/freeze_tools.py:715",
+    "end_line": 715,
     "named_in_test": true
   },
   {
@@ -1895,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:752",
-    "end_line": 752,
+    "where": "agent/mcp_tools/freeze_tools.py:760",
+    "end_line": 760,
     "named_in_test": true
   },
   {
@@ -1905,8 +1905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:796",
-    "end_line": 802,
+    "where": "agent/mcp_tools/freeze_tools.py:804",
+    "end_line": 810,
     "named_in_test": false
   },
   {
@@ -2895,8 +2895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:184",
-    "end_line": 190,
+    "where": "agent/mcp_tools/freeze_tools.py:192",
+    "end_line": 198,
     "named_in_test": true
   },
   {
@@ -2905,8 +2905,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:185",
-    "end_line": 189,
+    "where": "agent/mcp_tools/freeze_tools.py:193",
+    "end_line": 197,
     "named_in_test": true
   },
   {
@@ -2915,8 +2915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:543",
-    "end_line": 547,
+    "where": "agent/mcp_tools/freeze_tools.py:551",
+    "end_line": 555,
     "named_in_test": true
   },
   {
@@ -2925,8 +2925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:674",
-    "end_line": 675,
+    "where": "agent/mcp_tools/freeze_tools.py:682",
+    "end_line": 683,
     "named_in_test": true
   },
   {
@@ -2935,8 +2935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:677",
-    "end_line": 678,
+    "where": "agent/mcp_tools/freeze_tools.py:685",
+    "end_line": 686,
     "named_in_test": true
   },
   {
@@ -2945,8 +2945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:690",
-    "end_line": 691,
+    "where": "agent/mcp_tools/freeze_tools.py:698",
+    "end_line": 699,
     "named_in_test": false
   },
   {
@@ -2955,8 +2955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:720",
-    "end_line": 735,
+    "where": "agent/mcp_tools/freeze_tools.py:728",
+    "end_line": 743,
     "named_in_test": false
   },
   {
@@ -2965,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:791",
-    "end_line": 792,
+    "where": "agent/mcp_tools/freeze_tools.py:799",
+    "end_line": 800,
     "named_in_test": false
   },
   {
@@ -3025,8 +3025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:245",
-    "end_line": 250,
+    "where": "agent/mcp_tools/run_tools.py:253",
+    "end_line": 258,
     "named_in_test": false
   },
   {
@@ -3035,8 +3035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:467",
-    "end_line": 470,
+    "where": "agent/mcp_tools/run_tools.py:475",
+    "end_line": 478,
     "named_in_test": false
   },
   {
@@ -3535,8 +3535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_module_avail",
-    "where": "agent/skills/cluster_modules.py:190",
-    "end_line": 193,
+    "where": "agent/skills/cluster_modules.py:191",
+    "end_line": 194,
     "named_in_test": false
   },
   {
@@ -3545,8 +3545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_module_avail",
-    "where": "agent/skills/cluster_modules.py:197",
-    "end_line": 199,
+    "where": "agent/skills/cluster_modules.py:198",
+    "end_line": 200,
     "named_in_test": false
   },
   {
@@ -3555,8 +3555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_module_avail",
-    "where": "agent/skills/cluster_modules.py:229",
-    "end_line": 229,
+    "where": "agent/skills/cluster_modules.py:230",
+    "end_line": 230,
     "named_in_test": false
   },
   {

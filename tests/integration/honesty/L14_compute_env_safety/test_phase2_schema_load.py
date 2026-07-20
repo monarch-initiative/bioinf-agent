@@ -267,9 +267,6 @@ class TestSlurmBlock:
             "account": "tislab",
             "partition": "general",
             "gpu": {"partition": "a100-gpu", "qos": "gpu_access"},
-            "max_cores_per_job": 16,
-            "max_mem_gb_per_job": 64,
-            "max_time_hours_per_job": 24,
         }
 
     @pytest.mark.integration
@@ -281,7 +278,6 @@ class TestSlurmBlock:
         assert cfg["account"] == "tislab"
         assert cfg["partition"] == "general"
         assert cfg["gpu"] == {"partition": "a100-gpu", "qos": "gpu_access"}
-        assert cfg["max_cores_per_job"] == 16
 
     @pytest.mark.integration
     def test_empty_block_loads(self, tmp_path):
@@ -301,29 +297,34 @@ class TestSlurmBlock:
 
     @pytest.mark.integration
     def test_refuses_unknown_key(self, tmp_path):
-        # A typo in a max_* key is the classic "the cap isn't real" trap.
+        # A typo in a real key (account → accont) must be caught, not silently
+        # accepted as a setting that does nothing.
         bad = self._good_slurm()
-        bad["max_corees_per_job"] = 9999   # typo
+        bad["accont"] = "tislab"   # typo of `account`
         env = _base_env(slurm=bad)
         with pytest.raises(ConfigError) as exc:
             compute_access.load_access(_write(tmp_path, _wrap(env)))
         assert "unknown keys" in str(exc.value)
-        assert "max_corees_per_job" in str(exc.value)
+        assert "accont" in str(exc.value)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("field,bad_value", [
-        ("max_cores_per_job", 0), ("max_cores_per_job", -1),
-        ("max_cores_per_job", 1.5), ("max_cores_per_job", "16"),
-        ("max_cores_per_job", True), ("max_mem_gb_per_job", 0),
-        ("max_time_hours_per_job", -24),
+    @pytest.mark.parametrize("removed_key,value", [
+        ("max_cores_per_job", 16),
+        ("max_mem_gb_per_job", 64),
+        ("max_time_hours_per_job", 24),
+        ("module_loads", ["apptainer/1.4.1"]),
     ])
-    def test_refuses_non_positive_int_caps(self, tmp_path, field, bad_value):
+    def test_refuses_removed_dead_knobs(self, tmp_path, removed_key, value):
+        """The per-env resource caps and module_loads were REMOVED 2026-07-20 — they
+        were accepted + validated here but never enforced/emitted (the "gate present,
+        absent in effect" anti-pattern). A config that still sets one must now fail
+        LOUD via the closed-key check, not silently do nothing."""
         bad = self._good_slurm()
-        bad[field] = bad_value
+        bad[removed_key] = value
         env = _base_env(slurm=bad)
         with pytest.raises(ConfigError) as exc:
             compute_access.load_access(_write(tmp_path, _wrap(env)))
-        assert "positive integer" in str(exc.value) and field in str(exc.value)
+        assert "unknown keys" in str(exc.value) and removed_key in str(exc.value)
 
     @pytest.mark.integration
     @pytest.mark.parametrize("field", ["account", "partition"])
@@ -379,69 +380,23 @@ class TestSlurmBlock:
             compute_access.load_access(_write(tmp_path, _wrap(env)))
         assert "unknown keys" in str(exc.value) and "count" in str(exc.value)
 
-    # --- Optional module_loads -----------------------------------------------
-
-    @pytest.mark.integration
-    def test_accepts_optional_module_loads(self, tmp_path):
-        good = self._good_slurm()
-        good["module_loads"] = ["apptainer/1.4.1", "nextflow/25.04.7"]
-        env = _base_env(slurm=good)
-        p = _write(tmp_path, _wrap(env))
-        access = compute_access.load_access(p)
-        cfg = compute_access.get_slurm_config(
-            compute_access.get_compute_env("cluster", access))
-        assert cfg["module_loads"] == ["apptainer/1.4.1", "nextflow/25.04.7"]
-
-    @pytest.mark.integration
-    @pytest.mark.parametrize("bad_entry", [
-        "module with space",
-        "module;rm -rf /",
-        "module\ninjection",
-        "module|pipe",
-        "module$(id)",
-        "module`backtick`",
-        "",
-    ])
-    def test_refuses_module_load_entry_with_shell_metachars(
-            self, tmp_path, bad_entry):
-        bad = self._good_slurm()
-        bad["module_loads"] = ["apptainer/1.4.1", bad_entry]
-        env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        msg = str(exc.value)
-        assert "module_loads" in msg
-
-    @pytest.mark.integration
-    def test_refuses_module_loads_not_a_list(self, tmp_path):
-        bad = self._good_slurm()
-        bad["module_loads"] = "apptainer/1.4.1"  # string not list
-        env = _base_env(slurm=bad)
-        p = _write(tmp_path, _wrap(env))
-        with pytest.raises(ConfigError) as exc:
-            compute_access.load_access(p)
-        assert "module_loads" in str(exc.value)
-
     @pytest.mark.integration
     def test_optional_keys_absent_loads_clean(self, tmp_path):
         # The whole point of optional keys: they may be omitted without
         # the loader complaining.
         good = self._good_slurm()
-        # No mail_user, no module_loads.
+        # No mail_user (email is the env-level field, not a slurm key).
         env = _base_env(slurm=good)
         p = _write(tmp_path, _wrap(env))
         access = compute_access.load_access(p)
         cfg = compute_access.get_slurm_config(
             compute_access.get_compute_env("cluster", access))
         assert "mail_user" not in cfg
-        assert "module_loads" not in cfg
 
     @pytest.mark.integration
     def test_still_refuses_truly_unknown_key(self, tmp_path):
-        # The typo defense from Step 1 still works — adding optional
-        # mail_user/module_loads doesn't widen the closed-key set to
-        # accept arbitrary fields.
+        # The typo defense still works — the closed-key set accepts only the keys
+        # the code actually reads, never an arbitrary field.
         bad = self._good_slurm()
         bad["typo_extra_field"] = "evil"
         env = _base_env(slurm=bad)
@@ -776,9 +731,6 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
             "account": "tislab",
             "partition": "general",
             "gpu": {"partition": "a100-gpu", "qos": "gpu_access"},
-            "max_cores_per_job": 16,
-            "max_mem_gb_per_job": 64,
-            "max_time_hours_per_job": 24,
         },
     )
     p = _write(tmp_path, _wrap(env))
@@ -795,25 +747,27 @@ def test_complete_phase2_env_loads_and_all_lookups_return(tmp_path):
     assert set(common["permissions"]) >= {"upload", "download", "exec"}
 
     sl = compute_access.get_slurm_config(env_blk)
-    assert sl["max_cores_per_job"] == 16
     assert sl["account"] == "tislab"
     assert sl["gpu"] == {"partition": "a100-gpu", "qos": "gpu_access"}
 
 
 # ===========================================================================
-# 6. job_manager — the batch-scheduler enum (slurm | bash)
+# 6. job_manager — the batch-scheduler enum (slurm only; see VALID_JOB_MANAGERS)
 # ===========================================================================
 
 class TestJobManager:
     """`job_manager` names the scheduler an env runs jobs through. A CONTROLLED
-    enum — the config validator refuses anything outside VALID_JOB_MANAGERS.
+    enum — the config validator refuses anything outside VALID_JOB_MANAGERS, which
+    holds only the schedulers actually wired ('slurm').
 
-    Only the REFUSAL is tested, because refusing is all that is wired: nothing
-    reads job_manager to dispatch on, so there is no accessor and no default to
-    assert. When bash execution ships, the default-by-env-type belongs here."""
+    Only the REFUSAL is tested, because refusing is all that is wired: nothing reads
+    job_manager to dispatch on, so there is no accessor and no default to assert. The
+    un-implemented 'bash' value was removed 2026-07-20 (it violated the enum's own
+    rule — a value ships WITH its submit/poll wiring), so it now refuses too; a future
+    scheduler is added to VALID_JOB_MANAGERS together with its wiring."""
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad", ["pbs", "lsf", "SLURM", "sge", ""])
+    @pytest.mark.parametrize("bad", ["bash", "pbs", "lsf", "SLURM", "sge", ""])
     def test_refuses_unsupported_scheduler(self, tmp_path, bad):
         env = _base_env(job_manager=bad)
         with pytest.raises(ConfigError, match="job_manager"):
