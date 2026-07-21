@@ -30,6 +30,26 @@ from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.skills.outcomes import proven, refused, broke
 
 
+def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> None:
+    """Best-effort record a functional smoke for the ENGINE-COUPLED build tiers
+    (cargo / go). The smoke is stashed into `install_method["evidence"]` so freeze's
+    `_map_install` threads it as the in-image VALIDATED_IN_IMAGE evidence (validated==ran,
+    not the `{bin} --version` generator default). It is run in-env now purely for early
+    operator feedback and DISCLOSED under `smoke_*` — NON-GATING, because freeze is the
+    authoritative locus (it refuses if the evidence fails in the shipped image). We do NOT
+    touch the top-level `verify_command`/`verify_output` (env_manager set those to the
+    `which {bin}` cli_which anchor that `_merge_simple_install` caches for I2)."""
+    if not verify_command or not result.get("success"):
+        return
+    vr = _ms._env_mgr.run_in_env(env_name, verify_command, timeout=300)
+    result["smoke_command"]    = verify_command
+    result["smoke_output"]     = (vr.get("stdout") or "")[-2000:]
+    result["smoke_returncode"] = vr.get("returncode")
+    im = result.get("install_method")
+    if isinstance(im, dict):
+        im["evidence"] = verify_command
+
+
 @mcp.tool()
 def search_package(
     package_name: str,
@@ -685,6 +705,7 @@ def install_cargo_tool(
     version: str = "",
     binary_name: str = "",
     git_url: str = "",
+    verify_command: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -694,6 +715,15 @@ def install_cargo_tool(
     (defaults to crate) is the cli_which anchor. `git_url` installs from a git
     repo instead of crates.io. Pin `version` for reproducibility.
 
+    `verify_command` = a SELF-CONTAINED functional smoke that RUNS the built binary
+    on inline-generated data and exits 0 (e.g. `cd /tmp && printf '@r\\nACGT\\n+\\nIIII\\n'
+    > /tmp/in.fq && nanoq -i /tmp/in.fq -o /tmp/out.fq && test -s /tmp/out.fq`). It is
+    run best-effort in the env now AND recorded into install_method["evidence"] so freeze
+    re-runs it as the in-image VALIDATED_IN_IMAGE evidence — letting a cargo tool prove
+    validated==ran, not merely that `{bin} --version` answers (the generator default).
+    Freeze is the AUTHORITATIVE locus (it refuses if the evidence fails in the shipped
+    image), so a non-zero host rc here is DISCLOSED, never fatal. Empty ⇒ the default probe.
+
     NOTE many Rust genomics tools (sylph, skani, sourmash) are ALSO on bioconda —
     prefer install_conda_packages when available; this is the fallback. With
     pipeline_id, records the install_step + caches the verify (I2).
@@ -701,6 +731,10 @@ def install_cargo_tool(
     Returns: {success, crate, binary_name, verify_command, verify_output, install_method, log}.
     """
     result = _ms._env_mgr.install_cargo_tool(env_name, crate, version, binary_name, git_url)
+    # Best-effort in-env functional smoke (non-gating: freeze is authoritative). Recorded
+    # into install_method["evidence"] (NOT the top-level `verify_command`, which env_manager
+    # sets to `which {bin}` for I2) so freeze's _map_install threads it → validated==ran.
+    _record_engine_smoke(result, env_name, verify_command)
     if pipeline_id:
         name = binary_name or crate
         result["pipeline_merge"] = _ms._merge_simple_install(
@@ -717,6 +751,7 @@ def install_go_tool(
     package: str,
     version: str = "latest",
     binary_name: str = "",
+    verify_command: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -727,9 +762,23 @@ def install_go_tool(
     for reproducibility. With pipeline_id, records the install_step + caches the
     verify (I2).
 
+    `verify_command` = a SELF-CONTAINED functional smoke that RUNS the built binary on
+    inline-generated data and exits 0 (e.g. `cd /tmp && printf '>r\\nACGT\\n' > /tmp/r.fa &&
+    printf '>q\\nACGA\\n' > /tmp/q.fa && gofasta snps -r /tmp/r.fa -q /tmp/q.fa -o /tmp/o.csv
+    && test -s /tmp/o.csv`). It is run best-effort in the env now AND recorded into
+    install_method["evidence"] so freeze re-runs it as the in-image VALIDATED_IN_IMAGE
+    evidence — letting a go tool prove validated==ran, not merely `{bin} --version` (the
+    generator default). Freeze is AUTHORITATIVE (it refuses if the evidence fails in the
+    shipped image), so a non-zero host rc here is DISCLOSED, never fatal. Empty ⇒ default probe.
+
+    NOTE the go tier needs a replace-directive-free go.mod: `go install pkg@version` refuses
+    a module with `replace` directives (shenwei356 tools like seqkit/csvtk vendor libs that
+    way → clone-and-build-only, not go-install-able); prefer a tool with a clean go.mod.
+
     Returns: {success, package, binary_name, verify_command, verify_output, install_method, log}.
     """
     result = _ms._env_mgr.install_go_tool(env_name, package, version, binary_name)
+    _record_engine_smoke(result, env_name, verify_command)
     if pipeline_id:
         name = binary_name or package.rstrip("/").split("/")[-1]
         result["pipeline_merge"] = _ms._merge_simple_install(
