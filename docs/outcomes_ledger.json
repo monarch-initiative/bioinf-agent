@@ -985,8 +985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:114",
-    "end_line": 115,
+    "where": "agent/skills/freeze_from_image.py:173",
+    "end_line": 174,
     "named_in_test": false
   },
   {
@@ -995,8 +995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:118",
-    "end_line": 119,
+    "where": "agent/skills/freeze_from_image.py:177",
+    "end_line": 178,
     "named_in_test": false
   },
   {
@@ -1005,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:366",
-    "end_line": 367,
+    "where": "agent/skills/freeze_from_image.py:428",
+    "end_line": 429,
     "named_in_test": true
   },
   {
@@ -1015,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:371",
-    "end_line": 372,
+    "where": "agent/skills/freeze_from_image.py:433",
+    "end_line": 434,
     "named_in_test": false
   },
   {
@@ -1025,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:381",
-    "end_line": 383,
+    "where": "agent/skills/freeze_from_image.py:443",
+    "end_line": 445,
     "named_in_test": false
   },
   {
@@ -2395,8 +2395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:315",
-    "end_line": 319,
+    "where": "agent/skills/freeze_from_image.py:377",
+    "end_line": 381,
     "named_in_test": false
   },
   {
@@ -3965,8 +3965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:106",
-    "end_line": 107,
+    "where": "agent/skills/freeze_from_image.py:165",
+    "end_line": 166,
     "named_in_test": true
   },
   {
@@ -3975,8 +3975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:128",
-    "end_line": 129,
+    "where": "agent/skills/freeze_from_image.py:187",
+    "end_line": 188,
     "named_in_test": false
   },
   {
@@ -3985,8 +3985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:239",
-    "end_line": 242,
+    "where": "agent/skills/freeze_from_image.py:301",
+    "end_line": 304,
     "named_in_test": true
   },
   {
@@ -3995,8 +3995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:353",
-    "end_line": 354,
+    "where": "agent/skills/freeze_from_image.py:415",
+    "end_line": 416,
     "named_in_test": false
   },
   {
@@ -4005,8 +4005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:356",
-    "end_line": 356,
+    "where": "agent/skills/freeze_from_image.py:418",
+    "end_line": 418,
     "named_in_test": false
   },
   {
