@@ -188,10 +188,91 @@ FREEZE_TIERS: list[dict] = [
                 "arch-independent). Depends on the _map_install jar branch now threading "
                 "a recorded smoke as evidence (parity with source/synthesized/r_install).",
     },
-    {"tier": "cargo", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "cargo install --root --locked, engine rust toolchain. Unit only."},
-    {"tier": "go", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "GOBIN go install, engine go toolchain. Unit only."},
+    {
+        "tier": "cargo", "kind": "install", "builder": "container_native",
+        "probe_tool": "nanoq",
+        "build": {
+            "install_method": {
+                "type": "cargo", "name": "nanoq",
+                # nanoq 0.10.0 (esteinig/nanoq) — a real, small, pure-Rust Nanopore
+                # read-QC tool. `cargo install nanoq --version 0.10.0 --root /usr/local
+                # --locked`: the crate ships its own Cargo.lock (every bin crate does) so
+                # --locked pins the FULL dep tree, the --version pins the tool, and the
+                # rust toolchain is engine-lock-anchored (conda `rust`, auto-injected by
+                # plan_conda's _TOOLCHAIN_SPECS['cargo']) → the STRONGEST reproducibility
+                # shape of any tier (tool-version + crate-lock + toolchain-lock all pinned).
+                "crate": "nanoq", "version": "0.10.0", "binary_name": "nanoq",
+                # FUNCTIONAL evidence (validated==ran, NOT the `--version` default): RUN the
+                # built binary on an inline fastq and assert it wrote filtered reads. Leads
+                # with `cd` (not printf) so env_honesty's anti-echo-cheat shape rule sees a
+                # real `nanoq …` invocation; the `/tmp/*.fq` operands + `-i`/`-o` classify it
+                # 'functional'. `-i`/`-o` are nanoq's core flags (stable across releases).
+                # Exercises the _map_install cargo evidence-threading (env_freeze) — without
+                # which a cargo tool's VALIDATED_IN_IMAGE is the `--version` default.
+                "evidence": ("cd /tmp && printf '@r1\\n"
+                             "ACGTACGTACGTACGTACGT\\n+\\n"
+                             "IIIIIIIIIIIIIIIIIIII\\n' > /tmp/nanoq_in.fq && "
+                             "nanoq -i /tmp/nanoq_in.fq -o /tmp/nanoq_out.fq && "
+                             "test -s /tmp/nanoq_out.fq"),
+            },
+            "primary_tools": ["nanoq"],
+        },
+        "note": "cargo install --root /usr/local --locked, engine rust toolchain "
+                "(conda `rust`, auto-injected). ENGINE-COUPLED like go/perl/r_install — "
+                "the build runs with the conda env active; the OUTPUT binary is self-"
+                "contained and COPYed to the slim runtime. Proven via nanoq 0.10.0 with "
+                "FUNCTIONAL evidence — filters an inline fastq and writes output "
+                "(validated==ran, not the `--version` default). STRONGEST reproducibility "
+                "shape: tool-version pinned (--version 0.10.0) + crate Cargo.lock (--locked) "
+                "+ engine-lock-anchored rust toolchain.",
+    },
+    {
+        "tier": "go", "kind": "install", "builder": "container_native",
+        "probe_tool": "gofasta",
+        "build": {
+            "install_method": {
+                "type": "go", "name": "gofasta",
+                # gofasta v1.2.3 (virus-evolution/gofasta) — a real SARS-CoV-2 genomics
+                # tool (alignment/mutation calling, used in the pangolin/civet ecosystem).
+                # `GOBIN=/usr/local/bin go install github.com/virus-evolution/gofasta@v1.2.3`:
+                # the module version pins the tool, the module's go.sum pins the dep tree, and
+                # the go toolchain is engine-lock-anchored (conda `go`, _TOOLCHAIN_SPECS['go']
+                # → 1.26.5, > gofasta's `go 1.23` floor). Pure Go → a static binary, so the
+                # runtime stage needs no extra libs; main.go is at the module root → binary
+                # `gofasta`.
+                #
+                # WHY NOT seqkit (the obvious first pick): `go install pkg@version` REFUSES a
+                # module whose go.mod carries `replace` directives ("must not contain directives
+                # that would cause it to be interpreted differently than if it were the main
+                # module"). shenwei356 tools (seqkit/csvtk) vendor their own libs via `replace`,
+                # so they are `git clone && go build`-only, NOT `go install`-able — the go tier
+                # requires a clean (replace-free) go.mod, which gofasta has.
+                "package": "github.com/virus-evolution/gofasta", "version": "v1.2.3",
+                "binary_name": "gofasta",
+                # FUNCTIONAL evidence (validated==ran): RUN gofasta on inline data and assert
+                # it produced output. `gofasta snps -r <ref> -q <query>` calls SNPs of a query
+                # against a same-length reference (both pre-aligned); the query here differs at
+                # the last base → one SNP → a non-empty CSV. The `/tmp/*.fa`/`.csv` operands +
+                # `-r`/`-q`/`-o` classify it 'functional'; it leads with `cd` (shape-clean).
+                # Exercises the _map_install go evidence-threading (env_freeze), sibling of cargo.
+                "evidence": ("cd /tmp && printf '>ref\\n"
+                             "ACGTACGTACGTACGTACGT\\n' > /tmp/gofasta_ref.fa && "
+                             "printf '>q1\\nACGTACGTACGTACGTACGA\\n' > /tmp/gofasta_q.fa && "
+                             "gofasta snps -r /tmp/gofasta_ref.fa -q /tmp/gofasta_q.fa "
+                             "-o /tmp/gofasta_out.csv && test -s /tmp/gofasta_out.csv"),
+            },
+            "primary_tools": ["gofasta"],
+        },
+        "note": "GOBIN=/usr/local/bin go install pkg@version, engine go toolchain "
+                "(conda `go` 1.26.5, auto-injected). ENGINE-COUPLED like cargo/perl/r_install. "
+                "Proven via gofasta v1.2.3 (virus-evolution) with FUNCTIONAL evidence — "
+                "`gofasta snps` calls a SNP between two inline aligned fastas and writes a CSV "
+                "(validated==ran). Reproducibility: module version pinned (@v1.2.3) + module "
+                "go.sum + engine-lock-anchored go toolchain; pure-Go static binary. NOTE: the "
+                "go tier requires a replace-directive-FREE go.mod — `go install pkg@v` refuses "
+                "a module with `replace` directives, so seqkit/csvtk (shenwei356, which vendor "
+                "libs via replace) are clone-and-build-only, NOT go-install-able.",
+    },
     {"tier": "perl", "kind": "install", "builder": None, "probe_tool": "",
      "note": "cpanm --notest + xlocale shim for XS against conda perl. Unit only."},
     {"tier": "synthesized", "kind": "install", "builder": None, "probe_tool": "",
@@ -230,8 +311,8 @@ FLOORS: dict[str, float] = {
     "binary": 1.0,   # mosdepth v0.3.8 — proven 2026-07-20 (P2 slice 3, F2 firewall)
     "r_install": 1.0,   # BiocGenerics — proven 2026-07-20 (P2 slice 4, BiocManager path)
     "jar":    1.0,   # Picard 3.4.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
-    "cargo":              0.0,
-    "go":                 0.0,
+    "cargo":  1.0,   # nanoq 0.10.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
+    "go":     1.0,   # gofasta v1.2.3 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "perl":               0.0,
     "synthesized":        0.0,
     "adopt-biocontainer": 0.0,

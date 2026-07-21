@@ -37,7 +37,15 @@ from agent.skills.outcomes import refused, broke
 # long-tail generator; it needs no extra toolchain.)
 _TOOLCHAIN_SPECS = {
     "cargo":     ["rust"],
-    "go":        ["go"],
+    # conda `go` activates with CGO_ENABLED=1 and CC=x86_64-conda-linux-gnu-cc, so a
+    # cgo-touching build (many bio tools: htslib bindings; even the stdlib net/os-user
+    # native resolver, which gofasta pulls) needs that exact conda C compiler present —
+    # `c-compiler` provides it (gcc_linux-64 → x86_64-conda-linux-gnu-cc). Without it a
+    # cgo build fails "C compiler not found"; a pure-Go tool ignores it. Same reason
+    # perl/r_install carry it. (cargo stays rust-only until a real -sys/rust-htslib crate
+    # is proven in a slice — nanoq needs no C compiler, so we don't speculatively change
+    # a proven tier.)
+    "go":        ["go", "c-compiler"],
     "perl":      ["perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"],
     # zlib is a near-universal #include for Bioc/CRAN packages that touch compressed
     # data (snpStats: -lz for read_uncertain.c; many htslib-adjacent R packages).
@@ -386,13 +394,21 @@ def _map_install_spec(
                                        commit=im.get("commit_sha") or "")}
 
     if t == "cargo":
+        # A recorded functional smoke becomes the VALIDATED_IN_IMAGE evidence → freeze
+        # proves the built binary RAN on data, not merely that `{bin} --version` answers
+        # (ic.cargo's default). Parity with jar/source/synthesized/r_install; absent → the
+        # default `--help||--version||-h||command -v` probe. `verify_command` is honored as
+        # a fallback key (a normally-PRODUCED record carries no evidence in install_method,
+        # so this only fires when a smoke was explicitly recorded — never a silent downgrade).
         return {"spec": ic.cargo(name, im.get("crate") or name, version=im.get("version") or "",
                                  git_url=im.get("git_url") or "",
-                                 binary_name=im.get("binary_name") or name)}
+                                 binary_name=im.get("binary_name") or name,
+                                 evidence=im.get("evidence") or im.get("verify_command") or "")}
 
     if t == "go":
         return {"spec": ic.go(name, im.get("package") or name, version=im.get("version") or "latest",
-                              binary_name=im.get("binary_name") or name)}
+                              binary_name=im.get("binary_name") or name,
+                              evidence=im.get("evidence") or im.get("verify_command") or "")}
 
     if t == "perl":
         module = im.get("module") or name
