@@ -68,11 +68,30 @@ def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
     `ENV PATH` (e.g. a uv/conda venv baked at the front of PATH) — so `-lc` would fail to
     find the very tools we're validating. `-c` respects the image's environment.
 
+    TWO ATTEMPTS, because a tool image's ENTRYPOINT decides how `bash -c cmd` is read:
+      1. NATURAL — `docker run IMAGE bash -c cmd`. With no entrypoint this runs a shell;
+         with an env-ACTIVATING entrypoint (micromamba/conda images that `exec "$@"` after
+         activating the env) it runs THROUGH it, so the tool lands on PATH — which we want.
+         So the natural form is tried first and its success is kept verbatim.
+      2. ENTRYPOINT-OVERRIDDEN — `docker run --entrypoint bash IMAGE -c cmd`. The very common
+         `ENTRYPOINT ["<tool>"]` pattern (diamond, many biocontainers) EATS `bash -c cmd` as
+         the tool's own arguments and never starts a shell, so attempt 1 fails with a tool
+         usage error; overriding the entrypoint runs our command directly. This is ALSO how
+         the tool is invoked under `apptainer exec` on HPC (Singularity ignores the Docker
+         ENTRYPOINT), so it is the more delivery-faithful of the two. The image ENV (PATH)
+         applies either way, so a baked venv/conda PATH is still honored.
+    A green from EITHER attempt means the command runs in the shipped image; a double failure
+    returns the natural attempt's output (the canonical invocation's error).
+
     `maxlen` caps the returned output (evidence snippets stay short); pass a large value
     when the CALLER must parse the whole output (e.g. an SBOM JSON list) — truncating that
     mid-list would break the parse."""
-    r = _sh(["docker", "run", "--rm", "--platform", platform, image, "bash", "-c", command],
-            timeout=timeout)
+    base = ["docker", "run", "--rm", "--platform", platform]
+    r = _sh(base + [image, "bash", "-c", command], timeout=timeout)
+    if r["rc"] != 0:
+        r2 = _sh(base + ["--entrypoint", "bash", image, "-c", command], timeout=timeout)
+        if r2["rc"] == 0:
+            r = r2
     return {"rc": r["rc"], "out": (r["out"] or r["err"] or "").strip()[:maxlen]}
 
 

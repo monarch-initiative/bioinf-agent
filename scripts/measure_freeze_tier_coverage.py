@@ -165,6 +165,78 @@ def build_tier(spec: dict) -> dict:
             "validation_locus": res.get("validation_locus")}
 
 
+def _build_method_outcome(res: dict) -> dict:
+    """Normalize a freeze_from_image / build_from_authors_recipe result into build_tier's
+    shape. Those executors run the honesty contract (check_build) INTERNALLY and return a
+    proven/refused/broke dict — so a non-`success` result is a real failure (a refusal =
+    honesty violation, a broke = pull/build failure), recorded `ok=False` with the reason.
+    Same honesty bar as the container-native tiers: a green means the adopted/built image
+    passed BUILT · VALIDATED_IN_IMAGE · POLICY_CLEAN on real bytes."""
+    ok = bool(res.get("success"))
+    err = None
+    if not ok:
+        viols = res.get("honesty_violations")
+        err = (res.get("error") or "").strip() or (
+            f"honesty violations: {viols}" if viols else "not proven (no success)")
+    # The in-image evidence runs under `docker run --platform linux/amd64`; on a non-amd64
+    # host that is QEMU emulation — the same locus the container-native tiers record. This is
+    # a faithful derivation from the known (host arch, fixed --platform), not a fabricated field.
+    host = _host_arch()
+    locus = ("emulated" if host not in ("x86_64", "amd64") else "native") if ok else None
+    return {"ok": ok, "error": err,
+            "image_digest": res.get("image_digest"),
+            "content_digest": res.get("content_digest"),
+            "validation_locus": locus}
+
+
+def build_method_tier(spec: dict) -> dict:
+    """Drive ONE real ADOPT / AUTHORS-DOCKERFILE build-method probe — the routes that ship
+    an image WITHOUT a container-native reconstruction, so they don't ride build_env_image.
+    Uses the SAME injectable executors the freeze() MCP surface uses (freeze_from_image /
+    build_from_authors_recipe), pointed at a THROWAWAY EnvCache + reports dir so nothing
+    touches the real cache or env_reports/. Returns the normalized build_tier outcome."""
+    import tempfile
+    from agent.skills import freeze_from_image as ffi
+    from agent.skills.biocontainers import resolve_biocontainer
+    from agent.skills.freeze import EnvCache
+
+    b = spec["build"]
+    name = f"bioinf_tiergrid_{spec['tier']}"
+    try:
+        with tempfile.TemporaryDirectory(prefix="tiergrid_bm_") as td:
+            cache = EnvCache(Path(td) / "env_cache.json")
+            reports = Path(td) / "reports"
+            if "adopt" in b:
+                a = b["adopt"]
+                image = a.get("image")
+                if a.get("kind") == "biocontainer":
+                    # The distinguishing act of the biocontainer row: resolve the curated
+                    # quay.io/biocontainers image + adopt it BY MANIFEST DIGEST.
+                    rb = resolve_biocontainer([(a["tool"], a.get("version"))])
+                    if not (rb.get("found") and rb.get("image_by_digest")):
+                        return {"ok": False, "error": f"no biocontainer for "
+                                f"{a['tool']}={a.get('version')}: {rb.get('reason')}"}
+                    image = rb["image_by_digest"]
+                res = ffi.freeze_from_image(
+                    image=image, tools=[{"name": a["tool"], "evidence": a["evidence"]}],
+                    name=name, env_cache=cache, reports_dir=reports,
+                    build_method="adopt-image", platform=PLATFORM)
+            elif "authors_dockerfile" in b:
+                ad = b["authors_dockerfile"]
+                res = ffi.build_from_authors_recipe(
+                    repo=ad["repo"], tools=[{"name": ad["tool"], "evidence": ad["evidence"]}],
+                    name=name, env_cache=cache, reports_dir=reports,
+                    recipe=ad.get("recipe", "Dockerfile"), ref=ad.get("ref", ""),
+                    version=ad.get("ref", ""), build_args=ad.get("build_args"),
+                    platform=PLATFORM)
+            else:
+                return {"ok": False, "error": f"build_method tier {spec['tier']} has no "
+                        f"recognized recipe (need 'adopt' or 'authors_dockerfile')"}
+    except Exception as e:   # a crash IS a failure — record it, don't abort the sweep
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return _build_method_outcome(res)
+
+
 def tier_record(spec: dict, outcome: dict | None, docker_available: bool,
                 *, sha: str = "", now: str = "") -> dict:
     """PURE: fold a tier's FRESH build outcome into its committed JSON record.
@@ -371,7 +443,8 @@ def main(argv: list[str] | None = None) -> int:
             tiers[name] = tier_record(spec, None, docker)
         elif build_this:
             print(f"  building tier '{name}' (probe: {spec.get('probe_tool')}) …", flush=True)
-            outcome = build_tier(spec)
+            outcome = (build_method_tier(spec) if spec["kind"] == "build_method"
+                       else build_tier(spec))
             tiers[name] = tier_record(spec, outcome, docker, sha=head_sha, now=now)
             print(f"    → {tiers[name]['status']}"
                   + (f" ({tiers[name]['last_error']})" if tiers[name]["last_error"] else ""))
