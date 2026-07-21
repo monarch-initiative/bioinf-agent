@@ -425,19 +425,85 @@ FREEZE_TIERS: list[dict] = [
                 "real tool's real build files, not the routing.",
     },
     # ── build methods (adopt / authors — no container-native reconstruction) ──
-    {"tier": "adopt-biocontainer", "kind": "build_method", "builder": None,
-     "probe_tool": "",
-     "note": "pull a BioContainer by manifest digest + in-image evidence. The "
-             "DEFAULT production path, yet 0 real-bytes coverage (all tests mock "
-             "the digest-pull)."},
-    {"tier": "adopt-image", "kind": "build_method", "builder": None,
-     "probe_tool": "",
-     "note": "freeze_from_image on the author's own image. L15 proves the method "
-             "wrapper on a toy debian shell tool — NOT a real package install."},
-    {"tier": "authors-dockerfile", "kind": "build_method", "builder": None,
-     "probe_tool": "",
-     "note": "build_env_from_authors_recipe (docker build -f + build-args). L15 "
-             "proves it on a toy tool — NOT a real tool's Dockerfile."},
+    # These ship an image WITHOUT a container-native rebuild, so they don't ride
+    # build_env_image (build_tier); the generator drives them through the SAME
+    # executors the freeze() MCP surface uses — freeze_from_image (adopt) /
+    # build_from_authors_recipe (authors' Dockerfile) — via build_method_tier, each
+    # of which runs the honesty contract (check_build) internally. Real bytes, same
+    # bar as every install tier: pull/build a REAL image, RUN the tool in it, contract
+    # clean. (Bash-in-image is required — freeze_from_image validates via `bash -c` —
+    # so probes are debian/ubuntu-based, not alpine/distroless.)
+    {
+        "tier": "adopt-biocontainer", "kind": "build_method", "builder": "adopt",
+        "probe_tool": "samtools",
+        "build": {
+            # resolve_biocontainer([(samtools, 1.21)]) → the quay.io/biocontainers
+            # image_by_digest → freeze_from_image adopts it: pull BY MANIFEST DIGEST,
+            # RUN the tool's evidence IN the pulled image, honesty contract. samtools is
+            # the canonical bioconda-packaged tool AND the on-disk adopt exemplar (a
+            # samtools=1.21 biocontainer adopt already ran a sealed Longleaf workflow).
+            "adopt": {"kind": "biocontainer", "tool": "samtools", "version": "1.21",
+                      "evidence": "samtools --version"},
+            "primary_tools": ["samtools"],
+        },
+        "note": "pull a BioContainer by MANIFEST DIGEST + in-image evidence — the "
+                "DEFAULT production path. Proven 2026-07-21 via samtools 1.21: "
+                "resolve_biocontainer picks the quay.io/biocontainers image, "
+                "freeze_from_image pulls it by digest and RUNS `samtools --version` in "
+                "it (VALIDATED_IN_IMAGE), honesty contract clean. Evidence depth is "
+                "'version' (presence) — an adopt trusts the biocontainer's published "
+                "bytes and proves we bound the RIGHT image + it runs, honestly disclosed.",
+    },
+    {
+        "tier": "adopt-image", "kind": "build_method", "builder": "adopt",
+        "probe_tool": "uv",
+        "build": {
+            # freeze_from_image on a tool's OWN published image, adopted BY DIGEST. uv is
+            # the codebase's canonical author_image exemplar (resolve_tool routes uv →
+            # author_image) — a real, widely-used tool that publishes its OWN image. The
+            # row proves the adopt-an-authors-own-image MECHANISM (tool-domain-agnostic),
+            # NOT a bio install. The debian-slim variant is pinned because freeze_from_image
+            # validates via bash-IN-image — the scratch/distroless uv variants ship no shell
+            # (a genuine constraint of the adopt path, not an arbitrary tool choice).
+            "adopt": {"kind": "author_image",
+                      "image": "ghcr.io/astral-sh/uv:0.11.30-debian-slim",
+                      "tool": "uv", "evidence": "uv --version"},
+            "primary_tools": ["uv"],
+        },
+        "note": "freeze_from_image on the AUTHOR'S OWN image, adopted by registry manifest "
+                "digest. Proven 2026-07-21 via uv 0.11.30 (ghcr.io/astral-sh/uv, the "
+                "codebase's canonical author_image exemplar): pull by digest, RUN "
+                "`uv --version` in-image (VALIDATED_IN_IMAGE), honesty contract clean, "
+                "registry manifest digest pinned for re-pull. A real tool's own published "
+                "image — the mechanism is domain-agnostic. Pinned to the debian-slim "
+                "variant because freeze_from_image validates via bash-in-image (the "
+                "scratch/distroless variants have no shell).",
+    },
+    {
+        "tier": "authors-dockerfile", "kind": "build_method",
+        "builder": "authors_dockerfile", "probe_tool": "diamond",
+        "build": {
+            # build_from_authors_recipe clones the tool's OWN repo at a pinned ref, docker-
+            # builds ITS Dockerfile (-f + --build-arg), then freeze_from_image adopts the
+            # built image. diamond (bbuchfink/diamond) — a ubiquitous protein aligner with a
+            # real multi-stage ubuntu Dockerfile that COMPILES from source (g++/cmake/make,
+            # links zlib/zstd/sqlite) — exactly the authors-dockerfile point (the recipe
+            # installs a compiled toolchain a conda/pip reconstruction would not replay).
+            # ubuntu-based (bash-in-image, unlike the alpine tools). Pinned ref v2.2.4.
+            "authors_dockerfile": {"repo": "bbuchfink/diamond", "ref": "v2.2.4",
+                                   "recipe": "Dockerfile", "tool": "diamond",
+                                   "evidence": "diamond version"},
+            "primary_tools": ["diamond"],
+        },
+        "note": "build_env_from_authors_recipe (git clone @ pinned ref → docker build -f "
+                "the author's Dockerfile → adopt the built image). Proven 2026-07-21 via "
+                "diamond v2.2.4 (bbuchfink/diamond): a real multi-stage ubuntu Dockerfile "
+                "that COMPILES diamond from source (cmake/make, zlib/zstd/sqlite) — the "
+                "authors-dockerfile point (a compiled toolchain a conda reconstruction "
+                "would drop). freeze_from_image RUNS `diamond version` in the built image "
+                "(VALIDATED_IN_IMAGE), pins the source (repo + resolved commit + Dockerfile "
+                "verbatim) so the build is reproducible. Emulated build on a non-amd64 host.",
+    },
 ]
 
 INSTALL_TIERS: list[str] = [t["tier"] for t in FREEZE_TIERS if t["kind"] == "install"]
@@ -457,9 +523,9 @@ FLOORS: dict[str, float] = {
     "go":     1.0,   # gofasta v1.2.3 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "perl":   1.0,   # Set::IntervalTree 0.12 — proven 2026-07-21 (P2-C, XS run-on-data smoke)
     "synthesized": 1.0,   # bwa 0.7.18 — proven 2026-07-21 (P2-C, README-extracted + validate_submission)
-    "adopt-biocontainer": 0.0,
-    "adopt-image":        0.0,
-    "authors-dockerfile": 0.0,
+    "adopt-biocontainer": 1.0,   # samtools 1.21 biocontainer — proven 2026-07-21 (pull by manifest digest)
+    "adopt-image":        1.0,   # uv 0.11.30 author image — proven 2026-07-21 (adopt by digest)
+    "authors-dockerfile": 1.0,   # diamond v2.2.4 Dockerfile — proven 2026-07-21 (compiled-from-source build)
 }
 
 

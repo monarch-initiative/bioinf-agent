@@ -256,3 +256,52 @@ def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
     assert sb["bcftools"] == "9cef4057"      # the fork's own identity, captured
     assert sb["bcftools"] != "1.23.1"        # NOT the dependency htslib scraped from line 2
     assert sb["echtvar"] == "0.2.2"
+
+
+# ── _run_in_image: entrypoint-robust in-image execution (real bug: diamond) ────
+
+def test_run_in_image_falls_back_to_entrypoint_override(monkeypatch):
+    """A tool image with ENTRYPOINT ["tool"] (diamond, many biocontainers) eats `bash -c cmd`
+    as the tool's own args, so the natural invocation fails; _run_in_image retries with
+    --entrypoint bash — which runs the command directly AND mirrors how `apptainer exec`
+    invokes it on HPC — and takes that success."""
+    calls = []
+
+    def fake_sh(argv, timeout=300):
+        calls.append(argv)
+        if "--entrypoint" in argv:                       # override runs the command
+            return {"rc": 0, "out": "diamond version 2.2.4", "err": ""}
+        return {"rc": 1, "out": "", "err": "Invalid command: bash"}   # entrypoint ate it
+
+    monkeypatch.setattr(F, "_sh", fake_sh)
+    r = F._run_in_image("img", "linux/amd64", "diamond version")
+    assert r["rc"] == 0 and "diamond version 2.2.4" in r["out"]
+    assert len(calls) == 2 and "--entrypoint" in calls[1]   # natural FIRST, override SECOND
+
+
+def test_run_in_image_natural_success_never_triggers_override(monkeypatch):
+    """Zero regression: when the natural `bash -c` already works (no entrypoint, or an
+    env-ACTIVATING entrypoint that runs our shell), its success is kept verbatim and the
+    override is never attempted — so an activation entrypoint is preserved."""
+    calls = []
+
+    def fake_sh(argv, timeout=300):
+        calls.append(argv)
+        return {"rc": 0, "out": "ok", "err": ""}
+
+    monkeypatch.setattr(F, "_sh", fake_sh)
+    r = F._run_in_image("img", "linux/amd64", "tool --version")
+    assert r["rc"] == 0 and len(calls) == 1 and "--entrypoint" not in calls[0]
+
+
+def test_run_in_image_double_failure_returns_the_natural_error(monkeypatch):
+    """When BOTH attempts fail the command genuinely does not run — rc stays non-zero and the
+    natural (canonical) attempt's output is returned, not the override's."""
+    def fake_sh(argv, timeout=300):
+        if "--entrypoint" in argv:
+            return {"rc": 3, "out": "", "err": "override-err"}
+        return {"rc": 2, "out": "", "err": "natural-err"}
+
+    monkeypatch.setattr(F, "_sh", fake_sh)
+    r = F._run_in_image("img", "linux/amd64", "missing --version")
+    assert r["rc"] == 2 and r["out"] == "natural-err"

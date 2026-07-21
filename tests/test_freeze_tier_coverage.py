@@ -228,10 +228,22 @@ def test_render_row_status_matches_the_record():
             assert cls == "muted" and glyph != "✅", f"{tier} unmeasured but row=({cls!r},{glyph!r})"
         elif st == "broke":
             assert "bad" in cls and glyph == "💥", f"{tier} broke but row=({cls!r},{glyph!r})"
-    # directly guard the green-everything mutation: at least one non-proven row exists
-    # and is NOT painted proven.
-    assert any(c != "ok" for c, _ in rows.values()), \
-        "every row is painted 'ok' — an unmeasured tier is rendering as proven"
+    # Green-everything mutation guard, robust to a FULLY-GREEN grid: force one real tier to
+    # 'unmeasured' in a copy and assert the render paints it muted (not ok). The old form
+    # ("some real row is non-ok") silently self-disabled the moment every tier was proven —
+    # exactly when the whole grid went green — so it tested the render property by leaning on
+    # an incidental red row. This tests the property directly.
+    probe = {**data, "tiers": {**data["tiers"],
+             "conda": {**data["tiers"]["conda"], "status": "unmeasured",
+                       "attempts": 0, "passed": 0, "rate": None}}}
+    phtml = rd.render(probe, current_sha=probe["git_sha"])
+    prows = {tier: (cls, glyph) for cls, glyph, tier in re.findall(
+        r'<tr class="([^"]+)"><td class="tier"><span class="g">(.*?)</span>([\w\-]+)</td>', phtml)}
+    ccls, cglyph = prows.get("conda", ("", ""))
+    # unmeasured must never render as the proven green (it renders muted, or 'bad'/suspect
+    # when — as here — it also carries a floor it no longer backs); either way, NOT ✅ ok.
+    assert ccls != "ok" and cglyph != "✅", \
+        "an unmeasured tier rendered as proven-green — the render may be painting green unconditionally"
 
 
 @pytest.mark.integration
@@ -309,8 +321,11 @@ def test_recipe_fingerprint_is_stable_and_recipe_specific():
     # a mutated recipe → a different fingerprint (the invalidation trigger)
     mutated = {**ft.tier("perl"), "build": {**ft.tier("perl")["build"], "primary_tools": ["Other"]}}
     assert ft.recipe_fingerprint(mutated) != fp
-    # a build-method row (no `build`) fingerprints to the empty-recipe constant
-    assert ft.recipe_fingerprint(ft.tier("adopt-image")) == ft.recipe_fingerprint({"tier": "x"})
+    # a spec with NO build recipe fingerprints to a constant (two empties agree)…
+    assert ft.recipe_fingerprint({"tier": "x"}) == ft.recipe_fingerprint({"tier": "y"})
+    # …and every WIRED row — now including the build-method rows (adopt/authors), which carry
+    # a real `build` recipe since this slice — differs from that empty constant.
+    assert ft.recipe_fingerprint(ft.tier("adopt-image")) != ft.recipe_fingerprint({"tier": "x"})
 
 
 @pytest.mark.integration
