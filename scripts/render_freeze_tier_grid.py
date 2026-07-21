@@ -114,13 +114,26 @@ def render(data: dict, current_sha: str = "") -> str:
             rate_txt = "—" if r is None else f"{r:.0%}"
             locus = rec.get("validation_locus")
             locus_txt = f' · {_e(locus)}' if locus else ""
+            # Per-tier provenance — WHEN and against what commit this tier was measured,
+            # and whether it was freshly built THIS run or CARRIED FORWARD from a prior
+            # grid (incremental measurement). Carried is still 'proven' — it just wasn't
+            # rebuilt this run, so its (possibly older) measured sha is shown, never hidden
+            # behind the assembly's top sha (the honest signal the --keep laundering lacked).
+            msha = rec.get("measured_sha")
+            if rec.get("carried_forward"):
+                gf = " (grandfathered)" if rec.get("fingerprint_backfilled") else ""
+                prov_txt = f' · carried @{_e(msha)}{gf}' if msha else " · carried"
+            elif msha:
+                prov_txt = f' · @{_e(msha)}'
+            else:
+                prov_txt = ""
             probe = rec.get("probe_tool") or "—"
             detail = rec.get("last_error") or rec.get("note") or ""
             out.append(
                 f'<tr class="{_row_class(t, rec)}">'
                 f'<td class="tier"><span class="g">{g}</span>{_e(t)}</td>'
                 f'<td class="probe">{_e(probe)}</td>'
-                f'<td class="status {cls}">{_e(st)}{locus_txt}</td>'
+                f'<td class="status {cls}">{_e(st)}{locus_txt}{prov_txt}</td>'
                 f'<td class="ratecell">{_bar(t, rec)}<span class="ratenum">{rate_txt}'
                 f'</span></td>'
                 f'<td class="floor">{floor:g}</td>'
@@ -222,15 +235,21 @@ real green bake</b>.</p>
   <span><b>✅ proven</b> — real build baked it + check_build clean</span>
   <span><b>💥 broke</b> — real build failed the contract</span>
   <span><b>· unmeasured</b> — no real build yet (declared row, or Docker down)</span>
+  <span><b>carried @sha</b> — proven earlier, carried forward unchanged (incremental — not rebuilt this run)</span>
 </div>
 <p class="foot">A tier is <b>proven</b> only when a real docker build returned success
 AND <code>env_honesty.check_build</code> returned no violations — never on a
 Docker-less run (that would read green while proving nothing). Floors are a reviewed
 ratchet in <code>scripts/freeze_tiers.py</code> (raised by a human, never by the
 generator); <code>tests/test_freeze_tier_coverage.py</code> asserts
-<code>floor ≤ measured</code> and makes an unbacked floor a build failure. Regenerate:
-<code>python scripts/measure_freeze_tier_coverage.py</code>. Real builds can't run in
-CI, so if the measured sha above isn't HEAD, re-run before trusting these bars.</p>
+<code>floor ≤ measured</code> and makes an unbacked floor a build failure. Measurement is
+<b>incremental</b>: <code>--only &lt;tier&gt;</code> rebuilds that tier and CARRIES the rest
+forward from the committed grid, keeping each carried tier's original <b>measured sha</b>
+(shown per row) rather than re-stamping it as current — so adding or fixing one tier never
+forces a full N-tier re-sweep, and a carried tier whose recipe later changes auto-reddens
+(its <code>recipe_fingerprint</code> no longer matches) until it is re-baked. Regenerate one
+tier: <code>python scripts/measure_freeze_tier_coverage.py --only &lt;tier&gt;</code>. Real
+builds can't run in CI, so if a row's measured sha isn't HEAD, re-run it before trusting it.</p>
 </body></html>"""
 
 

@@ -575,8 +575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:430",
-    "end_line": 432,
+    "where": "agent/skills/env_freeze.py:446",
+    "end_line": 448,
     "named_in_test": false
   },
   {
@@ -585,8 +585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:435",
-    "end_line": 436,
+    "where": "agent/skills/env_freeze.py:451",
+    "end_line": 452,
     "named_in_test": false
   },
   {
@@ -595,8 +595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:636",
-    "end_line": 636,
+    "where": "agent/skills/env_freeze.py:659",
+    "end_line": 659,
     "named_in_test": false
   },
   {
@@ -2850,6 +2850,16 @@
     "named_in_test": false
   },
   {
+    "code": "install.r_unknown_source",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_r_package",
+    "where": "agent/mcp_tools/env_tools.py:1008",
+    "end_line": 1009,
+    "named_in_test": false
+  },
+  {
     "code": "install.synth_commit_mismatch",
     "outcome": "refused",
     "source": "helper",
@@ -2877,16 +2887,6 @@
     "func": "synth_build",
     "where": "agent/mcp_tools/env_tools.py:525",
     "end_line": 530,
-    "named_in_test": false
-  },
-  {
-    "code": "install.r_unknown_source",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:988",
-    "end_line": 989,
     "named_in_test": false
   },
   {
@@ -3615,8 +3615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:330",
-    "end_line": 330,
+    "where": "agent/skills/env_freeze.py:337",
+    "end_line": 337,
     "named_in_test": false
   },
   {
@@ -3625,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:371",
-    "end_line": 376,
+    "where": "agent/skills/env_freeze.py:378",
+    "end_line": 383,
     "named_in_test": false
   },
   {
@@ -3635,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:388",
-    "end_line": 389,
+    "where": "agent/skills/env_freeze.py:395",
+    "end_line": 396,
     "named_in_test": false
   },
   {
@@ -3645,8 +3645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:452",
-    "end_line": 458,
+    "where": "agent/skills/env_freeze.py:468",
+    "end_line": 474,
     "named_in_test": true
   },
   {
@@ -3655,8 +3655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:488",
-    "end_line": 489,
+    "where": "agent/skills/env_freeze.py:504",
+    "end_line": 505,
     "named_in_test": false
   },
   {
@@ -3665,8 +3665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:635",
-    "end_line": 635,
+    "where": "agent/skills/env_freeze.py:658",
+    "end_line": 658,
     "named_in_test": true
   },
   {

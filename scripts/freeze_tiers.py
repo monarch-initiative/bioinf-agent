@@ -37,6 +37,8 @@ regressed measurement reddens.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import typing
 from pathlib import Path
@@ -273,8 +275,65 @@ FREEZE_TIERS: list[dict] = [
                 "a module with `replace` directives, so seqkit/csvtk (shenwei356, which vendor "
                 "libs via replace) are clone-and-build-only, NOT go-install-able.",
     },
-    {"tier": "perl", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "cpanm --notest + xlocale shim for XS against conda perl. Unit only."},
+    {
+        "tier": "perl", "kind": "install", "builder": "container_native",
+        "probe_tool": "Set::IntervalTree",
+        "build": {
+            "install_method": {
+                "type": "perl", "name": "Set::IntervalTree",
+                # Set::IntervalTree 0.12 — a real Ensembl VEP dependency (VEP's
+                # INSTALL.pl cpanm-installs it) AND a genomic interval tree, so a genuine
+                # bioinformatics XS module, not a toy. It's C++ (a template-based interval-
+                # tree header + a .xs), so the build EXERCISES the hard part of this tier:
+                # compiling XS against the conda perl (5.32) with the conda cxx-compiler
+                # AND the xlocale.h shim (conda perl still #includes <xlocale.h>, which
+                # modern glibc folded into <locale.h>) — auto-injected via
+                # _TOOLCHAIN_SPECS['perl'] = perl + perl-app-cpanminus + c-/cxx-compiler.
+                # A pure-perl module would skip all of that and prove nothing about the
+                # tier's real mechanism.
+                "module": "Set::IntervalTree",
+                # Version-pinned via cpanm's Module@version syntax → a reproducible rebuild.
+                # (The tier's replay assurance stays `cpan_tofu`: CPAN records no content
+                # hash in the recipe, so a same-version re-upload is undetectable — TOFU is
+                # the honest ceiling, even though PAUSE makes (author,version) tarballs
+                # immutable in practice.)
+                "distribution": "Set::IntervalTree@0.12",
+                # FUNCTIONAL evidence (RUNS the compiled XS, not just loads the .so): build
+                # an interval tree, insert two disjoint intervals, fetch a point inside the
+                # first, and assert the fetch returns that value AND excludes the far one —
+                # i.e. the C++ query methods work and DISCRIMINATE. q()/qq() string literals
+                # keep the shell command double-quote-free; leads with `cd` so env_honesty's
+                # anti-echo-cheat shape rule sees a real `perl -MSet::IntervalTree …`. NOTE
+                # the depth CLASSIFIER discloses this as 'import' (not 'functional') because
+                # perl's `-Mmodule` glue is structurally indistinguishable from an import-
+                # only load — that UNDER-discloses the real depth (conservative; never over-
+                # claims). Exercises the _map_install perl evidence-threading (env_freeze) —
+                # without which VALIDATED_IN_IMAGE is the `perl -M{module} -e1` import default.
+                "evidence": ("cd /tmp && perl -MSet::IntervalTree -e "
+                             "'my $t=Set::IntervalTree->new; "
+                             "$t->insert(q(geneA),10,20); $t->insert(q(geneB),100,200); "
+                             "my $r=$t->fetch(12,13); "
+                             "die unless grep {$_ eq q(geneA)} @$r; "
+                             "die if grep {$_ eq q(geneB)} @$r; "
+                             "print scalar(@$r).qq(\\n);' "
+                             "> /tmp/sit_out.txt && test -s /tmp/sit_out.txt"),
+            },
+            "primary_tools": ["Set::IntervalTree"],
+        },
+        "note": "cpanm --notest into the conda perl + xlocale shim for XS. Proven "
+                "2026-07-21 via Set::IntervalTree 0.12 (a real Ensembl VEP dep; C++ XS) "
+                "with a run-on-data smoke — builds an interval tree and asserts fetch() "
+                "discriminates an overlapping from a non-overlapping interval (exercises "
+                "the compiled XS query methods, not just XSLoader). Version-pinned via "
+                "cpanm Module@version; replay assurance is cpan_tofu (no CPAN content-hash "
+                "pin in the recipe). The c-/cxx-compiler + xlocale shim ARE the tier's real "
+                "mechanism (a pure-perl module would skip them). Depth CLASSIFIER reads "
+                "'import' (perl `-M` glue is indistinguishable from an import-only load) — "
+                "an honest UNDER-disclosure of a genuine run, never an over-claim. Depends "
+                "on _map_install now threading the recorded evidence for perl (parity with "
+                "source/cargo/go/jar/r_install/synthesized — the last non-conda tier to "
+                "close its evidence-threading gap).",
+    },
     {"tier": "synthesized", "kind": "install", "builder": None, "probe_tool": "",
      "note": "provenance-gated command sequence via the shared longtail executor. "
              "A 2026-07-20 real bake BUILT the image but check_build correctly "
@@ -313,12 +372,38 @@ FLOORS: dict[str, float] = {
     "jar":    1.0,   # Picard 3.4.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "cargo":  1.0,   # nanoq 0.10.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "go":     1.0,   # gofasta v1.2.3 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
-    "perl":               0.0,
+    "perl":   1.0,   # Set::IntervalTree 0.12 — proven 2026-07-21 (P2-C, XS run-on-data smoke)
     "synthesized":        0.0,
     "adopt-biocontainer": 0.0,
     "adopt-image":        0.0,
     "authors-dockerfile": 0.0,
 }
+
+
+def recipe_fingerprint(spec: dict) -> str:
+    """A stable content hash of a tier's BUILD RECIPE — the tier-specific input that
+    determines WHAT gets built and HOW it's validated (the `build` dict: install_method
+    + evidence + primary_tools, or conda_deps + primary_tools). Deterministic (sorted
+    keys), pure.
+
+    This is the load-bearing anchor of INCREMENTAL measurement. When the generator
+    measures one tier and carries the others forward (rather than re-baking all N every
+    run — the cost that used to force a full emulated sweep to add a single tier), a
+    carried-forward record is only honest if that tier's recipe is byte-identical to
+    when it was measured. The fingerprint makes that checkable WITHOUT a rebuild: a
+    changed recipe → a changed fingerprint → the carried measurement is auto-invalidated
+    (re-measure required). This is precisely what makes 'retroactively fix a tier we got
+    wrong' safe — editing its recipe reddens it until a fresh bake, instead of silently
+    keeping the stale green. A tier with no `build` recipe (builder None / a build_method
+    row) fingerprints to a constant; it carries no measurement anyway.
+
+    Deliberately scoped to the RECIPE, not the shared build code (env_freeze /
+    container_build / install_commands): a shared-code change affects every tier and is
+    surfaced instead by the per-tier `measured_sha` staleness the render shows — the human
+    re-measures when they touch the build path, the same posture as the reviewed FLOORS."""
+    return hashlib.sha256(
+        json.dumps(spec.get("build") or {}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
 
 
 def tier(name: str) -> dict:
