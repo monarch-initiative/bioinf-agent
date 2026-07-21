@@ -29,6 +29,7 @@ so anyone can reproduce it). Docker required.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -73,6 +74,64 @@ def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
     r = _sh(["docker", "run", "--rm", "--platform", platform, image, "bash", "-c", command],
             timeout=timeout)
     return {"rc": r["rc"], "out": (r["out"] or r["err"] or "").strip()[:maxlen]}
+
+
+#: A self-reported version/identity token: a semver (1.21, 0.7.17-r1188) OR an unversioned
+#: fork's commit (9cef4057). Alnum lead, then alnum + . _ - ; MUST contain a digit — which
+#: is what separates a real version from a connective word like "version" or "release".
+_SELF_VER_TOKEN = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]*$")
+
+
+def _parse_self_report(tool: str, out: str) -> Optional[str]:
+    """Extract a tool's OWN self-reported version from its `--version` output, or None.
+
+    This is the adopt-path answer to the SBOM's blind spot: a source-built / release
+    binary baked into someone else's image carries no package metadata, so the only
+    observation of its version is what the binary itself prints. Talos ships a private
+    `bcftools` fork with no release — `bcftools --version` prints exactly:
+
+        bcftools 9cef4057            <- the fork's own identity (a commit, not a semver)
+        Using htslib 1.23.1          <- a DIFFERENT project's version
+
+    and the earlier whole-blob scrape returned `1.23.1` (htslib's) under bcftools' name.
+    Two guards make that lie STRUCTURALLY impossible here, not merely unlikely:
+
+      1. FIRST LINE ONLY. Line 2 ('Using htslib …') is never read, so a dependency's
+         version can never be captured no matter what shape it has.
+      2. FIRST TOKEN MUST BE THE TOOL. The line must START with the tool's own name
+         (basename, case-insensitive) — the tool identifying itself — so a usage banner
+         ('Usage: …') or a wrapper's preamble is rejected rather than mined for a number.
+
+    Then the FIRST digit-bearing token after the name is the version — `9cef4057` for the
+    fork, `1.21` for samtools, `0.2.2` for echtvar. The digit requirement skips a
+    connective word ('mytool version 1.2.3' → '1.2.3', never 'version'). A miss returns
+    None = UNRECORDED (the reader renders absence), never a guess: this REPLACES the
+    None-always default with a captured fact when one is legibly present, and keeps the
+    honest absence when it is not."""
+    first = (out or "").strip().split("\n", 1)[0]
+    toks = first.split()
+    if not toks:
+        return None
+    head = toks[0].rsplit("/", 1)[-1].rstrip(":").lower()
+    if head != (tool or "").lower():
+        return None  # not the tool's own line — do not mine it
+    for tok in toks[1:]:
+        cand = tok.lstrip("vV")
+        if any(c.isdigit() for c in cand) and _SELF_VER_TOKEN.fullmatch(cand):
+            return cand
+    return None
+
+
+def _self_reported_version(image: str, platform: str, tool: str) -> Optional[str]:
+    """Run `<tool> --version` in the image and parse the tool's own first-line self-report
+    (see `_parse_self_report`). A non-zero exit or an unparseable banner yields None —
+    absence, honestly, never a scraped guess. The one dedicated probe per shipped binary
+    is what turns the adopt path's blanket `version: None` into a captured fact when the
+    binary states one."""
+    res = _run_in_image(image, platform, f"{tool} --version 2>&1", timeout=60)
+    if res["rc"] != 0:
+        return None
+    return _parse_self_report(tool, res["out"])
 
 
 def freeze_from_image(
@@ -207,16 +266,19 @@ def freeze_from_image(
     record["redistributable"] = not gated
     if dockerfile_source:
         record["dockerfile_source"] = dict(dockerfile_source)
-    # The authors' image: we ADOPTED these bytes, we did not build them — so there is
-    # no `install_command` to show and no tier assurance to disclose, and saying so
-    # explicitly is the record. `version` is None because this path does not probe the
-    # binary for one; a reader must render that as "unrecorded" rather than scrape a
-    # number out of the evidence output (scraping bcftools' banner is what produced
-    # htslib's version under bcftools' name — see ShippedBinary).
+    # The authors' image: we ADOPTED these bytes, we did not build them — so there is no
+    # `install_command` to show and no tier assurance to disclose, and saying so explicitly
+    # is the record. But the SBOM cannot see a source-built / release binary the authors
+    # baked in, so its ONLY observable version is what the binary prints about ITSELF: we
+    # probe `<tool> --version` and capture the tool's own first-line token
+    # (`_self_reported_version`) — `9cef4057` for Talos's unversioned bcftools fork, `0.2.2`
+    # for echtvar. Its two guards (first line only; first token must be the tool) make the
+    # old htslib-under-bcftools lie STRUCTURALLY impossible; a miss stays None = "unrecorded",
+    # a captured fact when the binary states one and honest absence when it does not.
     record["shipped_binaries"] = [
         _ShippedBinary(
             tool=t["name"],
-            version=None,
+            version=_self_reported_version(image, platform, t["name"]),
             provenance=f"validated in the {build_method} image (evidence: {t['evidence'][:60]})",
             install_command=None,
             tier=None, verified=None, assurance=None,

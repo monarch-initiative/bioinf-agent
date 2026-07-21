@@ -179,3 +179,80 @@ def test_authors_dockerfile_records_pinned_source(tmp_path, monkeypatch):
     # the repo owner can move that tag tomorrow — it only reads like one.
     assert "git checkout c5a8f07" in md
     assert "v11.0.1" in md
+
+
+# --- shipped-binary self-reported version capture (adopt path) --------------------
+# The SBOM cannot see a source-built / release binary the authors baked in, so its only
+# observable version is what the binary prints about ITSELF. `_parse_self_report` extracts
+# that, and its two guards make the htslib-under-bcftools lie structurally impossible.
+
+import pytest
+
+
+@pytest.mark.parametrize("tool,out,expected", [
+    # THE war story: the fork prints its own commit on line 1, htslib's version on line 2.
+    # First-line-only means line 2 is never read, so 1.23.1 can NEVER be returned here.
+    ("bcftools", "bcftools 9cef4057\nUsing htslib 1.23.1\nCopyright (C) 2025", "9cef4057"),
+    ("samtools", "samtools 1.21\nUsing htslib 1.21", "1.21"),
+    ("echtvar", "echtvar 0.2.2", "0.2.2"),
+    ("tabix", "tabix (htslib) 1.23.1", "1.23.1"),           # skips the '(htslib)' token
+    ("mytool", "mytool version 1.2.3", "1.2.3"),            # digit-requirement skips 'version'
+    ("foo", "foo v2.0.1", "2.0.1"),                          # strips a leading v
+    ("bcftools", "/usr/local/bin/bcftools 9cef4057", "9cef4057"),  # basename match
+    ("bcftools", "Usage: bcftools [options]", None),        # not the tool's own line
+    ("bcftools", "Using htslib 1.23.1", None),              # a dependency's line — rejected
+    ("samtools", "samtools\nUsing htslib 1.21", None),      # no version token on line 1
+    ("bwa", "", None),                                       # empty → unrecorded, not a guess
+])
+def test_parse_self_report(tool, out, expected):
+    assert F._parse_self_report(tool, out) == expected
+
+
+def test_parse_self_report_never_returns_a_dependency_version():
+    # The load-bearing invariant, stated as its own test: for the real Talos bcftools fork
+    # banner, the returned token is the fork's commit and is NEVER htslib's 1.23.1.
+    got = F._parse_self_report("bcftools", "bcftools 9cef4057\nUsing htslib 1.23.1")
+    assert got == "9cef4057"
+    assert got != "1.23.1"
+
+
+def test_self_reported_version_none_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(F, "_run_in_image",
+                        lambda *a, **k: {"rc": 1, "out": "command not found"})
+    assert F._self_reported_version("img", "linux/amd64", "bcftools") is None
+
+
+def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
+    # End-to-end: freeze_from_image populates shipped_binaries[].version from the binary's
+    # own `--version`, so the adopted fork ships with `9cef4057`, not None and not htslib.
+    monkeypatch.setattr(F, "_image_present", lambda image: True)
+    monkeypatch.setattr(F, "_image_digest", lambda image: "sha256:" + "cd" * 32)
+    import agent.skills.container_build as CB
+    monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
+    monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))
+
+    def _run(image, platform, command, timeout=300, maxlen=400):
+        if "importlib.metadata" in command:
+            return {"rc": 0, "out": json.dumps([])}
+        if command.startswith("bcftools --version"):
+            return {"rc": 0, "out": "bcftools 9cef4057\nUsing htslib 1.23.1"}
+        if command.startswith("echtvar --version"):
+            return {"rc": 0, "out": "echtvar 0.2.2"}
+        return {"rc": 0, "out": "ran"}   # the evidence commands
+    monkeypatch.setattr(F, "_run_in_image", _run)
+
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos-authors:11.0.0", name="talos_selfrep", version="11.0.0",
+        tools=[{"name": "bcftools", "evidence": "bcftools --version"},
+               {"name": "echtvar", "evidence": "echtvar --version"}],
+        build_method="authors-dockerfile",
+        dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                           "commit": "c5a8f07", "tag": "v11.0.1"},
+        env_cache=cache, reports_dir=tmp_path)
+    assert out["outcome"] == "proven"
+    rec = cache.registered[out["request_key"]]
+    sb = {s["tool"]: s["version"] for s in rec["shipped_binaries"]}
+    assert sb["bcftools"] == "9cef4057"      # the fork's own identity, captured
+    assert sb["bcftools"] != "1.23.1"        # NOT the dependency htslib scraped from line 2
+    assert sb["echtvar"] == "0.2.2"
