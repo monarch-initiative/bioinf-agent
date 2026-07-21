@@ -66,6 +66,49 @@ def _host_arch() -> str:
     return _p.machine().lower()
 
 
+def _synth_install_method(ss: dict) -> dict:
+    """Drive the REAL synthesis machinery for the synthesized tier's `synth_spec`, and
+    return a provenance-tagged `install_method` ready for build_env_image — or raise.
+
+    This is what makes the synthesized tier HONEST rather than a hand-tag: the `submission`
+    in the recipe is only the agent's CLAIM (what it would type after reading synth_fetch).
+    Here we re-run the runtime's own ground-truth path:
+
+      1. fetch_build_source RE-FETCHES the repo at the PINNED commit and reads its build
+         files + their sha256s (the runtime's bytes, not the recipe's word).
+      2. an ANCHOR check refuses if the re-fetch resolved a different commit (the source
+         moved) — the same guard synth_build makes.
+      3. validate_submission RE-VERIFIES every command against those bytes: an 'extracted'
+         command must occur verbatim in its named origin_file (sha256 stamped by the
+         runtime), an 'agent_authored' command must be grounded in the corpus (its
+         URLs/remotes present). A paraphrase or an invented URL → violation → we raise.
+
+    So the shipped `commands` carry provenance the RUNTIME produced; check_build's
+    PROVENANCE_CLEAN passes because nothing was hand-tagged. Raising (not returning an
+    error dict) lets build_tier's single except-handler record it as a build failure."""
+    from agent.skills.env_manager import EnvManager
+    from agent.skills import synthesis as _synth
+
+    repo, commit = ss["repo_url"], ss["commit"]
+    fetch = EnvManager.fetch_build_source(repo, commit, is_relevant=_synth.is_build_relevant)
+    if not fetch.get("success"):
+        raise RuntimeError(f"synth fetch of {repo}@{commit[:12]} failed: {fetch.get('error')}")
+    if fetch.get("commit") != commit:
+        raise RuntimeError(
+            f"synth anchor mismatch: re-fetch resolved {fetch.get('commit')!r}, "
+            f"recipe pinned {commit!r} — the source moved; re-pin the commit")
+    # Ground the source URL exactly as synth_build does (a `git clone {url}` grounds).
+    fetch["corpus"] = _synth.build_corpus(fetch["files"]) + "\n" + repo
+    val = _synth.validate_submission(fetch, list(ss["submission"]))
+    if not val["ok"]:
+        raise RuntimeError(f"synth provenance violation (not shippable): {val['violations']}")
+    return {"type": "synthesized", "source": repo, "tool": ss["tool"],
+            "evidence": ss.get("evidence", ""),
+            "engine_coupled": ss.get("engine_coupled", False),
+            "commands": val["records"], "commit_sha": fetch["commit"],
+            "file_hashes": {f["path"]: f["sha256"] for f in fetch["files"]}}
+
+
 def build_tier(spec: dict) -> dict:
     """Drive ONE real container-native build for a wired tier. Returns a
     NORMALIZED outcome — {ok, error, image_digest, content_digest,
@@ -82,6 +125,20 @@ def build_tier(spec: dict) -> dict:
             res = env_freeze.build_env_image(
                 {}, name=name, conda_deps=b["conda_deps"],
                 primary_tools=b["primary_tools"], platform=PLATFORM)
+        elif "synth_spec" in b:
+            # The synthesized tier is NOT a static install_method: its honesty rests on
+            # driving the REAL synth_fetch + validate_submission machinery so the shipped
+            # provenance is the runtime's own re-verification (a hand-tagged install_method
+            # is exactly what check_build.PROVENANCE_CLEAN refuses — the 2026-07-20 gap).
+            # `_synth_install_method` re-fetches at the pinned commit, re-verifies every
+            # submitted command against those bytes, and returns a provenance-tagged
+            # install_method — or raises with the reason (a mismatch/violation is a build
+            # failure recorded like any other, not a silent skip).
+            im = _synth_install_method(b["synth_spec"])
+            draft = {"install_steps": [{"installed_packages": [
+                {"name": b["synth_spec"]["tool"], "install_method": im}]}]}
+            res = env_freeze.build_env_image(
+                draft, name=name, primary_tools=b["primary_tools"], platform=PLATFORM)
         elif "install_method" in b:
             im = b["install_method"]
             tool = im.get("name") or spec["probe_tool"]
@@ -91,7 +148,7 @@ def build_tier(spec: dict) -> dict:
                 draft, name=name, primary_tools=b["primary_tools"], platform=PLATFORM)
         else:
             return {"ok": False, "error": f"tier {spec['tier']} has no recognized "
-                    f"build recipe (need conda_deps or install_method)"}
+                    f"build recipe (need conda_deps, install_method, or synth_spec)"}
     except Exception as e:   # a crash IS a build failure — record it, don't abort the sweep
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
