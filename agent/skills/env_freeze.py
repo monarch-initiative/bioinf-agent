@@ -323,7 +323,14 @@ def _map_install_spec(
         hh = sha256_of_url(jar_url)              # jars rarely publish a checksum; best-effort
         jar_sha = hh.get("sha256", "") if hh.get("ok") else ""
         gen = ic.jar(name, jar_url, sha256=jar_sha,
-                     java_flags=im.get("java_flags"), wrapper=name)
+                     java_flags=im.get("java_flags"), wrapper=name,
+                     # A jar tool that recorded a self-contained smoke becomes the
+                     # VALIDATED_IN_IMAGE evidence → freeze proves the jar RAN, not
+                     # merely that the wrapper + JRE resolve (ic.jar's presence
+                     # default). Parity with source (verify_command) / synthesized
+                     # (evidence) / r_install (functional_evidence); absent → the
+                     # default presence probe.
+                     evidence=im.get("evidence") or im.get("verify_command") or "")
         # C5: a jar is TOFU at best — no publisher auth. We pin the bytes we ship
         # (pinned_tofu) when the freeze re-fetch hashed, else unanchored. Never verified.
         gen["provenance"] = {"tier": "jar", "verified": False,

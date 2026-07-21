@@ -747,6 +747,7 @@ def install_jar_tool(
     jar_url: str,
     java_flags: list[str] = [],
     wrapper_name: str = "",
+    verify_command: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -761,6 +762,16 @@ def install_jar_tool(
     java_flags default: ["-Xmx4g"]. Override for memory-hungry tools (Exomiser
     typically wants -Xmx6g or higher).
 
+    `verify_command` = a SELF-CONTAINED smoke that RUNS the tool via its wrapper and
+    exits 0 (e.g. `cd /tmp && picard CreateSequenceDictionary -R r.fa -O r.dict &&
+    test -s r.dict`). It is run best-effort in the env now (jars are arch-independent
+    bytecode, so a host run under the env's JRE is representative) AND recorded so
+    freeze re-runs it as the in-image VALIDATED_IN_IMAGE evidence — letting a jar
+    prove validated==ran, not merely that the wrapper + JRE resolve (the presence
+    default). Freeze is the AUTHORITATIVE locus (it refuses if the evidence fails in
+    the shipped image), so a non-zero host rc here is DISCLOSED, never fatal. Empty ⇒
+    freeze falls back to the presence probe.
+
     If pipeline_id is supplied, records an install_step (tool=jar, subcommand=install)
     with installed_packages=[{name=tool_name, channel=github (if URL host is github.com),
     else external, source=jar_url}], so the finalize-time package derivation picks it
@@ -774,17 +785,31 @@ def install_jar_tool(
         java_flags    = flags,
         wrapper_name  = wrapper_name,
     )
+    # Best-effort in-env smoke (non-gating: freeze is authoritative). Recorded below
+    # into install_method.verify_command so freeze's _map_install threads it.
+    if verify_command and result.get("success"):
+        vr = _ms._env_mgr.run_in_env(env_name, verify_command, timeout=300)
+        result["verify_command"]    = verify_command
+        result["verify_output"]     = (vr.get("stdout") or "")[-2000:]
+        result["verify_returncode"] = vr.get("returncode")
     if pipeline_id:
         from urllib.parse import urlparse
         from agent.skills.env_manager import parse_version_from_url
         host = urlparse(jar_url).netloc or ""
         channel = "github" if "github.com" in host else "external"
         version = parse_version_from_url(jar_url)
+        install_method = {"type": "jar", "source": jar_url}
+        # The caller's smoke (empty ⇒ freeze uses the presence default). freeze's
+        # _map_install jar branch re-runs THIS in-image as VALIDATED_IN_IMAGE
+        # evidence, so a jar can prove validated==ran (parity with source's
+        # verify_command threading).
+        if verify_command:
+            install_method["verify_command"] = verify_command
         ip_record = {
             "name":    tool_name,
             "channel": channel,
             "source":  jar_url,
-            "install_method": {"type": "jar", "source": jar_url},
+            "install_method": install_method,
         }
         if version:
             ip_record["version"] = version
@@ -801,6 +826,14 @@ def install_jar_tool(
             step_data["installed_packages"][0]["install_method"]["wrapper_script"]  = result.get("wrapper_path")
             step_data["installed_packages"][0]["install_method"]["java_flags"]      = flags
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
+        # Cache the smoke output so the env report surfaces it (mirrors
+        # install_git_repo). A jar's anchor is the sha256-pinned bytes + this run,
+        # not a registry-anchored verify().
+        if result.get("success") and result.get("verify_output"):
+            _ms._pipeline_state.cache_verification(pipeline_id, tool_name, {
+                "verify_command": result.get("verify_command"),
+                "verify_output":  result.get("verify_output"),
+            })
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "install_step_index": idx}
             if idx is not None else

@@ -575,8 +575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:407",
-    "end_line": 409,
+    "where": "agent/skills/env_freeze.py:414",
+    "end_line": 416,
     "named_in_test": false
   },
   {
@@ -585,8 +585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:412",
-    "end_line": 413,
+    "where": "agent/skills/env_freeze.py:419",
+    "end_line": 420,
     "named_in_test": false
   },
   {
@@ -595,8 +595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:613",
-    "end_line": 613,
+    "where": "agent/skills/env_freeze.py:620",
+    "end_line": 620,
     "named_in_test": false
   },
   {
@@ -2885,8 +2885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:906",
-    "end_line": 907,
+    "where": "agent/mcp_tools/env_tools.py:939",
+    "end_line": 940,
     "named_in_test": false
   },
   {
@@ -3625,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:356",
-    "end_line": 361,
+    "where": "agent/skills/env_freeze.py:363",
+    "end_line": 368,
     "named_in_test": false
   },
   {
@@ -3635,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:373",
-    "end_line": 374,
+    "where": "agent/skills/env_freeze.py:380",
+    "end_line": 381,
     "named_in_test": false
   },
   {
@@ -3645,8 +3645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:429",
-    "end_line": 435,
+    "where": "agent/skills/env_freeze.py:436",
+    "end_line": 442,
     "named_in_test": true
   },
   {
@@ -3655,8 +3655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_map_install_spec",
-    "where": "agent/skills/env_freeze.py:465",
-    "end_line": 466,
+    "where": "agent/skills/env_freeze.py:472",
+    "end_line": 473,
     "named_in_test": false
   },
   {
@@ -3665,8 +3665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_env_image",
-    "where": "agent/skills/env_freeze.py:612",
-    "end_line": 612,
+    "where": "agent/skills/env_freeze.py:619",
+    "end_line": 619,
     "named_in_test": true
   },
   {

@@ -153,8 +153,41 @@ FREEZE_TIERS: list[dict] = [
                 "(mosdepth v0.3.8). A darwin→linux asset is a CORRECT "
                 "unanchored_cross_platform disclosure, not a fail.",
     },
-    {"tier": "jar", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "JRE-ensure + jar download + java -jar wrapper. No build test today."},
+    {
+        "tier": "jar", "kind": "install", "builder": "container_native",
+        "probe_tool": "picard",
+        "build": {
+            "install_method": {
+                "type": "jar", "name": "picard",
+                # Picard 3.4.0 — the canonical Java bioinformatics tool (Broad
+                # Institute), shipped as a single fat jar. Arch-independent bytecode,
+                # so the jar bytes are identical cross-platform; container_build adds
+                # default-jre-headless (OpenJDK 17 on bookworm — Picard 3.x needs 17+)
+                # to the RUNTIME stage when a (java jar) longtail step exists.
+                "source": "https://github.com/broadinstitute/picard/releases/download/3.4.0/picard.jar",
+                # FUNCTIONAL evidence (validated==ran, NOT presence): actually RUN
+                # Picard on an inline-generated fasta and assert it produced a .dict.
+                # Leads with `cd` (not printf) so env_honesty's anti-echo-cheat shape
+                # rule sees a real `picard …` invocation; the `>` redirect classifies
+                # it 'functional'. This exercises the _map_install evidence-threading
+                # (env_freeze), without which a jar's VALIDATED_IN_IMAGE is presence-
+                # only (`command -v picard && java -version`).
+                "evidence": ("cd /tmp && printf '>chrTEST\\n"
+                             "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\\n' "
+                             "> picard_ref.fa && picard CreateSequenceDictionary "
+                             "-R picard_ref.fa -O picard_ref.dict && test -s picard_ref.dict"),
+            },
+            "primary_tools": ["picard"],
+        },
+        "note": "JRE-ensure + jar download + `java -jar` wrapper; the runtime stage "
+                "carries default-jre-headless. Proven 2026-07-21 via Picard 3.4.0 "
+                "(Broad) with FUNCTIONAL evidence — CreateSequenceDictionary RUNS on "
+                "an inline fasta and writes a .dict (validated==ran, not the presence "
+                "default). Version-PINNED asset URL, sha256-anchored best-effort at "
+                "freeze (jars rarely publish a checksum → pinned_tofu; the bytecode is "
+                "arch-independent). Depends on the _map_install jar branch now threading "
+                "a recorded smoke as evidence (parity with source/synthesized/r_install).",
+    },
     {"tier": "cargo", "kind": "install", "builder": None, "probe_tool": "",
      "note": "cargo install --root --locked, engine rust toolchain. Unit only."},
     {"tier": "go", "kind": "install", "builder": None, "probe_tool": "",
@@ -196,7 +229,7 @@ FLOORS: dict[str, float] = {
     "pip":    1.0,   # pyfaidx  — proven 2026-07-20 (P2 slice 3, pixi --pypi)
     "binary": 1.0,   # mosdepth v0.3.8 — proven 2026-07-20 (P2 slice 3, F2 firewall)
     "r_install": 1.0,   # BiocGenerics — proven 2026-07-20 (P2 slice 4, BiocManager path)
-    "jar":                0.0,
+    "jar":    1.0,   # Picard 3.4.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "cargo":              0.0,
     "go":                 0.0,
     "perl":               0.0,
