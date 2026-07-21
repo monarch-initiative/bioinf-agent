@@ -32,7 +32,7 @@ from agent.skills.outcomes import proven, refused, broke
 
 def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> None:
     """Best-effort record a functional smoke for the ENGINE-COUPLED build tiers
-    (cargo / go). The smoke is stashed into `install_method["evidence"]` so freeze's
+    (cargo / go / perl). The smoke is stashed into `install_method["evidence"]` so freeze's
     `_map_install` threads it as the in-image VALIDATED_IN_IMAGE evidence (validated==ran,
     not the `{bin} --version` generator default). It is run in-env now purely for early
     operator feedback and DISCLOSED under `smoke_*` — NON-GATING, because freeze is the
@@ -668,6 +668,7 @@ def install_perl_package(
     distribution: str = "",
     cpanm_flags: str = "",
     build_env: str = "",
+    verify_command: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
@@ -678,17 +679,36 @@ def install_perl_package(
     `module` is the Perl package name (e.g. Bio::DB::HTS) used for the
     `perl -M{module} -e1` load-or-die verify — the registry anchor for cpanm
     modules (tracked by neither conda nor pip). Set `distribution` when the CPAN
-    distribution name differs from the module name. `build_env` = space-separated
-    KEY=VAL exports for XS builds that link a conda C lib (e.g.
+    distribution name differs from the module name (pin a version with cpanm's
+    `Module@version` syntax for a reproducible rebuild). `build_env` = space-
+    separated KEY=VAL exports for XS builds that link a conda C lib (e.g.
     "HTSLIB_DIR=$CONDA_PREFIX" for Bio::DB::HTS) — use $CONDA_PREFIX so freeze's
-    recipe replay resolves it inside the SHIP image. With pipeline_id, records the
-    install_step (install_method.type="perl", recorded for replay) + caches the
+    recipe replay resolves it inside the SHIP image.
+
+    `verify_command` = a SELF-CONTAINED functional smoke that RUNS the module on
+    inline data and exits 0 (e.g. `cd /tmp && perl -MSet::IntervalTree -e '...build
+    a tree, fetch an overlap, die unless correct...' > /tmp/o.txt && test -s
+    /tmp/o.txt`). It is run best-effort in the env now AND recorded into
+    install_method["evidence"] so freeze re-runs it as the in-image
+    VALIDATED_IN_IMAGE evidence — letting an XS module prove validated==RAN (its
+    compiled C methods actually work), not merely that `perl -M{module} -e1` loads
+    the .so. Freeze is AUTHORITATIVE (it refuses if the evidence fails in the
+    shipped image), so a non-zero host rc here is DISCLOSED, never fatal. Empty ⇒
+    the `perl -M{module} -e1` import-only default.
+
+    PREFER conda when the module is packaged on bioconda (perl-* installs far more
+    reliably) — this tier is for the cpanm-only residue. With pipeline_id, records
+    the install_step (install_method.type="perl", recorded for replay) + caches the
     verify (I2). freeze rebuilds the module from CPAN on the ship platform with a C
     toolchain + the conda layer's libs.
 
     Returns: {success, module, verify_command, verify_output, install_method, log}.
     """
     result = _ms._env_mgr.install_perl_package(env_name, module, distribution, cpanm_flags, build_env)
+    # Best-effort in-env functional smoke (non-gating: freeze is authoritative). Recorded
+    # into install_method["evidence"] (NOT the top-level verify, which env_manager sets to
+    # `perl -M{module} -e1` for I2) so freeze's _map_install threads it → validated==ran.
+    _record_engine_smoke(result, env_name, verify_command)
     if pipeline_id:
         result["pipeline_merge"] = _ms._merge_simple_install(
             pipeline_id, step, result, name=module, channel="cpan", tool="cpanm",

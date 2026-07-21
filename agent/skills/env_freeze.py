@@ -32,6 +32,13 @@ from agent.skills import resolver as _resolver
 from agent.skills.env_build import EnvBuild
 from agent.skills.outcomes import refused, broke
 
+# How far BEHIND now() a fresh freeze pins its snapshot.debian.org apt timestamp.
+# snapshot.debian.org publishes with latency (debian-security lags more), so `now()`
+# itself routinely 404s a cold apt layer; 48h points at a reliably-mirrored snapshot.
+# Reproducibility is unaffected — a pinned 2-day-old archive is as deterministic as now().
+from datetime import timedelta as _timedelta
+_APT_SNAPSHOT_LAG = _timedelta(hours=48)
+
 # coupled tiers → the engine toolchain conda specs they need to BUILD in-container.
 # (pip is NOT here — it's declared through the engine directly via add_pip, not a
 # long-tail generator; it needs no extra toolchain.)
@@ -413,9 +420,18 @@ def _map_install_spec(
     if t == "perl":
         module = im.get("module") or name
         dist = im.get("distribution") or (im.get("source") or "").replace("cpanm ", "").strip() or module
+        # A recorded functional smoke becomes the VALIDATED_IN_IMAGE evidence → freeze
+        # proves the compiled module RAN (an XS module's C methods actually work), not
+        # merely that `perl -M{module} -e1` LOADS the .so (ic.perl_cpanm's import-only
+        # default). Parity with source/cargo/go/jar/synthesized/r_install — perl was the
+        # last non-conda tier dropping its recorded evidence; absent → the import default.
+        # (The depth CLASSIFIER still reads a perl `-M…-e` smoke as 'import' — the `-M`
+        # glue is structurally indistinguishable from a load — so this strengthens the
+        # RUN, not the disclosed label; that under-disclosure is honest, never over-claim.)
         return {"spec": ic.perl_cpanm(module, distribution=dist,
                                       cpanm_flags=im.get("cpanm_flags") or "--notest",
-                                      build_env=im.get("build_env") or "")}
+                                      build_env=im.get("build_env") or "",
+                                      evidence=im.get("evidence") or im.get("verify_command") or "")}
 
     if t == "r_install":
         # functional_evidence (when the install captured a self-contained functional
@@ -564,13 +580,20 @@ def build_env_image(
 
     `apt_snapshot`: UTC timestamp (e.g. "20260526T200000Z") pinning the apt layer
     to snapshot.debian.org at that moment. Empty on FRESH freeze → auto-generated
-    as `now()` so the resulting recipe captures a timestamp going forward. The
-    recipe-replay path passes the recipe's stored timestamp through verbatim."""
+    as `now() - _APT_SNAPSHOT_LAG` so the resulting recipe captures a timestamp going
+    forward. The recipe-replay path passes the recipe's stored timestamp through verbatim."""
     if not apt_snapshot:
-        # Fresh freeze: stamp the current UTC. Granularity to the second is more
-        # than enough; snapshot.debian.org keeps every snapshot ever taken.
+        # Fresh freeze: pin the apt layer to a snapshot.debian.org timestamp — but
+        # `now()` MINUS a safety margin, NOT `now()` itself. snapshot.debian.org
+        # publishes snapshots with real latency, and the debian-security archive lags
+        # further; a timestamp at the current instant routinely 404s with "does not have
+        # a Release file" until Debian has created AND mirrored it. A WARM apt cache hides
+        # this (the apt layer isn't re-run); a COLD build fails hard — the exact break a
+        # tier-grid cold rebuild surfaced. `_APT_SNAPSHOT_LAG` points at a snapshot that is
+        # reliably already published + fully mirrored (security included). Reproducibility
+        # is unaffected: a pinned 2-day-old archive is exactly as deterministic as now().
         from datetime import datetime, timezone
-        apt_snapshot = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        apt_snapshot = (datetime.now(timezone.utc) - _APT_SNAPSHOT_LAG).strftime("%Y%m%dT%H%M%SZ")
     conda_deps = conda_deps or []
     primary_tools = primary_tools or []
     non_conda = _freeze.non_conda_installs(spec)

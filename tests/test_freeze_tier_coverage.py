@@ -295,6 +295,165 @@ def test_committed_html_is_a_faithful_render_of_the_committed_json():
         "re-run scripts/measure_freeze_tier_coverage.py (or render_freeze_tier_grid.py).")
 
 
+# ── incremental measurement: per-tier sha + carry-forward + fingerprint ───────
+
+@pytest.mark.integration
+def test_recipe_fingerprint_is_stable_and_recipe_specific():
+    """The anchor of incremental measurement: the fingerprint is deterministic, differs
+    per recipe, and is a constant for a tier with no build recipe. Editing a recipe must
+    change it (that is what auto-invalidates a carried measurement)."""
+    ft = _ft()
+    fp = ft.recipe_fingerprint(ft.tier("perl"))
+    assert fp == ft.recipe_fingerprint(ft.tier("perl"))            # stable
+    assert fp != ft.recipe_fingerprint(ft.tier("cargo"))          # recipe-specific
+    # a mutated recipe → a different fingerprint (the invalidation trigger)
+    mutated = {**ft.tier("perl"), "build": {**ft.tier("perl")["build"], "primary_tools": ["Other"]}}
+    assert ft.recipe_fingerprint(mutated) != fp
+    # a build-method row (no `build`) fingerprints to the empty-recipe constant
+    assert ft.recipe_fingerprint(ft.tier("adopt-image")) == ft.recipe_fingerprint({"tier": "x"})
+
+
+@pytest.mark.integration
+def test_carry_forward_preserves_the_original_measured_sha():
+    """THE anti-laundering rule (the bug that got --keep removed): a carried record keeps
+    its ORIGINAL measured_sha and is flagged carried_forward — never re-stamped as if it
+    were rebuilt this run. That is what lets the render show a carried tier's real age."""
+    gen, ft = _gen(), _ft()
+    fp = ft.recipe_fingerprint(ft.tier("cargo"))
+    prev = {"kind": "install", "status": "proven", "attempts": 1, "passed": 1, "rate": 1.0,
+            "recipe_fingerprint": fp, "measured_sha": "old1234", "measured_on": "2026-01-01T00:00:00Z",
+            "image_digest": "sha256:c", "validation_locus": "emulated", "last_error": None}
+    r = gen.carry_forward(ft.tier("cargo"), prev, recipe_changed=False, current_fp=fp)
+    assert r["status"] == "proven" and r["passed"] == 1
+    assert r["measured_sha"] == "old1234", "carry-forward must NOT re-stamp the sha"
+    assert r["carried_forward"] is True and r["fingerprint_backfilled"] is False
+
+
+@pytest.mark.integration
+def test_carry_forward_only_carries_a_real_prior_measurement():
+    """Nothing is conjured: a missing / unmeasured / attempts-0 prior carries forward as
+    'unmeasured', never as proven."""
+    gen, ft = _gen(), _ft()
+    fp = ft.recipe_fingerprint(ft.tier("go"))
+    assert gen.carry_forward(ft.tier("go"), None, recipe_changed=False, current_fp=fp)["status"] == "unmeasured"
+    placeholder = {"status": "unmeasured", "attempts": 0, "passed": 0}
+    assert gen.carry_forward(ft.tier("go"), placeholder, recipe_changed=False,
+                             current_fp=fp)["status"] == "unmeasured"
+
+
+@pytest.mark.integration
+def test_carry_forward_invalidates_a_changed_recipe():
+    """'Retroactively fix a tier' safety: once its recipe changes, a carried measurement
+    can no longer count as proven — it reverts to unmeasured with a self-explaining error,
+    so the floor-earned ratchet reddens it until a fresh bake."""
+    gen, ft = _gen(), _ft()
+    prev = {"kind": "install", "status": "proven", "attempts": 1, "passed": 1, "rate": 1.0,
+            "recipe_fingerprint": "oldfp", "measured_sha": "old1234", "last_error": None}
+    r = gen.carry_forward(ft.tier("binary"), prev, recipe_changed=True, current_fp="newfp")
+    assert r["status"] == "unmeasured" and r["passed"] == 0
+    assert "recipe changed" in (r["last_error"] or "")
+
+
+@pytest.mark.integration
+def test_carry_forward_grandfathers_a_pre_fingerprint_record_visibly():
+    """The one-time migration: a proven prior with NO fingerprint is carried forward with
+    the missing sha backfilled and a VISIBLE fingerprint_backfilled flag — the grandfathering
+    is disclosed, and from then on the record carries a fingerprint."""
+    gen, ft = _gen(), _ft()
+    fp = ft.recipe_fingerprint(ft.tier("source"))
+    prev = {"kind": "install", "status": "proven", "attempts": 1, "passed": 1, "rate": 1.0,
+            "measured_sha": None, "image_digest": "sha256:s", "validation_locus": "emulated",
+            "last_error": None}   # NO recipe_fingerprint (pre-migration)
+    r = gen.carry_forward(ft.tier("source"), prev, recipe_changed=False, current_fp=fp,
+                          grandfather_sha="887e655")
+    assert r["status"] == "proven" and r["measured_sha"] == "887e655"
+    assert r["fingerprint_backfilled"] is True and r["recipe_fingerprint"] == fp
+
+
+@pytest.mark.integration
+def test_recipe_unchanged_since_reads_the_baseline_recipe_via_git(monkeypatch):
+    """The migration verifier: it must fingerprint the tier's recipe AS OF the baseline
+    commit (read via `git show`) and compare — NOT trust. A git failure returns False
+    (conservative: re-measure), so a hiccup can only cost a rebuild, never launder."""
+    gen, ft = _gen(), _ft()
+    conda_build = ft.tier("conda")["build"]
+    baseline_src = ("FREEZE_TIERS = [{'tier':'conda','kind':'install',"
+                    f"'builder':'container_native','build':{conda_build!r}}}]")
+
+    class _R:
+        def __init__(self, rc, out): self.returncode, self.stdout = rc, out
+    monkeypatch.setattr(gen.subprocess, "run", lambda *a, **k: _R(0, baseline_src))
+    fp = ft.recipe_fingerprint(ft.tier("conda"))
+    assert gen._recipe_unchanged_since("basesha", "conda", fp) is True       # identical recipe
+    assert gen._recipe_unchanged_since("basesha", "conda", "somethingelse") is False
+    # a git failure is conservative → False (re-measure), never a laundered True
+    monkeypatch.setattr(gen.subprocess, "run", lambda *a, **k: _R(128, ""))
+    assert gen._recipe_unchanged_since("basesha", "conda", fp) is False
+
+
+@pytest.mark.integration
+def test_main_measures_one_tier_and_carries_the_rest_forward(tmp_path, monkeypatch):
+    """THE #5 lesson applied: drive the REAL entry point (main()), not just the seam. An
+    incremental `--only` run must (a) freshly measure the named tier at HEAD, and (b) carry
+    every other proven tier forward UNCHANGED, keeping its original measured_sha — the whole
+    point of incremental measurement (no full N-tier re-sweep to add or fix one tier)."""
+    gen, ft = _gen(), _ft()
+    out = (tmp_path / "grid.json").resolve()
+    # a prior grid with fingerprinted proven records for every WIRED tier, measured @old9999
+    prior_tiers = {}
+    for spec in ft.FREEZE_TIERS:
+        t = spec["tier"]
+        if spec.get("builder"):
+            prior_tiers[t] = {"kind": spec["kind"], "status": "proven", "attempts": 1,
+                              "passed": 1, "rate": 1.0, "measured_sha": "old9999",
+                              "recipe_fingerprint": ft.recipe_fingerprint(spec),
+                              "image_digest": "sha256:z", "validation_locus": "emulated",
+                              "last_error": None, "carried_forward": False}
+        else:
+            prior_tiers[t] = {"kind": spec["kind"], "status": "unmeasured", "attempts": 0,
+                              "passed": 0, "rate": None, "last_error": None}
+    out.write_text(json.dumps({"git_sha": "old9999", "measured_on": "x", "tiers": prior_tiers}))
+
+    monkeypatch.setattr(gen, "_docker_up", lambda: True)
+    monkeypatch.setattr(gen, "_git", lambda *a: "new5678")
+    monkeypatch.setattr(gen, "build_tier",
+                        lambda spec: {"ok": True, "error": None, "image_digest": "sha256:fresh",
+                                      "content_digest": "sha256:c", "validation_locus": "emulated"})
+    monkeypatch.setattr(gen, "_render", lambda data: None)
+
+    rc = gen.main(["--only", "cargo", "--out", str(out)])
+    assert rc == 0
+    result = json.loads(out.read_text())["tiers"]
+    # cargo: freshly measured at the new HEAD, not carried
+    assert result["cargo"]["status"] == "proven"
+    assert result["cargo"]["measured_sha"] == "new5678"
+    assert result["cargo"]["carried_forward"] is False
+    assert result["cargo"]["image_digest"] == "sha256:fresh"
+    # every other wired tier: carried forward, ORIGINAL sha preserved (never re-stamped)
+    for t, rec in result.items():
+        if t != "cargo" and ft.tier(t).get("builder"):
+            assert rec["carried_forward"] is True, f"{t} should be carried"
+            assert rec["measured_sha"] == "old9999", f"{t} sha must be preserved, not re-stamped"
+            assert rec["status"] == "proven"
+
+
+@pytest.mark.integration
+def test_render_discloses_carry_forward_provenance():
+    """The render must SHOW a carried tier's provenance (carried @sha), so a reader can
+    see it wasn't rebuilt this run — the staleness signal that carry-forward must never hide."""
+    rd, ft = _render_mod(), _ft()
+    data = {"git_sha": "head1", "measured_on": "x", "platform": "linux/amd64",
+            "host_arch": "arm64", "docker_available": True,
+            "install_tiers_total": len(ft.INSTALL_TIERS), "install_tiers_proven": 1,
+            "tiers": {"conda": {"kind": "install", "probe_tool": "pigz", "note": "n",
+                                "status": "proven", "attempts": 1, "passed": 1, "rate": 1.0,
+                                "validation_locus": "emulated", "measured_sha": "old7777",
+                                "carried_forward": True, "fingerprint_backfilled": False,
+                                "last_error": None}}}
+    html = rd.render(data, current_sha="head1")
+    assert "carried @old7777" in html
+
+
 @pytest.mark.integration
 def test_a_docker_less_run_refuses_to_overwrite_the_committed_grid(tmp_path, monkeypatch):
     """The write-boundary honesty guard: a Docker-less run measures nothing, so it

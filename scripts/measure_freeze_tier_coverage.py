@@ -108,17 +108,24 @@ def build_tier(spec: dict) -> dict:
             "validation_locus": res.get("validation_locus")}
 
 
-def tier_record(spec: dict, outcome: dict | None, docker_available: bool) -> dict:
-    """PURE: fold a tier's build outcome into its committed JSON record. Hermetic-
-    testable (no Docker). The honesty invariants live HERE:
+def tier_record(spec: dict, outcome: dict | None, docker_available: bool,
+                *, sha: str = "", now: str = "") -> dict:
+    """PURE: fold a tier's FRESH build outcome into its committed JSON record.
+    Hermetic-testable (no Docker). The honesty invariants live HERE:
 
       - docker_available False  → status 'unmeasured', attempts 0, NEVER passed.
       - builder is None         → status 'unmeasured' (declared, not yet probed).
       - a real outcome          → 'proven' iff outcome.ok, else 'broke'.
 
-    `outcome` is None for an unmeasured tier (builder None, or Docker down)."""
+    `outcome` is None for an unmeasured tier (builder None, or Docker down). `sha`/`now`
+    stamp WHEN and against WHAT commit this tier was measured — the per-tier provenance
+    that makes INCREMENTAL measurement honest (a later run can measure one tier at a new
+    sha and carry the rest forward WITHOUT re-stamping their older shas; see
+    `carry_forward`). `recipe_fingerprint` records the recipe this measurement built, so
+    a future edit to that recipe auto-invalidates the carried record."""
     base = {"kind": spec["kind"], "probe_tool": spec.get("probe_tool") or None,
-            "note": spec.get("note", "")}
+            "note": spec.get("note", ""),
+            "recipe_fingerprint": ft.recipe_fingerprint(spec)}
     if spec.get("builder") is None or not docker_available or outcome is None:
         reason = None
         if spec.get("builder") is None:
@@ -127,7 +134,8 @@ def tier_record(spec: dict, outcome: dict | None, docker_available: bool) -> dic
             reason = "no Docker daemon at measurement time"
         return {**base, "attempts": 0, "passed": 0, "status": "unmeasured",
                 "rate": None, "image_digest": None, "content_digest": None,
-                "validation_locus": None, "last_error": reason}
+                "validation_locus": None, "measured_sha": None, "measured_on": None,
+                "carried_forward": False, "last_error": reason}
     passed = 1 if outcome.get("ok") else 0
     return {**base, "attempts": 1, "passed": passed,
             "status": "proven" if passed else "broke",
@@ -135,7 +143,62 @@ def tier_record(spec: dict, outcome: dict | None, docker_available: bool) -> dic
             "image_digest": outcome.get("image_digest"),
             "content_digest": outcome.get("content_digest"),
             "validation_locus": outcome.get("validation_locus"),
+            "measured_sha": sha or None, "measured_on": now or None,
+            "carried_forward": False,
             "last_error": None if passed else (outcome.get("error") or "build failed")}
+
+
+def carry_forward(spec: dict, prev: dict | None, *, recipe_changed: bool,
+                  current_fp: str, grandfather_sha: str = "") -> dict:
+    """PURE: fold a tier's PRIOR committed record into a new grid when we are measuring a
+    DIFFERENT tier this run — the honest INCREMENTAL path that replaces re-baking every
+    tier on every run. Hermetic-testable (no Docker, no git — the caller decides
+    `recipe_changed`). Each rule guards a specific way carry-forward could lie:
+
+      - prev None / not a REAL measurement (unmeasured, attempts 0) → 'unmeasured'. We only
+        ever carry a real prior build result forward, never a placeholder — nothing is
+        conjured into existence.
+      - `recipe_changed` (this tier's recipe differs from when it was measured) → 'unmeasured'
+        with a self-explaining error. The old measurement no longer describes today's recipe,
+        so it CANNOT keep counting as proven — this is what makes 'retroactively fix a tier'
+        safe (edit its recipe → it reddens until re-baked, per the floor-earned ratchet).
+      - else → carry the measurement VERBATIM, PRESERVING the original `measured_sha`
+        (NOT re-stamping it to now). Re-stamping stale records as fresh was exactly the
+        `--keep` laundering bug a prior self-review removed; here the original sha is kept
+        and `carried_forward: True` discloses this tier was not rebuilt this run, so the
+        render can flag its age. `current_fp` is stored so the NEXT run compares against it.
+
+    MIGRATION (a pre-fingerprint prior record, `recipe_fingerprint` absent): the caller
+    passes `recipe_changed=False` only after verifying out-of-band (git) that the recipe is
+    unchanged since it was measured, and `grandfather_sha` backfills the otherwise-missing
+    `measured_sha`. The result carries `fingerprint_backfilled: True` so the one-time
+    grandfathering is visible, and every record has a fingerprint from then on."""
+    base = {"kind": spec["kind"], "probe_tool": spec.get("probe_tool") or None,
+            "note": spec.get("note", ""), "recipe_fingerprint": current_fp}
+
+    def _unmeasured(reason: str) -> dict:
+        return {**base, "attempts": 0, "passed": 0, "status": "unmeasured", "rate": None,
+                "image_digest": None, "content_digest": None, "validation_locus": None,
+                "measured_sha": (prev or {}).get("measured_sha"), "measured_on": None,
+                "carried_forward": False, "last_error": reason}
+
+    if not prev or prev.get("status") not in ("proven", "broke") \
+            or (prev.get("attempts") or 0) < 1:
+        return _unmeasured("no prior real measurement to carry forward")
+    if recipe_changed:
+        return _unmeasured("recipe changed since this tier was last measured — "
+                           "re-run the generator for it (--only " + spec["tier"] + ")")
+    backfilled = not prev.get("recipe_fingerprint")
+    return {**base,
+            "attempts": prev["attempts"], "passed": prev["passed"],
+            "status": prev["status"], "rate": prev.get("rate"),
+            "image_digest": prev.get("image_digest"),
+            "content_digest": prev.get("content_digest"),
+            "validation_locus": prev.get("validation_locus"),
+            "measured_sha": prev.get("measured_sha") or (grandfather_sha or None),
+            "measured_on": prev.get("measured_on"),
+            "carried_forward": True, "fingerprint_backfilled": backfilled,
+            "last_error": prev.get("last_error")}
 
 
 def _git(*a) -> str:
@@ -161,13 +224,51 @@ def _render(data: dict) -> None:
     mod.write(data)
 
 
+def _load_prior(out_path: Path) -> dict:
+    """The prior committed grid's tiers (for carry-forward), or {} if none/unreadable.
+    A missing or malformed prior simply means every non-measured tier records
+    'unmeasured' — carry-forward can only ever build on a real prior file."""
+    try:
+        return (json.loads(out_path.read_text()).get("tiers") or {}) if out_path.exists() else {}
+    except Exception:
+        return {}
+
+
+def _recipe_unchanged_since(baseline_sha: str, tier_name: str, current_fp: str) -> bool:
+    """Did `tier_name`'s BUILD RECIPE change between `baseline_sha` and now? Reads the
+    tier's recipe from freeze_tiers.py AT baseline_sha via `git show`, fingerprints it
+    with the CURRENT `recipe_fingerprint`, and compares. Used ONLY to grandfather a
+    PRE-fingerprint prior record (one measured before per-tier fingerprints existed):
+    the code VERIFIES the recipe is byte-identical since it was measured rather than
+    trusting it. Any failure → False (conservative: treat as changed ⇒ re-measure), so a
+    git hiccup can only ever cost a rebuild, never launder a stale green."""
+    try:
+        src = subprocess.run(["git", "show", f"{baseline_sha}:scripts/freeze_tiers.py"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=15)
+        if src.returncode != 0 or not src.stdout.strip():
+            return False
+        ns: dict = {"__file__": str(ROOT / "scripts" / "freeze_tiers.py"), "__name__": "_ft_baseline"}
+        exec(compile(src.stdout, "<freeze_tiers@baseline>", "exec"), ns)
+        old = next((t for t in (ns.get("FREEZE_TIERS") or []) if t.get("tier") == tier_name), None)
+        return old is not None and ft.recipe_fingerprint(old) == current_fp
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--only", default="", help="comma-separated tiers to (re)build")
+    ap.add_argument("--only", default="", help="comma-separated tiers to (re)build; the "
+                    "rest are CARRIED FORWARD from the committed grid (incremental)")
     ap.add_argument("--out", default=str(OUT), help="output JSON path")
     ap.add_argument("--force", action="store_true",
                     help="write even with no Docker daemon (produces an all-"
                          "'unmeasured' file — this deliberately reddens the ratchet)")
+    ap.add_argument("--grandfather-from", default="", metavar="SHA",
+                    help="one-time migration: carry forward PRE-fingerprint prior records "
+                         "whose recipe is git-verified unchanged since SHA (the commit they "
+                         "were measured at). Without it, a fingerprint-less prior is treated "
+                         "as changed ⇒ re-measure. No effect on records that already carry a "
+                         "recipe_fingerprint.")
     args = ap.parse_args(argv)
     out_path = Path(args.out)
     is_canonical = out_path.resolve() == OUT   # any spelling of the committed target
@@ -182,11 +283,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # HONESTY GUARD: a Docker-less run can MEASURE NOTHING, so it must never be
     # allowed to overwrite the committed grid — doing so would silently erase the
-    # proven tiers (a footgun that reddens the ratchet with no obvious cause), and a
-    # carry-forward path would let a stale green be re-stamped as current. Refuse the
+    # proven tiers (a footgun that reddens the ratchet with no obvious cause). Refuse the
     # canonical write unless the operator explicitly --forces an all-unmeasured file
-    # (which then reddens the ratchet in CI, as it should). This is the same
-    # posture as tier_record's per-tier guard, applied at the write boundary so no
+    # (which then reddens the ratchet in CI, as it should). Carry-forward is DISABLED when
+    # Docker is down (below) so this run can never launder a prior green as "current"
+    # either — same posture as tier_record's per-tier guard, at the write boundary so no
     # code path can route around it (the exact seam a self-review flagged).
     if not docker and is_canonical and not args.force:
         print(f"  ! no Docker daemon — refusing to overwrite the committed "
@@ -198,24 +299,52 @@ def main(argv: list[str] | None = None) -> int:
         print("  ! no Docker daemon — every tier will record 'unmeasured' "
               "(a docker-less green would be a lie).", file=sys.stderr)
 
+    head_sha = _git("rev-parse", "--short", "HEAD") or "unknown"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prior = _load_prior(out_path)   # for carry-forward (only consulted when Docker is up)
+
     tiers: dict[str, dict] = {}
     for spec in ft.FREEZE_TIERS:
         name = spec["tier"]
+        current_fp = ft.recipe_fingerprint(spec)
         build_this = spec.get("builder") is not None and (not only or name in only)
-        if build_this and docker:
+        if not docker:
+            # Docker down: measure NOTHING and carry NOTHING — every tier unmeasured.
+            # (No carry-forward here, so a docker-less run can't restamp a prior green.)
+            tiers[name] = tier_record(spec, None, docker)
+        elif build_this:
             print(f"  building tier '{name}' (probe: {spec.get('probe_tool')}) …", flush=True)
             outcome = build_tier(spec)
-            tiers[name] = tier_record(spec, outcome, docker)
+            tiers[name] = tier_record(spec, outcome, docker, sha=head_sha, now=now)
             print(f"    → {tiers[name]['status']}"
                   + (f" ({tiers[name]['last_error']})" if tiers[name]["last_error"] else ""))
         else:
-            tiers[name] = tier_record(spec, None, docker)
+            # CARRY FORWARD the prior committed measurement (the incremental path). Decide
+            # whether this tier's recipe changed since it was measured:
+            #   - prior HAS a fingerprint → compare it to today's (pure, robust);
+            #   - prior LACKS one (pre-fingerprint record) → only carry it if
+            #     --grandfather-from git-verifies the recipe is unchanged since that sha.
+            prev = prior.get(name)
+            prev_fp = (prev or {}).get("recipe_fingerprint")
+            if prev_fp:
+                recipe_changed = prev_fp != current_fp
+            elif args.grandfather_from and prev and prev.get("status") in ("proven", "broke"):
+                recipe_changed = not _recipe_unchanged_since(args.grandfather_from, name, current_fp)
+            else:
+                recipe_changed = True   # no fingerprint + no verified baseline ⇒ re-measure
+            tiers[name] = carry_forward(spec, prev, recipe_changed=recipe_changed,
+                                        current_fp=current_fp,
+                                        grandfather_sha=args.grandfather_from)
+            if tiers[name].get("carried_forward"):
+                gf = " (grandfathered)" if tiers[name].get("fingerprint_backfilled") else ""
+                print(f"  carried '{name}' forward: {tiers[name]['status']} "
+                      f"@{tiers[name].get('measured_sha')}{gf}", flush=True)
 
     proven = sum(1 for r in tiers.values() if r["status"] == "proven"
                  and r["kind"] == "install")
     data = {
-        "measured_on": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "git_sha": _git("rev-parse", "--short", "HEAD") or "unknown",
+        "measured_on": now,          # this assembly run; per-tier measured_on is authoritative
+        "git_sha": head_sha,         # this assembly's HEAD; per-tier measured_sha is authoritative
         "platform": PLATFORM,
         "host_arch": _host_arch(),
         "docker_available": docker,
