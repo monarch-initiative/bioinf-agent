@@ -334,13 +334,96 @@ FREEZE_TIERS: list[dict] = [
                 "source/cargo/go/jar/r_install/synthesized — the last non-conda tier to "
                 "close its evidence-threading gap).",
     },
-    {"tier": "synthesized", "kind": "install", "builder": None, "probe_tool": "",
-     "note": "provenance-gated command sequence via the shared longtail executor. "
-             "A 2026-07-20 real bake BUILT the image but check_build correctly "
-             "REFUSED it (PROVENANCE_CLEAN.untagged_command) — its honest probe "
-             "must drive the real synth_fetch + validate_submission machinery so "
-             "every command is EXTRACTED (repo file + sha256) or grounded "
-             "AGENT_AUTHORED, NOT hand-tagged. Deferred to its own slice."},
+    {
+        "tier": "synthesized", "kind": "install", "builder": "container_native",
+        "probe_tool": "bwa",
+        "build": {
+            # The UNIVERSAL RESIDUAL tier: no per-tool generator — the agent reads the
+            # tool's OWN build files (fetched programmatically) and submits a command
+            # sequence, each tagged 'extracted' (verbatim from a named file) or
+            # 'agent_authored' (composed from the repo's prose, grounded). Unlike every
+            # other tier, this build is NOT a static install_method: the generator DRIVES
+            # the real synth_fetch + validate_submission machinery (see build_tier's
+            # `synth_spec` branch) so the shipped provenance is the runtime's own
+            # re-verification, NOT a hand-tag. That distinction is the whole slice — a
+            # 2026-07-20 bake that hand-tagged provenance BUILT the image but check_build
+            # correctly REFUSED it (PROVENANCE_CLEAN.untagged_command). The `submission`
+            # here is the agent's CLAIM (what it would type after reading synth_fetch);
+            # validate_submission is the PROOF — it re-fetches at the pinned commit and
+            # rejects any 'extracted' command not verbatim in its origin_file. So pinning
+            # the submission in the recipe makes the tier REPRODUCIBLE without making it
+            # dishonest: the recipe declares, the machinery verifies.
+            #
+            # bwa 0.7.18 (lh3/bwa) — one of the most-used aligners in bioinformatics, a
+            # small self-contained C build (`make`, links only zlib, which the builder
+            # (zlib1g-dev) and runtime (zlib1g) both carry). bwa IS on bioconda (a resolver
+            # routes there), but the synthesized tier proves the extract-and-replay
+            # MECHANISM, and doing so on a real, ubiquitous tool's real README beats a toy:
+            # 2 commands are EXTRACTED VERBATIM from bwa's own README "Getting started"
+            # block (the clone + `cd bwa; make`, each sha256-anchored to README.md by the
+            # runtime), and 2 are grounded AGENT_AUTHORED local verbs — a checkout that
+            # PINS the build to the v0.7.18 commit (reproducibility; the README's clone is
+            # unpinned) + the copy-to-PATH the README describes in prose ("copy the single
+            # executable bwa to the destination you want"). Neither authored command makes
+            # an external reference, so both ground trivially.
+            "synth_spec": {
+                "repo_url": "https://github.com/lh3/bwa",
+                # PIN the immutable commit (v0.7.18). build_tier re-fetches at exactly this
+                # commit and REFUSES on mismatch (the source moved) — the same anchor
+                # verification synth_build does; the README bytes the extractions verify
+                # against are this commit's.
+                "commit": "79b230de48c74156f9d3c26795a360fc5a2d5d3b",
+                "tool": "bwa",
+                "submission": [
+                    # bwa's OWN documented install, lifted verbatim from README.md.
+                    {"command": "git clone https://github.com/lh3/bwa.git",
+                     "source": "extracted", "origin_file": "README.md"},
+                    # Reproducibility pin — the README clone tracks HEAD; check out the
+                    # anchored commit. Grounded (a commit SHA is not an external ref).
+                    {"command": "git -C bwa checkout 79b230de48c74156f9d3c26795a360fc5a2d5d3b",
+                     "source": "agent_authored"},
+                    # bwa's OWN documented build, verbatim from README.md's Getting-started
+                    # block ("cd bwa; make").
+                    {"command": "cd bwa; make",
+                     "source": "extracted", "origin_file": "README.md"},
+                    # Install the single built executable onto PATH (README prose verb).
+                    {"command": "cp bwa /usr/local/bin/bwa",
+                     "source": "agent_authored"},
+                ],
+                # FUNCTIONAL evidence (validated==ran): RUN bwa on inline data and assert
+                # output — build a tiny reference, `bwa index` it, and check the FM-index
+                # (.bwt) was written. Leads with `cd` (shape-clean, not an echo cheat);
+                # references `bwa` as a real token; the `index` subcommand + .fa operand
+                # classify it 'functional'. Proven locally on a 217bp ref (bwa 0.7.19).
+                "evidence": (
+                    "cd /tmp && printf '>chrT\\n"
+                    "ACGTACGTACGTTGCAAGCTAGCTAGCTAACGGTACCGGATCGATCGATTACGACTAGCTAGC"
+                    "ATCGATCGTAGCTAGCATCGATCGATCGATCGTAGCTAGCTAGCTAGCATCGATCGATCGATC"
+                    "GATCGATCGGCTAGCATCGATCGTACGTACGTACGATCGATCGATCGTAGCTAGCTAGCATCG"
+                    "ATCGATCGTAGCTAGCTAGCTAGCATCG\\n' > bwa_ref.fa && "
+                    "bwa index bwa_ref.fa && test -s bwa_ref.fa.bwt"),
+            },
+            "primary_tools": ["bwa"],
+        },
+        "note": "the UNIVERSAL RESIDUAL — the agent reads the tool's OWN build files and "
+                "submits a provenance-tagged command sequence; the generator DRIVES the "
+                "real synth_fetch + validate_submission machinery (build_tier's synth_spec "
+                "branch), so the shipped provenance is the runtime's own re-verification, "
+                "NOT a hand-tag. Proven 2026-07-21 via bwa 0.7.18 (lh3/bwa): 2 commands "
+                "EXTRACTED VERBATIM from bwa's README (clone + `cd bwa; make`, sha256-"
+                "anchored to README.md) + 2 grounded AGENT_AUTHORED local verbs (a checkout "
+                "PINNING the v0.7.18 commit for reproducibility + the README-described copy "
+                "to PATH). FUNCTIONAL evidence RUNS `bwa index` on an inline ref and asserts "
+                "the FM-index (.bwt). This closes the 2026-07-20 gap: that bake hand-tagged "
+                "provenance → check_build correctly REFUSED it "
+                "(PROVENANCE_CLEAN.untagged_command); here validate_submission re-verifies "
+                "every 'extracted' command against the runtime's own fetched bytes at the "
+                "pinned commit, and rejects a paraphrase. Reproducibility: the recipe pins "
+                "the commit AND the submission; the immutable anchor is the git commit "
+                "(build_tier refuses on re-fetch mismatch). bwa is on bioconda (a resolver "
+                "routes to conda) — this tier proves the extract-and-replay MECHANISM on a "
+                "real tool's real build files, not the routing.",
+    },
     # ── build methods (adopt / authors — no container-native reconstruction) ──
     {"tier": "adopt-biocontainer", "kind": "build_method", "builder": None,
      "probe_tool": "",
@@ -373,7 +456,7 @@ FLOORS: dict[str, float] = {
     "cargo":  1.0,   # nanoq 0.10.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "go":     1.0,   # gofasta v1.2.3 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
     "perl":   1.0,   # Set::IntervalTree 0.12 — proven 2026-07-21 (P2-C, XS run-on-data smoke)
-    "synthesized":        0.0,
+    "synthesized": 1.0,   # bwa 0.7.18 — proven 2026-07-21 (P2-C, README-extracted + validate_submission)
     "adopt-biocontainer": 0.0,
     "adopt-image":        0.0,
     "authors-dockerfile": 0.0,
