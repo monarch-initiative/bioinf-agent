@@ -304,8 +304,8 @@ def test_compute_env_bridge_summary_parses_access_yaml(tmp_path):
             {"name": "laptop", "type": "local"},
         ],
         "projects": [
-            {"name": "wgs_proj", "compute_env_access": []},
-            {"name": "envs_catalog", "compute_env_access": []},
+            {"name": "wgs_proj", "compute_envs": []},
+            {"name": "envs_catalog", "compute_envs": []},
         ],
     }))
     rec = _compute_env_bridge_summary(access)

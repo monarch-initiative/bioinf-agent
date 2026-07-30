@@ -85,8 +85,8 @@ def _good_access(tmp_path: Path) -> Path:
         }],
         "projects": [{
             "name": "demo",
-            "compute_env_access": [{"compute_env": "fakehpc",
-                                     "directories": []}],
+            "compute_envs": ["fakehpc"],
+            "directories": [],
         }],
     })
 
@@ -221,8 +221,8 @@ class TestAuthGate:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
+                "compute_envs": ["fakehpc"],
+                "directories": [],
             }],
         })
         cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record()})
@@ -255,8 +255,8 @@ class TestAuthGate:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
+                "compute_envs": ["fakehpc"],
+                "directories": [],
             }],
         })
         # The schema validator should reject this manifest at load time
@@ -307,7 +307,7 @@ class TestAuthGate:
             }],
             "projects": [{
                 "name": "outsider",
-                "compute_env_access": [],  # no env grant
+                "compute_envs": [],  # no env grant
             }],
         })
         cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record()})
@@ -421,8 +421,8 @@ class TestBuildShipsSifToContainerZone:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
+                "compute_envs": ["fakehpc"],
+                "directories": [],
             }],
         })
         # A freeze docker-save tarball the record points at (build mode).

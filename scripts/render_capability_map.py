@@ -47,6 +47,41 @@ def _exit_cell(v) -> str:
     return '<span class="muted">n/a</span>'
 
 
+def _render_matrix(meta: dict, decs: list) -> str:
+    """The execution-shape grid — rendered PURELY from decisions tagged with
+    `execution_row` + `by_locus`. Single source of truth: the cells ARE the
+    tagged decisions, so there is no separate matrix blob to keep in sync."""
+    rows = [d for d in decs
+            if d.get("execution_row") and isinstance(d.get("by_locus"), dict)]
+    if not rows:
+        return ""
+    cols_seen: list = []
+    for d in rows:
+        for k in d["by_locus"]:
+            if k not in cols_seen:
+                cols_seen.append(k)
+    order = {"local": 0, "cluster": 1}
+    cols = sorted(cols_seen, key=lambda c: (order.get(c, 9), c))
+    head = "".join(f"<th>{_e(c)}</th>" for c in cols)
+    body = []
+    for d in rows:
+        cells = []
+        for c in cols:
+            val = d["by_locus"].get(c, "—")
+            nf = "nf" if "nextflow" in str(val).lower() else ""
+            cells.append(f'<td class="mcell {nf}">{_e(val)}</td>')
+        body.append(
+            f'<tr><th class="mrow">{_e(d["execution_row"])}'
+            f'<div class="did">{_e(d["id"])}</div></th>{"".join(cells)}</tr>')
+    note = meta.get("execution_matrix_note", "")
+    return (
+        '<h2>How work actually runs</h2>'
+        f'<div class="muted" style="margin-bottom:10px;font-size:12.5px">{_e(note)}</div>'
+        '<div class="tablewrap"><table class="matrix">'
+        f'<thead><tr><th></th>{head}</tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div>')
+
+
 def render(data: dict) -> str:
     meta = data["meta"]
     caps = data["capabilities"]
@@ -159,6 +194,17 @@ def render(data: dict) -> str:
   .dnote {{ font-size:12px; color:#c98b9a; margin-top:6px; font-style:italic; }}
   .muted {{ color:#6e7681; }}
   .tablewrap {{ overflow-x:auto; }}
+  table.matrix {{ border-collapse:collapse; }}
+  table.matrix th {{ text-transform:none; letter-spacing:0; font-size:13px; color:#8be9fd;
+                     position:static; background:transparent; border-bottom:1px solid #1f2733; }}
+  table.matrix th.mrow {{ text-align:left; color:#e6edf3; padding:12px; white-space:nowrap;
+                          vertical-align:top; border-bottom:1px solid #151b24; }}
+  table.matrix td.mcell {{ border:1px solid #1f2733; padding:12px; vertical-align:top;
+                           min-width:220px; color:#c9d1d9; }}
+  table.matrix td.mcell.nf {{ border-color:#7c5cff; box-shadow: inset 0 0 0 1px #7c5cff44; }}
+  table.matrix td.mcell.nf::after {{ content:"Nextflow"; display:inline-block; margin-top:8px;
+                           font-size:10px; letter-spacing:.5px; color:#b8a6ff;
+                           border:1px solid #7c5cff; border-radius:4px; padding:1px 6px; }}
 </style></head>
 <body><div class="wrap">
   <h1>{_e(meta['title'])}</h1>
@@ -178,6 +224,8 @@ def render(data: dict) -> str:
 
   <h2>What you can ask this system to do</h2>
   <div class="cards">{''.join(cards)}</div>
+
+  {_render_matrix(meta, decs)}
 
   <h2>Every decision it makes when you don't specify</h2>
   <div class="muted" style="margin-bottom:10px;font-size:12.5px">

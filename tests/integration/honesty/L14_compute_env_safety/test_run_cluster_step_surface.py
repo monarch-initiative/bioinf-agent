@@ -140,10 +140,8 @@ def _good_access(tmp_path: Path) -> Path:
         }],
         "projects": [{
             "name": "phase_b_samtools_demo",
-            "compute_env_access": [{
-                "compute_env": "fakehpc",
-                "directories": [],
-            }],
+            "compute_envs": ["fakehpc"],
+            "directories": [],
         }],
     })
 
@@ -228,8 +226,8 @@ class TestScratchOnlyWall:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc", "directories": []}],
+                "compute_envs": ["fakehpc"],
+                "directories": [],
             }],
         })
         r = run_cluster_step.run_step_on_cluster(
@@ -277,8 +275,8 @@ class TestScratchOnlyWall:
                               "container_upload_target": None}],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "laptop", "directories": []}],
+                "compute_envs": ["laptop"],
+                "directories": [],
             }],
         })
         r = run_cluster_step.run_step_on_cluster(

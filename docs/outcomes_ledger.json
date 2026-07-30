@@ -1160,6 +1160,26 @@
     "named_in_test": true
   },
   {
+    "code": "run_production.failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:418",
+    "end_line": 418,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:420",
+    "end_line": 421,
+    "named_in_test": false
+  },
+  {
     "code": "stage.docker_pull_failed",
     "outcome": "broke",
     "source": "helper",
@@ -2417,6 +2437,16 @@
     "func": "run_step_on_cluster",
     "where": "agent/skills/run_cluster_step.py:613",
     "end_line": 635,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.local_launched",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_local",
+    "where": "agent/skills/run_production.py:231",
+    "end_line": 235,
     "named_in_test": false
   },
   {
@@ -4197,6 +4227,106 @@
     "func": "run_step_on_cluster",
     "where": "agent/skills/run_cluster_step.py:373",
     "end_line": 375,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.no_image_handle",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_local",
+    "where": "agent/skills/run_production.py:157",
+    "end_line": 158,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.remote_daemon",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_local",
+    "where": "agent/skills/run_production.py:166",
+    "end_line": 169,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.workflow_dir_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_local",
+    "where": "agent/skills/run_production.py:176",
+    "end_line": 178,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.env_missing_modules",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_cluster",
+    "where": "agent/skills/run_production.py:260",
+    "end_line": 264,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.resources_required",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_cluster",
+    "where": "agent/skills/run_production.py:270",
+    "end_line": 273,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.no_container_target",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_cluster",
+    "where": "agent/skills/run_production.py:281",
+    "end_line": 283,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.sif_not_staged",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_run_cluster",
+    "where": "agent/skills/run_production.py:289",
+    "end_line": 293,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.env_contract_violated",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:380",
+    "end_line": 383,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.no_frozen_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:385",
+    "end_line": 386,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.unknown_env_type",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:412",
+    "end_line": 414,
     "named_in_test": false
   },
   {

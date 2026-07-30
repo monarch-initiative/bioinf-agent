@@ -70,10 +70,8 @@ def _make_access(tmp_path: Path, *,
 
     project_block = {
         "name":         "demo_project",
-        "compute_env_access": [{
-            "compute_env": "fakehpc",
-            "directories": project_dirs or [],
-        }],
+        "compute_envs": ["fakehpc"],
+        "directories":  [{**d, "env": "fakehpc"} for d in (project_dirs or [])],
     }
     access = {"compute_envs": [env_block], "projects": [project_block]}
     p = tmp_path / "projects_access.yaml"

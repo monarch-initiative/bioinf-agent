@@ -62,9 +62,8 @@ def _project_block(*, name: str, env_name: str, dirs: list[dict],
     return {
         "name": name,
         "description": description,
-        "compute_env_access": [
-            {"compute_env": env_name, "directories": dirs},
-        ],
+        "compute_envs": [env_name],
+        "directories": [{**d, "env": env_name} for d in dirs],
     }
 
 
@@ -329,13 +328,12 @@ def test_multi_env_project_aggregates_across_envs(tmp_path, envs_root):
         "projects": [{
             "name": "multi_env",
             "description": "two envs",
-            "compute_env_access": [
-                {"compute_env": "env_a", "directories": [
-                    {"path": str(envs_root),
-                     "permissions": ["file_name_only"]}]},
-                {"compute_env": "env_b", "directories": [
-                    {"path": str(envs_root),
-                     "permissions": ["file_name_only"]}]},
+            "compute_envs": ["env_a", "env_b"],
+            "directories": [
+                {"path": str(envs_root),
+                 "permissions": ["file_name_only"], "env": "env_a"},
+                {"path": str(envs_root),
+                 "permissions": ["file_name_only"], "env": "env_b"},
             ],
         }],
     })
@@ -361,7 +359,7 @@ def test_empty_compute_env_access_returns_clean_error(tmp_path):
         "projects": [{
             "name": "no_access",
             "description": "deliberately empty",
-            "compute_env_access": [],
+            "compute_envs": [],
         }],
     })
     rec = snapshot.snapshot_project("no_access", access_path=str(access))

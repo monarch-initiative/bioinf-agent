@@ -362,6 +362,70 @@ def submit_workflow_job(project_name: str,
 
 
 @mcp.tool()
+def run_production_pipeline(project_name: str,
+                           compute_env_name: str,
+                           workflow_name: str,
+                           tool_name: str,
+                           command: str,
+                           inputs: dict,
+                           outputs: dict,
+                           freeze_request_key: str,
+                           workflow_dir: str,
+                           resources: dict = {},
+                           platform: str = "linux/amd64") -> dict:
+    """Run a frozen env's workflow in PRODUCTION on WHICHEVER compute env you
+    name — local laptop OR ssh cluster. The SAME call, swap `compute_env_name`.
+    Plug-and-play: what differs between loci (scheduler, container runtime,
+    module names) is an ENV PROPERTY in projects_access.yaml, never an argument.
+
+    Dispatches on the env's type:
+      • local → renders a re-runnable `run.sh` that `docker run`s the frozen
+        image against `workflow_dir` (same-path bind mount), launches it in the
+        BACKGROUND, writes a submission manifest. Poll with check_job.
+      • ssh   → delegates to the proven nextflow+slurm+apptainer submission,
+        sourcing apptainer/nextflow modules + slurm policy from the env config
+        and deriving the staged .sif path from freeze_request_key.
+
+    NOT a composite. The caller still freezes the env; for the cluster locus the
+    caller also stages the .sif (stage_apptainer_image) first — this verb REFUSES
+    if the .sif isn't already staged. This is the PRODUCTION verb; it documents
+    the run (a manifest, findable later) but does NOT seal a WorkflowSpec — the
+    validation verbs (run_step_in_container / run_step_on_cluster) do that.
+
+    Authorization: `workflow_dir` must be a `directories[]` path on the project
+    with BOTH `upload` and `exec` (same wall as submit_workflow_job).
+
+    Inputs:
+      command            single-line shell command with {PLACEHOLDER} slots.
+      inputs/outputs     {PLACEHOLDER: absolute_path} — every placeholder in
+                         `command` must be declared (I6 parity, both loci).
+      freeze_request_key the frozen env handle (from freeze()); the uniform
+                         env reference for BOTH loci.
+      workflow_dir       absolute path under a `directories[]` grant.
+      resources          {mem_gb, cpus, time, gpus?} — the uniform per-run
+                         sizing knob. Optional locally (docker --memory/--cpus);
+                         REQUIRED on the cluster (SLURM needs mem + time).
+
+    Returns {success, locus, compute_env, job_id, workflow_dir, manifest_path,
+    ...} on success; {"error": ..., ...} on any refusal/failure."""
+    from agent.skills import run_production
+    return run_production.run_production_pipeline(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        workflow_name=workflow_name,
+        tool_name=tool_name,
+        command=command,
+        inputs=inputs,
+        outputs=outputs,
+        freeze_request_key=freeze_request_key,
+        workflow_dir=workflow_dir,
+        resources=resources or {},
+        platform=platform or "linux/amd64",
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
 def stage_apptainer_image(project_name: str,
                           compute_env_name: str,
                           freeze_request_key: str,

@@ -49,10 +49,8 @@ def _ssh_env_with_project_grant(tmp_path):
         }],
         "projects": [{
             "name": "myproj",
-            "compute_env_access": [{
-                "compute_env": "fakehpc",
-                "directories": [],
-            }],
+            "compute_envs": ["fakehpc"],
+            "directories": [],
         }],
     }
     return _write_access(tmp_path, access)
@@ -214,7 +212,7 @@ class TestAuthGate:
         data = yaml.safe_load(access_path.read_text())
         data["projects"].append({
             "name": "outsider",
-            "compute_env_access": [],
+            "compute_envs": [],
         })
         access_path.write_text(yaml.safe_dump(data))
 
@@ -254,8 +252,8 @@ class TestAuthGate:
                               "container_upload_target": None}],
             "projects": [{
                 "name": "myproj",
-                "compute_env_access": [{
-                    "compute_env": "laptop", "directories": []}],
+                "compute_envs": ["laptop"],
+                "directories": [],
             }],
         }
         access_path = _write_access(tmp_path, access)
