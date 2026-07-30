@@ -14,7 +14,7 @@ listed in a project has permission `none` — fail-closed.
 
 The agent cannot:
   - execute arbitrary commands on the compute env
-  - access directories not declared in a project's compute_env_access
+  - access directories not declared in a project's directories[]
   - elevate its own permissions
   - overwrite existing files via the `upload` permission (when wired)
 
@@ -43,12 +43,14 @@ template.
     projects:                                  # list of named projects
       - name: <your label>
         description: <free text>
-        compute_env_access:                    # one block per env this project touches
-          - compute_env: <name of a compute_envs[].name>
-            directories:                       # dir-access blocks on that env
-              - path: <abs path>
-                permissions: [<token>, ...]    # any subset of: file_name_only, upload
-                description: <free text>
+        compute_envs: [<name>, ...]            # which compute_envs[] this project may use
+                                               # (also grants each env's implicit
+                                               #  scratch/common_data zones)
+        directories:                           # explicit per-dir grants; each names its env
+          - env: <name of a compute_envs[].name in compute_envs above>
+            path: <abs path>
+            permissions: [<token>, ...]        # any subset of: file_name_only, upload, download, exec
+            description: <free text>
 
 The dir-access block `{path, permissions, description}` is reused in both
 `compute_envs[].container_upload_target` and projects[]…directories[] — same
@@ -101,6 +103,13 @@ OPERATION_REQUIRES: dict[str, str] = {
     # scratch sandbox. Goes through the env-level agent_scratch_target
     # (via check_env_target_capability), NOT project.directories[].
     "run_step_on_cluster":        "exec",
+    # run_production_pipeline lands a PRODUCTION run in a user-declared
+    # project dir. On the LOCAL locus it writes run.sh (needs `upload`,
+    # checked separately) then runs the frozen image there; on the CLUSTER
+    # locus it delegates to submit_workflow_job. Either way the dir must
+    # declare `exec` so the run may write its outputs in-place — same
+    # posture as submit_workflow_job.
+    "run_production_pipeline":     "exec",
 }
 
 # The batch scheduler a compute env runs jobs through, declared via `job_manager`.
@@ -156,7 +165,31 @@ def load_access(path: Optional[Path] = None) -> dict:
             f"agent/skills/projects_access.yaml.example for an annotated template.")
     data = yaml.safe_load(p.read_text()) or {}
     _validate(data, p)
+    _normalize_projects(data)
     return data
+
+
+def _normalize_projects(data: dict) -> None:
+    """Fold the FLAT project schema (compute_envs + env-tagged directories) into
+    the internal `compute_env_access[]` shape every reader/accessor expects.
+
+    ONE seam: the yaml stays flat and clean (a project is `compute_envs: [names]`
+    + `directories: [{env, path, permissions}]`), while the in-memory model keeps
+    the shape `get_project_directories` / `check_env_target_capability` / the
+    inline `any(compute_env==…)` guards read — so NO reader changes. Runs AFTER
+    validation, so the input shape is already known-good."""
+    for proj in data.get("projects") or []:
+        if not isinstance(proj, dict):
+            continue
+        cenvs = proj.get("compute_envs") or []
+        dirs = proj.get("directories") or []
+        proj["compute_env_access"] = [
+            {"compute_env": env_name,
+             "directories": [{k: v for k, v in d.items() if k != "env"}
+                             for d in dirs
+                             if isinstance(d, dict) and d.get("env") == env_name]}
+            for env_name in cenvs
+        ]
 
 
 def _validate(data: dict, path: Path) -> None:
@@ -202,6 +235,13 @@ _ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
     "name", "type", "host", "user", "email",
     "job_manager", "slurm", "data_transfer",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
+    # Container-runtime module names for the CLUSTER production path
+    # (run_production_pipeline / submit_workflow_job): the Lmod modules the
+    # launcher `module load`s to get apptainer + nextflow on the compute node.
+    # ssh+apptainer envs only — a local (docker) env has no module system and
+    # declares neither. Read by compute_access.get_container_modules; a
+    # cluster production run refuses clearly if they're absent.
+    "apptainer_module", "nextflow_module",
 })
 
 
@@ -250,13 +290,14 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
     #
     # Authorization model: the env-level target blocks are CAPABILITY
     # DECLARATIONS — they say "this path exists on the env and these ops
-    # are supported on it". Any project listed under this env via
-    # `compute_env_access` inherits ALL declared targets en bloc; there is
+    # are supported on it". Any project that lists this env in its
+    # `compute_envs` inherits ALL declared targets en bloc; there is
     # no per-project re-declaration of these paths. The security posture:
     # these paths are PUBLIC-DATA ZONES (no PHI, no protected datasets).
-    # Project-specific / protected paths go in `projects[].compute_env_access
-    # [].directories[]` where the project's `file_name_only` permission is
-    # explicit, and the agent can never list a dir it wasn't authorized for.
+    # Project-specific / protected paths go in `projects[].directories[]`
+    # (each tagged with its `env`) where the project's `file_name_only`
+    # permission is explicit, and the agent can never list a dir it wasn't
+    # authorized for.
     where_env = f"compute_envs[{idx}] (name={name!r})"
     scratch = env.get("agent_scratch_target")
     if scratch is not None:
@@ -302,7 +343,15 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
 
 def _validate_project(proj: object, idx: int, project_names: set[str],
                        env_names: set[str], path: Path) -> None:
-    """Validate one projects[] entry."""
+    """Validate one projects[] entry (FLAT schema).
+
+    A project is {name, description?, compute_envs: [env-name…],
+    directories: [{env, path, permissions, description?}…]}. `compute_envs`
+    lists which compute resources the project may use (this ALSO carries the
+    implicit scratch/common_data grant, so a scratch-only project needs no
+    directories); `directories` are the explicit user-territory grants, each
+    tagged with the `env` it lives on. The old `compute_env_access[]` wrapper is
+    gone — the loader synthesizes it internally (see _normalize_projects)."""
     if not isinstance(proj, dict):
         raise ConfigError(f"{path}: projects[{idx}] must be a mapping")
 
@@ -313,42 +362,45 @@ def _validate_project(proj: object, idx: int, project_names: set[str],
         raise ConfigError(f"{path}: duplicate project name {name!r}")
     project_names.add(name)
 
-    access_list = proj.get("compute_env_access") or []
-    if not isinstance(access_list, list):
+    allowed = {"name", "description", "compute_envs", "directories"}
+    extra = set(proj.keys()) - allowed
+    if extra:
         raise ConfigError(
-            f"{path}: projects[{idx}] (name={name!r}) .compute_env_access "
-            f"must be a list")
-    for j, block in enumerate(access_list):
-        _validate_access_block(block, name, j, env_names, path)
+            f"{path}: projects[name={name!r}] has unknown keys {sorted(extra)!r}. "
+            f"Allowed: {sorted(allowed)!r}. (The `compute_env_access` wrapper is "
+            f"gone — use a flat `compute_envs: [names]` + `directories: "
+            f"[{{env, path, permissions}}]`.)")
 
+    cenvs = proj.get("compute_envs") or []
+    if not isinstance(cenvs, list) or not all(isinstance(e, str) and e for e in cenvs):
+        raise ConfigError(
+            f"{path}: projects[name={name!r}].compute_envs must be a list of "
+            f"compute_env names (got {cenvs!r})")
+    for e in cenvs:
+        if e not in env_names:
+            raise ConfigError(
+                f"{path}: projects[name={name!r}].compute_envs entry {e!r} "
+                f"doesn't match any compute_envs[].name. Known: {sorted(env_names)}")
+    cenv_set = set(cenvs)
 
-def _validate_access_block(block: object, project_name: str, idx: int,
-                            env_names: set[str], path: Path) -> None:
-    """Validate one compute_env_access[] entry inside a project."""
-    if not isinstance(block, dict):
-        raise ConfigError(
-            f"{path}: projects[name={project_name!r}].compute_env_access[{idx}] "
-            f"must be a mapping")
-    env_ref = block.get("compute_env")
-    if not isinstance(env_ref, str):
-        raise ConfigError(
-            f"{path}: projects[name={project_name!r}].compute_env_access[{idx}]"
-            f".compute_env must be a string")
-    if env_ref not in env_names:
-        raise ConfigError(
-            f"{path}: projects[name={project_name!r}].compute_env_access[{idx}]"
-            f".compute_env={env_ref!r} doesn't match any compute_envs[].name. "
-            f"Known envs: {sorted(env_names)}")
-
-    dirs = block.get("directories") or []
+    dirs = proj.get("directories") or []
     if not isinstance(dirs, list):
         raise ConfigError(
-            f"{path}: projects[name={project_name!r}]"
-            f".compute_env_access[{idx}].directories must be a list")
+            f"{path}: projects[name={name!r}].directories must be a list")
     for k, d in enumerate(dirs):
-        _validate_dir_block(
-            d, f"projects[name={project_name!r}]"
-               f".compute_env_access[{idx}].directories[{k}]", path)
+        if not isinstance(d, dict):
+            raise ConfigError(
+                f"{path}: projects[name={name!r}].directories[{k}] must be a mapping")
+        denv = d.get("env")
+        if denv not in cenv_set:
+            raise ConfigError(
+                f"{path}: projects[name={name!r}].directories[{k}].env={denv!r} "
+                f"must be one of the project's compute_envs {sorted(cenv_set)} "
+                f"(every granted dir names the env it lives on)")
+        # Validate the {path, permissions, description} part; the `env` tag is
+        # project-schema, not part of the reusable dir-access block.
+        _validate_dir_block({k2: v2 for k2, v2 in d.items() if k2 != "env"},
+                            f"projects[name={name!r}].directories[{k}]", path)
 
 
 def _validate_dir_block(block: object, where: str, path: Path,
@@ -646,6 +698,15 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
     return []
 
 
+def get_project_compute_envs(project: dict) -> list[str]:
+    """The compute envs this project may use — its plug-and-play set (a project
+    runnable local OR on a cluster lists both). Read from the normalized
+    compute_env_access, so it reflects the flat `compute_envs: [names]` yaml."""
+    return [b.get("compute_env")
+            for b in (project.get("compute_env_access") or [])
+            if isinstance(b, dict) and b.get("compute_env")]
+
+
 # ---------------------------------------------------------------------------
 # Phase 2 — env-level lookups
 #
@@ -695,6 +756,22 @@ def get_slurm_config(env: dict) -> Optional[dict]:
     return blk if isinstance(blk, dict) else None
 
 
+def get_container_modules(env: dict) -> dict:
+    """Return the {apptainer_module, nextflow_module} Lmod names this env's
+    CLUSTER production launcher `module load`s, or {} if undeclared.
+
+    ssh+apptainer envs declare these (e.g. apptainer/1.5.0, nextflow/25.04.7);
+    a local (docker) env has no module system and declares neither, so this
+    returns {}. run_production_pipeline's cluster branch reads them and refuses
+    clearly if either is missing — it does NOT invent a module name."""
+    out = {}
+    for k in ("apptainer_module", "nextflow_module"):
+        v = env.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out
+
+
 def get_data_transfer_kind(env: dict) -> str:
     """Return the data_transfer.type for this env. Defaults to
     'scp_head_node' when the block is absent (back-compat with envs that
@@ -727,7 +804,7 @@ def get_globus_endpoints(env: dict) -> Optional[dict]:
 # `transfer.download`, routed to the scratch / common_data /
 # container_upload zones) do NOT walk the project's `directories[]`
 # entries for env-level target paths. Instead the env declares the target
-# block ONCE; any project that lists the env in its `compute_env_access`
+# block ONCE; any project that lists the env in its `compute_envs`
 # inherits the target en bloc. The required permission (`upload`,
 # `download`, `exec`) must appear in the env-level target's `permissions`.
 #
@@ -862,9 +939,9 @@ def check_permission(project: dict, compute_env_name: str, path: str,
         raise PermissionDenied(
             f"path {path!r} is not authorized in project {proj_name!r} "
             f"on compute_env {compute_env_name!r} — no matching directory entry. "
-            f"Add this path to projects[name={proj_name!r}].compute_env_access"
-            f"[compute_env={compute_env_name!r}].directories with permissions "
-            f"including {required!r} to allow.")
+            f"Add this path to projects[name={proj_name!r}].directories as an entry "
+            f"with env={compute_env_name!r} and permissions including {required!r} "
+            f"to allow.")
 
     actual_perms = list(best.get("permissions") or [])
     if required not in actual_perms:

@@ -27,7 +27,7 @@
 #
 #       ─── Phase 2 (HPC actuators) — all optional ──────────────────────────
 #       The Phase-2 target blocks below are env-level CAPABILITY DECLARATIONS:
-#       any project that lists this env via `compute_env_access` inherits the
+#       any project that lists this env via `compute_envs` inherits the
 #       declared targets en bloc — no per-project re-declaration of these
 #       paths in directories[]. Security posture: env-level target paths are
 #       PUBLIC-DATA ZONES (no PHI, no protected data). Anything sensitive
@@ -72,17 +72,18 @@
 #                                       scratch / common_data — MUST be a
 #                                       safe token (alnum + '_-', ≤64 chars).
 #       description                     free text
-#       compute_env_access[]:           one block per compute_env this project
-#                                       uses. Listing an env grants this
+#       compute_envs                    list of compute_envs[].name this project
+#                                       may use. Listing an env grants this
 #                                       project ALL of that env's Phase-2
 #                                       target blocks (env-implicit grant).
-#         - compute_env                 references a compute_envs[].name above
-#           directories[]:              PROJECT-SPECIFIC paths only (the
+#       directories[]:                  PROJECT-SPECIFIC paths only (the
 #                                       project's own data; typically protected).
 #                                       Env-level targets do NOT belong here.
-#             - path                    absolute path on the env
-#               permissions             list of permission tokens
-#               description             free text
+#         - env                         which compute_envs[] entry this dir lives
+#                                       on (references a name in compute_envs above)
+#           path                        absolute path on the env
+#           permissions                 list of permission tokens
+#           description                 free text
 #
 # ─── Permission tokens ─────────────────────────────────────────────────────
 #
@@ -122,6 +123,13 @@ compute_envs:
                                                  # path), so omit it for a local machine.
     email: alice@example.edu                     # OPTIONAL: when set, every job header emits
                                                  # --mail-type=END + --mail-user=<this>. Omit ⇒ no mail.
+
+    # Lmod modules a CLUSTER production run loads to get the container runtime +
+    # workflow engine on the compute node. Read by run_production_pipeline's ssh
+    # branch (and submit_workflow_job). ssh+apptainer envs only — a local
+    # (docker) machine declares neither (it has no module system).
+    apptainer_module: apptainer/1.5.0
+    nextflow_module:  nextflow/25.04.7
 
     container_upload_target:
       path: /scratch/alice/containers/
@@ -173,54 +181,59 @@ compute_envs:
 projects:
 
   # ─── Single-env project on the cluster ───────────────────────────────────
+  # `compute_envs` = the resources this project may use (also grants each env's
+  # implicit scratch/common_data zones). `directories` = the explicit grants,
+  # each tagged with the `env` it lives on. (The old compute_env_access[]
+  # wrapper is gone.)
   - name: wgs_proj
     description: "WGS analysis on the cluster"
-    compute_env_access:
+    compute_envs: [cluster]                      # references compute_envs[].name above
+    directories:                                 # PROJECT-SPECIFIC paths, each tagged with its env
 
-      - compute_env: cluster                     # references compute_envs[].name above
-        directories:
+      - env: cluster
+        path: /scratch/alice/wgs_proj/
+        permissions: [file_name_only]
+        description: "raw + processed reads, inventory only"
 
-          - path: /scratch/alice/wgs_proj/
-            permissions: [file_name_only]
-            description: "raw + processed reads, inventory only"
+      - env: cluster
+        path: /scratch/alice/wgs_proj_scratch/
+        permissions: [file_name_only, upload]    # MULTIPLE permissions on the same dir
+        description: "scratch space — list AND upload"
 
-          - path: /scratch/alice/wgs_proj_scratch/
-            permissions: [file_name_only, upload]    # MULTIPLE permissions on the same dir
-            description: "scratch space — list AND upload"
-
-          - path: /scratch/alice/wgs_proj_outputs/
-            permissions: [upload]                # upload-only — invisible to snapshot
-            description: "agent-staged outputs"
+      - env: cluster
+        path: /scratch/alice/wgs_proj_outputs/
+        permissions: [upload]                    # upload-only — invisible to snapshot
+        description: "agent-staged outputs"
 
   # ─── Single-env project on the laptop (the envs/ catalog you drove e2e) ──
   - name: envs_catalog
     description: "This repo's envs/ catalog + tool-discovery views"
-    compute_env_access:
+    compute_envs: [laptop]
+    directories:
 
-      - compute_env: laptop
-        directories:
+      - env: laptop
+        path: /Users/alice/code/bioinf_agent/envs/
+        permissions: [file_name_only]
+        description: "which envs are bootstrapped"
 
-          - path: /Users/alice/code/bioinf_agent/envs/
-            permissions: [file_name_only]
-            description: "which envs are bootstrapped"
-
-          - path: /Users/alice/code/bioinf_agent/envs/bioinf_core_tools/bin/
-            permissions: [file_name_only]
-            description: "tool-discovery view: samtools, bcftools, ..."
+      - env: laptop
+        path: /Users/alice/code/bioinf_agent/envs/bioinf_core_tools/bin/
+        permissions: [file_name_only]
+        description: "tool-discovery view: samtools, bcftools, ..."
 
   # ─── Multi-env project — same project spans two envs ────────────────────
+  # `compute_envs` lists both; each directory names the env it lives on.
   - name: wgs_with_mirror
     description: "WGS project — cluster-of-record + local mirror"
-    compute_env_access:
+    compute_envs: [cluster, laptop]
+    directories:
 
-      - compute_env: cluster
-        directories:
-          - path: /scratch/alice/wgs_proj/
-            permissions: [file_name_only]
-            description: "data on the cluster"
+      - env: cluster
+        path: /scratch/alice/wgs_proj/
+        permissions: [file_name_only]
+        description: "data on the cluster"
 
-      - compute_env: laptop
-        directories:
-          - path: /Users/alice/code/bioinf_agent/data/wgs_local_mirror/
-            permissions: [file_name_only]
-            description: "local mirror for offline iteration"
+      - env: laptop
+        path: /Users/alice/code/bioinf_agent/data/wgs_local_mirror/
+        permissions: [file_name_only]
+        description: "local mirror for offline iteration"

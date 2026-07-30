@@ -68,14 +68,10 @@ def _make_access(proj_dir: Path, *, env_type: str = "local",
             {
                 "name": "myproj",
                 "description": "test fixture",
-                "compute_env_access": [
-                    {
-                        "compute_env": "laptop",
-                        "directories": [
-                            {"path": str(proj_dir), "permissions": perms,
-                             "description": "test dir"},
-                        ],
-                    },
+                "compute_envs": ["laptop"],
+                "directories": [
+                    {"path": str(proj_dir), "permissions": perms,
+                     "description": "test dir", "env": "laptop"},
                 ],
             },
         ],
@@ -216,9 +212,9 @@ def test_unauthorized_path_refused_before_subprocess(_local_access, monkeypatch)
     # snapshot list FROM the project's directories[] list, so a path
     # outside any of those won't match. We simulate this by handing
     # check_permission an outside path directly.
-    data["projects"][0]["compute_env_access"][0]["directories"] = [
+    data["projects"][0]["directories"] = [
         {"path": "/some/declared/elsewhere",
-         "permissions": ["file_name_only"], "description": "x"},
+         "permissions": ["file_name_only"], "description": "x", "env": "laptop"},
     ]
     access_path.write_text(yaml.safe_dump(data))
 
@@ -245,7 +241,7 @@ def test_wrong_permission_refused(_local_access, monkeypatch):
     be present IN THE LIST — exact match, not a lattice."""
     access_path, proj_dir = _local_access
     data = yaml.safe_load(access_path.read_text())
-    data["projects"][0]["compute_env_access"][0]["directories"][0]["permissions"] = ["upload"]
+    data["projects"][0]["directories"][0]["permissions"] = ["upload"]
     access_path.write_text(yaml.safe_dump(data))
 
     called = []
@@ -497,11 +493,10 @@ def test_unknown_compute_env_clean_error(tmp_path):
                           "container_upload_target": None}],
         "projects": [{
             "name": "bad_proj",
-            "compute_env_access": [
-                {"compute_env": "nonexistent",
-                 "directories": [{"path": "/x",
-                                  "permissions": ["file_name_only"]}]},
-            ],
+            "compute_envs": ["nonexistent"],
+            "directories": [{"path": "/x",
+                             "permissions": ["file_name_only"],
+                             "env": "nonexistent"}],
         }],
     }
     p = tmp_path / "access.yaml"
@@ -520,11 +515,11 @@ def test_unknown_permission_in_config_refused(tmp_path):
                           "container_upload_target": None}],
         "projects": [{
             "name": "p",
-            "compute_env_access": [
-                {"compute_env": "e", "directories": [
-                    {"path": "/x",
-                     "permissions": ["filename_only"]},  # missing underscore
-                ]},
+            "compute_envs": ["e"],
+            "directories": [
+                {"path": "/x",
+                 "permissions": ["filename_only"],  # missing underscore
+                 "env": "e"},
             ],
         }],
     }
@@ -562,10 +557,11 @@ def test_old_singular_permission_shape_refused(tmp_path):
         "compute_envs": [{"name": "e", "type": "local",
                           "container_upload_target": None}],
         "projects": [{
-            "name": "p", "compute_env_access": [
-                {"compute_env": "e", "directories": [
-                    {"path": "/x", "permission": "file_name_only"},  # singular
-                ]},
+            "name": "p",
+            "compute_envs": ["e"],
+            "directories": [
+                {"path": "/x", "permission": "file_name_only",  # singular
+                 "env": "e"},
             ],
         }],
     }

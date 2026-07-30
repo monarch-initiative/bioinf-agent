@@ -519,13 +519,11 @@ class TestNewPermissionTokens:
                                        host=None, user=None)],
             "projects": [{
                 "name": "p", "description": "x",
-                "compute_env_access": [{
-                    "compute_env": "laptop",
-                    "directories": [{
-                        "path": "/tmp/scratch/", "description": "scratch",
-                        "permissions": ["download", "exec"]},
-                    ],
-                }],
+                "compute_envs": ["laptop"],
+                "directories": [{
+                    "path": "/tmp/scratch/", "description": "scratch",
+                    "permissions": ["download", "exec"], "env": "laptop"},
+                ],
             }],
         }
         manifest["compute_envs"][0].pop("host", None)

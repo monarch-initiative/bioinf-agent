@@ -52,12 +52,11 @@ def _good_access(tmp_path: Path) -> Path:
         }],
         "projects": [{
             "name": "demo",
-            "compute_env_access": [{
-                "compute_env": "fakehpc",
-                "directories": [{
-                    "path": "/work/u/demo/run_001",
-                    "permissions": ["upload", "exec", "download"],
-                }],
+            "compute_envs": ["fakehpc"],
+            "directories": [{
+                "path": "/work/u/demo/run_001",
+                "permissions": ["upload", "exec", "download"],
+                "env": "fakehpc",
             }],
         }],
     })
@@ -154,12 +153,11 @@ class TestAuthGate:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc",
-                    "directories": [{
-                        "path": "/work/u/demo/run_001",
-                        "permissions": ["upload"],
-                    }],
+                "compute_envs": ["fakehpc"],
+                "directories": [{
+                    "path": "/work/u/demo/run_001",
+                    "permissions": ["upload"],
+                    "env": "fakehpc",
                 }],
             }],
         })
@@ -181,12 +179,11 @@ class TestAuthGate:
             }],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "fakehpc",
-                    "directories": [{
-                        "path": "/work/u/demo/run_001",
-                        "permissions": ["exec"],
-                    }],
+                "compute_envs": ["fakehpc"],
+                "directories": [{
+                    "path": "/work/u/demo/run_001",
+                    "permissions": ["exec"],
+                    "env": "fakehpc",
                 }],
             }],
         })
@@ -217,12 +214,11 @@ class TestAuthGate:
                               "container_upload_target": None}],
             "projects": [{
                 "name": "demo",
-                "compute_env_access": [{
-                    "compute_env": "laptop",
-                    "directories": [{
-                        "path": "/work/u/demo/run_001",
-                        "permissions": ["upload", "exec"],
-                    }],
+                "compute_envs": ["laptop"],
+                "directories": [{
+                    "path": "/work/u/demo/run_001",
+                    "permissions": ["upload", "exec"],
+                    "env": "laptop",
                 }],
             }],
         })
