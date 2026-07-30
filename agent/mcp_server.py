@@ -702,6 +702,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     cluster_module_avail,
     cluster_job_status,
     submit_workflow_job,
+    run_production_pipeline,
     stage_apptainer_image,
     run_step_on_cluster,
 )
