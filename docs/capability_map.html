@@ -52,20 +52,31 @@
   .dnote { font-size:12px; color:#c98b9a; margin-top:6px; font-style:italic; }
   .muted { color:#6e7681; }
   .tablewrap { overflow-x:auto; }
+  table.matrix { border-collapse:collapse; }
+  table.matrix th { text-transform:none; letter-spacing:0; font-size:13px; color:#8be9fd;
+                     position:static; background:transparent; border-bottom:1px solid #1f2733; }
+  table.matrix th.mrow { text-align:left; color:#e6edf3; padding:12px; white-space:nowrap;
+                          vertical-align:top; border-bottom:1px solid #151b24; }
+  table.matrix td.mcell { border:1px solid #1f2733; padding:12px; vertical-align:top;
+                           min-width:220px; color:#c9d1d9; }
+  table.matrix td.mcell.nf { border-color:#7c5cff; box-shadow: inset 0 0 0 1px #7c5cff44; }
+  table.matrix td.mcell.nf::after { content:"Nextflow"; display:inline-block; margin-top:8px;
+                           font-size:10px; letter-spacing:.5px; color:#b8a6ff;
+                           border:1px solid #7c5cff; border-radius:4px; padding:1px 6px; }
 </style></head>
 <body><div class="wrap">
   <h1>What this system can DO — capabilities &amp; the decisions it makes for you</h1>
   <div class="ver">v2 (re-colored 2026-07-30 from the FIRST real cluster drive — htseq-count + DESeq2 on UNC Longleaf; the amber cells that got exercised now carry real evidence) &nbsp;·&nbsp; rendered from <code>docs/capability_decisions.json</code></div>
   <div class="purpose">Two maps in one, sharing one inventory. TOP: the action-verbs a user can ask for (install an env, create a pipeline, run data, move bytes, ...) — &#x27;wtf can this thing do&#x27;. BOTTOM: every decision the system makes when you don&#x27;t specify — its default, whether that default is CODED or IMPROVISED, and whether a wrong choice gets caught. This is step one of the determinism plan: you cannot make behaviour deterministic without first enumerating every decision.</div>
-  <div class="honesty">⚠ v1 is CURATED from reading the code, not auto-swept. Every coded/configurable decision cites its source location so a future drift-lint can verify it (the outcomes-ledger pattern). IMPROVISED decisions have no coded default to verify — they ARE the determinism backlog, not a rendering gap. A capability map that showed only the green would over-promise; the red cells and the one MISSING verb are shown on purpose.</div>
+  <div class="honesty">⚠ v1 is CURATED from reading the code, not auto-swept. Every coded/configurable decision cites its source location so a future drift-lint can verify it (the outcomes-ledger pattern). IMPROVISED decisions have no coded default to verify — they ARE the determinism backlog, not a rendering gap. A capability map that showed only the green would over-promise; the red/amber cells are shown on purpose. UPDATE 2026-07-30: the one-time MISSING verb (production execution) was realized as run_production_pipeline (proven E2E local), so 0 missing verbs remain — but its reference_rebind residual is left visible in the card, not papered over.</div>
   <div class="legend">
     <span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span> &nbsp; <span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span> &nbsp;
     <span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span> &nbsp; <span class="pill" style="border-color:#ff4d6d;color:#ff4d6d">✕&nbsp;MISSING</span>
   </div>
   <div class="strip">
-    <div class="stat dim"><b>8</b><span>capabilities you can ask for</span></div>
-    <div class="stat red"><b>1</b><span>expected verb still MISSING</span></div>
-    <div class="stat"><b>22</b><span>decisions the system makes</span></div>
+    <div class="stat dim"><b>9</b><span>capabilities you can ask for</span></div>
+    <div class="stat red"><b>0</b><span>expected verb still MISSING</span></div>
+    <div class="stat"><b>23</b><span>decisions the system makes</span></div>
     <div class="stat amber"><b>6</b><span>IMPROVISED (the determinism backlog)</span></div>
   </div>
 
@@ -159,17 +170,19 @@
           <div class="row"><span class="k">You get</span><div>the frozen envs + sealed workflows on disk; a one-level cluster dir walk</div></div>
           <div class="note">Query-only. contract_ok is re-earned at read time, not remembered.</div>
         </div>
-        <div class="card missing">
-          <div class="card-h" style="color:#ff4d6d">✕&nbsp;Run MY real data through an already-sealed pipeline, with my params
-            <span class="tag-missing">NOT A FIRST-CLASS VERB</span>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Run MY real data through a frozen env&#x27;s workflow, in production, on either my laptop or the cluster
+            
           </div>
-          <div class="verb">verb: <code>— (no first-class Kind)</code></div>
-          <div class="row"><span class="k">You give</span><ul class="needs"><li>a sealed WorkflowSpec</li><li>real input data</li><li>params</li><li>a target project dir</li></ul></div>
-          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does a PRODUCTION run write its outputs?">▲&nbsp;production_directory</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="How much time / memory / cpus does a cluster job request?">▲&nbsp;slurm_sizing</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="reference_rebind (ungoverned)">▲&nbsp;reference_rebind (ungoverned)</span></div></div>
-          <div class="row"><span class="k">Runs in</span><div>cluster directories[] (production territory) via submit_workflow_job</div></div>
-          <div class="row"><span class="k">You get</span><div>results in the user&#x27;s project workspace</div></div>
-          <div class="note">THE HOLE. Production execution exists only as the HPC bridge submit_workflow_job, not as a modeled verb. And nothing checks that the reference/inputs a production run binds match what the pipeline was SEALED against — the reference rebind is currently ungoverned.</div>
+          <div class="verb">verb: <code>run_production_pipeline</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>a frozen env (freeze_request_key)</li><li>real input data</li><li>a target project dir (directories[] with upload+exec)</li><li>resources (mem/cpus/time)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="compute_locus (from env.type: local docker / cluster nextflow)">▲&nbsp;compute_locus (from env.type: local docker / cluster nextflow)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="production_directory (explicit workflow_dir)">▲&nbsp;production_directory (explicit workflow_dir)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="slurm_sizing (now an explicit `resources` arg, not guessed)">▲&nbsp;slurm_sizing (now an explicit `resources` arg, not guessed)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="reference_rebind (STILL ungoverned)">▲&nbsp;reference_rebind (STILL ungoverned)</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>the named env: local docker (background run.sh) OR cluster directories[] via submit_workflow_job</div></div>
+          <div class="row"><span class="k">You get</span><div>results in the user&#x27;s project workspace + a submission manifest</div></div>
+          <div class="note">REALIZED 2026-07-30 (was THE HOLE). ONE verb, dispatches on env.type; cluster specifics (apptainer/nextflow modules, slurm policy) are ENV PROPERTIES not call args — swap the env, same call. Proven E2E local (samtools biocontainer, rc=0); the cluster branch delegates to the proven submit_workflow_job, re-validated on the next cluster drive. RESIDUAL (honest): it runs a command against a frozen ENV, NOT a replay of a sealed WorkflowSpec, and nothing checks the reference/inputs a run binds match what a pipeline was sealed against — reference_rebind stays ungoverned (a real v1 hardening item).</div>
         </div></div>
+
+  <h2>How work actually runs</h2><div class="muted" style="margin-bottom:10px;font-size:12.5px">How work ACTUALLY runs — the complete, honest set of execution shapes. Two job kinds × two compute loci = FOUR shapes, and Nextflow is used in exactly one of them (cluster data-processing). The env config declares only a submission mechanism (slurm / local); this orchestration is a CODED default per (job-kind × locus), not a config knob — so the system never claims it can run your data eight ways. This grid is rendered from the tagged decisions below (single source of truth).</div><div class="tablewrap"><table class="matrix"><thead><tr><th></th><th>local</th><th>cluster</th></tr></thead><tbody><tr><th class="mrow">acquire data (download)<div class="did">reference_download_mechanism</div></th><td class="mcell ">background bash script — resumable `curl -L -C -`</td><td class="mcell ">resumable `wget -c` / `curl -C -` in a SLURM script (sbatch); the compute node pulls, never the head node</td></tr><tr><th class="mrow">process (workflow steps)<div class="did">process_orchestration</div></th><td class="mcell nf">shell script of `docker run`s against the frozen image — no scheduler, no Nextflow</td><td class="mcell nf">Nextflow process (apptainer exec) in a SLURM launcher — the ONLY cell that uses Nextflow</td></tr></tbody></table></div>
 
   <h2>Every decision it makes when you don't specify</h2>
   <div class="muted" style="margin-bottom:10px;font-size:12.5px">
@@ -338,12 +351,20 @@
               <div class="dnote">The most deterministic decision in the system. A wrong tier is caught at freeze (VALIDATED_IN_IMAGE).</div></td>
         </tr>
         <tr>
+          <td class="q"><b>How is a data-processing / workflow STEP actually run?</b><div class="did">process_orchestration</div></td>
+          <td class="def">local: a shell script of `docker run`s against the frozen image; cluster: a Nextflow process (apptainer exec) wrapped in a SLURM launcher</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/skills/run_production.py:run_production_pipeline</code><div class="muted">VALIDATE: run_step_in_container (local docker) / run_step_on_cluster (cluster). PRODUCTION: run_production_pipeline dispatches on env.type — local docker-run shell script / cluster submit_workflow_job (Nextflow-in-SLURM). One production verb, swap the env.</div>
+              <div class="dnote">Conceptually one thing everywhere: exec the command INSIDE the frozen env&#x27;s container (docker local / apptainer cluster) — same bytes, so validated==shipped holds regardless of locus. What differs is only the orchestration wrapper. Nextflow appears in exactly ONE of the four execution shapes; the config never claims otherwise. REALIZED 2026-07-30: the local-production cell — previously the &#x27;missing verb&#x27; — is now run_production_pipeline (env.type=local), proven E2E (samtools biocontainer, rc=0). The SAME verb runs the cluster cell via env.type=ssh; the cluster specifics (apptainer/nextflow modules, slurm policy) are ENV PROPERTIES, not call args, so a compute env is a swappable resource.</div></td>
+        </tr>
+        <tr>
           <td class="q"><b>HOW is the reference actually fetched?</b><div class="did">reference_download_mechanism</div></td>
           <td class="def">curl -L --progress-bar -C - (resumable) in background locally; a resumable wget -c/curl -C - SLURM job on the compute node if cluster-directed</td>
           <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
           <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
           <td class="src"><code>agent/mcp_tools/data_tools.py:103</code><div class="muted">download_reference_database local + cluster script renderers</div>
-              <div class="dnote">Resumable both ways. The head node never pulls a giant DB — the compute node does.</div></td>
+              <div class="dnote">Resumable both ways. The head node never pulls a giant DB — the compute node does. NOT Nextflow — a plain script.</div></td>
         </tr>
         <tr>
           <td class="q"><b>Where on the cluster does a directed reference land?</b><div class="did">reference_landing_dir</div></td>
