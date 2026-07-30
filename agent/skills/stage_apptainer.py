@@ -73,6 +73,7 @@ from typing import Optional
 
 from agent.skills import compute_access, transfer
 from agent.skills.freeze import record_is_gated as _record_is_gated
+from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
@@ -394,7 +395,13 @@ def stage_apptainer_image(
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""
-        platform = record.get("platform") or "linux/amd64"
+        # The record's `platform` may be stored in conda form ('linux-64', how a
+        # container-native BUILD records it) or docker form ('linux/amd64', how an
+        # adopt/authors record does). It feeds `docker run/pull --platform` below,
+        # which ONLY accepts the docker form — an un-normalized 'linux-64' is
+        # rejected ("unknown operating system or architecture"). canon_platform
+        # collapses both spellings to the docker form (unknown values pass through).
+        platform = _canon_platform(record.get("platform") or "linux/amd64")
 
         # Guard: an ADOPT record MUST carry the image ref to build from.
         # (Kept as an explicit pre-flight refusal — no docker/ssh before it.)

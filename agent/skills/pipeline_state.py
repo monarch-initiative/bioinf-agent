@@ -270,6 +270,17 @@ class PipelineState:
             # Edit-in-place semantic (success-keeps-position OR rc unknown):
             # merge the new fields over the existing record at the same slot.
             merged = {**existing, **step_data, "step": replace_step}
+            # `validation` is captured OUT OF BAND (add_validation runs AFTER
+            # add_step), so a re-run's step_data never carries it — and the merge
+            # above would preserve the PRIOR command's per-file validation records.
+            # That silently violates the "throw away whatever was at N" contract:
+            # replacing an index-build step (8 .ht2 outputs validated 'any') with a
+            # fastqc step leaves the 8 stale 'any' records behind, which then fail
+            # I3.declared_output_type at seal even though the current step's outputs
+            # are all clean. A re-run re-validates its OWN outputs, so drop the
+            # inherited records unless the caller explicitly provided replacements.
+            if "validation" not in step_data:
+                merged.pop("validation", None)
             steps.insert(replace_step - 1, merged)
             self._persist(pipeline_id)
             return replace_step

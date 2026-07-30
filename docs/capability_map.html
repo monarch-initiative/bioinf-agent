@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What this system can DO — capabilities &amp; the decisions it makes for you</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0b0e14; color:#c9d1d9;
+         font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1180px; margin:0 auto; padding:28px 20px 80px; }
+  h1 { font-size:22px; margin:0 0 4px; color:#e6edf3; letter-spacing:.2px; }
+  .ver { color:#6e7681; font-size:12px; margin-bottom:18px; }
+  .purpose { background:#11161f; border:1px solid #1f2733; border-left:3px solid #8be9fd;
+              border-radius:8px; padding:14px 16px; margin:0 0 14px; color:#aeb8c4; }
+  .honesty { background:#1a1206; border:1px solid #3a2a0a; border-left:3px solid #ffb020;
+              border-radius:8px; padding:12px 16px; margin:0 0 20px; color:#e0c890; font-size:13.5px; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 22px; font-size:12.5px; }
+  .legend .pill { font-size:12px; }
+  .strip { display:flex; gap:14px; flex-wrap:wrap; margin:0 0 26px; }
+  .stat { background:#11161f; border:1px solid #1f2733; border-radius:8px; padding:10px 16px; }
+  .stat b { font-size:22px; display:block; }
+  .stat.amber b { color:#ffb020; } .stat.red b { color:#ff4d6d; } .stat.dim b { color:#8be9fd; }
+  .stat span { font-size:12px; color:#8b949e; }
+  h2 { font-size:16px; margin:30px 0 12px; color:#e6edf3;
+        border-bottom:1px solid #1f2733; padding-bottom:6px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
+  .card { background:#11161f; border:1px solid #1f2733; border-radius:10px; padding:14px 16px; }
+  .card.missing { border-color:#3a1420; background:#170c11; }
+  .card-h { font-size:15px; font-weight:650; margin-bottom:8px; }
+  .tag-missing { font-size:10px; background:#ff4d6d; color:#160a0d; padding:1px 6px;
+                  border-radius:4px; margin-left:6px; vertical-align:middle; letter-spacing:.4px; }
+  .verb { font-size:12px; color:#6e7681; margin-bottom:10px; }
+  .verb code, .src code { background:#0b0e14; border:1px solid #1f2733; border-radius:4px;
+                           padding:1px 5px; color:#8be9fd; font-size:12px; }
+  .row { display:flex; gap:10px; margin:7px 0; align-items:flex-start; }
+  .row .k { flex:0 0 92px; color:#6e7681; font-size:12px; text-transform:uppercase;
+             letter-spacing:.4px; padding-top:2px; }
+  ul.needs { margin:0; padding-left:16px; } ul.needs li { font-size:13.5px; }
+  .decides { display:flex; flex-wrap:wrap; gap:5px; }
+  .dchip { font-size:11px; border:1px solid; border-radius:10px; padding:1px 8px; cursor:help; }
+  .note { margin-top:10px; font-size:12.5px; color:#8b949e; font-style:italic;
+           border-top:1px dashed #1f2733; padding-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.5px;
+        padding:8px 10px; border-bottom:1px solid #1f2733; position:sticky; top:0; background:#0b0e14; }
+  td { padding:11px 10px; border-bottom:1px solid #151b24; vertical-align:top; }
+  td.q b { color:#e6edf3; } .did { font-size:11px; color:#6e7681; margin-top:2px; }
+  td.def { color:#aeb8c4; max-width:280px; }
+  .pill { display:inline-block; border:1px solid; border-radius:12px; padding:2px 9px;
+           font-size:11.5px; white-space:nowrap; }
+  .src { max-width:340px; } .src .muted { font-size:11.5px; margin-top:3px; }
+  .dnote { font-size:12px; color:#c98b9a; margin-top:6px; font-style:italic; }
+  .muted { color:#6e7681; }
+  .tablewrap { overflow-x:auto; }
+</style></head>
+<body><div class="wrap">
+  <h1>What this system can DO — capabilities &amp; the decisions it makes for you</h1>
+  <div class="ver">v2 (re-colored 2026-07-30 from the FIRST real cluster drive — htseq-count + DESeq2 on UNC Longleaf; the amber cells that got exercised now carry real evidence) &nbsp;·&nbsp; rendered from <code>docs/capability_decisions.json</code></div>
+  <div class="purpose">Two maps in one, sharing one inventory. TOP: the action-verbs a user can ask for (install an env, create a pipeline, run data, move bytes, ...) — &#x27;wtf can this thing do&#x27;. BOTTOM: every decision the system makes when you don&#x27;t specify — its default, whether that default is CODED or IMPROVISED, and whether a wrong choice gets caught. This is step one of the determinism plan: you cannot make behaviour deterministic without first enumerating every decision.</div>
+  <div class="honesty">⚠ v1 is CURATED from reading the code, not auto-swept. Every coded/configurable decision cites its source location so a future drift-lint can verify it (the outcomes-ledger pattern). IMPROVISED decisions have no coded default to verify — they ARE the determinism backlog, not a rendering gap. A capability map that showed only the green would over-promise; the red cells and the one MISSING verb are shown on purpose.</div>
+  <div class="legend">
+    <span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span> &nbsp; <span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span> &nbsp;
+    <span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span> &nbsp; <span class="pill" style="border-color:#ff4d6d;color:#ff4d6d">✕&nbsp;MISSING</span>
+  </div>
+  <div class="strip">
+    <div class="stat dim"><b>8</b><span>capabilities you can ask for</span></div>
+    <div class="stat red"><b>1</b><span>expected verb still MISSING</span></div>
+    <div class="stat"><b>22</b><span>decisions the system makes</span></div>
+    <div class="stat amber"><b>6</b><span>IMPROVISED (the determinism backlog)</span></div>
+  </div>
+
+  <h2>What you can ask this system to do</h2>
+  <div class="cards">
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Install a tool / build an environment
+            
+          </div>
+          <div class="verb">verb: <code>install_env</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>tool name(s) (versions optional — resolved or asked)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Where is the container image actually BUILT?">●&nbsp;env_build_locus</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Which install path (conda / pip / cran / author-image / authors-recipe / binary / source / ...)?">●&nbsp;install_tier</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Adopt a published biocontainer, or build the image from scratch?">●&nbsp;build_method</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="What target architecture is the image built for?">◆&nbsp;platform</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="What OS base does a container-native build start from?">●&nbsp;base_image</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="Which conda channels are searched, in what order?">◆&nbsp;conda_channels</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="What Python does a fresh env get when unspecified?">◆&nbsp;python_version</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="How is the frozen image delivered to HPC?">◆&nbsp;hpc_delivery_mode</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="GPU/accelerator policy for the env?">◆&nbsp;accelerator</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="Is the artifact license-gated (not redistributable)?">◆&nbsp;gated_license</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>local host + local docker daemon (build)</div></div>
+          <div class="row"><span class="k">You get</span><div>a frozen, content-addressed env image + ENV report + recipe + attestation</div></div>
+          <div class="note">The most on-rails verb: tier + build-method + validation are all coded and exit-checked.</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Add a tool to an environment I already built
+            
+          </div>
+          <div class="verb">verb: <code>add_to_env</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>existing env</li><li>tool name</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Which install path (conda / pip / cran / author-image / authors-recipe / binary / source / ...)?">●&nbsp;install_tier</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Adopt a published biocontainer, or build the image from scratch?">●&nbsp;build_method</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>local host + local docker daemon (re-freeze)</div></div>
+          <div class="row"><span class="k">You get</span><div>a re-frozen env image (new digest)</div></div>
+          <div class="note">Same rails as install_env, acting on an existing draft.</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Create &amp; VALIDATE a pipeline (run the steps, prove they work, seal it)
+            
+          </div>
+          <div class="verb">verb: <code>run_step (×N) + SEAL</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>a frozen env (or envs)</li><li>test/validation data (named, or a core dataset is picked)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does env/pipeline CREATION &amp; VALIDATION write?">▲&nbsp;validation_directory</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="What data validates the pipeline?">▲&nbsp;test_datasource</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="How is heavy test data trimmed to stay fast?">◆&nbsp;test_data_subsetting</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="slurm_sizing (if cluster)">▲&nbsp;slurm_sizing (if cluster)</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>test SANDBOX (cluster: scratch/&lt;project&gt;/&lt;workflow&gt;/ ; LOCAL: repo tree — no sandbox yet)</div></div>
+          <div class="row"><span class="k">You get</span><div>a sealed WorkflowSpec + RUN dashboard, rendered purely from the validated run</div></div>
+          <div class="note">This is a COMPOSITION (run_step ×N + the SEAL seam), not a single Kind. It is where the reference/test data (e.g. the GTF) is bound as an ExternalSource. LIMIT surfaced on Longleaf 2026-07-30: a MULTI-STEP CLUSTER chain can&#x27;t be cleanly SEALED — a step that consumes a prior step&#x27;s output DIRECTORY (DESeq2 reading htseq-count&#x27;s counts dir) is an I8 orphan (the directory basename matches no individual file output, and the prior step&#x27;s outputs are recorded as local download paths). Single-step cluster seal works (proved by samtools_cluster_rung3); directory-aware step-&gt;step lineage does not exist yet. Run-and-go is the honest close until it does — forcing the seal would mean declaring step 1&#x27;s real output as &#x27;external&#x27;, a REPORTS-NEVER-LIE violation.</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Run one step against a frozen env
+            
+          </div>
+          <div class="verb">verb: <code>run_step</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>a frozen env</li><li>input path(s)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does env/pipeline CREATION &amp; VALIDATION write?">▲&nbsp;validation_directory</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="Which directory is scanned for a step&#x27;s outputs?">◆&nbsp;watch_dir</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>local docker (run_step_in_container) OR cluster scratch (run_step_on_cluster)</div></div>
+          <div class="row"><span class="k">You get</span><div>validated output files + a recorded pipeline_step</div></div>
+          <div class="note">Authoring-time, single-step, env-centric. NOT production execution of a whole sealed pipeline (see the missing verb).</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Download reference data (a genome, an annotation, a variant DB)
+            
+          </div>
+          <div class="verb">verb: <code>download_reference_database</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>name</li><li>URL (or a data recipe)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="Where does downloaded reference data go — local or cluster?">◆&nbsp;reference_data_destination</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="HOW is the reference actually fetched?">●&nbsp;reference_download_mechanism</span> <span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Where on the cluster does a directed reference land?">●&nbsp;reference_landing_dir</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="slurm_sizing (if cluster)">▲&nbsp;slurm_sizing (if cluster)</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>LOCAL (background curl) by default; the COMPUTE NODE if a compute_env is named</div></div>
+          <div class="row"><span class="k">You get</span><div>a versioned, sha256-anchored ReferenceDatabase record (local or cluster locus)</div></div>
+          <div class="note">This is the exomiser/GTF question: default is LOCAL; it only goes to the cluster if you say so, and then it lands in the env&#x27;s shared common_data zone.</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Move bytes (upload inputs to the cluster / download results back)
+            
+          </div>
+          <div class="verb">verb: <code>transfer_data</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>local path</li><li>remote path (routed by which zone it falls in)</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="How do bytes move to/from the cluster?">◆&nbsp;transfer_wire_protocol</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="transfer_zone (scratch / common_data / project_path)">▲&nbsp;transfer_zone (scratch / common_data / project_path)</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>local &lt;-&gt; cluster</div></div>
+          <div class="row"><span class="k">You get</span><div>verified bytes at the destination + a transfer_history record</div></div>
+          <div class="note">No install implied. Zone + auth are coded; the wire protocol (scp vs globus) is a per-env config knob.</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;Rebuild an env from its recipe and prove it matches
+            
+          </div>
+          <div class="verb">verb: <code>reproduce</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>a recipe (yaml) from a prior freeze</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#3ddc84;color:#3ddc84" title="Where is the container image actually BUILT?">●&nbsp;env_build_locus</span> <span class="dchip" style="border-color:#4aa3ff;color:#4aa3ff" title="What target architecture is the image built for?">◆&nbsp;platform</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>local docker daemon</div></div>
+          <div class="row"><span class="k">You get</span><div>a rebuilt image + a digest-match verdict</div></div>
+          <div class="note">verify_env_recipe: container-native rebuilds are digest-checked; adopt paths are re-pulled-and-compared; authors-dockerfile refuses (not bit-reproducible).</div>
+        </div>
+        <div class="card ">
+          <div class="card-h" style="color:#8be9fd">▸&nbsp;What do I already have / what&#x27;s on the cluster?
+            
+          </div>
+          <div class="verb">verb: <code>list_installed_pipelines / snapshot_project / agent_status</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>(nothing) or a project name</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class='muted'>—</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>read-only (local records; one ssh find for a project snapshot)</div></div>
+          <div class="row"><span class="k">You get</span><div>the frozen envs + sealed workflows on disk; a one-level cluster dir walk</div></div>
+          <div class="note">Query-only. contract_ok is re-earned at read time, not remembered.</div>
+        </div>
+        <div class="card missing">
+          <div class="card-h" style="color:#ff4d6d">✕&nbsp;Run MY real data through an already-sealed pipeline, with my params
+            <span class="tag-missing">NOT A FIRST-CLASS VERB</span>
+          </div>
+          <div class="verb">verb: <code>— (no first-class Kind)</code></div>
+          <div class="row"><span class="k">You give</span><ul class="needs"><li>a sealed WorkflowSpec</li><li>real input data</li><li>params</li><li>a target project dir</li></ul></div>
+          <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does the work run — local or cluster?">▲&nbsp;compute_locus</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="Where does a PRODUCTION run write its outputs?">▲&nbsp;production_directory</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="How much time / memory / cpus does a cluster job request?">▲&nbsp;slurm_sizing</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="reference_rebind (ungoverned)">▲&nbsp;reference_rebind (ungoverned)</span></div></div>
+          <div class="row"><span class="k">Runs in</span><div>cluster directories[] (production territory) via submit_workflow_job</div></div>
+          <div class="row"><span class="k">You get</span><div>results in the user&#x27;s project workspace</div></div>
+          <div class="note">THE HOLE. Production execution exists only as the HPC bridge submit_workflow_job, not as a modeled verb. And nothing checks that the reference/inputs a production run binds match what the pipeline was SEALED against — the reference rebind is currently ungoverned.</div>
+        </div></div>
+
+  <h2>Every decision it makes when you don't specify</h2>
+  <div class="muted" style="margin-bottom:10px;font-size:12.5px">
+    exit_caught = does the honesty contract (freeze/seal gates) catch a WRONG choice here? If yes, improvisation is safe (a bad pick can&#x27;t ship). If no, a wrong choice ships silently — that is where determinism must be enforced up front.</div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Decision</th><th>Default</th><th>Status</th><th>Wrong choice?</th><th>Source · notes</th></tr></thead>
+    <tbody>
+        <tr>
+          <td class="q"><b>Where does the work run — local or cluster?</b><div class="did">compute_locus</div></td>
+          <td class="def">LOCAL</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
+          <td class="src"><code>agent/skills/intent.py:88</code><div class="muted">emergent from which primitive the agent calls; the only STATED policy (Compute.unspecified, &#x27;never silently defaulted to local&#x27;) lives in the advisory intent layer</div>
+              <div class="dnote">A wrong locus still seals honestly — the exit contract has nothing to say about it. Top of the determinism backlog. Exercised end-to-end on Longleaf 2026-07-30 (both steps ran cluster-locus via run_step_on_cluster; the choice was mine, not modeled).</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Where does a PRODUCTION run write its outputs?</b><div class="did">production_directory</div></td>
+          <td class="def">cluster: directories[] (explicit per-dir auth); LOCAL: undefined</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
+          <td class="src"><code>agent/skills/compute_access.py</code><div class="muted">cluster half coded via projects_access.yaml directories[]; local production has no defined zone</div>
+              <div class="dnote">Other half of the parity policy: execution -&gt; project dirs. Cluster-only today.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>At production run time, is the bound reference checked against what the pipeline was SEALED against?</b><div class="did">reference_rebind</div></td>
+          <td class="def">no check (ungoverned)</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
+          <td class="src"><code>agent/skills/submit_workflow.py</code><div class="muted">submit_workflow_job takes concrete input paths; nothing diffs them against the sealed spec&#x27;s pinned references</div>
+              <div class="dnote">REPORTS-NEVER-LIE gap: a pipeline validated against gencode.v44 can be run against gencode.v38 and nothing discloses the divergence. The data analog of the tool requested-vs-installed drift flag we already enforce.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>How much time / memory / cpus does a cluster job request?</b><div class="did">slurm_sizing</div></td>
+          <td class="def">time &amp; mem REQUIRED (no default); cpus/ntasks default to 1</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
+          <td class="src"><code>agent/skills/workflow_render.py:121</code><div class="muted">_check_slurm requires time+mem; the agent must supply them (today: a guess, or derived from non-authoritative emulated numbers)</div>
+              <div class="dnote">The system refuses to FABRICATE a measured number, but the REQUESTED sizing is an unprincipled agent guess. Too low -&gt; OOM kill; too high -&gt; waste. No profile-then-size loop exists. FIRST AUTHORITATIVE DATA (Longleaf 2026-07-30): htseq-count requested 8G/30min, really used 488MB/44s (~16x over on mem); DESeq2 requested 4G/20min, really used 1.28GB/25s (~3x over). Both jobs succeeded — the guess erred SAFE (over-provisioned), so this cell costs efficiency, not correctness. A data-informed default (a per-tool table seeded from sacct MaxRSS/Elapsed, or a profile-then-size loop) is now concrete and unblocked.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>What data validates the pipeline?</b><div class="did">test_datasource</div></td>
+          <td class="def">you name it; else the agent picks from data/core_test_data_hg38/manifest.yaml</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools (select_test_data)</code><div class="muted">select_test_data + agent judgment</div>
+              <div class="dnote">If specified, deterministic and bound as an ExternalSource. Unspecified -&gt; agent chooses; the choice is at least exit-validated as a real typed input.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Where does env/pipeline CREATION &amp; VALIDATION write?</b><div class="did">validation_directory</div></td>
+          <td class="def">cluster: ALWAYS scratch/&lt;project&gt;/&lt;workflow&gt;/ (no caller knob); LOCAL: the repo tree (envs/, env_reports/) — NO sandbox</td>
+          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
+          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
+          <td class="src"><code>agent/skills/run_cluster_step.py</code><div class="muted">cluster half is coded (run_step_on_cluster); local half has no sandbox — the parity gap you flagged</div>
+              <div class="dnote">PARITY GAP. The test-dir/project-dir split is a locus-INDEPENDENT policy that today holds only on the cluster. Bringing local into parity converts this cell to coded. CLUSTER HALF CONFIRMED on Longleaf 2026-07-30: scratch/&lt;project&gt;/&lt;workflow&gt;/ is auto-computed with no caller knob and worked cleanly for both steps. The LOCAL sandbox is the remaining actionable item (user-blessed).</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>GPU/accelerator policy for the env?</b><div class="did">accelerator</div></td>
+          <td class="def">none</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/freeze_tools.py:93</code><div class="muted">freeze() accel=&#x27;none&#x27;; GPU base nvidia/cuda:12.1.0 when gpu_required</div>
+              <div class="dnote">I12 accelerator honesty: cuda/rocm need a toolkit_version; runtime_verified needs a captured probe.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Which conda channels are searched, in what order?</b><div class="did">conda_channels</div></td>
+          <td class="def">bioconda, conda-forge, defaults</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>config/agent_config.yaml:20</code><div class="muted">config conda.base_channels</div>
+              <div class="dnote">Channel order is deterministic; a package resolving from an unexpected channel is still exit-validated in-image.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Is the artifact license-gated (not redistributable)?</b><div class="did">gated_license</div></td>
+          <td class="def">false (not gated)</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/freeze_tools.py:94</code><div class="muted">freeze() gated=False</div>
+              <div class="dnote">I13 license firewall: gated =&gt; redistributable:false AND licenses[] recorded, never pushed.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>How is the frozen image delivered to HPC?</b><div class="did">hpc_delivery_mode</div></td>
+          <td class="def">registry-free: docker save -&gt; apptainer build docker-archive (zero config); a registry push if config docker.registry or push_target is set</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>config/agent_config.yaml:42</code><div class="muted">freeze() delivery + config docker.registry</div>
+              <div class="dnote">Gated (licensed) artifacts are never pushed (I13) — tarball-only.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>What target architecture is the image built for?</b><div class="did">platform</div></td>
+          <td class="def">linux/amd64</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>config/agent_config.yaml:35</code><div class="muted">config docker.platform + freeze() platform arg (default &#x27;linux-64&#x27;)</div>
+              <div class="dnote">On an arm64 host, amd64 builds/runs are QEMU-emulated — I7 timings are then marked non-authoritative (locus: emulated). BUG surfaced+fixed on Longleaf 2026-07-30: a container-native env records platform in CONDA form (&#x27;linux-64&#x27;) while adopt/authors records use DOCKER form (&#x27;linux/amd64&#x27;); stage_apptainer fed the conda form straight into `docker --platform` and hard-failed (the first build-archive .sif ever staged to a cluster hit this). Fixed by canonicalizing at the docker boundary. The record&#x27;s dual spelling remains a cosmetic report inconsistency worth reconciling.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>What Python does a fresh env get when unspecified?</b><div class="did">python_version</div></td>
+          <td class="def">3.11</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>config/agent_config.yaml:24</code><div class="muted">config conda.python_version</div>
+              </td>
+        </tr>
+        <tr>
+          <td class="q"><b>Where does downloaded reference data go — local or cluster?</b><div class="did">reference_data_destination</div></td>
+          <td class="def">LOCAL (local_path); cluster only if compute_env is named</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/data_tools.py:36</code><div class="muted">download_reference_database compute_env=&#x27;&#x27; =&gt; local default</div>
+              <div class="dnote">The exomiser/GTF answer: local by default, explicit knob to send it to the cluster.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>How is heavy test data trimmed to stay fast?</b><div class="did">test_data_subsetting</div></td>
+          <td class="def">max 10000 reads; restrict to chr22 (fallback chr1)</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>config/agent_config.yaml:64</code><div class="muted">config testing.max_reads / preferred_chromosome / fallback_chromosome</div>
+              </td>
+        </tr>
+        <tr>
+          <td class="q"><b>How do bytes move to/from the cluster?</b><div class="did">transfer_wire_protocol</div></td>
+          <td class="def">scp_head_node (scp + sha256 round-trip); globus if the env declares it</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>projects_access.yaml (per env)</code><div class="muted">env.data_transfer.type in projects_access.yaml</div>
+              </td>
+        </tr>
+        <tr>
+          <td class="q"><b>Which directory is scanned for a step&#x27;s outputs?</b><div class="did">watch_dir</div></td>
+          <td class="def">the input&#x27;s directory</td>
+          <td><span class="pill" style="border-color:#4aa3ff;color:#4aa3ff">◆&nbsp;CODED · configurable</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/run_tools.py:65</code><div class="muted">run_pipeline_step / run_step_in_container watch_dir=&#x27;&#x27; default</div>
+              <div class="dnote">An output written elsewhere with no watch_dir override is undetected -&gt; unvalidated -&gt; fails I3 at seal. So a wrong default is exit-caught (loudly).</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>What OS base does a container-native build start from?</b><div class="did">base_image</div></td>
+          <td class="def">debian:bookworm-slim, pinned by sha256 digest</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span class="muted">n/a</span></td>
+          <td class="src"><code>agent/skills/container_build.py:144</code><div class="muted">container_build.BASE_IMAGE (digest-pinned for OS-layer reproducibility). NB: config docker.base_image says &#x27;ubuntu:22.04&#x27; — a separate/legacy path, a dual-source worth reconciling</div>
+              <div class="dnote">Digest-pinned = deterministic. Flagged: two sources name a base image; only the hardcoded one drives the container-native build.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Adopt a published biocontainer, or build the image from scratch?</b><div class="did">build_method</div></td>
+          <td class="def">pure-conda + a published biocontainer -&gt; ADOPT by digest; anything else -&gt; container-native BUILD</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/skills/freeze.py</code><div class="muted">freeze() ADOPT-or-BUILD rule</div>
+              <div class="dnote">Coded and exit-checked (the built/adopted image must pass the honesty contract).</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Where is the container image actually BUILT?</b><div class="did">env_build_locus</div></td>
+          <td class="def">LOCAL docker daemon (always)</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span class="muted">n/a</span></td>
+          <td class="src"><code>agent/skills/container_build.py:773</code><div class="muted">docker buildx build on the local daemon; no cluster-build path by design (never build on a head node — build local, ship via apptainer)</div>
+              <div class="dnote">The decision the capability list originally hid. Hardcoded, with a strong rationale ([[feedback-no-head-node-image-builds]]). Deterministic.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Which install path (conda / pip / cran / author-image / authors-recipe / binary / source / ...)?</b><div class="did">install_tier</div></td>
+          <td class="def">the highest-ranked AVAILABLE tier</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/skills/resolve_tool.py</code><div class="muted">resolve_tool&#x27;s reliability-gated ranked ladder (author_image &gt; authors_recipe &gt; conda &gt; pip/cran/bioc &gt; binary &gt; synthesis &gt; source &gt; manual)</div>
+              <div class="dnote">The most deterministic decision in the system. A wrong tier is caught at freeze (VALIDATED_IN_IMAGE).</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>HOW is the reference actually fetched?</b><div class="did">reference_download_mechanism</div></td>
+          <td class="def">curl -L --progress-bar -C - (resumable) in background locally; a resumable wget -c/curl -C - SLURM job on the compute node if cluster-directed</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/data_tools.py:103</code><div class="muted">download_reference_database local + cluster script renderers</div>
+              <div class="dnote">Resumable both ways. The head node never pulls a giant DB — the compute node does.</div></td>
+        </tr>
+        <tr>
+          <td class="q"><b>Where on the cluster does a directed reference land?</b><div class="did">reference_landing_dir</div></td>
+          <td class="def">&lt;common_data&gt;/&lt;name&gt;/ (remote_dir overrides, must stay under common_data)</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/mcp_tools/data_tools.py:44</code><div class="muted">download_reference_database cluster path</div>
+              </td>
+        </tr></tbody>
+  </table></div>
+</div></body></html>
