@@ -1,0 +1,358 @@
+{
+  "meta": {
+    "title": "What this system can DO — capabilities & the decisions it makes for you",
+    "version": "v2 (re-colored 2026-07-30 from the FIRST real cluster drive — htseq-count + DESeq2 on UNC Longleaf; the amber cells that got exercised now carry real evidence)",
+    "purpose": "Two maps in one, sharing one inventory. TOP: the action-verbs a user can ask for (install an env, create a pipeline, run data, move bytes, ...) — 'wtf can this thing do'. BOTTOM: every decision the system makes when you don't specify — its default, whether that default is CODED or IMPROVISED, and whether a wrong choice gets caught. This is step one of the determinism plan: you cannot make behaviour deterministic without first enumerating every decision.",
+    "honesty_note": "v1 is CURATED from reading the code, not auto-swept. Every coded/configurable decision cites its source location so a future drift-lint can verify it (the outcomes-ledger pattern). IMPROVISED decisions have no coded default to verify — they ARE the determinism backlog, not a rendering gap. A capability map that showed only the green would over-promise; the red cells and the one MISSING verb are shown on purpose.",
+    "legend": {
+      "coded_fixed": "Hardcoded in the code, no knob. Fully deterministic. (green)",
+      "coded_configurable": "A stated default in config/signature, overridable. Deterministic with a knob. (blue)",
+      "improvised": "No coded default — the agent chooses per request. This is the mess-risk surface. (amber)",
+      "missing": "A capability users will expect that the system does NOT have as a first-class action. (red)"
+    },
+    "exit_caught_note": "exit_caught = does the honesty contract (freeze/seal gates) catch a WRONG choice here? If yes, improvisation is safe (a bad pick can't ship). If no, a wrong choice ships silently — that is where determinism must be enforced up front."
+  },
+
+  "capabilities": [
+    {
+      "id": "install_env",
+      "ask": "Install a tool / build an environment",
+      "verb": "install_env",
+      "exists": true,
+      "needs": ["tool name(s) (versions optional — resolved or asked)"],
+      "decides": ["compute_locus", "env_build_locus", "install_tier", "build_method", "platform", "base_image", "conda_channels", "python_version", "hpc_delivery_mode", "accelerator", "gated_license"],
+      "runs_in": "local host + local docker daemon (build)",
+      "produces": "a frozen, content-addressed env image + ENV report + recipe + attestation",
+      "note": "The most on-rails verb: tier + build-method + validation are all coded and exit-checked."
+    },
+    {
+      "id": "add_to_env",
+      "ask": "Add a tool to an environment I already built",
+      "verb": "add_to_env",
+      "exists": true,
+      "needs": ["existing env", "tool name"],
+      "decides": ["install_tier", "build_method", "compute_locus"],
+      "runs_in": "local host + local docker daemon (re-freeze)",
+      "produces": "a re-frozen env image (new digest)",
+      "note": "Same rails as install_env, acting on an existing draft."
+    },
+    {
+      "id": "author_pipeline",
+      "ask": "Create & VALIDATE a pipeline (run the steps, prove they work, seal it)",
+      "verb": "run_step (×N) + SEAL",
+      "exists": true,
+      "needs": ["a frozen env (or envs)", "test/validation data (named, or a core dataset is picked)"],
+      "decides": ["compute_locus", "validation_directory", "test_datasource", "test_data_subsetting", "slurm_sizing (if cluster)"],
+      "runs_in": "test SANDBOX (cluster: scratch/<project>/<workflow>/ ; LOCAL: repo tree — no sandbox yet)",
+      "produces": "a sealed WorkflowSpec + RUN dashboard, rendered purely from the validated run",
+      "note": "This is a COMPOSITION (run_step ×N + the SEAL seam), not a single Kind. It is where the reference/test data (e.g. the GTF) is bound as an ExternalSource. LIMIT surfaced on Longleaf 2026-07-30: a MULTI-STEP CLUSTER chain can't be cleanly SEALED — a step that consumes a prior step's output DIRECTORY (DESeq2 reading htseq-count's counts dir) is an I8 orphan (the directory basename matches no individual file output, and the prior step's outputs are recorded as local download paths). Single-step cluster seal works (proved by samtools_cluster_rung3); directory-aware step->step lineage does not exist yet. Run-and-go is the honest close until it does — forcing the seal would mean declaring step 1's real output as 'external', a REPORTS-NEVER-LIE violation."
+    },
+    {
+      "id": "run_step",
+      "ask": "Run one step against a frozen env",
+      "verb": "run_step",
+      "exists": true,
+      "needs": ["a frozen env", "input path(s)"],
+      "decides": ["compute_locus", "validation_directory", "watch_dir"],
+      "runs_in": "local docker (run_step_in_container) OR cluster scratch (run_step_on_cluster)",
+      "produces": "validated output files + a recorded pipeline_step",
+      "note": "Authoring-time, single-step, env-centric. NOT production execution of a whole sealed pipeline (see the missing verb)."
+    },
+    {
+      "id": "download_reference_database",
+      "ask": "Download reference data (a genome, an annotation, a variant DB)",
+      "verb": "download_reference_database",
+      "exists": true,
+      "needs": ["name", "URL (or a data recipe)"],
+      "decides": ["reference_data_destination", "reference_download_mechanism", "reference_landing_dir", "slurm_sizing (if cluster)"],
+      "runs_in": "LOCAL (background curl) by default; the COMPUTE NODE if a compute_env is named",
+      "produces": "a versioned, sha256-anchored ReferenceDatabase record (local or cluster locus)",
+      "note": "This is the exomiser/GTF question: default is LOCAL; it only goes to the cluster if you say so, and then it lands in the env's shared common_data zone."
+    },
+    {
+      "id": "transfer_data",
+      "ask": "Move bytes (upload inputs to the cluster / download results back)",
+      "verb": "transfer_data",
+      "exists": true,
+      "needs": ["local path", "remote path (routed by which zone it falls in)"],
+      "decides": ["transfer_wire_protocol", "transfer_zone (scratch / common_data / project_path)"],
+      "runs_in": "local <-> cluster",
+      "produces": "verified bytes at the destination + a transfer_history record",
+      "note": "No install implied. Zone + auth are coded; the wire protocol (scp vs globus) is a per-env config knob."
+    },
+    {
+      "id": "reproduce",
+      "ask": "Rebuild an env from its recipe and prove it matches",
+      "verb": "reproduce",
+      "exists": true,
+      "needs": ["a recipe (yaml) from a prior freeze"],
+      "decides": ["env_build_locus", "platform"],
+      "runs_in": "local docker daemon",
+      "produces": "a rebuilt image + a digest-match verdict",
+      "note": "verify_env_recipe: container-native rebuilds are digest-checked; adopt paths are re-pulled-and-compared; authors-dockerfile refuses (not bit-reproducible)."
+    },
+    {
+      "id": "orient",
+      "ask": "What do I already have / what's on the cluster?",
+      "verb": "list_installed_pipelines / snapshot_project / agent_status",
+      "exists": true,
+      "needs": ["(nothing) or a project name"],
+      "decides": [],
+      "runs_in": "read-only (local records; one ssh find for a project snapshot)",
+      "produces": "the frozen envs + sealed workflows on disk; a one-level cluster dir walk",
+      "note": "Query-only. contract_ok is re-earned at read time, not remembered."
+    },
+    {
+      "id": "run_production_pipeline",
+      "ask": "Run MY real data through an already-sealed pipeline, with my params",
+      "verb": "— (no first-class Kind)",
+      "exists": false,
+      "needs": ["a sealed WorkflowSpec", "real input data", "params", "a target project dir"],
+      "decides": ["compute_locus", "production_directory", "slurm_sizing", "reference_rebind (ungoverned)"],
+      "runs_in": "cluster directories[] (production territory) via submit_workflow_job",
+      "produces": "results in the user's project workspace",
+      "note": "THE HOLE. Production execution exists only as the HPC bridge submit_workflow_job, not as a modeled verb. And nothing checks that the reference/inputs a production run binds match what the pipeline was SEALED against — the reference rebind is currently ungoverned."
+    }
+  ],
+
+  "decisions": [
+    {
+      "id": "compute_locus",
+      "question": "Where does the work run — local or cluster?",
+      "default": "LOCAL",
+      "status": "improvised",
+      "source": "emergent from which primitive the agent calls; the only STATED policy (Compute.unspecified, 'never silently defaulted to local') lives in the advisory intent layer",
+      "source_ref": "agent/skills/intent.py:88",
+      "applies_to": ["install_env", "add_to_env", "author_pipeline", "run_step", "run_production_pipeline"],
+      "exit_caught": false,
+      "note": "A wrong locus still seals honestly — the exit contract has nothing to say about it. Top of the determinism backlog. Exercised end-to-end on Longleaf 2026-07-30 (both steps ran cluster-locus via run_step_on_cluster; the choice was mine, not modeled)."
+    },
+    {
+      "id": "env_build_locus",
+      "question": "Where is the container image actually BUILT?",
+      "default": "LOCAL docker daemon (always)",
+      "status": "coded_fixed",
+      "source": "docker buildx build on the local daemon; no cluster-build path by design (never build on a head node — build local, ship via apptainer)",
+      "source_ref": "agent/skills/container_build.py:773",
+      "applies_to": ["install_env", "add_to_env", "reproduce"],
+      "exit_caught": null,
+      "note": "The decision the capability list originally hid. Hardcoded, with a strong rationale ([[feedback-no-head-node-image-builds]]). Deterministic."
+    },
+    {
+      "id": "install_tier",
+      "question": "Which install path (conda / pip / cran / author-image / authors-recipe / binary / source / ...)?",
+      "default": "the highest-ranked AVAILABLE tier",
+      "status": "coded_fixed",
+      "source": "resolve_tool's reliability-gated ranked ladder (author_image > authors_recipe > conda > pip/cran/bioc > binary > synthesis > source > manual)",
+      "source_ref": "agent/skills/resolve_tool.py",
+      "applies_to": ["install_env", "add_to_env"],
+      "exit_caught": true,
+      "note": "The most deterministic decision in the system. A wrong tier is caught at freeze (VALIDATED_IN_IMAGE)."
+    },
+    {
+      "id": "build_method",
+      "question": "Adopt a published biocontainer, or build the image from scratch?",
+      "default": "pure-conda + a published biocontainer -> ADOPT by digest; anything else -> container-native BUILD",
+      "status": "coded_fixed",
+      "source": "freeze() ADOPT-or-BUILD rule",
+      "source_ref": "agent/skills/freeze.py",
+      "applies_to": ["install_env", "add_to_env"],
+      "exit_caught": true,
+      "note": "Coded and exit-checked (the built/adopted image must pass the honesty contract)."
+    },
+    {
+      "id": "platform",
+      "question": "What target architecture is the image built for?",
+      "default": "linux/amd64",
+      "status": "coded_configurable",
+      "source": "config docker.platform + freeze() platform arg (default 'linux-64')",
+      "source_ref": "config/agent_config.yaml:35",
+      "applies_to": ["install_env", "add_to_env", "reproduce", "run_step"],
+      "exit_caught": true,
+      "note": "On an arm64 host, amd64 builds/runs are QEMU-emulated — I7 timings are then marked non-authoritative (locus: emulated). BUG surfaced+fixed on Longleaf 2026-07-30: a container-native env records platform in CONDA form ('linux-64') while adopt/authors records use DOCKER form ('linux/amd64'); stage_apptainer fed the conda form straight into `docker --platform` and hard-failed (the first build-archive .sif ever staged to a cluster hit this). Fixed by canonicalizing at the docker boundary. The record's dual spelling remains a cosmetic report inconsistency worth reconciling."
+    },
+    {
+      "id": "base_image",
+      "question": "What OS base does a container-native build start from?",
+      "default": "debian:bookworm-slim, pinned by sha256 digest",
+      "status": "coded_fixed",
+      "source": "container_build.BASE_IMAGE (digest-pinned for OS-layer reproducibility). NB: config docker.base_image says 'ubuntu:22.04' — a separate/legacy path, a dual-source worth reconciling",
+      "source_ref": "agent/skills/container_build.py:144",
+      "applies_to": ["install_env", "add_to_env", "reproduce"],
+      "exit_caught": null,
+      "note": "Digest-pinned = deterministic. Flagged: two sources name a base image; only the hardcoded one drives the container-native build."
+    },
+    {
+      "id": "conda_channels",
+      "question": "Which conda channels are searched, in what order?",
+      "default": "bioconda, conda-forge, defaults",
+      "status": "coded_configurable",
+      "source": "config conda.base_channels",
+      "source_ref": "config/agent_config.yaml:20",
+      "applies_to": ["install_env", "add_to_env"],
+      "exit_caught": true,
+      "note": "Channel order is deterministic; a package resolving from an unexpected channel is still exit-validated in-image."
+    },
+    {
+      "id": "python_version",
+      "question": "What Python does a fresh env get when unspecified?",
+      "default": "3.11",
+      "status": "coded_configurable",
+      "source": "config conda.python_version",
+      "source_ref": "config/agent_config.yaml:24",
+      "applies_to": ["install_env"],
+      "exit_caught": true
+    },
+    {
+      "id": "reference_data_destination",
+      "question": "Where does downloaded reference data go — local or cluster?",
+      "default": "LOCAL (local_path); cluster only if compute_env is named",
+      "status": "coded_configurable",
+      "source": "download_reference_database compute_env='' => local default",
+      "source_ref": "agent/mcp_tools/data_tools.py:36",
+      "applies_to": ["download_reference_database"],
+      "exit_caught": true,
+      "note": "The exomiser/GTF answer: local by default, explicit knob to send it to the cluster."
+    },
+    {
+      "id": "reference_download_mechanism",
+      "question": "HOW is the reference actually fetched?",
+      "default": "curl -L --progress-bar -C - (resumable) in background locally; a resumable wget -c/curl -C - SLURM job on the compute node if cluster-directed",
+      "status": "coded_fixed",
+      "source": "download_reference_database local + cluster script renderers",
+      "source_ref": "agent/mcp_tools/data_tools.py:103",
+      "applies_to": ["download_reference_database"],
+      "exit_caught": true,
+      "note": "Resumable both ways. The head node never pulls a giant DB — the compute node does."
+    },
+    {
+      "id": "reference_landing_dir",
+      "question": "Where on the cluster does a directed reference land?",
+      "default": "<common_data>/<name>/ (remote_dir overrides, must stay under common_data)",
+      "status": "coded_fixed",
+      "source": "download_reference_database cluster path",
+      "source_ref": "agent/mcp_tools/data_tools.py:44",
+      "applies_to": ["download_reference_database"],
+      "exit_caught": true
+    },
+    {
+      "id": "validation_directory",
+      "question": "Where does env/pipeline CREATION & VALIDATION write?",
+      "default": "cluster: ALWAYS scratch/<project>/<workflow>/ (no caller knob); LOCAL: the repo tree (envs/, env_reports/) — NO sandbox",
+      "status": "improvised",
+      "source": "cluster half is coded (run_step_on_cluster); local half has no sandbox — the parity gap you flagged",
+      "source_ref": "agent/skills/run_cluster_step.py",
+      "applies_to": ["author_pipeline", "run_step"],
+      "exit_caught": false,
+      "note": "PARITY GAP. The test-dir/project-dir split is a locus-INDEPENDENT policy that today holds only on the cluster. Bringing local into parity converts this cell to coded. CLUSTER HALF CONFIRMED on Longleaf 2026-07-30: scratch/<project>/<workflow>/ is auto-computed with no caller knob and worked cleanly for both steps. The LOCAL sandbox is the remaining actionable item (user-blessed)."
+    },
+    {
+      "id": "production_directory",
+      "question": "Where does a PRODUCTION run write its outputs?",
+      "default": "cluster: directories[] (explicit per-dir auth); LOCAL: undefined",
+      "status": "improvised",
+      "source": "cluster half coded via projects_access.yaml directories[]; local production has no defined zone",
+      "source_ref": "agent/skills/compute_access.py",
+      "applies_to": ["run_production_pipeline"],
+      "exit_caught": false,
+      "note": "Other half of the parity policy: execution -> project dirs. Cluster-only today."
+    },
+    {
+      "id": "slurm_sizing",
+      "question": "How much time / memory / cpus does a cluster job request?",
+      "default": "time & mem REQUIRED (no default); cpus/ntasks default to 1",
+      "status": "improvised",
+      "source": "_check_slurm requires time+mem; the agent must supply them (today: a guess, or derived from non-authoritative emulated numbers)",
+      "source_ref": "agent/skills/workflow_render.py:121",
+      "applies_to": ["author_pipeline", "run_step", "run_production_pipeline", "download_reference_database"],
+      "exit_caught": false,
+      "note": "The system refuses to FABRICATE a measured number, but the REQUESTED sizing is an unprincipled agent guess. Too low -> OOM kill; too high -> waste. No profile-then-size loop exists. FIRST AUTHORITATIVE DATA (Longleaf 2026-07-30): htseq-count requested 8G/30min, really used 488MB/44s (~16x over on mem); DESeq2 requested 4G/20min, really used 1.28GB/25s (~3x over). Both jobs succeeded — the guess erred SAFE (over-provisioned), so this cell costs efficiency, not correctness. A data-informed default (a per-tool table seeded from sacct MaxRSS/Elapsed, or a profile-then-size loop) is now concrete and unblocked."
+    },
+    {
+      "id": "test_datasource",
+      "question": "What data validates the pipeline?",
+      "default": "you name it; else the agent picks from data/core_test_data_hg38/manifest.yaml",
+      "status": "improvised",
+      "source": "select_test_data + agent judgment",
+      "source_ref": "agent/mcp_tools (select_test_data)",
+      "applies_to": ["author_pipeline", "run_step"],
+      "exit_caught": true,
+      "note": "If specified, deterministic and bound as an ExternalSource. Unspecified -> agent chooses; the choice is at least exit-validated as a real typed input."
+    },
+    {
+      "id": "test_data_subsetting",
+      "question": "How is heavy test data trimmed to stay fast?",
+      "default": "max 10000 reads; restrict to chr22 (fallback chr1)",
+      "status": "coded_configurable",
+      "source": "config testing.max_reads / preferred_chromosome / fallback_chromosome",
+      "source_ref": "config/agent_config.yaml:64",
+      "applies_to": ["author_pipeline"],
+      "exit_caught": true
+    },
+    {
+      "id": "hpc_delivery_mode",
+      "question": "How is the frozen image delivered to HPC?",
+      "default": "registry-free: docker save -> apptainer build docker-archive (zero config); a registry push if config docker.registry or push_target is set",
+      "status": "coded_configurable",
+      "source": "freeze() delivery + config docker.registry",
+      "source_ref": "config/agent_config.yaml:42",
+      "applies_to": ["install_env", "run_production_pipeline"],
+      "exit_caught": true,
+      "note": "Gated (licensed) artifacts are never pushed (I13) — tarball-only."
+    },
+    {
+      "id": "accelerator",
+      "question": "GPU/accelerator policy for the env?",
+      "default": "none",
+      "status": "coded_configurable",
+      "source": "freeze() accel='none'; GPU base nvidia/cuda:12.1.0 when gpu_required",
+      "source_ref": "agent/mcp_tools/freeze_tools.py:93",
+      "applies_to": ["install_env"],
+      "exit_caught": true,
+      "note": "I12 accelerator honesty: cuda/rocm need a toolkit_version; runtime_verified needs a captured probe."
+    },
+    {
+      "id": "gated_license",
+      "question": "Is the artifact license-gated (not redistributable)?",
+      "default": "false (not gated)",
+      "status": "coded_configurable",
+      "source": "freeze() gated=False",
+      "source_ref": "agent/mcp_tools/freeze_tools.py:94",
+      "applies_to": ["install_env"],
+      "exit_caught": true,
+      "note": "I13 license firewall: gated => redistributable:false AND licenses[] recorded, never pushed."
+    },
+    {
+      "id": "transfer_wire_protocol",
+      "question": "How do bytes move to/from the cluster?",
+      "default": "scp_head_node (scp + sha256 round-trip); globus if the env declares it",
+      "status": "coded_configurable",
+      "source": "env.data_transfer.type in projects_access.yaml",
+      "source_ref": "projects_access.yaml (per env)",
+      "applies_to": ["transfer_data", "run_production_pipeline"],
+      "exit_caught": true
+    },
+    {
+      "id": "watch_dir",
+      "question": "Which directory is scanned for a step's outputs?",
+      "default": "the input's directory",
+      "status": "coded_configurable",
+      "source": "run_pipeline_step / run_step_in_container watch_dir='' default",
+      "source_ref": "agent/mcp_tools/run_tools.py:65",
+      "applies_to": ["run_step", "author_pipeline"],
+      "exit_caught": true,
+      "note": "An output written elsewhere with no watch_dir override is undetected -> unvalidated -> fails I3 at seal. So a wrong default is exit-caught (loudly)."
+    },
+    {
+      "id": "reference_rebind",
+      "question": "At production run time, is the bound reference checked against what the pipeline was SEALED against?",
+      "default": "no check (ungoverned)",
+      "status": "improvised",
+      "source": "submit_workflow_job takes concrete input paths; nothing diffs them against the sealed spec's pinned references",
+      "source_ref": "agent/skills/submit_workflow.py",
+      "applies_to": ["run_production_pipeline"],
+      "exit_caught": false,
+      "note": "REPORTS-NEVER-LIE gap: a pipeline validated against gencode.v44 can be run against gencode.v38 and nothing discloses the divergence. The data analog of the tool requested-vs-installed drift flag we already enforce."
+    }
+  ]
+}
