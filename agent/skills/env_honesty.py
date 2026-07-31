@@ -1,7 +1,10 @@
 """
 env_honesty — the container-native Layer-1 honesty contract.
 
-This REPLACES spec_writer's env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14)
+This REPLACES spec_writer's retired env-build invariants (WHICH ones is data, in
+agent/skills/invariants.py; the list spelled out on this line named nine, and four of
+them were never retired at all — two are the Layer-2 run-side clauses, two are the
+POLICY_CLEAN clauses enforced right here in this module)
 for the container-native build locus, learning from what those invariants earned
 but shedding the machinery the locus makes redundant. The honesty model collapses
 because the locus collapsed install-and-ship into ONE event:
@@ -21,7 +24,8 @@ re-clone, authored re-hash) collapse into THREE structural guarantees:
 
   BUILT              — the image exists (image + image_digest resolve). Every RUN,
                        each carrying its own inline anchor, returned 0; else no
-                       image. Absorbs I1 + the structural core of I9/I11/I14.
+                       image. Absorbs I1 + the structural core of the other
+                       re-anchoring invariants (see the registry).
   VALIDATED_IN_IMAGE — every declared tool's evidence passes when re-run in the
                        SHIPPED image, AND each evidence genuinely exercises its tool
                        (the anti-echo-cheat shape rule — the one piece of I2 that
@@ -600,7 +604,8 @@ def evaluate_build(result: dict) -> BuildContract:
                 f"record discloses nothing about {key}", DISCLOSURE))
 
     # -- BUILT -----------------------------------------------------------
-    # The image existing is the structural anchor for I1/I9/I11/I14: every RUN
+    # The image existing is the structural anchor for the retired re-anchoring
+    # invariants (agent/skills/invariants.py): every RUN
     # (each with its inline sha256/commit/bake anchor) returned 0, else there is
     # no image. We assert the handles resolve.
     #

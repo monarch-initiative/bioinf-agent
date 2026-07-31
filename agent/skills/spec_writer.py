@@ -2,17 +2,20 @@
 spec_writer — Layer-2 (workflow) spec + provenance persistence.
 
 The pre-respine combined env+workflow writer (save_pipeline_spec) and its
-env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14) have been retired: an
+env-build invariants have been retired (WHICH ones is data, in
+agent/skills/invariants.py — the list spelled out here named four still-active
+invariants as retired, two of them Layer-2 clauses that refuse real seals): an
 env is now solved once by freeze() and verified IN the shipped image by
 env_honesty.check_build (install==ship). What survives here is the Layer-2
 surface that consumes a frozen env:
 
     write_workflow_spec(workflow, config)   -> {workflow_spec_path}
-    check_workflow_invariants(spec)         -> run-side violations (I0/I3/I6/I7/I8)
+    check_workflow_invariants(spec)         -> run-side violations (roster:
+                                               agent/skills/invariants.py)
     self_test_usage(spec, env_manager, ...) -> executes usage.command_template (I4)
     write_provenance(inputs, config)        -> {written, sample_key}
 
-check_invariants is now the run-side checker (I0/I3/I6/I7/I8 only); the
+check_invariants is now the run-side checker (roster in agent/skills/invariants.py); the
 env-build tiers moved to agent/skills/env_honesty.py.
 """
 
@@ -31,6 +34,7 @@ from agent.models.core_data import (
     PedigreeInput, PhenotypeInput, Provenance, QuantitativeTraitInput,
     ReadInput, VcfInput, usage_commands,
 )
+from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
 # The READER for a step's validation dict. Imported (not re-implemented) so the invariant
 # and the store agree on how a record is keyed — pipeline_state imports only stdlib + yaml
@@ -592,7 +596,7 @@ def check_invariants(spec: dict) -> list[dict]:
 
     Scope is I0 (shape) · I3 (validated outputs) · I6 (absolute paths +
     declared placeholders) · I7 (resource_usage) · I8 (input provenance). The
-    env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14) are NOT here — an env
+    env-build invariants are NOT here (see agent/skills/invariants.py) — an env
     is verified IN its shipped image by env_honesty.check_build (install==ship).
     seal_workflow runs this (via check_workflow_invariants) over the validated
     run and refuses to write a WorkflowSpec if anything fails.
@@ -921,20 +925,26 @@ def check_invariants(spec: dict) -> list[dict]:
     return violations
 
 
-# Layer-2 (workflow) invariant subset. A WorkflowSpec consumes a frozen env by
-# digest, so only the RUN-side invariants apply — the env-build invariants
-# (I1/I2/I5/I9/I10/I11/I12/I13/I14) are Layer 1's, verified IN the shipped image
-# by env_honesty.check_build. check_invariants is now itself run-side-only, so
-# this filter is belt-and-suspenders (it stays the named Layer-2 entry point and
-# guards against a future non-run-side clause leaking into check_invariants).
-_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I5", "I6", "I7", "I8", "I10"}
+# Layer-2 (workflow) invariant subset. A WorkflowSpec consumes a frozen env by digest,
+# so only the RUN-side invariants apply — the env-build ones are Layer 1's, verified IN
+# the shipped image by env_honesty.check_build.
+#
+# DERIVED FROM THE REGISTRY, never typed out. The literal set that used to live here
+# said seven ids while this module's own docstring said five, four lines apart, and
+# CLAUDE.md's table said six — a different six. Reading it from `invariants` means a new
+# clause is registered once and every consumer follows.
+_WORKFLOW_INVARIANT_TIERS = frozenset(
+    i.id for i in _invariants.active(_invariants.LAYER_WORKFLOW)
+    if i.enforced_by.endswith("check_workflow_invariants"))
 
 
 def check_workflow_invariants(spec: dict) -> list[dict]:
-    """Run only the workflow-relevant invariants (I0 shape · I3 validated
-    outputs · I6 paths/placeholders · I7 resource_usage · I8 input provenance).
-    Pass the FULL draft so I8 sees the complete universe of prior outputs +
-    external sources, but only the run-side violations are returned."""
+    """Run only the workflow-relevant invariants — see `agent/skills/invariants.py` for
+    the roster and each one's statement (deliberately NOT restated here; this docstring
+    used to name five of the seven).
+
+    Pass the FULL draft so I8 sees the complete universe of prior outputs + external
+    sources, but only the run-side violations are returned."""
     return [v for v in check_invariants(spec)
             if v.get("invariant", "").split(".")[0] in _WORKFLOW_INVARIANT_TIERS]
 

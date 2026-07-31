@@ -121,6 +121,17 @@ class PipelineState:
         path = self._draft_path(pipeline_id)
         if path.exists():
             path.unlink()
+        # ...and its lock sentinel, so discarded drafts don't leave litter in drafts_dir.
+        # Safe to unlink even if another process holds it: flock is on the INODE, so a
+        # holder keeps its lock and the next acquirer simply creates a fresh file. The
+        # only cost of that race is two writers briefly locking different inodes, which
+        # cannot happen here — discard means nobody is writing this draft any more.
+        lock = _store_lock.lock_path_for(path)
+        if lock.exists():
+            try:
+                lock.unlink()
+            except OSError:
+                pass
         return {"pipeline_id": pipeline_id, "existed": existed}
 
     def get_draft(self, pipeline_id: str) -> Optional[dict]:

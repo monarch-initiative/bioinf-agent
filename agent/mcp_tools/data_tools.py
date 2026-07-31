@@ -448,7 +448,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     """
     invariants = [
         # Layer 1 — the env image (env_honesty.check_build; install==ship is ONE event,
-        # so the per-tier env-build invariants I1/I2/I5/I9/I10/I11/I12/I13/I14 collapse
+        # so the per-tier env-build invariants (agent/skills/invariants.py) collapse
         # into three structural guarantees enforced INSIDE the shipped image):
         "BUILT: the env image + image_digest resolve in the local Docker daemon",
         "VALIDATED_IN_IMAGE: every tool's evidence command re-runs green INSIDE the shipped image AND references the tool (echo/print/true cheats rejected) — because install==ship, the bytes validated are the bytes that run on HPC",
@@ -481,7 +481,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
         "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
         "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
-        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (I0/I3/I6/I7/I8), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
+        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
         "8. write_pipeline_provenance with the right input shape",
     ]
     return {
