@@ -39,13 +39,12 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
+from pathlib import Path
 
 import pytest
 import yaml
 
 from agent.skills import spec_writer as sw
-
-REAL_DRAFT = "data/pipeline_drafts/rnaseq_deseq2_chr22_cluster.draft.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -172,15 +171,44 @@ def test_remote_outputs_is_held_to_the_same_absoluteness_rule():
 
 
 # ---------------------------------------------------------------------------
-# The real draft.
+# The real chain — from a COMMITTED fixture, not from the working tree.
+#
+# These three tests used to read data/pipeline_drafts/rnaseq_deseq2_chr22_cluster
+# .draft.yaml directly. That is agent-mutable working state under a gitignored
+# `data/` (0 files tracked), so it was never a regression test: it pinned whatever
+# the agent had most recently done, and it errored outright on a fresh clone where
+# the path does not exist. The next Longleaf drive re-ran this very chain and all
+# three failed — not because the fix regressed, but because the draft they were
+# reading had been replaced by a better one.
+#
+# The fixture below is that shape, committed: the same two real cluster steps, with
+# the two things the pre-fix draft lacked removed (the runner did not yet record
+# `remote_outputs`, and no external sources were declared). Derived from a genuine
+# second run of the chain on Longleaf, it reproduces the original measurement
+# exactly — 9 orphans, 8 undeclared external inputs plus 1 untraceable directory —
+# which is the independent check that it is faithful rather than merely convenient.
 # ---------------------------------------------------------------------------
 
+FIXTURE = Path(__file__).parent / "fixtures" / "cluster_chain_prefix_draft.yaml"
+
+#: The workflow_dir step 1 wrote into, and the directory step 2 consumes.
+CHAIN_WFDIR = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_chain"
+CHAIN_INPUTS = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs"
+COUNTS = ("ctrl_rep1", "ctrl_rep2", "ctrl_rep3", "treat_rep1", "treat_rep2", "treat_rep3")
+
+
 def _real():
-    return yaml.safe_load(open(REAL_DRAFT))
+    return yaml.safe_load(FIXTURE.read_text())
+
+
+def _with_remote_outputs(d):
+    d["pipeline_steps"][0]["remote_outputs"] = [
+        f"{CHAIN_WFDIR}/{n}.counts.tsv" for n in COUNTS]
+    return d
 
 
 def test_the_real_cluster_chain_reproduces_the_gap_as_measured():
-    """9 orphans, on the bytes as they sit on disk."""
+    """9 orphans, on a real two-step cluster chain with nothing declared."""
     v = _i8(_real())
     assert len(v) == 9, Counter(x["orphan_path"] for x in v)
 
@@ -188,13 +216,8 @@ def test_the_real_cluster_chain_reproduces_the_gap_as_measured():
 def test_recording_the_remote_outputs_closes_the_lineage_orphan():
     """The one system defect of the nine. The other eight are undeclared external
     inputs, which is a different problem with a supported answer."""
-    d = _real()
-    wfdir = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_cluster"
-    d["pipeline_steps"][0]["remote_outputs"] = [
-        f"{wfdir}/{n}.counts.tsv" for n in
-        ("ctrl_rep1", "ctrl_rep2", "ctrl_rep3", "treat_rep1", "treat_rep2", "treat_rep3")]
-    orphans = [v["orphan_path"] for v in _i8(d)]
-    assert wfdir not in orphans, "the directory input still does not trace"
+    orphans = [v["orphan_path"] for v in _i8(_with_remote_outputs(_real()))]
+    assert CHAIN_WFDIR not in orphans, "the directory input still does not trace"
     assert len(orphans) == 8
     assert all("/rnaseq_inputs/" in p for p in orphans), \
         "what remains should be exactly the undeclared external inputs"
@@ -204,15 +227,10 @@ def test_the_real_two_step_cluster_chain_now_seals():
     """END TO END. Outputs recorded by the runner + inputs declared by the user
     ⇒ zero violations. This is the claim 'a multi-step cluster chain cannot be
     honestly sealed' being retired, on the real artifact that established it."""
-    d = _real()
-    wfdir = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_cluster"
-    d["pipeline_steps"][0]["remote_outputs"] = [
-        f"{wfdir}/{n}.counts.tsv" for n in
-        ("ctrl_rep1", "ctrl_rep2", "ctrl_rep3", "treat_rep1", "treat_rep2", "treat_rep3")]
-    base = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs"
+    d = _with_remote_outputs(_real())
     d["reference_databases"] = [
         {"name": n, "version": "chr22-demo", "locus": "cluster",
-         "local_path": f"{base}/{n}"}
+         "local_path": f"{CHAIN_INPUTS}/{n}"}
         for n in ("ctrl_rep1.sorted.bam", "ctrl_rep2.sorted.bam", "ctrl_rep3.sorted.bam",
                   "treat_rep1.sorted.bam", "treat_rep2.sorted.bam", "treat_rep3.sorted.bam",
                   "gencode.v44.chr22.gtf", "coldata.tsv")]
@@ -220,11 +238,18 @@ def test_the_real_two_step_cluster_chain_now_seals():
 
 
 @pytest.mark.parametrize("spec_path", sorted(__import__("glob").glob(
-    "env_reports/*.workflow.yaml")))
+    "env_reports/*.workflow.yaml")) or [None])
 def test_no_already_sealed_workflow_starts_failing(spec_path, monkeypatch):
     """The rules above only ever ACCEPT more, but 'only accepts more' has been
     wrong here before — the last I8 change refused a real sealed cluster
-    workflow. Check the artifacts, not the reasoning."""
+    workflow. Check the artifacts, not the reasoning.
+
+    `env_reports/` is gitignored, so on a fresh clone there is nothing to check and
+    a green tick here would mean nothing. SKIP, loudly: a skip is visible in the
+    run, a vacuous pass is indistinguishable from coverage."""
+    if spec_path is None:
+        pytest.skip("no sealed workflow artifacts on disk (env_reports/ is gitignored) "
+                    "— this ratchet only has force in a tree that has sealed something")
     spec = yaml.safe_load(open(spec_path))
     assert sw.check_workflow_invariants(spec) == [], spec_path
 

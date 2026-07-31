@@ -1,0 +1,247 @@
+pipeline_name: rnaseq_deseq2_chr22_cluster
+description: "A3 of the Longleaf drive: the two-step htseq-count \u2192 DESeq2 chain\
+  \ run natively on Longleaf and SEALED, where step 2 consumes the remote DIRECTORY\
+  \ step 1 wrote into. This is the shape that was unsealable before remote_outputs\
+  \ + the I8 exact-parent directory match \u2014 step 2's input traced to nothing\
+  \ because detected_outputs holds the downloaded LOCAL copies. Two frozen envs, chained\
+  \ by digest."
+pipeline_steps:
+- tool: htseq_count
+  purpose: cluster run of htseq_count
+  command: htseq-count -f bam -r pos -s no -t exon -i gene_id ${bam_ctrl1} ${gtf}
+    > ${counts_ctrl1}; htseq-count -f bam -r pos -s no -t exon -i gene_id ${bam_ctrl2}
+    ${gtf} > ${counts_ctrl2}; htseq-count -f bam -r pos -s no -t exon -i gene_id ${bam_ctrl3}
+    ${gtf} > ${counts_ctrl3}; htseq-count -f bam -r pos -s no -t exon -i gene_id ${bam_treat1}
+    ${gtf} > ${counts_treat1}; htseq-count -f bam -r pos -s no -t exon -i gene_id
+    ${bam_treat2} ${gtf} > ${counts_treat2}; htseq-count -f bam -r pos -s no -t exon
+    -i gene_id ${bam_treat3} ${gtf} > ${counts_treat3}
+  returncode: 0
+  resource_usage:
+    wall_seconds: 43.0
+    peak_rss_mb: 454.6
+    max_cpu_percent: 116.3
+    locus: cluster
+    sacct_job_id: '61479336'
+    sacct_rows:
+    - job_id: '61479336'
+      elapsed: 00:00:43
+      max_rss: ''
+      ave_cpu: ''
+      total_cpu: '00:50.227'
+    - job_id: 61479336.batch
+      elapsed: 00:00:43
+      max_rss: 465516K
+      ave_cpu: 00:00:50
+      total_cpu: '00:50.227'
+    - job_id: 61479336.extern
+      elapsed: 00:00:43
+      max_rss: ''
+      ave_cpu: ''
+      total_cpu: 00:00:00
+  inputs:
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/ctrl_rep1.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/ctrl_rep2.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/ctrl_rep3.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/treat_rep1.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/treat_rep2.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/treat_rep3.sorted.bam
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/gencode.v44.chr22.gtf
+    references: []
+  detected_outputs:
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep1.counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep2.counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep3.counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep1.counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep2.counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep3.counts.tsv
+  output_sha256:
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep1.counts.tsv
+    : 5bd5d90f1dc21f79f1041da0348d1bc33c87942663b8aecbf555976a38796b1a
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep2.counts.tsv
+    : ad6ce3e57f81146c4eb7d89d6eea0aa58b68ccd42e01b6117b72ebc60b2d83e8
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep3.counts.tsv
+    : 77ccbd6ebfbba7feac28a9c144ce4c1c6fc5aa2ddca92af462b07be5b78f2a44
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep1.counts.tsv
+    : e84898d6c28c929f95d6f687ba3430285be05fce7a12e9b4cae3085560ede238
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep2.counts.tsv
+    : ec691cfb6030c74c2f99456e72e329a69dc6e81e469ea5db26ff1bf90e478dea
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep3.counts.tsv
+    : 681b9d4c2aa0b41bac3e59a4f4fd753ed01e3ab4c57e1b0eaa6bdccbaf640f75
+  ran_in_container: true
+  container_image: /work/users/a/o/ao33/CLAUDE_CONTAINERS/rnaseq_quant_7beed6c171d4.sif
+  container_image_digest: sha256:31389600c47d57828e8f9687f74c5566606ce7d6097fdc16167bc76190b9193c
+  cluster_sif_sha256: a036899c56fd9eaa526e240e6114de1bd6084d8114ce1de05b350cba7c5ed590
+  cluster_image_verified: true
+  validation_locus: cluster
+  cluster_job_id: '61479336'
+  cluster_workflow_dir: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_chain
+  cluster_node: c0302
+  cluster_state: COMPLETED
+  cluster_exit_code: 0:0
+  cluster_job_verdict: succeeded
+  cluster_apptainer_module: apptainer/1.5.0
+  cluster_nextflow_module: nextflow/25.04.7
+  cluster_slurm:
+    time: 00:30:00
+    mem: 8g
+    cpus: 2
+  step: 1
+  validation:
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep1.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep1.counts.tsv
+      expected_type: tsv
+      size_bytes: 29582
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep2.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep2.counts.tsv
+      expected_type: tsv
+      size_bytes: 29576
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep3.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/ctrl_rep3.counts.tsv
+      expected_type: tsv
+      size_bytes: 29579
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep1.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep1.counts.tsv
+      expected_type: tsv
+      size_bytes: 29576
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep2.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep2.counts.tsv
+      expected_type: tsv
+      size_bytes: 29573
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep3.counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 2
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/htseq_count/treat_rep3.counts.tsv
+      expected_type: tsv
+      size_bytes: 29581
+- tool: deseq2
+  purpose: cluster run of deseq2
+  command: Rscript ${rscript} ${counts_dir} ${coldata} . && ls ${out_results} ${out_norm}
+    ${out_summary}
+  returncode: 0
+  resource_usage:
+    wall_seconds: 27.0
+    peak_rss_mb: 1210.0
+    max_cpu_percent: 122.2
+    locus: cluster
+    sacct_job_id: '61479472'
+    sacct_rows:
+    - job_id: '61479472'
+      elapsed: 00:00:27
+      max_rss: ''
+      ave_cpu: ''
+      total_cpu: '00:33.937'
+    - job_id: 61479472.batch
+      elapsed: 00:00:27
+      max_rss: 1239008K
+      ave_cpu: 00:00:33
+      total_cpu: '00:33.937'
+    - job_id: 61479472.extern
+      elapsed: 00:00:27
+      max_rss: ''
+      ave_cpu: ''
+      total_cpu: 00:00:00
+  inputs:
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/deseq2_analysis.R
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_chain
+    references: []
+  - path: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs/coldata.tsv
+    references: []
+  detected_outputs:
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_results.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_normalized_counts.tsv
+  - /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_summary.txt
+  output_sha256:
+    /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_results.tsv: a64662e436117907ce4f020b4193ead2d9a6b63cca386573ad87eb82457ba799
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_normalized_counts.tsv
+    : a737d321ee1b002ef8935281ff10a76707421085f3be4c268f6b5bf518fa06c8
+    /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_summary.txt: bec0e45f6983d0d05d20c164829241f00cbf1303a05a0415244d2923c4472a67
+  ran_in_container: true
+  container_image: /work/users/a/o/ao33/CLAUDE_CONTAINERS/rnaseq_deseq2_de4543b77eba.sif
+  container_image_digest: sha256:de4543b77eba3d5b4b774a50bf2539b9adb0ba7451c9d909bf8def4a1b1dd56d
+  cluster_sif_sha256: 9c07c36a6219a9ee2d10f8bf389a56effc6dcf4b2cb8ac73eef16a9908992749
+  cluster_image_verified: true
+  validation_locus: cluster
+  cluster_job_id: '61479472'
+  cluster_workflow_dir: /work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/deseq2_chain
+  cluster_node: c0305
+  cluster_state: COMPLETED
+  cluster_exit_code: 0:0
+  cluster_job_verdict: succeeded
+  cluster_apptainer_module: apptainer/1.5.0
+  cluster_nextflow_module: nextflow/25.04.7
+  cluster_slurm:
+    time: 00:30:00
+    mem: 8g
+    cpus: 2
+  step: 2
+  validation:
+    /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_results.tsv:
+      passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 7
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_results.tsv
+      expected_type: tsv
+      size_bytes: 41496
+    ? /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_normalized_counts.tsv
+    : passed: true
+      validation_method: tsv_parse
+      rows_sampled: 20
+      columns: 7
+      outcome: proven
+      code: validate.tabular_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_normalized_counts.tsv
+      expected_type: tsv
+      size_bytes: 39051
+    /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_summary.txt:
+      passed: true
+      validation_method: txt_probe
+      bytes_sampled: 104
+      outcome: proven
+      code: validate.txt_ok
+      file: /Users/ao33/Desktop/GIT_PROJECTS/bioinf_agent/data/rnaseq_deseq2_chr22_test_data/cluster_chain/deseq2/deseq2_summary.txt
+      expected_type: txt
+      size_bytes: 104
