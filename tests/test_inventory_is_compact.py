@@ -21,15 +21,21 @@ from __future__ import annotations
 import json
 
 import pytest
-import tiktoken
 
 from agent.skills import resources
 
-ENC = tiktoken.get_encoding("cl100k_base")
 
+def _size(o) -> int:
+    """Serialised length. A CHARACTER count, not a token count, deliberately.
 
-def _tok(o) -> int:
-    return len(ENC.encode(json.dumps(o, default=str)))
+    The claim under test is a RATIO — "compact is much smaller than detail" — and
+    characters carry that just as well as tokens for JSON of the same kind. The first
+    version of this file imported tiktoken for it and went red in CI, because tiktoken
+    is a local analysis tool that nothing declares. Reaching for a dev-only dependency
+    to compute a ratio is a bad trade; the exact token figures belong in the commit
+    message, where they were measured once, not in a test that has to run everywhere.
+    """
+    return len(json.dumps(o, default=str))
 
 
 class _Cache:
@@ -73,9 +79,9 @@ def test_compact_is_the_default_and_is_much_smaller(tmp_path):
     cache = _Cache({"samtools=1.21|linux/amd64|none": _rec()})
     compact = resources.list_pipelines(_cfg(tmp_path), env_cache=cache)
     detail = resources.list_pipelines(_cfg(tmp_path), env_cache=cache, detail=True)
-    assert _tok(compact) < _tok(detail) / 2, (
-        f"compact {_tok(compact)} vs detail {_tok(detail)} — not worth the extra "
-        f"parameter unless it is a real reduction")
+    assert _size(compact) < _size(detail) / 2, (
+        f"compact {_size(compact)} vs detail {_size(detail)} chars — not worth the "
+        f"extra parameter unless it is a real reduction")
 
 
 def test_compact_still_answers_the_question_it_exists_for(tmp_path):
