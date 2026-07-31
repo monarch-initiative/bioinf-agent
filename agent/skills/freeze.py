@@ -30,6 +30,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.skills import store_lock as _store_lock
+
 
 # Platform-spelling canonicalization (D6 fix). The cache contained BOTH
 # 'linux-64' (conda form, freeze()'s public default) and 'linux/amd64' (docker
@@ -579,8 +581,26 @@ class EnvCache:
         policy gate. It must be loud at the seam and impossible to serve. Records that
         FAIL policy still register (that is what `contract_violations` is for) — this
         gate is strictly about "can this record be read at all".
+
+        LOCKED read-modify-write. `_save` being atomic prevents a TORN file; it does
+        nothing about a LOST UPDATE, where two writers read the same snapshot and the
+        second `os.replace` discards the first's record. Having atomicity is what made
+        the absence of exclusion hard to see: the file always parses. Measured — 3
+        processes x 60 registers left 84 of 180 records, so 96 frozen envs (each a real
+        image built at real cost) vanished with no error anywhere.
+
+        The window is open in ordinary single-agent use: `freeze(background=True)`
+        spawns a detached subprocess that registers into this same file while its parent
+        keeps working. Two background freezes is a documented way to drive this system.
+
+        The shape check stays OUTSIDE the lock — it touches only the argument, and a
+        malformed record must raise without ever contending for the file.
         """
         self._validate_shape(record)
+        with _store_lock.locked(self.path):
+            return self._register_locked(key, record)
+
+    def _register_locked(self, key: str, record: dict) -> dict:
         data = self._load()
         # Keyed by request_key (the REQUEST's content address): re-freezing an
         # identical request refreshes its own cache entry with an equivalent record

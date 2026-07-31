@@ -33,6 +33,7 @@ from typing import Optional
 
 import yaml
 
+from agent.skills import store_lock as _store_lock
 from agent.skills.outcomes import refused
 
 
@@ -129,28 +130,57 @@ class PipelineState:
         """Remove the in-memory draft and return it. Caller deletes the file."""
         return self._drafts.pop(pipeline_id, None)
 
+    def mutate_on_disk(self, pipeline_id: str, apply) -> bool:
+        """Apply `apply(draft)` to the draft AS IT IS ON DISK, under the store lock.
+
+        THE CROSS-PROCESS WRITE PATH. `self._drafts` is an in-memory cache populated at
+        construction and never re-read, which is correct for one process and wrong the
+        moment there are two — and there are two whenever `freeze(background=True)` is
+        used, a shipped feature that spawns a DETACHED SUBPROCESS. The subprocess builds
+        its own PipelineState, writes `frozen_as`, and exits; the parent still holds the
+        pre-freeze copy and erases the pointer on its next `_persist`. The freeze was
+        real and its record on the draft simply disappeared.
+
+        So a writer that may be racing re-reads first: take the lock, load the file,
+        apply, write, and refresh the in-memory copy from what was actually written.
+
+        THIS DOES NOT MAKE THE WHOLE STORE CONCURRENCY-SAFE, and the difference is worth
+        stating plainly rather than implying by omission. The ordinary mutators
+        (`add_step`, `patch`, `add_validation`, …) still edit `self._drafts` and persist
+        it wholesale, so two processes mutating the SAME draft through them still lose
+        one side's edits. That is acceptable today because only this pointer is written
+        cross-process; it is the thing to convert first when batch install lands."""
+        with _store_lock.locked(self._draft_path(pipeline_id)):
+            on_disk = self._read_draft_file(pipeline_id)
+            draft = on_disk if on_disk is not None else self._drafts.get(pipeline_id)
+            if draft is None:
+                return False
+            apply(draft)
+            self._drafts[pipeline_id] = draft
+            self._write_draft_file(pipeline_id, draft)
+        return True
+
     def set_frozen_pointer(self, pipeline_id: str, request_key: str) -> None:
         """Record which frozen env (by request_key) this pipeline produced, so
         `current_state` can RE-EARN ENV_FROZEN via the honesty contract. A best-
         effort ORIENTATION pointer — never authoritative (current_state re-checks
-        it) and never allowed to fail the freeze that calls it."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return
-        draft["frozen_as"] = request_key
-        self._persist(pipeline_id)
+        it) and never allowed to fail the freeze that calls it.
+
+        Written through `mutate_on_disk` because the caller may be a background-freeze
+        SUBPROCESS (see that method)."""
+        def _set(draft):
+            draft["frozen_as"] = request_key
+        self.mutate_on_disk(pipeline_id, _set)
 
     def append_sealed_pointer(self, pipeline_id: str, workflow_name: str) -> None:
         """Record which workflow(s) this pipeline has sealed. A LIST — one draft
         may seal many workflows (seal does not pop the draft). Orientation only;
         `current_state` re-earns SEALED by matching the spec to this pipeline."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return
-        sealed = draft.setdefault("sealed_as", [])
-        if workflow_name not in sealed:
-            sealed.append(workflow_name)
-        self._persist(pipeline_id)
+        def _append(draft):
+            sealed = draft.setdefault("sealed_as", [])
+            if workflow_name not in sealed:
+                sealed.append(workflow_name)
+        self.mutate_on_disk(pipeline_id, _append)
 
     def delete_draft_file(self, pipeline_id: str) -> None:
         path = self._draft_path(pipeline_id)
@@ -538,9 +568,18 @@ class PipelineState:
         return self.drafts_dir / f"{pipeline_id}.draft.yaml"
 
     def _persist(self, pipeline_id: str) -> None:
-        """Atomic write of the draft to disk."""
+        """Atomic write of the in-memory draft to disk, under the store lock.
+
+        The lock makes this write not INTERLEAVE with another process's read-modify-write
+        of the same draft. It does NOT make the write correct when this process's copy is
+        stale — for that a writer must re-read first, which is what `mutate_on_disk` is
+        for. Locking a stale write only makes it lose the race cleanly."""
+        with _store_lock.locked(self._draft_path(pipeline_id)):
+            self._write_draft_file(pipeline_id, self._drafts[pipeline_id])
+
+    def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
+        """The atomic write itself — assumes the caller holds the lock."""
         path = self._draft_path(pipeline_id)
-        draft = self._drafts[pipeline_id]
         with tempfile.NamedTemporaryFile(
             mode="w", dir=str(path.parent),
             prefix=path.stem, suffix=".tmp", delete=False,
@@ -548,6 +587,18 @@ class PipelineState:
             yaml.dump(draft, f, default_flow_style=False, sort_keys=False)
             tmp = f.name
         os.replace(tmp, path)
+
+    def _read_draft_file(self, pipeline_id: str) -> Optional[dict]:
+        """Re-read one draft from disk, or None if it is absent/unreadable. Absent is a
+        real answer (the draft was discarded); unreadable returns None too so a writer
+        falls back to its in-memory copy rather than destroying the file with a partial
+        one — the pointer this serves is explicitly best-effort."""
+        path = self._draft_path(pipeline_id)
+        try:
+            data = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def _load_existing_drafts(self) -> None:
         """Recover drafts from disk on server startup. Scans both the new

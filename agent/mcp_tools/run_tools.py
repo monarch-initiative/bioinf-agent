@@ -287,6 +287,24 @@ def run_step_in_container(
                     pass
         return snap
 
+    # OBSERVE THE DIGEST OF WHAT IS ABOUT TO RUN — do not echo the one we were handed.
+    #
+    # The step used to stamp `rec["image_digest"]`, i.e. the EnvCache's NOMINAL digest,
+    # copied straight from the record we looked the image up in. `seal_workflow` then
+    # earns `validated_in_shipped_image` by matching each step's digest against the
+    # frozen env's digest — the SAME value, copied twice. The headline claim of this
+    # codebase ("the bytes the user runs on HPC are the exact bytes we validated") was
+    # therefore self-confirming: it could not fail, including in the one case it exists
+    # to catch, where the tag has since been rebuilt or retagged and the daemon's image
+    # is no longer the one the record describes.
+    #
+    # `docker image inspect` on the ref we are about to run is an independent
+    # observation of the local daemon, so a drifted tag now produces a MISMATCH and the
+    # badge is withheld. Absence is recorded as absence: if the inspect fails we keep no
+    # digest at all rather than falling back to the nominal one, because a fallback here
+    # would restore exactly the tautology being removed.
+    observed_digest = _ms._docker.image_digest(image)
+    nominal_digest = rec.get("image_digest") or ""
     before = _snap()
     res = _ms._docker.run_in_container(image, command, mounts=mounts, workdir=str(ddir),
                                        platform=platform, timeout=timeout_seconds)
@@ -313,7 +331,14 @@ def run_step_in_container(
         "output_sha256":   output_sha256 or None,
         "ran_in_container": True,
         "container_image":  image,
-        "container_image_digest": rec.get("image_digest"),
+        # OBSERVED (see above), never the nominal digest we were handed.
+        "container_image_digest": observed_digest or None,
+        # ...and when the two disagree, say so on the step rather than only withholding
+        # the badge: a silent absence reads as "not checked", a recorded mismatch reads
+        # as "checked, and the image moved".
+        "container_digest_nominal": (nominal_digest
+                                     if nominal_digest and nominal_digest != observed_digest
+                                     else None),
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)

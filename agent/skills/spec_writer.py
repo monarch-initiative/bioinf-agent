@@ -53,6 +53,45 @@ from agent.skills.pipeline_state import validation_covers as _validation_covers
 # ---------------------------------------------------------------------------
 I8_STATEMENT = "every input traces to a prior step's output OR an external source"
 
+#: Companion-file suffixes a step may legitimately consume beside a prior step's output:
+#: the index/checksum/compression siblings that bioinformatics tools write next to the
+#: real artifact. Order matters only in that the longest sensible suffix should win; each
+#: is stripped from the FULL path and the parent looked up in the universe by full path,
+#: never by basename (see the I8 loop for what basename matching cost).
+_SIDECAR_SUFFIXES = (".bai", ".csi", ".crai", ".tbi", ".fai", ".gzi", ".dict",
+                     ".idx", ".md5", ".sha256", ".gz", ".bgz")
+
+
+def _sidecar_parent(path: str) -> Optional[str]:
+    """The artifact `path` is a companion OF, or None if it is not a companion.
+
+    `/run/x.bam.bai` → `/run/x.bam`; `/run/x.bam` → None."""
+    if not isinstance(path, str):
+        return None
+    low = path.lower()
+    for suf in _SIDECAR_SUFFIXES:
+        if low.endswith(suf) and len(path) > len(suf):
+            return path[: -len(suf)]
+    return None
+
+
+def _ran_off_host(step: dict) -> bool:
+    """Did this step execute on a filesystem other than ours?
+
+    Cluster steps consume paths under the compute env's scratch, which share no
+    namespace with the local paths every declared external source is recorded as. I8
+    needs to know that so it can tell "incomparable paths" from "unrelated paths" —
+    the first deserves a fallback, the second is the orphan it exists to catch.
+
+    Read from the step's own runtime evidence (`validation_locus`, the sacct/cluster
+    fields `run_step_on_cluster` stamps), never from a caller-supplied flag: a step
+    could otherwise claim cross-locus staging to excuse a genuine orphan."""
+    if not isinstance(step, dict):
+        return False
+    locus = (step.get("validation_locus")
+             or (step.get("resource_usage") or {}).get("locus") or "")
+    return str(locus).lower() not in ("", "host", "local", "container")
+
 EXTERNAL_SOURCE_KINDS = frozenset({
     "test_data", "reference_databases", "runtime_configs", "authored_artifacts",
 })
@@ -210,6 +249,24 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     if not commands:
         return _not_attempted("usage.command_template is empty")
     template = "\n".join(commands)   # placeholder scanning spans every command
+
+    # NOTHING DECLARED ⇒ NOTHING VERIFIED. A trial is judged on its outputs: every
+    # declared pattern must match a produced file and every match must pass type-aware
+    # validation. With `usage.outputs == []` both loops iterate zero times, so the trial
+    # returned ok=True having established only that the command exited 0 — and
+    # `usage_verified: True` went onto the sealed spec and the run dashboard over a
+    # how-to nobody checked the results of. `touch` would have passed.
+    #
+    # `not_attempted` is the honest state and the one that already exists for exactly
+    # this ("we had no way to run it; NOT a judgement of the how-to"). It does not refuse
+    # the seal — it records `usage_verified: False` with a reason, which is the truth.
+    if not usage.get("outputs"):
+        return _not_attempted(
+            "usage.outputs is empty, so a trial could only prove the command exits 0 — "
+            "not that it produces anything. Declare usage.outputs[*].files (a glob per "
+            "output, written through a recognized OUTPUT slot such as {OUTPUT_DIR}) to "
+            "make this how-to self-testable.")
+
     # A runner is either injected (the frozen image — validated == shipped) or taken from
     # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
     # what silently disabled I4 for every container-native env.
@@ -1298,6 +1355,10 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
 
     violations: list[dict] = []
     universe: set[str] = set(external_paths)
+    # Basenames of DECLARED EXTERNAL SOURCES only — the cross-locus staging handle (see
+    # the loop). Deliberately not seeded from prior outputs: steps sharing a filesystem
+    # compare by path, so widening this to outputs would reopen the hole it replaced.
+    external_basenames: set[str] = {Path(x).name for x in external_paths if x}
 
     steps = sorted(
         [s for s in spec.get("pipeline_steps", []) or [] if isinstance(s, dict)],
@@ -1312,11 +1373,32 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                 continue
             if p in universe:
                 continue
-            # Allow a basename-match fallback: agents sometimes record an
-            # output path with an extra suffix (e.g. {p}.gz, {p}.bai) where
-            # the prior step produced the unsuffixed parent.
-            base = Path(p).name
-            if any(Path(u).name == base for u in universe):
+            # SIDECAR TOLERANCE — a step may consume the companion of a file a prior step
+            # produced (`{p}.bai` beside `{p}`, `{p}.gz` after an in-step bgzip). The
+            # PARENT must be in the universe, matched on the FULL path.
+            parent = _sidecar_parent(p)
+            if parent and parent in universe:
+                continue
+            # CROSS-LOCUS STAGING — a step that ran somewhere else consumes the UPLOADED
+            # COPY of a declared external source. Its path is on the cluster filesystem;
+            # every external source we know is a local path. Those two absolute paths
+            # live in different namespaces and comparing them is a category error, so
+            # here — and only here — the basename is the strongest handle the record
+            # carries, and it is matched against DECLARED EXTERNAL SOURCES only, never
+            # against prior outputs (two steps on the same cluster share a filesystem, so
+            # their paths compare directly and need no fallback).
+            #
+            # This is what the old `any(Path(u).name == base for u in universe)` was
+            # really load-bearing for — samtools_cluster_rung3 seals on exactly this
+            # shape. But it was written as an unscoped rule and did two wrong things:
+            # it REFUSED the sidecar case its own comment claimed it existed for
+            # (`sample.bam.bai` != `sample.bam` as basenames), and it ACCEPTED any input
+            # anywhere on the local filesystem that merely shared a name with some prior
+            # output — `/somewhere/else/entirely/sample.bam` traced cleanly to
+            # `/run1/sample.bam`, which is the entire class of orphan I8 exists to catch.
+            # Both verified against the live checker; scoping it to the cross-locus case
+            # keeps the real capability and drops the hole.
+            if _ran_off_host(s) and Path(p).name in external_basenames:
                 continue
             violations.append({
                 "invariant": "I8.composition_coherence",
