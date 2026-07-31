@@ -221,3 +221,110 @@ def test_an_unobservable_digest_is_recorded_as_absent_not_as_the_nominal_one(mon
     m.run_step_in_container(freeze_request_key="k", command="echo hi", pipeline_id="p",
                             inputs=[], data_dir=str(tmp_path))
     assert captured.get("container_image_digest") is None
+
+
+# ---------------------------------------------------------------------------
+# I10 — a clause the sealed artifact carried no data for.
+#
+# The same shape as the three above, one layer out. I10 ran at seal against the
+# DRAFT and refused an unhealthy service correctly; the field was then dropped
+# from the constructed WorkflowSpec, so seal's own self-verify — which validates
+# the artifact, not the draft — re-checked the clause against nothing. A workflow
+# that genuinely depends on a running service read, standalone, as one that
+# depends on no service at all: the reproducibility hole the clause exists to
+# close, reintroduced by the writer immediately after the clause passed.
+# ---------------------------------------------------------------------------
+
+import ast
+from pathlib import Path
+
+import yaml
+
+from agent.models.core_data import WorkflowSpec
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _i10(spec) -> list[str]:
+    return [v["invariant"] for v in sw.check_workflow_invariants(spec)
+            if v["invariant"].startswith("I10")]
+
+
+def _service(*, healthy: bool) -> dict:
+    return {"type": "database", "name": "redis",
+            "start_command": "redis-server", "stop_command": "redis-cli shutdown",
+            "health_check_command": "redis-cli ping",
+            "status": "running" if healthy else "failed",
+            "health_check_log": [{"timestamp": "2026-07-31T00:00:00Z",
+                                  "command": "redis-cli ping",
+                                  "returncode": 0 if healthy else 1,
+                                  "healthy": healthy}]}
+
+
+def _minimal_spec(**over) -> dict:
+    return {"workflow_name": "w", "description": "d",
+            "created_at": "2026-07-31T00:00:00Z", "env_request_key": "k",
+            "env_content_digest": "sha256:c", "env_image": "img@sha256:c",
+            "pipeline_status": "fully_validated", **over}
+
+
+def test_dropping_the_field_is_what_made_the_check_vacuous():
+    """The bug, stated as an equality: the clause refuses the draft and passes the
+    artifact, for no reason other than which keys the writer copied across."""
+    assert _i10({"service_dependencies": [_service(healthy=False)]}), \
+        "I10 must refuse a service that never came up"
+    assert _i10({}) == [], \
+        "…and with the field dropped it has nothing to refuse — the vacuity, exactly"
+
+
+def test_the_sealed_model_carries_services_with_their_probes_intact():
+    """The typed-record trap: `health_check_log` is what I10 reads, so a model that
+    declared the field but dropped the log would be worse than not carrying it at
+    all — every carried service would become a spurious refusal at re-verify."""
+    spec = WorkflowSpec.model_validate(
+        _minimal_spec(service_dependencies=[_service(healthy=True)]))
+    on_disk = yaml.safe_load(spec.to_yaml())
+    assert on_disk["service_dependencies"][0]["health_check_log"], \
+        "the probes did not survive the typed round trip"
+    assert _i10(on_disk) == []
+
+
+def test_an_unhealthy_service_refuses_the_artifact_standalone():
+    """The point of carrying it: the refusal now survives into the artifact, so a
+    reader who never saw the draft reaches the same verdict."""
+    spec = WorkflowSpec.model_validate(
+        _minimal_spec(service_dependencies=[_service(healthy=False)]))
+    assert _i10(yaml.safe_load(spec.to_yaml()))
+
+
+#: Fields the sealed artifact must carry because its OWN invariants read them.
+#: Both halves are required and neither implies the other: a model field seal
+#: never populates is dead, and a key seal writes that the model drops is lost at
+#: `to_yaml`. This ratchet is the join.
+_CARRIED_FOR_SELF_VERIFICATION = (
+    "test_data", "reference_databases", "runtime_configs",
+    "authored_artifacts", "service_dependencies",
+)
+
+
+def test_seal_writes_every_field_the_artifact_re_verifies_against():
+    """THE GENERAL RATCHET. `service_dependencies` was declared nowhere and copied
+    nowhere, and nothing noticed for as long as the clause existed, because a
+    missing external source cannot fail an invariant — it can only silence one.
+    Adding a run-side clause that reads a new top-level field now means adding it
+    here, or the build breaks."""
+    tree = ast.parse((ROOT / "agent" / "mcp_tools" / "workflow_tools.py").read_text())
+    written: set[str] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                and any(getattr(t, "id", None) == "wf" for t in node.targets)):
+            written |= {k.value for k in node.value.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+    assert written, "could not find seal's WorkflowSpec dict — the AST walk has drifted"
+
+    for field in _CARRIED_FOR_SELF_VERIFICATION:
+        assert field in WorkflowSpec.model_fields, \
+            f"WorkflowSpec has no '{field}' — seal may write it, but to_yaml will drop it"
+        assert field in written, \
+            f"seal never copies '{field}' into the spec — the artifact re-verifies " \
+            f"that clause against nothing"

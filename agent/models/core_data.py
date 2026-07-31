@@ -1154,6 +1154,27 @@ class PipelineStep(BaseModel):
     # verify same-path-same-bytes across consumer steps. Optional for
     # back-compat with older recorded runs.
     output_sha256:     Optional[dict[str, str]] = None
+    # Where an OFF-HOST step's outputs live at the locus that produced them.
+    # `detected_outputs` above holds the DOWNLOADED LOCAL copies — right for
+    # validation, since those are the bytes we hashed and typed — but a second
+    # cluster step consumes the remote originals, and no local path can match
+    # one. I8 unions this into the lineage universe and I6 holds it to the same
+    # absoluteness rule, which is exactly why it is DECLARED here rather than
+    # left to ride on `extra="allow"`: a field two invariants read is
+    # load-bearing, and an undeclared one lets a typo'd key vanish into extras
+    # while the suite stays green. (The shipped_binaries lesson, one layer down.)
+    # Optional/None, NOT `= []`: `to_yaml` excludes None, so a local step does
+    # not carry a meaningless empty key. `outputs: list[str] = []` is the
+    # counter-example in this very model — it stamps an empty list into every
+    # sealed spec while the truth lives elsewhere, which is a default AUTHORING
+    # drift rather than catching it.
+    remote_outputs:    Optional[list[str]] = None
+    # The scheduler's verdict on the job that produced this step, STATED rather
+    # than left to be re-derived from cluster_state + cluster_exit_code. Deriving
+    # it is the defect: SLURM reports a signal death as `<rc>:<signal>`, so a
+    # reader who checks the exit code first reads every scheduler-killed job as
+    # clean. Absent on a step that did not run off-host.
+    cluster_job_verdict: Optional[str] = None
 
     @field_validator("inputs", mode="before")
     @classmethod
@@ -1322,6 +1343,14 @@ class WorkflowSpec(BaseModel):
     reference_databases:  list[ReferenceDatabase] = []
     runtime_configs:      list[RuntimeConfig] = []
     authored_artifacts:   list[AuthoredArtifact] = []
+    # Not an input SOURCE — a runtime PREREQUISITE, carried for the same reason.
+    # I10 (every declared service has a healthy probe) ran at seal against the
+    # draft and then the field was dropped from the artifact, so the sealed spec
+    # re-verified it against nothing: a workflow that genuinely depends on a
+    # running Redis/Postgres/Spark read, standalone, as one that depends on no
+    # service at all. Carrying it makes seal's own self-verify (which validates
+    # the constructed spec, not the draft) actually re-check the clause.
+    service_dependencies: list[ServiceDependency] = []
     # Driver env: what runs the workflow (records the orchestrator's env, too).
     driver_env:         dict = {}                  # {conda_env, python_version, key_packages}
     user_guide:         Optional[str] = None       # rendered markdown (from the passing run)

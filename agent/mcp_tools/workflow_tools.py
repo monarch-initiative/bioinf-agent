@@ -534,6 +534,9 @@ def seal_workflow(
         "reference_databases":  _refresh_reference_databases(draft.get("reference_databases", [])),
         "runtime_configs":      draft.get("runtime_configs", []),
         "authored_artifacts":   draft.get("authored_artifacts", []),
+        # Runtime prerequisites, carried for the same self-verification reason:
+        # without them the artifact's I10 re-check has nothing to look at.
+        "service_dependencies": draft.get("service_dependencies", []),
         "driver_env":         {"conda_env": draft.get("conda_env"),
                                "python_version": draft.get("python_version"),
                                "key_packages": key_packages},

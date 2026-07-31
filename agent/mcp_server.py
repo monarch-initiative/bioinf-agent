@@ -700,6 +700,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     download,
     cluster_module_avail,
     cluster_job_status,
+    globus_task_status,
     submit_workflow_job,
     run_production_pipeline,
     stage_apptainer_image,
@@ -707,6 +708,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,
+    acquire_reference_via_recipe,
     list_available_resources,
     download_resource,
     add_core_test_data,
@@ -735,6 +737,8 @@ from agent.mcp_tools.env_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
+    freeze_from_image,
+    build_env_from_authors_recipe,
     verify_env_recipe,
     generate_user_guide,
 )
