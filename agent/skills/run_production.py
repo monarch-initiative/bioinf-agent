@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, stage_apptainer, submit_workflow
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills import compute_access, data_pins, stage_apptainer, submit_workflow
+from agent.skills.outcomes import proven, refused, broke, degraded
 
 
 # ${name} — the SAME placeholder syntax workflow_render uses, so one command
@@ -131,6 +131,7 @@ def _run_local(*, project: dict, project_name: str, compute_env_name: str,
                tool_name: str, command: str, inputs: Mapping[str, str],
                outputs: Mapping[str, str], workflow_dir: str,
                resources: Mapping, platform: str,
+               reference_check: Mapping,
                _job_manager, _docker_available, _daemon_is_remote) -> dict:
     image = record.get("image")
     if not image:
@@ -189,6 +190,10 @@ def _run_local(*, project: dict, project_name: str, compute_env_name: str,
         "inputs": dict(inputs), "outputs": dict(outputs), "image": image,
         "image_digest": record.get("image_digest"),
         "freeze_request_key": freeze_request_key, "resources": dict(resources or {}),
+        # The DATA pins, alongside the env pin. A manifest that records
+        # image_digest but nothing about the references it consumed documents
+        # half a run.
+        "reference_check": dict(reference_check),
         "run_script": str(run_sh), "submitted_at": started,
         "follow_up": {
             "poll": f"call check_job(job_id={job_id!r})",
@@ -216,7 +221,7 @@ def _run_cluster(*, project_name: str, compute_env_name: str, env: dict,
                  tool_name: str, command: str, inputs: Mapping[str, str],
                  outputs: Mapping[str, str], workflow_dir: str,
                  resources: Mapping, access_path: Optional[str],
-                 timeout: int) -> dict:
+                 timeout: int, reference_check: Mapping) -> dict:
     # Cluster specifics come from the ENV config, never the call — that's what
     # makes the env swappable. Refuse (don't invent) if absent.
     modules = compute_access.get_container_modules(env)
@@ -260,7 +265,11 @@ def _run_cluster(*, project_name: str, compute_env_name: str, env: dict,
         apptainer_sif=sif_remote_abs,
         apptainer_module=modules["apptainer_module"],
         nextflow_module=modules["nextflow_module"],
-        slurm=slurm, access_path=access_path, timeout=timeout)
+        slurm=slurm, access_path=access_path, timeout=timeout,
+        # The DATA pins go into the cluster manifest too. Two manifest writers
+        # with two shapes is exactly how a disclosure ends up on one locus only.
+        extra_manifest={"reference_check": dict(reference_check),
+                        "freeze_request_key": freeze_request_key})
 
 
 def _resources_to_slurm(resources: Mapping) -> dict:
@@ -281,6 +290,96 @@ def _resources_to_slurm(resources: Mapping) -> dict:
 # The verb
 # ---------------------------------------------------------------------------
 
+def _disclose(result: dict, reference_check: Mapping) -> dict:
+    """Attach the data-pin verdict to whatever the locus branch returned, and
+    DOWNGRADE a launch that could not stand behind its data.
+
+    Here rather than in the two branches because there are two manifest writers
+    with two shapes, and a disclosure added to one leaf silently misses the other
+    locus — which is how the ENV report and the attestation ended up with two
+    implementations of the same divergence question.
+
+    A divergence does not REFUSE. Re-running a validated pipeline against a newer
+    reference is a legitimate, common thing to want; the failure this closes is
+    doing it without being told. That is what `degraded` means — proceeded, with
+    reduced assurance, and said so."""
+    if not isinstance(result, dict):                        # pragma: no cover
+        return result
+    out = {**result, "reference_check": dict(reference_check)}
+    status = reference_check.get("status")
+    if out.get("outcome") != "proven":
+        return out                                          # already a refusal/break
+    if status == data_pins.DIVERGED:
+        return degraded("run_production.reference_diverged",
+                        **{k: v for k, v in out.items()
+                           if k not in ("outcome", "code")},
+                        reference_divergence=reference_check.get("summary", ""))
+    if status == data_pins.UNVERIFIED:
+        return degraded("run_production.reference_unverified",
+                        **{k: v for k, v in out.items()
+                           if k not in ("outcome", "code")},
+                        reference_divergence=reference_check.get("summary", ""))
+    return out
+
+
+def _observe_inputs(inputs: Mapping[str, str], *, locus: str, env: dict,
+                    timeout: int) -> dict:
+    """{path: {exists, sha256}} for every bound input, observed AT ITS LOCUS.
+
+    ONE observation, two consumers: the existence precondition below and the
+    sealed-pin comparison in `data_pins`. Keeping it in one place is what stops
+    a cluster run from being stat-ed locally — the mistake that makes a check
+    report every correct path as missing."""
+    observed: dict[str, dict] = {}
+    if locus == "cluster":
+        from agent.skills.acquire_data import _probe_cluster_path
+        for path in dict.fromkeys((inputs or {}).values()):
+            probe = _probe_cluster_path(env, path, timeout=timeout)
+            if "error" in probe:
+                # An unreachable cluster is NOT a missing file. Record the
+                # ignorance rather than converting it into a finding — the
+                # absent-vs-unchecked distinction this codebase keeps relearning.
+                observed[path] = {"exists": None, "sha256": "",
+                                  "probe_error": probe["error"]}
+            else:
+                observed[path] = {"exists": bool(probe.get("exists")),
+                                  "sha256": probe.get("sha256") or ""}
+    else:
+        for path in dict.fromkeys((inputs or {}).values()):
+            p = Path(path)
+            observed[path] = {"exists": p.is_file() or p.is_dir(), "sha256": ""}
+    return observed
+
+
+def _missing_inputs(observed: Mapping[str, dict]) -> list:
+    """Paths we LOOKED FOR and did not find. `exists is None` means we could not
+    look, which is not the same thing and must not be reported as one."""
+    return sorted(p for p, o in observed.items() if o.get("exists") is False)
+
+
+def _load_sealed_spec(sealed_workflow: str) -> tuple:
+    """(spec_dict, error). Read through the TYPED seam — `load_workflow_spec` is
+    documented as the read-back path for 'any consumer that ACTS on a sealed
+    spec', and deciding whether to warn a user about their reference data is
+    acting on one. A malformed artifact fails here, loudly, rather than
+    surfacing as a bogus divergence."""
+    from agent.skills.spec_writer import load_workflow_spec
+    from agent import mcp_server as _ms
+    reports = (Path(__file__).resolve().parents[2]
+               / _ms.config["paths"]["pipelines_dir"])
+    path = reports / f"{sealed_workflow}.workflow.yaml"
+    if not path.is_file():
+        available = sorted(p.name[: -len(".workflow.yaml")]
+                           for p in reports.glob("*.workflow.yaml"))
+        return None, (f"no sealed workflow named {sealed_workflow!r} "
+                      f"(have: {', '.join(available) or 'none'})")
+    try:
+        spec = load_workflow_spec(path)
+    except Exception as e:                                  # pragma: no cover
+        return None, f"{path.name} is not a valid WorkflowSpec: {type(e).__name__}: {e}"
+    return (spec.model_dump() if hasattr(spec, "model_dump") else dict(spec)), None
+
+
 def run_production_pipeline(project_name: str,
                             compute_env_name: str,
                             workflow_name: str,
@@ -291,6 +390,7 @@ def run_production_pipeline(project_name: str,
                             freeze_request_key: str,
                             workflow_dir: str,
                             *,
+                            sealed_workflow: Optional[str] = None,
                             resources: Optional[Mapping] = None,
                             platform: str = "linux/amd64",
                             access_path: Optional[str] = None,
@@ -305,6 +405,15 @@ def run_production_pipeline(project_name: str,
     workflow_dir: a directories[] path with both `upload` and `exec`.
     resources: {mem_gb, cpus, time, gpus?} — optional locally, REQUIRED on the
       cluster (a SLURM job must declare mem + time).
+    sealed_workflow: name of a sealed `{name}.workflow.yaml` to check this run's
+      DATA against — the artifacts it binds vs the ones the workflow was
+      validated with. Optional, and deliberately EXPLICIT rather than inferred
+      from `workflow_name`: on disk the real cluster production run is
+      `samtools_flagstat_prod007` while the sealed workflow it corresponds to is
+      `samtools_cluster_rung3`, so a name-based join would silently compare a run
+      against the wrong spec — or, worse, against none while appearing to check.
+      Omitted ⇒ the result says `reference_check.status = not_attempted`, which
+      is a stated third state, not a pass.
     """
     try:
         access = compute_access.load_access(
@@ -328,24 +437,64 @@ def run_production_pipeline(project_name: str,
                 error=f"no frozen env for {freeze_request_key!r} — run freeze() first")
 
         env_type = env.get("type")
+
+        # ─── The DATA pins ────────────────────────────────────────────────
+        # Everything above re-anchors the ENV by digest. Nothing re-anchored the
+        # DATA: a workflow validated against gencode.v44 could be production-run
+        # against v39, or against a path that does not exist, and the command
+        # rendered and launched identically. Both halves of a reproducible run
+        # deserve the same treatment.
+        locus = "cluster" if env_type == "ssh" else "local"
+        observed = _observe_inputs(inputs, locus=locus, env=env, timeout=timeout)
+
+        # (a) Do the inputs EXIST? Both sibling verbs already fail fast on this
+        # (run_step_on_cluster via remote_paths_exist) and production did not,
+        # so a typo'd path bought a queued SLURM job that died opaquely.
+        missing = _missing_inputs(observed)
+        if missing:
+            return refused("run_production.inputs_missing",
+                error=f"{len(missing)} declared input(s) do not exist at the "
+                f"{locus} locus: {', '.join(missing[:5])}"
+                + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+                missing_inputs=missing, locus=locus)
+
+        # (b) Are they the artifacts the workflow was SEALED against?
+        reference_check = {"status": data_pins.NOT_ATTEMPTED,
+                           "reason": "no sealed_workflow was named, so nothing pins "
+                                     "this run's data to a validated one",
+                           "locus": locus}
+        if sealed_workflow:
+            spec, spec_err = _load_sealed_spec(sealed_workflow)
+            if spec_err:
+                return refused("run_production.sealed_workflow_unreadable",
+                               error=spec_err, sealed_workflow=sealed_workflow)
+            reference_check = data_pins.check_bound_inputs(
+                spec, inputs, locus=locus,
+                remote_presence={p: o.get("exists") for p, o in observed.items()},
+                remote_sha256={p: o.get("sha256", "") for p, o in observed.items()})
+            reference_check["sealed_workflow"] = sealed_workflow
+            reference_check["summary"] = data_pins.summarize(reference_check)
+
         if env_type == "local":
             from agent import mcp_server as _ms
-            return _run_local(
+            return _disclose(_run_local(
                 project=project, project_name=project_name,
                 compute_env_name=compute_env_name, record=record,
                 freeze_request_key=freeze_request_key, workflow_name=workflow_name,
                 tool_name=tool_name, command=command, inputs=inputs, outputs=outputs,
                 workflow_dir=workflow_dir, resources=resources or {}, platform=platform,
+                reference_check=reference_check,
                 _job_manager=_job_manager or _ms._job_manager,
                 _docker_available=_ms._check_docker_available,
-                _daemon_is_remote=_ms._locus.daemon_is_remote)
+                _daemon_is_remote=_ms._locus.daemon_is_remote), reference_check)
         if env_type == "ssh":
-            return _run_cluster(
+            return _disclose(_run_cluster(
                 project_name=project_name, compute_env_name=compute_env_name,
                 env=env, record=record, freeze_request_key=freeze_request_key,
                 workflow_name=workflow_name, tool_name=tool_name, command=command,
                 inputs=inputs, outputs=outputs, workflow_dir=workflow_dir,
-                resources=resources or {}, access_path=access_path, timeout=timeout)
+                resources=resources or {}, access_path=access_path, timeout=timeout,
+                reference_check=reference_check), reference_check)
         return refused("run_production.unknown_env_type",
             error=f"compute env {compute_env_name!r} has type={env_type!r}; "
             f"run_production_pipeline supports 'local' and 'ssh'")
