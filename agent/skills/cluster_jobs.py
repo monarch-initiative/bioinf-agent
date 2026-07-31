@@ -55,6 +55,95 @@ _SACCT_FIELDS = ("JobID", "State", "Elapsed", "ExitCode",
 _JOB_ID_RE = re.compile(r"^\d{1,12}(_\d{1,12})?$")
 
 
+# ---------------------------------------------------------------------------
+# Did the job succeed? — a STATE-first verdict.
+# ---------------------------------------------------------------------------
+
+#: sacct States that mean the job is over, one way or another. Anything not in
+#: here means keep polling.
+TERMINAL_STATES = frozenset({
+    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL",
+    "DEADLINE", "REVOKED",
+})
+
+RUNNING = "running"
+SUCCEEDED = "succeeded"
+DIED = "died"
+
+#: Why each terminal non-COMPLETED state is a death, in words a caller can show
+#: a user without consulting the SLURM manual.
+_DEATH_REASON = {
+    "FAILED":        "the job failed",
+    "CANCELLED":     "the job was cancelled (scancel, or the scheduler revoked it)",
+    "TIMEOUT":       "the job hit its wall-clock limit and was killed",
+    "OUT_OF_MEMORY": "the job was killed for exceeding its memory allocation",
+    "NODE_FAIL":     "the compute node failed under the job",
+    "PREEMPTED":     "the job was preempted by a higher-priority job",
+    "BOOT_FAIL":     "the compute node failed to boot for the job",
+    "DEADLINE":      "the job hit its scheduling deadline",
+    "REVOKED":       "the job allocation was revoked",
+}
+
+
+def normalize_state(state: str) -> str:
+    """The bare State token. sacct decorates some states with a trailer —
+    `CANCELLED by 123456` is the common one — so an equality test against the
+    undecorated name silently fails to match and the job never reads terminal."""
+    return (str(state or "").strip().split() or [""])[0].upper()
+
+
+def classify_sacct_row(row: dict) -> tuple[str, str]:
+    """(verdict, human reason) for one sacct row: RUNNING / SUCCEEDED / DIED.
+
+    THE STATE DECIDES, NOT THE EXIT CODE. This is the whole point of the
+    function, and it is a fix, not a preference. The poller used to read State
+    only to test terminality and then take `int(ExitCode.split(':')[0]) == 0` as
+    the verdict — but SLURM reports a signal death as `0:<signal>`, so the rc is
+    ZERO for every job the scheduler itself killed. Measured against these very
+    parsers, six of eight death shapes took the success path:
+
+        FAILED        0:9     SIGKILL (a cgroup OOM on a cluster that does not
+                              account OUT_OF_MEMORY) — the sharpest case
+        OUT_OF_MEMORY 0:125   the accounted OOM
+        CANCELLED     0:15    scancel
+        TIMEOUT       0:0     wall-clock kill
+        NODE_FAIL     0:0     the node died under it
+        PREEMPTED     0:0     preempted
+
+    Only `FAILED 1:0` — a job whose TOOL exited non-zero — was caught, because
+    that is the one death that happens to route through the rc.
+
+    A killed job is not harmless just because nothing downstream noticed. It
+    dies mid-write, so its outputs are TRUNCATED rather than absent: a TIMEOUT
+    during a BAM write leaves a file that exists, is non-empty, and validates.
+    That is the shape that seals green.
+
+    SUCCEEDED therefore requires BOTH a COMPLETED state and a `0:0` exit code.
+    A COMPLETED row carrying a non-zero rc is a contradiction, and the honest
+    reading of a contradiction is not success."""
+    state = normalize_state(row.get("state"))
+    exit_code = str(row.get("exit_code") or "").strip()
+    reason = str(row.get("reason") or "").strip()
+
+    if state not in TERMINAL_STATES:
+        return RUNNING, f"state={state or '?'}"
+
+    if state == "COMPLETED":
+        if exit_code in ("", "0:0"):
+            return SUCCEEDED, "COMPLETED 0:0"
+        # Contradiction: the scheduler says clean, the exit code says otherwise.
+        return DIED, (f"sacct reports COMPLETED but the exit code is {exit_code} "
+                      f"— a clean state with a non-zero exit is a contradiction, "
+                      f"and success is not the safe reading of one")
+
+    why = _DEATH_REASON.get(state, f"the job ended in state {state}")
+    detail = f"{why} (state={state}, exit_code={exit_code or 'unrecorded'}"
+    if reason and reason not in ("None", "none"):
+        detail += f", sacct Reason={reason}"
+    return DIED, detail + ")"
+
+
 def _validate_job_id(job_id: str) -> str:
     """job_id is required, must be a safe token. Refuses everything that
     isn't digits + optional `_<task>` — so an attacker can't smuggle a
@@ -178,6 +267,16 @@ def cluster_job_status(project_name: str,
                 **({"hint": hint} if hint else {}))
 
         jobs = _parse_sacct_output(res.stdout)
+        # Each row STATES its verdict. This is the only window a PRODUCTION run
+        # has — submit_workflow_job is submit-and-document, so nobody polls on
+        # the caller's behalf and nobody classifies for them. Handing back a raw
+        # `TIMEOUT | 0:0` row invites exactly the reading the poller used to
+        # make: rc is zero, so the job must be fine. Additive (the raw columns
+        # are untouched), so every existing consumer is unaffected.
+        for row in jobs:
+            verdict, why = classify_sacct_row(row)
+            row["verdict"] = verdict
+            row["verdict_reason"] = why
         return {
             "compute_env": compute_env_name,
             "job_id":      norm_id,

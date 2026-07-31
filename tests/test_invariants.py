@@ -141,7 +141,7 @@ def test_i7_still_rejects_an_all_zeros_record():
 
 def test_i7_accepts_a_real_observation():
     """Guard against 'fixed' meaning 'refuses everything' — these are the real values
-    the sealed samtools_cluster_rung3 workflow recorded on Longleaf."""
+    the sealed samtools_cluster_rung3 workflow recorded on a cluster."""
     v = check_invariants(_spec_with_resource_usage(
         {"wall_seconds": 16.0, "peak_rss_mb": 377.5, "peak_cpu_percent": 100.0}))
     assert not any(x["invariant"].startswith("I7") for x in v), v
@@ -1803,7 +1803,7 @@ def test_freeze_record_derives_redistributable_from_gated():
 def test_record_is_gated_reads_new_and_legacy_records():
     """EnvCache records written before the rename carry `gated`; the helper is the single
     reader so the two names can never drift apart again."""
-    from agent.skills.freeze import record_is_gated
+    from agent.models.core_data import record_is_gated
     assert record_is_gated({"license_gated": True}) is True
     assert record_is_gated({"license_gated": False}) is False
     assert record_is_gated({"gated": True}) is True            # legacy, on disk today
@@ -3544,7 +3544,15 @@ def test_attestation_is_intoto_slsa_statement_from_record():
     assert "pkg:conda/htslib@1.21" in uris
     assert any(u.startswith("docker:debian:bookworm-slim@sha256:") for u in uris)
     ip = pred["buildDefinition"]["internalParameters"]
-    assert ip["honesty_contract"] == ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+    # POLICY_CLEAN is now listed as its two INDEPENDENT clauses (I12 accelerator,
+    # I13 license). They reach separate verdicts on separate evidence — one name for
+    # two answers is the same collapse the coverage work exists to undo — and
+    # PROVENANCE_CLEAN (the synthesis firewall) was always a clause and was simply
+    # missing from this list. The guarantees are read off env_honesty.evaluate_build,
+    # so this assertion tracks the contract instead of restating it from memory.
+    assert ip["honesty_contract"] == [
+        "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
+        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
     assert ip["validation_locus"] == "native"
     # validated==shipped evidence is carried per tool
     assert any(v["tool"] == "samtools" and v["passed"] for v in ip["validated_in_image"])
@@ -4488,6 +4496,14 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
         captured["spec"], captured["kw"] = spec, kw
         return {"success": True, "image": "samtools-seqkit:latest", "image_digest": "sha256:deadbeef",
                 "content_digest": "sha256:cd",
+                # the real builder returns in-image evidence; a stub that returns none
+                # produces a record the honesty contract refuses (VALIDATED_IN_IMAGE),
+                # which is correct behaviour and would make this a test of the stub.
+                "verifications": [
+                    {"label": "samtools", "tool": "samtools", "check": "command -v samtools",
+                     "rc": 0, "passed": True, "out": "/opt/conda/bin/samtools"},
+                    {"label": "seqkit", "tool": "seqkit", "check": "command -v seqkit",
+                     "rc": 0, "passed": True, "out": "/opt/conda/bin/seqkit"}],
                 # matches what env_build really emits: `tool` alongside the prose
                 # `purpose` and the shell `command` (they are three different things)
                 "longtail_steps": [{"tool": "seqkit", "purpose": "seqkit (release binary)",
@@ -4553,7 +4569,14 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch,
     captured = {}
     monkeypatch.setattr(m._env_freeze, "build_env_image",
                         lambda spec, **kw: captured.update(kw) or {
-                            "success": True, "image": "x:1", "image_digest": "sha256:d", "longtail_steps": []})
+                            "success": True, "image": "x:1", "image_digest": "sha256:d",
+                            "longtail_steps": [],
+                            # see the note on the other fake_build: the real builder
+                            # returns evidence, so a faithful stub must too.
+                            "verifications": [
+                                {"label": "samtools", "tool": "samtools",
+                                 "check": "command -v samtools", "rc": 0, "passed": True,
+                                 "out": "/opt/conda/bin/samtools"}]})
     monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
     res = m.freeze("bioinf_x", ["samtools=1.21", "bcftools=1.21"], platform="linux/amd64", pipeline_id="")
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
@@ -6149,14 +6172,30 @@ def test_attestation_predicate_licenses_present_on_adopt_path():
     """F4 — adopt mode carries policy too (the dorado-stress lesson: we
     declare gated/licenses ON ourselves regardless of who built the bytes)."""
     from agent.skills.attestation import build_attestation
+    # `redistributable: False` is REQUIRED, not decoration: I13 says a gated artifact must
+    # be marked non-redistributable, and `freeze_record` derives exactly that from `gated`.
+    # The fixture omitted it and passed anyway, because the contract read only the modern
+    # `license_gated` key and this record carries the legacy `gated` — so I13 was skipped
+    # entirely on the one record shape written to assert I13 is carried. Reading gatedness
+    # through `core_data.record_is_gated` woke the clause up, and it immediately objected.
     record = {"image": "biocon:1.0", "image_digest": "sha256:" + "c" * 64,
-              "mode": "adopt", "gated": True, "licenses": ["EULA-X"]}
+              "mode": "adopt", "gated": True, "licenses": ["EULA-X"],
+              "redistributable": False}
     att = build_attestation(record)
     ip = att["predicate"]["buildDefinition"]["internalParameters"]
     assert ip["licenses"] == ["EULA-X"]
     assert ip["license_gated"] is True
     # mode-aware honesty preserved (the adopt contract)
-    assert ip["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+    assert ip["honesty_contract"] == [
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "PROVENANCE_CLEAN"]
+
+    # ...and the legacy key really does gate now: drop the marking and I13 fires, so the
+    # clause is reported as failed instead of silently guaranteed.
+    del record["redistributable"]
+    ip2 = build_attestation(record)["predicate"]["buildDefinition"]["internalParameters"]
+    assert "POLICY_CLEAN.license" not in ip2["honesty_contract"]
+    assert "POLICY_CLEAN.license" in ip2["contract_coverage"]["failed"]
 
 
 # =============================================================================
@@ -7046,6 +7085,114 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
     assert wf["workflow_name"] == "demo"
     assert (wf["steps_total"], wf["steps_validated"]) == (2, 1)
     assert wf["validated_in_shipped_image"] is True and wf["usage_verified"] is True
+
+
+def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
+    """The inventory row must distinguish "never tested" from "tested and failed".
+
+    `usage_verified: false` conflates them, and because seal REFUSES a real I4 failure,
+    false on disk always meant the former — a verdict nobody reached, reported as one.
+    This row sat directly beneath the envs[] half that RE-EARNS its contract coverage,
+    so the same listing was rigorous about Layer 1 and credulous about Layer 2.
+
+    Both fixtures below carry `usage_verified: false`; only the three-state field tells
+    them apart, which is the whole point."""
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    def _spec(name, uv):
+        d = {"workflow_name": name, "description": "d", "created_at": "2026-01-01",
+             "env_request_key": "", "usage_verified": False,
+             "pipeline_steps": [{"step": 1, "validation_status": "passed"}]}
+        if uv is not None:
+            d["usage_verification"] = uv
+        return d
+
+    (tmp_path / "never.workflow.yaml").write_text(yaml.safe_dump(_spec(
+        "never", {"status": "not_attempted", "reason": "inputs live on the cluster"})))
+    (tmp_path / "ran.workflow.yaml").write_text(yaml.safe_dump(_spec(
+        "ran", {"status": "verified", "reason": ""})))
+    # An artifact sealed BEFORE the field existed: the honest read is the stated
+    # "not_attempted", never a fabricated False the producer never wrote.
+    (tmp_path / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    rows = {w["workflow_name"]: w for w in r["workflows"]}
+
+    assert rows["never"]["usage_verification_status"] == "not_attempted"
+    assert "cluster" in rows["never"]["usage_verification_reason"]
+    assert rows["ran"]["usage_verification_status"] == "verified"
+    assert rows["legacy"]["usage_verification_status"] == "not_attempted"
+    # ...and the bare bool genuinely cannot tell the first two apart, which is why the
+    # field above has to exist rather than the reader being told to be careful.
+    assert rows["never"]["usage_verified"] == rows["ran"]["usage_verified"] is False
+
+
+def test_list_pipelines_counts_the_NORMAL_validation_shape_not_only_the_override(tmp_path):
+    """`steps_validated` must count per-file `validation` records, not just the override.
+
+    Found on a live cluster drive, not by the suite: every sealed workflow in the repo
+    reported `steps_validated: 0`, including a five-step run whose every step carried a
+    complete set of passing `validate_output` records. The row read only
+    `validation_status == "passed"` — the NARROW `mark_step_validated` override — so it
+    counted a step as validated exactly when the agent had asserted it and never when
+    the runtime had observed it. Precisely inverted, and advertised in the tool's own
+    description.
+
+    The two tests above did not catch it because both build steps out of
+    `validation_status`, the shape almost no real step has. A fixture that avoids the
+    defect is why the defect shipped, so this one uses the shape the runtime writes.
+    """
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    (tmp_path / "mixed.workflow.yaml").write_text(yaml.safe_dump({
+        "workflow_name": "mixed", "description": "d", "created_at": "2026-01-01",
+        "env_request_key": "", "pipeline_steps": [
+            # what run_pipeline_step / run_step_in_container / run_step_on_cluster write
+            {"step": 1, "returncode": 0,
+             "validation": {"a.bam": {"passed": True, "validation_method": "samtools"}}},
+            # the narrow agent-asserted override
+            {"step": 2, "returncode": 0, "validation_status": "passed"},
+            # ran, produced nothing anyone checked
+            {"step": 3, "returncode": 0},
+        ],
+    }))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    (wf,) = r["workflows"]
+    assert (wf["steps_total"], wf["steps_validated"]) == (3, 2)
+
+
+def test_list_pipelines_never_contradicts_its_own_usage_bool(tmp_path):
+    """One row must not print `usage_verified: true` beside `status: not_attempted`.
+
+    A spec sealed before `usage_verification` existed carries only the bool. Deriving
+    the status locally here — rather than through `core_data.usage_status`, which falls
+    back to that bool — made this row a THIRD reading of one field, and it disagreed
+    with the bool printed two lines above it. `samtools_cluster_rung3.workflow.yaml` is
+    that artifact on disk, and the contradiction was visible in a live inventory call.
+    """
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    (tmp_path / "legacyok.workflow.yaml").write_text(yaml.safe_dump({
+        "workflow_name": "legacyok", "description": "d", "created_at": "2026-01-01",
+        "env_request_key": "", "usage_verified": True,   # ...and NO usage_verification
+        "pipeline_steps": [{"step": 1, "returncode": 0,
+                            "validation": {"a.tsv": {"passed": True}}}],
+    }))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    (wf,) = r["workflows"]
+    assert wf["usage_verified"] is True
+    assert wf["usage_verification_status"] == "verified"
 
 
 def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):

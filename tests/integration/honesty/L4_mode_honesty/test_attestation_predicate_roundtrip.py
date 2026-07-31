@@ -132,7 +132,15 @@ def test_build_mode_predicate_carries_built_validated_clean_triple():
     """The three-guarantee badge for build mode."""
     att = build_attestation(_build_record())
     internal = att["predicate"]["buildDefinition"]["internalParameters"]
-    assert internal["honesty_contract"] == ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+    # POLICY_CLEAN is now listed as its two INDEPENDENT clauses (I12 accelerator,
+    # I13 license). They reach separate verdicts on separate evidence — one name for
+    # two answers is the same collapse the coverage work exists to undo — and
+    # PROVENANCE_CLEAN (the synthesis firewall) was always a clause and was simply
+    # missing from this list. The guarantees are read off env_honesty.evaluate_build,
+    # so this assertion tracks the contract instead of restating it from memory.
+    assert internal["honesty_contract"] == [
+        "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
+        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
 
 
 @pytest.mark.integration
@@ -150,13 +158,16 @@ def test_adopt_predicate_claims_validation_only_when_evidence_exists():
     rec = _adopt_record()
     rec.pop("verifications", None)
     internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
-    assert internal["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"], \
+    assert internal["honesty_contract"] == [
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "PROVENANCE_CLEAN"], \
         f"an adopt record with no evidence must not claim validation: {internal['honesty_contract']}"
 
     rec["verifications"] = [{"tool": "samtools", "check": "command -v samtools", "passed": True}]
     internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
-    assert internal["honesty_contract"] == ["ADOPTED_BY_DIGEST", "VALIDATED_IN_IMAGE",
-                                            "POLICY_CLEAN"], internal["honesty_contract"]
+    assert internal["honesty_contract"] == [
+        "ADOPTED_BY_DIGEST", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
+        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"], internal["honesty_contract"]
 
 
 @pytest.mark.integration

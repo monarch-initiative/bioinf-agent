@@ -113,7 +113,7 @@ def _scan_placeholders(command: str) -> set[str]:
 #   ntasks (def 1) int 1..256                   → --ntasks
 #   gpus (def 0)   int 0..16                    → --gres=gpu:N (+ partition/qos)
 #   partition (opt) safe token                  → --partition (OMITTED ⇒ scheduler
-#                                                  default, e.g. Longleaf CPU jobs)
+#                                                  default, e.g. many HPC CPU jobs)
 #   qos (opt)       safe token                  → --qos (GPU access on many HPCs)
 #   account (opt)   safe token                  → --account (OMITTED when unset)
 # partition/qos/account are normally MERGED IN from the env's slurm policy by the
@@ -124,7 +124,7 @@ _SLURM_ALL = _SLURM_REQUIRED + _SLURM_OPTIONAL
 
 _TIME_RE = re.compile(r"^(\d+-)?\d{1,2}:\d{2}:\d{2}$|^\d+-$")
 _MEM_RE = re.compile(r"^\d+[KMGTkmgt]$")
-# A partition value: one or more comma-separated safe tokens (Longleaf permits
+# A partition value: one or more comma-separated safe tokens (some sites permit
 # targeting several GPU partitions, e.g. "a100-gpu,l40-gpu").
 _PARTITION_RE = re.compile(r"^[A-Za-z0-9_.\-]+(,[A-Za-z0-9_.\-]+)*$")
 
@@ -167,7 +167,7 @@ def _check_slurm(slurm: Mapping) -> dict:
         raise ValueError(f"slurm.gpus={g!r} must be an int in [0, 16]")
     out["gpus"] = g
     # partition: optional; may be comma-separated (e.g. "a100-gpu,l40-gpu" —
-    # Longleaf lets a GPU job target several partitions). Omitted ⇒ no line.
+    # some sites let a GPU job target several partitions). Omitted ⇒ no line.
     if slurm.get("partition"):
         p = slurm["partition"]
         if not isinstance(p, str) or not _PARTITION_RE.match(p):
@@ -208,7 +208,7 @@ def _render_sbatch_header(workflow_name: str, slurm_v: dict, email: str) -> str:
     """The #SBATCH block — one controlled convention, using SLURM's own filename
     directives (%x=job-name, %j=job-id) so logs self-name with the real job ID and
     never collide. Optional lines (partition/qos/gres/account/mail) are emitted
-    ONLY when their value is present, so a Longleaf CPU job renders no --partition
+    ONLY when their value is present, so a typical CPU job renders no --partition
     and no --account (matches slurm_header_template.txt)."""
     def line(cond: object, text: str) -> str:
         return f"{text}\n" if cond else ""
@@ -374,7 +374,7 @@ def render_workflow(*,
         f"    \"\"\"\n"
         # --cleanenv: run with the IMAGE's baked environment, NOT the host's.
         # Apptainer passes host env vars into the container by default, and they
-        # OVERRIDE the image's ENV — so a cluster-set JAVA_HOME (Longleaf ships
+        # OVERRIDE the image's ENV — so a cluster-set JAVA_HOME (the cluster ships
         # /nas/.../java/17) clobbers our baked JAVA_HOME and the JVM/Spark gateway
         # dies "java: No such file or directory". --cleanenv makes validated ==
         # shipped hold at the env level: the container runs the environment we
@@ -403,7 +403,7 @@ def render_workflow(*,
         f"process {{\n"
         f"    cpus = {slurm_v['cpus']}\n"
         # Nextflow MemoryUnit wants an uppercase unit + 'B' (e.g. 6GB, 20GB). The
-        # SBATCH --mem accepts either case (UNC writes lowercase '20g'); normalize
+        # SBATCH --mem accepts either case (writes lowercase '20g'); normalize
         # here so a lowercase request doesn't render an odd '20gB'.
         f"    memory = '{slurm_v['mem'].upper()}B'\n"
         f"    time = '{slurm_v['time']}'\n"

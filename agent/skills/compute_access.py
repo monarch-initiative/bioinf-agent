@@ -447,9 +447,9 @@ def _validate_dir_block(block: object, where: str, path: Path,
 # a silently-accepted key we never read is a setting that does nothing. The env-level
 # `slurm:` block is the HPC's SCHEDULER POLICY — the constants for THIS cluster that
 # _resolve_slurm_and_email (submit_workflow) merges into every job's header. EVERY key
-# is OPTIONAL: an HPC like Longleaf (no partition selection, no account for CPU jobs)
+# is OPTIONAL: some HPC systems (no partition selection, no account for CPU jobs)
 # can omit the whole block. Email is NOT here — it's the env-level `email:` field.
-#   account      (str)  → --account on every job (omit ⇒ none, e.g. Longleaf)
+#   account      (str)  → --account on every job (omit ⇒ none, e.g. many clusters)
 #   partition    (str)  → default --partition for CPU jobs (omit ⇒ scheduler default)
 #   gpu          (map)  → this HPC's GPU convention {partition, qos}; present ⇒ GPU
 #                         jobs supported (a gpus>0 request renders -p/--qos/--gres)
@@ -474,7 +474,7 @@ def _validate_slurm_gpu_block(blk: object, where: str, path: Path) -> None:
     """The GPU convention `slurm.gpu: {partition, qos}` — both REQUIRED once the
     block is declared (a gpus>0 job's `-p`/`--qos` come from here; a half-declared
     convention would render a broken GPU header). Both are safe tokens; partition
-    may be comma-separated (Longleaf permits `a100-gpu,l40-gpu`)."""
+    may be comma-separated (some sites permit `a100-gpu,l40-gpu`)."""
     if not isinstance(blk, dict):
         raise ConfigError(f"{path}: {where} must be a mapping")
     extra = set(blk.keys()) - _SLURM_GPU_KEYS
@@ -497,7 +497,7 @@ def _validate_slurm_gpu_block(blk: object, where: str, path: Path) -> None:
 
 def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
     """Validate the OPTIONAL, closed `slurm:` block — the HPC's scheduler policy.
-    ALL keys optional (Longleaf CPU jobs need none); unknown keys rejected; each
+    ALL keys optional (many clusters need none); unknown keys rejected; each
     present key type-checked. Email is NOT here — it's the env-level `email:`."""
     if not isinstance(blk, dict):
         raise ConfigError(f"{path}: {where} must be a mapping")
@@ -750,7 +750,7 @@ def get_slurm_config(env: dict) -> Optional[dict]:
     """Return the OPTIONAL slurm policy block for this env, or None if undeclared.
     All keys optional (see _SLURM_ALLOWED_KEYS): account, partition, and the gpu
     convention {partition, qos}. _resolve_slurm_and_email (submit_workflow) merges
-    account/partition/gpu into each job's header. An HPC like Longleaf (no partition,
+    account/partition/gpu into each job's header. An HPC like the cluster (no partition,
     no account for CPU jobs) legitimately has no block at all."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None

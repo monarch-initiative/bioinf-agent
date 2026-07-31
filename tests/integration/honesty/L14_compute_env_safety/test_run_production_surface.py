@@ -306,6 +306,9 @@ class TestLocalHappyPath:
         monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
 
         d = tmp_path / "proj"; d.mkdir()
+        # The declared input must EXIST — production now fails fast on a path
+        # that isn't there, the way both sibling verbs already did.
+        (d / "x.bam").write_bytes(b"BAM\x01")
         ap = _local_access(tmp_path, str(d))
         fake_jm = _FakeJobManager()
         r = run_production.run_production_pipeline(
@@ -344,6 +347,8 @@ class TestLocalHappyPath:
 
         d = tmp_path / "proj"; d.mkdir()
         refs = tmp_path / "refs"; refs.mkdir()
+        (d / "x.bam").write_bytes(b"BAM\x01")
+        (refs / "genome.fa").write_text(">chr1\nACGT\n")
         ap = _local_access(tmp_path, str(d))
         r = run_production.run_production_pipeline(
             project_name="demo", compute_env_name="laptop",
@@ -403,3 +408,148 @@ class TestClusterRefusals:
             access_path=ap, _env_cache=_FakeCache(record=_REC))
         assert "error" in r and "not staged" in r["error"]
         assert "stage_apptainer_image" in r["error"]
+
+
+# ===========================================================================
+# The DATA pins — reference_rebind governance.
+#
+# Everything else in this verb re-anchors the ENV by digest. Nothing re-anchored
+# the DATA: a workflow validated against gencode.v44 could be production-run
+# against v39, or against a path that did not exist, and the command rendered
+# and launched identically. These drive the whole verb, so they cover the wiring
+# (does it load the spec, does it degrade, does the manifest carry it) that the
+# unit tests in tests/test_data_pins.py cannot see.
+# ===========================================================================
+
+class TestReferenceRebind:
+
+    @staticmethod
+    def _seal(tmp_path, monkeypatch, spec: dict, name="sealedwf"):
+        """Write a sealed WorkflowSpec where the verb will look for it."""
+        import agent.mcp_server as ms
+        reports = tmp_path / "env_reports"
+        reports.mkdir(exist_ok=True)
+        (reports / f"{name}.workflow.yaml").write_text(yaml.safe_dump(spec))
+        monkeypatch.setitem(ms.config["paths"], "pipelines_dir", str(reports))
+        # _load_sealed_spec resolves pipelines_dir against the repo root, so an
+        # absolute override has to survive the join — it does (Path / abs = abs).
+        return name
+
+    @staticmethod
+    def _base_spec(**over):
+        return {"workflow_name": "sealedwf", "description": "d",
+                "created_at": "2026-07-31T00:00:00Z", "env_request_key": "k",
+                "env_content_digest": "sha256:c", "env_image": "i@sha256:c",
+                "pipeline_status": "fully_validated", **over}
+
+    def _run(self, tmp_path, monkeypatch, *, inputs, sealed_workflow=None):
+        import agent.mcp_server as ms
+        monkeypatch.setattr(ms, "_check_docker_available", lambda: None)
+        monkeypatch.setattr(ms._locus, "daemon_is_remote", lambda: False)
+        from agent.skills import transfer
+        monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
+        d = tmp_path / "proj"
+        d.mkdir(exist_ok=True)
+        ap = _local_access(tmp_path, str(d))
+        return run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop",
+            workflow_name="wf", tool_name="t",
+            command="t ${REF} > ${OUT}",
+            inputs=inputs, outputs={"OUT": "out.txt"},
+            freeze_request_key="k", workflow_dir=str(d),
+            sealed_workflow=sealed_workflow,
+            resources={"mem_gb": 1}, access_path=ap,
+            _env_cache=_FakeCache(record=_REC), _job_manager=_FakeJobManager())
+
+    @pytest.mark.integration
+    def test_a_rebound_reference_degrades_the_run(self, tmp_path, monkeypatch):
+        """THE HEADLINE. Same slot, same path, DIFFERENT bytes than the workflow
+        was validated with. It launches — re-running against a newer reference is
+        legitimate — but it must never come back a bare success."""
+        import hashlib
+        ref = tmp_path / "genome.fa"
+        ref.write_text(">v44\n")
+        sealed_sha = hashlib.sha256(b">v44\n").hexdigest()
+        name = self._seal(tmp_path, monkeypatch, self._base_spec(
+            reference_databases=[{"name": "genome", "version": "v44",
+                                  "local_path": str(ref),
+                                  "sha256": sealed_sha, "size_bytes": 6}]))
+        ref.write_text(">v39\n")                     # the rebind
+
+        r = self._run(tmp_path, monkeypatch,
+                      inputs={"REF": str(ref)}, sealed_workflow=name)
+        assert r["outcome"] == "degraded", r
+        assert r["code"] == "run_production.reference_diverged"
+        assert r["reference_check"]["status"] == "diverged"
+        assert "DIVERGED" in r["reference_divergence"]
+        # it still LAUNCHED — disclosure, not refusal
+        assert r.get("job_id")
+
+    @pytest.mark.integration
+    def test_the_matching_reference_is_a_clean_proven_run(self, tmp_path, monkeypatch):
+        import hashlib
+        ref = tmp_path / "genome.fa"
+        ref.write_text(">v44\n")
+        name = self._seal(tmp_path, monkeypatch, self._base_spec(
+            reference_databases=[{"name": "genome", "version": "v44",
+                                  "local_path": str(ref),
+                                  "sha256": hashlib.sha256(b">v44\n").hexdigest(),
+                                  "size_bytes": 6}]))
+        r = self._run(tmp_path, monkeypatch,
+                      inputs={"REF": str(ref)}, sealed_workflow=name)
+        assert r["outcome"] == "proven", r
+        assert r["reference_check"]["status"] == "verified"
+
+    @pytest.mark.integration
+    def test_naming_no_sealed_workflow_is_a_stated_third_state(self, tmp_path, monkeypatch):
+        """Not a pass. The payload says the data is unpinned, in words, because
+        absence reading as compliance is the failure this whole layer exists to
+        stop."""
+        ref = tmp_path / "genome.fa"
+        ref.write_text(">v44\n")
+        r = self._run(tmp_path, monkeypatch, inputs={"REF": str(ref)})
+        assert r["outcome"] == "proven"
+        assert r["reference_check"]["status"] == "not_attempted"
+        assert "nothing pins" in r["reference_check"]["reason"]
+
+    @pytest.mark.integration
+    def test_an_input_that_does_not_exist_is_refused_before_launch(
+            self, tmp_path, monkeypatch):
+        """Both sibling verbs already failed fast on this; production launched a
+        docker run against a path that wasn't there and let it die opaquely."""
+        r = self._run(tmp_path, monkeypatch,
+                      inputs={"REF": str(tmp_path / "nope.fa")})
+        assert r["outcome"] == "refused"
+        assert r["code"] == "run_production.inputs_missing"
+        assert "nope.fa" in r["error"]
+
+    @pytest.mark.integration
+    def test_naming_a_sealed_workflow_that_does_not_exist_refuses(
+            self, tmp_path, monkeypatch):
+        """A typo'd spec name must not silently become 'checked nothing'."""
+        ref = tmp_path / "genome.fa"
+        ref.write_text("x")
+        self._seal(tmp_path, monkeypatch, self._base_spec())
+        r = self._run(tmp_path, monkeypatch, inputs={"REF": str(ref)},
+                      sealed_workflow="no_such_workflow")
+        assert r["outcome"] == "refused"
+        assert r["code"] == "run_production.sealed_workflow_unreadable"
+
+    @pytest.mark.integration
+    def test_the_manifest_carries_the_verdict_not_just_the_return_value(
+            self, tmp_path, monkeypatch):
+        """The manifest is the DURABLE record — it is what a future agent
+        invocation reads. One that records image_digest but nothing about the
+        references documents half a run."""
+        import hashlib, json
+        ref = tmp_path / "genome.fa"
+        ref.write_text(">v44\n")
+        name = self._seal(tmp_path, monkeypatch, self._base_spec(
+            reference_databases=[{"name": "genome", "version": "v44",
+                                  "local_path": str(ref),
+                                  "sha256": hashlib.sha256(b">v44\n").hexdigest()}]))
+        r = self._run(tmp_path, monkeypatch,
+                      inputs={"REF": str(ref)}, sealed_workflow=name)
+        manifest = json.loads(Path(r["manifest_path"]).read_text())
+        assert manifest["reference_check"]["status"] == "verified"
+        assert manifest["reference_check"]["sealed_workflow"] == name

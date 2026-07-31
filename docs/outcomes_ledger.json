@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:715",
-    "end_line": 715,
+    "where": "agent/mcp_tools/freeze_tools.py:747",
+    "end_line": 747,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:761",
-    "end_line": 761,
+    "where": "agent/mcp_tools/freeze_tools.py:793",
+    "end_line": 793,
     "named_in_test": true
   },
   {
@@ -45,8 +45,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:263",
-    "end_line": 264,
+    "where": "agent/mcp_tools/run_tools.py:267",
+    "end_line": 268,
     "named_in_test": false
   },
   {
@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1046",
-    "end_line": 1046,
+    "where": "agent/mcp_tools/workflow_tools.py:1068",
+    "end_line": 1068,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1059",
-    "end_line": 1059,
+    "where": "agent/mcp_tools/workflow_tools.py:1081",
+    "end_line": 1081,
     "named_in_test": false
   },
   {
@@ -75,8 +75,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:570",
-    "end_line": 570,
+    "where": "agent/mcp_tools/workflow_tools.py:666",
+    "end_line": 666,
     "named_in_test": false
   },
   {
@@ -85,8 +85,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:822",
-    "end_line": 822,
+    "where": "agent/mcp_tools/workflow_tools.py:844",
+    "end_line": 844,
     "named_in_test": false
   },
   {
@@ -155,8 +155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_status",
-    "where": "agent/skills/cluster_jobs.py:175",
-    "end_line": 178,
+    "where": "agent/skills/cluster_jobs.py:264",
+    "end_line": 267,
     "named_in_test": false
   },
   {
@@ -165,8 +165,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_status",
-    "where": "agent/skills/cluster_jobs.py:192",
-    "end_line": 192,
+    "where": "agent/skills/cluster_jobs.py:291",
+    "end_line": 291,
     "named_in_test": false
   },
   {
@@ -175,8 +175,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_paths_exist",
-    "where": "agent/skills/cluster_jobs.py:236",
-    "end_line": 237,
+    "where": "agent/skills/cluster_jobs.py:335",
+    "end_line": 336,
     "named_in_test": false
   },
   {
@@ -185,8 +185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_paths_exist",
-    "where": "agent/skills/cluster_jobs.py:240",
-    "end_line": 243,
+    "where": "agent/skills/cluster_jobs.py:339",
+    "end_line": 342,
     "named_in_test": false
   },
   {
@@ -195,8 +195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:384",
-    "end_line": 387,
+    "where": "agent/skills/cluster_jobs.py:483",
+    "end_line": 486,
     "named_in_test": false
   },
   {
@@ -205,8 +205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:456",
-    "end_line": 456,
+    "where": "agent/skills/cluster_jobs.py:555",
+    "end_line": 555,
     "named_in_test": false
   },
   {
@@ -985,8 +985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:192",
-    "end_line": 193,
+    "where": "agent/skills/freeze_from_image.py:242",
+    "end_line": 243,
     "named_in_test": false
   },
   {
@@ -995,8 +995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:196",
-    "end_line": 197,
+    "where": "agent/skills/freeze_from_image.py:246",
+    "end_line": 247,
     "named_in_test": false
   },
   {
@@ -1005,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:447",
-    "end_line": 448,
+    "where": "agent/skills/freeze_from_image.py:526",
+    "end_line": 527,
     "named_in_test": true
   },
   {
@@ -1015,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:452",
-    "end_line": 453,
+    "where": "agent/skills/freeze_from_image.py:531",
+    "end_line": 532,
     "named_in_test": false
   },
   {
@@ -1025,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:462",
-    "end_line": 464,
+    "where": "agent/skills/freeze_from_image.py:541",
+    "end_line": 543,
     "named_in_test": false
   },
   {
@@ -1115,8 +1115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:320",
-    "end_line": 322,
+    "where": "agent/skills/run_cluster_step.py:323",
+    "end_line": 325,
     "named_in_test": false
   },
   {
@@ -1125,8 +1125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:398",
-    "end_line": 401,
+    "where": "agent/skills/run_cluster_step.py:401",
+    "end_line": 404,
     "named_in_test": false
   },
   {
@@ -1135,8 +1135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:417",
-    "end_line": 424,
+    "where": "agent/skills/run_cluster_step.py:420",
+    "end_line": 427,
     "named_in_test": true
   },
   {
@@ -1145,8 +1145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:449",
-    "end_line": 455,
+    "where": "agent/skills/run_cluster_step.py:452",
+    "end_line": 458,
     "named_in_test": true
   },
   {
@@ -1155,8 +1155,18 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:477",
-    "end_line": 485,
+    "where": "agent/skills/run_cluster_step.py:484",
+    "end_line": 492,
+    "named_in_test": true
+  },
+  {
+    "code": "run_cluster.job_died",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_on_cluster",
+    "where": "agent/skills/run_cluster_step.py:523",
+    "end_line": 536,
     "named_in_test": true
   },
   {
@@ -1165,8 +1175,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:355",
-    "end_line": 355,
+    "where": "agent/skills/run_production.py:504",
+    "end_line": 504,
     "named_in_test": false
   },
   {
@@ -1175,8 +1185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:357",
-    "end_line": 358,
+    "where": "agent/skills/run_production.py:506",
+    "end_line": 507,
     "named_in_test": false
   },
   {
@@ -1265,8 +1275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:414",
-    "end_line": 420,
+    "where": "agent/skills/submit_workflow.py:415",
+    "end_line": 421,
     "named_in_test": true
   },
   {
@@ -1275,8 +1285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:481",
-    "end_line": 481,
+    "where": "agent/skills/submit_workflow.py:488",
+    "end_line": 488,
     "named_in_test": false
   },
   {
@@ -1285,8 +1295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:483",
-    "end_line": 483,
+    "where": "agent/skills/submit_workflow.py:490",
+    "end_line": 490,
     "named_in_test": false
   },
   {
@@ -1850,13 +1860,63 @@
     "named_in_test": false
   },
   {
+    "code": "freeze.built_unobserved",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:673",
+    "end_line": 673,
+    "named_in_test": false
+  },
+  {
+    "code": "seal.sealed_howto_unproven",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:644",
+    "end_line": 651,
+    "named_in_test": true
+  },
+  {
+    "code": "freeze_from_image.frozen_unobserved",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze_from_image",
+    "where": "agent/skills/freeze_from_image.py:478",
+    "end_line": 478,
+    "named_in_test": false
+  },
+  {
+    "code": "run_production.reference_diverged",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "_disclose",
+    "where": "agent/skills/run_production.py:313",
+    "end_line": 316,
+    "named_in_test": true
+  },
+  {
+    "code": "run_production.reference_unverified",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "_disclose",
+    "where": "agent/skills/run_production.py:318",
+    "end_line": 321,
+    "named_in_test": false
+  },
+  {
     "code": "cluster.res_no_rows_retry",
     "outcome": "loop",
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:406",
-    "end_line": 408,
+    "where": "agent/skills/cluster_jobs.py:505",
+    "end_line": 507,
     "named_in_test": false
   },
   {
@@ -1895,8 +1955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:642",
-    "end_line": 643,
+    "where": "agent/mcp_tools/freeze_tools.py:675",
+    "end_line": 675,
     "named_in_test": false
   },
   {
@@ -1905,8 +1965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:715",
-    "end_line": 715,
+    "where": "agent/mcp_tools/freeze_tools.py:747",
+    "end_line": 747,
     "named_in_test": true
   },
   {
@@ -1915,8 +1975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:760",
-    "end_line": 760,
+    "where": "agent/mcp_tools/freeze_tools.py:792",
+    "end_line": 792,
     "named_in_test": true
   },
   {
@@ -1925,8 +1985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:804",
-    "end_line": 810,
+    "where": "agent/mcp_tools/freeze_tools.py:836",
+    "end_line": 842,
     "named_in_test": false
   },
   {
@@ -1945,8 +2005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1099",
-    "end_line": 1112,
+    "where": "agent/mcp_tools/workflow_tools.py:1121",
+    "end_line": 1134,
     "named_in_test": false
   },
   {
@@ -1955,8 +2015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1161",
-    "end_line": 1162,
+    "where": "agent/mcp_tools/workflow_tools.py:1183",
+    "end_line": 1184,
     "named_in_test": false
   },
   {
@@ -1965,8 +2025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:551",
-    "end_line": 555,
+    "where": "agent/mcp_tools/workflow_tools.py:642",
+    "end_line": 642,
     "named_in_test": true
   },
   {
@@ -1975,8 +2035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:846",
-    "end_line": 876,
+    "where": "agent/mcp_tools/workflow_tools.py:868",
+    "end_line": 898,
     "named_in_test": false
   },
   {
@@ -1985,8 +2045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:953",
-    "end_line": 953,
+    "where": "agent/mcp_tools/workflow_tools.py:975",
+    "end_line": 975,
     "named_in_test": false
   },
   {
@@ -2415,8 +2475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:396",
-    "end_line": 400,
+    "where": "agent/skills/freeze_from_image.py:479",
+    "end_line": 479,
     "named_in_test": false
   },
   {
@@ -2435,8 +2495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:613",
-    "end_line": 635,
+    "where": "agent/skills/run_cluster_step.py:684",
+    "end_line": 706,
     "named_in_test": false
   },
   {
@@ -2445,8 +2505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:203",
-    "end_line": 207,
+    "where": "agent/skills/run_production.py:208",
+    "end_line": 212,
     "named_in_test": false
   },
   {
@@ -2475,8 +2535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:467",
-    "end_line": 477,
+    "where": "agent/skills/submit_workflow.py:474",
+    "end_line": 484,
     "named_in_test": false
   },
   {
@@ -2945,9 +3005,19 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:551",
-    "end_line": 555,
+    "where": "agent/mcp_tools/freeze_tools.py:595",
+    "end_line": 599,
     "named_in_test": true
+  },
+  {
+    "code": "freeze.build_honesty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:600",
+    "end_line": 604,
+    "named_in_test": false
   },
   {
     "code": "freeze.recipe_load_failed",
@@ -2955,8 +3025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:682",
-    "end_line": 683,
+    "where": "agent/mcp_tools/freeze_tools.py:714",
+    "end_line": 715,
     "named_in_test": true
   },
   {
@@ -2965,8 +3035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:685",
-    "end_line": 686,
+    "where": "agent/mcp_tools/freeze_tools.py:717",
+    "end_line": 718,
     "named_in_test": true
   },
   {
@@ -2975,8 +3045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:698",
-    "end_line": 699,
+    "where": "agent/mcp_tools/freeze_tools.py:730",
+    "end_line": 731,
     "named_in_test": false
   },
   {
@@ -2985,8 +3055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:728",
-    "end_line": 743,
+    "where": "agent/mcp_tools/freeze_tools.py:760",
+    "end_line": 775,
     "named_in_test": false
   },
   {
@@ -2995,8 +3065,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:799",
-    "end_line": 800,
+    "where": "agent/mcp_tools/freeze_tools.py:831",
+    "end_line": 832,
     "named_in_test": false
   },
   {
@@ -3015,8 +3085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:220",
-    "end_line": 221,
+    "where": "agent/mcp_tools/run_tools.py:224",
+    "end_line": 225,
     "named_in_test": false
   },
   {
@@ -3025,22 +3095,12 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:228",
-    "end_line": 232,
+    "where": "agent/mcp_tools/run_tools.py:232",
+    "end_line": 236,
     "named_in_test": false
   },
   {
     "code": "run_container.no_frozen_env",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:234",
-    "end_line": 235,
-    "named_in_test": false
-  },
-  {
-    "code": "run_container.no_image_handle",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
@@ -3050,13 +3110,23 @@
     "named_in_test": false
   },
   {
+    "code": "run_container.no_image_handle",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:242",
+    "end_line": 243,
+    "named_in_test": false
+  },
+  {
     "code": "run_container.remote_daemon",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:253",
-    "end_line": 258,
+    "where": "agent/mcp_tools/run_tools.py:257",
+    "end_line": 262,
     "named_in_test": false
   },
   {
@@ -3065,8 +3135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:475",
-    "end_line": 478,
+    "where": "agent/mcp_tools/run_tools.py:504",
+    "end_line": 507,
     "named_in_test": false
   },
   {
@@ -3075,8 +3145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_pipeline_step",
-    "where": "agent/mcp_tools/run_tools.py:94",
-    "end_line": 95,
+    "where": "agent/mcp_tools/run_tools.py:95",
+    "end_line": 96,
     "named_in_test": false
   },
   {
@@ -3105,8 +3175,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1028",
-    "end_line": 1032,
+    "where": "agent/mcp_tools/workflow_tools.py:1050",
+    "end_line": 1054,
     "named_in_test": false
   },
   {
@@ -3115,8 +3185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1034",
-    "end_line": 1034,
+    "where": "agent/mcp_tools/workflow_tools.py:1056",
+    "end_line": 1056,
     "named_in_test": false
   },
   {
@@ -3125,8 +3195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1041",
-    "end_line": 1041,
+    "where": "agent/mcp_tools/workflow_tools.py:1063",
+    "end_line": 1063,
     "named_in_test": false
   },
   {
@@ -3135,8 +3205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1050",
-    "end_line": 1053,
+    "where": "agent/mcp_tools/workflow_tools.py:1072",
+    "end_line": 1075,
     "named_in_test": false
   },
   {
@@ -3145,8 +3215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1097",
-    "end_line": 1097,
+    "where": "agent/mcp_tools/workflow_tools.py:1119",
+    "end_line": 1119,
     "named_in_test": false
   },
   {
@@ -3155,8 +3225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1130",
-    "end_line": 1132,
+    "where": "agent/mcp_tools/workflow_tools.py:1152",
+    "end_line": 1154,
     "named_in_test": false
   },
   {
@@ -3165,8 +3235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1139",
-    "end_line": 1140,
+    "where": "agent/mcp_tools/workflow_tools.py:1161",
+    "end_line": 1162,
     "named_in_test": false
   },
   {
@@ -3175,8 +3245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1152",
-    "end_line": 1158,
+    "where": "agent/mcp_tools/workflow_tools.py:1174",
+    "end_line": 1180,
     "named_in_test": false
   },
   {
@@ -3185,8 +3255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1163",
-    "end_line": 1165,
+    "where": "agent/mcp_tools/workflow_tools.py:1185",
+    "end_line": 1187,
     "named_in_test": false
   },
   {
@@ -3195,8 +3265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_guard_spec_overwrite",
-    "where": "agent/mcp_tools/workflow_tools.py:336",
-    "end_line": 347,
+    "where": "agent/mcp_tools/workflow_tools.py:344",
+    "end_line": 355,
     "named_in_test": true
   },
   {
@@ -3205,8 +3275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:393",
-    "end_line": 394,
+    "where": "agent/mcp_tools/workflow_tools.py:401",
+    "end_line": 402,
     "named_in_test": true
   },
   {
@@ -3215,8 +3285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:401",
-    "end_line": 405,
+    "where": "agent/mcp_tools/workflow_tools.py:409",
+    "end_line": 413,
     "named_in_test": false
   },
   {
@@ -3225,9 +3295,19 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:407",
-    "end_line": 408,
+    "where": "agent/mcp_tools/workflow_tools.py:415",
+    "end_line": 416,
     "named_in_test": false
+  },
+  {
+    "code": "seal.no_validated_run",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:445",
+    "end_line": 453,
+    "named_in_test": true
   },
   {
     "code": "seal.workflow_invariants",
@@ -3235,8 +3315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:414",
-    "end_line": 416,
+    "where": "agent/mcp_tools/workflow_tools.py:457",
+    "end_line": 459,
     "named_in_test": true
   },
   {
@@ -3245,9 +3325,9 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:462",
-    "end_line": 469,
-    "named_in_test": false
+    "where": "agent/mcp_tools/workflow_tools.py:522",
+    "end_line": 529,
+    "named_in_test": true
   },
   {
     "code": "seal.self_verify_failed",
@@ -3255,18 +3335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:546",
-    "end_line": 550,
-    "named_in_test": false
-  },
-  {
-    "code": "provenance.invalid_inputs",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "write_pipeline_provenance",
-    "where": "agent/mcp_tools/workflow_tools.py:663",
-    "end_line": 664,
+    "where": "agent/mcp_tools/workflow_tools.py:615",
+    "end_line": 619,
     "named_in_test": false
   },
   {
@@ -3275,8 +3345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:952",
-    "end_line": 952,
+    "where": "agent/mcp_tools/workflow_tools.py:974",
+    "end_line": 974,
     "named_in_test": false
   },
   {
@@ -3445,8 +3515,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:681",
-    "end_line": 685,
+    "where": "agent/skills/acquire_data.py:711",
+    "end_line": 715,
     "named_in_test": true
   },
   {
@@ -3455,8 +3525,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:688",
-    "end_line": 695,
+    "where": "agent/skills/acquire_data.py:718",
+    "end_line": 725,
     "named_in_test": true
   },
   {
@@ -3465,8 +3535,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:697",
-    "end_line": 703,
+    "where": "agent/skills/acquire_data.py:727",
+    "end_line": 733,
     "named_in_test": true
   },
   {
@@ -3475,8 +3545,18 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:705",
-    "end_line": 711,
+    "where": "agent/skills/acquire_data.py:735",
+    "end_line": 741,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_cluster_reference_db",
+    "where": "agent/skills/acquire_data.py:745",
+    "end_line": 756,
     "named_in_test": true
   },
   {
@@ -3485,8 +3565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_status",
-    "where": "agent/skills/cluster_jobs.py:158",
-    "end_line": 161,
+    "where": "agent/skills/cluster_jobs.py:247",
+    "end_line": 250,
     "named_in_test": false
   },
   {
@@ -3495,8 +3575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_status",
-    "where": "agent/skills/cluster_jobs.py:165",
-    "end_line": 167,
+    "where": "agent/skills/cluster_jobs.py:254",
+    "end_line": 256,
     "named_in_test": false
   },
   {
@@ -3505,8 +3585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_status",
-    "where": "agent/skills/cluster_jobs.py:190",
-    "end_line": 190,
+    "where": "agent/skills/cluster_jobs.py:289",
+    "end_line": 289,
     "named_in_test": false
   },
   {
@@ -3515,8 +3595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_paths_exist",
-    "where": "agent/skills/cluster_jobs.py:224",
-    "end_line": 226,
+    "where": "agent/skills/cluster_jobs.py:323",
+    "end_line": 325,
     "named_in_test": false
   },
   {
@@ -3525,8 +3605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_paths_exist",
-    "where": "agent/skills/cluster_jobs.py:248",
-    "end_line": 253,
+    "where": "agent/skills/cluster_jobs.py:347",
+    "end_line": 352,
     "named_in_test": false
   },
   {
@@ -3535,8 +3615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:367",
-    "end_line": 370,
+    "where": "agent/skills/cluster_jobs.py:466",
+    "end_line": 469,
     "named_in_test": false
   },
   {
@@ -3545,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:374",
-    "end_line": 376,
+    "where": "agent/skills/cluster_jobs.py:473",
+    "end_line": 475,
     "named_in_test": false
   },
   {
@@ -3555,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_job_resources",
-    "where": "agent/skills/cluster_jobs.py:454",
-    "end_line": 454,
+    "where": "agent/skills/cluster_jobs.py:553",
+    "end_line": 553,
     "named_in_test": false
   },
   {
@@ -3704,9 +3784,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:235",
-    "end_line": 238,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:444",
+    "end_line": 447,
     "named_in_test": true
   },
   {
@@ -3714,9 +3794,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:241",
-    "end_line": 243,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:450",
+    "end_line": 452,
     "named_in_test": true
   },
   {
@@ -3724,9 +3804,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:246",
-    "end_line": 249,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:455",
+    "end_line": 458,
     "named_in_test": true
   },
   {
@@ -3734,9 +3814,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:251",
-    "end_line": 253,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:460",
+    "end_line": 462,
     "named_in_test": true
   },
   {
@@ -3744,9 +3824,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:275",
-    "end_line": 278,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:488",
+    "end_line": 491,
     "named_in_test": true
   },
   {
@@ -3754,9 +3834,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:284",
-    "end_line": 287,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:497",
+    "end_line": 500,
     "named_in_test": true
   },
   {
@@ -3764,9 +3844,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:289",
-    "end_line": 293,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:502",
+    "end_line": 506,
     "named_in_test": true
   },
   {
@@ -3774,9 +3854,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:305",
-    "end_line": 307,
+    "func": "_clause_license",
+    "where": "agent/skills/env_honesty.py:534",
+    "end_line": 536,
     "named_in_test": true
   },
   {
@@ -3784,29 +3864,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:309",
-    "end_line": 311,
-    "named_in_test": true
-  },
-  {
-    "code": "WELL_FORMED.shipped_binaries",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:344",
-    "end_line": 348,
-    "named_in_test": true
-  },
-  {
-    "code": "WELL_FORMED.tool_identities",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:352",
-    "end_line": 356,
+    "func": "_clause_license",
+    "where": "agent/skills/env_honesty.py:538",
+    "end_line": 540,
     "named_in_test": true
   },
   {
@@ -3814,9 +3874,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:363",
-    "end_line": 365,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:617",
+    "end_line": 619,
     "named_in_test": true
   },
   {
@@ -3824,9 +3884,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:367",
-    "end_line": 369,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:623",
+    "end_line": 625,
     "named_in_test": true
   },
   {
@@ -3834,9 +3894,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:377",
-    "end_line": 379,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:639",
+    "end_line": 641,
     "named_in_test": true
   },
   {
@@ -3844,9 +3904,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:386",
-    "end_line": 388,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:657",
+    "end_line": 659,
     "named_in_test": true
   },
   {
@@ -3854,9 +3914,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:390",
-    "end_line": 394,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:661",
+    "end_line": 665,
     "named_in_test": true
   },
   {
@@ -3995,8 +4055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:184",
-    "end_line": 185,
+    "where": "agent/skills/freeze_from_image.py:234",
+    "end_line": 235,
     "named_in_test": true
   },
   {
@@ -4005,9 +4065,19 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:206",
-    "end_line": 207,
+    "where": "agent/skills/freeze_from_image.py:257",
+    "end_line": 258,
     "named_in_test": false
+  },
+  {
+    "code": "freeze_from_image.vacuous_evidence",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze_from_image",
+    "where": "agent/skills/freeze_from_image.py:283",
+    "end_line": 287,
+    "named_in_test": true
   },
   {
     "code": "freeze_from_image.honesty_violation",
@@ -4015,8 +4085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:320",
-    "end_line": 323,
+    "where": "agent/skills/freeze_from_image.py:391",
+    "end_line": 394,
     "named_in_test": true
   },
   {
@@ -4025,8 +4095,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:434",
-    "end_line": 435,
+    "where": "agent/skills/freeze_from_image.py:513",
+    "end_line": 514,
     "named_in_test": false
   },
   {
@@ -4035,8 +4105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:437",
-    "end_line": 437,
+    "where": "agent/skills/freeze_from_image.py:516",
+    "end_line": 516,
     "named_in_test": false
   },
   {
@@ -4125,8 +4195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:447",
-    "end_line": 447,
+    "where": "agent/skills/pipeline_state.py:539",
+    "end_line": 539,
     "named_in_test": false
   },
   {
@@ -4135,8 +4205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:452",
-    "end_line": 463,
+    "where": "agent/skills/pipeline_state.py:544",
+    "end_line": 555,
     "named_in_test": true
   },
   {
@@ -4145,8 +4215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:465",
-    "end_line": 473,
+    "where": "agent/skills/pipeline_state.py:557",
+    "end_line": 565,
     "named_in_test": false
   },
   {
@@ -4155,8 +4225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:241",
-    "end_line": 242,
+    "where": "agent/skills/run_cluster_step.py:244",
+    "end_line": 245,
     "named_in_test": false
   },
   {
@@ -4165,8 +4235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:244",
-    "end_line": 247,
+    "where": "agent/skills/run_cluster_step.py:247",
+    "end_line": 250,
     "named_in_test": false
   },
   {
@@ -4175,8 +4245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:267",
-    "end_line": 268,
+    "where": "agent/skills/run_cluster_step.py:270",
+    "end_line": 271,
     "named_in_test": false
   },
   {
@@ -4185,8 +4255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:272",
-    "end_line": 274,
+    "where": "agent/skills/run_cluster_step.py:275",
+    "end_line": 277,
     "named_in_test": false
   },
   {
@@ -4195,8 +4265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:278",
-    "end_line": 283,
+    "where": "agent/skills/run_cluster_step.py:281",
+    "end_line": 286,
     "named_in_test": false
   },
   {
@@ -4205,8 +4275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:292",
-    "end_line": 293,
+    "where": "agent/skills/run_cluster_step.py:295",
+    "end_line": 296,
     "named_in_test": false
   },
   {
@@ -4215,8 +4285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:307",
-    "end_line": 310,
+    "where": "agent/skills/run_cluster_step.py:310",
+    "end_line": 313,
     "named_in_test": false
   },
   {
@@ -4225,8 +4295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:373",
-    "end_line": 375,
+    "where": "agent/skills/run_cluster_step.py:376",
+    "end_line": 378,
     "named_in_test": false
   },
   {
@@ -4235,8 +4305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:137",
-    "end_line": 138,
+    "where": "agent/skills/run_production.py:138",
+    "end_line": 139,
     "named_in_test": false
   },
   {
@@ -4245,8 +4315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:145",
-    "end_line": 147,
+    "where": "agent/skills/run_production.py:146",
+    "end_line": 148,
     "named_in_test": false
   },
   {
@@ -4255,8 +4325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:153",
-    "end_line": 155,
+    "where": "agent/skills/run_production.py:154",
+    "end_line": 156,
     "named_in_test": false
   },
   {
@@ -4265,8 +4335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:226",
-    "end_line": 229,
+    "where": "agent/skills/run_production.py:231",
+    "end_line": 234,
     "named_in_test": false
   },
   {
@@ -4275,8 +4345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:234",
-    "end_line": 236,
+    "where": "agent/skills/run_production.py:239",
+    "end_line": 241,
     "named_in_test": false
   },
   {
@@ -4285,8 +4355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:242",
-    "end_line": 244,
+    "where": "agent/skills/run_production.py:247",
+    "end_line": 249,
     "named_in_test": false
   },
   {
@@ -4295,8 +4365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:250",
-    "end_line": 254,
+    "where": "agent/skills/run_production.py:255",
+    "end_line": 259,
     "named_in_test": false
   },
   {
@@ -4305,8 +4375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:322",
-    "end_line": 325,
+    "where": "agent/skills/run_production.py:431",
+    "end_line": 434,
     "named_in_test": false
   },
   {
@@ -4315,9 +4385,29 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:327",
-    "end_line": 328,
+    "where": "agent/skills/run_production.py:436",
+    "end_line": 437,
     "named_in_test": false
+  },
+  {
+    "code": "run_production.inputs_missing",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:455",
+    "end_line": 459,
+    "named_in_test": true
+  },
+  {
+    "code": "run_production.sealed_workflow_unreadable",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:469",
+    "end_line": 470,
+    "named_in_test": true
   },
   {
     "code": "run_production.unknown_env_type",
@@ -4325,8 +4415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:349",
-    "end_line": 351,
+    "where": "agent/skills/run_production.py:498",
+    "end_line": 500,
     "named_in_test": false
   },
   {
@@ -4350,243 +4440,13 @@
     "named_in_test": false
   },
   {
-    "code": "I5.reference_database_size_mismatch",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:1009",
-    "end_line": 1017,
-    "named_in_test": true
-  },
-  {
-    "code": "I5.reference_database_unreadable",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:1029",
-    "end_line": 1034,
-    "named_in_test": false
-  },
-  {
-    "code": "I5.reference_database_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:1037",
-    "end_line": 1045,
-    "named_in_test": true
-  },
-  {
-    "code": "spec_writer.validation_failed",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "write_workflow_spec",
-    "where": "agent/skills/spec_writer.py:104",
-    "end_line": 104,
-    "named_in_test": false
-  },
-  {
-    "code": "I8.authored_artifact_missing",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1082",
-    "end_line": 1089,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.authored_artifact_unreadable",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1094",
-    "end_line": 1100,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.authored_artifact_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_authored_artifact_integrity",
-    "where": "agent/skills/spec_writer.py:1103",
-    "end_line": 1112,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_missing",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1176",
-    "end_line": 1185,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_unreadable",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1194",
-    "end_line": 1200,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.lineage_mutated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_lineage_integrity",
-    "where": "agent/skills/spec_writer.py:1203",
-    "end_line": 1215,
-    "named_in_test": true
-  },
-  {
-    "code": "I8.composition_coherence",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:1316",
-    "end_line": 1323,
-    "named_in_test": true
-  },
-  {
-    "code": "I0.shape_sanity",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:557",
-    "end_line": 561,
-    "named_in_test": true
-  },
-  {
-    "code": "I0.shape_sanity",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:565",
-    "end_line": 570,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.pipeline_step_has_outputs",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:588",
-    "end_line": 594,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.outputs_validated",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:607",
-    "end_line": 614,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.validation_passed",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:635",
-    "end_line": 644,
-    "named_in_test": true
-  },
-  {
-    "code": "I3.declared_output_type",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:658",
-    "end_line": 667,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:690",
-    "end_line": 694,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.absolute_paths",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:697",
-    "end_line": 701,
-    "named_in_test": true
-  },
-  {
-    "code": "I6.template_placeholders_declared",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:728",
-    "end_line": 737,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_recorded",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:754",
-    "end_line": 760,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_captured",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:771",
-    "end_line": 779,
-    "named_in_test": true
-  },
-  {
-    "code": "I7.resource_usage_captured",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_invariants",
-    "where": "agent/skills/spec_writer.py:795",
-    "end_line": 803,
-    "named_in_test": true
-  },
-  {
     "code": "I10.service_never_healthy",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
     "func": "_check_service_health",
-    "where": "agent/skills/spec_writer.py:904",
-    "end_line": 912,
+    "where": "agent/skills/spec_writer.py:1007",
+    "end_line": 1015,
     "named_in_test": true
   },
   {
@@ -4595,8 +4455,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:970",
-    "end_line": 977,
+    "where": "agent/skills/spec_writer.py:1073",
+    "end_line": 1080,
     "named_in_test": true
   },
   {
@@ -4605,8 +4465,248 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_reference_database_availability",
-    "where": "agent/skills/spec_writer.py:989",
-    "end_line": 995,
+    "where": "agent/skills/spec_writer.py:1092",
+    "end_line": 1098,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_size_mismatch",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:1112",
+    "end_line": 1120,
+    "named_in_test": true
+  },
+  {
+    "code": "I5.reference_database_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:1132",
+    "end_line": 1137,
+    "named_in_test": false
+  },
+  {
+    "code": "I5.reference_database_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_reference_database_availability",
+    "where": "agent/skills/spec_writer.py:1140",
+    "end_line": 1148,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.authored_artifact_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:1185",
+    "end_line": 1192,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.authored_artifact_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:1197",
+    "end_line": 1203,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.authored_artifact_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_authored_artifact_integrity",
+    "where": "agent/skills/spec_writer.py:1206",
+    "end_line": 1215,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_missing",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1279",
+    "end_line": 1288,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_unreadable",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1297",
+    "end_line": 1303,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.lineage_mutated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_lineage_integrity",
+    "where": "agent/skills/spec_writer.py:1306",
+    "end_line": 1318,
+    "named_in_test": true
+  },
+  {
+    "code": "I8.composition_coherence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "_check_composition_coherence",
+    "where": "agent/skills/spec_writer.py:1458",
+    "end_line": 1465,
+    "named_in_test": true
+  },
+  {
+    "code": "spec_writer.validation_failed",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "write_workflow_spec",
+    "where": "agent/skills/spec_writer.py:170",
+    "end_line": 170,
+    "named_in_test": false
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:641",
+    "end_line": 645,
+    "named_in_test": true
+  },
+  {
+    "code": "I0.shape_sanity",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:649",
+    "end_line": 654,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.pipeline_step_has_outputs",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:672",
+    "end_line": 678,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.outputs_validated",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:692",
+    "end_line": 699,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.validation_passed",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:720",
+    "end_line": 729,
+    "named_in_test": true
+  },
+  {
+    "code": "I3.declared_output_type",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:743",
+    "end_line": 752,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:775",
+    "end_line": 779,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:782",
+    "end_line": 786,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.absolute_paths",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:793",
+    "end_line": 798,
+    "named_in_test": true
+  },
+  {
+    "code": "I6.template_placeholders_declared",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:825",
+    "end_line": 834,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_recorded",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:851",
+    "end_line": 857,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:868",
+    "end_line": 876,
+    "named_in_test": true
+  },
+  {
+    "code": "I7.resource_usage_captured",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "check_invariants",
+    "where": "agent/skills/spec_writer.py:892",
+    "end_line": 900,
     "named_in_test": true
   },
   {
@@ -4715,8 +4815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:353",
-    "end_line": 355,
+    "where": "agent/skills/submit_workflow.py:354",
+    "end_line": 356,
     "named_in_test": false
   },
   {
@@ -4725,8 +4825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:358",
-    "end_line": 364,
+    "where": "agent/skills/submit_workflow.py:359",
+    "end_line": 365,
     "named_in_test": false
   },
   {

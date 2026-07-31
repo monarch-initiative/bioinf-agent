@@ -164,7 +164,7 @@ def test_synth_install_method_ships_runtime_verified_provenance(monkeypatch):
     # Route it through the real freeze mapping and assert the Layer-1 firewall is clean.
     x = {"name": "bwa", "type": "synthesized", "install_method": im}
     spec = env_freeze._map_install(x)["spec"]
-    assert env_honesty._check_provenance({"longtail_steps": [spec]}) == []
+    assert env_honesty._clause_provenance({"longtail_steps": [spec]})[1] == []
     # the replayed RUN is the pinned, reproducible sequence
     assert f"git -C bwa checkout {COMMIT}" in spec["command"]
     assert spec["evidence"] == _synth_spec()["evidence"]

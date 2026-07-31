@@ -9,6 +9,9 @@ list_installed_pipelines.
 
 from pathlib import Path
 
+from agent.models.core_data import (USAGE_NOT_ATTEMPTED, record_is_gated as _record_is_gated,
+                                    step_is_validated, usage_status)
+
 import yaml
 
 
@@ -239,7 +242,8 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
     for key, rec in sorted((env_cache.all() or {}).items()):
         if not isinstance(rec, dict):
             continue
-        violations = env_cache.contract_violations(rec)
+        contract = env_cache.contract_report(rec)
+        violations = contract.violations
         envs.append({
             "request_key":      key,
             "name":             rec.get("name"),
@@ -257,10 +261,18 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
             "platform":         rec.get("platform"),
             "validation_locus": rec.get("validation_locus"),
             "created_at":       rec.get("created_at"),
-            "license_gated":    bool(rec.get("license_gated")),
+            # via record_is_gated, not a bare .get: records on disk carry the legacy
+            # `gated` key, and a one-key read reported a gated artifact as ungated in
+            # the inventory — the same drift that once disabled I13 itself.
+            "license_gated":    _record_is_gated(rec),
             # The green is EARNED here, not remembered from freeze time.
             "contract_ok":          not violations,
             "contract_violations":  violations,
+            # ...and the green says how much it rests on. `contract_ok: true` with an
+            # UNOBSERVED clause is a real state, and an inventory that hid it would be
+            # making exactly the claim this field exists to qualify.
+            "contract_coverage":    contract.summary(),
+            "contract_unobserved":  [c.clause for c in contract.unobserved],
         })
 
     # --- Layer 2: sealed workflows -------------------------------------------
@@ -279,10 +291,37 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
                 "envs":               d.get("envs") or [],
                 "validated_in_shipped_image": bool(d.get("validated_in_shipped_image")),
                 "usage_verified":             bool(d.get("usage_verified")),
+                # THE THREE-STATE READ, because the bool above cannot answer the
+                # question anyone actually has. `usage_verified: false` conflates
+                # "tested and broken" with "never tested" — and since seal REFUSES the
+                # former, false on disk always meant the latter, a verdict nobody
+                # reached. Consult this, not the bool.
+                #
+                # A missing key means the artifact predates the three-state field, so
+                # the honest read is the stated string "not_attempted" — never a
+                # fabricated False, which would be this row inventing the verdict the
+                # producer declined to make. (Unlike the envs[] half above, which
+                # RE-EARNS contract_ok at read time, this is disclosure of a stored
+                # claim: Layer 2 cannot re-anchor here, because
+                # check_workflow_invariants dials out over ssh on a locus:cluster I5
+                # and an inventory listing must not open cluster connections.)
+                # Read through core_data.usage_status, not re-derived here. Spelling it
+                # out locally made this row a THIRD reading of one field, and it drifted
+                # immediately: for a spec sealed before `usage_verification` existed the
+                # local version fell to "not_attempted" while `usage_verified: true` was
+                # printed directly above it, so one row contradicted itself about one
+                # workflow. samtools_cluster_rung3 is that artifact on disk.
+                "usage_verification_status": usage_status(d) or USAGE_NOT_ATTEMPTED,
+                "usage_verification_reason": (
+                    (d.get("usage_verification") or {}).get("reason") or ""),
                 "steps_total":     len(steps),
-                "steps_validated": sum(
-                    1 for s in steps
-                    if isinstance(s, dict) and s.get("validation_status") == "passed"),
+                # core_data.step_is_validated — BOTH the per-file `validation` records and
+                # the `mark_step_validated` override. This line used to keep only the
+                # override, making it the one drifted copy of a predicate written out
+                # seven times, and it reported `steps_validated: 0` for every workflow
+                # ever sealed — including a five-step run with a full set of passing
+                # records. Plausible, advertised in the tool description, untested.
+                "steps_validated": sum(1 for s in steps if step_is_validated(s)),
                 "path": str(spec_file),
             })
         except Exception as e:      # a malformed artifact is reported, never swallowed

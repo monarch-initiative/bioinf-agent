@@ -444,7 +444,12 @@ class TestHappyPath:
         # Output captured + validated
         assert len(r["detected_outputs"]) == 1
         assert r["detected_outputs"][0].endswith("filtered.bam")
-        assert "filtered.bam" in r["validations"]
+        # Validations are keyed by RESOLVED ABSOLUTE PATH, not basename — a per-sample
+        # cluster fan-out is exactly where two outputs share a name and the earlier
+        # record got overwritten (see pipeline_state.validation_key). Asserted through
+        # the key function so the test tracks the definition instead of restating it.
+        from agent.skills.pipeline_state import validation_key
+        assert validation_key(r["detected_outputs"][0]) in r["validations"]
         assert validator.calls and validator.calls[0][1] == "bam"
 
         # C2 — the recorded step carries the REAL cluster-side .sif fingerprint
@@ -471,9 +476,10 @@ class TestHappyPath:
         assert step["ran_in_container"] is True
         assert step["container_image"].endswith("samtools_abc.sif")
         assert step["container_image_digest"] == "sha256:abcdef"
-        # validation hooked
+        # validation hooked — add_validation is handed the PATH (it normalizes the key
+        # itself); passing a bare basename is what let two same-named outputs collide.
         assert len(state.validations) == 1
-        assert state.validations[0][2] == "filtered.bam"
+        assert state.validations[0][2] == r["detected_outputs"][0]
 
 
 # ===========================================================================
@@ -805,3 +811,179 @@ class TestRenderStagingLocation:
         assert str(stage).startswith(str(repo_root)), \
             f"render staging {stage} must live under the repo {repo_root} " \
             f"(which is under $HOME, so Globus can access it)"
+
+
+# ---------------------------------------------------------------------------
+# A job the SCHEDULER killed must not return proven.
+#
+# The poller read State only to decide terminality and then took the exit code
+# as the verdict. SLURM reports a signal death as `<rc>:<signal>` with rc ZERO,
+# so six of the eight death shapes arrived looking exactly like a clean run.
+# The dangerous one is not the job that produced nothing — the download loop
+# already fails loudly on that — it is the job killed MID-WRITE, whose output
+# exists, is non-empty, and validates.
+#
+# These drive the whole orchestration with a dying sacct row, so they cover the
+# wiring (does the runner branch, does it record, does it name the logs) that
+# the unit tests in tests/test_cluster_job_death.py cannot see.
+# ---------------------------------------------------------------------------
+
+class TestJobDeath:
+
+    @staticmethod
+    def _drive(monkeypatch, tmp_path, *, state, exit_code, reason="None"):
+        access_path = _good_access(tmp_path)
+        from agent.skills import (cluster_jobs as _cj, transfer as _tr,
+                                   stage_apptainer as _sa, submit_workflow as _sw)
+        monkeypatch.setattr(_cj, "remote_paths_exist",
+                            lambda env, paths, **kw: {"ok": True, "checked": list(paths)})
+        monkeypatch.setattr(_sa, "stage_apptainer_image",
+                            lambda **kw: {"success": True, "sif_path": "/x.sif",
+                                          "image_digest": "sha256:x"})
+        monkeypatch.setattr(_sa, "inspect_staged_sif",
+                            lambda env, sif, **kw: {"sif_sha256": "f"*64,
+                                                    "inspect": {"data": {}},
+                                                    "apptainer_inspect_ok": True, "raw": ""})
+        monkeypatch.setattr(_tr, "upload",
+                            lambda **kw: {"success": True, "zone": "scratch",
+                                          "remote_abs_path": kw["remote_abs_path"],
+                                          "provider": "scp_head_node", "bytes": 1,
+                                          "local_sha256": "0"*64, "duration_s": 0.001,
+                                          "verified_method": "sha256_round_trip",
+                                          "manifest": "/tmp/m.json",
+                                          "compute_env": kw["compute_env_name"]})
+        monkeypatch.setattr(_sw, "sbatch_via_ssh",
+                            lambda env, dir, timeout=300: {"job_id": "58025583",
+                                                           "launcher": f"{dir}/launcher.sh"})
+        monkeypatch.setattr(_cj, "cluster_job_status",
+                            lambda **kw: {"jobs": [{"job_id": "58025583", "state": state,
+                                                    "elapsed": "00:30:00",
+                                                    "exit_code": exit_code,
+                                                    "nodelist": "c1", "reason": reason,
+                                                    "start": "t", "end": "t"}]})
+
+        # The trap: the job died mid-write, so a TRUNCATED output IS downloadable
+        # and DOES validate. If the runner does not stop on the sacct verdict,
+        # nothing downstream will — this is the whole point of the fix.
+        def fake_download(**kw):
+            Path(kw["local_path"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(kw["local_path"]).write_bytes(b"truncated but non-empty")
+            return {"success": True, "local_path": kw["local_path"],
+                    "remote_abs_path": kw["remote_abs_path"], "zone": "scratch",
+                    "provider": "scp_head_node", "local_sha256": "d"*64,
+                    "bytes": 23, "duration_s": 0.1,
+                    "verified_method": "sha256_round_trip", "manifest": "/tmp/m.json",
+                    "compute_env": kw["compute_env_name"]}
+        monkeypatch.setattr(_tr, "download", fake_download)
+        monkeypatch.setattr(_cj, "cluster_job_resources",
+                            lambda **kw: {"wall_seconds": 1800.0, "peak_rss_mb": 1.0,
+                                          "max_cpu_percent": 1.0, "locus": "cluster"})
+
+        ps = _FakePipelineState()
+        r = run_cluster_step.run_step_on_cluster(
+            pipeline_id="P1", freeze_request_key="x",
+            project_name="phase_b_samtools_demo", compute_env_name="fakehpc",
+            workflow_name="w1", tool_name="samtools",
+            command="samtools sort ${i} -o ${o}",
+            inputs={"i": "/work/u/p/in.bam"}, outputs={"o": "out.bam"},
+            download_local_dir=str(tmp_path / "downloads"),
+            apptainer_module="apptainer/1", nextflow_module="nextflow/2",
+            slurm={"time": "00:30:00", "mem": "4G", "cpus": 2},
+            poll_interval=0, max_polls=3, access_path=str(access_path),
+            _pipeline_state=ps, _validator=_FakeValidator(), _env_mgr=_FakeEnvMgr())
+        return r, ps
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("state,exit_code", [
+        ("FAILED",        "0:9"),
+        ("OUT_OF_MEMORY", "0:125"),
+        ("CANCELLED",     "0:15"),
+        ("TIMEOUT",       "0:0"),
+        ("NODE_FAIL",     "0:0"),
+        ("PREEMPTED",     "0:0"),
+    ])
+    def test_a_scheduler_killed_job_breaks_instead_of_proving(
+            self, monkeypatch, tmp_path, state, exit_code):
+        r, ps = self._drive(monkeypatch, tmp_path, state=state, exit_code=exit_code)
+        assert r["outcome"] == "broke", f"{state} {exit_code} returned {r['outcome']}"
+        assert r.get("success") is not True
+        assert r["code"] == "run_cluster.job_died"
+        assert r["job_state"] == state
+
+    @pytest.mark.integration
+    def test_the_death_is_recorded_in_the_draft_not_just_returned(self, monkeypatch, tmp_path):
+        """A failure the system cannot see is worse than one it records loudly —
+        and rc=-1 is what makes seal's rc=0-gated clauses correctly SKIP the step
+        rather than demand outputs from a run that never finished."""
+        r, ps = self._drive(monkeypatch, tmp_path, state="TIMEOUT", exit_code="0:0",
+                            reason="TimeLimit")
+        assert len(ps.steps) == 1
+        _, step = ps.steps[0]
+        assert step["returncode"] == -1
+        assert step["failure_code"] == "run_cluster.job_died"
+        assert step["cluster_job_id"] == "58025583"
+        assert step["cluster_job_state"] == "TIMEOUT"
+        assert step["cluster_sacct_reason"] == "TimeLimit"
+        # attempted_inputs, NOT inputs — a step that never consumed its inputs
+        # must not become a node in the I8 data-flow graph.
+        assert "attempted_inputs" in step and "inputs" not in step
+
+    @pytest.mark.integration
+    def test_the_caller_is_told_where_to_look(self, monkeypatch, tmp_path):
+        """sbatch runs from workflow_dir and --job-name is the workflow name, so
+        `%x-%j` resolves to exactly this pair. Naming them costs nothing and is
+        the difference between a diagnosable failure and a dead end."""
+        r, _ = self._drive(monkeypatch, tmp_path, state="OUT_OF_MEMORY", exit_code="0:125")
+        d = r["diagnose"]
+        assert d["stderr"].endswith("/w1-58025583.err")
+        assert d["stdout"].endswith("/w1-58025583.out")
+        assert "/phase_b_samtools_demo/w1/" in d["stderr"]
+        assert "58025583" in d["sacct"]
+
+    @pytest.mark.integration
+    def test_a_truncated_output_does_not_rescue_a_dead_job(self, monkeypatch, tmp_path):
+        """THE REGRESSION GUARD. The harness downloads a real, non-empty, valid
+        file — exactly what a job killed mid-write leaves behind. Before the fix
+        this reached the recording path and sealed green. The step must be the
+        FAILED one, never a validated one."""
+        r, ps = self._drive(monkeypatch, tmp_path, state="TIMEOUT", exit_code="0:0")
+        assert r["outcome"] == "broke"
+        _, step = ps.steps[0]
+        assert step["detected_outputs"] == []
+        assert ps.validations == [], \
+            "a dead job's leftovers must never be validated into evidence"
+
+    @pytest.mark.integration
+    def test_a_genuinely_clean_job_is_unaffected(self, monkeypatch, tmp_path):
+        r, ps = self._drive(monkeypatch, tmp_path, state="COMPLETED", exit_code="0:0")
+        assert r["outcome"] == "proven", r.get("error")
+        _, step = ps.steps[0]
+        assert step["returncode"] == 0
+
+    @pytest.mark.integration
+    def test_a_surviving_step_states_its_verdict_rather_than_implying_it(
+            self, monkeypatch, tmp_path):
+        """A sealed cluster step used to record State and ExitCode and leave the
+        conclusion to the reader — and re-deriving that conclusion is the bug.
+        Now the record says which it was, so a later reader (a dashboard, an
+        invariant, a human) inherits the verdict instead of recomputing it."""
+        r, ps = self._drive(monkeypatch, tmp_path, state="COMPLETED", exit_code="0:0")
+        assert r["outcome"] == "proven"
+        _, step = ps.steps[0]
+        assert step["cluster_job_verdict"] == "succeeded"
+        assert step["cluster_state"] == "COMPLETED"
+        assert step["cluster_exit_code"] == "0:0"
+
+    @pytest.mark.integration
+    def test_the_step_records_where_its_outputs_live_on_the_cluster(
+            self, monkeypatch, tmp_path):
+        """`detected_outputs` are the DOWNLOADED LOCAL copies — right for
+        validation, since those are the bytes we hashed. But a second cluster
+        step consumes the REMOTE originals, and no local path can match one, so
+        without this a multi-step cluster chain has no provable lineage."""
+        r, ps = self._drive(monkeypatch, tmp_path, state="COMPLETED", exit_code="0:0")
+        _, step = ps.steps[0]
+        assert step["remote_outputs"] == [
+            "/work/u/CLAUDE_SCRATCH/phase_b_samtools_demo/w1/out.bam"]
+        # and they are NOT confused with the local copies
+        assert all(p.startswith(str(tmp_path)) for p in step["detected_outputs"])

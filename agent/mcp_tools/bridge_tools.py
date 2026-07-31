@@ -372,6 +372,7 @@ def run_production_pipeline(project_name: str,
                            freeze_request_key: str,
                            workflow_dir: str,
                            resources: dict = {},
+                           sealed_workflow: str = "",
                            platform: str = "linux/amd64") -> dict:
     """Run a frozen env's workflow in PRODUCTION on WHICHEVER compute env you
     name — local laptop OR ssh cluster. The SAME call, swap `compute_env_name`.
@@ -408,6 +409,18 @@ def run_production_pipeline(project_name: str,
       resources          {mem_gb, cpus, time, gpus?} — the uniform per-run
                          sizing knob. Optional locally (docker --memory/--cpus);
                          REQUIRED on the cluster (SLURM needs mem + time).
+      sealed_workflow    OPTIONAL name of a sealed `{name}.workflow.yaml` to
+                         check this run's DATA against. The env is pinned by
+                         digest; without this NOTHING pins the references, so a
+                         pipeline validated on gencode.v44 can be production-run
+                         on v39 with no disclosure. Name it EXPLICITLY — it is
+                         deliberately not inferred from workflow_name, because
+                         the two genuinely differ in practice (a run named
+                         `samtools_flagstat_prod007` against sealed workflow
+                         `samtools_cluster_rung3`). Omitted ⇒ the result carries
+                         `reference_check.status = "not_attempted"`, a stated
+                         third state rather than a silent pass; a divergence
+                         comes back `degraded`, never a bare success.
 
     Returns {success, locus, compute_env, job_id, workflow_dir, manifest_path,
     ...} on success; {"error": ..., ...} on any refusal/failure."""
@@ -422,6 +435,7 @@ def run_production_pipeline(project_name: str,
         outputs=outputs,
         freeze_request_key=freeze_request_key,
         workflow_dir=workflow_dir,
+        sealed_workflow=sealed_workflow or None,
         resources=resources or {},
         platform=platform or "linux/amd64",
         access_path=_resolve_access_path(),

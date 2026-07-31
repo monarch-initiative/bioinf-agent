@@ -32,7 +32,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any, Optional
 
-from agent.skills.freeze import record_is_gated as _record_is_gated
+from agent.models.core_data import record_is_gated as _record_is_gated
 
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
@@ -594,9 +594,26 @@ def render_env_report_html(record: dict) -> str:
                  'step(s) baked verbatim into the shipped image — the command IS '
                  'the provenance)</span></h2>')
         P.append('<div class="bx-body">')
-        if shipped:
+        # Parse ONCE, and survive a record that does not conform. `shipped` above is the
+        # RAW list (used only for the count); this is the typed read, and on a legacy
+        # record it raises. It used to raise straight out of the renderer, so freeze's
+        # `except` wrote "(html report render failed: ValidationError…)" and the user got
+        # NO page at all — for the one record class that most needs explaining. The
+        # sibling identity read three sections up has always degraded gracefully; this is
+        # the same courtesy, and it says WHY rather than silently showing nothing.
+        try:
+            typed_shipped, shipped_parse_error = _shipped_binaries(r), ""
+        except Exception as e:
+            typed_shipped, shipped_parse_error = [], str(e)
+        if shipped_parse_error:
+            P.append(_empty(
+                f"({len(shipped)} long-tail step(s) recorded, but they do not conform to the "
+                f"declared ShippedBinary shape, so they cannot be shown without guessing at "
+                f"their fields. This record predates the schema — re-freeze it. "
+                f"See the contract-coverage table below: {shipped_parse_error[:200]})"))
+        elif typed_shipped:
             P.append('<details open><summary>Verbatim long-tail commands</summary>')
-            for s in _shipped_binaries(r):
+            for s in typed_shipped:
                 # `name or purpose or "tool"` read keys the authors'-image producer
                 # never wrote, so every one of its binaries fell through to the literal
                 # string "tool" — four rows labelled <b>tool</b> under a header
@@ -748,6 +765,35 @@ def render_env_report_html(record: dict) -> str:
              "are sha256-anchored. The apt runtime layer is captured but not version-pinned "
              "(<code>apt-get</code> is not reproducible across time).</li>")
     P.append("</ul>")
+
+    # -- WHAT THE CONTRACT ACTUALLY LOOKED AT -------------------------------
+    # The bullets above are what each clause means WHEN IT RUNS. This table is whether
+    # it ran. Without it the page reads a clean contract as "all of the above were
+    # proven", when a clause whose subject was absent contributed nothing — the exact
+    # substitution [[feedback-reports-never-lie]] forbids, one level up: not a request
+    # standing in for an observation, but a NON-observation standing in for one.
+    # Rendered from env_honesty.evaluate_build, the same function the gate calls.
+    from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
+                                          evaluate_build)
+    _contract = evaluate_build(r)
+    _mark = {CHECKED: ('<span class="ok">checked</span>', ""),
+             NOT_APPLICABLE: ('<span class="muted">n/a</span>', ""),
+             UNOBSERVED: ('<span class="warn">unobserved</span>', "")}
+    P.append(f'<h3 style="margin-top:1.2rem">Contract coverage <span class="note">'
+             f'{_e(_contract.summary())}</span></h3>')
+    P.append('<table class="t"><thead><tr><th>Clause</th><th>Ran?</th><th>Establishes</th>'
+             '<th>What it examined</th></tr></thead><tbody>')
+    for c in _contract.coverage:
+        badge = _mark.get(c.status, (_e(c.status), ""))[0]
+        P.append(f'<tr><td><code>{_e(c.clause)}</code></td><td>{badge}</td>'
+                 f'<td class="muted">{_e(c.establishes)}</td><td>{_e(c.detail)}</td></tr>')
+    P.append('</tbody></table>')
+    if _contract.unobserved:
+        P.append('<p class="note"><b>Read this page accordingly.</b> The clause(s) marked '
+                 '<i>unobserved</i> had nothing to examine — they neither passed nor failed, '
+                 'so nothing on this page rests on them. <i>n/a</i> is different: the '
+                 'precondition is genuinely absent (no accelerator claimed, not license-gated), '
+                 'which is itself a fact about the artifact.</p>')
     P.append('</div></section>')
 
     P.append(_close_page('<p class="gen">Generated deterministically from the freeze record'

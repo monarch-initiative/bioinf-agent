@@ -70,8 +70,8 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
           "command": ...,                    # the recorded command, verbatim
           "inputs": [ "<abs path>", … ],     # recorded input paths
           "tool": ...,
-          "pinned_env": { "request_key", "content_digest", "image",
-                          "available", "contract_ok", "contract_violations" },
+          "pinned_env": { "request_key", "content_digest", "image", "available",
+                          "contract_ok", "contract_violations", "contract_coverage" },
           "preconditions": [ { "path", "exists" }, … ],
           "all_inputs_present": bool,
           "steps": [ { "step", "tool", "command" }, … ] }   # the full roster, for context
@@ -126,6 +126,12 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
         "available":           rec is not None,
         "contract_ok":         (rec is not None) and (not violations),
         "contract_violations": violations or [],
+        # ...and how much that `contract_ok` rests on. Same reason as the inventory:
+        # a clean contract with an UNOBSERVED clause is a real state, and a reader
+        # deciding whether to run against this env should see it here rather than
+        # discover it in the ENV report afterwards.
+        "contract_coverage":   (_ms._env_cache.contract_report(rec).summary()
+                                if rec is not None else ""),
     }
 
     return {

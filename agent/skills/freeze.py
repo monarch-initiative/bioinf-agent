@@ -30,6 +30,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.skills import store_lock as _store_lock
+
 
 # Platform-spelling canonicalization (D6 fix). The cache contained BOTH
 # 'linux-64' (conda form, freeze()'s public default) and 'linux/amd64' (docker
@@ -382,18 +384,6 @@ def apptainer_delivery(
     }
 
 
-def record_is_gated(record: dict) -> bool:
-    """Is this EnvCache record a license-gated artifact (I13)?
-
-    Reads the canonical `license_gated`, falling back to the legacy `gated` key that
-    records written before the 2026-07-16 unification carry on disk. Every consumer of
-    "is this gated" goes through here so the two names can never drift apart again —
-    drifting apart is exactly how I13 stopped firing on the authors'-image path."""
-    if "license_gated" in record:
-        return bool(record.get("license_gated"))
-    return bool(record.get("gated", False))
-
-
 def freeze_record(
     *,
     request_key: str,
@@ -513,8 +503,9 @@ class EnvCache:
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)
 
-    def contract_violations(self, record: dict) -> list[dict]:
-        """The Layer-1 honesty contract, re-run against a STORED record.
+    def contract_report(self, record: dict):
+        """The Layer-1 honesty contract, re-run against a STORED record — in FULL
+        (violations + per-clause coverage). Returns an `env_honesty.BuildContract`.
 
         The contract is a pure function of the record, so the question "would this
         artifact be accepted if we froze it today?" is answerable at any time — and
@@ -523,7 +514,14 @@ class EnvCache:
         answer to "is this cached artifact trustworthy?"; the audit's whole finding
         was one concept re-derived in N places and drifting in N-1 of them."""
         from agent.skills import env_honesty   # re + typing + models (leaf); no import cycle
-        return env_honesty.check_build(record)
+        return env_honesty.evaluate_build(record)
+
+    def contract_violations(self, record: dict) -> list[dict]:
+        """Just the objections — the GATE half of `contract_report`. Serving paths that
+        decide pass/fail use this; anything that REPORTS the contract to a human should
+        take `contract_report` instead, so it can distinguish a clause that checked three
+        things from a clause that had nothing to check."""
+        return self.contract_report(record).violations
 
     def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
         """A cache hit RE-ANCHORED against reality: the record is returned only if
@@ -583,8 +581,26 @@ class EnvCache:
         policy gate. It must be loud at the seam and impossible to serve. Records that
         FAIL policy still register (that is what `contract_violations` is for) — this
         gate is strictly about "can this record be read at all".
+
+        LOCKED read-modify-write. `_save` being atomic prevents a TORN file; it does
+        nothing about a LOST UPDATE, where two writers read the same snapshot and the
+        second `os.replace` discards the first's record. Having atomicity is what made
+        the absence of exclusion hard to see: the file always parses. Measured — 3
+        processes x 60 registers left 84 of 180 records, so 96 frozen envs (each a real
+        image built at real cost) vanished with no error anywhere.
+
+        The window is open in ordinary single-agent use: `freeze(background=True)`
+        spawns a detached subprocess that registers into this same file while its parent
+        keeps working. Two background freezes is a documented way to drive this system.
+
+        The shape check stays OUTSIDE the lock — it touches only the argument, and a
+        malformed record must raise without ever contending for the file.
         """
         self._validate_shape(record)
+        with _store_lock.locked(self.path):
+            return self._register_locked(key, record)
+
+    def _register_locked(self, key: str, record: dict) -> dict:
         data = self._load()
         # Keyed by request_key (the REQUEST's content address): re-freezing an
         # identical request refreshes its own cache entry with an equivalent record

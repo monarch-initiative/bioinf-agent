@@ -2,17 +2,19 @@
 spec_writer — Layer-2 (workflow) spec + provenance persistence.
 
 The pre-respine combined env+workflow writer (save_pipeline_spec) and its
-env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14) have been retired: an
+env-build invariants have been retired (WHICH ones is data, in
+agent/skills/invariants.py — the list spelled out here named four still-active
+invariants as retired, two of them Layer-2 clauses that refuse real seals): an
 env is now solved once by freeze() and verified IN the shipped image by
 env_honesty.check_build (install==ship). What survives here is the Layer-2
 surface that consumes a frozen env:
 
     write_workflow_spec(workflow, config)   -> {workflow_spec_path}
-    check_workflow_invariants(spec)         -> run-side violations (I0/I3/I6/I7/I8)
+    check_workflow_invariants(spec)         -> run-side violations (roster:
+                                               agent/skills/invariants.py)
     self_test_usage(spec, env_manager, ...) -> executes usage.command_template (I4)
-    write_provenance(inputs, config)        -> {written, sample_key}
 
-check_invariants is now the run-side checker (I0/I3/I6/I7/I8 only); the
+check_invariants is now the run-side checker (roster in agent/skills/invariants.py); the
 env-build tiers moved to agent/skills/env_honesty.py.
 """
 
@@ -26,12 +28,13 @@ from typing import Any, Optional
 
 import yaml
 
-from agent.models.core_data import (
-    AssemblyInput, BamInput, GenomeRef, GenotypeArrayInput, OutputFile,
-    PedigreeInput, PhenotypeInput, Provenance, QuantitativeTraitInput,
-    ReadInput, VcfInput, usage_commands,
-)
+from agent.models.core_data import step_is_validated, usage_commands
+from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
+# The READER for a step's validation dict. Imported (not re-implemented) so the invariant
+# and the store agree on how a record is keyed — pipeline_state imports only stdlib + yaml
+# + outcomes, so this stays cycle-free.
+from agent.skills.pipeline_state import validation_covers as _validation_covers
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +51,70 @@ from agent.skills.outcomes import refused
 # reference_databases.local_path / runtime_configs.path / authored_artifacts.path).
 # ---------------------------------------------------------------------------
 I8_STATEMENT = "every input traces to a prior step's output OR an external source"
+
+#: Companion-file suffixes a step may legitimately consume beside a prior step's output:
+#: the index/checksum/compression siblings that bioinformatics tools write next to the
+#: real artifact. Order matters only in that the longest sensible suffix should win; each
+#: is stripped from the FULL path and the parent looked up in the universe by full path,
+#: never by basename (see the I8 loop for what basename matching cost).
+_SIDECAR_SUFFIXES = (".bai", ".csi", ".crai", ".tbi", ".fai", ".gzi", ".dict",
+                     ".idx", ".md5", ".sha256", ".gz", ".bgz")
+
+
+def _sidecar_parent(path: str) -> Optional[str]:
+    """The artifact `path` is a companion OF, or None if it is not a companion.
+
+    `/run/x.bam.bai` → `/run/x.bam`; `/run/x.bam` → None."""
+    if not isinstance(path, str):
+        return None
+    low = path.lower()
+    for suf in _SIDECAR_SUFFIXES:
+        if low.endswith(suf) and len(path) > len(suf):
+            return path[: -len(suf)]
+    return None
+
+
+def _dir_contains_a_prior_output(path: str, universe: set) -> bool:
+    """Is `path` the directory a prior step wrote its outputs INTO?
+
+    True only when some artifact already in the universe has `path` as its EXACT
+    parent. The exactness is the whole safety property:
+
+      * prefix matching would let `/work/run1` capture `/work/run10`;
+      * ancestor matching would let an input of `/work` trace to every output
+        anything ever produced, which is not provenance, it is a wildcard.
+
+    Scoped this way it is not a loosening of I8 but an expression of a relation
+    the full-path rule cannot state: a step whose declared input is the directory
+    holding a prior step's recorded outputs really does consume them. That is the
+    normal shape of a cluster chain — htseq-count writes six `.counts.tsv` into
+    the shared remote workflow_dir and DESeq2 takes the directory."""
+    if not isinstance(path, str) or not path:
+        return False
+    target = path.rstrip("/") or "/"
+    for produced in universe:
+        if isinstance(produced, str) and produced:
+            if str(Path(produced).parent) == target:
+                return True
+    return False
+
+
+def _ran_off_host(step: dict) -> bool:
+    """Did this step execute on a filesystem other than ours?
+
+    Cluster steps consume paths under the compute env's scratch, which share no
+    namespace with the local paths every declared external source is recorded as. I8
+    needs to know that so it can tell "incomparable paths" from "unrelated paths" —
+    the first deserves a fallback, the second is the orphan it exists to catch.
+
+    Read from the step's own runtime evidence (`validation_locus`, the sacct/cluster
+    fields `run_step_on_cluster` stamps), never from a caller-supplied flag: a step
+    could otherwise claim cross-locus staging to excuse a genuine orphan."""
+    if not isinstance(step, dict):
+        return False
+    locus = (step.get("validation_locus")
+             or (step.get("resource_usage") or {}).get("locus") or "")
+    return str(locus).lower() not in ("", "host", "local", "container")
 
 EXTERNAL_SOURCE_KINDS = frozenset({
     "test_data", "reference_databases", "runtime_configs", "authored_artifacts",
@@ -77,8 +144,7 @@ def derive_pipeline_status(steps: list) -> str:
         return "in_progress"
     if any(s.get("returncode") not in (None, 0) for s in steps):
         return "failed"
-    validated = [s for s in steps
-                 if s.get("validation") or s.get("validation_status") == "passed"]
+    validated = [s for s in steps if step_is_validated(s)]
     if len(validated) == len(steps):
         return "fully_validated"
     if validated:
@@ -206,6 +272,24 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     if not commands:
         return _not_attempted("usage.command_template is empty")
     template = "\n".join(commands)   # placeholder scanning spans every command
+
+    # NOTHING DECLARED ⇒ NOTHING VERIFIED. A trial is judged on its outputs: every
+    # declared pattern must match a produced file and every match must pass type-aware
+    # validation. With `usage.outputs == []` both loops iterate zero times, so the trial
+    # returned ok=True having established only that the command exited 0 — and
+    # `usage_verified: True` went onto the sealed spec and the run dashboard over a
+    # how-to nobody checked the results of. `touch` would have passed.
+    #
+    # `not_attempted` is the honest state and the one that already exists for exactly
+    # this ("we had no way to run it; NOT a judgement of the how-to"). It does not refuse
+    # the seal — it records `usage_verified: False` with a reason, which is the truth.
+    if not usage.get("outputs"):
+        return _not_attempted(
+            "usage.outputs is empty, so a trial could only prove the command exits 0 — "
+            "not that it produces anything. Declare usage.outputs[*].files (a glob per "
+            "output, written through a recognized OUTPUT slot such as {OUTPUT_DIR}) to "
+            "make this how-to self-testable.")
+
     # A runner is either injected (the frozen image — validated == shipped) or taken from
     # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
     # what silently disabled I4 for every container-native env.
@@ -531,7 +615,7 @@ def check_invariants(spec: dict) -> list[dict]:
 
     Scope is I0 (shape) · I3 (validated outputs) · I6 (absolute paths +
     declared placeholders) · I7 (resource_usage) · I8 (input provenance). The
-    env-build invariants (I1/I2/I5/I9/I10/I11/I12/I13/I14) are NOT here — an env
+    env-build invariants are NOT here (see agent/skills/invariants.py) — an env
     is verified IN its shipped image by env_honesty.check_build (install==ship).
     seal_workflow runs this (via check_workflow_invariants) over the validated
     run and refuses to write a WorkflowSpec if anything fails.
@@ -594,11 +678,12 @@ def check_invariants(spec: dict) -> list[dict]:
                 })
             continue
         validation = s.get("validation") or {}
-        validated_basenames = set(validation.keys())
-        unvalidated = [
-            o for o in outs
-            if Path(o).name not in validated_basenames
-        ]
+        # Coverage is asked PER OUTPUT PATH, through the one reader that knows how a
+        # validation record is keyed. It used to compare `Path(o).name` against the key
+        # set, which meant `/out/a/result.bam` counted as validated because a DIFFERENT
+        # file called `result.bam` had a record — the read side of the same basename
+        # collision that let the write side erase a failure.
+        unvalidated = [o for o in outs if not _validation_covers(validation, o)]
         # An explicit mark_step_validated=passed substitutes for per-file
         # validate_output records (use case: outputs aren't validate_output-able
         # but the agent verified them by other means — mark_step_validated
@@ -698,6 +783,18 @@ def check_invariants(spec: dict) -> list[dict]:
                     "invariant": "I6.absolute_paths",
                     "message":   f"pipeline_step {step_n} has a relative output path: {o}",
                     "where":     f"pipeline_steps[step={step_n}].detected_outputs",
+                })
+        # remote_outputs feeds the I8 universe, so it is a path channel into the
+        # lineage graph and gets the same absoluteness rule. A field that other
+        # invariants trust and this one does not examine is how an unchecked
+        # channel opens.
+        for o in s.get("remote_outputs", []) or []:
+            if _is_path_like(o) and not Path(o).is_absolute():
+                violations.append({
+                    "invariant": "I6.absolute_paths",
+                    "message":   f"pipeline_step {step_n} has a relative remote output "
+                                 f"path: {o}",
+                    "where":     f"pipeline_steps[step={step_n}].remote_outputs",
                 })
 
     # ------------------------------------------------------------------
@@ -859,20 +956,26 @@ def check_invariants(spec: dict) -> list[dict]:
     return violations
 
 
-# Layer-2 (workflow) invariant subset. A WorkflowSpec consumes a frozen env by
-# digest, so only the RUN-side invariants apply — the env-build invariants
-# (I1/I2/I5/I9/I10/I11/I12/I13/I14) are Layer 1's, verified IN the shipped image
-# by env_honesty.check_build. check_invariants is now itself run-side-only, so
-# this filter is belt-and-suspenders (it stays the named Layer-2 entry point and
-# guards against a future non-run-side clause leaking into check_invariants).
-_WORKFLOW_INVARIANT_TIERS = {"I0", "I3", "I5", "I6", "I7", "I8", "I10"}
+# Layer-2 (workflow) invariant subset. A WorkflowSpec consumes a frozen env by digest,
+# so only the RUN-side invariants apply — the env-build ones are Layer 1's, verified IN
+# the shipped image by env_honesty.check_build.
+#
+# DERIVED FROM THE REGISTRY, never typed out. The literal set that used to live here
+# said seven ids while this module's own docstring said five, four lines apart, and
+# CLAUDE.md's table said six — a different six. Reading it from `invariants` means a new
+# clause is registered once and every consumer follows.
+_WORKFLOW_INVARIANT_TIERS = frozenset(
+    i.id for i in _invariants.active(_invariants.LAYER_WORKFLOW)
+    if i.enforced_by.endswith("check_workflow_invariants"))
 
 
 def check_workflow_invariants(spec: dict) -> list[dict]:
-    """Run only the workflow-relevant invariants (I0 shape · I3 validated
-    outputs · I6 paths/placeholders · I7 resource_usage · I8 input provenance).
-    Pass the FULL draft so I8 sees the complete universe of prior outputs +
-    external sources, but only the run-side violations are returned."""
+    """Run only the workflow-relevant invariants — see `agent/skills/invariants.py` for
+    the roster and each one's statement (deliberately NOT restated here; this docstring
+    used to name five of the seven).
+
+    Pass the FULL draft so I8 sees the complete universe of prior outputs + external
+    sources, but only the run-side violations are returned."""
     return [v for v in check_invariants(spec)
             if v.get("invariant", "").split(".")[0] in _WORKFLOW_INVARIANT_TIERS]
 
@@ -1293,6 +1396,10 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
 
     violations: list[dict] = []
     universe: set[str] = set(external_paths)
+    # Basenames of DECLARED EXTERNAL SOURCES only — the cross-locus staging handle (see
+    # the loop). Deliberately not seeded from prior outputs: steps sharing a filesystem
+    # compare by path, so widening this to outputs would reopen the hole it replaced.
+    external_basenames: set[str] = {Path(x).name for x in external_paths if x}
 
     steps = sorted(
         [s for s in spec.get("pipeline_steps", []) or [] if isinstance(s, dict)],
@@ -1307,11 +1414,46 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                 continue
             if p in universe:
                 continue
-            # Allow a basename-match fallback: agents sometimes record an
-            # output path with an extra suffix (e.g. {p}.gz, {p}.bai) where
-            # the prior step produced the unsuffixed parent.
-            base = Path(p).name
-            if any(Path(u).name == base for u in universe):
+            # SIDECAR TOLERANCE — a step may consume the companion of a file a prior step
+            # produced (`{p}.bai` beside `{p}`, `{p}.gz` after an in-step bgzip). The
+            # PARENT must be in the universe, matched on the FULL path.
+            parent = _sidecar_parent(p)
+            if parent and parent in universe:
+                continue
+            # CROSS-LOCUS STAGING — a step that ran somewhere else consumes the UPLOADED
+            # COPY of a declared external source. Its path is on the cluster filesystem;
+            # every external source we know is a local path. Those two absolute paths
+            # live in different namespaces and comparing them is a category error, so
+            # here — and only here — the basename is the strongest handle the record
+            # carries, and it is matched against DECLARED EXTERNAL SOURCES only, never
+            # against prior outputs (two steps on the same cluster share a filesystem, so
+            # their paths compare directly and need no fallback).
+            #
+            # This is what the old `any(Path(u).name == base for u in universe)` was
+            # really load-bearing for — samtools_cluster_rung3 seals on exactly this
+            # shape. But it was written as an unscoped rule and did two wrong things:
+            # it REFUSED the sidecar case its own comment claimed it existed for
+            # (`sample.bam.bai` != `sample.bam` as basenames), and it ACCEPTED any input
+            # anywhere on the local filesystem that merely shared a name with some prior
+            # output — `/somewhere/else/entirely/sample.bam` traced cleanly to
+            # `/run1/sample.bam`, which is the entire class of orphan I8 exists to catch.
+            # Both verified against the live checker; scoping it to the cross-locus case
+            # keeps the real capability and drops the hole.
+            if _ran_off_host(s) and Path(p).name in external_basenames:
+                continue
+            # DIRECTORY CONSUMPTION — a step consumes the DIRECTORY a prior step
+            # wrote into, not the individual files. This is the normal shape for a
+            # cluster chain: htseq-count writes six `.counts.tsv` into
+            # <workflow_dir>, and DESeq2's input is <workflow_dir> itself.
+            #
+            # Matched by exact PARENT, never by prefix. `/work/run1` must not
+            # capture `/work/run10`, and a grandparent must not capture a whole
+            # subtree — an input of `/work` would otherwise trace to every output
+            # anything ever produced. `_dir_contains_a_prior_output` is that rule,
+            # and it is a real provenance relationship rather than a loosening:
+            # if a prior step's recorded output lives directly in this directory,
+            # then consuming the directory IS consuming that output.
+            if _dir_contains_a_prior_output(p, universe):
                 continue
             violations.append({
                 "invariant": "I8.composition_coherence",
@@ -1328,171 +1470,20 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
         for o in s.get("detected_outputs", []) or []:
             if isinstance(o, str) and o:
                 universe.add(o)
+        # REMOTE OUTPUTS — where an off-host step's outputs live AT THE LOCUS
+        # THAT PRODUCED THEM. `detected_outputs` holds the downloaded LOCAL
+        # copies, which is right for validation (we hashed and typed those very
+        # bytes) but leaves a cluster chain unprovable: step 2 consumes
+        # `<remote workflow_dir>/counts.tsv`, and no local path can ever match it.
+        #
+        # A DEDICATED field rather than reusing `outputs`, deliberately. `outputs`
+        # is read first-wins as `detected_outputs or outputs`, so writing remote
+        # paths there would make a step whose downloads ALL failed — the
+        # silent-empty-success trap I3 exists to catch — look like it produced
+        # something. It also already has a second producer (`run_in_env`) writing
+        # a different dialect into it. One producer, one consumer, no collision.
+        for o in s.get("remote_outputs", []) or []:
+            if isinstance(o, str) and o:
+                universe.add(o)
 
     return violations
-
-
-def write_provenance(inputs: dict, config: dict) -> dict:
-    """Build and write a validated Provenance YAML for one pipeline run.
-
-    Tool versions are read from the spec YAML's packages list rather than
-    probing binaries — the spec is the authoritative source for what was
-    actually installed (PackageSearch resolved versions at install time)."""
-    output_dir = Path(inputs["output_dir"])
-    sample_key = inputs["sample_key"]
-    prov_path = output_dir / f"{sample_key}_provenance.yaml"
-
-    def _rel(abs_path: str) -> str:
-        return os.path.relpath(Path(abs_path).resolve(), output_dir.resolve())
-
-    genome = None
-    if inputs.get("reference_path"):
-        genome = GenomeRef(
-            genome_build=inputs.get("genome_build", ""),
-            chromosome_subset=inputs.get("chromosome", ""),
-            reference=_rel(inputs["reference_path"]),
-            reference_fai=_rel(inputs["reference_path"] + ".fai"),
-        )
-
-    reads = None
-    if inputs.get("reads"):
-        r = inputs["reads"]
-        raw_db = r.get("database", "EBI_SRA")
-        db = _DB_ALIASES.get(raw_db, raw_db)
-        reads = [ReadInput(
-            read_type=r.get("read_type", "short_read"),
-            end_type=r.get("end_type", "paired_end"),
-            assay_type=r.get("assay_type", "exome"),
-            subset=r.get("subset", ""),
-            num_reads=int(r.get("num_reads", 0)),
-            r1=_rel(r["r1"]),
-            r2=_rel(r["r2"]) if r.get("r2") else None,
-            sample=r.get("sample", ""),
-            accession=r.get("accession", ""),
-            database=db,
-        )]
-
-    bam_input = None
-    if inputs.get("bam_input"):
-        b = inputs["bam_input"]
-        bam_input = BamInput(bam=_rel(b["bam"]), bai=_rel(b["bai"]))
-
-    vcf_input = None
-    if inputs.get("vcf_input"):
-        v = inputs["vcf_input"]
-        vcf_input = VcfInput(
-            vcf=_rel(v["vcf"]),
-            tbi=_rel(v["tbi"]) if v.get("tbi") else None,
-            genome_build=v.get("genome_build", inputs.get("genome_build", "")),
-            upstream_pipeline=v.get("upstream_pipeline"),
-            sample_ids=v.get("sample_ids", []),
-        )
-
-    assembly_input = None
-    if inputs.get("assembly_input"):
-        a = inputs["assembly_input"]
-        assembly_input = AssemblyInput(
-            assembly=_rel(a["assembly"]),
-            upstream_pipeline=a.get("upstream_pipeline"),
-        )
-
-    phenotype = None
-    if inputs.get("phenotype"):
-        p = inputs["phenotype"]
-        phenotype = PhenotypeInput(
-            ontology=p.get("ontology", "HPO"),
-            terms=p["terms"],
-            source=p.get("source"),
-        )
-
-    pedigree = None
-    if inputs.get("pedigree"):
-        g = inputs["pedigree"]
-        pedigree = PedigreeInput(
-            ped=_rel(g["ped"]),
-            proband=g.get("proband"),
-        )
-
-    genotype_array = None
-    if inputs.get("genotype_array"):
-        ga = inputs["genotype_array"]
-        genotype_array = GenotypeArrayInput(
-            file=_rel(ga["file"]),
-            format=ga["format"],
-            bim=_rel(ga["bim"]) if ga.get("bim") else None,
-            fam=_rel(ga["fam"]) if ga.get("fam") else None,
-            n_samples=ga.get("n_samples"),
-            n_snps=ga.get("n_snps"),
-            genome_build=ga.get("genome_build"),
-            upstream_pipeline=ga.get("upstream_pipeline"),
-        )
-
-    quantitative_traits = None
-    if inputs.get("quantitative_traits"):
-        qt = inputs["quantitative_traits"]
-        quantitative_traits = QuantitativeTraitInput(
-            traits=qt["traits"],
-            file=_rel(qt["file"]),
-            n_samples=qt.get("n_samples"),
-            measurement_type=qt.get("measurement_type", "continuous"),
-        )
-
-    pipeline_spec_path = Path(inputs["pipeline_spec_path"]).resolve()
-    try:
-        spec_rel = str(pipeline_spec_path.relative_to(output_dir.resolve()))
-    except ValueError:
-        spec_rel = str(pipeline_spec_path)
-
-    outputs = [
-        OutputFile(file=f["file"], type=f["type"], indexed=f.get("indexed", False))
-        for f in inputs.get("output_files", [])
-    ]
-
-    tool_versions = _tool_versions_from_spec(pipeline_spec_path)
-
-    prov = Provenance(
-        pipeline=inputs["pipeline"],
-        pipeline_spec=spec_rel,
-        conda_env=Path(inputs["conda_env_path"]).name,
-        created_at=str(date.today()),
-        tool_versions=tool_versions,
-        genome=genome,
-        reads=reads,
-        bam_input=bam_input,
-        vcf_input=vcf_input,
-        assembly_input=assembly_input,
-        phenotype=phenotype,
-        pedigree=pedigree,
-        genotype_array=genotype_array,
-        quantitative_traits=quantitative_traits,
-        upstream_pipelines=inputs.get("upstream_pipelines", []),
-        parameters=inputs.get("parameters") or None,
-        outputs=outputs,
-    )
-
-    written = prov.write(prov_path)
-    return {"written": str(written), "sample_key": sample_key}
-
-
-def _tool_versions_from_spec(spec_path: Path) -> dict[str, str]:
-    """Read tool versions from a pipeline spec YAML's packages list.
-
-    The spec is the authoritative source — PackageSearch already resolved
-    each package's exact version at install time and stored it there.
-    Falls back to {} if the spec file is missing or unreadable."""
-    if not spec_path.exists():
-        return {}
-    try:
-        with open(spec_path) as f:
-            spec = yaml.safe_load(f) or {}
-    except Exception:
-        return {}
-    versions: dict[str, str] = {}
-    for pkg in spec.get("packages", []):
-        name = pkg.get("name")
-        if not name or name == "conda-pack":
-            continue
-        ver = pkg.get("resolved_version") or pkg.get("version")
-        if ver:
-            versions[name] = ver
-    return versions

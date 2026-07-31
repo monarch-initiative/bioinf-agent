@@ -307,7 +307,8 @@ def submit_workflow_job(project_name: str,
                         slurm: Mapping,
                         *,
                         access_path: Optional[str] = None,
-                        timeout: int = 300) -> dict:
+                        timeout: int = 300,
+                        extra_manifest: Optional[Mapping] = None) -> dict:
     """Render the workflow, upload the files to `workflow_dir`, sbatch
     launcher.sh, return the SLURM job_id + a local submission manifest.
 
@@ -452,6 +453,12 @@ def submit_workflow_job(project_name: str,
             "submitted_at":     submitted_at,
             "upload_started":   upload_started,
             "host":             env.get("host"),
+            # Caller-supplied provenance that belongs in the DURABLE record
+            # rather than only in the return payload — today the data-pin
+            # verdict from run_production_pipeline. Merged, never overriding
+            # a field this writer owns.
+            **{k: v for k, v in (extra_manifest or {}).items()
+               if k not in ("job_id", "workflow_dir", "submitted_at")},
             "follow_up": {
                 "poll":     ("call cluster_job_status(project, env, "
                              f"job_id={job_id!r})"),

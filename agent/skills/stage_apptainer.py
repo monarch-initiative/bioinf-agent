@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access, transfer
-from agent.skills.freeze import record_is_gated as _record_is_gated
+from agent.models.core_data import record_is_gated as _record_is_gated
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint

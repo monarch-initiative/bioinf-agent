@@ -103,7 +103,6 @@ from agent.skills.core_test_data import add_core_pod5_data as _add_core_pod5_dat
 from agent.skills.core_test_data import add_phenopacket as _add_phenopacket
 from agent.skills.core_test_data import phenopacket_to_vcf as _phenopacket_to_vcf
 from agent.validators.output_validator import OutputValidator
-from agent.skills.spec_writer import write_provenance as _write_provenance
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
 from agent.skills.pipeline_state import PipelineState
@@ -608,7 +607,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 # workflow_tools       — start_pipeline, discard_pipeline_draft,
 #                        show_pipeline_draft, patch_pipeline,
 #                        stage_authored_artifact, mark_step_validated,
-#                        seal_workflow, write_pipeline_provenance,
+#                        seal_workflow,
 #                        list_installed_pipelines, fetch_r_package_deps
 
 
@@ -701,6 +700,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     download,
     cluster_module_avail,
     cluster_job_status,
+    globus_task_status,
     submit_workflow_job,
     run_production_pipeline,
     stage_apptainer_image,
@@ -708,6 +708,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,
+    acquire_reference_via_recipe,
     list_available_resources,
     download_resource,
     add_core_test_data,
@@ -736,6 +737,8 @@ from agent.mcp_tools.env_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
+    freeze_from_image,
+    build_env_from_authors_recipe,
     verify_env_recipe,
     generate_user_guide,
 )
@@ -780,7 +783,6 @@ from agent.mcp_tools.service_tools import (  # noqa: E402,F401
 )
 from agent.mcp_tools.workflow_tools import (  # noqa: E402,F401
     seal_workflow,
-    write_pipeline_provenance,
     list_installed_pipelines,
     fetch_r_package_deps,
     start_pipeline,

@@ -8,8 +8,10 @@ on. A subagent trusts the outcome tag, so the load-bearing surface is:
 
   1. every `proven`        — a false green makes the agent proceed on a lie
   2. every seal invariant  — the honesty gates that EXIST to catch false-greens
-                             (source == 'invariant': I0/I3/I6/I7/I8/I12/I13,
-                              BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN/ADOPTED…)
+                             (source == 'invariant'; the roster is DATA, in
+                              agent/skills/invariants.py — this line used to name
+                              the Layer-2 set by hand and omitted two live clauses,
+                              plus BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN/ADOPTED…)
   3. the named FIREWALLS    — helper-tagged gates that, if they fail to fire,
                              ship a bad artifact (supply-chain / validated==shipped)
 

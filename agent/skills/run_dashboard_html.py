@@ -34,7 +34,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from agent.models.core_data import usage_commands
+from agent.models.core_data import (USAGE_LABELS, step_is_validated, usage_commands,
+                                    usage_status)
 from agent.skills.env_report_html import (
     _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
@@ -94,7 +95,19 @@ def _render_cluster_context(step: dict) -> str:
     rows: list[tuple[str, str]] = []
     job, node = step.get("cluster_job_id"), step.get("cluster_node")
     if job:
-        rows.append(("SLURM job", f"{_e(job)} on {_e(node or '?')}"))
+        # The scheduler's verdict, shown alongside the raw State/ExitCode that
+        # produced it. Both, deliberately: the verdict is what a reader should
+        # act on, and the two columns behind it are what lets them check it —
+        # `TIMEOUT | 0:0` looks clean until you know the State outranks the rc.
+        verdict = step.get("cluster_job_verdict")
+        state, ec = step.get("cluster_state"), step.get("cluster_exit_code")
+        detail = f"{_e(job)} on {_e(node or '?')}"
+        if state or ec:
+            detail += f" — {_e(state or '?')} / exit {_e(ec or '?')}"
+        if verdict:
+            mark = "✓" if verdict == "succeeded" else "⚠"
+            detail += f" — {mark} {_e(verdict)}"
+        rows.append(("SLURM job", detail))
     sha = step.get("cluster_sif_sha256")
     if sha:
         tag = ""
@@ -133,7 +146,14 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
         for fn, v in val.items():
             passed = v.get("passed") if isinstance(v, dict) else None
             method = (v or {}).get("validation_method") or (v or {}).get("method") or ""
-            rows.append(f"<tr><td>{_e(fn)}</td><td>{_badge(passed)}</td>"
+            # Records are keyed by absolute path (pipeline_state.validation_key), because
+            # two outputs of one step can share a basename. Show the name prominently and
+            # the directory dim beside it: the part that DISTINGUISHES two same-named rows
+            # is the directory, so a table that printed only the name would render the
+            # collision invisible again, this time in the report.
+            head, _, tail = _e(fn).rpartition("/")
+            name_cell = (f'<span class="muted">{head}/</span>{tail}' if head else tail)
+            rows.append(f"<tr><td>{name_cell}</td><td>{_badge(passed)}</td>"
                         f"<td>{_e(method)}</td></tr>")
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Output</th><th>Validated</th><th>Check</th></tr>'
@@ -205,18 +225,18 @@ def _usage_status(spec: dict) -> str:
     One derivation, read by every panel. The head table used to re-derive it as the raw
     bool, so the same page said "Usage self-tested: False" above the fold and
     "not attempted — <reason>" below it. Two answers to one question is the bug this
-    whole audit is about."""
-    uv = spec.get("usage_verification") or {}
-    return uv.get("status") or ("verified" if spec.get("usage_verified") else "")
+    whole audit is about.
+
+    ...and the derivation now lives in `core_data.usage_status`, not here. Keeping it
+    private to the renderer only shrank the disagreement rather than ending it: the
+    markdown guide went on printing the bare bool, so two ARTIFACTS about one workflow
+    still disagreed. Same fix as `usage_commands` — one field, one reading, in a leaf."""
+    return usage_status(spec)
 
 
 #: How each I4 state reads in a one-line summary cell.
-_USAGE_LABEL = {
-    "verified":      "yes",
-    "failed":        "NO — self-test failed",
-    "not_attempted": "not attempted",
-    "":              "not attempted",
-}
+#: Wording lives in core_data.USAGE_LABELS — see there for why it is not local.
+_USAGE_LABEL = USAGE_LABELS
 
 
 def _render_howto(spec: dict) -> str:
@@ -397,7 +417,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     name = s.get("workflow_name") or "workflow"
     steps = [st for st in (s.get("pipeline_steps") or []) if isinstance(st, dict)]
     validated = [st for st in steps
-                 if st.get("validation") or st.get("validation_status") == "passed"]
+                 if step_is_validated(st)]
     loci = [locus for locus in _LOCUS_ORDER
             if any(_run_locus(st) == locus for st in steps)]
     # Primary digest for stale-detection MUST be a bare image digest (sha256:…),

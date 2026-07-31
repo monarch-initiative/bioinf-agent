@@ -33,7 +33,40 @@ from typing import Optional
 
 import yaml
 
+from agent.skills import store_lock as _store_lock
 from agent.skills.outcomes import refused
+
+
+def validation_key(path: str) -> str:
+    """THE key a step's validation record is filed under: the output's absolute, resolved
+    path. One definition, used by the store (`PipelineState.add_validation`), by the
+    readers (`spec_writer` I3), and by the response builders — so the record, the invariant
+    and what the agent is shown all name the same thing.
+
+    Why not the basename: a basename is not an identity. Two outputs of one step routinely
+    share one (`.../sampleA/counts.tsv`, `.../sampleB/counts.tsv`), and keying on it meant
+    the later validation overwrote the earlier — deleting a `passed: False` that I3 exists
+    to refuse on. Resolution also collapses `./out/x.bam` and `/abs/out/x.bam` to one key,
+    so re-validating the same file updates its record instead of creating a second."""
+    try:
+        return str(Path(path).resolve())
+    except Exception:                      # unresolvable (broken symlink, odd mount)
+        return str(path)
+
+
+def validation_covers(validation: dict, output_path: str) -> bool:
+    """Does `validation` hold a record for this output? The READ side of `validation_key`.
+
+    Accepts the canonical path key, the raw string as filed, and — for records written
+    before path keys existed — the bare basename. The legacy fallback is deliberately last
+    and deliberately narrow: on a path-keyed record no output's basename matches any key,
+    so new records get the strict behaviour while old drafts keep working rather than
+    failing an invariant for a naming change they had no say in."""
+    if not isinstance(validation, dict) or not validation:
+        return False
+    return (output_path in validation
+            or validation_key(output_path) in validation
+            or Path(output_path).name in validation)
 
 
 class PipelineState:
@@ -88,6 +121,17 @@ class PipelineState:
         path = self._draft_path(pipeline_id)
         if path.exists():
             path.unlink()
+        # ...and its lock sentinel, so discarded drafts don't leave litter in drafts_dir.
+        # Safe to unlink even if another process holds it: flock is on the INODE, so a
+        # holder keeps its lock and the next acquirer simply creates a fresh file. The
+        # only cost of that race is two writers briefly locking different inodes, which
+        # cannot happen here — discard means nobody is writing this draft any more.
+        lock = _store_lock.lock_path_for(path)
+        if lock.exists():
+            try:
+                lock.unlink()
+            except OSError:
+                pass
         return {"pipeline_id": pipeline_id, "existed": existed}
 
     def get_draft(self, pipeline_id: str) -> Optional[dict]:
@@ -97,28 +141,57 @@ class PipelineState:
         """Remove the in-memory draft and return it. Caller deletes the file."""
         return self._drafts.pop(pipeline_id, None)
 
+    def mutate_on_disk(self, pipeline_id: str, apply) -> bool:
+        """Apply `apply(draft)` to the draft AS IT IS ON DISK, under the store lock.
+
+        THE CROSS-PROCESS WRITE PATH. `self._drafts` is an in-memory cache populated at
+        construction and never re-read, which is correct for one process and wrong the
+        moment there are two — and there are two whenever `freeze(background=True)` is
+        used, a shipped feature that spawns a DETACHED SUBPROCESS. The subprocess builds
+        its own PipelineState, writes `frozen_as`, and exits; the parent still holds the
+        pre-freeze copy and erases the pointer on its next `_persist`. The freeze was
+        real and its record on the draft simply disappeared.
+
+        So a writer that may be racing re-reads first: take the lock, load the file,
+        apply, write, and refresh the in-memory copy from what was actually written.
+
+        THIS DOES NOT MAKE THE WHOLE STORE CONCURRENCY-SAFE, and the difference is worth
+        stating plainly rather than implying by omission. The ordinary mutators
+        (`add_step`, `patch`, `add_validation`, …) still edit `self._drafts` and persist
+        it wholesale, so two processes mutating the SAME draft through them still lose
+        one side's edits. That is acceptable today because only this pointer is written
+        cross-process; it is the thing to convert first when batch install lands."""
+        with _store_lock.locked(self._draft_path(pipeline_id)):
+            on_disk = self._read_draft_file(pipeline_id)
+            draft = on_disk if on_disk is not None else self._drafts.get(pipeline_id)
+            if draft is None:
+                return False
+            apply(draft)
+            self._drafts[pipeline_id] = draft
+            self._write_draft_file(pipeline_id, draft)
+        return True
+
     def set_frozen_pointer(self, pipeline_id: str, request_key: str) -> None:
         """Record which frozen env (by request_key) this pipeline produced, so
         `current_state` can RE-EARN ENV_FROZEN via the honesty contract. A best-
         effort ORIENTATION pointer — never authoritative (current_state re-checks
-        it) and never allowed to fail the freeze that calls it."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return
-        draft["frozen_as"] = request_key
-        self._persist(pipeline_id)
+        it) and never allowed to fail the freeze that calls it.
+
+        Written through `mutate_on_disk` because the caller may be a background-freeze
+        SUBPROCESS (see that method)."""
+        def _set(draft):
+            draft["frozen_as"] = request_key
+        self.mutate_on_disk(pipeline_id, _set)
 
     def append_sealed_pointer(self, pipeline_id: str, workflow_name: str) -> None:
         """Record which workflow(s) this pipeline has sealed. A LIST — one draft
         may seal many workflows (seal does not pop the draft). Orientation only;
         `current_state` re-earns SEALED by matching the spec to this pipeline."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return
-        sealed = draft.setdefault("sealed_as", [])
-        if workflow_name not in sealed:
-            sealed.append(workflow_name)
-        self._persist(pipeline_id)
+        def _append(draft):
+            sealed = draft.setdefault("sealed_as", [])
+            if workflow_name not in sealed:
+                sealed.append(workflow_name)
+        self.mutate_on_disk(pipeline_id, _append)
 
     def delete_draft_file(self, pipeline_id: str) -> None:
         path = self._draft_path(pipeline_id)
@@ -312,9 +385,28 @@ class PipelineState:
         self,
         pipeline_id: str,
         step: int,
-        filename: str,
+        path: str,
         validation_result: dict,
     ) -> bool:
+        """File one output's validation result under the step.
+
+        The key is normalized HERE, by `validation_key`, and not by the caller. Five call
+        sites used to compute it themselves and all five chose `Path(path).name` — so two
+        outputs of one step that share a basename (`/out/a/result.bam` and
+        `/out/b/result.bam`, the ordinary shape of a per-sample fan-out) collided on one
+        key and the SECOND write silently destroyed the first.
+
+        That is not a cosmetic loss. I3's non-overridable clause refuses a seal when any
+        validation record says `passed: False` — and the erased record was the failing one
+        whenever the failure came first. Reproduced: one step, two same-named outputs, the
+        first truncated; the runtime recorded a single `{"passed": true}` and
+        `check_workflow_invariants` returned no I3 violation at all. Evidence that exists
+        and says FAILED cannot be un-failed by an assertion — but it could be overwritten
+        by an unrelated file that happened to share a name.
+
+        A key rule enforced at five call sites is a key rule with five chances to differ;
+        the store owns it now, so passing a bare basename simply files it under that
+        basename and a path files it under the path."""
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return False
@@ -322,7 +414,7 @@ class PipelineState:
         if step < 1 or step > len(steps):
             return False
         s = steps[step - 1]
-        s.setdefault("validation", {})[filename] = validation_result
+        s.setdefault("validation", {})[validation_key(path)] = validation_result
         self._persist(pipeline_id)
         return True
 
@@ -487,9 +579,18 @@ class PipelineState:
         return self.drafts_dir / f"{pipeline_id}.draft.yaml"
 
     def _persist(self, pipeline_id: str) -> None:
-        """Atomic write of the draft to disk."""
+        """Atomic write of the in-memory draft to disk, under the store lock.
+
+        The lock makes this write not INTERLEAVE with another process's read-modify-write
+        of the same draft. It does NOT make the write correct when this process's copy is
+        stale — for that a writer must re-read first, which is what `mutate_on_disk` is
+        for. Locking a stale write only makes it lose the race cleanly."""
+        with _store_lock.locked(self._draft_path(pipeline_id)):
+            self._write_draft_file(pipeline_id, self._drafts[pipeline_id])
+
+    def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
+        """The atomic write itself — assumes the caller holds the lock."""
         path = self._draft_path(pipeline_id)
-        draft = self._drafts[pipeline_id]
         with tempfile.NamedTemporaryFile(
             mode="w", dir=str(path.parent),
             prefix=path.stem, suffix=".tmp", delete=False,
@@ -497,6 +598,18 @@ class PipelineState:
             yaml.dump(draft, f, default_flow_style=False, sort_keys=False)
             tmp = f.name
         os.replace(tmp, path)
+
+    def _read_draft_file(self, pipeline_id: str) -> Optional[dict]:
+        """Re-read one draft from disk, or None if it is absent/unreadable. Absent is a
+        real answer (the draft was discarded); unreadable returns None too so a writer
+        falls back to its in-memory copy rather than destroying the file with a partial
+        one — the pointer this serves is explicitly best-effort."""
+        path = self._draft_path(pipeline_id)
+        try:
+            data = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def _load_existing_drafts(self) -> None:
         """Recover drafts from disk on server startup. Scans both the new

@@ -20,7 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.models.core_data import shipped_binaries as _shipped_binaries, usage_commands
+from agent.models.core_data import (shipped_binaries as _shipped_binaries,
+                                    step_is_validated, usage_commands, usage_label)
 
 
 def _version_of(pkg: dict) -> str:
@@ -115,7 +116,7 @@ def executed_commands(spec: dict) -> list[dict]:
         if not cmd:
             continue
         outs = s.get("detected_outputs") or list((s.get("validation") or {}).keys())
-        validated = bool(s.get("validation")) or s.get("validation_status") == "passed"
+        validated = step_is_validated(s)
         if not validated:
             continue
         out.append({"command": cmd, "outputs": outs, "source": f"pipeline_step {s.get('step')}"})
@@ -150,8 +151,7 @@ def validated_in_shipped_image(spec: dict, freeze_record: Optional[dict] = None,
     if not valid_digests:
         return False
     steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
-    validated = [s for s in steps
-                 if s.get("validation") or s.get("validation_status") == "passed"]
+    validated = [s for s in steps if step_is_validated(s)]
     if not validated:
         return False
     return all(_step_ran_in_shipped_image(s, valid_digests) for s in validated)
@@ -462,8 +462,7 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     L += ["## Provenance (machine-verified)", ""]
     fr = freeze_record or {}
     steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
-    validated = [s for s in steps
-                 if s.get("validation") or s.get("validation_status") == "passed"]
+    validated = [s for s in steps if step_is_validated(s)]
     # Prefer the status the producer STATED on the spec (self-describing); derive
     # from the steps only if absent (pre-fix specs). ONE definition —
     # spec_writer.derive_pipeline_status — shared with the seal that wrote it, so
@@ -479,7 +478,11 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
         ("run status", run_status),
         ("steps validated", f"{len(validated)}/{len(steps)}" if steps else None),
         ("validated in shipped image", "yes — validated == shipped" if in_shipped else None),
-        ("usage_verified", spec.get("usage_verified")),
+        # THE THREE-STATE READ (core_data.usage_status), not the bool. Printing
+        # `usage_verified: False` into a how-to document tells a reader the command
+        # was tested and does not work; seal REFUSES that case, so it has only ever
+        # meant nobody ran it. This guide was the last artifact still saying it.
+        ("usage self-tested", usage_label(spec)),
     ]
     L += [f"- {k}: `{v}`" for k, v in rows if v not in (None, "")]
     L.append("")

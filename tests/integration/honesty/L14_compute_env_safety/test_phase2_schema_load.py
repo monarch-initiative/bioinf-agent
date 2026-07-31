@@ -257,9 +257,9 @@ class TestAgentCommonDataTarget:
 
 class TestSlurmBlock:
     """The env-level `slurm:` block is the HPC's scheduler POLICY. ALL keys are
-    OPTIONAL now (Longleaf CPU jobs need none) — the old required
+    OPTIONAL now (many clusters need none) — the old required
     queue_default/allowed_queues/account/max_* model was a queue-SELECTION scheme
-    Longleaf doesn't use. Email moved to the env-level `email:` field. Unknown keys
+    many clusters don't use. Email moved to the env-level `email:` field. Unknown keys
     still rejected; the GPU convention {partition, qos} is a closed sub-block."""
 
     def _good_slurm(self) -> dict:
@@ -282,7 +282,7 @@ class TestSlurmBlock:
     @pytest.mark.integration
     def test_empty_block_loads(self, tmp_path):
         """ALL keys optional — an empty slurm block is valid (a cluster that needs
-        no account/partition, like Longleaf for CPU jobs)."""
+        no account/partition, as many clusters do for CPU jobs)."""
         env = _base_env(slurm={})
         access = compute_access.load_access(_write(tmp_path, _wrap(env)))
         assert compute_access.get_slurm_config(
@@ -350,7 +350,7 @@ class TestSlurmBlock:
 
     @pytest.mark.integration
     def test_partition_may_be_comma_separated(self, tmp_path):
-        """Longleaf allows targeting several GPU partitions (a100-gpu,l40-gpu)."""
+        """the cluster allows targeting several GPU partitions (a100-gpu,l40-gpu)."""
         good = self._good_slurm()
         good["gpu"] = {"partition": "a100-gpu,l40-gpu", "qos": "gpu_access"}
         access = compute_access.load_access(_write(tmp_path, _wrap(_base_env(slurm=good))))

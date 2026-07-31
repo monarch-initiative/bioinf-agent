@@ -659,17 +659,47 @@ def refresh_cluster_reference_db(rdb: dict, *,
     out["available"] = bool(probe.get("exists"))
     if probe.get("size_bytes") is not None:
         out["size_bytes"] = probe["size_bytes"]
-    if probe.get("sha256"):
+    # FILL AN ABSENT ANCHOR; NEVER OVERWRITE A RECORDED ONE (2026-07-31).
+    #
+    # This used to assign unconditionally, and that is not enrichment — it is laundering.
+    # Seal calls this refresh (workflow_tools._refresh_reference_databases) to build the
+    # artifact's reference_databases and then immediately re-validates the artifact, so an
+    # overwrite replaced the RECORDED anchor with the JUST-OBSERVED value and the check
+    # that follows compared a value against itself. A DB whose bytes had genuinely changed
+    # produced perfect agreement.
+    #
+    # An anchor is a claim made at record time about what the bytes WERE. An observation
+    # is what they are NOW. A producer that overwrites the first with the second destroys
+    # the only thing the comparison could have been between — the same reader-scrapes
+    # failure the typed-record seam exists to prevent, in its most damaging direction.
+    if probe.get("sha256") and not out.get("sha256"):
         out["sha256"] = probe["sha256"]
     return out
 
 
 def check_cluster_reference_db(rdb: dict, *,
                                access_path: Optional[str] = None) -> list[dict]:
-    """I5 for a cluster-locus reference DB: verify it exists + is non-empty ON THE
-    CLUSTER (ssh), the same 'observe at the locus' posture as the C2 .sif
-    round-trip. A cluster DB that isn't there — or can't be verified because the
-    env is unreachable — fails the seal. Returns a list of violation dicts."""
+    """I5 for a cluster-locus reference DB: verify it exists, is non-empty, and still
+    matches its recorded content anchor ON THE CLUSTER (ssh), the same 'observe at the
+    locus' posture as the C2 .sif round-trip. A cluster DB that isn't there — or can't
+    be verified because the env is unreachable — fails the seal. Returns violation dicts.
+
+    THE CONTENT COMPARISON WAS MISSING (added 2026-07-31). This returned [] after
+    exists + non-empty and never touched `probe["sha256"]`, even though
+    `_probe_cluster_path` already reads the `<path>.source.sha256` sidecar on the same
+    hop and hands it back. So the registry's I5 statement, CLAUDE.md's I5 row and this
+    function's own docstring all advertised a hash check that no code performed, and
+    every cluster DB in the corpus sealed on existence alone — including four recorded
+    with `sha256: None` and one whose recorded hash was never once compared.
+
+    NO NEW SSH. The probe is unchanged; only its already-returned field is now read.
+
+    WHEN THERE IS NO ANCHOR TO COMPARE (no recorded sha256, or no sidecar on the
+    cluster) this emits nothing, and it deliberately does NOT invent a second way of
+    saying so. `data_pins` already answers "were these the bytes it was sealed against?"
+    at production time, keyed on the path the run actually bound; a parallel disclosure
+    here would be two answers to one question, which is the drift this codebase keeps
+    paying for. Absent anchor ⇒ the record's own `sha256: null` is the disclosure."""
     name = rdb.get("name") or "reference_database"
     path = rdb.get("local_path")
     where = f"reference_databases[name={rdb.get('name')}]"
@@ -708,5 +738,20 @@ def check_cluster_reference_db(rdb: dict, *,
                          f"{rdb.get('compute_env')!r} but is empty at {path} "
                          f"(partial/failed download?)",
             "where":     where, "path": path,
+        }]
+    recorded = str(rdb.get("sha256") or "").strip().lower()
+    observed = str(probe.get("sha256") or "").strip().lower()
+    if recorded and observed and recorded != observed:
+        return [{
+            "invariant": "I5.reference_database_mutated",
+            "message":   f"cluster reference_database '{name}' on "
+                         f"{rdb.get('compute_env')!r} no longer matches the content it was "
+                         f"recorded with: {path}.source.sha256 reads {observed[:12]}…, the "
+                         f"spec pins {recorded[:12]}…. The bytes at that path changed since "
+                         f"this workflow was validated, so re-runs would not reproduce it — "
+                         f"re-validate against the current reference, or restore the pinned "
+                         f"one, before sealing.",
+            "where":     where, "path": path,
+            "recorded_sha256": recorded, "observed_sha256": observed,
         }]
     return []

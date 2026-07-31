@@ -14,7 +14,7 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
                         (Layer-1 deliverable production)
   workflow_tools      — pipeline lifecycle (start/show/patch/discard) +
                         mark_step_validated + stage_authored_artifact +
-                        seal_workflow + write_pipeline_provenance +
+                        seal_workflow +
                         fetch_r_package_deps + list_installed_pipelines
                         (Layer-2 surface + draft-state machinery)
   data_tools          — add_core_*, phenopacket_*, select_test_data,
@@ -65,4 +65,4 @@ from . import jobs_tools           # noqa: F401  (run_in_background, check_job, 
 from . import observability_tools  # noqa: F401  (agent_status, snapshot_project)
 from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in_container, verify_installation, run_in_env, validate_output)
 from . import service_tools        # noqa: F401  (check_gpu, start_service, stop_service, check_service_health, verify_service_dependency)
-from . import workflow_tools       # noqa: F401  (seal_workflow, write_pipeline_provenance, list_installed_pipelines, fetch_r_package_deps, start_pipeline, discard_pipeline_draft, show_pipeline_draft, patch_pipeline, stage_authored_artifact, mark_step_validated)
+from . import workflow_tools       # noqa: F401  (seal_workflow, list_installed_pipelines, fetch_r_package_deps, start_pipeline, discard_pipeline_draft, show_pipeline_draft, patch_pipeline, stage_authored_artifact, mark_step_validated)

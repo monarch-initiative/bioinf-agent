@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -151,8 +152,11 @@ def run_pipeline_step(
             if etype is None:
                 etype = _infer_validator_type(basename, ext)
             v = _ms._validator.validate(path, etype, env_name=env_name)
-            validations[basename] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, basename, v)
+            # keyed by resolved PATH, not basename: two outputs of one step routinely
+            # share a name, and the collision destroyed the earlier record (see
+            # pipeline_state.validation_key).
+            validations[_validation_key(path)] = v
+            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
 
     unmatched = sorted(set(output_types) - output_types_used)
     out = {
@@ -283,6 +287,24 @@ def run_step_in_container(
                     pass
         return snap
 
+    # OBSERVE THE DIGEST OF WHAT IS ABOUT TO RUN — do not echo the one we were handed.
+    #
+    # The step used to stamp `rec["image_digest"]`, i.e. the EnvCache's NOMINAL digest,
+    # copied straight from the record we looked the image up in. `seal_workflow` then
+    # earns `validated_in_shipped_image` by matching each step's digest against the
+    # frozen env's digest — the SAME value, copied twice. The headline claim of this
+    # codebase ("the bytes the user runs on HPC are the exact bytes we validated") was
+    # therefore self-confirming: it could not fail, including in the one case it exists
+    # to catch, where the tag has since been rebuilt or retagged and the daemon's image
+    # is no longer the one the record describes.
+    #
+    # `docker image inspect` on the ref we are about to run is an independent
+    # observation of the local daemon, so a drifted tag now produces a MISMATCH and the
+    # badge is withheld. Absence is recorded as absence: if the inspect fails we keep no
+    # digest at all rather than falling back to the nominal one, because a fallback here
+    # would restore exactly the tautology being removed.
+    observed_digest = _ms._docker.image_digest(image)
+    nominal_digest = rec.get("image_digest") or ""
     before = _snap()
     res = _ms._docker.run_in_container(image, command, mounts=mounts, workdir=str(ddir),
                                        platform=platform, timeout=timeout_seconds)
@@ -309,7 +331,14 @@ def run_step_in_container(
         "output_sha256":   output_sha256 or None,
         "ran_in_container": True,
         "container_image":  image,
-        "container_image_digest": rec.get("image_digest"),
+        # OBSERVED (see above), never the nominal digest we were handed.
+        "container_image_digest": observed_digest or None,
+        # ...and when the two disagree, say so on the step rather than only withholding
+        # the badge: a silent absence reads as "not checked", a recorded mismatch reads
+        # as "checked, and the image moved".
+        "container_digest_nominal": (nominal_digest
+                                     if nominal_digest and nominal_digest != observed_digest
+                                     else None),
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
@@ -322,8 +351,8 @@ def run_step_in_container(
             etype = (output_types.get(basename) or output_types.get(ext)
                      or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename, ext))
             v = _ms._validator.validate(path, etype)
-            validations[basename] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, basename, v)
+            validations[_validation_key(path)] = v
+            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
 
     return {
         **res,
@@ -485,14 +514,14 @@ def validate_output(
                 path, etype, env_name=env_name or None,
                 allow_empty=entry_allow_empty,
             )
-            filename = Path(path).name
+            filename = _validation_key(path)
             validations[filename] = vr
             if vr.get("passed") is True:
                 passed_count += 1
             elif vr.get("passed") is False:
                 failed_count += 1
             if merge_status == "merged":
-                ok = _ms._pipeline_state.add_validation(pipeline_id, step, filename, vr)
+                ok = _ms._pipeline_state.add_validation(pipeline_id, step, path, vr)
                 if not ok:
                     merge_status = "step_not_found"
         out: dict = {
@@ -521,8 +550,8 @@ def validate_output(
         if step <= 0:
             result["pipeline_merge"] = {"status": "step_required", "pipeline_id": pipeline_id}
         else:
-            filename = Path(file_path).name
-            ok = _ms._pipeline_state.add_validation(pipeline_id, step, filename, result)
+            filename = _validation_key(file_path)
+            ok = _ms._pipeline_state.add_validation(pipeline_id, step, file_path, result)
             result["pipeline_merge"] = (
                 {"status": "merged", "pipeline_id": pipeline_id,
                  "step": step, "filename": filename}

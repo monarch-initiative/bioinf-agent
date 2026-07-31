@@ -66,7 +66,11 @@ def _produce_from_authors_image(tmp_path, monkeypatch) -> list[dict]:
     monkeypatch.setattr(F, "_image_present", lambda image: True)
     monkeypatch.setattr(F, "_image_digest", lambda image: "sha256:" + "ab" * 32)
     monkeypatch.setattr(F, "_run_in_image", lambda image, platform, command, timeout=300, maxlen=400: (
-        {"rc": 0, "out": json.dumps(["talos==11.0.0"])} if "importlib.metadata" in command
+        # the control image must NOT carry the tool, or the evidence is vacuous by
+        # construction and freeze_from_image correctly refuses it (see
+        # freeze_from_image._evidence_discriminates)
+        {"rc": 127, "out": "command not found"} if image == F._CONTROL_IMAGE
+        else {"rc": 0, "out": json.dumps(["talos==11.0.0"])} if "importlib.metadata" in command
         else {"rc": 0, "out": "bcftools 9cef4057\nUsing htslib 1.23.1"}))
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))

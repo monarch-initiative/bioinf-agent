@@ -21,7 +21,7 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.models.core_data import ShippedBinary as _ShippedBinary
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, degraded
 
 
 def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dict]:
@@ -542,17 +542,6 @@ def freeze(
         # authoritative), so it takes the same value the build path records.
         record["validation_locus"] = _ms._locus.detect_locus(_adopt_platform)["locus"]
 
-        # THE CONTRACT, on the completed record. It runs here (not at the adopt decision)
-        # because BUILT/VALIDATED_IN_IMAGE/POLICY_CLEAN read image + verifications +
-        # accelerator + licenses, and the last of those only land once the record is
-        # assembled — gating earlier would have checked a record that didn't exist yet.
-        adopt_violations = _ms._env_honesty.check_build(record)
-        if adopt_violations:
-            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
-                    request_key=rkey, adopt_attempt=adopt,
-                    honesty_violations=adopt_violations,
-                    violation_count=len(adopt_violations),
-                    verifications=record.get("verifications"))
     # IDENTITY DISCLOSURE (audit #8): what each requested tool says it IS, read from the
     # registry the shipped package actually came from (matched via the in-image SBOM).
     # Agent-asserted, best-effort — a probe miss yields self_description=None and NEVER
@@ -581,6 +570,38 @@ def freeze(
         # pin), the exact ambiguity the 2026-07-20 hunt flagged. Descriptive; rebuild ignores.
         env_recipe_dict["resolved_packages"] = record.get("resolved_packages") or []
         env_recipe_dict["system_packages"] = record.get("system_packages") or []
+
+    # ==== THE CONTRACT — on the COMPLETED record, for BOTH modes ====================
+    # It runs HERE, not at the adopt/build decision, because BUILT / VALIDATED_IN_IMAGE /
+    # POLICY_CLEAN / WELL_FORMED read image + verifications + accelerator + licenses +
+    # tool_identities, and the last of those only land once the record is assembled —
+    # gating earlier checks a record that does not exist yet.
+    #
+    # That reasoning was written for the ADOPT path and applied only there. The BUILD
+    # path's contract check lives inside `env_build.run()`, which evaluates the BUILD
+    # RESULT — a different dict, assembled ~130 lines before this one. So every field
+    # added during record assembly (shipped_binaries, tool_identities, the merged
+    # accelerator policy, the licenses) reached disk having never been checked, and a
+    # record that could not pass the contract could still be registered and served. That
+    # is the same shape as the defect the adopt comment above describes, one path over:
+    # the gate existed, at one seam, and was never propagated to the other.
+    #
+    # Checking the registered bytes is also what makes the check total: `register` asserts
+    # SHAPE, `lookup_verified` asserts the CONTRACT at serve time, and now the write path
+    # asserts it too — so a record on disk can no longer be one the serving path refuses.
+    contract = _ms._env_honesty.evaluate_build(record)
+    if contract.violations:
+        if mode == "adopt":
+            return refused("freeze.adopt_honesty", success=False, stage="adopt_honesty",
+                           request_key=rkey, adopt_attempt=adopt,
+                           honesty_violations=contract.violations,
+                           violation_count=len(contract.violations),
+                           verifications=record.get("verifications"))
+        return refused("freeze.build_honesty", success=False, stage="build_honesty",
+                       request_key=rkey,
+                       honesty_violations=contract.violations,
+                       violation_count=len(contract.violations),
+                       verifications=record.get("verifications"))
     _ms._env_cache.register(rkey, record)
     # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
     # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.
@@ -636,11 +657,22 @@ def freeze(
         except Exception as e:
             recipe_md_path = f"(recipe.md render failed: {e!r})"
 
+    # THE OUTCOME IS EARNED FROM THE REGISTERED RECORD, NOT FROM "WE GOT THIS FAR".
+    # The contract already passed (we would have refused above), so this asks the second
+    # question a pass/fail gate cannot: how much did it actually LOOK at? A clean contract
+    # with an UNOBSERVED clause is `degraded`, not `proven` — same artifact, same
+    # registration, honest tag. See env_honesty.coverage_outcome for why the rule is
+    # structural (unobserved clauses) and not evidence depth.
     # merge (not kwargs) — `record` is a build result that may already carry a
     # `success` key; a dict-literal merge makes the explicit values last-wins
-    # instead of a kwarg collision.
-    out = proven("freeze.built", **{**record, "success": True, "cache_hit": False,
-                                    "adopt_attempt": adopt})
+    # instead of a kwarg collision. `contract` is the SAME evaluation that gated the
+    # register above — the tag and the gate cannot disagree because there is one walk.
+    _fields = {**record, **_ms._env_honesty.coverage_disclosure(contract),
+               "success": True, "cache_hit": False, "adopt_attempt": adopt}
+    if contract.unobserved:
+        out = degraded("freeze.built_unobserved", **_fields)
+    else:
+        out = proven("freeze.built", **_fields)
     out["env_report_html"] = report_html_path
     out["attestation"] = attestation_path
     out["env_recipe"] = recipe_path

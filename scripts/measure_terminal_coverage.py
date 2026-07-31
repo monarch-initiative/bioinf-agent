@@ -56,10 +56,30 @@ def _run_suite_under_coverage() -> dict:
                    "--deselect", _DESELECT]
         print("  running suite under coverage (this takes ~1 min)…")
         r = subprocess.run(env_run, cwd=str(ROOT), capture_output=True, text=True)
-        # pytest may exit non-zero on the (tolerated) failures; only bail if it
-        # produced no coverage data at all.
         tail = "\n".join(r.stdout.strip().splitlines()[-2:])
         print(f"    pytest: {tail or r.stderr.strip()[-200:]}")
+
+        # THE SUITE MUST ACTUALLY HAVE RUN. rc=1 is TOLERATED — some failures are
+        # expected here (this very script regenerates the overlay the ledger test
+        # checks, so that one is always stale mid-run). Everything else means pytest
+        # did not do what it was asked, and the numbers below would describe nothing.
+        #
+        # The datafile check under this used to be the ONLY guard, and it cannot see
+        # this: `coverage run` creates the datafile as soon as the process starts, so
+        # a conftest that fails to import gives rc=4 with a datafile present —
+        # measured, not reasoned. The script then computed coverage over a run where
+        # ZERO tests executed and WROTE docs/terminal_coverage.json plus the dashboard,
+        # both committed. A sweeping "everything went dark" regression would have
+        # looked like a measurement rather than a broken run.
+        _PYTEST_RC = {0: "all passed", 1: "tests failed (tolerated)",
+                      2: "interrupted", 3: "internal error",
+                      4: "usage error / collection failed", 5: "NO TESTS COLLECTED"}
+        if r.returncode not in (0, 1):
+            print(f"  ! pytest exited {r.returncode} "
+                  f"({_PYTEST_RC.get(r.returncode, 'unknown')}) — the suite did not run, "
+                  f"so there is nothing to measure and the committed coverage artifacts "
+                  f"are left untouched. Fix the run, then re-measure.", file=sys.stderr)
+            sys.exit(2)
         if not Path(datafile).exists():
             print("  ! coverage produced no data — aborting", file=sys.stderr)
             sys.exit(2)

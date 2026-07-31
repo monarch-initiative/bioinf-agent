@@ -432,6 +432,34 @@ def select_test_data(
     return result
 
 
+#: Practical notes for the brief's Layer-2 roster: WHICH PRIMITIVE satisfies the clause.
+#: The registry's `statement` says what must be true and stops there, on purpose — it is
+#: the roster, not a how-to. An autonomous agent needs the how-to, so it lives here,
+#: keyed by id and additive. Every key must be a live invariant (asserted in
+#: tests/test_invariant_registry.py) so a note cannot outlive the clause it explains.
+_BRIEF_HINTS = {
+    "I3": "declare types via run_pipeline_step's output_types",
+    "I4": "type-aware validate_output (samtools/bcftools/json.loads/…), so touch-and-hope "
+          "cheats fail; an empty usage.outputs is not_attempted, never verified",
+    "I5": "download_reference_database records the sha256; a locus:cluster DB is verified "
+          "over ssh against its <path>.source.sha256 sidecar",
+    "I7": "populated by run_pipeline_step / run_step_in_container / run_step_on_cluster",
+    "I8": "anything the agent writes outside MCP must be declared with "
+          "stage_authored_artifact or its path is an orphan",
+    "I10": "start_service / verify_service_dependency append the probes this reads",
+}
+
+
+def _layer2_brief_invariants() -> list:
+    """The Layer-2 roster for the brief: every ACTIVE Layer-2 invariant, in id order.
+
+    Includes I4, whose `enforced_by` is the usage self-test rather than the structural
+    walk — being enforced one seam over is exactly why it kept appearing in and vanishing
+    from hand-written rosters, so it is selected by LAYER, not by enforcer."""
+    from agent.skills import invariants as _reg
+    return _reg.active(layer=_reg.LAYER_WORKFLOW)
+
+
 @mcp.tool()
 def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> dict:
     """Return the install brief for `name` — the structured prompt a downstream
@@ -448,18 +476,27 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     """
     invariants = [
         # Layer 1 — the env image (env_honesty.check_build; install==ship is ONE event,
-        # so the per-tier env-build invariants I1/I2/I5/I9/I10/I11/I12/I13/I14 collapse
+        # so the per-tier env-build invariants (agent/skills/invariants.py) collapse
         # into three structural guarantees enforced INSIDE the shipped image):
         "BUILT: the env image + image_digest resolve in the local Docker daemon",
         "VALIDATED_IN_IMAGE: every tool's evidence command re-runs green INSIDE the shipped image AND references the tool (echo/print/true cheats rejected) — because install==ship, the bytes validated are the bytes that run on HPC",
         "POLICY_CLEAN: I12 accelerator honesty (cuda/rocm need toolkit_version; runtime_verified needs a captured probe + min_driver_version; mps is dev_only) + I13 license firewall (gated => redistributable:false AND licenses[] recorded)",
-        # Layer 2 — the workflow run (check_workflow_invariants, over the validated run):
-        "I0: every top-level list-of-records holds only dicts (shape sanity)",
-        "I3: every pipeline_step has validated detected_outputs AND no validation uses expected_type='any' — declare types via run_pipeline_step's output_types",
-        "I4: usage.command_template executes against every declared trial AND each produced file passes type-aware validate_output (samtools/bcftools/json.loads/etc — touch-and-hope cheats fail)",
-        "I6: every input/output path is absolute AND every {PLACEHOLDER} in usage.command_template is declared",
-        "I7: every rc=0 pipeline_step has resource_usage (wall, peak RSS, peak CPU) — populated by run_pipeline_step / run_step_in_container",
-        "I8: every step input traces to a prior step's output OR an external source (test_data, reference_databases, runtime_configs, authored_artifacts)",
+        # Layer 2 — the workflow run: DERIVED FROM THE REGISTRY, never hand-listed.
+        # This was a hand-written run of six entries and it was already wrong — it
+        # omitted I5 and I10, the two clauses that were called "retired" in prose for
+        # months while refusing real seals. That is precisely the drift
+        # agent/skills/invariants.py was created to end, and a roster inside the BRIEF
+        # HANDED TO AN AUTONOMOUS SUBAGENT is the worst place to keep a stale copy: the
+        # agent plans against invariants that do not exist, omits fields for ones it was
+        # told were gone, and is then refused by a gate it had no reason to expect.
+        #
+        # Membership and statement text come from the registry so they cannot drift.
+        # _BRIEF_HINTS adds only the PRACTICAL note the registry deliberately does not
+        # carry (which primitive populates the field) — keyed by id, and the test asserts
+        # every key is a live invariant, so a hint cannot outlive its clause either.
+        *(f"{inv.id}: {inv.statement}"
+          + (f" — {_BRIEF_HINTS[inv.id]}" if inv.id in _BRIEF_HINTS else "")
+          for inv in _layer2_brief_invariants()),
     ]
     primitives = [
         "install_conda_packages: bioconda / conda-forge / defaults",
@@ -481,8 +518,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
         "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
         "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
-        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (I0/I3/I6/I7/I8), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
-        "8. write_pipeline_provenance with the right input shape",
+        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
     ]
     return {
         "pipeline_name": name,
