@@ -74,6 +74,31 @@ def _sidecar_parent(path: str) -> Optional[str]:
     return None
 
 
+def _dir_contains_a_prior_output(path: str, universe: set) -> bool:
+    """Is `path` the directory a prior step wrote its outputs INTO?
+
+    True only when some artifact already in the universe has `path` as its EXACT
+    parent. The exactness is the whole safety property:
+
+      * prefix matching would let `/work/run1` capture `/work/run10`;
+      * ancestor matching would let an input of `/work` trace to every output
+        anything ever produced, which is not provenance, it is a wildcard.
+
+    Scoped this way it is not a loosening of I8 but an expression of a relation
+    the full-path rule cannot state: a step whose declared input is the directory
+    holding a prior step's recorded outputs really does consume them. That is the
+    normal shape of a cluster chain — htseq-count writes six `.counts.tsv` into
+    the shared remote workflow_dir and DESeq2 takes the directory."""
+    if not isinstance(path, str) or not path:
+        return False
+    target = path.rstrip("/") or "/"
+    for produced in universe:
+        if isinstance(produced, str) and produced:
+            if str(Path(produced).parent) == target:
+                return True
+    return False
+
+
 def _ran_off_host(step: dict) -> bool:
     """Did this step execute on a filesystem other than ours?
 
@@ -760,6 +785,18 @@ def check_invariants(spec: dict) -> list[dict]:
                     "message":   f"pipeline_step {step_n} has a relative output path: {o}",
                     "where":     f"pipeline_steps[step={step_n}].detected_outputs",
                 })
+        # remote_outputs feeds the I8 universe, so it is a path channel into the
+        # lineage graph and gets the same absoluteness rule. A field that other
+        # invariants trust and this one does not examine is how an unchecked
+        # channel opens.
+        for o in s.get("remote_outputs", []) or []:
+            if _is_path_like(o) and not Path(o).is_absolute():
+                violations.append({
+                    "invariant": "I6.absolute_paths",
+                    "message":   f"pipeline_step {step_n} has a relative remote output "
+                                 f"path: {o}",
+                    "where":     f"pipeline_steps[step={step_n}].remote_outputs",
+                })
 
     # ------------------------------------------------------------------
     # I6 (extended): every {PLACEHOLDER} in usage.command_template must
@@ -1405,6 +1442,20 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             # keeps the real capability and drops the hole.
             if _ran_off_host(s) and Path(p).name in external_basenames:
                 continue
+            # DIRECTORY CONSUMPTION — a step consumes the DIRECTORY a prior step
+            # wrote into, not the individual files. This is the normal shape for a
+            # cluster chain: htseq-count writes six `.counts.tsv` into
+            # <workflow_dir>, and DESeq2's input is <workflow_dir> itself.
+            #
+            # Matched by exact PARENT, never by prefix. `/work/run1` must not
+            # capture `/work/run10`, and a grandparent must not capture a whole
+            # subtree — an input of `/work` would otherwise trace to every output
+            # anything ever produced. `_dir_contains_a_prior_output` is that rule,
+            # and it is a real provenance relationship rather than a loosening:
+            # if a prior step's recorded output lives directly in this directory,
+            # then consuming the directory IS consuming that output.
+            if _dir_contains_a_prior_output(p, universe):
+                continue
             violations.append({
                 "invariant": "I8.composition_coherence",
                 "message":   f"pipeline_step {step_n} input '{p}' has no producing source — "
@@ -1418,6 +1469,21 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             if isinstance(o, str) and o:
                 universe.add(o)
         for o in s.get("detected_outputs", []) or []:
+            if isinstance(o, str) and o:
+                universe.add(o)
+        # REMOTE OUTPUTS — where an off-host step's outputs live AT THE LOCUS
+        # THAT PRODUCED THEM. `detected_outputs` holds the downloaded LOCAL
+        # copies, which is right for validation (we hashed and typed those very
+        # bytes) but leaves a cluster chain unprovable: step 2 consumes
+        # `<remote workflow_dir>/counts.tsv`, and no local path can ever match it.
+        #
+        # A DEDICATED field rather than reusing `outputs`, deliberately. `outputs`
+        # is read first-wins as `detected_outputs or outputs`, so writing remote
+        # paths there would make a step whose downloads ALL failed — the
+        # silent-empty-success trap I3 exists to catch — look like it produced
+        # something. It also already has a second producer (`run_in_env`) writing
+        # a different dialect into it. One producer, one consumer, no collision.
+        for o in s.get("remote_outputs", []) or []:
             if isinstance(o, str) and o:
                 universe.add(o)
 
