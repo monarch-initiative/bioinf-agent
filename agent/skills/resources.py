@@ -9,6 +9,8 @@ list_installed_pipelines.
 
 from pathlib import Path
 
+from agent.models.core_data import record_is_gated as _record_is_gated
+
 import yaml
 
 
@@ -239,7 +241,8 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
     for key, rec in sorted((env_cache.all() or {}).items()):
         if not isinstance(rec, dict):
             continue
-        violations = env_cache.contract_violations(rec)
+        contract = env_cache.contract_report(rec)
+        violations = contract.violations
         envs.append({
             "request_key":      key,
             "name":             rec.get("name"),
@@ -257,10 +260,18 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
             "platform":         rec.get("platform"),
             "validation_locus": rec.get("validation_locus"),
             "created_at":       rec.get("created_at"),
-            "license_gated":    bool(rec.get("license_gated")),
+            # via record_is_gated, not a bare .get: records on disk carry the legacy
+            # `gated` key, and a one-key read reported a gated artifact as ungated in
+            # the inventory — the same drift that once disabled I13 itself.
+            "license_gated":    _record_is_gated(rec),
             # The green is EARNED here, not remembered from freeze time.
             "contract_ok":          not violations,
             "contract_violations":  violations,
+            # ...and the green says how much it rests on. `contract_ok: true` with an
+            # UNOBSERVED clause is a real state, and an inventory that hid it would be
+            # making exactly the claim this field exists to qualify.
+            "contract_coverage":    contract.summary(),
+            "contract_unobserved":  [c.clause for c in contract.unobserved],
         })
 
     # --- Layer 2: sealed workflows -------------------------------------------

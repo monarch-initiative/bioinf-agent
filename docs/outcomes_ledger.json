@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:715",
-    "end_line": 715,
+    "where": "agent/mcp_tools/freeze_tools.py:747",
+    "end_line": 747,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:761",
-    "end_line": 761,
+    "where": "agent/mcp_tools/freeze_tools.py:793",
+    "end_line": 793,
     "named_in_test": true
   },
   {
@@ -985,8 +985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:192",
-    "end_line": 193,
+    "where": "agent/skills/freeze_from_image.py:242",
+    "end_line": 243,
     "named_in_test": false
   },
   {
@@ -995,8 +995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:196",
-    "end_line": 197,
+    "where": "agent/skills/freeze_from_image.py:246",
+    "end_line": 247,
     "named_in_test": false
   },
   {
@@ -1005,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:447",
-    "end_line": 448,
+    "where": "agent/skills/freeze_from_image.py:526",
+    "end_line": 527,
     "named_in_test": true
   },
   {
@@ -1015,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:452",
-    "end_line": 453,
+    "where": "agent/skills/freeze_from_image.py:531",
+    "end_line": 532,
     "named_in_test": false
   },
   {
@@ -1025,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:462",
-    "end_line": 464,
+    "where": "agent/skills/freeze_from_image.py:541",
+    "end_line": 543,
     "named_in_test": false
   },
   {
@@ -1850,6 +1850,26 @@
     "named_in_test": false
   },
   {
+    "code": "freeze.built_unobserved",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:673",
+    "end_line": 673,
+    "named_in_test": false
+  },
+  {
+    "code": "freeze_from_image.frozen_unobserved",
+    "outcome": "degraded",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze_from_image",
+    "where": "agent/skills/freeze_from_image.py:478",
+    "end_line": 478,
+    "named_in_test": false
+  },
+  {
     "code": "cluster.res_no_rows_retry",
     "outcome": "loop",
     "source": "helper",
@@ -1895,8 +1915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:642",
-    "end_line": 643,
+    "where": "agent/mcp_tools/freeze_tools.py:675",
+    "end_line": 675,
     "named_in_test": false
   },
   {
@@ -1905,8 +1925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:715",
-    "end_line": 715,
+    "where": "agent/mcp_tools/freeze_tools.py:747",
+    "end_line": 747,
     "named_in_test": true
   },
   {
@@ -1915,8 +1935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:760",
-    "end_line": 760,
+    "where": "agent/mcp_tools/freeze_tools.py:792",
+    "end_line": 792,
     "named_in_test": true
   },
   {
@@ -1925,8 +1945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:804",
-    "end_line": 810,
+    "where": "agent/mcp_tools/freeze_tools.py:836",
+    "end_line": 842,
     "named_in_test": false
   },
   {
@@ -2415,8 +2435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:396",
-    "end_line": 400,
+    "where": "agent/skills/freeze_from_image.py:479",
+    "end_line": 479,
     "named_in_test": false
   },
   {
@@ -2945,9 +2965,19 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:551",
-    "end_line": 555,
+    "where": "agent/mcp_tools/freeze_tools.py:595",
+    "end_line": 599,
     "named_in_test": true
+  },
+  {
+    "code": "freeze.build_honesty",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/mcp_tools/freeze_tools.py:600",
+    "end_line": 604,
+    "named_in_test": false
   },
   {
     "code": "freeze.recipe_load_failed",
@@ -2955,8 +2985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:682",
-    "end_line": 683,
+    "where": "agent/mcp_tools/freeze_tools.py:714",
+    "end_line": 715,
     "named_in_test": true
   },
   {
@@ -2965,8 +2995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:685",
-    "end_line": 686,
+    "where": "agent/mcp_tools/freeze_tools.py:717",
+    "end_line": 718,
     "named_in_test": true
   },
   {
@@ -2975,8 +3005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:698",
-    "end_line": 699,
+    "where": "agent/mcp_tools/freeze_tools.py:730",
+    "end_line": 731,
     "named_in_test": false
   },
   {
@@ -2985,8 +3015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:728",
-    "end_line": 743,
+    "where": "agent/mcp_tools/freeze_tools.py:760",
+    "end_line": 775,
     "named_in_test": false
   },
   {
@@ -2995,8 +3025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:799",
-    "end_line": 800,
+    "where": "agent/mcp_tools/freeze_tools.py:831",
+    "end_line": 832,
     "named_in_test": false
   },
   {
@@ -3704,9 +3734,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:235",
-    "end_line": 238,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:440",
+    "end_line": 443,
     "named_in_test": true
   },
   {
@@ -3714,9 +3744,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:241",
-    "end_line": 243,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:446",
+    "end_line": 448,
     "named_in_test": true
   },
   {
@@ -3724,9 +3754,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:246",
-    "end_line": 249,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:451",
+    "end_line": 454,
     "named_in_test": true
   },
   {
@@ -3734,9 +3764,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_accelerator",
-    "where": "agent/skills/env_honesty.py:251",
-    "end_line": 253,
+    "func": "_clause_accelerator",
+    "where": "agent/skills/env_honesty.py:456",
+    "end_line": 458,
     "named_in_test": true
   },
   {
@@ -3744,9 +3774,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:275",
-    "end_line": 278,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:484",
+    "end_line": 487,
     "named_in_test": true
   },
   {
@@ -3754,9 +3784,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:284",
-    "end_line": 287,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:493",
+    "end_line": 496,
     "named_in_test": true
   },
   {
@@ -3764,9 +3794,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_provenance",
-    "where": "agent/skills/env_honesty.py:289",
-    "end_line": 293,
+    "func": "_clause_provenance",
+    "where": "agent/skills/env_honesty.py:498",
+    "end_line": 502,
     "named_in_test": true
   },
   {
@@ -3774,9 +3804,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:305",
-    "end_line": 307,
+    "func": "_clause_license",
+    "where": "agent/skills/env_honesty.py:530",
+    "end_line": 532,
     "named_in_test": true
   },
   {
@@ -3784,29 +3814,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "_check_license",
-    "where": "agent/skills/env_honesty.py:309",
-    "end_line": 311,
-    "named_in_test": true
-  },
-  {
-    "code": "WELL_FORMED.shipped_binaries",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:344",
-    "end_line": 348,
-    "named_in_test": true
-  },
-  {
-    "code": "WELL_FORMED.tool_identities",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:352",
-    "end_line": 356,
+    "func": "_clause_license",
+    "where": "agent/skills/env_honesty.py:534",
+    "end_line": 536,
     "named_in_test": true
   },
   {
@@ -3814,9 +3824,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:363",
-    "end_line": 365,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:612",
+    "end_line": 614,
     "named_in_test": true
   },
   {
@@ -3824,9 +3834,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:367",
-    "end_line": 369,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:618",
+    "end_line": 620,
     "named_in_test": true
   },
   {
@@ -3834,9 +3844,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:377",
-    "end_line": 379,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:634",
+    "end_line": 636,
     "named_in_test": true
   },
   {
@@ -3844,9 +3854,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:386",
-    "end_line": 388,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:652",
+    "end_line": 654,
     "named_in_test": true
   },
   {
@@ -3854,9 +3864,9 @@
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
-    "func": "check_build",
-    "where": "agent/skills/env_honesty.py:390",
-    "end_line": 394,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:656",
+    "end_line": 660,
     "named_in_test": true
   },
   {
@@ -3995,8 +4005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:184",
-    "end_line": 185,
+    "where": "agent/skills/freeze_from_image.py:234",
+    "end_line": 235,
     "named_in_test": true
   },
   {
@@ -4005,9 +4015,19 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:206",
-    "end_line": 207,
+    "where": "agent/skills/freeze_from_image.py:257",
+    "end_line": 258,
     "named_in_test": false
+  },
+  {
+    "code": "freeze_from_image.vacuous_evidence",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze_from_image",
+    "where": "agent/skills/freeze_from_image.py:283",
+    "end_line": 287,
+    "named_in_test": true
   },
   {
     "code": "freeze_from_image.honesty_violation",
@@ -4015,8 +4035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze_from_image",
-    "where": "agent/skills/freeze_from_image.py:320",
-    "end_line": 323,
+    "where": "agent/skills/freeze_from_image.py:391",
+    "end_line": 394,
     "named_in_test": true
   },
   {
@@ -4025,8 +4045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:434",
-    "end_line": 435,
+    "where": "agent/skills/freeze_from_image.py:513",
+    "end_line": 514,
     "named_in_test": false
   },
   {
@@ -4035,8 +4055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build_from_authors_recipe",
-    "where": "agent/skills/freeze_from_image.py:437",
-    "end_line": 437,
+    "where": "agent/skills/freeze_from_image.py:516",
+    "end_line": 516,
     "named_in_test": false
   },
   {

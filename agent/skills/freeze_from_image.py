@@ -39,7 +39,8 @@ _shq = shlex.quote
 
 from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills import env_recipe, env_recipe_render
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.container_build import BASE_IMAGE as _CB_BASE_IMAGE
+from agent.skills.outcomes import proven, refused, broke, degraded
 
 
 def _sh(argv: list[str], timeout: int = 300) -> dict:
@@ -93,6 +94,55 @@ def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
         if r2["rc"] == 0:
             r = r2
     return {"rc": r["rc"], "out": (r["out"] or r["err"] or "").strip()[:maxlen]}
+
+
+#: The CONTROL image for the discriminating-evidence check below: a stock Debian that
+#: carries none of the tools we freeze. Pinned by digest for the same reason the build
+#: base is — a control that drifts is not a control.
+_CONTROL_IMAGE = _CB_BASE_IMAGE
+
+
+def _evidence_discriminates(platform: str, evidence: str) -> tuple:
+    """Does this evidence command actually distinguish "the tool is here" from "it is not"?
+
+    Returns `(verdict, detail)` where verdict is:
+      "discriminating"  — the evidence FAILED in a control image that lacks the tool, so
+                          its pass in the real image means something.
+      "vacuous"         — it PASSED in the control image too. It would pass anywhere; it
+                          proves nothing about what we are shipping.
+      "unchecked"       — the control could not be run (no docker / no network / the
+                          control image would not start). NOT a pass: absence of a check
+                          is recorded as absence, never as compliance.
+
+    WHY AN EXPERIMENT AND NOT ANOTHER REGEX. `evidence` on this path is authored by the
+    agent, and until now the only defense was `env_honesty.evidence_shape_violation`
+    reading that string. A string rule loses this game by construction: the audit walked
+    straight through it with `true || samtools`, `true # samtools`, `[ -n "samtools" ]`
+    and `test -f /etc/hosts # samtools` — each references the tool as a word-boundary
+    token, none is a bare echo, all four passed, and `evidence_depth` rated the first
+    one `functional`, the strongest class. Every one of those is caught here without
+    reading the string at all, because none of them can tell the two images apart.
+
+    The shape rule stays as cheap defense-in-depth (it needs no container and it catches
+    the lazy shapes before a build is even attempted); this is the load-bearing check.
+
+    Cost: one extra ~0.3s container run per tool against an image the freeze has usually
+    already pulled — the same trade the adopt-path validation made, and the same
+    justification: the busiest path was the unvalidated one."""
+    try:
+        if not _image_present(_CONTROL_IMAGE):
+            pl = _sh(["docker", "pull", "--platform", platform, _CONTROL_IMAGE], timeout=600)
+            if pl["rc"] != 0 or not _image_present(_CONTROL_IMAGE):
+                return ("unchecked", f"control image unavailable: {pl['err'][:160]}")
+        res = _run_in_image(_CONTROL_IMAGE, platform, evidence, timeout=120)
+    except Exception as e:                      # docker absent / daemon down
+        return ("unchecked", f"control run failed: {type(e).__name__}: {e}")
+    if res["rc"] == 0:
+        return ("vacuous",
+                f"this command also exits 0 in a stock {_CONTROL_IMAGE.split('@')[0]} that "
+                f"does not contain the tool, so passing it in the shipped image proves "
+                f"nothing about the shipped image")
+    return ("discriminating", f"fails in a control image without the tool (rc={res['rc']})")
 
 
 #: A self-reported version/identity token: a semver (1.21, 0.7.17-r1188) OR an unversioned
@@ -199,6 +249,7 @@ def freeze_from_image(
 
     # -- VALIDATED_IN_IMAGE: run each tool's evidence IN the image --
     verifications: list[dict] = []
+    vacuous: list[str] = []
     for t in tools:
         tname = (t.get("name") or "").strip()
         ev = (t.get("evidence") or "").strip()
@@ -207,6 +258,13 @@ def freeze_from_image(
                            error=f"each tool needs a name + evidence command (got {t!r})")
         res = _run_in_image(image, platform, ev)
         from agent.skills import env_honesty as _eh
+        # THE DISCRIMINATING CHECK — only meaningful for evidence that PASSED. A failing
+        # evidence already refuses via the contract, and paying for a control run to learn
+        # why a failure failed buys nothing.
+        control, control_note = (_evidence_discriminates(platform, ev)
+                                 if res["rc"] == 0 else ("not_applicable", "evidence did not pass"))
+        if control == "vacuous":
+            vacuous.append(f"{tname}: {ev!r} — {control_note}")
         verifications.append({"label": tname, "tool": tname, "check": ev,
                               "passed": res["rc"] == 0, "rc": res["rc"],
                               "out": res["out"],
@@ -214,7 +272,19 @@ def freeze_from_image(
                               # the tool. 'version'/'import'/'help' prove presence; only
                               # 'smoke'/'functional' prove it RUNS. Surfaced so a shallow
                               # proof can't masquerade as a functional one.
-                              "depth": _eh.evidence_depth(ev, tname)})
+                              "depth": _eh.evidence_depth(ev, tname),
+                              # ...and whether it distinguishes this image from any image.
+                              "control": control, "control_note": control_note})
+    if vacuous:
+        # REFUSE, do not degrade. `unchecked` (we could not run the control) is the state
+        # that degrades; this is the state where we RAN the experiment and it came back
+        # negative — the evidence is proven not to be evidence, and registering a green
+        # on it would be the precise thing the honesty contract exists to prevent.
+        return refused("freeze_from_image.vacuous_evidence",
+                       error="evidence that would pass with or without the tool installed — "
+                             "it cannot prove the image carries what you asked for: "
+                             + "; ".join(vacuous),
+                       vacuous_evidence=vacuous, verifications=verifications)
 
     # -- SBOM captured FROM the shipped image (can't be faked) --
     # A capture FAILURE must not look like an image with no dependencies: an empty
@@ -315,7 +385,8 @@ def freeze_from_image(
         record["tool_identities"] = []
 
     from agent.skills import env_honesty
-    violations = env_honesty.check_build(record)
+    contract = env_honesty.evaluate_build(record)
+    violations = contract.violations
     if violations:
         return refused("freeze_from_image.honesty_violation",
                        error=f"the image failed the honesty contract ({len(violations)} violation(s)) — "
@@ -393,11 +464,19 @@ def freeze_from_image(
     if shallow:
         advisory = ("shallow evidence (proves presence, not function) for: "
                     + ", ".join(shallow) + " — consider evidence that RUNS the tool on an input")
-    return proven("freeze_from_image.frozen", success=True, cache_hit=False,
+    # The contract passed; now say how much of it actually looked at anything. An
+    # UNOBSERVED clause makes this `degraded` rather than `proven` — same artifact, same
+    # registration, honest tag. Branch written out with literal helpers + literal codes so
+    # scripts/extract_outcomes.py still harvests both terminals (see coverage_disclosure).
+    fields = dict(success=True, cache_hit=False,
                   request_key=rkey, image=image, image_digest=digest,
                   content_digest=digest, build_method=build_method, platform=platform,
                   verifications=verifications, shallow_evidence=shallow,
-                  evidence_advisory=advisory, **out_paths)
+                  evidence_advisory=advisory,
+                  **env_honesty.coverage_disclosure(contract), **out_paths)
+    if contract.unobserved:
+        return degraded("freeze_from_image.frozen_unobserved", **fields)
+    return proven("freeze_from_image.frozen", **fields)
 
 
 def _clone_url(repo: str) -> str:

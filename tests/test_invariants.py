@@ -1803,7 +1803,7 @@ def test_freeze_record_derives_redistributable_from_gated():
 def test_record_is_gated_reads_new_and_legacy_records():
     """EnvCache records written before the rename carry `gated`; the helper is the single
     reader so the two names can never drift apart again."""
-    from agent.skills.freeze import record_is_gated
+    from agent.models.core_data import record_is_gated
     assert record_is_gated({"license_gated": True}) is True
     assert record_is_gated({"license_gated": False}) is False
     assert record_is_gated({"gated": True}) is True            # legacy, on disk today
@@ -3544,7 +3544,15 @@ def test_attestation_is_intoto_slsa_statement_from_record():
     assert "pkg:conda/htslib@1.21" in uris
     assert any(u.startswith("docker:debian:bookworm-slim@sha256:") for u in uris)
     ip = pred["buildDefinition"]["internalParameters"]
-    assert ip["honesty_contract"] == ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+    # POLICY_CLEAN is now listed as its two INDEPENDENT clauses (I12 accelerator,
+    # I13 license). They reach separate verdicts on separate evidence — one name for
+    # two answers is the same collapse the coverage work exists to undo — and
+    # PROVENANCE_CLEAN (the synthesis firewall) was always a clause and was simply
+    # missing from this list. The guarantees are read off env_honesty.evaluate_build,
+    # so this assertion tracks the contract instead of restating it from memory.
+    assert ip["honesty_contract"] == [
+        "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
+        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
     assert ip["validation_locus"] == "native"
     # validated==shipped evidence is carried per tool
     assert any(v["tool"] == "samtools" and v["passed"] for v in ip["validated_in_image"])
@@ -4488,6 +4496,14 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
         captured["spec"], captured["kw"] = spec, kw
         return {"success": True, "image": "samtools-seqkit:latest", "image_digest": "sha256:deadbeef",
                 "content_digest": "sha256:cd",
+                # the real builder returns in-image evidence; a stub that returns none
+                # produces a record the honesty contract refuses (VALIDATED_IN_IMAGE),
+                # which is correct behaviour and would make this a test of the stub.
+                "verifications": [
+                    {"label": "samtools", "tool": "samtools", "check": "command -v samtools",
+                     "rc": 0, "passed": True, "out": "/opt/conda/bin/samtools"},
+                    {"label": "seqkit", "tool": "seqkit", "check": "command -v seqkit",
+                     "rc": 0, "passed": True, "out": "/opt/conda/bin/seqkit"}],
                 # matches what env_build really emits: `tool` alongside the prose
                 # `purpose` and the shell `command` (they are three different things)
                 "longtail_steps": [{"tool": "seqkit", "purpose": "seqkit (release binary)",
@@ -4553,7 +4569,14 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch,
     captured = {}
     monkeypatch.setattr(m._env_freeze, "build_env_image",
                         lambda spec, **kw: captured.update(kw) or {
-                            "success": True, "image": "x:1", "image_digest": "sha256:d", "longtail_steps": []})
+                            "success": True, "image": "x:1", "image_digest": "sha256:d",
+                            "longtail_steps": [],
+                            # see the note on the other fake_build: the real builder
+                            # returns evidence, so a faithful stub must too.
+                            "verifications": [
+                                {"label": "samtools", "tool": "samtools",
+                                 "check": "command -v samtools", "rc": 0, "passed": True,
+                                 "out": "/opt/conda/bin/samtools"}]})
     monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
     res = m.freeze("bioinf_x", ["samtools=1.21", "bcftools=1.21"], platform="linux/amd64", pipeline_id="")
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
@@ -6149,14 +6172,30 @@ def test_attestation_predicate_licenses_present_on_adopt_path():
     """F4 — adopt mode carries policy too (the dorado-stress lesson: we
     declare gated/licenses ON ourselves regardless of who built the bytes)."""
     from agent.skills.attestation import build_attestation
+    # `redistributable: False` is REQUIRED, not decoration: I13 says a gated artifact must
+    # be marked non-redistributable, and `freeze_record` derives exactly that from `gated`.
+    # The fixture omitted it and passed anyway, because the contract read only the modern
+    # `license_gated` key and this record carries the legacy `gated` — so I13 was skipped
+    # entirely on the one record shape written to assert I13 is carried. Reading gatedness
+    # through `core_data.record_is_gated` woke the clause up, and it immediately objected.
     record = {"image": "biocon:1.0", "image_digest": "sha256:" + "c" * 64,
-              "mode": "adopt", "gated": True, "licenses": ["EULA-X"]}
+              "mode": "adopt", "gated": True, "licenses": ["EULA-X"],
+              "redistributable": False}
     att = build_attestation(record)
     ip = att["predicate"]["buildDefinition"]["internalParameters"]
     assert ip["licenses"] == ["EULA-X"]
     assert ip["license_gated"] is True
     # mode-aware honesty preserved (the adopt contract)
-    assert ip["honesty_contract"] == ["ADOPTED_BY_DIGEST", "POLICY_CLEAN"]
+    assert ip["honesty_contract"] == [
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "PROVENANCE_CLEAN"]
+
+    # ...and the legacy key really does gate now: drop the marking and I13 fires, so the
+    # clause is reported as failed instead of silently guaranteed.
+    del record["redistributable"]
+    ip2 = build_attestation(record)["predicate"]["buildDefinition"]["internalParameters"]
+    assert "POLICY_CLEAN.license" not in ip2["honesty_contract"]
+    assert "POLICY_CLEAN.license" in ip2["contract_coverage"]["failed"]
 
 
 # =============================================================================

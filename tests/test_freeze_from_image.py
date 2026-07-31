@@ -26,6 +26,12 @@ def _mock_docker(monkeypatch, *, evidence_rc=0, digest="sha256:" + "ab" * 32):
     monkeypatch.setattr(F, "_image_present", lambda image: True)
     monkeypatch.setattr(F, "_image_digest", lambda image: digest)
     def _run(image, platform, command, timeout=300, maxlen=400):
+        # THE CONTROL IMAGE MUST NOT CARRY THE TOOL. `_evidence_discriminates` re-runs
+        # each passing evidence in a stock Debian and refuses if it passes there too. A
+        # stub that returns rc=0 for EVERY image models a world where the evidence proves
+        # nothing — which is exactly the state the check exists to catch, so it fired.
+        if image == F._CONTROL_IMAGE:
+            return {"rc": 127, "out": "command not found"}
         # importlib SBOM probe returns a JSON list; everything else is the evidence
         if "importlib.metadata" in command:
             return {"rc": 0, "out": json.dumps(["talos==11.0.0"])}
@@ -105,8 +111,11 @@ def test_sbom_capture_failure_is_recorded_not_silently_empty(tmp_path, monkeypat
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(_boom))
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(_boom))
     # and make the importlib fallback fail too, so the SBOM is genuinely empty
-    monkeypatch.setattr(F, "_run_in_image",
-                        lambda image, platform, command, timeout=300, maxlen=400: {"rc": 0, "out": "ran"})
+    monkeypatch.setattr(
+        F, "_run_in_image",
+        lambda image, platform, command, timeout=300, maxlen=400:
+            {"rc": 127, "out": "not found"} if image == F._CONTROL_IMAGE
+            else {"rc": 0, "out": "ran"})
     cache = _Cache()
     out = F.freeze_from_image(
         image="img@sha256:abc", name="t", version="1",
@@ -154,7 +163,7 @@ def test_gated_image_with_licenses_registers_and_is_not_redistributable(tmp_path
         env_cache=cache, reports_dir=tmp_path)
     assert out["outcome"] == "proven", out
     rec = cache.registered[out["request_key"]]
-    from agent.skills.freeze import record_is_gated
+    from agent.models.core_data import record_is_gated
     assert record_is_gated(rec) is True
     assert rec["redistributable"] is False
     assert rec["licenses"] == ["10x Genomics EULA"]
@@ -232,6 +241,12 @@ def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))
 
     def _run(image, platform, command, timeout=300, maxlen=400):
+        # THE CONTROL IMAGE MUST NOT CARRY THE TOOL. `_evidence_discriminates` re-runs
+        # each passing evidence in a stock Debian and refuses if it passes there too. A
+        # stub that returns rc=0 for EVERY image models a world where the evidence proves
+        # nothing — which is exactly the state the check exists to catch, so it fired.
+        if image == F._CONTROL_IMAGE:
+            return {"rc": 127, "out": "command not found"}
         if "importlib.metadata" in command:
             return {"rc": 0, "out": json.dumps([])}
         if command.startswith("bcftools --version"):

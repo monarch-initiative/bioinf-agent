@@ -1001,6 +1001,26 @@ def tool_identities(record: dict) -> list[ToolIdentity]:
     return [ToolIdentity.model_validate(t) for t in (record.get("tool_identities") or [])]
 
 
+def record_is_gated(record: dict) -> bool:
+    """THE reader for "is this EnvCache record a license-gated artifact?" (I13).
+
+    Reads the canonical `license_gated`, falling back to the legacy `gated` key that
+    records written before the 2026-07-16 unification carry on disk. Every consumer of
+    "is this gated" goes through here so the two names can never drift apart again —
+    drifting apart is exactly how I13 stopped firing on the authors'-image path.
+
+    LIVES HERE, beside the other record readers, and not in `freeze` — because the
+    consumer that matters most is the CONTRACT (`env_honesty._clause_license`), and
+    `env_honesty` cannot import `freeze` (freeze imports it). While the canonical reader
+    sat behind that cycle the contract kept its own one-key copy, so a record carrying
+    only the legacy `gated` key passed I13 by default: the deduplication had reached the
+    four rendering callers and stopped one import short of the gate it was written for.
+    A shared fact belongs in a leaf, or it is not actually shared."""
+    if "license_gated" in record:
+        return bool(record.get("license_gated"))
+    return bool(record.get("gated", False))
+
+
 class TestDataRef(BaseModel):
     """Reference to the test dataset used during pipeline validation."""
     model_config = ConfigDict(extra="allow")

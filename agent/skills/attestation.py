@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.skills.env_report_helpers import version_divergences as _version_divergences
-from agent.skills.freeze import record_is_gated as _record_is_gated
+from agent.models.core_data import record_is_gated as _record_is_gated
 
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 SLSA_PREDICATE = "https://slsa.dev/provenance/v1"
@@ -73,24 +73,58 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                   "passed": bool(v.get("passed"))}
                  for v in (r.get("verifications") or []) if isinstance(v, dict)]
 
-    # The honesty guarantees are MODE-DEPENDENT and must not over-claim. The distinction
-    # that survives is about PROVENANCE, not validation: a container-native BUILD made the
-    # bytes (BUILT); an ADOPTED public biocontainer's bytes are BioContainers', pinned by
-    # their published manifest digest (ADOPTED_BY_DIGEST). That claim is unchanged and
-    # still exactly true.
+    # THE GUARANTEES ARE READ OFF THE CONTRACT, NOT ASSERTED BY MODE.
     #
-    # What changed (audit 2026-07-16 Tier 2): adopt now RUNS each tool's evidence inside
-    # the adopted image, so VALIDATED_IN_IMAGE is a claim it earns rather than one it must
-    # omit. It is asserted off the evidence actually present — never as a mode default —
-    # so an adopt record that somehow carries no verifications cannot claim it. (Before,
-    # adopt validated nothing at all: the omission was honest, and the hole was real.)
+    # The provenance distinction is real and survives: a container-native BUILD made the
+    # bytes (BUILT); an ADOPTED public biocontainer's bytes are BioContainers', pinned by
+    # their published manifest digest (ADOPTED_BY_DIGEST). Everything else — which clauses
+    # this artifact actually earned — comes from `evaluate_build`, the same evaluation that
+    # gated the freeze.
+    #
+    # This used to be a literal list on the build branch (`["BUILT", "VALIDATED_IN_IMAGE",
+    # "POLICY_CLEAN"]`) and a hand-written re-derivation on the adopt branch ("append
+    # VALIDATED_IN_IMAGE if there is any evidence"). Two problems, and the second is the
+    # one that matters: the adopt branch was a SECOND implementation of "did this clause
+    # examine anything", so the document a downstream verifier consumes decided honesty by
+    # its own rules rather than by the contract's. A hardcoded guarantee is a claim nothing
+    # can falsify — the strongest form of a report that cannot lie being a report that
+    # never looked. Now a clause appears here only if it was CHECKED, and `not_applicable`
+    # / `unobserved` clauses are carried explicitly beside it rather than dropped, because
+    # a verifier that sees only the earned list cannot tell a short list from a full one.
+    # A clause earns a place in `honesty_contract` only if it (a) establishes ASSURANCE
+    # — WELL_FORMED records what shipped, it guarantees nothing, so it belongs in the
+    # coverage block, not the guarantee list; (b) reached a VERDICT — `not_applicable`
+    # counts (no accelerator claimed IS the policy answer), `unobserved` never does; and
+    # (c) emitted NO violation. (c) is not hypothetical: `CHECKED` means the clause
+    # LOOKED, not that it liked what it saw, and a first cut of this derivation listed a
+    # record's malformed `shipped_binaries` as a guarantee it had just failed.
+    from agent.skills.env_honesty import (ASSURANCE, CHECKED, NOT_APPLICABLE, UNOBSERVED,
+                                          evaluate_build)
+    _contract = evaluate_build(r)
+    _failed = {c.clause for c in _contract.coverage for v in _contract.violations
+               if any(v["invariant"] == p or v["invariant"].startswith(p + ".")
+                      for p in c.covers)}
+    earned = [c.clause for c in _contract.coverage
+              if c.establishes == ASSURANCE and c.status != UNOBSERVED
+              and c.clause not in _failed]
+    # BUILT is the one clause whose NAME is mode-specific. The contract asks one question
+    # ("do the image handles resolve?") and both modes answer it, but "BUILT" asserts we
+    # made these bytes — false for an adopt, where the provenance is BioContainers' and
+    # the anchor is their published manifest digest. So adopt renames rather than appends:
+    # appending gave an adopted image a `BUILT` guarantee it had not earned.
     if r.get("mode") == "adopt":
-        guarantees = ["ADOPTED_BY_DIGEST"]
-        if validated:
-            guarantees.append("VALIDATED_IN_IMAGE")
-        guarantees.append("POLICY_CLEAN")
-    else:
-        guarantees = ["BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN"]
+        earned = ["ADOPTED_BY_DIGEST" if c == "BUILT" else c for c in earned]
+        if "ADOPTED_BY_DIGEST" not in earned:
+            earned.insert(0, "ADOPTED_BY_DIGEST")
+    guarantees = earned
+    contract_coverage = {
+        "checked": [c.clause for c in _contract.coverage if c.status == CHECKED],
+        "not_applicable": [{"clause": c.clause, "why": c.detail}
+                           for c in _contract.coverage if c.status == NOT_APPLICABLE],
+        "unobserved": [{"clause": c.clause, "establishes": c.establishes, "why": c.detail}
+                       for c in _contract.unobserved],
+        "failed": sorted(_failed),
+    }
 
     # WHAT WAS THIS BUILT FROM? For the two authors' paths the answer used to be nowhere in
     # the document: externalParameters carried {requested_tools, platform, conda_specs}, and
@@ -125,6 +159,9 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "mode": r.get("mode", ""),
                 "validation_locus": r.get("validation_locus", ""),
                 "honesty_contract": guarantees,
+                # ...and what the contract did NOT examine. A verifier reading only the
+                # earned list cannot distinguish a short list from a complete one.
+                "contract_coverage": contract_coverage,
                 "validated_in_image": validated,        # validated == shipped, per tool (build only)
                 "redistributable": r.get("redistributable", not _record_is_gated(r)),
                 # F4 fix (Batch 2): the gated/license firewall (I13) is verified

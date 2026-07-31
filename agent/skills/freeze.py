@@ -382,18 +382,6 @@ def apptainer_delivery(
     }
 
 
-def record_is_gated(record: dict) -> bool:
-    """Is this EnvCache record a license-gated artifact (I13)?
-
-    Reads the canonical `license_gated`, falling back to the legacy `gated` key that
-    records written before the 2026-07-16 unification carry on disk. Every consumer of
-    "is this gated" goes through here so the two names can never drift apart again —
-    drifting apart is exactly how I13 stopped firing on the authors'-image path."""
-    if "license_gated" in record:
-        return bool(record.get("license_gated"))
-    return bool(record.get("gated", False))
-
-
 def freeze_record(
     *,
     request_key: str,
@@ -513,8 +501,9 @@ class EnvCache:
     def lookup(self, key: str) -> Optional[dict]:
         return self._load().get(key)
 
-    def contract_violations(self, record: dict) -> list[dict]:
-        """The Layer-1 honesty contract, re-run against a STORED record.
+    def contract_report(self, record: dict):
+        """The Layer-1 honesty contract, re-run against a STORED record — in FULL
+        (violations + per-clause coverage). Returns an `env_honesty.BuildContract`.
 
         The contract is a pure function of the record, so the question "would this
         artifact be accepted if we froze it today?" is answerable at any time — and
@@ -523,7 +512,14 @@ class EnvCache:
         answer to "is this cached artifact trustworthy?"; the audit's whole finding
         was one concept re-derived in N places and drifting in N-1 of them."""
         from agent.skills import env_honesty   # re + typing + models (leaf); no import cycle
-        return env_honesty.check_build(record)
+        return env_honesty.evaluate_build(record)
+
+    def contract_violations(self, record: dict) -> list[dict]:
+        """Just the objections — the GATE half of `contract_report`. Serving paths that
+        decide pass/fail use this; anything that REPORTS the contract to a human should
+        take `contract_report` instead, so it can distinguish a clause that checked three
+        things from a clause that had nothing to check."""
+        return self.contract_report(record).violations
 
     def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
         """A cache hit RE-ANCHORED against reality: the record is returned only if
