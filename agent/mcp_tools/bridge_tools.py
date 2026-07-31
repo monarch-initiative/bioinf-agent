@@ -396,9 +396,12 @@ def run_production_pipeline(project_name: str,
     with BOTH `upload` and `exec` (same wall as submit_workflow_job).
 
     Inputs:
-      command            single-line shell command with {PLACEHOLDER} slots.
-      inputs/outputs     {PLACEHOLDER: absolute_path} — every placeholder in
-                         `command` must be declared (I6 parity, both loci).
+      command            single-line shell command with ${PLACEHOLDER} slots —
+                         the SAME syntax on both loci (one command, swap the env).
+      inputs             {PLACEHOLDER: absolute_path} — a real path on the
+                         compute env. Every ${placeholder} must be declared.
+      outputs            {PLACEHOLDER: bare_filename} — written into workflow_dir
+                         (same convention as submit_workflow_job).
       freeze_request_key the frozen env handle (from freeze()); the uniform
                          env reference for BOTH loci.
       workflow_dir       absolute path under a `directories[]` grant.
