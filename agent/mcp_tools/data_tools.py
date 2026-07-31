@@ -482,7 +482,6 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
         "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
         "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
-        "8. write_pipeline_provenance with the right input shape",
     ]
     return {
         "pipeline_name": name,

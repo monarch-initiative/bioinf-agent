@@ -1,7 +1,7 @@
 """workflow_tools — pipeline-draft lifecycle + Layer-2 seal + R-deps helper.
 
 The pipeline-draft surface (start / show / patch / discard / mark / stage),
-plus the Layer-2 deliverable producers (seal_workflow / write_pipeline_provenance
+plus the Layer-2 deliverable producer (seal_workflow
 / list_installed_pipelines), plus the R-package DESCRIPTION/dep scanner used
 before installing CRAN/Bioconductor packages from GitHub.
 
@@ -588,80 +588,6 @@ def seal_workflow(
     else:
         result["workflow"] = wf
     return result
-
-
-@mcp.tool()
-def write_pipeline_provenance(
-    pipeline: str,
-    conda_env_path: str,
-    pipeline_spec_path: str,
-    output_files: list[dict],
-    output_dir: str,
-    sample_key: str,
-    # genome reference — optional for tools that don't use a reference FASTA
-    genome_build: str = "",
-    chromosome: str = "",
-    reference_path: str = "",
-    # input types — at least one must be provided
-    reads: Optional[dict] = None,
-    bam_input: Optional[dict] = None,
-    vcf_input: Optional[dict] = None,
-    assembly_input: Optional[dict] = None,
-    phenotype: Optional[dict] = None,
-    pedigree: Optional[dict] = None,
-    genotype_array: Optional[dict] = None,
-    quantitative_traits: Optional[dict] = None,
-    upstream_pipelines: Optional[list[str]] = None,
-    parameters: Optional[dict] = None,
-) -> dict:
-    """Write a validated provenance YAML for a completed pipeline run.
-
-    output_files: list of {file: str, type: str, indexed: bool}
-
-    Input types (at least one required):
-      reads:               {r1, r2?, sample, accession, subset, num_reads, assay_type, end_type, database}
-      bam_input:           {bam: str, bai: str}
-      vcf_input:           {vcf: str, tbi?: str, genome_build: str, upstream_pipeline?: str, sample_ids?: []}
-      assembly_input:      {assembly: str, upstream_pipeline?: str}
-      phenotype:           {ontology?: str, terms: [str], source?: str}
-      pedigree:            {ped: str, proband?: str}
-      genotype_array:      {file: str, format: hapmap|plink_bed|vcf|dosage|bgen,
-                            bim?: str, fam?: str, n_samples?: int, n_snps?: int,
-                            genome_build?: str, upstream_pipeline?: str}
-      quantitative_traits: {traits: [str], file: str, n_samples?: int,
-                            measurement_type?: continuous|binary|ordinal}
-
-    genome_build / chromosome / reference_path are optional for tools that do not
-    consume a reference FASTA (e.g. variant prioritizers, phenotype scorers, GWAS)."""
-    inputs: dict[str, Any] = {
-        "pipeline":           pipeline,
-        "conda_env_path":     conda_env_path,
-        "pipeline_spec_path": pipeline_spec_path,
-        "genome_build":       genome_build,
-        "chromosome":         chromosome,
-        "reference_path":     reference_path,
-        "output_files":       output_files,
-        "output_dir":         output_dir,
-        "sample_key":         sample_key,
-    }
-    if reads:                inputs["reads"]                = reads
-    if bam_input:            inputs["bam_input"]            = bam_input
-    if vcf_input:            inputs["vcf_input"]            = vcf_input
-    if assembly_input:       inputs["assembly_input"]       = assembly_input
-    if phenotype:            inputs["phenotype"]            = phenotype
-    if pedigree:             inputs["pedigree"]             = pedigree
-    if genotype_array:       inputs["genotype_array"]       = genotype_array
-    if quantitative_traits:  inputs["quantitative_traits"]  = quantitative_traits
-    if upstream_pipelines:   inputs["upstream_pipelines"]   = upstream_pipelines
-    if parameters:           inputs["parameters"]           = parameters
-    try:
-        return _ms._write_provenance(inputs, _ms.config)
-    except Exception as e:
-        # The provenance record is pydantic-validated; malformed/partial inputs
-        # raise ValidationError (and a bad output_dir raises OSError). Surface a
-        # tag the agent can act on instead of an uncaught exception (C4).
-        return refused("provenance.invalid_inputs", success=False,
-                       error=f"{type(e).__name__}: {str(e)[:400]}")
 
 
 @mcp.tool()

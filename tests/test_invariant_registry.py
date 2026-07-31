@@ -176,6 +176,7 @@ def _roster_runs(text: str) -> list[str]:
     "agent/skills/env_honesty.py",
     "agent/mcp_tools/workflow_tools.py",
     "agent/mcp_tools/data_tools.py",
+    "scripts/seaworthy_scope.py",
 ])
 def test_no_hand_written_invariant_roster_survives(path):
     """THE GENERAL RATCHET — the reason this file exists rather than five one-off fixes.

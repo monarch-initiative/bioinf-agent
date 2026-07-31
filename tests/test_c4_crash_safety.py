@@ -233,9 +233,6 @@ def _battery():
          dict(pipeline_id=BAD_PID, service_name="svc", env_name=BAD_ENV), True),
         # -- workflow -------------------------------------------------------
         ("seal_workflow", W.seal_workflow, dict(pipeline_id=BAD_PID, freeze_request_key=BAD_KEY), True),
-        ("write_pipeline_provenance", W.write_pipeline_provenance,
-         dict(pipeline="p", conda_env_path=BAD_PATH, pipeline_spec_path=BAD_PATH,
-              output_files=[], output_dir=BAD_PATH, sample_key="s"), True),
         ("list_installed_pipelines", W.list_installed_pipelines, dict(), False),
         ("fetch_r_package_deps", W.fetch_r_package_deps, dict(github_repo="not/a/real/repo"), True),
         ("start_pipeline", W.start_pipeline, dict(pipeline_name="", description=""), False),
