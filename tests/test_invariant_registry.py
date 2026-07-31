@@ -33,6 +33,22 @@ from agent.skills import invariants as reg
 ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_MD = ROOT / "CLAUDE.md"
 
+#: Prose the agent is steered by, wherever it lives. `docs/primitives.md` is the
+#: long-form primitive reference that was lifted OUT of CLAUDE.md on 2026-07-31 to stop
+#: paying 8,806 tokens for it every session.
+#:
+#: It is listed here because moving governed text out of a linted file is the quietest
+#: way to lose a lint. Every "is this claim still true" check below reads CLAUDE.md; had
+#: the relocation not brought the new file with it, a stale "I5 is retired" sentence
+#: could ride along in docs/primitives.md and the suite would stay green having stopped
+#: looking. That is the vacuous-pass shape this repo keeps rediscovering — a check that
+#: silently narrows its own scope reads exactly like a check that passes.
+STEERING_DOCS = (CLAUDE_MD, ROOT / "docs" / "primitives.md")
+
+
+def _steering_text() -> str:
+    return "\n".join(p.read_text() for p in STEERING_DOCS if p.is_file())
+
 
 def _emitted_ids(module_rel: str) -> set[str]:
     """Every `I<n>` prefix appearing in an `"invariant": "..."` dict literal in the module.
@@ -136,12 +152,22 @@ def test_claude_md_layer2_table_matches_the_registry():
 
 
 def test_claude_md_mentions_no_invariant_the_registry_does_not_know():
-    mentioned = {f"I{n}" for n in re.findall(r"\bI(\d{1,2})\b", CLAUDE_MD.read_text())}
+    mentioned = {f"I{n}" for n in re.findall(r"\bI(\d{1,2})\b", _steering_text())}
     unknown = sorted(mentioned - set(reg.REGISTRY), key=lambda s: int(s[1:]))
     assert not unknown, (
-        f"CLAUDE.md refers to {unknown}, which the registry does not declare. Either "
-        f"register them or stop citing them — an id a reader cannot look up is worse "
-        f"than no id.")
+        f"The steering docs refer to {unknown}, which the registry does not declare. "
+        f"Either register them or stop citing them — an id a reader cannot look up is "
+        f"worse than no id.")
+
+
+def test_every_steering_doc_the_lint_claims_to_read_is_actually_there():
+    """A path in STEERING_DOCS that does not exist is silently skipped by
+    `_steering_text`, so the roster would go on passing while the file it was supposed
+    to police had been renamed or deleted. Name the gap instead."""
+    missing = [str(p.relative_to(ROOT)) for p in STEERING_DOCS if not p.is_file()]
+    assert not missing, (
+        f"STEERING_DOCS lists {missing}, which are not on disk. Either restore them or "
+        f"drop them from the tuple — a lint that reads nothing reports no problems.")
 
 
 #: A hand-written roster: three or more invariant ids run together with `/`, `,` or `·`.
@@ -303,8 +329,14 @@ def test_install_pipeline_brief_roster_matches_the_registry():
 @pytest.mark.parametrize("live_id", ["I5", "I10"])
 def test_claude_md_does_not_call_a_live_invariant_retired(live_id):
     """The specific rot this workstream found: the prose asserted twice that I5 and I10
-    were 'retired'/'subsumed' — the two live clauses its own table had dropped."""
-    text = CLAUDE_MD.read_text()
+    were 'retired'/'subsumed' — the two live clauses its own table had dropped.
+
+    Reads every steering doc, not just CLAUDE.md. When the long-form primitive reference
+    was lifted into docs/primitives.md, a false 'retired' sentence riding along in the
+    moved text would have escaped this check entirely — and the suite would have gone
+    green on the strength of having stopped looking.
+    """
+    text = _steering_text()
     for m in re.finditer(r"[^.\n]*\b(retired|subsumed)\b[^.\n]*", text, re.I):
         sentence = m.group(0)
         if re.search(rf"\b{live_id}\b", sentence):

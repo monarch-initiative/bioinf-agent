@@ -366,8 +366,9 @@ def test_no_rendered_artifact_prints_a_bare_usage_bool():
     guard did not fire: reverting the guide to print the bare bool left the import in
     place and the substring check passed. A test that a name appears in a file says
     nothing about what the file renders, so this renders both artifacts and reads them.
-    (Gating on the bool is still fine and still happens — the guide only shows a
-    command_template it can honestly call self-tested. This is about DISPLAY.)"""
+    (This one is about DISPLAY. GATING was a separate hole and is covered by the test
+    below — the parenthetical here used to say gating on the bool was "still fine",
+    which held only while the two fields agreed.)"""
     from agent.skills.run_dashboard_html import render_run_dashboard_html
     from agent.skills.user_guide import render_user_guide
 
@@ -391,3 +392,60 @@ def test_no_rendered_artifact_prints_a_bare_usage_bool():
             f"{name} prints the raw field name/bool — `usage_verified: False` tells a "
             f"reader the command was TESTED and does not work, and seal refuses that "
             f"case, so it has only ever meant nobody ran it")
+
+
+def test_the_guide_does_not_call_a_command_self_tested_when_the_two_usage_fields_disagree():
+    """The GATING half, and the reason it is not covered by the display test above.
+
+    `usage_verified: True` beside `usage_verification.status: "not_attempted"` is not a
+    hypothetical — samtools_cluster_rung3 carries exactly that on disk, from the window
+    before the producer always stated the three-state field. The guide gated its
+    "(self-tested)" label on the raw bool, so for that spec it printed a command as
+    self-tested while the record beside it said nobody ever ran one.
+
+    That is the failure mode the whole honesty contract exists to prevent: the report is
+    the only thing most people read, and here it would assert a verification that did
+    not happen. `usage_status` treats the explicit status as authoritative and falls back
+    to the bool only for specs sealed before the field existed, so it resolves the
+    contradiction the way the evidence does.
+    """
+    from agent.skills.user_guide import render_user_guide
+
+    contradictory = {
+        "workflow_name": "disagreeing_fields", "description": "d",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "env_request_key": "fake=1.0|linux/amd64|none",
+        "env_image": "fake:1.0", "env_content_digest": "sha256:" + "a" * 64,
+        "usage_verified": True,                                   # the stale bool
+        "usage_verification": {"status": "not_attempted",         # the real verdict
+                               "reason": "no usage block was authored"},
+        "usage": {"description": "how to run it",
+                  "command_template": "fake --go {INPUT} -o {OUTPUT_DIR}/r.txt"},
+        "pipeline_steps": [{"step": 1, "tool": "fake", "command": "fake --go",
+                            "returncode": 0, "validation_status": "passed"}],
+    }
+    TEMPLATE = "fake --go {INPUT} -o {OUTPUT_DIR}/r.txt"
+    page = render_user_guide(contradictory)
+
+    # What a reader actually sees. The guide presents the command_template under
+    # "the validated command sequence" and repeats it in the TL;DR — so printing it
+    # is the claim, and the provenance row two screens down already said
+    # `usage self-tested: not attempted` (that row reads the leaf). One page, two
+    # answers, the prominent one wrong: the same contradiction the inventory row had.
+    assert TEMPLATE not in page, (
+        "the guide offered an unverified command_template as the validated command "
+        "sequence, on the strength of the stale `usage_verified` bool, while "
+        "usage_verification.status says nobody ran it")
+    assert "not attempted" in page.lower(), (
+        "having withheld the command, the guide must still SAY the how-to was never run")
+    assert "fake --go" in page, (
+        "the guide must still show what DID run — withholding the unproven how-to is "
+        "not a reason to drop the executed step, which is real evidence")
+
+    agreeing = {**contradictory,
+                "usage_verification": {"status": "verified", "reason": "I4 passed"}}
+    verified_page = render_user_guide(agreeing)
+    assert TEMPLATE in verified_page, (
+        "the fix must not silence a how-to that WAS self-tested — a gate that never "
+        "opens is not an improvement on one that never closes")
+    assert "usage self-tested: `yes`" in verified_page

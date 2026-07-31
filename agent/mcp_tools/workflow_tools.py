@@ -687,30 +687,36 @@ def seal_workflow(
 
 
 @mcp.tool()
-def list_installed_pipelines() -> dict:
+def list_installed_pipelines(detail: bool = False) -> dict:
     """What has ALREADY been built here — check this before solving a tool again.
 
     Returns both layers:
       `envs[]`     — Layer 1: the frozen, content-addressed envs in the EnvCache.
                      These are the reusable "solved components": ask for one of
                      these tools again and freeze serves it BY DIGEST instead of
-                     rebuilding. Each carries its REQUESTED tools with semantic
-                     versions (from the shipped image's SBOM), image_digest,
-                     content_digest, build_method (adopt/build/authors-dockerfile)
-                     and validation_locus.
+                     rebuilding.
       `workflows[]`— Layer 2: the sealed WorkflowSpecs, each pinning its env by
-                     digest, with steps_validated / validated_in_shipped_image /
-                     usage_verified.
+                     digest.
+
+    COMPACT BY DEFAULT — ~83 tokens per env and ~64 per workflow, enough to answer
+    "do I already have this, and would it still be served?". Pass `detail=True` for
+    image/content digests, platform, validation_locus, created_at, per-clause
+    contract coverage, full per-tool version records and artifact paths (~5x larger).
 
     **`contract_ok` is earned, not remembered.** Every env is re-anchored against
     the full honesty contract AS YOU ASK (`env_honesty.check_build`, the same
     question freeze/run/stage/seal ask at serve time). `contract_ok: False` means
     "on disk, but the serving paths would REFUSE it today" — a record whose green
-    has expired, e.g. because a gate got stronger since it was frozen. Read
-    `contract_violations[]` for the failing clause. An inventory that showed a
-    stale record as usable would be precisely the false green tier 5 closed.
+    has expired, e.g. because a gate got stronger since it was frozen. An inventory
+    that showed a stale record as usable would be precisely the false green tier 5
+    closed.
+
+    Compaction never hides a problem: `contract_violations[]` (naming the failing
+    clause), a tool whose installed version DIVERGES from what was requested, and the
+    reason a how-to is unverified all appear in the compact form too. Omitting what is
+    absent or default is compression; omitting a warning is something else.
     """
-    return _ms._list_pipelines(_ms.config, env_cache=_ms._env_cache)
+    return _ms._list_pipelines(_ms.config, env_cache=_ms._env_cache, detail=detail)
 
 
 # ---------------------------------------------------------------------------

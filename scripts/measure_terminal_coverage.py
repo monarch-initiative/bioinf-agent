@@ -45,6 +45,49 @@ OVERLAY = ROOT / "docs" / "terminal_coverage.json"
 _DESELECT = "tests/integration/honesty/L1_tool_install/test_n1_conda_meta_probe_docker.py"
 
 
+#: What each pytest exit code means, for the refusal message. A refusal that does not
+#: say which failure it saw sends the reader to the source.
+PYTEST_RC_MEANING = {0: "all passed", 1: "tests failed (tolerated)",
+                     2: "interrupted", 3: "internal error",
+                     4: "usage error / collection failed", 5: "NO TESTS COLLECTED"}
+
+#: rc=1 is TOLERATED on purpose: this script regenerates the overlay that
+#: `test_coverage_overlay_keys_resolve_against_the_ledger` reads, so that test is
+#: always stale while the measurement is running.
+TOLERATED_PYTEST_RC = (0, 1)
+
+#: The suite runs parallel by default (`addopts = -n auto` in pytest.ini). It must NOT
+#: here. `coverage run` traces the process it starts; under xdist the tests execute in
+#: WORKER subprocesses it never sees, so it would record almost nothing while pytest
+#: still exits 0.
+#:
+#: That is precisely the shape this script's exit-code gate exists to catch, and the
+#: gate would NOT catch it — rc=0 is the honest answer to "did the suite run", and it
+#: did. The result would be a clean run publishing "263 dark -> 548 dark" as a finding.
+#: An explicit -n0 is the whole defence, which is why it is a named constant with a
+#: test on it rather than a flag buried in an argv list.
+NO_XDIST = ("-n0",)
+
+
+def refuse_reason_for_pytest_rc(rc: int) -> str:
+    """Empty string = proceed. Non-empty = the refusal message; do not write anything.
+
+    A FUNCTION, not an inline `if`, and the reason is worth stating: the three tests
+    covering this gate used to read this file's source and regex for
+    `if r.returncode not in (0, 1):`. Pulling the tuple out into a named constant — a
+    strictly better spelling of identical logic — broke two of them. A test that fails
+    when the code improves teaches people to not improve the code.
+
+    The behaviour under test is "which exit codes may publish numbers", so that is what
+    a test should be able to call. Nothing here needs a 4-minute suite run to check.
+    """
+    if rc in TOLERATED_PYTEST_RC:
+        return ""
+    return (f"pytest exited {rc} ({PYTEST_RC_MEANING.get(rc, 'unknown')}) — the suite "
+            f"did not run, so there is nothing to measure and the committed coverage "
+            f"artifacts are left untouched. Fix the run, then re-measure.")
+
+
 def _run_suite_under_coverage() -> dict:
     """Run pytest under coverage, return {rel_path: set(executed_lines)}."""
     with tempfile.TemporaryDirectory() as td:
@@ -53,32 +96,23 @@ def _run_suite_under_coverage() -> dict:
         env_run = [sys.executable, "-m", "coverage", "run",
                    f"--data-file={datafile}", "--source=agent",
                    "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
-                   "--deselect", _DESELECT]
+                   *NO_XDIST, "--deselect", _DESELECT]
         print("  running suite under coverage (this takes ~1 min)…")
         r = subprocess.run(env_run, cwd=str(ROOT), capture_output=True, text=True)
         tail = "\n".join(r.stdout.strip().splitlines()[-2:])
         print(f"    pytest: {tail or r.stderr.strip()[-200:]}")
 
-        # THE SUITE MUST ACTUALLY HAVE RUN. rc=1 is TOLERATED — some failures are
-        # expected here (this very script regenerates the overlay the ledger test
-        # checks, so that one is always stale mid-run). Everything else means pytest
-        # did not do what it was asked, and the numbers below would describe nothing.
-        #
-        # The datafile check under this used to be the ONLY guard, and it cannot see
-        # this: `coverage run` creates the datafile as soon as the process starts, so
-        # a conftest that fails to import gives rc=4 with a datafile present —
-        # measured, not reasoned. The script then computed coverage over a run where
-        # ZERO tests executed and WROTE docs/terminal_coverage.json plus the dashboard,
-        # both committed. A sweeping "everything went dark" regression would have
-        # looked like a measurement rather than a broken run.
-        _PYTEST_RC = {0: "all passed", 1: "tests failed (tolerated)",
-                      2: "interrupted", 3: "internal error",
-                      4: "usage error / collection failed", 5: "NO TESTS COLLECTED"}
-        if r.returncode not in (0, 1):
-            print(f"  ! pytest exited {r.returncode} "
-                  f"({_PYTEST_RC.get(r.returncode, 'unknown')}) — the suite did not run, "
-                  f"so there is nothing to measure and the committed coverage artifacts "
-                  f"are left untouched. Fix the run, then re-measure.", file=sys.stderr)
+        # THE SUITE MUST ACTUALLY HAVE RUN. The datafile check below this used to be the
+        # ONLY guard, and it cannot see the failure that matters: `coverage run` creates
+        # the datafile as soon as the process starts, so a conftest that fails to import
+        # gives rc=4 WITH a datafile present — measured, not reasoned. The script then
+        # computed coverage over a run where ZERO tests executed and wrote
+        # docs/terminal_coverage.json plus the dashboard, both committed. A sweeping
+        # "everything went dark" regression would have looked like a measurement rather
+        # than a broken run.
+        refusal = refuse_reason_for_pytest_rc(r.returncode)
+        if refusal:
+            print(f"  ! {refusal}", file=sys.stderr)
             sys.exit(2)
         if not Path(datafile).exists():
             print("  ! coverage produced no data — aborting", file=sys.stderr)

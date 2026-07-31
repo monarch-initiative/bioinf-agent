@@ -207,11 +207,72 @@ def test_ordinary_mutators_remain_single_writer_by_design(tmp_path):
 # JobManager — deliberately unlocked, and why.
 # ---------------------------------------------------------------------------
 
-def test_job_status_needs_no_lock_because_it_is_one_file_per_job():
-    """Not an oversight. JobManager writes `data/jobs/<job_id>.json` — one writer per
-    file, no shared document, so there is no read-modify-write to interleave. Adding a
-    lock here would be cargo-culting the mechanism instead of the reason for it."""
-    src = (ROOT / "agent" / "skills" / "job_manager.py").read_text()
-    assert "store_lock" not in src
-    assert "_status_path(job_id)" in src, \
-        "job status is no longer per-job — re-examine whether it now needs the lock"
+def _write_job_statuses(args):
+    """One worker: write status for its OWN job ids. Separate process, not a thread —
+    the GIL hides exactly the interleaving these tests exist to expose.
+
+    `jobs_dir` is hardcoded to <repo>/data/jobs in the constructor, so it is redirected
+    after construction; the config is loaded straight from yaml rather than by importing
+    mcp_server, which drags the whole tool surface into every spawned worker.
+    """
+    jobs_dir, tag, n = args
+    sys.path.insert(0, str(ROOT))
+    import yaml
+    from agent.skills.job_manager import JobManager
+    cfg = yaml.safe_load((ROOT / "config" / "agent_config.yaml").read_text())
+    jm = JobManager(cfg)
+    jm.jobs_dir = Path(jobs_dir)
+    for i in range(n):
+        jm._write_status(f"{tag}-{i}", {"state": "running", "owner": tag, "seq": i})
+    return n
+
+
+@pytest.mark.integration
+def test_concurrent_job_status_writes_do_not_interfere(tmp_path):
+    """JobManager takes no lock, and that is correct rather than an oversight — but the
+    claim deserves a demonstration, not an inspection.
+
+    This used to grep job_manager.py for the ABSENCE of the string "store_lock" and the
+    PRESENCE of "_status_path(job_id)". Both can hold while the store is broken (a
+    shared index added elsewhere), and both can break while it is fine (the helper gets
+    renamed). What actually matters is that concurrent writers cannot lose each other's
+    data, so that is what is measured here — the same shape as the EnvCache
+    reproduction above, which found real loss.
+    """
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir()
+    workers, per_worker = 3, 40
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(workers) as pool:
+        pool.map(_write_job_statuses,
+                 [(str(jobs_dir), f"w{w}", per_worker) for w in range(workers)])
+
+    written = sorted(p.name for p in jobs_dir.glob("*.status.json"))
+    assert len(written) == workers * per_worker, (
+        f"expected {workers * per_worker} status files, found {len(written)} — if this "
+        f"drops, job status is no longer one-file-per-job and DOES need the lock")
+    for w in range(workers):
+        for i in range(per_worker):
+            got = json.loads((jobs_dir / f"w{w}-{i}.status.json").read_text())
+            assert got == {"state": "running", "owner": f"w{w}", "seq": i}, (
+                f"w{w}-{i} was overwritten by another worker: {got}")
+
+
+@pytest.mark.integration
+def test_no_shared_job_index_appears_alongside_the_per_job_files(tmp_path):
+    """The other half of the claim, and the one that would actually invalidate it.
+
+    "No lock needed" rests on there being no shared document to interleave on. If
+    someone adds an index — jobs.json, a manifest, anything every writer appends to —
+    the reasoning silently stops holding while every per-job file still looks fine.
+    Assert on what lands on disk rather than on the absence of a word in the source.
+    """
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir()
+    _write_job_statuses((str(jobs_dir), "solo", 5))
+    stray = [p.name for p in jobs_dir.iterdir()
+             if not p.name.startswith("solo-")]
+    assert not stray, (
+        f"JobManager wrote {stray} outside the per-job files. A shared document is a "
+        f"read-modify-write, and read-modify-write without a lock is what erased 96 "
+        f"EnvCache records. Re-examine whether the lock is now required.")

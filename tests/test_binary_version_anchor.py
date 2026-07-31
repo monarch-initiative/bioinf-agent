@@ -46,6 +46,14 @@ def _wire(monkeypatch, *, conda=None, gh=None, relver=None, pip=None):
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
     monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
     monkeypatch.setattr(R, "probe_github", lambda repo, t=12: dict(gh or {"repo_exists": False}))
+    # `_canon_repo` is a SECOND network call on the same page as probe_github, and
+    # stubbing only the probe left it live: this file's docstring said "run offline"
+    # while every test in it hit api.github.com. It stayed invisible because the tier
+    # had nothing that refuses a socket (tests/conftest.py does now). The stub returns
+    # what a repo that has NOT been renamed returns — identity + "ok" — which is the
+    # case each test here is written about; a test that wants a 301 says so itself.
+    monkeypatch.setattr(R, "_canon_repo",
+                        lambda repo, t=12: ((repo or "").strip().strip("/").lower(), "ok"))
     monkeypatch.setattr(R, "_release_for_version",
                         (lambda *a, **k: relver) if relver is not None else _boom)
 

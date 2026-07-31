@@ -123,6 +123,16 @@ def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo="", conda_
                                                           "home_page": "", "project_urls": urls, "package_url": ""})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
+    # The GitHub side of the same page. Unstubbed, these tests called api.github.com
+    # for real — under the unauthenticated 60/hr quota, which is exactly the rate-limit
+    # this repo's resolver docs describe sliding a pick from conda to binary. A gate
+    # test that can be flipped by someone else's quota is not testing the gate.
+    monkeypatch.setattr(R, "probe_github", lambda repo, t=12: {
+        "repo_exists": True, "has_release_assets": False, "assets": [],
+        "is_fork": False, "parent": "", "upstream": "",
+        "full_name": repo, "default_branch": "main"})
+    monkeypatch.setattr(R, "_canon_repo",
+                        lambda repo, t=12: ((repo or "").strip().strip("/").lower(), "ok"))
 
 
 def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = ""):

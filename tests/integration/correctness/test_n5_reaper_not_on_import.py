@@ -15,6 +15,24 @@ the reaper ran or not — the module's already been imported (it gets reused
 across tests). The only way to actually prove the no-import-side-effect is
 to spawn a fresh Python subprocess that imports the module and check the
 filesystem AFTER. That's what this does.
+
+WHY BOTH TESTS ARE PINNED TO ONE XDIST WORKER. They share the real global
+`/tmp/bioinf_services` — and they must: test 1's whole method is a COLD
+subprocess, which reads the hardcoded path in env_manager and cannot see a
+monkeypatch made in this process. Test 2 then calls the reaper, which walks
+that entire directory and removes every orphan it finds.
+
+Run on separate workers, test 2 deletes the file test 1 planted, and test 1
+fails with "reaper ran on module import" — accusing the code of the exact
+defect this file exists to catch, when nothing of the sort occurred. A flake
+that invents a plausible bug report is worse than a flake that just fails,
+so this is a correctness fix, not a speed accommodation. `xdist_group` keeps
+them on one worker, where they run in file order and cannot interleave.
+
+(The underlying sharpness is that `/tmp/bioinf_services` is spelled out four
+separate times in env_manager.py. Making it one constant would let a test
+inject a private directory — but not for test 1, whose subprocess is cold by
+design. Grouping is the honest fix for these two.)
 """
 from __future__ import annotations
 
@@ -29,6 +47,7 @@ import pytest
 
 
 @pytest.mark.integration
+@pytest.mark.xdist_group("service_pid_registry")
 def test_import_does_not_reap_orphan_service_pids(tmp_path):
     """The acid test: drop an obviously-orphan PID file under the shared
     service-registry dir, spawn a Python subprocess that imports
@@ -70,6 +89,7 @@ def test_import_does_not_reap_orphan_service_pids(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.xdist_group("service_pid_registry")
 def test_explicit_reaper_call_still_works(tmp_path):
     """Sibling guarantee: the no-import-side-effect MUST NOT also disable
     the reaper. Calling _reap_orphan_service_pids() explicitly (as the MCP
