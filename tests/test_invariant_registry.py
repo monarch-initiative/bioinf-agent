@@ -196,6 +196,110 @@ def test_no_hand_written_invariant_roster_survives(path):
         f"I10 went missing from every list at once.")
 
 
+#: A roster spelled ONE ID PER LIST ITEM — `["I0: …", "I3: …", "I6: …"]` — which the
+#: single-line `_ROSTER_RUN` regex cannot see, because no line holds more than one id.
+_ROSTER_ITEM = re.compile(r"^\s*(I\d+)\s*[:—-]")
+
+
+def _per_item_rosters(module_rel: str) -> list[tuple[int, set[str]]]:
+    """Every list literal in a module that enumerates 3+ invariants, one per string.
+
+    THE BLIND SPOT THIS CLOSES. `_ROSTER_RUN` catches `I0/I3/I6/I7/I8` — ids run together
+    on one line, the shape that was wrong in six places. It does NOT catch the same roster
+    written as a list of sentences, and that shape was live and already wrong:
+    `install_pipeline_brief` enumerated I0, I3, I4, I6, I7, I8 as six separate strings,
+    omitting I5 and I10, and this suite passed over it. A lint that only recognises the
+    formatting of the bug it was written for is a lint that will miss the next one.
+
+    Returns (lineno, ids) per roster found, from the AST so a docstring cannot fake one."""
+    tree = ast.parse((ROOT / module_rel).read_text())
+    out: list[tuple[int, set[str]]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            continue
+        ids = {m.group(1)
+               for el in node.elts
+               if isinstance(el, ast.Constant) and isinstance(el.value, str)
+               for m in [_ROSTER_ITEM.match(el.value)] if m}
+        if len(ids) >= 3:
+            out.append((node.lineno, ids))
+    return out
+
+
+@pytest.mark.parametrize("path", [
+    "agent/mcp_tools/data_tools.py",
+    "agent/mcp_tools/workflow_tools.py",
+    "agent/skills/spec_writer.py",
+    "agent/skills/env_honesty.py",
+])
+def test_a_per_item_roster_is_complete_for_its_layer(path):
+    """A hand-enumerated roster must not be MISSING a live invariant of the layer it
+    covers. Deriving it from the registry (what data_tools now does) makes it invisible
+    here, which is the intended way to pass: a roster that cannot drift is not linted."""
+    layer2 = {i.id for i in reg.active(layer=reg.LAYER_WORKFLOW)}
+    layer1 = {i.id for i in reg.active(layer=reg.LAYER_ENV)}
+    for lineno, ids in _per_item_rosters(path):
+        # Attribute the roster to whichever layer it overlaps more, then require it whole.
+        target = layer2 if len(ids & layer2) >= len(ids & layer1) else layer1
+        missing = sorted(target - ids, key=lambda s: int(s[1:]))
+        assert not missing, (
+            f"{path}:{lineno} enumerates invariants one per item but omits {missing}. "
+            f"Build the list from agent.skills.invariants.active(layer=…) instead — this "
+            f"is the exact shape that let install_pipeline_brief hand an autonomous agent "
+            f"a roster with I5 and I10 missing while the whole suite stayed green.")
+
+
+def test_the_single_line_lint_alone_would_have_missed_the_per_item_shape():
+    """The reason the check above exists, pinned so nobody 'simplifies' it back.
+
+    Feeds both lints the exact defective shape — a six-entry list omitting I5 and I10 —
+    and asserts the old regex is blind to it while the new walk catches it."""
+    defective = ('invariants = [\n'
+                 + "".join(f'    "{i}: something must be true",\n'
+                           for i in ("I0", "I3", "I4", "I6", "I7", "I8"))
+                 + ']\n')
+    assert _roster_runs(defective) == [], (
+        "the single-line roster regex now matches the per-item shape; if that is "
+        "intentional this test should be rewritten, not deleted")
+
+    tree = ast.parse(defective)
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.List))
+    ids = {m.group(1) for el in node.elts
+           if isinstance(el, ast.Constant)
+           for m in [_ROSTER_ITEM.match(el.value)] if m}
+    assert len(ids) >= 3, "the per-item walk failed to recognise a roster at all"
+    layer2 = {i.id for i in reg.active(layer=reg.LAYER_WORKFLOW)}
+    assert sorted(layer2 - ids) == ["I5", "I10"] or set(layer2 - ids) == {"I5", "I10"}, (
+        f"expected the per-item walk to find I5 and I10 missing; got {sorted(layer2 - ids)}")
+
+
+def test_brief_hints_never_outlive_their_invariant():
+    """`_BRIEF_HINTS` adds the practical how-to the registry deliberately omits. A hint
+    for an id that no longer exists is the same stale-copy problem one level down."""
+    from agent.mcp_tools.data_tools import _BRIEF_HINTS
+    unknown = sorted(set(_BRIEF_HINTS) - set(reg.REGISTRY))
+    assert not unknown, f"_BRIEF_HINTS explains {unknown}, which the registry does not declare"
+    retired = sorted(k for k in _BRIEF_HINTS if reg.REGISTRY[k].status != reg.ACTIVE)
+    assert not retired, f"_BRIEF_HINTS still explains retired invariant(s) {retired}"
+
+
+def test_install_pipeline_brief_roster_matches_the_registry():
+    """The brief handed to an autonomous subagent must name every live Layer-2 invariant.
+
+    It named six of eight — I5 and I10 missing — so an agent following it would omit the
+    reference-DB and service records those clauses refuse on, and be rejected by a gate
+    the brief told it did not exist."""
+    from agent.mcp_tools import data_tools
+    brief = data_tools.install_pipeline_brief("samtools")
+    listed = {m.group(1) for line in brief["invariants"]
+              for m in [re.match(r"(I\d+)\s*:", line)] if m}
+    expected = {i.id for i in reg.active(layer=reg.LAYER_WORKFLOW)}
+    assert listed == expected, (
+        f"the brief's Layer-2 roster is {sorted(listed)} but the registry's is "
+        f"{sorted(expected)} (missing {sorted(expected - listed)}, "
+        f"extra {sorted(listed - expected)})")
+
+
 @pytest.mark.parametrize("live_id", ["I5", "I10"])
 def test_claude_md_does_not_call_a_live_invariant_retired(live_id):
     """The specific rot this workstream found: the prose asserted twice that I5 and I10

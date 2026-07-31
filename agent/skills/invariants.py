@@ -107,7 +107,18 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
                    "health_check_log",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
          note="RESTORED at Layer 2, same story as I5: retired as an env-build invariant, "
-              "brought back as a run-side one, never re-listed in the roster."),
+              "brought back as a run-side one, never re-listed in the roster. "
+              "KNOWN VACUOUS, and no signal exists to fix it: the clause iterates "
+              "service_dependencies, so it examines nothing on all 5 sealed specs and all "
+              "3 drafts on disk. Nothing in a draft or a spec distinguishes 'this run "
+              "needed no service' from 'nobody declared one' — a search of every recorded "
+              "command, usage template and runtime_config for localhost/port/daemon tokens "
+              "returns zero hits, and the env SBOM is both absent from the spec and noisy "
+              "(the talos env ships pyspark). Investigated 2026-07-31 and recorded rather "
+              "than papered over with a coverage state: inventing UNOBSERVED here would "
+              "degrade 5/5 correct workflows, and inventing NOT_APPLICABLE would be a label "
+              "on silence. The absence is real; it is just not currently distinguishable "
+              "from an omission."),
 
     # ---- Layer 1: the env image ----------------------------------------------------
     _inv(id="I12", layer=LAYER_ENV, status=ACTIVE,
