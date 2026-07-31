@@ -20,7 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.models.core_data import shipped_binaries as _shipped_binaries, usage_commands
+from agent.models.core_data import (shipped_binaries as _shipped_binaries,
+                                    usage_commands, usage_label)
 
 
 def _version_of(pkg: dict) -> str:
@@ -479,7 +480,11 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
         ("run status", run_status),
         ("steps validated", f"{len(validated)}/{len(steps)}" if steps else None),
         ("validated in shipped image", "yes — validated == shipped" if in_shipped else None),
-        ("usage_verified", spec.get("usage_verified")),
+        # THE THREE-STATE READ (core_data.usage_status), not the bool. Printing
+        # `usage_verified: False` into a how-to document tells a reader the command
+        # was tested and does not work; seal REFUSES that case, so it has only ever
+        # meant nobody ran it. This guide was the last artifact still saying it.
+        ("usage self-tested", usage_label(spec)),
     ]
     L += [f"- {k}: `{v}`" for k, v in rows if v not in (None, "")]
     L.append("")

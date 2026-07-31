@@ -328,3 +328,66 @@ def test_seal_writes_every_field_the_artifact_re_verifies_against():
         assert field in written, \
             f"seal never copies '{field}' into the spec — the artifact re-verifies " \
             f"that clause against nothing"
+
+
+# ---------------------------------------------------------------------------
+# usage_status — ONE reading of a three-state fact stored in two fields.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("spec,expected", [
+    # the stated verdict always wins
+    ({"usage_verification": {"status": "not_attempted"}, "usage_verified": False},
+     "not_attempted"),
+    ({"usage_verification": {"status": "failed"}, "usage_verified": False}, "failed"),
+    # ...even against a bool that disagrees: the producer STATED one, the bool is derived
+    ({"usage_verification": {"status": "verified"}, "usage_verified": False}, "verified"),
+    # pre-three-state artifacts fall back to the bool
+    ({"usage_verified": True}, "verified"),
+    # ...and a bare False resolves to "", NOT "failed". seal REFUSES a real I4 failure,
+    # so false on a sealed spec never meant the command was tested and broken. Reading it
+    # as "failed" would be the same fabrication in the opposite direction.
+    ({"usage_verified": False}, ""),
+    ({}, ""),
+    (None, ""),
+])
+def test_usage_status_is_one_reading_of_the_three_state_verdict(spec, expected):
+    from agent.models.core_data import usage_status
+    assert usage_status(spec) == expected
+
+
+def test_no_rendered_artifact_prints_a_bare_usage_bool():
+    """THE RATCHET behind the leaf, asserted on RENDERED OUTPUT rather than on imports.
+
+    Both artifacts a user opens — the RUN dashboard and the markdown guide — used to
+    derive this verdict independently, so one printed "not attempted — <reason>" while
+    the other printed `False` about the same workflow.
+
+    An earlier version of this test checked that each module MENTIONED usage_status. Its
+    guard did not fire: reverting the guide to print the bare bool left the import in
+    place and the substring check passed. A test that a name appears in a file says
+    nothing about what the file renders, so this renders both artifacts and reads them.
+    (Gating on the bool is still fine and still happens — the guide only shows a
+    command_template it can honestly call self-tested. This is about DISPLAY.)"""
+    from agent.skills.run_dashboard_html import render_run_dashboard_html
+    from agent.skills.user_guide import render_user_guide
+
+    spec = {
+        "workflow_name": "never_tested", "description": "d",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "env_request_key": "fake=1.0|linux/amd64|none",
+        "env_image": "fake:1.0", "env_content_digest": "sha256:" + "a" * 64,
+        "usage_verified": False,
+        "usage_verification": {"status": "not_attempted",
+                               "reason": "no usage block was authored"},
+        "pipeline_steps": [{"step": 1, "tool": "fake", "command": "fake --go",
+                            "returncode": 0, "validation_status": "passed"}],
+    }
+    for name, page in (("RUN.html", render_run_dashboard_html(spec)),
+                       ("GUIDE.md", render_user_guide(spec))):
+        assert "not attempted" in page.lower(), (
+            f"{name} does not state the three-state verdict for a workflow whose how-to "
+            f"was never executed")
+        assert "usage_verified" not in page, (
+            f"{name} prints the raw field name/bool — `usage_verified: False` tells a "
+            f"reader the command was TESTED and does not work, and seal refuses that "
+            f"case, so it has only ever meant nobody ran it")

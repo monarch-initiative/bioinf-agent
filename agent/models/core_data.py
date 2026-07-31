@@ -1294,6 +1294,59 @@ def usage_commands(usage: Any) -> list[str]:
     return [c.strip() for c in ct if isinstance(c, str) and c.strip()]
 
 
+#: What the I4 self-test actually concluded. `""` only for a spec so malformed it has
+#: neither field.
+USAGE_VERIFIED = "verified"
+USAGE_FAILED = "failed"
+USAGE_NOT_ATTEMPTED = "not_attempted"
+
+
+#: How each state is SHOWN. In the leaf with `usage_status` for the same reason the
+#: status is: the dashboard rendered "not attempted" while the markdown guide printed
+#: the raw enum, so two artifacts about one workflow read differently. One fact, one
+#: reading, one wording. "" is the pre-three-state fallback and means the same thing.
+USAGE_LABELS = {
+    USAGE_VERIFIED:      "yes",
+    USAGE_FAILED:        "NO — self-test failed",
+    USAGE_NOT_ATTEMPTED: "not attempted",
+    "":                  "not attempted",
+}
+
+
+def usage_label(spec: Any) -> str:
+    """The human wording for a spec's I4 verdict — what a REPORT should print."""
+    st = usage_status(spec)
+    return USAGE_LABELS.get(st, st)
+
+
+def usage_status(spec: Any) -> str:
+    """THE one reading of whether a sealed workflow's how-to was actually proven —
+    for every consumer (the RUN dashboard, the markdown guide, the inventory row).
+
+    Same rule, same reason as `usage_commands` directly above: one field, one reading.
+    `usage_verified` is a bool over a THREE-state fact, and the collapse is not
+    symmetric — seal REFUSES a genuine I4 failure, so `false` on a sealed spec has only
+    ever meant "never attempted", a verdict nobody reached being rendered as one.
+    `usage_verification.status` carries the truth; the bool is the fallback for specs
+    sealed before that field existed.
+
+    This exists as a leaf because the alternative was measured, not imagined: the
+    dashboard had already grown its own private derivation while the guide printed the
+    raw bool, so one page said "not attempted — <reason>" and another said `False`
+    about the same workflow. A shared fact belongs in a leaf, or it is not shared.
+
+    Accepts a dict or a WorkflowSpec."""
+    if spec is None:
+        return ""
+    get = (spec.get if isinstance(spec, dict)
+           else lambda k, d=None: getattr(spec, k, d))
+    uv = get("usage_verification") or {}
+    status = uv.get("status") if isinstance(uv, dict) else getattr(uv, "status", None)
+    if status:
+        return str(status)
+    return USAGE_VERIFIED if get("usage_verified") else ""
+
+
 class WorkflowSpec(BaseModel):
     """Layer 2 — a workflow that runs on a FROZEN environment, pinned by digest.
 

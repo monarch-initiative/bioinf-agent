@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from agent.models.core_data import usage_commands
+from agent.models.core_data import USAGE_LABELS, usage_commands, usage_status
 from agent.skills.env_report_html import (
     _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
@@ -224,18 +224,18 @@ def _usage_status(spec: dict) -> str:
     One derivation, read by every panel. The head table used to re-derive it as the raw
     bool, so the same page said "Usage self-tested: False" above the fold and
     "not attempted — <reason>" below it. Two answers to one question is the bug this
-    whole audit is about."""
-    uv = spec.get("usage_verification") or {}
-    return uv.get("status") or ("verified" if spec.get("usage_verified") else "")
+    whole audit is about.
+
+    ...and the derivation now lives in `core_data.usage_status`, not here. Keeping it
+    private to the renderer only shrank the disagreement rather than ending it: the
+    markdown guide went on printing the bare bool, so two ARTIFACTS about one workflow
+    still disagreed. Same fix as `usage_commands` — one field, one reading, in a leaf."""
+    return usage_status(spec)
 
 
 #: How each I4 state reads in a one-line summary cell.
-_USAGE_LABEL = {
-    "verified":      "yes",
-    "failed":        "NO — self-test failed",
-    "not_attempted": "not attempted",
-    "":              "not attempted",
-}
+#: Wording lives in core_data.USAGE_LABELS — see there for why it is not local.
+_USAGE_LABEL = USAGE_LABELS
 
 
 def _render_howto(spec: dict) -> str:
