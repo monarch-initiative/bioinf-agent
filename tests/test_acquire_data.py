@@ -229,6 +229,51 @@ class TestCheckClusterReferenceDb:
         assert v[0]["invariant"] == "I5.reference_database_unverifiable"
         assert "hint" in v[0]
 
+    # -- the content anchor: added 2026-07-31, absent for the life of the clause -----
+    #
+    # I5's statement, CLAUDE.md's I5 row and this function's own docstring all promised
+    # "existence + non-empty + sidecar hash" for a cluster DB. The code stopped at
+    # non-empty and never read probe["sha256"], which _probe_cluster_path was already
+    # returning on the same hop. Every cluster DB in the corpus sealed on existence alone.
+
+    def test_sidecar_mismatch_is_refused(self, monkeypatch):
+        """The bytes moved: the recorded anchor and the cluster sidecar disagree."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 10,
+                                             "sha256": "b" * 64})
+        v = acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64))
+        assert len(v) == 1 and v[0]["invariant"] == "I5.reference_database_mutated"
+        assert v[0]["recorded_sha256"] == "a" * 64
+        assert v[0]["observed_sha256"] == "b" * 64
+
+    def test_sidecar_match_passes(self, monkeypatch):
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 10,
+                                             "sha256": "A" * 64})   # case-insensitive
+        assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64)) == []
+
+    @pytest.mark.parametrize("recorded,observed", [
+        (None,      "b" * 64),   # nothing was pinned at record time
+        ("a" * 64,  None),       # no sidecar on the cluster to compare against
+        (None,      None),
+    ])
+    def test_existence_only_when_there_is_no_anchor_to_compare(
+            self, monkeypatch, recorded, observed):
+        """Half an anchor is not a mismatch. With nothing recorded, or no sidecar on the
+        cluster, there is no comparison to make and the clause must not invent one — the
+        record's own `sha256: null` is the disclosure, and `data_pins` is the one place
+        that reports it. A violation here would be a second answer to one question."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 10,
+                                             "sha256": observed})
+        assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256=recorded)) == []
+
 
 class TestRefreshClusterReferenceDb:
     def test_enriches_from_probe(self, monkeypatch):
@@ -249,6 +294,56 @@ class TestRefreshClusterReferenceDb:
         out = acquire_data.refresh_cluster_reference_db(
             _cluster_rdb(available=False))
         assert out["available"] is False   # unchanged
+
+    def test_refresh_never_overwrites_a_recorded_anchor(self, monkeypatch):
+        """THE LAUNDERING FIX. Seal calls this refresh to build the artifact's
+        reference_databases and then immediately re-validates that artifact. While this
+        overwrote `sha256` from the probe, the check that followed compared the observed
+        value against itself — so a DB whose bytes had genuinely changed produced perfect
+        agreement, and the mismatch clause above could never have fired on the artifact
+        pass even once it existed. An anchor is a claim about what the bytes WERE; an
+        observation is what they are now. Replacing the first with the second manufactures
+        the agreement it is supposed to test for.
+
+        `available` and `size_bytes` ARE observations and must still refresh."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 999,
+                                             "sha256": "b" * 64})
+        out = acquire_data.refresh_cluster_reference_db(_cluster_rdb(sha256="a" * 64))
+        assert out["sha256"] == "a" * 64, "the recorded anchor was overwritten by the probe"
+        assert out["available"] is True and out["size_bytes"] == 999
+
+    def test_refresh_still_fills_an_absent_anchor(self, monkeypatch):
+        """Fill-only, not read-only: a DB recorded before the sidecar existed still gets
+        pinned. Only an EXISTING claim is protected."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 999,
+                                             "sha256": "b" * 64})
+        assert acquire_data.refresh_cluster_reference_db(
+            _cluster_rdb())["sha256"] == "b" * 64
+
+    def test_seal_refresh_then_check_can_still_catch_a_moved_reference(self, monkeypatch):
+        """THE TWO DEFECTS HID EACH OTHER — pinned end to end.
+
+        Reproduces seal's real order (refresh the record, then re-validate the artifact)
+        and asserts a moved cluster reference survives the refresh and is caught. Before
+        this pair of fixes the same sequence returned zero violations twice over: once
+        because nothing compared, and once because there was nothing left to compare."""
+        from agent.mcp_tools import workflow_tools
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda *a, **k: {"exists": True, "size_bytes": 10,
+                                             "sha256": "b" * 64})
+        refreshed = workflow_tools._refresh_reference_databases(
+            [_cluster_rdb(sha256="a" * 64)])
+        assert refreshed[0]["sha256"] == "a" * 64, "refresh laundered the anchor"
+        v = acquire_data.check_cluster_reference_db(refreshed[0])
+        assert [x["invariant"] for x in v] == ["I5.reference_database_mutated"]
 
 
 # ---------------------------------------------------------------------------
@@ -279,3 +374,27 @@ class TestSealIntegration:
         # the cluster branch must ssh-derive available=True instead.
         out = workflow_tools._refresh_reference_databases([_cluster_rdb()])
         assert out[0]["available"] is True and out[0]["size_bytes"] == 555
+
+    def test_local_refresh_fills_an_absent_anchor_but_never_overwrites_one(self, tmp_path):
+        """The LOCAL branch launders the same way the cluster one did, just less totally.
+
+        Local I5 hashes the FILE and compares it to the recorded value, so re-deriving that
+        value from today's sidecar means a reference swapped together with its sidecar
+        sails through. Same rule, same reason: `available`/`size_bytes` are observations
+        and refresh; `sha256` is an anchor and is filled only when absent.
+
+        (Found by a GUARD, not by design: reverting this line broke no test, because the
+        local branch had none. A production change nothing can fail on is not covered.)"""
+        from agent.mcp_tools import workflow_tools
+        db = tmp_path / "ref.fa"
+        db.write_text(">chr1\nACGT\n")
+        Path(f"{db}.source.sha256").write_text("b" * 64 + "  ref.fa\n")
+
+        pinned = workflow_tools._refresh_reference_databases(
+            [{"name": "ref", "local_path": str(db), "sha256": "a" * 64}])[0]
+        assert pinned["sha256"] == "a" * 64, "the recorded anchor was overwritten"
+        assert pinned["available"] is True and pinned["size_bytes"] == db.stat().st_size
+
+        filled = workflow_tools._refresh_reference_databases(
+            [{"name": "ref", "local_path": str(db)}])[0]
+        assert filled["sha256"] == "b" * 64, "an absent anchor must still be filled"
