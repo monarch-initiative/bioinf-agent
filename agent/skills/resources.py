@@ -290,6 +290,24 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
                 "envs":               d.get("envs") or [],
                 "validated_in_shipped_image": bool(d.get("validated_in_shipped_image")),
                 "usage_verified":             bool(d.get("usage_verified")),
+                # THE THREE-STATE READ, because the bool above cannot answer the
+                # question anyone actually has. `usage_verified: false` conflates
+                # "tested and broken" with "never tested" — and since seal REFUSES the
+                # former, false on disk always meant the latter, a verdict nobody
+                # reached. Consult this, not the bool.
+                #
+                # A missing key means the artifact predates the three-state field, so
+                # the honest read is the stated string "not_attempted" — never a
+                # fabricated False, which would be this row inventing the verdict the
+                # producer declined to make. (Unlike the envs[] half above, which
+                # RE-EARNS contract_ok at read time, this is disclosure of a stored
+                # claim: Layer 2 cannot re-anchor here, because
+                # check_workflow_invariants dials out over ssh on a locus:cluster I5
+                # and an inventory listing must not open cluster connections.)
+                "usage_verification_status": (
+                    (d.get("usage_verification") or {}).get("status") or "not_attempted"),
+                "usage_verification_reason": (
+                    (d.get("usage_verification") or {}).get("reason") or ""),
                 "steps_total":     len(steps),
                 "steps_validated": sum(
                     1 for s in steps

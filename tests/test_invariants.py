@@ -7087,6 +7087,49 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
     assert wf["validated_in_shipped_image"] is True and wf["usage_verified"] is True
 
 
+def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
+    """The inventory row must distinguish "never tested" from "tested and failed".
+
+    `usage_verified: false` conflates them, and because seal REFUSES a real I4 failure,
+    false on disk always meant the former — a verdict nobody reached, reported as one.
+    This row sat directly beneath the envs[] half that RE-EARNS its contract coverage,
+    so the same listing was rigorous about Layer 1 and credulous about Layer 2.
+
+    Both fixtures below carry `usage_verified: false`; only the three-state field tells
+    them apart, which is the whole point."""
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    def _spec(name, uv):
+        d = {"workflow_name": name, "description": "d", "created_at": "2026-01-01",
+             "env_request_key": "", "usage_verified": False,
+             "pipeline_steps": [{"step": 1, "validation_status": "passed"}]}
+        if uv is not None:
+            d["usage_verification"] = uv
+        return d
+
+    (tmp_path / "never.workflow.yaml").write_text(yaml.safe_dump(_spec(
+        "never", {"status": "not_attempted", "reason": "inputs live on the cluster"})))
+    (tmp_path / "ran.workflow.yaml").write_text(yaml.safe_dump(_spec(
+        "ran", {"status": "verified", "reason": ""})))
+    # An artifact sealed BEFORE the field existed: the honest read is the stated
+    # "not_attempted", never a fabricated False the producer never wrote.
+    (tmp_path / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    rows = {w["workflow_name"]: w for w in r["workflows"]}
+
+    assert rows["never"]["usage_verification_status"] == "not_attempted"
+    assert "cluster" in rows["never"]["usage_verification_reason"]
+    assert rows["ran"]["usage_verification_status"] == "verified"
+    assert rows["legacy"]["usage_verification_status"] == "not_attempted"
+    # ...and the bare bool genuinely cannot tell the first two apart, which is why the
+    # field above has to exist rather than the reader being told to be careful.
+    assert rows["never"]["usage_verified"] == rows["ran"]["usage_verified"] is False
+
+
 def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
     """`contract_ok` is EARNED at read time, not remembered from freeze time.
 
