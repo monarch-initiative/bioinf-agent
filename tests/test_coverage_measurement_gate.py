@@ -16,6 +16,7 @@ guard was insufficient.
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -25,6 +26,23 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "measure_terminal_coverage.py"
+
+
+def _script():
+    """The script as a module, so the gate can be CALLED.
+
+    Three tests here used to regex this file's source for
+    `if r.returncode not in (0, 1):`. Pulling that tuple into a named constant — the
+    same logic, spelled better — broke two of them. Tests that punish an improvement
+    are how a codebase gets stiff, so the gate became a function
+    (`refuse_reason_for_pytest_rc`) and these call it.
+
+    scripts/ is not a package, hence the spec loader rather than an import.
+    """
+    spec = importlib.util.spec_from_file_location("_mtc", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def test_a_collection_error_still_leaves_a_coverage_datafile(tmp_path):
@@ -56,47 +74,87 @@ def test_a_collection_error_still_leaves_a_coverage_datafile(tmp_path):
         "load-bearing — but do not remove it on that basis alone")
 
 
-def test_the_script_refuses_every_rc_that_means_the_suite_did_not_run():
-    """rc=1 is tolerated; 2/3/4/5 must abort BEFORE anything is written.
-
-    Read off the source rather than executed: running the real script takes ~4
-    minutes and shells out to the whole suite. What is pinned is the decision — the
-    tolerated set — because that is the thing that was wrong.
-    """
-    src = SCRIPT.read_text()
-    m = re.search(r"if r\.returncode not in \(([^)]*)\):", src)
-    assert m, "the exit-code gate is gone from measure_terminal_coverage.py"
-    tolerated = {int(x) for x in re.findall(r"\d+", m.group(1))}
-    assert tolerated == {0, 1}, (
-        f"tolerated pytest exit codes are {sorted(tolerated)}; only 0 (clean) and "
-        f"1 (tests failed — expected, the overlay is stale mid-run) may pass. "
-        f"2=interrupted 3=internal 4=collection-failed 5=no-tests-collected all "
-        f"mean the numbers would describe nothing.")
-    # ...and it must exit, not merely warn.
-    after = src[m.end():m.end() + 800]
-    assert "sys.exit(" in after, "the gate warns but does not abort"
-
-
-def test_the_gate_sits_before_the_artifacts_are_written():
-    """A check that runs after the write is not a gate.
-
-    Anchored on the WRITE CALL, not on a mention of the filename — the first two
-    occurrences of `terminal_coverage.json` in this file are the module docstring
-    and the gate's own comment, so a naive substring search puts the gate 'after'
-    a write that is really prose. (That is how this test failed when first written.)
-    """
-    src = SCRIPT.read_text()
-    gate = src.index("if r.returncode not in (")
-    writes = [m.start() for m in re.finditer(r"\.write_text\(", src)]
-    assert writes, "expected the script to write its artifacts with write_text"
-    assert gate < min(writes), "the exit-code gate must precede every artifact write"
+@pytest.mark.parametrize("rc", [0, 1])
+def test_the_codes_that_mean_the_suite_ran_are_allowed_to_publish(rc):
+    """0 is clean. 1 means tests failed, which is EXPECTED here — the script
+    regenerates the overlay its own ledger test reads, so that test is stale for the
+    duration of the run. Both must proceed, or the measurement can never be taken."""
+    assert _script().refuse_reason_for_pytest_rc(rc) == "", (
+        f"rc={rc} means the suite ran; refusing it makes the script unrunnable")
 
 
 @pytest.mark.parametrize("rc", [2, 3, 4, 5])
-def test_every_refused_code_is_explained_to_whoever_hits_it(rc):
-    """A refusal that does not say which failure it saw sends the reader to the
-    source. Each refused code carries its meaning in the message table."""
+def test_every_code_that_means_the_suite_did_not_run_is_refused_and_explained(rc):
+    """2=interrupted 3=internal 4=collection-failed 5=no-tests-collected. Each must
+    refuse, and the refusal must name what happened — a bare "aborting" sends the
+    reader to the source to find out which of four failures they hit."""
+    mod = _script()
+    reason = mod.refuse_reason_for_pytest_rc(rc)
+    assert reason, f"rc={rc} means zero tests ran; publishing numbers from it is a lie"
+    assert str(rc) in reason, f"the refusal does not say which code it saw: {reason!r}"
+    assert mod.PYTEST_RC_MEANING[rc].split()[0] in reason, (
+        f"rc={rc} is refused but its meaning is not in the message: {reason!r}")
+
+
+def test_the_coverage_run_disables_parallelism():
+    """The one failure mode the exit-code gate CANNOT see.
+
+    pytest.ini sets `addopts = -n auto`. Under xdist the tests run in worker
+    subprocesses, and `coverage run` only traces the process it started — so it would
+    record almost no executed lines while pytest still exits 0. rc=0 is the honest
+    answer to "did the suite run" (it did), so the gate above waves it through, and the
+    script publishes a total blackout as a measurement.
+
+    Caught in practice: adding `-n auto` to pytest.ini turned this script into a
+    generator of exactly the false finding it was hardened against last round.
+    """
+    mod = _script()
+    assert "-n0" in mod.NO_XDIST or "-p" in mod.NO_XDIST, (
+        f"NO_XDIST={mod.NO_XDIST!r} no longer disables parallelism")
     src = SCRIPT.read_text()
-    table = re.search(r"_PYTEST_RC = \{(.*?)\}", src, re.S)
-    assert table, "the exit-code explanation table is gone"
-    assert re.search(rf"\b{rc}:", table.group(1)), f"rc={rc} is refused but unexplained"
+    assert "*NO_XDIST" in src or "NO_XDIST" in src.split("def _run_suite_under_coverage")[1][:600], (
+        "NO_XDIST is defined but the coverage subprocess does not use it")
+
+
+def test_the_gate_is_consulted_before_any_artifact_is_written():
+    """A check that runs after the write is not a gate.
+
+    This one stays source-anchored — "does the call site come before the writes" is a
+    fact about ORDER IN THE FILE, and there is no way to ask it of a running function
+    without executing the real script, which shells out to the whole suite for ~4
+    minutes. Anchored on the function name and on `.write_text(` rather than on a
+    filename: the first mentions of terminal_coverage.json in that file are prose, and
+    matching those put the gate 'after' a write that was really a docstring.
+    """
+    assert _gate_call_offset() < min(_write_offsets()), \
+        "the exit-code gate must precede every artifact write"
+
+
+def test_the_gate_aborts_rather_than_warning():
+    """A warning printed into a long run scrolls past; the artifacts still get written.
+    Pinned at the call site for the same order-in-file reason as above."""
+    src = SCRIPT.read_text()
+    after = src[_gate_call_offset():][:600]
+    assert "sys.exit(" in after, "the gate warns but does not abort"
+
+
+_GATE_CALL = "refuse_reason_for_pytest_rc(r.returncode)"
+
+
+def _gate_call_offset() -> int:
+    """Where the gate is CONSULTED. A bare str.index here raises ValueError, which
+    fails the test but reports 'substring not found' instead of what went wrong."""
+    src = SCRIPT.read_text()
+    at = src.find(_GATE_CALL)
+    assert at != -1, (
+        f"{SCRIPT.name} never calls {_GATE_CALL} — the gate function may still exist "
+        f"and pass its own tests while nothing consults it. Publishing coverage numbers "
+        f"from a suite that did not run is the failure this guards.")
+    return at
+
+
+def _write_offsets() -> list[int]:
+    src = SCRIPT.read_text()
+    writes = [m.start() for m in re.finditer(r"\.write_text\(", src)]
+    assert writes, "expected the script to write its artifacts with write_text"
+    return writes

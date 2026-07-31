@@ -49,9 +49,38 @@ def test_upload_validator_still_rejects_symlink_after_absolutize(tmp_path, monke
         assert "symlink" in str(e)
 
 
-def test_run_cluster_step_absolutizes_download_dir_source():
-    """#8b — run_cluster_step must resolve download_local_dir so detected_outputs
-    are absolute (I6). Pin the code shape so the fix can't silently revert."""
-    src = Path("agent/skills/run_cluster_step.py").read_text()
-    assert "Path(download_local_dir).expanduser().resolve()" in src, (
-        "download_dir must be absolutized for I6-compliant detected_outputs")
+def test_run_cluster_step_absolutizes_a_relative_download_dir(tmp_path, monkeypatch):
+    """#8b — run_cluster_step must resolve download_local_dir so detected_outputs are
+    absolute (I6).
+
+    This used to read run_cluster_step.py and assert the literal expression
+    `Path(download_local_dir).expanduser().resolve()` appeared in it. That passes if
+    the expression is sitting in a comment and fails if someone splits the line: it
+    pinned the SPELLING, not the behaviour, and its two siblings above already showed
+    the better shape. The absolutization is now a named function, so ask it directly.
+    """
+    from agent.skills.run_cluster_step import absolutize_download_dir
+    monkeypatch.chdir(tmp_path)
+    p = absolutize_download_dir("run1/outputs")
+    assert p.is_absolute(), f"download dir not absolutized: {p}"
+    assert p == (tmp_path / "run1" / "outputs").resolve()
+
+
+def test_download_dir_absolutization_does_not_require_the_dir_to_exist(tmp_path, monkeypatch):
+    """The caller mkdirs immediately after, so the normal case is a path that is not
+    there yet. `resolve()` is lexical for a missing dir — pinned, because a switch to
+    `strict=True` would raise here and only on the cluster path, where it is expensive
+    to find out."""
+    from agent.skills.run_cluster_step import absolutize_download_dir
+    monkeypatch.chdir(tmp_path)
+    p = absolutize_download_dir("does/not/exist/yet")
+    assert p.is_absolute() and not p.exists()
+
+
+def test_home_relative_download_dir_is_expanded(tmp_path, monkeypatch):
+    """`~/scratch` must become a real path, not a literal directory named '~'."""
+    from agent.skills.run_cluster_step import absolutize_download_dir
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = absolutize_download_dir("~/scratch/out")
+    assert p == (tmp_path / "scratch" / "out").resolve()
+    assert "~" not in str(p)

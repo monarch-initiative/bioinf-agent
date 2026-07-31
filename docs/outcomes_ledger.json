@@ -1115,8 +1115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:323",
-    "end_line": 325,
+    "where": "agent/skills/run_cluster_step.py:346",
+    "end_line": 348,
     "named_in_test": false
   },
   {
@@ -1125,8 +1125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:401",
-    "end_line": 404,
+    "where": "agent/skills/run_cluster_step.py:424",
+    "end_line": 427,
     "named_in_test": false
   },
   {
@@ -1135,8 +1135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:420",
-    "end_line": 427,
+    "where": "agent/skills/run_cluster_step.py:443",
+    "end_line": 450,
     "named_in_test": true
   },
   {
@@ -1145,8 +1145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:452",
-    "end_line": 458,
+    "where": "agent/skills/run_cluster_step.py:475",
+    "end_line": 481,
     "named_in_test": true
   },
   {
@@ -1155,8 +1155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:484",
-    "end_line": 492,
+    "where": "agent/skills/run_cluster_step.py:507",
+    "end_line": 515,
     "named_in_test": true
   },
   {
@@ -1165,8 +1165,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:523",
-    "end_line": 536,
+    "where": "agent/skills/run_cluster_step.py:546",
+    "end_line": 559,
     "named_in_test": true
   },
   {
@@ -2495,8 +2495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:684",
-    "end_line": 706,
+    "where": "agent/skills/run_cluster_step.py:702",
+    "end_line": 724,
     "named_in_test": false
   },
   {
@@ -4225,8 +4225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:244",
-    "end_line": 245,
+    "where": "agent/skills/run_cluster_step.py:267",
+    "end_line": 268,
     "named_in_test": false
   },
   {
@@ -4235,8 +4235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:247",
-    "end_line": 250,
+    "where": "agent/skills/run_cluster_step.py:270",
+    "end_line": 273,
     "named_in_test": false
   },
   {
@@ -4245,8 +4245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:270",
-    "end_line": 271,
+    "where": "agent/skills/run_cluster_step.py:293",
+    "end_line": 294,
     "named_in_test": false
   },
   {
@@ -4255,8 +4255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:275",
-    "end_line": 277,
+    "where": "agent/skills/run_cluster_step.py:298",
+    "end_line": 300,
     "named_in_test": false
   },
   {
@@ -4265,8 +4265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:281",
-    "end_line": 286,
+    "where": "agent/skills/run_cluster_step.py:304",
+    "end_line": 309,
     "named_in_test": false
   },
   {
@@ -4275,8 +4275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:295",
-    "end_line": 296,
+    "where": "agent/skills/run_cluster_step.py:318",
+    "end_line": 319,
     "named_in_test": false
   },
   {
@@ -4285,8 +4285,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:310",
-    "end_line": 313,
+    "where": "agent/skills/run_cluster_step.py:333",
+    "end_line": 336,
     "named_in_test": false
   },
   {
@@ -4295,8 +4295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:376",
-    "end_line": 378,
+    "where": "agent/skills/run_cluster_step.py:399",
+    "end_line": 401,
     "named_in_test": false
   },
   {

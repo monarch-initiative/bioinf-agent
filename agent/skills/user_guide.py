@@ -20,8 +20,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.models.core_data import (shipped_binaries as _shipped_binaries,
-                                    step_is_validated, usage_commands, usage_label)
+from agent.models.core_data import (USAGE_VERIFIED, shipped_binaries as _shipped_binaries,
+                                    step_is_validated, usage_commands, usage_label,
+                                    usage_status)
 
 
 def _version_of(pkg: dict) -> str:
@@ -124,7 +125,13 @@ def executed_commands(spec: dict) -> list[dict]:
     # ONE reading of command_template (str or list[str]) — core_data.usage_commands. A
     # multi-command how-to lists each command in order; the guide must show every one,
     # because the self-test ran every one.
-    if spec.get("usage_verified"):
+    #
+    # Gated on `usage_status`, NOT the raw `usage_verified` bool. Every command below is
+    # LABELLED "(self-tested)", so the gate decides whether this guide asserts that I4
+    # ran. The bool is two states in one — and a spec on disk already carries
+    # `usage_verified: true` next to `status: not_attempted`, which is the combination
+    # that would print "self-tested" over a command nothing executed.
+    if usage_status(spec) == USAGE_VERIFIED:
         cmds = usage_commands(usage)
         for i, c in enumerate(cmds, 1):
             src = ("usage.command_template (self-tested)" if len(cmds) == 1
@@ -298,7 +305,9 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
                      if s.get("validation_locus") == "cluster"
                      or (s.get("resource_usage") or {}).get("locus") == "cluster"]
     cmds = executed_commands(spec)
-    template_cmds = usage_commands(usage) if spec.get("usage_verified") else []
+    # Same gate as executed_commands above, and for the same reason — these become the
+    # guide's "how to run it" block, which only stands up if I4 actually ran it.
+    template_cmds = usage_commands(usage) if usage_status(spec) == USAGE_VERIFIED else []
 
     L: list[str] = [f"# {title} — how to run it", ""]
     if spec.get("description"):

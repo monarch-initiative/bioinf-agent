@@ -112,6 +112,29 @@ _RENDER_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "cluster_rend
 _TERMINAL_STATES = cluster_jobs.TERMINAL_STATES
 
 
+def absolutize_download_dir(download_local_dir: str) -> Path:
+    """Where downloaded outputs land, always as an absolute path.
+
+    Two separate things break on a relative one, which is why this is not merely tidy:
+
+      * `detected_outputs` must be absolute or I6 refuses the seal;
+      * Globus resolves a local destination against its ENDPOINT ROOT, not the process
+        CWD, so a relative path records an output somewhere other than where Globus
+        actually delivered it — a recorded path that points at nothing.
+
+    `resolve()` is lexical for a directory that does not exist yet, which is the normal
+    case here: the caller mkdirs it immediately after.
+
+    Public and named rather than inline because the test for it used to read this
+    module's source and assert the literal string
+    `Path(download_local_dir).expanduser().resolve()` appeared somewhere in it. That
+    passes if the expression sits in a comment and fails if someone splits the line —
+    it pins the spelling, not the behaviour. Callable, it can be asked the question
+    that actually matters.
+    """
+    return Path(download_local_dir).expanduser().resolve()
+
+
 def _parse_exit_code(s: str) -> int:
     """SLURM's ExitCode is `<rc>:<signal>`. Take the rc."""
     if not isinstance(s, str) or ":" not in s:
@@ -570,12 +593,7 @@ def run_step_on_cluster(
             resource_usage["sacct_error"] = resources["sacct_error"]
 
     # ─── 5. Download outputs back local (from scratch) ────────────────
-    # ABSOLUTIZE: detected_outputs must be absolute (I6) AND Globus resolves the
-    # local dest against its endpoint root, not the process CWD — a relative
-    # download_local_dir otherwise records a relative output path (I6 refusal at
-    # seal) and diverges from where Globus actually delivered. resolve() is
-    # lexical for a not-yet-created dir.
-    download_dir = Path(download_local_dir).expanduser().resolve()
+    download_dir = absolutize_download_dir(download_local_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
     downloaded: list[str] = []
     download_errors: list[dict] = []
