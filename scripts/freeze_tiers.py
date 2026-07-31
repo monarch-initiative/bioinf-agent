@@ -441,7 +441,7 @@ FREEZE_TIERS: list[dict] = [
             # image_by_digest → freeze_from_image adopts it: pull BY MANIFEST DIGEST,
             # RUN the tool's evidence IN the pulled image, honesty contract. samtools is
             # the canonical bioconda-packaged tool AND the on-disk adopt exemplar (a
-            # samtools=1.21 biocontainer adopt already ran a sealed Longleaf workflow).
+            # samtools=1.21 biocontainer adopt already ran a sealed cluster workflow).
             "adopt": {"kind": "biocontainer", "tool": "samtools", "version": "1.21",
                       "evidence": "samtools --version"},
             "primary_tools": ["samtools"],

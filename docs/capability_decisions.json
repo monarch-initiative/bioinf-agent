@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "What this system can DO — capabilities & the decisions it makes for you",
-    "version": "v2 (re-colored 2026-07-30 from the FIRST real cluster drive — htseq-count + DESeq2 on UNC Longleaf; the amber cells that got exercised now carry real evidence)",
+    "version": "v2 (re-colored 2026-07-30 from the FIRST real cluster drive — htseq-count + DESeq2 on an HPC cluster; the amber cells that got exercised now carry real evidence)",
     "purpose": "Two maps in one, sharing one inventory. TOP: the action-verbs a user can ask for (install an env, create a pipeline, run data, move bytes, ...) — 'wtf can this thing do'. BOTTOM: every decision the system makes when you don't specify — its default, whether that default is CODED or IMPROVISED, and whether a wrong choice gets caught. This is step one of the determinism plan: you cannot make behaviour deterministic without first enumerating every decision.",
     "honesty_note": "v1 is CURATED from reading the code, not auto-swept. Every coded/configurable decision cites its source location so a future drift-lint can verify it (the outcomes-ledger pattern). IMPROVISED decisions have no coded default to verify — they ARE the determinism backlog, not a rendering gap. A capability map that showed only the green would over-promise; the red/amber cells are shown on purpose. UPDATE 2026-07-30: the one-time MISSING verb (production execution) was realized as run_production_pipeline (proven E2E local), so 0 missing verbs remain — but its reference_rebind residual is left visible in the card, not papered over.",
     "legend": {
@@ -46,7 +46,7 @@
       "decides": ["compute_locus", "validation_directory", "test_datasource", "test_data_subsetting", "slurm_sizing (if cluster)"],
       "runs_in": "test SANDBOX (cluster: scratch/<project>/<workflow>/ ; LOCAL: repo tree — no sandbox yet)",
       "produces": "a sealed WorkflowSpec + RUN dashboard, rendered purely from the validated run",
-      "note": "This is a COMPOSITION (run_step ×N + the SEAL seam), not a single Kind. It is where the reference/test data (e.g. the GTF) is bound as an ExternalSource. LIMIT surfaced on Longleaf 2026-07-30: a MULTI-STEP CLUSTER chain can't be cleanly SEALED — a step that consumes a prior step's output DIRECTORY (DESeq2 reading htseq-count's counts dir) is an I8 orphan (the directory basename matches no individual file output, and the prior step's outputs are recorded as local download paths). Single-step cluster seal works (proved by samtools_cluster_rung3); directory-aware step->step lineage does not exist yet. Run-and-go is the honest close until it does — forcing the seal would mean declaring step 1's real output as 'external', a REPORTS-NEVER-LIE violation."
+      "note": "This is a COMPOSITION (run_step ×N + the SEAL seam), not a single Kind. It is where the reference/test data (e.g. the GTF) is bound as an ExternalSource. LIMIT surfaced on the cluster 2026-07-30: a MULTI-STEP CLUSTER chain can't be cleanly SEALED — a step that consumes a prior step's output DIRECTORY (DESeq2 reading htseq-count's counts dir) is an I8 orphan (the directory basename matches no individual file output, and the prior step's outputs are recorded as local download paths). Single-step cluster seal works (proved by samtools_cluster_rung3); directory-aware step->step lineage does not exist yet. Run-and-go is the honest close until it does — forcing the seal would mean declaring step 1's real output as 'external', a REPORTS-NEVER-LIE violation."
     },
     {
       "id": "run_step",
@@ -126,7 +126,7 @@
       "source_ref": "agent/skills/intent.py:88",
       "applies_to": ["install_env", "add_to_env", "author_pipeline", "run_step", "run_production_pipeline"],
       "exit_caught": false,
-      "note": "A wrong locus still seals honestly — the exit contract has nothing to say about it. Top of the determinism backlog. Exercised end-to-end on Longleaf 2026-07-30 (both steps ran cluster-locus via run_step_on_cluster; the choice was mine, not modeled)."
+      "note": "A wrong locus still seals honestly — the exit contract has nothing to say about it. Top of the determinism backlog. Exercised end-to-end on the cluster 2026-07-30 (both steps ran cluster-locus via run_step_on_cluster; the choice was mine, not modeled)."
     },
     {
       "id": "env_build_locus",
@@ -170,7 +170,7 @@
       "source_ref": "config/agent_config.yaml:35",
       "applies_to": ["install_env", "add_to_env", "reproduce", "run_step"],
       "exit_caught": true,
-      "note": "On an arm64 host, amd64 builds/runs are QEMU-emulated — I7 timings are then marked non-authoritative (locus: emulated). BUG surfaced+fixed on Longleaf 2026-07-30: a container-native env records platform in CONDA form ('linux-64') while adopt/authors records use DOCKER form ('linux/amd64'); stage_apptainer fed the conda form straight into `docker --platform` and hard-failed (the first build-archive .sif ever staged to a cluster hit this). Fixed by canonicalizing at the docker boundary. The record's dual spelling remains a cosmetic report inconsistency worth reconciling."
+      "note": "On an arm64 host, amd64 builds/runs are QEMU-emulated — I7 timings are then marked non-authoritative (locus: emulated). BUG surfaced+fixed on the cluster 2026-07-30: a container-native env records platform in CONDA form ('linux-64') while adopt/authors records use DOCKER form ('linux/amd64'); stage_apptainer fed the conda form straight into `docker --platform` and hard-failed (the first build-archive .sif ever staged to a cluster hit this). Fixed by canonicalizing at the docker boundary. The record's dual spelling remains a cosmetic report inconsistency worth reconciling."
     },
     {
       "id": "base_image",
@@ -266,7 +266,7 @@
       "source_ref": "agent/skills/run_cluster_step.py",
       "applies_to": ["author_pipeline", "run_step"],
       "exit_caught": false,
-      "note": "PARITY GAP. The test-dir/project-dir split is a locus-INDEPENDENT policy that today holds only on the cluster. Bringing local into parity converts this cell to coded. CLUSTER HALF CONFIRMED on Longleaf 2026-07-30: scratch/<project>/<workflow>/ is auto-computed with no caller knob and worked cleanly for both steps. The LOCAL sandbox is the remaining actionable item (user-blessed)."
+      "note": "PARITY GAP. The test-dir/project-dir split is a locus-INDEPENDENT policy that today holds only on the cluster. Bringing local into parity converts this cell to coded. CLUSTER HALF CONFIRMED on the cluster 2026-07-30: scratch/<project>/<workflow>/ is auto-computed with no caller knob and worked cleanly for both steps. The LOCAL sandbox is the remaining actionable item (user-blessed)."
     },
     {
       "id": "production_directory",
@@ -288,7 +288,7 @@
       "source_ref": "agent/skills/workflow_render.py:121",
       "applies_to": ["author_pipeline", "run_step", "run_production_pipeline", "download_reference_database"],
       "exit_caught": false,
-      "note": "The system refuses to FABRICATE a measured number, but the REQUESTED sizing is an unprincipled agent guess. Too low -> OOM kill; too high -> waste. No profile-then-size loop exists. FIRST AUTHORITATIVE DATA (Longleaf 2026-07-30): htseq-count requested 8G/30min, really used 488MB/44s (~16x over on mem); DESeq2 requested 4G/20min, really used 1.28GB/25s (~3x over). Both jobs succeeded — the guess erred SAFE (over-provisioned), so this cell costs efficiency, not correctness. A data-informed default (a per-tool table seeded from sacct MaxRSS/Elapsed, or a profile-then-size loop) is now concrete and unblocked."
+      "note": "The system refuses to FABRICATE a measured number, but the REQUESTED sizing is an unprincipled agent guess. Too low -> OOM kill; too high -> waste. No profile-then-size loop exists. FIRST AUTHORITATIVE DATA (the cluster 2026-07-30): htseq-count requested 8G/30min, really used 488MB/44s (~16x over on mem); DESeq2 requested 4G/20min, really used 1.28GB/25s (~3x over). Both jobs succeeded — the guess erred SAFE (over-provisioned), so this cell costs efficiency, not correctness. A data-informed default (a per-tool table seeded from sacct MaxRSS/Elapsed, or a profile-then-size loop) is now concrete and unblocked."
     },
     {
       "id": "test_datasource",

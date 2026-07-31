@@ -1,7 +1,7 @@
 """Regression tests for the TURNKEY cluster env fixes (bugs #7 + #9).
 
 Anchored to the real Talos cluster seal: the frozen image ran 173 pytest green
-inside apptainer on Longleaf with a BARE command (no manual `export JAVA_HOME`).
+inside apptainer on a cluster with a BARE command (no manual `export JAVA_HOME`).
 Getting there took two fixes, both general (any JVM/GDAL/PROJ/R conda tool):
 
   #7  freeze bakes conda's activate.d env deltas (JAVA_HOME, GDAL_DATA, …) as ENV

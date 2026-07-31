@@ -51,7 +51,7 @@
 #       slurm                           OPTIONAL closed-key block — the HPC's
 #                                       scheduler policy. ALL keys optional
 #                                       (omit the block for a cluster that needs
-#                                       none, e.g. Longleaf CPU jobs); unknown
+#                                       none, e.g. many HPC CPU jobs); unknown
 #                                       keys rejected to catch typos:
 #         account                       SLURM account (→ --account; omit ⇒ none)
 #         partition                     default --partition for CPU jobs
@@ -154,7 +154,7 @@ compute_envs:
     slurm:                                       # OPTIONAL — the HPC's scheduler POLICY.
                                                  # EVERY key optional; typos still REFUSED. Omit
                                                  # the whole block for a cluster that needs no
-                                                 # account/partition (e.g. UNC Longleaf CPU jobs).
+                                                 # account/partition (e.g. many HPC CPU jobs).
                                                  # (Per-job time/mem/cpus are passed to the run
                                                  # primitives, NOT declared here.)
       account: alice_lab                         # optional → --account on every job (omit ⇒ none)

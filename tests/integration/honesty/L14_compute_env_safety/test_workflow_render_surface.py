@@ -45,7 +45,7 @@ _DEMO_SLURM = {
     "time":  "00:30:00",
     "mem":   "4G",
     "cpus":  2,
-    # no partition (Longleaf CPU convention); cpus/ntasks default when omitted
+    # no partition (a common CPU convention); cpus/ntasks default when omitted
 }
 _DEMO_SIF = "/work/users/u/s/user1/CLAUDE_GENOMES/samtools/samtools_1.21.sif"
 
@@ -131,7 +131,7 @@ class TestHappyPath:
                 "#SBATCH --error=%x-%j.err",
         ]:
             assert line in sh, f"missing SBATCH directive: {line!r}"
-        # No --partition for a CPU job (Longleaf default), no --account unless set.
+        # No --partition for a CPU job (the cluster default), no --account unless set.
         assert "#SBATCH --partition=" not in sh
         assert "#SBATCH --account=" not in sh
 
@@ -347,7 +347,7 @@ class TestSlurmClosedKey:
         assert "slurm.time" in str(exc.value)
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("bad_mem", ["4", "4GB", "fast"])   # "4g" IS valid (UNC uses lowercase)
+    @pytest.mark.parametrize("bad_mem", ["4", "4GB", "fast"])   # "4g" IS valid (some sites use lowercase)
     def test_refuses_malformed_mem(self, bad_mem):
         with pytest.raises(ValueError):
             render_workflow(
@@ -468,7 +468,7 @@ class TestSlurmConvention:
 
     @pytest.mark.integration
     def test_lowercase_mem_accepted(self):
-        """UNC Longleaf writes --mem=5g (lowercase)."""
+        """some sites write --mem=5g (lowercase)."""
         assert "#SBATCH --mem=45g" in _render({"time": "1-", "mem": "45g"})
 
     @pytest.mark.integration
