@@ -29,7 +29,16 @@ SCRIPT = REPO / "scripts" / "measure_terminal_coverage.py"
 
 def test_a_collection_error_still_leaves_a_coverage_datafile(tmp_path):
     """The premise of the gate, reproduced — this is why 'datafile exists' is not
-    evidence that anything ran."""
+    evidence that anything ran.
+
+    `coverage` is a developer tool, not a runtime dependency, so it is absent in CI.
+    Skip rather than fail: the three tests below read the gate off the source and DO
+    run everywhere, so the gate itself stays covered. (Written without this guard, it
+    failed CI immediately — a test that assumes a dev-only dependency.)
+    """
+    pytest.importorskip("coverage",
+                        reason="coverage is a dev tool, not installed in CI; the "
+                               "source-level gate tests below still run here")
     (tmp_path / "conftest.py").write_text("import a_module_that_does_not_exist\n")
     tests = tmp_path / "tests"
     tests.mkdir()

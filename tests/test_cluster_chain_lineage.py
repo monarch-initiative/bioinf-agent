@@ -45,6 +45,7 @@ import pytest
 import yaml
 
 from agent.skills import spec_writer as sw
+from _artifacts import load_or_skip, sealed_spec_params
 
 
 @pytest.fixture(autouse=True)
@@ -237,20 +238,16 @@ def test_the_real_two_step_cluster_chain_now_seals():
     assert sw.check_workflow_invariants(d) == []
 
 
-@pytest.mark.parametrize("spec_path", sorted(__import__("glob").glob(
-    "env_reports/*.workflow.yaml")) or [None])
+@pytest.mark.parametrize("spec_path", sealed_spec_params())
 def test_no_already_sealed_workflow_starts_failing(spec_path, monkeypatch):
     """The rules above only ever ACCEPT more, but 'only accepts more' has been
     wrong here before — the last I8 change refused a real sealed cluster
     workflow. Check the artifacts, not the reasoning.
 
     `env_reports/` is gitignored, so on a fresh clone there is nothing to check and
-    a green tick here would mean nothing. SKIP, loudly: a skip is visible in the
-    run, a vacuous pass is indistinguishable from coverage."""
-    if spec_path is None:
-        pytest.skip("no sealed workflow artifacts on disk (env_reports/ is gitignored) "
-                    "— this ratchet only has force in a tree that has sealed something")
-    spec = yaml.safe_load(open(spec_path))
+    a green tick here would mean nothing — `load_or_skip` turns that into a visible
+    skip, because a vacuous pass is indistinguishable from coverage."""
+    spec = load_or_skip(spec_path)
     assert sw.check_workflow_invariants(spec) == [], spec_path
 
 

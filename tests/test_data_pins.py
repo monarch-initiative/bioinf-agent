@@ -30,14 +30,15 @@ where they were sealed.
 """
 from __future__ import annotations
 
-import glob
-
 import pytest
 import yaml
 
 from agent.skills import data_pins as dp
+from _artifacts import load_or_skip, sealed_spec_params
 
-REAL_SPECS = sorted(glob.glob("env_reports/*.workflow.yaml"))
+#: Generated, gitignored — empty in CI and on a fresh clone. Read through
+#: tests/_artifacts so absence is a visible SKIP, never a silent pass or an error.
+REAL_SPECS = sealed_spec_params()
 
 
 def _spec(**over) -> dict:
@@ -206,7 +207,7 @@ def test_no_sealed_workflow_condemns_its_own_inputs(spec_path, locus):
     """THE REGRESSION GUARD, and the test that found both design errors. Re-bind
     each sealed workflow's own step-1 inputs and demand the checker not call them
     diverged — they are, by construction, exactly what it was sealed against."""
-    spec = yaml.safe_load(open(spec_path))
+    spec = load_or_skip(spec_path)
     steps = spec.get("pipeline_steps") or []
     if not steps:
         pytest.skip("no steps")
@@ -225,8 +226,7 @@ def test_no_sealed_workflow_condemns_its_own_inputs(spec_path, locus):
 def test_the_flagship_workflow_really_does_verify_by_content():
     """The complement of the guard above: proof it is not vacuously green. This
     one has 16 authored anchors still on disk and must MATCH them, by sha256."""
-    path = "env_reports/rnaseq_deseq2_chr22.workflow.yaml"
-    spec = yaml.safe_load(open(path))
+    spec = load_or_skip("env_reports/rnaseq_deseq2_chr22.workflow.yaml")
     step1 = (spec.get("pipeline_steps") or [])[0]
     bound = {f"IN{i}": inp["path"] for i, inp in enumerate(step1.get("inputs") or [])}
     r = dp.check_bound_inputs(spec, bound)
