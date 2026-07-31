@@ -2,8 +2,8 @@
 A multi-step CLUSTER chain could not be sealed, and the reason was narrower than
 it looked.
 
-Measured on the real draft at data/pipeline_drafts/rnaseq_deseq2_chr22_cluster —
-htseq-count then DESeq2, both on Longleaf — `check_workflow_invariants` returned
+Measured on a real draft at data/pipeline_drafts/rnaseq_deseq2_chr22_cluster —
+htseq-count then DESeq2, both on an HPC cluster — `check_workflow_invariants` returned
 9 I8 orphans. They have TWO different causes and only one is a system defect:
 
   8 of 9  the draft declared no external sources at all, so its cluster-resident
@@ -178,14 +178,14 @@ def test_remote_outputs_is_held_to_the_same_absoluteness_rule():
 # .draft.yaml directly. That is agent-mutable working state under a gitignored
 # `data/` (0 files tracked), so it was never a regression test: it pinned whatever
 # the agent had most recently done, and it errored outright on a fresh clone where
-# the path does not exist. The next Longleaf drive re-ran this very chain and all
+# the path does not exist. The next cluster drive re-ran this very chain and all
 # three failed — not because the fix regressed, but because the draft they were
 # reading had been replaced by a better one.
 #
 # The fixture below is that shape, committed: the same two real cluster steps, with
 # the two things the pre-fix draft lacked removed (the runner did not yet record
 # `remote_outputs`, and no external sources were declared). Derived from a genuine
-# second run of the chain on Longleaf, it reproduces the original measurement
+# second run of the chain on the cluster, it reproduces the original measurement
 # exactly — 9 orphans, 8 undeclared external inputs plus 1 untraceable directory —
 # which is the independent check that it is faithful rather than merely convenient.
 # ---------------------------------------------------------------------------
@@ -193,8 +193,8 @@ def test_remote_outputs_is_held_to_the_same_absoluteness_rule():
 FIXTURE = Path(__file__).parent / "fixtures" / "cluster_chain_prefix_draft.yaml"
 
 #: The workflow_dir step 1 wrote into, and the directory step 2 consumes.
-CHAIN_WFDIR = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/htseq_count_chain"
-CHAIN_INPUTS = "/work/users/a/o/ao33/CLAUDE_SCRATCH/longleaf_test/rnaseq_inputs"
+CHAIN_WFDIR = "/work/users/demo/CLAUDE_SCRATCH/demo_project/htseq_count_chain"
+CHAIN_INPUTS = "/work/users/demo/CLAUDE_SCRATCH/demo_project/rnaseq_inputs"
 COUNTS = ("ctrl_rep1", "ctrl_rep2", "ctrl_rep3", "treat_rep1", "treat_rep2", "treat_rep3")
 
 

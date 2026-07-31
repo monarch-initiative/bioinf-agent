@@ -141,7 +141,7 @@ def test_i7_still_rejects_an_all_zeros_record():
 
 def test_i7_accepts_a_real_observation():
     """Guard against 'fixed' meaning 'refuses everything' — these are the real values
-    the sealed samtools_cluster_rung3 workflow recorded on Longleaf."""
+    the sealed samtools_cluster_rung3 workflow recorded on a cluster."""
     v = check_invariants(_spec_with_resource_usage(
         {"wall_seconds": 16.0, "peak_rss_mb": 377.5, "peak_cpu_percent": 100.0}))
     assert not any(x["invariant"].startswith("I7") for x in v), v
@@ -7133,7 +7133,7 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
 def test_list_pipelines_counts_the_NORMAL_validation_shape_not_only_the_override(tmp_path):
     """`steps_validated` must count per-file `validation` records, not just the override.
 
-    Found on a live Longleaf drive, not by the suite: every sealed workflow in the repo
+    Found on a live cluster drive, not by the suite: every sealed workflow in the repo
     reported `steps_validated: 0`, including a five-step run whose every step carried a
     complete set of passing `validate_output` records. The row read only
     `validation_status == "passed"` — the NARROW `mark_step_validated` override — so it
