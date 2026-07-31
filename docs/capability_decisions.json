@@ -112,7 +112,7 @@
       "decides": ["compute_locus (from env.type: local docker / cluster nextflow)", "production_directory (explicit workflow_dir)", "slurm_sizing (now an explicit `resources` arg, not guessed)", "reference_rebind (STILL ungoverned)"],
       "runs_in": "the named env: local docker (background run.sh) OR cluster directories[] via submit_workflow_job",
       "produces": "results in the user's project workspace + a submission manifest",
-      "note": "REALIZED 2026-07-30 (was THE HOLE). ONE verb, dispatches on env.type; cluster specifics (apptainer/nextflow modules, slurm policy) are ENV PROPERTIES not call args — swap the env, same call. Proven E2E local (samtools biocontainer, rc=0); the cluster branch delegates to the proven submit_workflow_job, re-validated on the next cluster drive. RESIDUAL (honest): it runs a command against a frozen ENV, NOT a replay of a sealed WorkflowSpec, and nothing checks the reference/inputs a run binds match what a pipeline was sealed against — reference_rebind stays ungoverned (a real v1 hardening item)."
+      "note": "REALIZED 2026-07-30 (was THE HOLE). ONE verb, dispatches on env.type; cluster specifics (apptainer/nextflow modules, slurm policy) are ENV PROPERTIES not call args — swap the env, same call. Proven E2E on BOTH loci with one identical command (samtools flagstat): output byte-identical across local and cluster. RESIDUAL (honest): it runs a command against a frozen ENV, NOT a replay of a sealed WorkflowSpec, and nothing checks the reference/inputs a run binds match what a pipeline was sealed against — reference_rebind stays ungoverned (a real v1 hardening item)."
     }
   ],
 
