@@ -9,7 +9,8 @@ list_installed_pipelines.
 
 from pathlib import Path
 
-from agent.models.core_data import (USAGE_NOT_ATTEMPTED, record_is_gated as _record_is_gated,
+from agent.models.core_data import (USAGE_NOT_ATTEMPTED, USAGE_VERIFIED,
+                                    record_is_gated as _record_is_gated,
                                     step_is_validated, usage_status)
 
 import yaml
@@ -210,8 +211,47 @@ def _semantic_versions(record: dict) -> list[dict]:
     return out
 
 
-def list_pipelines(config: dict, env_cache=None) -> dict:
+def _compact_tools(tools: list[dict]) -> list:
+    """The tools of one env, as short as honesty allows.
+
+    `{tool, requested, installed, version, diverges}` per tool is 117 tokens for a
+    5-tool env, and `version` is a pure back-compat alias of `installed`. In the common
+    case (nothing diverged, or nothing observed) the whole row collapses to one string.
+
+    The DIVERGENCE never collapses. When requested and installed disagree, the full
+    record is emitted — that flag is the whole point of the row, and shrinking a payload
+    by dropping the one field that carries a warning would be the exact substitution
+    (a request presented as an observation) the report-honesty work exists to prevent.
+    """
+    out: list = []
+    for t in tools:
+        if t.get("diverges"):
+            out.append(t)                                  # a warning is never compacted
+        elif t.get("installed"):
+            out.append(f"{t['tool']} {t['installed']}")
+        else:
+            # absence is a FACT about our record, stated — never a fabricated version
+            out.append(f"{t['tool']} (version unrecorded)")
+    return out
+
+
+def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
     """Inventory of what has ALREADY been built, in both layers.
+
+    COMPACT BY DEFAULT (`detail=False`). This is the tool the protocol tells an agent to
+    call FIRST, and it was ~811 tokens per env+workflow pair — 5,622 today, and a linear
+    40,000 at 50 envs, for the question "do I already have this?". It was also called 9
+    times in one real session: 31,142 tokens of the same inventory.
+
+    The compact row carries what answers that question — identity, tools, and whether
+    the record would still be SERVED today. `detail=True` adds the digests, timestamps,
+    platform, per-clause contract coverage and paths.
+
+    What compaction must never do is hide a problem, so three things ignore the flag and
+    appear whenever they are true: `contract_violations` (a record that would be
+    refused), a diverging tool version, and a `usage_verification_reason` for a how-to
+    that is not verified. Omitting what is ABSENT or DEFAULT is compression; omitting a
+    warning is a different thing wearing the same clothes.
 
     Layer 1 — `envs`: the frozen, content-addressed envs in the EnvCache. These
     are the reusable "solved components": ask for one of these tools again and
@@ -244,10 +284,28 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
             continue
         contract = env_cache.contract_report(rec)
         violations = contract.violations
+        tools = _semantic_versions(rec)
+        if not detail:
+            row = {
+                "request_key":   key,
+                "name":          rec.get("name"),
+                "tools":         _compact_tools(tools),
+                "build_method":  rec.get("build_method") or rec.get("mode"),
+                "contract_ok":   not violations,
+            }
+            # Shown ONLY when true — and never suppressed. `contract_ok: false` without
+            # the failing clause would send the reader back to a second call to find out
+            # what is wrong with an artifact we just told them not to trust.
+            if violations:
+                row["contract_violations"] = violations
+            if _record_is_gated(rec):
+                row["license_gated"] = True
+            envs.append(row)
+            continue
         envs.append({
             "request_key":      key,
             "name":             rec.get("name"),
-            "tools":            _semantic_versions(rec),
+            "tools":            tools,
             "image":            rec.get("image"),
             "image_digest":     rec.get("image_digest"),
             "content_digest":   rec.get("content_digest"),
@@ -281,6 +339,27 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
         try:
             d = yaml.safe_load(spec_file.read_text()) or {}
             steps = d.get("pipeline_steps") or []
+            if not detail:
+                status = usage_status(d) or USAGE_NOT_ATTEMPTED
+                row = {
+                    "workflow_name":   d.get("workflow_name"),
+                    "env_request_key": d.get("env_request_key"),
+                    "steps_validated": sum(1 for s in steps if step_is_validated(s)),
+                    "steps_total":     len(steps),
+                    "validated_in_shipped_image":
+                        bool(d.get("validated_in_shipped_image")),
+                    "usage_verification_status": status,
+                }
+                # The reason matters exactly when the how-to is NOT proven. Dropping it
+                # there would leave `not_attempted` with no way to tell "nobody authored
+                # a usage block" from "it spans two images and structurally cannot be
+                # self-tested" — two very different facts about the same artifact.
+                if status != USAGE_VERIFIED:
+                    reason = (d.get("usage_verification") or {}).get("reason") or ""
+                    if reason:
+                        row["usage_verification_reason"] = reason
+                workflows.append(row)
+                continue
             workflows.append({
                 "workflow_name":  d.get("workflow_name"),
                 "description":    d.get("description"),

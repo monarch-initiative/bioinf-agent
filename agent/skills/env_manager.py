@@ -20,6 +20,64 @@ from typing import Any
 from agent.skills import evidence
 from agent.skills.outcomes import proven, refused, broke
 
+#: How much of a step's stdout/stderr travels back into the agent's context.
+#:
+#: Measured, not guessed. `run_in_env` returned the streams UNTRUNCATED, so one
+#: ordinary verbose command (4,000 lines of build chatter) put **47,001 tokens** into
+#: context from a single call — more than the whole session's fixed prompt. On the
+#: 5-tool/5-step flagship pipeline, `run_step_in_container` alone was 35,188 tokens
+#: across 7 calls: 60% of that pipeline's entire MCP traffic.
+#:
+#: The lesson was already learned HERE, one function away: the conda install path has
+#: capped its streams at `[-3000:]` for a long time. It never propagated to the verb an
+#: agent uses to run an ARBITRARY bioinformatics command — which is the one that faces
+#: hisat2-build, STAR genomeGenerate and pip. One truth, applied at exactly one site.
+#:
+#: TAIL, not head: a traceback, a `command not found`, and a tool's final summary all
+#: land at the END. stderr keeps a larger share because it is almost always the
+#: diagnostic, and it is usually small — capping it aggressively would save nothing and
+#: cost the error message.
+_STDOUT_KEEP_CHARS = 4000
+_STDERR_KEEP_CHARS = 8000
+
+
+def _spill_full_stream(project_root: Path, kind: str, text: str) -> str:
+    """Write an over-long stream to disk and return its path, or "" on failure.
+
+    Truncation must not DESTROY evidence — this codebase refuses to let a report be the
+    only record of a run. The agent gets the tail; the bytes stay on disk at a path the
+    payload names, so anything cut is one Read away instead of gone.
+    """
+    try:
+        d = project_root / "data" / "step_logs"
+        d.mkdir(parents=True, exist_ok=True)
+        import hashlib
+        h = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+        p = d / f"{kind}_{h}.log"
+        if not p.exists():
+            p.write_text(text, errors="replace")
+        return str(p)
+    except Exception:
+        return ""      # a failed spill must never fail the step it is reporting on
+
+
+def cap_stream(text: Any, keep: int, *, kind: str = "stdout",
+               project_root: Path | None = None) -> tuple[str, dict]:
+    """Return `(text_for_the_agent, note)`. `note` is {} when nothing was cut.
+
+    The note is never silent: it states how much was dropped and where the full stream
+    lives. A quietly shortened log reads exactly like a short one, and "the tool printed
+    nothing else" is a different claim from "we stopped showing you".
+    """
+    s = text if isinstance(text, str) else ("" if text is None else str(text))
+    if len(s) <= keep:
+        return s, {}
+    full = _spill_full_stream(project_root, kind, s) if project_root else ""
+    note = {"dropped_chars": len(s) - keep, "total_chars": len(s), "kept": "tail"}
+    if full:
+        note["full_log"] = full
+    return s[-keep:], note
+
 
 # conda spec grammar: "{name}{op?}{version?}{=build?}".
 # Operators: =, ==, >=, <=, >, <, != (the last one is rare but legal).
@@ -491,10 +549,16 @@ class EnvManager:
             cwd=working_dir or str(self.project_root),
             timeout=timeout,
         )
+        # Capped before it travels — see _STDOUT_KEEP_CHARS. The full stream spills to
+        # data/step_logs/ and the note names the path, so nothing is destroyed.
+        _out, _out_note = cap_stream(result["stdout"], _STDOUT_KEEP_CHARS,
+                                     kind="stdout", project_root=self.project_root)
+        _err, _err_note = cap_stream(result["stderr"], _STDERR_KEEP_CHARS,
+                                     kind="stderr", project_root=self.project_root)
         run_fields = dict(
             returncode=result["returncode"],
-            stdout=result["stdout"],
-            stderr=result["stderr"],
+            stdout=_out,
+            stderr=_err,
             success=result["returncode"] == 0,
             command=command,
             runtime_seconds=result["resource_usage"]["wall_seconds"],
@@ -505,6 +569,10 @@ class EnvManager:
             # processes' droppings are filtered out.
             detected_outputs=self._diff_snapshot(before, watch, self.project_root),
         )
+        if _out_note:
+            run_fields["stdout_truncated"] = _out_note
+        if _err_note:
+            run_fields["stderr_truncated"] = _err_note
         if result["returncode"] == 0:
             return proven("env_manager.run_in_env_ok", **run_fields)
         return broke("env_manager.run_in_env_failed", **run_fields)

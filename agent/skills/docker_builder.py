@@ -163,10 +163,25 @@ class DockerBuilder:
             if accurate.get("wall_seconds") is not None:
                 wall = accurate["wall_seconds"]
 
+        # Capped for the same reason and by the same helper as the host runner — see
+        # env_manager._STDOUT_KEEP_CHARS. This is the path `run_step_in_container` takes,
+        # and on the 5-tool flagship pipeline it was 35,188 tokens across 7 calls: 60% of
+        # that whole pipeline's MCP traffic, and the single largest line item anywhere in
+        # the system. The full stream spills to data/step_logs/ and the note names it.
+        from agent.skills.env_manager import (_STDERR_KEEP_CHARS, _STDOUT_KEEP_CHARS,
+                                              cap_stream)
+        _root = Path(__file__).resolve().parents[2]
+        _out, _out_note = cap_stream(logs.get("stdout", ""), _STDOUT_KEEP_CHARS,
+                                     kind="stdout", project_root=_root)
+        _err, _err_note = cap_stream(
+            logs.get("stderr", "") + (" [killed: timeout]" if killed else ""),
+            _STDERR_KEEP_CHARS, kind="stderr", project_root=_root)
         return {
             "returncode": -1 if killed else rc,
-            "stdout": logs.get("stdout", ""),
-            "stderr": logs.get("stderr", "") + (" [killed: timeout]" if killed else ""),
+            "stdout": _out,
+            "stderr": _err,
+            **({"stdout_truncated": _out_note} if _out_note else {}),
+            **({"stderr_truncated": _err_note} if _err_note else {}),
             "image": image,
             "resource_method": method,
             "resource_usage": {

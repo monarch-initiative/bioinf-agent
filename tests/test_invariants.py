@@ -7073,7 +7073,13 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
                    env_record(name="demo", requested_tools=["samtools=1.21"],
                               resolved_packages=[{"name": "samtools", "version": "1.21"}]))
 
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache)
+    # detail=True: this test is about the FULL record — the per-tool requested/installed
+    # /diverges shape and the legacy `usage_verified` bool. The compact default has its
+    # own contract, covered in tests/test_inventory_is_compact.py (which checks that a
+    # DIVERGENCE and a contract violation survive compaction, since those are the two
+    # things a smaller payload must never quietly drop).
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache,
+                       detail=True)
 
     assert r["counts"] == {"envs": 1, "envs_contract_ok": 1, "workflows": 1}
     # Layer 1 — the frozen env, with a HUMAN-READABLE version off the SBOM. Each tool
@@ -7120,16 +7126,27 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
     # "not_attempted", never a fabricated False the producer never wrote.
     (tmp_path / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
 
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
-                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
-    rows = {w["workflow_name"]: w for w in r["workflows"]}
+    # Checked in BOTH forms. This is the highest-value property in the row, and adding a
+    # second rendering of the row is a fresh chance to lose it in one of them — which is
+    # exactly how `steps_validated` ended up correct in six places and inverted in the
+    # seventh.
+    for detail in (False, True):
+        r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                           env_cache=EnvCache(tmp_path / "_env_cache.json"),
+                           detail=detail)
+        rows = {w["workflow_name"]: w for w in r["workflows"]}
 
-    assert rows["never"]["usage_verification_status"] == "not_attempted"
-    assert "cluster" in rows["never"]["usage_verification_reason"]
-    assert rows["ran"]["usage_verification_status"] == "verified"
-    assert rows["legacy"]["usage_verification_status"] == "not_attempted"
+        assert rows["never"]["usage_verification_status"] == "not_attempted", detail
+        assert "cluster" in rows["never"]["usage_verification_reason"], detail
+        assert rows["ran"]["usage_verification_status"] == "verified", detail
+        assert rows["legacy"]["usage_verification_status"] == "not_attempted", detail
+
     # ...and the bare bool genuinely cannot tell the first two apart, which is why the
-    # field above has to exist rather than the reader being told to be careful.
+    # field above has to exist rather than the reader being told to be careful. Only the
+    # detail form still carries it.
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"), detail=True)
+    rows = {w["workflow_name"]: w for w in r["workflows"]}
     assert rows["never"]["usage_verified"] == rows["ran"]["usage_verified"] is False
 
 
@@ -7191,11 +7208,24 @@ def test_list_pipelines_never_contradicts_its_own_usage_bool(tmp_path):
                             "validation": {"a.tsv": {"passed": True}}}],
     }))
 
+    # detail=True, because the contradiction being guarded is between the legacy bool
+    # and the status, and the COMPACT row does not carry the bool at all. That is the
+    # stronger position — a field with two readings cannot disagree with itself if only
+    # the unambiguous one ships — but it means the contradiction can only be reproduced
+    # here, where both are present.
     r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
-                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"), detail=True)
     (wf,) = r["workflows"]
     assert wf["usage_verified"] is True
     assert wf["usage_verification_status"] == "verified"
+
+    compact = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                             env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    (cwf,) = compact["workflows"]
+    assert cwf["usage_verification_status"] == "verified"
+    assert "usage_verified" not in cwf, (
+        "the compact row must ship the three-state verdict ONLY — carrying the "
+        "two-states-in-one bool alongside it is how the contradiction happened")
 
 
 def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
