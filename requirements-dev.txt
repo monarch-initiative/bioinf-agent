@@ -2,3 +2,7 @@
 # Self-contained: pulls in the runtime deps so `pip install -r requirements-dev.txt` is enough.
 -r requirements.txt
 pytest>=8.0
+# REQUIRED, not optional: pytest.ini sets `addopts = -n auto --dist loadgroup`, so
+# without xdist every invocation dies on an unrecognised argument before collecting a
+# single test. Declared here rather than left to whoever remembers to pip install it.
+pytest-xdist>=3.5
