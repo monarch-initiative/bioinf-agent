@@ -81,6 +81,7 @@ from agent.skills import (
     transfer,
 )
 from agent.skills.outcomes import proven, refused, broke
+from agent.skills.pipeline_state import validation_key as _validation_key
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -606,9 +607,10 @@ def run_step_on_cluster(
                      or output_types.get(ext.lstrip("."))
                      or _infer_etype(basename, ext))
             v = _validator.validate(path, etype)
-            validations[basename] = v
-            _pipeline_state.add_validation(
-                pipeline_id, step_index, basename, v)
+            # keyed by resolved PATH (see pipeline_state.validation_key) — a per-sample
+            # cluster fan-out is precisely where two outputs share a basename.
+            validations[_validation_key(path)] = v
+            _pipeline_state.add_validation(pipeline_id, step_index, path, v)
 
     return proven(
         "run_cluster.step_recorded",

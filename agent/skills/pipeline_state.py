@@ -36,6 +36,38 @@ import yaml
 from agent.skills.outcomes import refused
 
 
+def validation_key(path: str) -> str:
+    """THE key a step's validation record is filed under: the output's absolute, resolved
+    path. One definition, used by the store (`PipelineState.add_validation`), by the
+    readers (`spec_writer` I3), and by the response builders — so the record, the invariant
+    and what the agent is shown all name the same thing.
+
+    Why not the basename: a basename is not an identity. Two outputs of one step routinely
+    share one (`.../sampleA/counts.tsv`, `.../sampleB/counts.tsv`), and keying on it meant
+    the later validation overwrote the earlier — deleting a `passed: False` that I3 exists
+    to refuse on. Resolution also collapses `./out/x.bam` and `/abs/out/x.bam` to one key,
+    so re-validating the same file updates its record instead of creating a second."""
+    try:
+        return str(Path(path).resolve())
+    except Exception:                      # unresolvable (broken symlink, odd mount)
+        return str(path)
+
+
+def validation_covers(validation: dict, output_path: str) -> bool:
+    """Does `validation` hold a record for this output? The READ side of `validation_key`.
+
+    Accepts the canonical path key, the raw string as filed, and — for records written
+    before path keys existed — the bare basename. The legacy fallback is deliberately last
+    and deliberately narrow: on a path-keyed record no output's basename matches any key,
+    so new records get the strict behaviour while old drafts keep working rather than
+    failing an invariant for a naming change they had no say in."""
+    if not isinstance(validation, dict) or not validation:
+        return False
+    return (output_path in validation
+            or validation_key(output_path) in validation
+            or Path(output_path).name in validation)
+
+
 class PipelineState:
     def __init__(self, config: dict):
         self.config = config
@@ -312,9 +344,28 @@ class PipelineState:
         self,
         pipeline_id: str,
         step: int,
-        filename: str,
+        path: str,
         validation_result: dict,
     ) -> bool:
+        """File one output's validation result under the step.
+
+        The key is normalized HERE, by `validation_key`, and not by the caller. Five call
+        sites used to compute it themselves and all five chose `Path(path).name` — so two
+        outputs of one step that share a basename (`/out/a/result.bam` and
+        `/out/b/result.bam`, the ordinary shape of a per-sample fan-out) collided on one
+        key and the SECOND write silently destroyed the first.
+
+        That is not a cosmetic loss. I3's non-overridable clause refuses a seal when any
+        validation record says `passed: False` — and the erased record was the failing one
+        whenever the failure came first. Reproduced: one step, two same-named outputs, the
+        first truncated; the runtime recorded a single `{"passed": true}` and
+        `check_workflow_invariants` returned no I3 violation at all. Evidence that exists
+        and says FAILED cannot be un-failed by an assertion — but it could be overwritten
+        by an unrelated file that happened to share a name.
+
+        A key rule enforced at five call sites is a key rule with five chances to differ;
+        the store owns it now, so passing a bare basename simply files it under that
+        basename and a path files it under the path."""
         draft = self._drafts.get(pipeline_id)
         if draft is None:
             return False
@@ -322,7 +373,7 @@ class PipelineState:
         if step < 1 or step > len(steps):
             return False
         s = steps[step - 1]
-        s.setdefault("validation", {})[filename] = validation_result
+        s.setdefault("validation", {})[validation_key(path)] = validation_result
         self._persist(pipeline_id)
         return True
 

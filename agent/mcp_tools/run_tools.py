@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -151,8 +152,11 @@ def run_pipeline_step(
             if etype is None:
                 etype = _infer_validator_type(basename, ext)
             v = _ms._validator.validate(path, etype, env_name=env_name)
-            validations[basename] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, basename, v)
+            # keyed by resolved PATH, not basename: two outputs of one step routinely
+            # share a name, and the collision destroyed the earlier record (see
+            # pipeline_state.validation_key).
+            validations[_validation_key(path)] = v
+            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
 
     unmatched = sorted(set(output_types) - output_types_used)
     out = {
@@ -322,8 +326,8 @@ def run_step_in_container(
             etype = (output_types.get(basename) or output_types.get(ext)
                      or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename, ext))
             v = _ms._validator.validate(path, etype)
-            validations[basename] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, basename, v)
+            validations[_validation_key(path)] = v
+            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
 
     return {
         **res,
@@ -485,14 +489,14 @@ def validate_output(
                 path, etype, env_name=env_name or None,
                 allow_empty=entry_allow_empty,
             )
-            filename = Path(path).name
+            filename = _validation_key(path)
             validations[filename] = vr
             if vr.get("passed") is True:
                 passed_count += 1
             elif vr.get("passed") is False:
                 failed_count += 1
             if merge_status == "merged":
-                ok = _ms._pipeline_state.add_validation(pipeline_id, step, filename, vr)
+                ok = _ms._pipeline_state.add_validation(pipeline_id, step, path, vr)
                 if not ok:
                     merge_status = "step_not_found"
         out: dict = {
@@ -521,8 +525,8 @@ def validate_output(
         if step <= 0:
             result["pipeline_merge"] = {"status": "step_required", "pipeline_id": pipeline_id}
         else:
-            filename = Path(file_path).name
-            ok = _ms._pipeline_state.add_validation(pipeline_id, step, filename, result)
+            filename = _validation_key(file_path)
+            ok = _ms._pipeline_state.add_validation(pipeline_id, step, file_path, result)
             result["pipeline_merge"] = (
                 {"status": "merged", "pipeline_id": pipeline_id,
                  "step": step, "filename": filename}

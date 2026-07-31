@@ -133,7 +133,14 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
         for fn, v in val.items():
             passed = v.get("passed") if isinstance(v, dict) else None
             method = (v or {}).get("validation_method") or (v or {}).get("method") or ""
-            rows.append(f"<tr><td>{_e(fn)}</td><td>{_badge(passed)}</td>"
+            # Records are keyed by absolute path (pipeline_state.validation_key), because
+            # two outputs of one step can share a basename. Show the name prominently and
+            # the directory dim beside it: the part that DISTINGUISHES two same-named rows
+            # is the directory, so a table that printed only the name would render the
+            # collision invisible again, this time in the report.
+            head, _, tail = _e(fn).rpartition("/")
+            name_cell = (f'<span class="muted">{head}/</span>{tail}' if head else tail)
+            rows.append(f"<tr><td>{name_cell}</td><td>{_badge(passed)}</td>"
                         f"<td>{_e(method)}</td></tr>")
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Output</th><th>Validated</th><th>Check</th></tr>'

@@ -32,6 +32,10 @@ from agent.models.core_data import (
     ReadInput, VcfInput, usage_commands,
 )
 from agent.skills.outcomes import refused
+# The READER for a step's validation dict. Imported (not re-implemented) so the invariant
+# and the store agree on how a record is keyed — pipeline_state imports only stdlib + yaml
+# + outcomes, so this stays cycle-free.
+from agent.skills.pipeline_state import validation_covers as _validation_covers
 
 
 # ---------------------------------------------------------------------------
@@ -594,11 +598,12 @@ def check_invariants(spec: dict) -> list[dict]:
                 })
             continue
         validation = s.get("validation") or {}
-        validated_basenames = set(validation.keys())
-        unvalidated = [
-            o for o in outs
-            if Path(o).name not in validated_basenames
-        ]
+        # Coverage is asked PER OUTPUT PATH, through the one reader that knows how a
+        # validation record is keyed. It used to compare `Path(o).name` against the key
+        # set, which meant `/out/a/result.bam` counted as validated because a DIFFERENT
+        # file called `result.bam` had a record — the read side of the same basename
+        # collision that let the write side erase a failure.
+        unvalidated = [o for o in outs if not _validation_covers(validation, o)]
         # An explicit mark_step_validated=passed substitutes for per-file
         # validate_output records (use case: outputs aren't validate_output-able
         # but the agent verified them by other means — mark_step_validated

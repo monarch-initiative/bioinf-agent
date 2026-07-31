@@ -444,7 +444,12 @@ class TestHappyPath:
         # Output captured + validated
         assert len(r["detected_outputs"]) == 1
         assert r["detected_outputs"][0].endswith("filtered.bam")
-        assert "filtered.bam" in r["validations"]
+        # Validations are keyed by RESOLVED ABSOLUTE PATH, not basename — a per-sample
+        # cluster fan-out is exactly where two outputs share a name and the earlier
+        # record got overwritten (see pipeline_state.validation_key). Asserted through
+        # the key function so the test tracks the definition instead of restating it.
+        from agent.skills.pipeline_state import validation_key
+        assert validation_key(r["detected_outputs"][0]) in r["validations"]
         assert validator.calls and validator.calls[0][1] == "bam"
 
         # C2 — the recorded step carries the REAL cluster-side .sif fingerprint
@@ -471,9 +476,10 @@ class TestHappyPath:
         assert step["ran_in_container"] is True
         assert step["container_image"].endswith("samtools_abc.sif")
         assert step["container_image_digest"] == "sha256:abcdef"
-        # validation hooked
+        # validation hooked — add_validation is handed the PATH (it normalizes the key
+        # itself); passing a bare basename is what let two same-named outputs collide.
         assert len(state.validations) == 1
-        assert state.validations[0][2] == "filtered.bam"
+        assert state.validations[0][2] == r["detected_outputs"][0]
 
 
 # ===========================================================================
