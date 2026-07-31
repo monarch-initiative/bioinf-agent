@@ -34,7 +34,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from agent.models.core_data import USAGE_LABELS, usage_commands, usage_status
+from agent.models.core_data import (USAGE_LABELS, step_is_validated, usage_commands,
+                                    usage_status)
 from agent.skills.env_report_html import (
     _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
@@ -416,7 +417,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     name = s.get("workflow_name") or "workflow"
     steps = [st for st in (s.get("pipeline_steps") or []) if isinstance(st, dict)]
     validated = [st for st in steps
-                 if st.get("validation") or st.get("validation_status") == "passed"]
+                 if step_is_validated(st)]
     loci = [locus for locus in _LOCUS_ORDER
             if any(_run_locus(st) == locus for st in steps)]
     # Primary digest for stale-detection MUST be a bare image digest (sha256:…),

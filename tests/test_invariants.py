@@ -7130,6 +7130,71 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
     assert rows["never"]["usage_verified"] == rows["ran"]["usage_verified"] is False
 
 
+def test_list_pipelines_counts_the_NORMAL_validation_shape_not_only_the_override(tmp_path):
+    """`steps_validated` must count per-file `validation` records, not just the override.
+
+    Found on a live Longleaf drive, not by the suite: every sealed workflow in the repo
+    reported `steps_validated: 0`, including a five-step run whose every step carried a
+    complete set of passing `validate_output` records. The row read only
+    `validation_status == "passed"` — the NARROW `mark_step_validated` override — so it
+    counted a step as validated exactly when the agent had asserted it and never when
+    the runtime had observed it. Precisely inverted, and advertised in the tool's own
+    description.
+
+    The two tests above did not catch it because both build steps out of
+    `validation_status`, the shape almost no real step has. A fixture that avoids the
+    defect is why the defect shipped, so this one uses the shape the runtime writes.
+    """
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    (tmp_path / "mixed.workflow.yaml").write_text(yaml.safe_dump({
+        "workflow_name": "mixed", "description": "d", "created_at": "2026-01-01",
+        "env_request_key": "", "pipeline_steps": [
+            # what run_pipeline_step / run_step_in_container / run_step_on_cluster write
+            {"step": 1, "returncode": 0,
+             "validation": {"a.bam": {"passed": True, "validation_method": "samtools"}}},
+            # the narrow agent-asserted override
+            {"step": 2, "returncode": 0, "validation_status": "passed"},
+            # ran, produced nothing anyone checked
+            {"step": 3, "returncode": 0},
+        ],
+    }))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    (wf,) = r["workflows"]
+    assert (wf["steps_total"], wf["steps_validated"]) == (3, 2)
+
+
+def test_list_pipelines_never_contradicts_its_own_usage_bool(tmp_path):
+    """One row must not print `usage_verified: true` beside `status: not_attempted`.
+
+    A spec sealed before `usage_verification` existed carries only the bool. Deriving
+    the status locally here — rather than through `core_data.usage_status`, which falls
+    back to that bool — made this row a THIRD reading of one field, and it disagreed
+    with the bool printed two lines above it. `samtools_cluster_rung3.workflow.yaml` is
+    that artifact on disk, and the contradiction was visible in a live inventory call.
+    """
+    import yaml
+    from agent.skills.resources import list_pipelines
+    from agent.skills.freeze import EnvCache
+
+    (tmp_path / "legacyok.workflow.yaml").write_text(yaml.safe_dump({
+        "workflow_name": "legacyok", "description": "d", "created_at": "2026-01-01",
+        "env_request_key": "", "usage_verified": True,   # ...and NO usage_verification
+        "pipeline_steps": [{"step": 1, "returncode": 0,
+                            "validation": {"a.tsv": {"passed": True}}}],
+    }))
+
+    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+                       env_cache=EnvCache(tmp_path / "_env_cache.json"))
+    (wf,) = r["workflows"]
+    assert wf["usage_verified"] is True
+    assert wf["usage_verification_status"] == "verified"
+
+
 def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
     """`contract_ok` is EARNED at read time, not remembered from freeze time.
 

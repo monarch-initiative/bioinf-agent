@@ -9,7 +9,8 @@ list_installed_pipelines.
 
 from pathlib import Path
 
-from agent.models.core_data import record_is_gated as _record_is_gated
+from agent.models.core_data import (USAGE_NOT_ATTEMPTED, record_is_gated as _record_is_gated,
+                                    step_is_validated, usage_status)
 
 import yaml
 
@@ -304,14 +305,23 @@ def list_pipelines(config: dict, env_cache=None) -> dict:
                 # claim: Layer 2 cannot re-anchor here, because
                 # check_workflow_invariants dials out over ssh on a locus:cluster I5
                 # and an inventory listing must not open cluster connections.)
-                "usage_verification_status": (
-                    (d.get("usage_verification") or {}).get("status") or "not_attempted"),
+                # Read through core_data.usage_status, not re-derived here. Spelling it
+                # out locally made this row a THIRD reading of one field, and it drifted
+                # immediately: for a spec sealed before `usage_verification` existed the
+                # local version fell to "not_attempted" while `usage_verified: true` was
+                # printed directly above it, so one row contradicted itself about one
+                # workflow. samtools_cluster_rung3 is that artifact on disk.
+                "usage_verification_status": usage_status(d) or USAGE_NOT_ATTEMPTED,
                 "usage_verification_reason": (
                     (d.get("usage_verification") or {}).get("reason") or ""),
                 "steps_total":     len(steps),
-                "steps_validated": sum(
-                    1 for s in steps
-                    if isinstance(s, dict) and s.get("validation_status") == "passed"),
+                # core_data.step_is_validated — BOTH the per-file `validation` records and
+                # the `mark_step_validated` override. This line used to keep only the
+                # override, making it the one drifted copy of a predicate written out
+                # seven times, and it reported `steps_validated: 0` for every workflow
+                # ever sealed — including a five-step run with a full set of passing
+                # records. Plausible, advertised in the tool description, untested.
+                "steps_validated": sum(1 for s in steps if step_is_validated(s)),
                 "path": str(spec_file),
             })
         except Exception as e:      # a malformed artifact is reported, never swallowed

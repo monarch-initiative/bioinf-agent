@@ -1294,6 +1294,40 @@ def usage_commands(usage: Any) -> list[str]:
     return [c.strip() for c in ct if isinstance(c, str) and c.strip()]
 
 
+def step_is_validated(step: Any) -> bool:
+    """THE one reading of "did this pipeline_step's outputs get validated" — for every
+    consumer (the I3 walk, the RUN dashboard, the markdown guide, the inventory row,
+    the seal's own step accounting).
+
+    Two things can discharge it, and BOTH must be read:
+      - `validation` — the per-file records `validate_output` produced. This is the
+        normal path and the one almost every real step takes.
+      - `validation_status == "passed"` — the narrow agent-asserted override written
+        only by `mark_step_validated`, for outputs that aren't `validate_output`-able
+        but were verified another way.
+
+    A leaf because the drift already happened and shipped. This predicate was written
+    out by hand in SEVEN places; six spelled both halves and the seventh —
+    `resources.py`, the one that answers `list_installed_pipelines` — kept only the
+    override. So the inventory counted a step as validated ONLY when the agent had
+    asserted it, the exact inverse of the intended meaning, and reported
+    `steps_validated: 0` for every workflow ever sealed, including a five-step run with
+    a complete set of passing per-file records. Nothing was broken enough to fail: the
+    number was plausible, the field was advertised in the tool's own description, and
+    no test pinned it.
+
+    That is this project's recurring disease in its purest form — one truth, N
+    hand-copies, and the drifted copy is the one facing the user. Read it here; do not
+    re-spell it.
+
+    Accepts a dict or a PipelineStep; anything else is not validated."""
+    if step is None:
+        return False
+    get = (step.get if isinstance(step, dict)
+           else lambda k, d=None: getattr(step, k, d))
+    return bool(get("validation")) or get("validation_status") == "passed"
+
+
 #: What the I4 self-test actually concluded. `""` only for a spec so malformed it has
 #: neither field.
 USAGE_VERIFIED = "verified"

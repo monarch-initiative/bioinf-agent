@@ -283,9 +283,9 @@ def _validated_step_count(spec: dict) -> int:
     """How many pipeline_steps carry real validation evidence. A re-seal that
     LOWERS this over an existing spec is dropping evidence — not accretion — and
     must not silently replace the richer artifact."""
+    from agent.models.core_data import step_is_validated
     return sum(1 for s in spec.get("pipeline_steps", []) or []
-               if isinstance(s, dict) and (s.get("validation")
-                                           or s.get("validation_status") == "passed"))
+               if isinstance(s, dict) and step_is_validated(s))
 
 
 def _next_superseded_path(out_dir: Path, wname: str) -> Path:
@@ -533,6 +533,7 @@ def seal_workflow(
     # the set of ALL frozen env digests, not just the one we sealed from — so a
     # multi-env workflow is still "validated == shipped" when every step ran in some
     # shipped env. `fr` remains the PRIMARY env (the guide's get-the-image section).
+    from agent.models.core_data import step_is_validated
     all_envs = _ms._env_cache.all()
     valid_digests = {r.get("image_digest") for r in all_envs.values() if r.get("image_digest")}
     by_digest = {r.get("image_digest"): (k, r) for k, r in all_envs.items() if r.get("image_digest")}
@@ -542,7 +543,7 @@ def seal_workflow(
         if not isinstance(s, dict):
             continue
         d = s.get("container_image_digest")
-        is_validated = s.get("validation") or s.get("validation_status") == "passed"
+        is_validated = step_is_validated(s)
         if d and is_validated and d not in seen_dig:
             seen_dig.add(d)
             rk, rr = by_digest.get(d, ("", {}))

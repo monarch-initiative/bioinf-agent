@@ -28,7 +28,7 @@ from typing import Any, Optional
 
 import yaml
 
-from agent.models.core_data import usage_commands
+from agent.models.core_data import step_is_validated, usage_commands
 from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
 # The READER for a step's validation dict. Imported (not re-implemented) so the invariant
@@ -144,8 +144,7 @@ def derive_pipeline_status(steps: list) -> str:
         return "in_progress"
     if any(s.get("returncode") not in (None, 0) for s in steps):
         return "failed"
-    validated = [s for s in steps
-                 if s.get("validation") or s.get("validation_status") == "passed"]
+    validated = [s for s in steps if step_is_validated(s)]
     if len(validated) == len(steps):
         return "fully_validated"
     if validated:
