@@ -103,11 +103,13 @@ _RENDER_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "cluster_rend
 
 
 # Terminal SLURM states — once we hit one of these the job is over.
-_TERMINAL_STATES = {
-    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
-    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL",
-    "DEADLINE", "REVOKED",
-}
+#: Alias of the one definition, in `cluster_jobs` alongside the sacct parser
+#: that produces the rows. It was a second literal copy here — and the copy in
+#: the L14 surface test asserts set-equality against it, so the two had to be
+#: edited in lockstep and the test could only prove the set had not changed,
+#: never that it was right. Same shape as the invariant roster: the poller that
+#: consumes the set is not its owner.
+_TERMINAL_STATES = cluster_jobs.TERMINAL_STATES
 
 
 def _parse_exit_code(s: str) -> int:
@@ -456,7 +458,11 @@ def run_step_on_cluster(
                                 "step_index": step_index})
         if s.get("jobs"):
             row = s["jobs"][0]
-            if row.get("state") in _TERMINAL_STATES:
+            # normalize_state, not a bare `in`: sacct writes `CANCELLED by 12345`,
+            # which never matched the undecorated name — so the one death a user
+            # causes on purpose polled until the timeout and was reported as a
+            # poll_timeout rather than as the cancellation it was.
+            if cluster_jobs.normalize_state(row.get("state")) in _TERMINAL_STATES:
                 final_status = row
                 break
         time.sleep(poll_interval)
@@ -486,6 +492,48 @@ def run_step_on_cluster(
                             "step_index": step_index})
 
     rc = _parse_exit_code(final_status.get("exit_code", ""))
+
+    # ─── 3b. Did the job actually SUCCEED? ────────────────────────────
+    # The State decides, not the exit code — see cluster_jobs.classify_sacct_row
+    # for the six death shapes that reached this line with rc=0 and proceeded to
+    # download, validate and record a green step. A scheduler-killed job dies
+    # mid-write, so the danger is not the missing output (the download loop
+    # already fails loudly on that, and I3 refuses a step with none) but the
+    # TRUNCATED one: a BAM cut off by a wall-clock kill exists, is non-empty,
+    # and passes validation.
+    verdict, why = cluster_jobs.classify_sacct_row(final_status)
+    if verdict == cluster_jobs.DIED:
+        step_index = _record_failed_cluster_step(
+            _pipeline_state, pipeline_id,
+            tool_name=tool_name, command=command, inputs=inputs,
+            failure_code="run_cluster.job_died",
+            error=f"the cluster job did not succeed: {why}",
+            job_id=job_id, workflow_dir=workflow_dir,
+            sif_path_remote=sif_path_remote, image_digest=image_digest,
+            cluster_sif_sha256=cluster_sif_sha256,
+            # Forensics for whoever reads the draft later. The .out/.err land in
+            # workflow_dir because sbatch is run from there and --job-name is the
+            # workflow name, so `%x-%j` resolves to exactly this pair.
+            extra={"cluster_job_state": cluster_jobs.normalize_state(
+                       final_status.get("state")),
+                   "cluster_exit_code": final_status.get("exit_code"),
+                   "cluster_sacct_reason": final_status.get("reason"),
+                   "cluster_stdout_log": f"{workflow_dir}/{workflow_name}-{job_id}.out",
+                   "cluster_stderr_log": f"{workflow_dir}/{workflow_name}-{job_id}.err"})
+        return broke("run_cluster.job_died",
+            error=f"the cluster job did not succeed: {why}",
+            stage_result=stage, job_id=job_id, workflow_dir=workflow_dir,
+            job_state=cluster_jobs.normalize_state(final_status.get("state")),
+            exit_code=final_status.get("exit_code"),
+            sacct_reason=final_status.get("reason"),
+            diagnose={
+                "stderr": f"{workflow_dir}/{workflow_name}-{job_id}.err",
+                "stdout": f"{workflow_dir}/{workflow_name}-{job_id}.out",
+                "sacct":  f"call cluster_job_status(job_id={job_id!r}) for the raw row",
+            },
+            pipeline_merge={"status": "recorded_failed",
+                            "pipeline_id": pipeline_id,
+                            "step_index": step_index})
 
     # ─── 4. Fetch I7-shaped resource_usage from sacct ─────────────────
     resources = cluster_jobs.cluster_job_resources(
@@ -580,12 +628,33 @@ def run_step_on_cluster(
         "cluster_image_verified":   cluster_image_verified,
         "cluster_image_digest_match": cluster_image_digest_match,
         # Layer-2 HPC-locus metadata (new fields, downstream-tolerant)
+        # WHERE THE OUTPUTS LIVE AT THE LOCUS THAT MADE THEM. detected_outputs
+        # above are the DOWNLOADED LOCAL copies — correct for validation, since
+        # those are the bytes we hashed and type-checked — but a second cluster
+        # step consumes the REMOTE originals, and no local path can ever match
+        # one. Without this a multi-step cluster chain is unsealable: step 2's
+        # input traces to nothing, and the honest options are to fake a lineage
+        # or to give up on sealing. Recording the truth is neither.
+        #
+        # Declared from `outputs`, which is what the job was TOLD to write and
+        # what the download loop just read back — not a guess about the remote
+        # filesystem. Empty when the step declared no outputs, so a step that
+        # produced nothing gains no phantom provenance.
+        "remote_outputs":         [f"{workflow_dir}/{fn}"
+                                   for fn in outputs.values()] or None,
         "validation_locus":       "cluster",
         "cluster_job_id":         job_id,
         "cluster_workflow_dir":   workflow_dir,
         "cluster_node":           final_status.get("nodelist"),
         "cluster_state":          final_status.get("state"),
         "cluster_exit_code":      final_status.get("exit_code"),
+        # The VERDICT, stated — not left for a reader to re-derive from the two
+        # fields above. Re-deriving it is exactly the defect this fix removes:
+        # `TIMEOUT` + `0:0` reads as success to anyone who looks at the exit code
+        # first, and every reader that needs this answer would have to get the
+        # State-before-rc precedence right independently. The producer captures;
+        # the reader must not scrape.
+        "cluster_job_verdict":    verdict,
         # Repro (cluster context) — the run environment a reader needs to
         # reproduce the job: the modules loaded + the SLURM placement. Recorded
         # from the request (account/partition/qos) + the observed node above.

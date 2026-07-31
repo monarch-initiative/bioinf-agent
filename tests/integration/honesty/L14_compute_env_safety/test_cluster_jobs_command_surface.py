@@ -358,3 +358,66 @@ class TestSshHappyPathMock:
             job_id="99999", access_path=str(access_path))
         assert "error" not in result
         assert result["jobs"] == []
+
+
+# ===========================================================================
+# 6. Each returned row STATES whether the job worked.
+#
+# This is the only window a PRODUCTION run has. submit_workflow_job is
+# submit-and-document — nobody polls on the caller's behalf, nobody classifies
+# for them — so a bare `TIMEOUT | 0:0` row invites exactly the reading the
+# validation poller used to make: the rc is zero, so the job must be fine.
+# SLURM reports a signal death as `<rc>:<signal>` with rc ZERO, so that reading
+# is wrong for every job the scheduler itself killed.
+# ===========================================================================
+
+class TestRowVerdict:
+    @staticmethod
+    def _status(monkeypatch, access_path, sacct_text):
+        import subprocess
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=0, stdout=sacct_text, stderr=""))
+        return cluster_jobs.cluster_job_status(
+            project_name="myproj", compute_env_name="fakehpc",
+            job_id="58025583", access_path=str(access_path))
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("state,exit_code,want", [
+        ("COMPLETED",     "0:0",   "succeeded"),
+        ("TIMEOUT",       "0:0",   "died"),      # wall-clock kill, rc reads clean
+        ("OUT_OF_MEMORY", "0:125", "died"),
+        ("FAILED",        "0:9",   "died"),      # SIGKILL / cgroup OOM
+        ("NODE_FAIL",     "0:0",   "died"),
+        ("RUNNING",       "0:0",   "running"),
+    ])
+    def test_the_row_carries_its_verdict(
+            self, _ssh_env_with_project_grant, monkeypatch, state, exit_code, want):
+        text = (f"58025583|{state}|04:00:11|{exit_code}|c1|None|"
+                f"2026-07-30T01:00:00|2026-07-30T05:00:11\n")
+        r = self._status(monkeypatch, _ssh_env_with_project_grant, text)
+        assert r["jobs"][0]["verdict"] == want, r["jobs"][0]
+        assert r["jobs"][0]["verdict_reason"]
+
+    @pytest.mark.integration
+    def test_the_raw_sacct_columns_are_untouched(
+            self, _ssh_env_with_project_grant, monkeypatch):
+        """Additive, so every existing consumer keeps working — the verdict is an
+        extra key on the row, never a replacement for the columns sacct gave us."""
+        text = ("58025583|TIMEOUT|04:00:11|0:0|c1|TimeLimit|"
+                "2026-07-30T01:00:00|2026-07-30T05:00:11\n")
+        row = self._status(monkeypatch, _ssh_env_with_project_grant, text)["jobs"][0]
+        assert row["state"] == "TIMEOUT"
+        assert row["exit_code"] == "0:0"
+        assert row["reason"] == "TimeLimit"
+        assert row["nodelist"] == "c1"
+        assert row["elapsed"] == "04:00:11"
+
+    @pytest.mark.integration
+    def test_no_rows_means_no_verdicts_not_a_crash(
+            self, _ssh_env_with_project_grant, monkeypatch):
+        """sacct returns nothing for an id slurmdbd has not caught up with yet.
+        That is 'ask again', and it must stay distinguishable from a verdict."""
+        r = self._status(monkeypatch, _ssh_env_with_project_grant, "")
+        assert r["jobs"] == []

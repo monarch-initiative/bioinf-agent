@@ -94,7 +94,19 @@ def _render_cluster_context(step: dict) -> str:
     rows: list[tuple[str, str]] = []
     job, node = step.get("cluster_job_id"), step.get("cluster_node")
     if job:
-        rows.append(("SLURM job", f"{_e(job)} on {_e(node or '?')}"))
+        # The scheduler's verdict, shown alongside the raw State/ExitCode that
+        # produced it. Both, deliberately: the verdict is what a reader should
+        # act on, and the two columns behind it are what lets them check it —
+        # `TIMEOUT | 0:0` looks clean until you know the State outranks the rc.
+        verdict = step.get("cluster_job_verdict")
+        state, ec = step.get("cluster_state"), step.get("cluster_exit_code")
+        detail = f"{_e(job)} on {_e(node or '?')}"
+        if state or ec:
+            detail += f" — {_e(state or '?')} / exit {_e(ec or '?')}"
+        if verdict:
+            mark = "✓" if verdict == "succeeded" else "⚠"
+            detail += f" — {mark} {_e(verdict)}"
+        rows.append(("SLURM job", detail))
     sha = step.get("cluster_sif_sha256")
     if sha:
         tag = ""
