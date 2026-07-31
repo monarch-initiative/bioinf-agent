@@ -30,7 +30,7 @@ from typing import Any, Optional
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
-from agent.skills.outcomes import broke, proven, refused  # terminal outcome tags
+from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,15 @@ def _refresh_reference_databases(rdbs: list) -> list:
     `<local_path>.source.sha256` sidecar written during download (the hash of
     the bytes the URL served — see download_reference_database), so the sealed
     WorkflowSpec pins each DB by CONTENT, not merely by name+URL. Missing
-    sidecar ⇒ sha256 stays absent (honest: we never fabricate a hash)."""
+    sidecar ⇒ sha256 stays absent (honest: we never fabricate a hash).
+
+    FILL-ONLY, NEVER OVERWRITE (2026-07-31). `available` and `size_bytes` are
+    observations and are refreshed every time; `sha256` is an ANCHOR — a claim about
+    what the bytes were when the run was validated — and re-deriving it from today's
+    sidecar erases the only value the I5 comparison could be against. This refresh runs
+    while building the artifact and the artifact is re-validated immediately after, so
+    an overwrite made that check compare a value with itself. See the same fix in
+    acquire_data.refresh_cluster_reference_db, where it was total rather than partial."""
     out: list = []
     for e in rdbs or []:
         if not isinstance(e, dict):
@@ -64,7 +72,7 @@ def _refresh_reference_databases(rdbs: list) -> list:
             p = Path(lp)
             e["available"] = p.exists()
             sidecar = Path(f"{lp}.source.sha256")
-            if sidecar.is_file():
+            if sidecar.is_file() and not e.get("sha256"):
                 try:
                     parts = sidecar.read_text().strip().split()
                     if parts:
@@ -409,6 +417,41 @@ def seal_workflow(
 
     from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status,
                                           self_test_usage, write_workflow_spec)
+
+    # A WorkflowSpec's stated premise is THE VALIDATED RUN. It must contain one.
+    #
+    # Every step-side clause in the Layer-2 roster (agent/skills/invariants.py) iterates
+    # `pipeline_steps`, so a draft with none makes them all go silent AT ONCE and the walk
+    # returns [] — the failure is not one clause missing a case, it is every clause that
+    # reads the run having no run to read. The model does
+    # not catch it either: `derive_pipeline_status([])` returns "in_progress", a valid
+    # PipelineStatus, so the artifact validates and gets written with a green seal over a
+    # workflow that ran nothing. Layer 1 makes the analogous record a hard
+    # VALIDATED_IN_IMAGE.no_evidence violation; Layer 2 said nothing at all.
+    #
+    # This REFUSES rather than degrading, and the distinction is deliberate: a degrade
+    # says "this artifact proves less than it looks like it does", which is true of a
+    # thin run. Here there is no run, so there is nothing for the artifact to be a record
+    # OF — it should not exist. Measured impact on the five sealed specs on disk: zero
+    # (all carry >= 1 rc=0 step).
+    #
+    # It lives in seal_workflow, not in check_invariants, on purpose: the walk is the
+    # ssh-capable path (a locus:cluster I5 dials out), and this question is answerable
+    # from the draft alone, so asking it FIRST also spares a doomed draft that round trip.
+    _ran = [s for s in (draft.get("pipeline_steps") or [])
+            if isinstance(s, dict) and s.get("returncode") in (None, 0)]
+    if not _ran:
+        _total = len([s for s in (draft.get("pipeline_steps") or []) if isinstance(s, dict)])
+        return refused(
+            "seal.no_validated_run", success=False, stage="validated_run",
+            error=(f"this draft records no validated run: {_total} pipeline_step(s), none of "
+                   f"which exited 0. A WorkflowSpec IS the record of a run — with no "
+                   f"successful step every run-side invariant examines nothing "
+                   f"and passes vacuously, so the seal would be green over an empty premise. "
+                   f"Run a step with run_step_in_container / run_step_on_cluster first."),
+            pipeline_steps_total=_total, pipeline_steps_succeeded=0,
+        )
+
     violations = check_workflow_invariants(draft)
     if violations:
         return refused("seal.workflow_invariants", success=False,
@@ -437,9 +480,26 @@ def seal_workflow(
     # tested against the exact bytes the user runs), fall back to the host env for the
     # pre-freeze path, and when neither can run it we record not_attempted + WHY rather
     # than fabricating a False.
+    #
+    # AND THE PRODUCER ALWAYS STATES THE OUTCOME (2026-07-31). This gate used to skip the
+    # whole block when no `usage` block was authored, leaving `usage_detail = None` — which
+    # made `usage_verification` None, which `to_yaml(exclude_none=True)` then DROPPED. So the
+    # sealed spec carried no I4 record at all and every reader fell back to the bare
+    # `usage_verified: False`: the two-states-in-one-bool defect the three-state field was
+    # added to kill, reintroduced by the field being absent instead of wrong. Measured on
+    # disk: talos_cluster_pytest is exactly that artifact — no usage block, a green seal,
+    # and nothing proven about how to run it. Absence must never render as a verdict.
     usage_ok = False
-    usage_detail: dict | None = None
-    if draft.get("usage"):
+    usage_detail: dict
+    if not draft.get("usage"):
+        usage_detail = {
+            "ok": False, "status": "not_attempted",
+            "reason": "no usage block was authored on the draft, so I4 ran nothing — this "
+                      "seal proves the RUN happened, not how to re-run it. Add "
+                      "patch_pipeline(usage={command_template, description, inputs, outputs}) "
+                      "and re-seal to earn a verified how-to.",
+        }
+    else:
         runner = _image_usage_runner(fr, draft) or (_ms._env_mgr if draft.get("conda_env") else None)
         try:
             usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
@@ -516,12 +576,17 @@ def seal_workflow(
         # distinguish "tested and broken" from "never tested", and since seal refuses the
         # former, False on disk ALWAYS meant the latter — a verdict nobody reached.
         # Renderers must read this, not the bool, before saying anything about the how-to.
-        "usage_verification": ({"status": usage_detail.get("status", "not_attempted"),
-                                "reason": usage_detail.get("reason", ""),
-                                "locus":  usage_detail.get("locus", ""),
-                                "trial_count": usage_detail.get("trial_count", 0),
-                                "passed": usage_detail.get("passed", 0)}
-                               if usage_detail else None),
+        #
+        # UNCONDITIONAL. This used to end `if usage_detail else None`, and that fallback
+        # was not defensive — it was the live path for every draft with no usage block,
+        # and exclude_none then deleted the field. `usage_detail` is now always a stated
+        # dict (see above), so there is no None to guard against and no way for the
+        # record to go missing instead of saying "not_attempted".
+        "usage_verification": {"status": usage_detail.get("status", "not_attempted"),
+                               "reason": usage_detail.get("reason", ""),
+                               "locus":  usage_detail.get("locus", ""),
+                               "trial_count": usage_detail.get("trial_count", 0),
+                               "passed": usage_detail.get("passed", 0)},
         "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),
@@ -551,11 +616,38 @@ def seal_workflow(
                        reason="constructed WorkflowSpec failed its own run-side invariants — "
                               "it would not be re-verifiable standalone",
                        violations=self_violations, violation_count=len(self_violations))
-    result = proven(
-        "seal.sealed", success=True, workflow_name=wname,
+    # THE SEAL IS GREEN ON THE RUN; THE TAG SAYS WHETHER THE HOW-TO IS GREEN TOO.
+    #
+    # A sealed spec makes two claims: this run happened and was validated (the steps), and
+    # this is how to re-run it (the usage block, proven by I4). Seal refuses outright when
+    # I4 FAILS, so the only remaining gap is "I4 never ran" — and that used to return the
+    # same unconditional `proven("seal.sealed")` as a fully-proven workflow. 3 of the 5
+    # specs on disk are that tag: green, over a how-to nobody executed.
+    #
+    # Two literal terminals with DISTINCT codes, mirroring freeze's
+    # built / built_unobserved pair. Never re-tag `seal.sealed` itself: it is a published
+    # code that other readers (and tests/test_outcome_tags.py) join on, and flipping a
+    # code's meaning under a stable name is the drift this repo keeps paying for. Both
+    # branches carry the same fields and success=True — the artifact IS written either
+    # way, because a validated run with no how-to is a real, useful record. It is just
+    # not the same record as one whose how-to was executed, and the tag now says which.
+    _seal_fields = dict(
+        success=True, workflow_name=wname,
         env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
         commands_shown=len(_ms._user_guide.executed_commands(draft)),
+        usage_verification=wf["usage_verification"],
     )
+    if usage_detail.get("status") == "verified":
+        result = proven("seal.sealed", **_seal_fields)
+    else:
+        result = degraded(
+            "seal.sealed_howto_unproven", **_seal_fields,
+            advisory=(f"the RUN is sealed and validated, but I4 did not execute the how-to "
+                      f"(usage_verification.status={usage_detail.get('status')!r}): "
+                      f"{usage_detail.get('reason') or 'no reason recorded'}. Nothing here is "
+                      f"wrong — this spec simply proves less than one whose command_template "
+                      f"was run, and a pass/fail badge cannot show the difference."),
+        )
     if write:
         project_root = Path(__file__).resolve().parents[2]
         out_dir = project_root / _ms.config["paths"]["pipelines_dir"]

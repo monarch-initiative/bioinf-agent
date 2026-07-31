@@ -354,6 +354,83 @@ def test_e2e_seal_records_not_attempted_rather_than_a_fabricated_false(_staged_p
     uv = spec["usage_verification"]
     assert uv["status"] == "not_attempted"
     assert "cluster" in uv["reason"], "the REASON must survive to the artifact"
+    # ...and the TAG must say so too. A seal whose how-to was never executed proves
+    # strictly less than one whose was, and `proven` cannot express the difference.
+    assert result["outcome"] == "degraded"
+    assert result["code"] == "seal.sealed_howto_unproven"
+
+
+@pytest.mark.integration
+def test_e2e_seal_degrades_when_the_draft_has_no_usage_block(_staged_pipeline):
+    """NO usage block at all — the case that produced a fully green seal over nothing.
+
+    The I4 block was gated behind `if draft.get("usage")`, so with no usage block
+    `usage_detail` stayed None, `usage_verification` was written as None, exclude_none
+    DELETED it, and the terminal returned an unconditional proven("seal.sealed"). Every
+    reader then fell back to the bare `usage_verified: False` — reintroducing the
+    two-states-in-one-bool defect by way of the field being ABSENT rather than wrong.
+    talos_cluster_pytest on disk is exactly that artifact.
+
+    The spec must still be WRITTEN (a validated run with no how-to is a real record) and
+    it must SAY which of the two it is."""
+    pipeline_id, request_key, *_ = _staged_pipeline
+    m._pipeline_state.mutate_on_disk(pipeline_id, lambda d: d.pop("usage", None))
+
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                             workflow_name="e2e_seal_no_usage")
+    assert result.get("success") is True, f"a validated run must still seal: {result}"
+    assert result["outcome"] == "degraded"
+    assert result["code"] == "seal.sealed_howto_unproven"
+    assert "advisory" in result and result["advisory"]
+
+    import yaml
+    spec = yaml.safe_load(open(result["workflow_spec_path"]))
+    uv = spec.get("usage_verification")
+    assert uv is not None, ("usage_verification was dropped from the artifact — absence "
+                            "is exactly what renders as a verdict downstream")
+    assert uv["status"] == "not_attempted"
+    assert uv["reason"], "the producer must state WHY, not merely that it did not happen"
+
+
+@pytest.mark.integration
+def test_e2e_seal_tags_a_fully_proven_workflow_proven(_staged_pipeline):
+    """The other side of the split: the happy path keeps the published `seal.sealed`
+    code. Re-tagging that code rather than adding a second one would silently change the
+    meaning of a value other readers join on."""
+    pipeline_id, request_key, *_ = _staged_pipeline
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                             workflow_name="e2e_seal_proven_tag")
+    assert result["outcome"] == "proven" and result["code"] == "seal.sealed"
+    assert result["usage_verification"]["status"] == "verified"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("steps_shape", ["none", "all_failed"])
+def test_e2e_seal_refuses_a_spec_with_no_validated_run(_staged_pipeline, steps_shape):
+    """A WorkflowSpec's premise is THE VALIDATED RUN; with no successful step there is
+    nothing for it to be a record of.
+
+    Every step-side clause iterates pipeline_steps, so they all go silent at once and the
+    walk returns []; `derive_pipeline_status([])` then returns "in_progress", a valid
+    status, so the model validates and the artifact is written green. Layer 1 makes the
+    analogous evidence-free record a hard violation. REFUSED rather than degraded: a
+    degrade says the artifact proves less than it looks like it does, but here it has no
+    subject at all and should not exist."""
+    pipeline_id, request_key, *_ = _staged_pipeline
+    def _break_the_run(draft):
+        if steps_shape == "none":
+            draft["pipeline_steps"] = []
+        else:
+            for st in draft["pipeline_steps"]:
+                st["returncode"] = 1
+    m._pipeline_state.mutate_on_disk(pipeline_id, _break_the_run)
+
+    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
+                             workflow_name=f"e2e_seal_norun_{steps_shape}")
+    assert result.get("success") is False
+    assert result["outcome"] == "refused" and result["code"] == "seal.no_validated_run"
+    assert result["pipeline_steps_succeeded"] == 0
+    assert "workflow_spec_path" not in result, "a refused seal must write no artifact"
 
 
 @pytest.mark.integration
