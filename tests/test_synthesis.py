@@ -286,6 +286,17 @@ def test_probe_github_search_empty(monkeypatch):
 def _dead_registries(monkeypatch):
     for fn in ("probe_conda", "probe_pypi", "probe_cran", "probe_bioconductor"):
         monkeypatch.setattr(resolver, fn, lambda *a, **k: {"available": False})
+    # `_canon_repo` is the network call that is easy to miss: it fires on the AUTO-CHAIN
+    # recursion, after the discovered repo is adopted, so a test can stub probe_github
+    # and still reach api.github.com one frame later. Identity + "ok" is the
+    # not-renamed case every test in this file is written about.
+    monkeypatch.setattr(resolver, "_canon_repo",
+                        lambda repo, t=12: ((repo or "").strip().strip("/").lower(), "ok"))
+    # ...and the authors gate fetches the repo's Dockerfile from raw.githubusercontent.
+    # Left live, a failed fetch prefixes the install_call with "AUTHORS-PATH GATE FAILED"
+    # — deliberate disclosure, and it means this test's exact-string assertion on
+    # install_call was one network hiccup away from failing for no reason of its own.
+    monkeypatch.setattr(resolver, "probe_authors_sources", lambda *a, **k: {})
 
 
 def test_resolve_auto_discovers_and_adopts_dominant_repo(monkeypatch):

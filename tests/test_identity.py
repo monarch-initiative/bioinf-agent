@@ -41,7 +41,7 @@ _FACT_KEYS = {"chosen_tier", "self_description", "has_description", "repo",
 _VERDICT_KEYS = {"confirmed", "anchor", "evidence", "note", "reason"}
 
 
-def _stub(monkeypatch, *, conda=None, pip=None, cran=None):
+def _stub(monkeypatch, *, conda=None, pip=None, cran=None, gh=None):
     """Stub the registry probes; drive the REAL resolve()."""
     monkeypatch.setattr(R, "probe_conda", lambda n, t=12: conda or {"available": False})
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: pip or {"available": False})
@@ -49,6 +49,16 @@ def _stub(monkeypatch, *, conda=None, pip=None, cran=None):
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
     # the authors gate needs no network for these cases
     monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    # A test that passes `github_repo=` DOES reach probe_github, and this helper used to
+    # leave it live — so one test here talked to api.github.com about a repo invented for
+    # the test. The default is the 404 that repo really returns, so behaviour is unchanged;
+    # it just no longer depends on GitHub answering.
+    monkeypatch.setattr(R, "probe_github", lambda repo, t=12: dict(gh or {
+        "repo_exists": False, "has_release_assets": False, "assets": [],
+        "is_fork": False, "parent": "", "upstream": "",
+        "full_name": "", "default_branch": ""}))
+    monkeypatch.setattr(R, "_canon_repo",
+                        lambda repo, t=12: ((repo or "").strip().strip("/").lower(), "absent"))
 
 
 # ---------------------------------------------------------------------------

@@ -1678,6 +1678,7 @@ def test_build_number_ranking():
     assert _build_number("noversion") == -1
 
 
+@pytest.mark.live
 def test_resolve_biocontainer_single_tool_live():
     """Live adoption against quay.io for a tool that definitely has a
     biocontainer (samtools 1.21). Network-guarded: skips if the registry is
@@ -1898,6 +1899,7 @@ def test_install_call_maps_each_tier_to_its_primitive():
     assert "install_git_repo" in _install_call("source", "thing", "", {}, "owner/thing")
 
 
+@pytest.mark.live
 def test_resolve_live_samtools_chooses_conda():
     """Live resolve: samtools is on bioconda, so the resolver must choose the
     conda tier. Network-guarded — skips if registries are unreachable."""
@@ -2062,6 +2064,7 @@ def test_resolve_cran_cross_namespace_collision(monkeypatch):
     assert d["probed"]["cran"]["available"] is False
 
 
+@pytest.mark.live
 def test_resolve_live_ape_disambiguated_by_language():
     """The collision finding, fixed: bare 'ape' is flagged ambiguous (PyPI vs
     CRAN), and language='r' steers it to an R tier (cran/bioconductor/conda
