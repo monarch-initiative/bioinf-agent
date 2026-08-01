@@ -119,7 +119,8 @@ def _source_stamp() -> str:
     return f"rendered from {sha}{' + uncommitted changes' if dirty else ''}"
 
 
-def render(entries: list[dict], overlay: dict | None, source_stamp: str = "") -> str:
+def render(entries: list[dict], overlay: dict | None, source_stamp: str = "",
+           carried: dict | None = None) -> str:
     total = len(entries)
     for e in entries:
         e["_cov"] = _cover_state(e, overlay)
@@ -150,10 +151,49 @@ def render(entries: list[dict], overlay: dict | None, source_stamp: str = "") ->
                                           -len(by_sub[n]), n))
 
     measured = overlay is not None
-    banner = "" if measured else (
-        '<div class="nocov">⚠ coverage NOT measured — showing the weak grep signal '
-        'only. Run <code>python scripts/measure_terminal_coverage.py</code> for the '
-        'real verified / exercised / dark picture.</div>')
+    # THE OVERLAY IS KEYED ON `file:line`, SO IT GOES STALE ON LINE MOTION ALONE.
+    # `_cover_state` maps a key the overlay has never heard of to "dark" — the right call
+    # for one row, and a fabricated blackout when a whole file shifted down by two lines.
+    # Measured on real history: the ledger at 4adf7c8 joined against the overlay from
+    # 513fbbd renders 95/149/310 where the truth is 129/160/265 — a 45-terminal phantom
+    # regression on a page whose entire purpose is to be believed. A CI-blocking test
+    # (test_coverage_overlay_keys_resolve_against_the_ledger) stops that reaching main,
+    # so this banner is not the trust boundary; it is for the hours BEFORE the push, when
+    # the page is the only thing you are reading and it is quietly lying to you. The
+    # freeze grid has had its own staleness banner all along — this one did not.
+    unjoined = sorted({e["where"] for e in entries} - set(overlay)) if measured else []
+    if not measured:
+        banner = ('<div class="nocov">⚠ coverage NOT measured — showing the weak grep '
+                  'signal only. Run <code>python scripts/measure_terminal_coverage.py'
+                  '</code> for the real verified / exercised / dark picture.</div>')
+    elif unjoined:
+        banner = (f'<div class="nocov">⚠ the coverage overlay does not match this ledger — '
+                  f'<b>{len(unjoined)} of {total}</b> terminals have no measurement and are '
+                  f'counted DARK below, which understates coverage by up to that many. The '
+                  f'overlay is keyed on <code>file:line</code>, so moving a line invalidates '
+                  f'it even when nothing about the code\'s behaviour changed. Re-run '
+                  f'<code>python scripts/measure_terminal_coverage.py</code> (~3.5 min) '
+                  f'before reading these numbers. First unjoined: '
+                  f'<code>{_e(unjoined[0])}</code>.</div>')
+    elif carried:
+        # A CARRIED overlay joins perfectly — that is what the re-key is for — so the
+        # staleness check above cannot see it. Without this branch the re-key would be a
+        # SILENT under-report, i.e. it would introduce the exact defect the branch above
+        # was just added to remove. The numbers are still honest (unmeasured terminals are
+        # counted dark, never lit), but "honest" and "silent about its own provenance"
+        # are not the same thing.
+        n_unmeasured = len(carried.get("unmeasured") or [])
+        banner = (f'<div class="nocov">⚑ these verdicts were <b>carried</b>, not measured '
+                  f'here. Last observed at <code>{_e(carried.get("measured_sha"))}</code> '
+                  f'and re-keyed onto <code>{_e(carried.get("rekeyed_at"))}</code> across '
+                  f'{carried.get("moved_lines", 0)} moved line(s)'
+                  + (f'; <b>{n_unmeasured}</b> terminal(s) had no transferable verdict and '
+                     f'are counted DARK, so real coverage is at least this good and may be '
+                     f'better' if n_unmeasured else '')
+                  + f'. Run <code>python scripts/measure_terminal_coverage.py</code> '
+                    f'(~3.5 min) for an observed number.</div>')
+    else:
+        banner = ""
 
     # ---- coverage headline bar (verified | exercised | dark) --------------
     def seg(pct, cls):
@@ -420,10 +460,12 @@ def main() -> int:
               file=sys.stderr)
         return 1
     entries = json.loads(LEDGER.read_text())
-    overlay = None
+    overlay = carried = None
     if OVERLAY.exists():
-        overlay = json.loads(OVERLAY.read_text()).get("by_where")
-    OUT.write_text(render(entries, overlay, _source_stamp()))
+        doc = json.loads(OVERLAY.read_text())
+        overlay = doc.get("by_where")
+        carried = doc.get("carried_forward")
+    OUT.write_text(render(entries, overlay, _source_stamp(), carried))
     if overlay is None:
         print(f"  wrote {OUT.relative_to(ROOT)}  (coverage NOT measured — grep only; "
               f"run measure_terminal_coverage.py)")
