@@ -51,10 +51,13 @@ import hashlib
 from pathlib import Path
 from typing import Mapping, Optional
 
-#: Above this we do not read a whole file to hash it. Mirrors
-#: spec_writer.HASH_CAP_BYTES — the seal-time check has the same cap, so a
-#: reference that was size-anchored at seal is size-anchored here too, and the
-#: two never disagree merely because one of them gave up sooner.
+from agent.models import core_data as _core_data
+
+#: Above this we do not read a whole file to hash it. Same value as
+#: `spec_writer._check_reference_database_availability`'s cap and
+#: `core_data.ANCHOR_HASH_CAP_BYTES` — an artifact size-anchored by one of them must be
+#: size-anchored by all of them, or two checks disagree merely because one gave up
+#: sooner. Pinned by test_test_data_is_pinned.test_the_hash_cap_is_the_same_number_everywhere.
 HASH_CAP_BYTES = 2 * 1024 ** 3
 
 MATCH = "match"
@@ -94,11 +97,18 @@ def sealed_anchors(spec: Mapping) -> dict[str, dict]:
                      "sha256": sha256 or "", "size_bytes": size_bytes,
                      "locus": locus or ""}
 
+    # test_data. Read through `core_data.test_data_paths` + `resolve_data_path` — this
+    # loop used to take any value STARTING WITH "/", and `select_test_data` builds its
+    # paths from the manifest's `core_dir`, which is relative in the shipped config. On
+    # both sealed specs that carry test_data it therefore matched nothing: the check
+    # reported 17 anchors over a workflow whose actual sequencing inputs it could not
+    # see. The anchors written at selection are what makes these comparable at all.
     td = spec.get("test_data")
-    if isinstance(td, Mapping):
-        for key, val in td.items():
-            if isinstance(val, str) and val.startswith("/"):
-                _add(val, source="test_data", name=str(key))
+    anchors = _core_data.test_data_anchors(td)
+    for key, raw in _core_data.test_data_paths(td).items():
+        rec = anchors.get(key) or {}
+        _add(str(_core_data.resolve_data_path(raw)), source="test_data", name=str(key),
+             sha256=rec.get("sha256") or "", size_bytes=rec.get("size_bytes"))
 
     for rdb in spec.get("reference_databases") or []:
         if isinstance(rdb, Mapping):

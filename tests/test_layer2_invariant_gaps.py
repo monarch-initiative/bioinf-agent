@@ -20,11 +20,17 @@ from __future__ import annotations
 import pytest
 
 from agent.skills import spec_writer as sw
+from real_inputs import real_input
 
 
 # ---------------------------------------------------------------------------
 # I8 — sidecar tolerance, done as stated.
 # ---------------------------------------------------------------------------
+
+#: A REAL file, because I8's test-data clause stats what the spec declares. The fixture
+#: used to say `/data/in.fq`, which passed only while nothing looked.
+_IN_FQ = real_input("in.fq")
+
 
 def _two_step(step2_input: str, *, locus: str = "") -> dict:
     """Step 1 produces /run1/sample.bam from test data; step 2 consumes something."""
@@ -38,8 +44,8 @@ def _two_step(step2_input: str, *, locus: str = "") -> dict:
     s2 = _s(2, [step2_input], ["/run1/out.vcf"])
     if locus:
         s2["validation_locus"] = locus
-    return {"pipeline_steps": [_s(1, ["/data/in.fq"], ["/run1/sample.bam"]), s2],
-            "test_data": {"r1": "/data/in.fq"}}
+    return {"pipeline_steps": [_s(1, [_IN_FQ], ["/run1/sample.bam"]), s2],
+            "test_data": {"r1": _IN_FQ}}
 
 
 def _i8(spec) -> list[str]:

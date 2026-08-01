@@ -9,9 +9,12 @@ list_installed_pipelines.
 
 from pathlib import Path
 
+from agent.models import core_data
 from agent.models.core_data import (USAGE_NOT_ATTEMPTED, USAGE_VERIFIED,
                                     record_is_gated as _record_is_gated,
                                     step_is_validated, usage_status)
+from agent.skills.spec_writer import (TEST_DATA_NOT_ATTEMPTED, TEST_DATA_UNANCHORED,
+                                      TEST_DATA_VERIFIED)
 
 import yaml
 
@@ -235,6 +238,25 @@ def _compact_tools(tools: list[dict]) -> list:
     return out
 
 
+def _test_data_status(spec: dict) -> str:
+    """Three-state read of a sealed spec's input pin, for BOTH inventory forms.
+
+    An absent `test_data_integrity` means the artifact predates anchoring, which is
+    `unanchored` — not `verified`, and not "nothing to say" either when the spec does
+    declare input paths. Rounding either way would be the inventory asserting a verdict
+    its producer never made. Written once because the compact and detail rows had it
+    twice within minutes, and they already disagreed: the compact one keyed off the
+    stored field alone, so both legacy specs on disk showed no warning at all.
+
+    NOT re-derived from disk. `verify_test_data` stats and hashes every declared input,
+    and an inventory listing must stay a cheap read — the same reason the how-to status
+    beside it is disclosed rather than re-earned."""
+    if not core_data.test_data_paths(spec.get("test_data")):
+        return TEST_DATA_NOT_ATTEMPTED
+    return ((spec.get("test_data_integrity") or {}).get("status")
+            or TEST_DATA_UNANCHORED)
+
+
 def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
     """Inventory of what has ALREADY been built, in both layers.
 
@@ -358,6 +380,13 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
                     reason = (d.get("usage_verification") or {}).get("reason") or ""
                     if reason:
                         row["usage_verification_reason"] = reason
+                # Same rule for the inputs: carried only when it is a WARNING. A sealed
+                # workflow whose test data was never content-anchored is reproducible
+                # only up to "the paths were there", and the inventory is where someone
+                # decides whether to trust it.
+                td_status = _test_data_status(d)
+                if td_status not in (TEST_DATA_VERIFIED, TEST_DATA_NOT_ATTEMPTED):
+                    row["test_data_status"] = td_status
                 workflows.append(row)
                 continue
             workflows.append({
@@ -401,6 +430,7 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
                 # ever sealed — including a five-step run with a full set of passing
                 # records. Plausible, advertised in the tool description, untested.
                 "steps_validated": sum(1 for s in steps if step_is_validated(s)),
+                "test_data_status": _test_data_status(d),
                 "path": str(spec_file),
             })
         except Exception as e:      # a malformed artifact is reported, never swallowed

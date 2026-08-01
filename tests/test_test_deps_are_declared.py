@@ -41,7 +41,7 @@ _ALIASES = {"yaml": "pyyaml", "dotenv": "python-dotenv", "PIL": "pillow"}
 #: Local test helpers. tests/ has no __init__.py, so these are imported bare — the
 #: convention documented at tests/conftest.py. They are files in this directory, not
 #: packages, and requiring them in requirements.txt would be nonsense.
-_LOCAL = {"env_records", "_artifacts", "conftest"}
+_LOCAL = {"env_records", "_artifacts", "conftest", "real_inputs"}
 
 
 def _declared() -> set[str]:

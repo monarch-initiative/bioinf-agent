@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.models import core_data as _core_data
 from agent.skills.outcomes import refused
 @mcp.tool()
 def download_reference_database(
@@ -367,6 +368,14 @@ def select_test_data(
     {error} if nothing on disk matches at all. Inspect the result and call
     again with different criteria if the match is wrong.
 
+    CONTENT ANCHORS. Every path in the returned block is sha256-anchored here,
+    at selection time, under `test_data.content_anchors` — and this is the only
+    producer of one, since `test_data` is not patchable. Seal re-verifies those
+    anchors (I8.test_data_*) and never writes them, so the pin means "these were
+    the bytes the run was validated against" rather than "these are the bytes
+    now". Consequence worth knowing before you seal: an input deleted, truncated
+    or rewritten between the run and `seal_workflow` REFUSES the seal.
+
     `file_format` ("fastq" | "pod5" | "fast5" | …) lets a basecaller pipeline
     pick the raw-signal entry deterministically when both pod5 and the same
     project's basecalled FASTQ exist under the same assay_type. Defaults to
@@ -421,6 +430,19 @@ def select_test_data(
         "core_data_dir":   best.get("core_dir"),
     }
     test_data_ref = {k: v for k, v in test_data_ref.items() if v is not None}
+
+    # CONTENT ANCHORS — pin the bytes at SELECTION time, so seal has something real to
+    # re-verify against. Written here and nowhere else: an anchor first observed at seal
+    # would be compared against itself moments later and prove nothing (the I5 laundering
+    # bug). A path that is not on disk gets NO anchor rather than a fabricated one — the
+    # seal-side check refuses on the missing file itself, which is the honest complaint.
+    anchors = {}
+    for key, path in _core_data.test_data_paths(test_data_ref).items():
+        anchor = _core_data.anchor_for_path(_core_data.resolve_data_path(path))
+        if anchor is not None:
+            anchors[key] = anchor.model_dump()
+    if anchors:
+        test_data_ref["content_anchors"] = anchors
 
     result = {"test_data": test_data_ref, "available": available, "match_score": score}
     if pipeline_id:

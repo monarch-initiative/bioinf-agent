@@ -35,17 +35,25 @@ from agent.skills.spec_writer import check_workflow_invariants
 
 def _minimal_passing_spec() -> dict:
     """A spec that passes all five workflow invariants — the baseline
-    each test mutates one field of."""
+    each test mutates one field of.
+
+    The test_data bam is a REAL on-disk file, for the same reason the authored-artifact
+    test below already uses one: the external-source clauses LOOK at what a spec declares
+    (I5 stats reference DBs, I8 re-hashes authored artifacts, and I8.test_data_* does both
+    for test data). `/abs/path/in.bam` passed only while test_data was the one source
+    nobody checked."""
+    from real_inputs import real_input
+    in_bam = real_input("in.bam", "BAM\x01")
     return {
         "pipeline_name": "test",
         "packages": [{"name": "samtools", "verify_output": "v1.21"}],
         "install_steps": [{"step": 1, "returncode": 0}],
-        "test_data": {"bam": "/abs/path/in.bam"},
+        "test_data": {"bam": in_bam},
         "pipeline_steps": [{
             "step": 1, "tool": "samtools",
-            "command": "samtools view /abs/path/in.bam > /abs/path/out.txt",
+            "command": f"samtools view {in_bam} > /abs/path/out.txt",
             "returncode": 0,
-            "inputs": [{"path": "/abs/path/in.bam"}],
+            "inputs": [{"path": in_bam}],
             "detected_outputs": ["/abs/path/out.txt"],
             "validation": {"out.txt": {"valid": True, "expected_type": "txt"}},
             "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0,

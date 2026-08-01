@@ -416,7 +416,8 @@ def seal_workflow(
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
 
     from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status,
-                                          self_test_usage, write_workflow_spec)
+                                          self_test_usage, verify_test_data,
+                                          write_workflow_spec)
 
     # A WorkflowSpec's stated premise is THE VALIDATED RUN. It must contain one.
     #
@@ -597,6 +598,12 @@ def seal_workflow(
         "pipeline_steps":     _derive_step_dependencies(draft.get("pipeline_steps", [])),
         # External sources carried so the artifact self-verifies (I8 standalone).
         "test_data":            draft.get("test_data"),
+        # Which of the three the test-data pin actually is. Stated rather than inferred:
+        # the invariant only ever emits a violation, so "no complaint" reads identically
+        # for "every input re-verified against its selection-time anchor" and "nothing
+        # was anchored, so nothing was compared".
+        "test_data_integrity":  {k: v for k, v in verify_test_data(draft).items()
+                                 if k != "violations"},
         "reference_databases":  _refresh_reference_databases(draft.get("reference_databases", [])),
         "runtime_configs":      draft.get("runtime_configs", []),
         "authored_artifacts":   draft.get("authored_artifacts", []),
