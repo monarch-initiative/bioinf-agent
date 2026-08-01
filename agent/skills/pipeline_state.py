@@ -135,7 +135,83 @@ class PipelineState:
         return {"pipeline_id": pipeline_id, "existed": existed}
 
     def get_draft(self, pipeline_id: str) -> Optional[dict]:
-        return self._drafts.get(pipeline_id)
+        """The draft AS IT IS ON DISK, under a shared (read) lock.
+
+        THE RETURNED DICT IS A COPY. Mutating it changes nothing — go through a mutator.
+        This method used to hand back a live reference into `self._drafts`, so
+        `d = get_draft(pid); d[k] = v` appeared to work and two of this repo's own tests
+        built their fixtures that way. It now re-reads per call, which means such a write
+        is silently discarded. Verified at the time of the change: all 11 production
+        callers are read-only.
+
+        THIS USED TO RETURN `self._drafts.get(...)` — a map populated once at
+        `__init__` and never re-read. In one process that is merely a cache; with two
+        it is a LIE, and there are two whenever a primitive runs in a detached child.
+        The measured failure: a background install writes its `install_step` to disk
+        and exits; the long-lived server's map still holds the pre-install draft; and
+        `seal_workflow` reads the draft through THIS method (`workflow_tools.py:399`),
+        so the step is not merely fragile — it is INVISIBLE to the seal. A workflow
+        silently seals without the step that did the work.
+
+        Re-reading also refreshes the cache, so the in-memory copy converges on disk
+        instead of drifting further from it with every call.
+
+        FALLBACK, and why it is not a hole: an unreadable or absent file falls back to
+        the in-memory copy. Absent is a real answer for a draft that was discarded (we
+        then return None from the map too), and unreadable must not be allowed to erase
+        a live draft — the same best-effort posture `_read_draft_file` already documents.
+
+        STILL A WRITE-SIDE HOLE, deliberately out of scope here: the ordinary mutators
+        continue to persist a whole in-memory copy, so two processes MUTATING one draft
+        still lose an update, and `start()` decides resume-vs-new from the map alone.
+        Both need the exclusive lock, which is the write-side conversion."""
+        path = self._draft_path(pipeline_id)
+        # Only lock a draft that EXISTS. `locked()` creates its sentinel on acquire, so
+        # locking unconditionally would litter drafts_dir with a .lock for every id ever
+        # asked about — including typos and discarded drafts.
+        if not path.exists():
+            return self._drafts.get(pipeline_id)
+        try:
+            with _store_lock.locked(path, shared=True):
+                on_disk = self._read_draft_file(pipeline_id)
+        except _store_lock.StoreLockTimeout:
+            # A writer is mid-write. Its in-flight bytes are NOT a better answer than our
+            # last known-good copy, and blocking a read forever is worse than both.
+            return self._drafts.get(pipeline_id)
+        if on_disk is None:
+            return self._drafts.get(pipeline_id)
+        self._drafts[pipeline_id] = on_disk
+        return on_disk
+
+    def all_drafts(self) -> dict[str, dict]:
+        """Every draft, keyed by pipeline_id, re-read from disk.
+
+        Exists so no caller outside this class has to touch `self._drafts` — the one
+        that did (`agent_status`) reported whatever the server saw at startup, which is
+        exactly the staleness `get_draft` above fixes. Readers that reach past the API
+        into the cache do not get the fix."""
+        out: dict[str, dict] = {}
+        for pid in set(self._drafts) | self._known_draft_ids():
+            draft = self.get_draft(pid)
+            if draft is not None:
+                out[pid] = draft
+        return out
+
+    def _known_draft_ids(self) -> set[str]:
+        """Draft ids present on disk right now, across both the drafts dir and the
+        legacy pipelines dir. One reading of "which drafts exist", shared by
+        `all_drafts` and `_load_existing_drafts`."""
+        ids: set[str] = set()
+        for d in self._draft_scan_dirs():
+            if d.exists():
+                ids.update(f.name.removesuffix(".draft.yaml") for f in d.glob("*.draft.yaml"))
+        return ids
+
+    def _draft_scan_dirs(self) -> list[Path]:
+        dirs = [self.drafts_dir]
+        if self.pipelines_dir != self.drafts_dir:
+            dirs.append(self.pipelines_dir)
+        return dirs
 
     def pop_for_finalize(self, pipeline_id: str) -> Optional[dict]:
         """Remove the in-memory draft and return it. Caller deletes the file."""
@@ -595,7 +671,11 @@ class PipelineState:
             mode="w", dir=str(path.parent),
             prefix=path.stem, suffix=".tmp", delete=False,
         ) as f:
-            yaml.dump(draft, f, default_flow_style=False, sort_keys=False)
+            # safe_dump, not dump: the READER is `yaml.safe_load` (`_read_draft_file`), so
+            # the unsafe dumper could emit a `!!python/...` tag its own reader refuses —
+            # a draft writable but not readable. Harmless while writes came from one
+            # in-memory copy; silently fatal now that every read goes back to disk.
+            yaml.safe_dump(draft, f, default_flow_style=False, sort_keys=False)
             tmp = f.name
         os.replace(tmp, path)
 
@@ -615,11 +695,8 @@ class PipelineState:
         """Recover drafts from disk on server startup. Scans both the new
         drafts_dir AND the legacy pipelines_dir location so an upgrade picks
         up drafts that pre-date the split. New writes always go to drafts_dir."""
-        scan_dirs = [self.drafts_dir]
-        if self.pipelines_dir != self.drafts_dir:
-            scan_dirs.append(self.pipelines_dir)
         seen: set[str] = set()
-        for d in scan_dirs:
+        for d in self._draft_scan_dirs():
             if not d.exists():
                 continue
             for f in d.glob("*.draft.yaml"):

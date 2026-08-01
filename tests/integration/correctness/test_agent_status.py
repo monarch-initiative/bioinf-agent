@@ -35,9 +35,16 @@ from agent.skills.agent_status import (
 # ---------------------------------------------------------------------------
 
 class _FakePipelineState:
-    """Minimal stand-in for PipelineState that exposes _drafts."""
+    """Minimal stand-in for PipelineState.
+
+    Exposes `all_drafts()`, the public accessor — NOT the `_drafts` map. agent_status
+    used to read the map directly and so reported whatever the server saw at startup;
+    a fake that keeps offering the private attribute would let that regress unnoticed."""
     def __init__(self, drafts: dict | None = None):
         self._drafts = drafts or {}
+
+    def all_drafts(self) -> dict:
+        return self._drafts
 
 
 class _FakeEnvCache:

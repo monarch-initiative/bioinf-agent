@@ -38,19 +38,22 @@ from agent.skills.outcomes import broke
 # ---------------------------------------------------------------------------
 
 def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
-    """In-progress pipeline drafts the agent has been building. Reads the
-    `PipelineState._drafts` dict directly — every entry is a draft that
-    hasn't been discarded yet (a sealed draft persists — seal doesn't pop it —
-    so `state` may read 'sealed')."""
+    """In-progress pipeline drafts the agent has been building. Every entry is a draft
+    that hasn't been discarded yet (a sealed draft persists — seal doesn't pop it — so
+    `state` may read 'sealed').
+
+    Goes through `all_drafts()`, which re-reads from disk. It used to read the
+    `_drafts` map directly and therefore reported whatever the server saw at STARTUP:
+    after a `freeze(background=True)`, the child wrote `frozen_as` and exited while this
+    panel went on showing `env_built` forever. Reaching past the API into the cache is
+    exactly what does not get the re-read."""
     from agent.skills.pipeline_state import current_state, state_checks
     try:
         out: list[dict] = []
         # ONE lifecycle answer per draft, re-earned from the artifacts — replaces
         # the dead env_status/pipeline_status nominal stamps (Phase-3 Piece B).
         checks = state_checks(env_cache, reports_dir)
-        # Best-effort access to the internal map; defensive in case the
-        # PipelineState API gains a public accessor later.
-        drafts = getattr(pipeline_state, "_drafts", {}) or {}
+        drafts = pipeline_state.all_drafts() or {}
         drafts_dir = getattr(pipeline_state, "drafts_dir", None)
         for pid, draft in drafts.items():
             row = {
