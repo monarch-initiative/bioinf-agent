@@ -1,5 +1,5 @@
 {
- "probed_on": "2026-07-20",
+ "probed_on": "2026-08-01",
  "source": "Mined by workflow wf_432b6933-fcf (6 scenario families, live-probed against real registries), structured + adversarially verified by wf_dea34e43-d9d. Every row's actual_today was reproduced against the live resolver; expectations survived a refutation pass that rewrote 79 things and killed several rows outright.",
  "rows": [
   {
@@ -1592,11 +1592,11 @@
     "unassertable_reason": null
    },
    "actual_today": {
-    "chosen": "pip",
-    "ambiguous": false,
+    "chosen": null,
+    "ambiguous": true,
     "install_call_poisoned": false,
     "authors_gate": "no_repo",
-    "refusal_reason": null,
+    "refusal_reason": "needs_user_input",
     "pins_requested_version": false
    },
    "is_correct_today": false,

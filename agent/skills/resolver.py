@@ -351,13 +351,10 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     return {"available": False, **({"probe_error": err} if err else {})}
 
 
-def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
-    """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
-    resolve() can confirm a same-name CRAN hit references the same project.
-
-    `summary` is CRAN's Title + Description — the identity evidence. CRAN's
-    `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
-    10x Genomics' Cell Ranger; the name is all they share."""
+def _probe_cran_exact(name: str, timeout: int) -> dict[str, Any]:
+    """One crandb lookup, exactly as spelled. `resolved_name` is ALWAYS set on a
+    hit — the name CRAN actually knows the package by, which is not necessarily
+    the name that was asked for (see `probe_cran`)."""
     data, err = _fetch_json(f"https://crandb.r-pkg.org/{name}", timeout)
     if isinstance(data, dict) and data.get("Package"):
         summary = " — ".join(x for x in ((data.get("Title") or "").strip(),
@@ -368,8 +365,64 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
             "summary": re.sub(r"\s+", " ", summary)[:400],
             "url": data.get("URL") or "",
             "bug_reports": data.get("BugReports") or "",
+            # CRAN's own spelling, not ours. `install.packages()` is case-SENSITIVE,
+            # so this is what has to reach the install_call — never the query.
+            "resolved_name": data.get("Package"),
         }
     return {"available": False, **({"probe_error": err} if err else {})}
+
+
+def _cran_case_variants(name: str) -> list[str]:
+    """Mechanical capitalizations to retry a CLEAN CRAN miss with, at most 2.
+
+    Deliberately mechanical and tiny rather than smart: CRAN package names are
+    case-sensitive but conventionally either all-lower (`ggplot2`, `data.table`)
+    or capitalized (`Seurat`, `Matrix`). A caller who typed mixed case meant it,
+    so we do not second-guess them — only an all-one-case query is retried."""
+    if not name or not (name.islower() or name.isupper()):
+        return []
+    lower = name.lower()
+    out: list[str] = []
+    for cand in (lower.capitalize(),
+                 re.sub(r"(^|[-._])([a-z])", lambda m: m.group(1) + m.group(2).upper(), lower)):
+        if cand != name and cand not in out:
+            out.append(cand)
+    return out[:2]
+
+
+def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
+    """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
+    resolve() can confirm a same-name CRAN hit references the same project.
+
+    `summary` is CRAN's Title + Description — the identity evidence. CRAN's
+    `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
+    10x Genomics' Cell Ranger; the name is all they share.
+
+    CASE. crandb.r-pkg.org is case-SENSITIVE: `/seurat` 404s while `/Seurat`
+    returns 5.5.1. Before this, the resolver's answer depended on the shift key —
+    `resolve('seurat')` returned `install_pip_package(env, "seurat", version="0.0.2")`,
+    an empty PyPI squat with no summary at all and no warning, while `resolve('Seurat')`
+    correctly refused as ambiguous. So a clean miss is retried against at most two
+    mechanical capitalizations.
+
+    TWO RULES, both load-bearing:
+      * Only a CLEAN miss is retried. A `probe_error` means crandb did not ANSWER,
+        and retrying it into an absence is the ABSENT-≠-UNCHECKED failure that
+        `test_probe_honesty.py` exists to prevent. On an error we stop and report it.
+      * The hit carries `resolved_name` — CRAN's spelling — and callers must build
+        the install_call from THAT, never from the query. `install.packages()` is
+        itself case-sensitive, so a probe that found `Seurat` while the call still
+        said `seurat` would trade a wrong package for a broken one."""
+    rec = _probe_cran_exact(name, timeout)
+    if rec.get("available") or rec.get("probe_error"):
+        return rec
+    for cand in _cran_case_variants(name):
+        alt = _probe_cran_exact(cand, timeout)
+        if alt.get("available"):
+            return {**alt, "queried_name": name}
+        if alt.get("probe_error"):
+            break                      # never retry an error into an absence
+    return rec
 
 
 def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
@@ -1227,6 +1280,36 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
     }
 
 
+def registry_name(detail: dict, tool: str) -> str:
+    """THE one reading of "what does this registry ACTUALLY call this package?".
+
+    A registry's name for a package is frequently not the name a user types:
+      * bioconda ships DESeq2 as `bioconductor-deseq2` — there is no bare `deseq2`
+      * conda-forge ships R packages as `r-{name}`
+      * CRAN knows Seurat as `Seurat`, and `install.packages()` is case-SENSITIVE
+
+    Three keys, one question. They were spelled separately at three call sites and
+    the third — the DISCLOSURE that tells the user the name changed — read only
+    `bioc_spec`, so `resolve('Seurat', language='r')` emitted an install of
+    `r-Seurat` with no mention that the name had been rewritten at all. That is the
+    `feedback-reports-never-lie` failure (requested-vs-installed at a glance) and
+    the repo's signature defect (one truth in N places, drifting in N−1) in one
+    line. Add a fourth registry convention HERE, never at a call site."""
+    return (detail.get("bioc_spec") or detail.get("r_spec")
+            or detail.get("resolved_name") or tool)
+
+
+def registry_name_note(detail: dict, tool: str) -> str:
+    """The disclosure for `registry_name`, or "" when the name was not rewritten.
+    Always emitted alongside a rewritten name — a silent rewrite is the thing this
+    pair exists to prevent."""
+    name = registry_name(detail, tool)
+    if name == tool:
+        return ""
+    return (f"  # NAME MAPPED: you asked for '{tool}'; this registry's package is "
+            f"'{name}' — verify that is the tool you meant")
+
+
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:
     v = version or detail.get("latest") or ""
     if tier == "author_image":
@@ -1243,11 +1326,7 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
                 f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
                 f'  # build the authors\' {path}, don\'t reconstruct')
     if tier == "conda":
-        # bioc_spec: `bioconductor-{name}` when a bare Bioconductor name resolved via the
-        # bioconda fallback; r_spec: `r-{name}` for an R tool via conda. Either overrides the
-        # bare tool name so the emitted call names the package that ACTUALLY exists on the
-        # channel (bioconda has no `deseq2`, only `bioconductor-deseq2`).
-        base = detail.get("bioc_spec") or detail.get("r_spec") or tool
+        base = registry_name(detail, tool)
         spec = f"{base}={v}" if v else base
         return f'install_conda_packages(env, [{{"spec": "{spec}", "channel": "{detail.get("channel","bioconda")}"}}])'
     if tier == "pip":
@@ -1324,7 +1403,7 @@ def pullable_image(availability: dict[str, dict], tool: str,
 
     conda = availability.get("conda") or {}
     if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
-        spec = conda.get("bioc_spec") or conda.get("r_spec") or tool
+        spec = registry_name(conda, tool)
         try:
             bc = _resolve_biocontainer(
                 [(spec, version or conda.get("latest") or None)], timeout=timeout)
@@ -1365,7 +1444,13 @@ def resolve(
     if language == "r":
         rconda = probe_conda(f"r-{tool}", timeout)
         if rconda.get("available"):
-            rconda["r_spec"] = f"r-{tool}"
+            # LOWERCASE, like the bioc producer below. The anaconda API is case-TOLERANT
+            # (`r-Seurat` and `r-seurat` both answer 5.5.1), so the probe passes either way and
+            # the bug hides — but `spec` flows verbatim into `conda install` (env_manager.py),
+            # where channel package names are canonically lowercase. Without this,
+            # `resolve('Seurat', language='r')` emitted `r-Seurat=5.5.1`: the CALLER's spelling
+            # presented as the channel's.
+            rconda["r_spec"] = f"r-{tool.lower()}"
         availability["conda"]        = rconda
         availability["cran"]         = probe_cran(tool, timeout)
         availability["bioconductor"] = probe_bioconductor(tool, timeout)
@@ -1815,17 +1900,30 @@ def resolve(
     # NAME-MAPPING HONESTY. When the pick came via the bioconductor→conda fold, the emitted
     # call names `bioconductor-{tool}`, not the `{tool}` the caller typed — say so up front so
     # a reader sees requested-vs-installed at a glance, never a silent substitution.
-    _bioc_spec = availability.get("conda", {}).get("bioc_spec") if chosen == "conda" else None
-    if _bioc_spec:
-        # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror), so
-        # hardcoding "not on CRAN" would contradict the resolver's own probe (and the `cran`
-        # that appears in this same rationale as a lower-priority alternative) — a report lie.
-        _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
-        decision["rationale"] = (
-            f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
-            f"'{_bioc_spec}' (not the bare name{_cran_clause}). "
-            + decision.get("rationale", "")
-        )
+    # This clause used to read ONLY `bioc_spec`, so the two OTHER ways a name gets rewritten
+    # went out silently: `r_spec` (`resolve('Seurat', language='r')` installed `r-Seurat` with
+    # no mention) and CRAN's `resolved_name` (crandb is case-sensitive, so the query and the
+    # package name differ). It now asks `registry_name` — the same leaf the install_call and
+    # the biocontainer lookup use — so the disclosure cannot disagree with what gets installed.
+    _chosen_detail = availability.get(chosen, {}) if chosen else {}
+    _mapped_name = registry_name(_chosen_detail, tool)
+    if _mapped_name != tool:
+        if _chosen_detail.get("bioc_spec"):
+            # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror),
+            # so hardcoding "not on CRAN" would contradict the resolver's own probe (and the
+            # `cran` in this same rationale as a lower-priority alternative) — a report lie.
+            _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
+            decision["rationale"] = (
+                f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
+                f"'{_mapped_name}' (not the bare name{_cran_clause}). "
+                + decision.get("rationale", "")
+            )
+        else:
+            decision["rationale"] = (
+                f"NAME MAPPED: you asked for '{tool}'; the {chosen} registry knows this package "
+                f"as '{_mapped_name}', and the emitted call installs THAT — confirm it is the "
+                f"tool you meant. " + decision.get("rationale", "")
+            )
     if cross_namespace_collisions:
         # Surface the rejection prominently so an agent reading the rationale
         # sees WHY pip/cran was disqualified — silence here would mask the very
