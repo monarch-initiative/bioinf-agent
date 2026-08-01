@@ -153,6 +153,53 @@ def derive_pipeline_status(steps: list) -> str:
     return "complete"
 
 
+# Fields whose ABSENCE is a known late-seal trap: the invariants all pass, then the
+# model refuses at write time. Pydantic names the field but not the remedy, and by then
+# every expensive step is already done. THE GATE IS THE GUIDE — the knowledge about how
+# to satisfy a refusal belongs AT the refusal, not in prose the agent must pre-load every
+# session to avoid tripping it. A refusal that only says "no" gets worked around; one
+# that says "here" gets fixed.
+_SHAPE_FIX = {
+    "usage.description":
+        "a one-line human sentence saying what the how-to does. Required whenever a "
+        "`usage` block is present, and NO invariant checks it — so it surfaces only "
+        "here, after everything else passed.",
+    "usage.command_template":
+        "a str, or a list[str] for a multi-phase how-to (one command per entry, run in "
+        "order in one shared working dir).",
+    "usage.inputs":  "one entry per input, each with a `format`.",
+    "usage.outputs": "one entry per output, each with a `files` glob. An EMPTY outputs "
+                     "list makes the self-test `not_attempted`, never `verified` — with "
+                     "nothing declared a trial can only prove the command exits 0, which "
+                     "`touch` also does.",
+}
+
+
+def _shape_fix_hint(err: Exception) -> str:
+    """Turn a pydantic ValidationError into a remedy the caller can act on.
+
+    Never replaces the raw error — the evidence stays. This only adds the 'and here is
+    how to supply it' half, plus the primitive that writes these fields, because every
+    agent-authored key on a draft goes through exactly one door (`patch_pipeline`) and
+    an agent that does not know that reaches for the wrong one."""
+    errors = getattr(err, "errors", None)
+    if not callable(errors):
+        return ""
+    lines: list[str] = []
+    try:
+        for e in errors():
+            path = ".".join(str(p) for p in e.get("loc", ()) if not isinstance(p, int))
+            remedy = _SHAPE_FIX.get(path)
+            lines.append(f"{path}: {remedy}" if remedy
+                         else f"{path}: {e.get('msg', 'invalid')}")
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+    return ("Supply these on the draft with "
+            "patch_pipeline(pipeline_id, {...}) and seal again — " + " | ".join(lines))
+
+
 def write_workflow_spec(workflow: dict, config: dict) -> dict:
     """Validate + write a Layer-2 WorkflowSpec as YAML.
 
@@ -160,6 +207,7 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     (run_dashboard_html), NOT a markdown guide — the markdown GUIDE.md is retired.
     Any legacy `user_guide` markdown on the workflow dict is dropped here (never
     inlined in the YAML, never written to disk)."""
+    # (helper below is module-level; see _shape_fix_hint)
     from agent.models.core_data import WorkflowSpec
 
     project_root = Path(__file__).parent.parent.parent.resolve()
@@ -168,7 +216,9 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     try:
         wf = WorkflowSpec.model_validate(workflow)
     except Exception as e:
-        return refused("spec_writer.validation_failed", error=f"WorkflowSpec validation failed: {e}")
+        return refused("spec_writer.validation_failed",
+                       error=f"WorkflowSpec validation failed: {e}",
+                       fix=_shape_fix_hint(e))
 
     name = wf.workflow_name
     yaml_path = out_dir / f"{name}.workflow.yaml"
