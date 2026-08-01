@@ -51,6 +51,10 @@ OWNED_BY = {
     "validation_status":  "step_is_validated",
     "license_gated":      "record_is_gated",
     "gated":              "record_is_gated",
+    # Registered WITH the field, not after it drifted — this one had two readers within
+    # an hour of being introduced (the seal-side check and the production data-pin
+    # check), which is how fast the class recurs when nothing is watching.
+    "content_anchors":    "test_data_anchors",
 }
 
 #: "<path>:<field>" -> why reading it raw here is correct.

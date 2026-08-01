@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from agent.models import core_data as _core_data
 from agent.models.core_data import (USAGE_LABELS, step_is_validated, usage_commands,
                                     usage_status)
 from agent.skills.env_report_html import (
@@ -378,11 +379,32 @@ def _render_inputs(spec: dict) -> str:
              '<span class="note">what the validated run consumed (I8 provenance)</span></h2>')
     P.append('<div class="bx-body">')
     if td:
-        keys = [k for k in ("r1", "r2", "vcf", "bam", "reference_fasta", "file", "core_data_dir")
-                if td.get(k)]
-        if keys:
-            P.append('<h3 class="sub">Test data</h3>')
-            P.append(_kv_table([(k, f'<code>{_e(td[k])}</code>') for k in keys]))
+        # Paths via the leaf — this list used to be a FOURTH hand-spelling of the
+        # test_data key set, and the panel showed a bare path beside reference DBs and
+        # authored artifacts that show their sha256, so unpinned data read as pinned.
+        paths = _core_data.test_data_paths(td)
+        if paths:
+            anchors = _core_data.test_data_anchors(td)
+            status = ((spec.get("test_data_integrity") or {}).get("status")
+                      if isinstance(spec.get("test_data_integrity"), dict) else None)
+            note = {"verified": "re-verified at seal against the bytes selected",
+                    "unanchored": "NOT content-anchored — these paths were recorded "
+                                  "before anchoring existed, so only their presence is proven",
+                    "diverged": "CONTENT DIVERGED from what was selected"}.get(status or "", "")
+            P.append('<h3 class="sub">Test data'
+                     + (f' <span class="note">{_e(note)}</span>' if note else "") + "</h3>")
+            rows = []
+            for k, raw in sorted(paths.items()):
+                sha = (anchors.get(k) or {}).get("sha256")
+                kind = (anchors.get(k) or {}).get("kind")
+                pin = (f'<code>{_e(sha[:19])}…</code>' if sha
+                       else ("directory (no single hash)" if kind == "directory"
+                             else "<em>not anchored</em>"))
+                rows.append(f'<tr><td>{_e(k)}</td><td><code>{_e(raw)}</code></td>'
+                            f'<td>{pin}</td></tr>')
+            P.append('<div class="tbl-wrap"><table>'
+                     '<tr><th>Slot</th><th>Path</th><th>sha256</th></tr>'
+                     + "".join(rows) + "</table></div>")
     if rdbs:
         P.append('<h3 class="sub">Reference databases</h3>')
         rows = "".join(

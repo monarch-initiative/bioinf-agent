@@ -32,6 +32,9 @@ _REPO = Path(__file__).resolve().parent.parent
 
 # Contract-clean EnvCache record builders live in tests/env_records.py — importable as
 # `from env_records import env_record, env_evidence` from anywhere in the suite.
+# Real on-disk fixture inputs live in tests/real_inputs.py, same import style: the
+# Layer-2 external-source clauses stat and hash what a spec declares, so a fixture that
+# names `/abs/x.bam` is describing a workflow the seal is built to refuse.
 
 
 # --- the hermetic tier must actually be hermetic -----------------------------------

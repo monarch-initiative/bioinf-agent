@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 import yaml
 
+from agent.models import core_data as _core_data
 from agent.models.core_data import step_is_validated, usage_commands
 from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
@@ -919,6 +920,14 @@ def check_invariants(spec: dict) -> list[dict]:
     violations.extend(_check_authored_artifact_integrity(spec))
 
     # ------------------------------------------------------------------
+    # I8 (test-data integrity): the same re-anchoring for the external source
+    # the documented protocol actually tells the agent to produce. See
+    # `verify_test_data` — until this existed, test_data was the one input
+    # source whose paths were read only as strings to widen I8's universe.
+    # ------------------------------------------------------------------
+    violations.extend(_check_test_data_integrity(spec))
+
+    # ------------------------------------------------------------------
     # I8 (lineage integrity): file-type-agnostic universal lineage. When a
     # step's input path matches a prior step's output, the on-disk bytes must
     # match the producer's recorded sha256 from run time. Catches an agent
@@ -1149,6 +1158,148 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
     return violations
 
 
+#: `test_data_integrity` states which of the three it is, so a reader never has to infer
+#: "no complaint" from an absent field. Mirrors the three-state usage verdict.
+TEST_DATA_VERIFIED = "verified"
+TEST_DATA_UNANCHORED = "unanchored"
+TEST_DATA_DIVERGED = "diverged"
+TEST_DATA_NOT_ATTEMPTED = "not_attempted"
+
+
+def verify_test_data(spec: dict) -> dict:
+    """Re-anchor every `test_data` path against disk. THE reader for "is this run's
+    test data the test data it was selected against?" (Named `verify_…` rather than
+    `test_data_…`: pytest COLLECTS any imported callable whose name starts with `test_`,
+    so the obvious name turns every test module that imports it into a broken fixture
+    request. The field it produces on the spec is `test_data_integrity`.)
+
+    The last external input source with no content check. Every other one is pinned —
+    reference_databases by I5, authored_artifacts by the re-hash above, runtime_configs
+    by their recorded sha256 — while `test_data`, which step 3 of the documented protocol
+    tells the agent to produce, was accepted purely as a set of strings that made I8's
+    universe bigger. Verified by reproduction before this was written: a spec whose
+    `test_data.r1` pointed at `/nope/ghost.fastq.gz` sealed green, and so did one whose
+    input file was rewritten with entirely different reads between two seal calls.
+
+    Returns {status, checked, anchored, violations[]}:
+      - EXISTENCE + NON-EMPTY are unconditional. They need no recorded anchor — the
+        artifact is either there or it is not — so they close the hole for legacy blocks
+        too, and they are the half that catches the common real failure (a scratch dir
+        cleaned up between the run and the seal).
+      - SIZE / SHA256 drift are checked only against an anchor `select_test_data`
+        recorded. Seal NEVER writes one: an anchor first observed here would be compared
+        against itself moments later and manufacture its own agreement, which is exactly
+        how I5's cluster branch spent months proving nothing.
+      - A path with no anchor is `unanchored` — reported as a third state, never rounded
+        up to a pass. That is the honest landing for the specs sealed before anchors
+        existed and for any block that reached the draft outside the primitive."""
+    td = spec.get("test_data")
+    paths = _core_data.test_data_paths(td)
+    if not paths:
+        return {"status": TEST_DATA_NOT_ATTEMPTED, "checked": 0, "anchored": 0,
+                "violations": []}
+
+    recorded_anchors = _core_data.test_data_anchors(td)
+
+    violations: list[dict] = []
+    anchored = 0
+    for key, raw in sorted(paths.items()):
+        where = f"test_data.{key}"
+        p = _core_data.resolve_data_path(raw)
+        if not p.exists():
+            violations.append({
+                "invariant": "I8.test_data_missing",
+                "message":   f"test_data.{key} points at {raw}, which is not on disk — the "
+                             f"run's declared input is gone, so nothing about this workflow's "
+                             f"inputs can be reproduced or re-checked",
+                "where": where, "path": str(p),
+            })
+            continue
+        try:
+            empty = (not any(p.iterdir())) if p.is_dir() else p.stat().st_size == 0
+        except OSError:
+            empty = False
+        if empty:
+            violations.append({
+                "invariant": "I8.test_data_empty",
+                "message":   f"test_data.{key} exists but is empty "
+                             f"({'no entries' if p.is_dir() else 'zero bytes'}): {raw} — an "
+                             f"empty input is as unusable as a missing one",
+                "where": where, "path": str(p),
+            })
+            continue
+
+        # ANCHORED means "the producer recorded what this artifact WAS", which for a
+        # directory is its kind and nothing else — a tree has no single hash. Gating on
+        # "has a digest" instead would make a block containing `core_data_dir` (which
+        # `select_test_data` emits on every match) permanently un-verifiable, so the
+        # happy path could never reach `verified` and the third state would mean nothing.
+        rec = recorded_anchors.get(key) or {}
+        kind = rec.get("kind")
+        if kind == "directory":
+            anchored += 1
+            continue
+        if kind != "file" or not (rec.get("sha256") or rec.get("size_bytes")):
+            continue                       # unanchored — counted below, never a violation
+        anchored += 1
+        if p.is_dir():
+            # Recorded as a file, now a directory: not a hash mismatch, a swap.
+            violations.append({
+                "invariant": "I8.test_data_kind_changed",
+                "message":   f"test_data.{key} was anchored as a file and is now a "
+                             f"directory: {raw}",
+                "where": where, "path": str(p),
+            })
+            continue
+
+        now = _core_data.anchor_for_path(p)
+        if now is None:
+            violations.append({
+                "invariant": "I8.test_data_unreadable",
+                "message":   f"test_data.{key} could not be re-read at seal time: {raw}",
+                "where": where, "path": str(p),
+            })
+            continue
+        rec_size, rec_sha = rec.get("size_bytes"), rec.get("sha256")
+        if isinstance(rec_size, int) and now.size_bytes is not None and now.size_bytes != rec_size:
+            violations.append({
+                "invariant": "I8.test_data_size_mismatch",
+                "message":   f"test_data.{key} size changed since it was selected: recorded "
+                             f"{rec_size} bytes, on disk {now.size_bytes} — the input was "
+                             f"truncated, replaced, or re-downloaded to different content",
+                "where": where, "path": str(p),
+                "recorded_size_bytes": rec_size, "disk_size_bytes": now.size_bytes,
+            })
+            continue
+        # `now.sha256` is None only above the hash cap, where the size check above is the
+        # anchor. Comparing None to a recorded digest would read as a mutation.
+        if rec_sha and now.sha256 and now.sha256 != rec_sha:
+            violations.append({
+                "invariant": "I8.test_data_mutated",
+                "message":   f"test_data.{key} bytes changed since it was selected: recorded "
+                             f"sha256={rec_sha[:12]}..., on disk={now.sha256[:12]}... — the run "
+                             f"was validated against different data than this path now holds",
+                "where": where, "path": str(p),
+                "recorded_sha256": rec_sha, "disk_sha256": now.sha256,
+            })
+
+    # `diverged` never reaches disk — seal refuses on the violations — but this function
+    # is a public reader, and returning "unanchored" for an input that WAS anchored and
+    # then changed underneath us would be the wrong word for the worst case.
+    if violations:
+        status = TEST_DATA_DIVERGED
+    elif anchored == len(paths):
+        status = TEST_DATA_VERIFIED
+    else:
+        status = TEST_DATA_UNANCHORED
+    return {"status": status, "checked": len(paths), "anchored": anchored,
+            "violations": violations}
+
+
+def _check_test_data_integrity(spec: dict) -> list[dict]:
+    return verify_test_data(spec)["violations"]
+
+
 def _check_authored_artifact_integrity(spec: dict) -> list[dict]:
     """Re-anchor every authored_artifact against its on-disk bytes at seal
     time. Each entry was sha256-anchored by stage_authored_artifact when it
@@ -1355,11 +1506,11 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
 
     external_paths: set[str] = set()
 
-    td = spec.get("test_data") or {}
-    if isinstance(td, dict):
-        for k in ("r1", "r2", "vcf", "tbi", "bam", "bai", "ped",
-                  "reference_fasta", "core_data_dir", "file"):
-            _add_external(td.get(k))
+    # THE one reading of "which test_data values are paths" — this used to be a fixed
+    # key tuple here and a "starts with /" scan in data_pins, and they disagreed on both
+    # axes. See core_data.test_data_paths.
+    for _path in _core_data.test_data_paths(spec.get("test_data")).values():
+        _add_external(_path)
 
     for rdb in spec.get("reference_databases", []) or []:
         if isinstance(rdb, dict):

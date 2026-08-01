@@ -43,6 +43,7 @@ Used by:
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
 
 import yaml
@@ -1021,6 +1022,139 @@ def record_is_gated(record: dict) -> bool:
     return bool(record.get("gated", False))
 
 
+class ContentAnchor(BaseModel):
+    """What an external input's bytes WERE when the runtime selected it.
+
+    An ANCHOR, not an observation: it is a claim about the past, written once by the
+    producer and thereafter only ever compared against. Seal must never refresh it —
+    that is the I5 laundering bug, where the refresh overwrote the pin moments before
+    the check read it and manufactured perfect agreement with itself.
+
+    `extra="forbid"` and NO defaults, per the typed-record-seam rule: every field is
+    required and `None` is a value the producer has to STATE. A directory has no single
+    content hash, so it states `sha256=None` rather than inheriting an empty string that
+    a reader could mistake for "hashed, and it was empty"."""
+    model_config = ConfigDict(extra="forbid")
+
+    kind:       Literal["file", "directory"]
+    #: None when there is no single hash to take: a directory, or a file above
+    #: ANCHOR_HASH_CAP_BYTES that we declined to read. Both are stated, not implied.
+    sha256:     Optional[str]
+    size_bytes: Optional[int]        # None iff kind == "directory"
+
+
+#: Above this we record size + existence instead of reading the whole file. Same value
+#: as the caps in `spec_writer._check_reference_database_availability` and
+#: `data_pins.HASH_CAP_BYTES` — an artifact that is size-anchored by one of them must be
+#: size-anchored by all of them, or two checks disagree merely because one gave up sooner.
+ANCHOR_HASH_CAP_BYTES = 2 * 1024 ** 3
+
+
+#: Repo root — `agent/models/core_data.py` → parents[2]. Relative test_data paths are
+#: relative to THIS, never to the CWD: the manifest builds them from `core_dir`, which is
+#: relative in the shipped config, and the MCP server's CWD is not guaranteed.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_data_path(path: Any, project_root: Optional[Path] = None) -> Path:
+    """Turn a `test_data` path — relative or absolute — into the file it names.
+
+    The other half of `test_data_paths`'s one-reading job. `_check_composition_coherence`
+    already knew relative paths anchor at the project root and did it inline; every other
+    reader either assumed absolute or silently resolved against the CWD."""
+    p = Path(str(path)).expanduser()
+    if p.is_absolute():
+        return p
+    return (project_root or _PROJECT_ROOT) / p
+
+
+def anchor_for_path(path: Any) -> Optional[ContentAnchor]:
+    """Observe `path` NOW and describe it as a ContentAnchor, or None if it is not there.
+
+    The producer's half of the anchor contract. The comparer (seal) calls this too and
+    diffs the result against what was recorded — so both sides see the same artifact
+    through the same eyes, including the hash cap. Two implementations of "what are these
+    bytes" is how a check ends up comparing a capped observation with an uncapped pin."""
+    import hashlib
+
+    p = Path(str(path)).expanduser()
+    try:
+        if p.is_dir():
+            return ContentAnchor(kind="directory", sha256=None, size_bytes=None)
+        if not p.is_file():
+            return None
+        size = p.stat().st_size
+        if size > ANCHOR_HASH_CAP_BYTES:
+            return ContentAnchor(kind="file", sha256=None, size_bytes=size)
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return ContentAnchor(kind="file", sha256=h.hexdigest(), size_bytes=size)
+    except OSError:
+        return None
+
+
+#: Keys in a `test_data` block whose value is a filesystem path.
+#:
+#: THE one reading — see `test_data_paths`. Suffix rules cover the open-ended cases
+#: (`*_path`, `*_dir`, `*_fasta`, …) so a producer adding `pod5_dir` or `truth_vcf` is
+#: covered without editing this tuple; the explicit names are the ones whose spelling
+#: gives no hint (`r1`, `bam`, `file`).
+TEST_DATA_PATH_KEYS = (
+    "r1", "r2", "vcf", "tbi", "bam", "bai", "cram", "crai", "ped", "bed", "gtf",
+    "reference_fasta", "fasta", "fai", "file", "provenance", "core_data_dir",
+)
+_TEST_DATA_PATH_SUFFIXES = ("_path", "_dir", "_file", "_fasta", "_vcf", "_bam", "_bed")
+
+
+def test_data_paths(test_data: Any) -> dict[str, str]:
+    """THE reader for "which values in a `test_data` block are filesystem paths?".
+
+    Returns {field_key: path}, empty for a block with none (or a non-dict).
+
+    Written out twice before this existed, and the two spellings disagreed on BOTH
+    axes — which is how the gap stayed invisible while each half looked fine:
+      * `spec_writer._check_composition_coherence` matched a fixed key list and
+        accepted relative paths (resolving them against the project root);
+      * `data_pins.sealed_anchors` matched ANY key but only values starting with "/".
+    `select_test_data` records paths built from the manifest's `core_dir`, which is
+    RELATIVE in the shipped config — so on both sealed specs that carry test_data,
+    the second reader saw zero of it. A production run's data check reported
+    "17 anchors" over a spec whose actual sequencing inputs it could not see at all.
+
+    Deliberately key-driven rather than "any string containing a slash": this set
+    feeds I8's external-source universe (where a wrong extra entry WIDENS what counts
+    as traceable) as well as the integrity check (where it narrows). A heuristic that
+    promotes `platform: "illumina/nextseq"` to an external source would loosen the
+    invariant, and loosening is the direction that fails silently."""
+    if not isinstance(test_data, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for key, val in test_data.items():
+        if not isinstance(key, str) or not isinstance(val, str) or not val:
+            continue
+        if val.startswith(("http://", "https://", "ftp://", "s3://", "{", "$", "<")):
+            continue
+        if key in TEST_DATA_PATH_KEYS or key.endswith(_TEST_DATA_PATH_SUFFIXES):
+            out[key] = val
+    return out
+
+
+def test_data_anchors(test_data: Any) -> dict[str, dict]:
+    """THE reader for a test_data block's recorded content anchors, {field_key: anchor}.
+
+    A leaf from birth rather than after the drift: `verify_test_data` and
+    `data_pins.sealed_anchors` both need it, and every previously-shared fact in this
+    file became a leaf only after its hand-copies had already disagreed in production."""
+    if not isinstance(test_data, Mapping):
+        return {}
+    raw = test_data.get("content_anchors")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): dict(v) for k, v in raw.items() if isinstance(v, Mapping)}
+
+
 class TestDataRef(BaseModel):
     """Reference to the test dataset used during pipeline validation."""
     model_config = ConfigDict(extra="allow")
@@ -1040,6 +1174,16 @@ class TestDataRef(BaseModel):
     reference_fasta:    Optional[str] = None
     core_data_dir:      Optional[str] = None
     upstream_pipelines: list[str] = []
+    #: {field_key: ContentAnchor} for every path in `test_data_paths(self)`, written by
+    #: the runtime (`select_test_data`) at SELECTION time and re-verified at seal. This
+    #: was the last external input source with no content anchor at all: every other one
+    #: is pinned (reference_databases by I5, authored_artifacts by I8's re-hash, runtime
+    #: configs by their sha256), so the documented happy path — step 3 of the protocol —
+    #: was the one that produced inputs nothing pinned. A `test_data.r1` could be deleted
+    #: or swapped for entirely different reads between selection and seal and the spec
+    #: sealed green, because the only thing ever checked was whether the path appeared in
+    #: I8's universe of strings.
+    content_anchors:    dict[str, ContentAnchor] = {}
 
 
 class InstallStep(BaseModel):
@@ -1427,6 +1571,12 @@ class WorkflowSpec(BaseModel):
     # source) can be re-checked against the artifact alone, not just the draft it
     # was sealed from.
     test_data:            Optional[TestDataRef] = None
+    # {status: verified|unanchored|not_attempted, checked, anchored}. Same reason
+    # `usage_verification` exists beside `usage_verified`: the invariant only ever emits
+    # a violation, so silence conflates "every input re-verified against the anchor
+    # recorded when it was selected" with "nothing was anchored, so nothing was compared".
+    # Renderers must consult this before claiming anything about the run's inputs.
+    test_data_integrity:  Optional[dict] = None
     reference_databases:  list[ReferenceDatabase] = []
     runtime_configs:      list[RuntimeConfig] = []
     authored_artifacts:   list[AuthoredArtifact] = []

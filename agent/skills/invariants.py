@@ -101,7 +101,14 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
     _inv(id="I8", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every pipeline_step input traces to a prior step's output or a declared "
                    "external source, and every traced artifact still hashes to what was recorded",
-         enforced_by="agent.skills.spec_writer.check_workflow_invariants"),
+         enforced_by="agent.skills.spec_writer.check_workflow_invariants",
+         note="The second clause reached authored_artifacts long before test_data, which "
+              "step 3 of the documented protocol tells the agent to produce: its paths "
+              "were read only as strings, to widen the traceable universe the first "
+              "clause walks. A test_data.r1 of /nope/ghost.fastq.gz sealed green. Closed "
+              "2026-07-31 (I8.test_data_missing/_empty/_mutated/_size_mismatch/"
+              "_kind_changed) against anchors select_test_data records at SELECTION "
+              "time; seal only ever compares, never writes one."),
     _inv(id="I10", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every declared service_dependency has at least one HEALTHY probe in its "
                    "health_check_log",

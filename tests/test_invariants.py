@@ -2953,15 +2953,19 @@ def test_non_conda_installs_includes_perl():
 
 
 def _selfverify_workflow(with_test_data: bool) -> dict:
+    # A REAL file: I8's test-data clause stats what the spec declares, so a workflow
+    # carrying `/abs/reads.fastq.gz` is one whose declared input isn't there.
+    from real_inputs import real_input
+    reads = real_input("reads.fastq.gz")
     step = {"step": 1, "returncode": 0,
-            "command": "seqkit stats -o /abs/out/stats.tsv /abs/reads.fastq.gz",
-            "inputs": [{"path": "/abs/reads.fastq.gz"}],
+            "command": f"seqkit stats -o /abs/out/stats.tsv {reads}",
+            "inputs": [{"path": reads}],
             "detected_outputs": ["/abs/out/stats.tsv"],
             "validation": {"stats.tsv": {"passed": True, "validation_method": "tsv_parse"}},
             "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 50.0}}
     spec = {"pipeline_name": "wf", "pipeline_steps": [step]}
     if with_test_data:
-        spec["test_data"] = {"r1": "/abs/reads.fastq.gz"}
+        spec["test_data"] = {"r1": reads}
     return spec
 
 
