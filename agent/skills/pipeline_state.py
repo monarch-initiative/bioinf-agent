@@ -89,28 +89,41 @@ class PipelineState:
     # ------------------------------------------------------------------
 
     def start(self, pipeline_name: str, description: str) -> dict:
-        """Initialize a draft, or resume the existing one (silent resume)."""
-        if pipeline_name in self._drafts:
-            return {
-                "pipeline_id": pipeline_name,
-                "draft_path": str(self._draft_path(pipeline_name)),
-                "resumed": True,
+        """Initialize a draft, or resume the existing one (silent resume).
+
+        Resume-vs-new is decided from the FILE, inside one lock — not from `self._drafts`.
+        Deciding it from the cache is the create-side of the same staleness bug the
+        mutators had, and it is the destructive one: a second process calling
+        `start("p")` saw "p" missing from its OWN map, created a fresh empty draft, and
+        persisted it over a draft the first process had been filling. Everything already
+        recorded — install steps, test data, validations — gone, and reported as a clean
+        new pipeline rather than as an error."""
+        path = self._draft_path(pipeline_name)
+        with _store_lock.locked(path):
+            existing = self._read_draft_file(pipeline_name)
+            if existing is not None:
+                self._drafts[pipeline_name] = existing
+                return {
+                    "pipeline_id": pipeline_name,
+                    "draft_path":  str(path),
+                    "resumed":     True,
+                }
+            # No env_status/pipeline_status stamp: they were written 'in_progress' here
+            # and NEVER transitioned, so they answered nothing while LOOKING like a
+            # state machine. `current_state()` derives the real lifecycle position from
+            # the artifacts on every read instead (Phase-3 Piece B).
+            draft = {
+                "pipeline_name":   pipeline_name,
+                "description":     description,
+                "packages":        [],
+                "install_steps":   [],
+                "pipeline_steps":  [],
             }
-        # No env_status/pipeline_status stamp: they were written 'in_progress' here
-        # and NEVER transitioned, so they answered nothing while LOOKING like a
-        # state machine. `current_state()` derives the real lifecycle position from
-        # the artifacts on every read instead (Phase-3 Piece B).
-        self._drafts[pipeline_name] = {
-            "pipeline_name":   pipeline_name,
-            "description":     description,
-            "packages":        [],
-            "install_steps":   [],
-            "pipeline_steps":  [],
-        }
-        self._persist(pipeline_name)
+            self._drafts[pipeline_name] = draft
+            self._write_draft_file(pipeline_name, draft)
         return {
             "pipeline_id": pipeline_name,
-            "draft_path":  str(self._draft_path(pipeline_name)),
+            "draft_path":  str(path),
             "resumed":     False,
         }
 
@@ -217,35 +230,43 @@ class PipelineState:
         """Remove the in-memory draft and return it. Caller deletes the file."""
         return self._drafts.pop(pipeline_id, None)
 
-    def mutate_on_disk(self, pipeline_id: str, apply) -> bool:
-        """Apply `apply(draft)` to the draft AS IT IS ON DISK, under the store lock.
+    def _mutate(self, pipeline_id: str, apply, default=None):
+        """THE ONE WRITE PATH. Lock, re-read from disk, apply, write, refresh the cache.
 
-        THE CROSS-PROCESS WRITE PATH. `self._drafts` is an in-memory cache populated at
-        construction and never re-read, which is correct for one process and wrong the
-        moment there are two — and there are two whenever `freeze(background=True)` is
-        used, a shipped feature that spawns a DETACHED SUBPROCESS. The subprocess builds
-        its own PipelineState, writes `frozen_as`, and exits; the parent still holds the
-        pre-freeze copy and erases the pointer on its next `_persist`. The freeze was
-        real and its record on the draft simply disappeared.
+        Returns `(ok, result)` — `ok=False` when there is no draft to mutate, in which
+        case `result` is `default` and NOTHING was written. Every mutator on this class
+        goes through here, which is what makes "did I remember to re-read?" un-askable
+        rather than merely answered correctly thirteen times.
 
-        So a writer that may be racing re-reads first: take the lock, load the file,
-        apply, write, and refresh the in-memory copy from what was actually written.
+        WHY NOT `_persist`: the old path read `self._drafts` (a cache filled once at
+        `__init__`), mutated it, and wrote the whole copy back under the lock. The lock
+        stopped the write from INTERLEAVING; it did nothing about the copy being stale.
+        A parent and a detached child mutating one draft therefore lost one side's edits
+        entirely — the child's install_step written, then erased by the parent's next
+        write of a draft it had read before the child ran.
 
-        THIS DOES NOT MAKE THE WHOLE STORE CONCURRENCY-SAFE, and the difference is worth
-        stating plainly rather than implying by omission. The ordinary mutators
-        (`add_step`, `patch`, `add_validation`, …) still edit `self._drafts` and persist
-        it wholesale, so two processes mutating the SAME draft through them still lose
-        one side's edits. That is acceptable today because only this pointer is written
-        cross-process; it is the thing to convert first when batch install lands."""
+        A FAILED RE-READ REFUSES; it does not fall back to the cached copy. That fallback
+        is precisely how a stale write gets laundered into a durable one: if the file is
+        gone the draft is gone, and if it is unreadable we must not overwrite it with a
+        guess. Refusing is recoverable; clobbering is not."""
         with _store_lock.locked(self._draft_path(pipeline_id)):
-            on_disk = self._read_draft_file(pipeline_id)
-            draft = on_disk if on_disk is not None else self._drafts.get(pipeline_id)
+            draft = self._read_draft_file(pipeline_id)
             if draft is None:
-                return False
-            apply(draft)
+                return False, default
+            result = apply(draft)
             self._drafts[pipeline_id] = draft
             self._write_draft_file(pipeline_id, draft)
-        return True
+        return True, result
+
+    def mutate_on_disk(self, pipeline_id: str, apply) -> bool:
+        """`_mutate` as a bool — kept for callers that only need "did it happen".
+
+        This was once the ONLY re-reading writer, carved out for `set_frozen_pointer`
+        because a detached `freeze(background=True)` child wrote `frozen_as` and the
+        parent's next whole-copy write erased it. Every mutator now takes that path, so
+        this is a thin wrapper rather than a special case."""
+        ok, _ = self._mutate(pipeline_id, apply)
+        return ok
 
     def set_frozen_pointer(self, pipeline_id: str, request_key: str) -> None:
         """Record which frozen env (by request_key) this pipeline produced, so
@@ -281,65 +302,52 @@ class PipelineState:
 
     def add_package(self, pipeline_id: str, package_record: dict) -> Optional[int]:
         """Append a PackageRecord, or update by name if it already exists."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return None
-        pkgs = draft.setdefault("packages", [])
-        for i, p in enumerate(pkgs):
-            if p.get("name") == package_record.get("name"):
-                pkgs[i] = {**p, **package_record}
-                self._persist(pipeline_id)
-                return i
-        pkgs.append(package_record)
-        self._persist(pipeline_id)
-        return len(pkgs) - 1
+        def _apply(draft):
+            pkgs = draft.setdefault("packages", [])
+            for i, p in enumerate(pkgs):
+                if p.get("name") == package_record.get("name"):
+                    pkgs[i] = {**p, **package_record}
+                    return i
+            pkgs.append(package_record)
+            return len(pkgs) - 1
+        return self._mutate(pipeline_id, _apply)[1]
 
     def cache_search_result(self, pipeline_id: str, name: str, entry: dict) -> bool:
         """Store search_package metadata (description, homepage, input/output types)
         keyed by package name. Used by spec_writer's finalize-time package
         derivation to annotate records without re-querying."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        cache = draft.setdefault("search_cache", {})
-        cache[name] = {**(cache.get(name) or {}), **entry}
-        self._persist(pipeline_id)
-        return True
+        def _apply(draft):
+            cache = draft.setdefault("search_cache", {})
+            cache[name] = {**(cache.get(name) or {}), **entry}
+        return self._mutate(pipeline_id, _apply)[0]
 
     def cache_verification(self, pipeline_id: str, name: str, entry: dict) -> bool:
         """Store verify_installation result (verify_command, verify_output)
         keyed by package name. Used by spec_writer's finalize-time package
         derivation to attach verification info to the rebuilt records."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        verifications = draft.setdefault("verifications", {})
-        verifications[name] = {**(verifications.get(name) or {}), **entry}
-        self._persist(pipeline_id)
-        return True
+        def _apply(draft):
+            verifications = draft.setdefault("verifications", {})
+            verifications[name] = {**(verifications.get(name) or {}), **entry}
+        return self._mutate(pipeline_id, _apply)[0]
 
     def patch_package(self, pipeline_id: str, package_name: str, patch: dict) -> bool:
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
+        def _apply(draft):
+            for p in draft.get("packages", []):
+                if p.get("name") == package_name:
+                    p.update(patch)
+                    return True
             return False
-        for p in draft.get("packages", []):
-            if p.get("name") == package_name:
-                p.update(patch)
-                self._persist(pipeline_id)
-                return True
-        return False
+        ok, found = self._mutate(pipeline_id, _apply, default=False)
+        return bool(ok and found)
 
     def set_conda_env(
         self, pipeline_id: str, env_name: str, python_version: str = ""
     ) -> bool:
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        draft["conda_env"] = env_name
-        if python_version:
-            draft["python_version"] = python_version
-        self._persist(pipeline_id)
-        return True
+        def _apply(draft):
+            draft["conda_env"] = env_name
+            if python_version:
+                draft["python_version"] = python_version
+        return self._mutate(pipeline_id, _apply)[0]
 
     def add_step(
         self,
@@ -388,56 +396,53 @@ class PipelineState:
         which then surfaced as duplicate installs in the freeze replay and
         required hand-editing the draft yaml to remove.
         """
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return None
-        steps = draft.setdefault(list_name, [])
-        if replace_step > 0 and replace_step <= len(steps):
-            existing = steps[replace_step - 1]
-            existing_rc = existing.get("returncode")
-            new_rc = step_data.get("returncode")
-            # ALWAYS remove the prior entry at this slot first — the user's
-            # contract: 'replace_step=N means throw away whatever was at N'.
-            # (N4 fix: this previously only happened in the edit-in-place
-            # branch; the smart-replace path appended without removing,
-            # leaving the failed entry behind.)
-            del steps[replace_step - 1]
-            if existing_rc not in (0, None) and new_rc == 0:
-                # Smart-replace: previous attempt failed, new succeeded → new
-                # lands at end (after any intervening successful steps).
-                new_index = len(steps) + 1
-                step_data = {**step_data, "step": new_index}
-                steps.append(step_data)
-                # Re-number any subsequent steps so step fields stay 1-based-
-                # contiguous (we just removed at replace_step - 1 and appended
-                # at end; everything between shifted down by one).
-                for i, st in enumerate(steps, start=1):
-                    if isinstance(st, dict):
-                        st["step"] = i
-                self._persist(pipeline_id)
-                return new_index
-            # Edit-in-place semantic (success-keeps-position OR rc unknown):
-            # merge the new fields over the existing record at the same slot.
-            merged = {**existing, **step_data, "step": replace_step}
-            # `validation` is captured OUT OF BAND (add_validation runs AFTER
-            # add_step), so a re-run's step_data never carries it — and the merge
-            # above would preserve the PRIOR command's per-file validation records.
-            # That silently violates the "throw away whatever was at N" contract:
-            # replacing an index-build step (8 .ht2 outputs validated 'any') with a
-            # fastqc step leaves the 8 stale 'any' records behind, which then fail
-            # I3.declared_output_type at seal even though the current step's outputs
-            # are all clean. A re-run re-validates its OWN outputs, so drop the
-            # inherited records unless the caller explicitly provided replacements.
-            if "validation" not in step_data:
-                merged.pop("validation", None)
-            steps.insert(replace_step - 1, merged)
-            self._persist(pipeline_id)
-            return replace_step
-        new_index = len(steps) + 1
-        step_data = {**step_data, "step": new_index}
-        steps.append(step_data)
-        self._persist(pipeline_id)
-        return new_index
+        def _apply(draft):
+            nonlocal step_data
+            steps = draft.setdefault(list_name, [])
+            if replace_step > 0 and replace_step <= len(steps):
+                existing = steps[replace_step - 1]
+                existing_rc = existing.get("returncode")
+                new_rc = step_data.get("returncode")
+                # ALWAYS remove the prior entry at this slot first — the user's
+                # contract: 'replace_step=N means throw away whatever was at N'.
+                # (N4 fix: this previously only happened in the edit-in-place
+                # branch; the smart-replace path appended without removing,
+                # leaving the failed entry behind.)
+                del steps[replace_step - 1]
+                if existing_rc not in (0, None) and new_rc == 0:
+                    # Smart-replace: previous attempt failed, new succeeded → new
+                    # lands at end (after any intervening successful steps).
+                    new_index = len(steps) + 1
+                    step_data = {**step_data, "step": new_index}
+                    steps.append(step_data)
+                    # Re-number any subsequent steps so step fields stay 1-based-
+                    # contiguous (we just removed at replace_step - 1 and appended
+                    # at end; everything between shifted down by one).
+                    for i, st in enumerate(steps, start=1):
+                        if isinstance(st, dict):
+                            st["step"] = i
+                    return new_index
+                # Edit-in-place semantic (success-keeps-position OR rc unknown):
+                # merge the new fields over the existing record at the same slot.
+                merged = {**existing, **step_data, "step": replace_step}
+                # `validation` is captured OUT OF BAND (add_validation runs AFTER
+                # add_step), so a re-run's step_data never carries it — and the merge
+                # above would preserve the PRIOR command's per-file validation records.
+                # That silently violates the "throw away whatever was at N" contract:
+                # replacing an index-build step (8 .ht2 outputs validated 'any') with a
+                # fastqc step leaves the 8 stale 'any' records behind, which then fail
+                # I3.declared_output_type at seal even though the current step's outputs
+                # are all clean. A re-run re-validates its OWN outputs, so drop the
+                # inherited records unless the caller explicitly provided replacements.
+                if "validation" not in step_data:
+                    merged.pop("validation", None)
+                steps.insert(replace_step - 1, merged)
+                return replace_step
+            new_index = len(steps) + 1
+            step_data = {**step_data, "step": new_index}
+            steps.append(step_data)
+            return new_index
+        return self._mutate(pipeline_id, _apply)[1]
 
     def mark_pipeline_step_validated(
         self,
@@ -447,15 +452,14 @@ class PipelineState:
     ) -> bool:
         """Set validation_status on pipeline_steps[step-1]. Returns False if
         the pipeline or step is unknown."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        steps = draft.get("pipeline_steps", [])
-        if step < 1 or step > len(steps):
-            return False
-        steps[step - 1]["validation_status"] = validation_status
-        self._persist(pipeline_id)
-        return True
+        def _apply(draft):
+            steps = draft.get("pipeline_steps", [])
+            if step < 1 or step > len(steps):
+                return False
+            steps[step - 1]["validation_status"] = validation_status
+            return True
+        ok, hit = self._mutate(pipeline_id, _apply, default=False)
+        return bool(ok and hit)
 
     def add_validation(
         self,
@@ -483,24 +487,19 @@ class PipelineState:
         A key rule enforced at five call sites is a key rule with five chances to differ;
         the store owns it now, so passing a bare basename simply files it under that
         basename and a path files it under the path."""
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        steps = draft.get("pipeline_steps", [])
-        if step < 1 or step > len(steps):
-            return False
-        s = steps[step - 1]
-        s.setdefault("validation", {})[validation_key(path)] = validation_result
-        self._persist(pipeline_id)
-        return True
+        def _apply(draft):
+            steps = draft.get("pipeline_steps", [])
+            if step < 1 or step > len(steps):
+                return False
+            s = steps[step - 1]
+            s.setdefault("validation", {})[validation_key(path)] = validation_result
+            return True
+        ok, hit = self._mutate(pipeline_id, _apply, default=False)
+        return bool(ok and hit)
 
     def set_test_data(self, pipeline_id: str, test_data: dict) -> bool:
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return False
-        draft["test_data"] = test_data
-        self._persist(pipeline_id)
-        return True
+        return self._mutate(
+            pipeline_id, lambda draft: draft.__setitem__("test_data", test_data))[0]
 
     def upsert_service_dependency(
         self, pipeline_id: str, name: str, fields: dict
@@ -516,26 +515,22 @@ class PipelineState:
         APPENDED to the existing list rather than replacing it — every probe
         observed by the runtime accumulates.
         """
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return None
-        deps = draft.setdefault("service_dependencies", [])
-        for i, d in enumerate(deps):
-            if isinstance(d, dict) and d.get("name") == name:
-                merged = dict(d)
-                for k, v in fields.items():
-                    if k == "health_check_log" and isinstance(v, list):
-                        existing = merged.get("health_check_log") or []
-                        merged["health_check_log"] = list(existing) + list(v)
-                    else:
-                        merged[k] = v
-                deps[i] = merged
-                self._persist(pipeline_id)
-                return i
-        new_entry = {"name": name, **fields}
-        deps.append(new_entry)
-        self._persist(pipeline_id)
-        return len(deps) - 1
+        def _apply(draft):
+            deps = draft.setdefault("service_dependencies", [])
+            for i, d in enumerate(deps):
+                if isinstance(d, dict) and d.get("name") == name:
+                    merged = dict(d)
+                    for k, v in fields.items():
+                        if k == "health_check_log" and isinstance(v, list):
+                            existing = merged.get("health_check_log") or []
+                            merged["health_check_log"] = list(existing) + list(v)
+                        else:
+                            merged[k] = v
+                    deps[i] = merged
+                    return i
+            deps.append({"name": name, **fields})
+            return len(deps) - 1
+        return self._mutate(pipeline_id, _apply)[1]
 
     def add_authored_artifact(self, pipeline_id: str, artifact: dict) -> Optional[int]:
         """Append (or replace by path) an AuthoredArtifact entry.
@@ -549,19 +544,16 @@ class PipelineState:
         Replace-by-path semantics means the agent can iterate on a script
         without leaving stale entries.
         """
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return None
-        artifacts = draft.setdefault("authored_artifacts", [])
-        target_path = artifact.get("path")
-        for i, a in enumerate(artifacts):
-            if a.get("path") == target_path:
-                artifacts[i] = artifact
-                self._persist(pipeline_id)
-                return i
-        artifacts.append(artifact)
-        self._persist(pipeline_id)
-        return len(artifacts) - 1
+        def _apply(draft):
+            artifacts = draft.setdefault("authored_artifacts", [])
+            target_path = artifact.get("path")
+            for i, a in enumerate(artifacts):
+                if a.get("path") == target_path:
+                    artifacts[i] = artifact
+                    return i
+            artifacts.append(artifact)
+            return len(artifacts) - 1
+        return self._mutate(pipeline_id, _apply)[1]
 
     # Top-level keys patch_pipeline is allowed to write. Anything else is
     # runtime-captured (pipeline_steps / install_steps / packages / validation
@@ -610,10 +602,9 @@ class PipelineState:
         those have to flow through their dedicated primitive so the spec's
         claims stay anchored to observed reality.
         """
-        draft = self._drafts.get(pipeline_id)
-        if draft is None:
-            return refused("pipeline_state.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}")
-
+        # Key validation needs no draft, so it stays OUTSIDE the lock — a rejected patch
+        # should not queue behind a writer, and holding the lock to answer "that key is
+        # not patchable" would serialise every caller on a question about a constant.
         rejected = [k for k in patches if k in self.BLOCKED_PATCH_KEYS]
         unknown  = [k for k in patches if k not in self.PATCHABLE_KEYS and k not in self.BLOCKED_PATCH_KEYS]
         if rejected:
@@ -640,8 +631,10 @@ class PipelineState:
                 patchable_keys=sorted(self.PATCHABLE_KEYS),
             )
 
-        _deep_merge(draft, patches)
-        self._persist(pipeline_id)
+        ok, _ = self._mutate(pipeline_id, lambda draft: _deep_merge(draft, patches))
+        if not ok:
+            return refused("pipeline_state.unknown_pipeline",
+                           error=f"unknown pipeline_id: {pipeline_id}")
         return {
             "draft_path":   str(self._draft_path(pipeline_id)),
             "patched_keys": list(patches.keys()),
@@ -654,15 +647,11 @@ class PipelineState:
     def _draft_path(self, pipeline_id: str) -> Path:
         return self.drafts_dir / f"{pipeline_id}.draft.yaml"
 
-    def _persist(self, pipeline_id: str) -> None:
-        """Atomic write of the in-memory draft to disk, under the store lock.
-
-        The lock makes this write not INTERLEAVE with another process's read-modify-write
-        of the same draft. It does NOT make the write correct when this process's copy is
-        stale — for that a writer must re-read first, which is what `mutate_on_disk` is
-        for. Locking a stale write only makes it lose the race cleanly."""
-        with _store_lock.locked(self._draft_path(pipeline_id)):
-            self._write_draft_file(pipeline_id, self._drafts[pipeline_id])
+    # `_persist` IS DELETED, DELIBERATELY. It wrote `self._drafts[pipeline_id]` — the
+    # cached copy — under the lock, which stopped writes interleaving but not stale
+    # writes winning. Every mutator now goes through `_mutate`, and the way to guarantee
+    # a future mutator does too is that the unsafe door no longer exists. A comment
+    # saying "don't use _persist" would have been a rule; removing it is a property.
 
     def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
         """The atomic write itself — assumes the caller holds the lock."""

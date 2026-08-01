@@ -183,12 +183,15 @@ def test_mutate_on_disk_reports_a_missing_draft_rather_than_creating_one(tmp_pat
     assert _state(tmp_path).mutate_on_disk("never-existed", lambda d: None) is False
 
 
-def test_ordinary_mutators_remain_single_writer_by_design(tmp_path):
-    """A STATED limitation, pinned so it stays stated. `add_step` and friends still edit
-    the in-memory copy and persist it wholesale, so two processes mutating the same draft
-    through them lose one side's edits. Only the cross-process pointer writes go through
-    `mutate_on_disk` today. This test documents the boundary; when batch install lands and
-    the boundary moves, it should fail and be rewritten — not deleted."""
+def test_ordinary_mutators_are_cross_process_safe(tmp_path):
+    """THE BOUNDARY MOVED. This test used to assert the opposite — that A's write was
+    ERASED — and carried an instruction to rewrite it rather than delete it when the
+    ordinary mutators started re-reading. They now do: every mutator goes through
+    `_mutate` (lock, re-read from disk, apply, write), `_persist` is gone, and there is
+    no longer a door that writes a cached copy.
+
+    B's snapshot deliberately predates A's write, which is the whole point: a writer
+    holding a stale view must not be able to roll back a write it never saw."""
     a, b = _state(tmp_path), _state(tmp_path)
     pid = a.start("p", "d")["pipeline_id"]
     b._drafts[pid] = json.loads(json.dumps(a.get_draft(pid)))
@@ -198,9 +201,44 @@ def test_ordinary_mutators_remain_single_writer_by_design(tmp_path):
 
     final = _state(tmp_path).get_draft(pid)
     assert final["notes"] == ["from B"]
-    assert final["description"] != "from A", (
-        "if this now passes, the ordinary mutators became cross-process safe — good; "
-        "rewrite this test to assert that instead of the old boundary")
+    assert final["description"] == "from A", \
+        "B's stale snapshot rolled back A's write — the mutators are not re-reading"
+
+
+def test_start_resumes_another_processes_draft_instead_of_wiping_it(tmp_path):
+    """The CREATE-side of the same bug, and the destructive one. `start` decided
+    resume-vs-new from `self._drafts`, so a second process saw the id missing from its
+    OWN map, built a fresh empty draft and persisted it over one already being filled —
+    reporting a clean new pipeline rather than an error."""
+    a = _state(tmp_path)
+    pid = a.start("p", "d")["pipeline_id"]
+    a.add_install_step(pid, {"command": "conda install samtools", "returncode": 0})
+
+    b = _state(tmp_path)                       # a second process, cold cache
+    assert b.start("p", "d")["resumed"] is True
+    assert b.get_draft(pid)["install_steps"], "start() wiped a draft it should have resumed"
+
+
+def test_forty_appends_from_three_processes_all_survive(tmp_path):
+    """The reproduction that matters for a batch: concurrent step appends. Threads share
+    a process but each gets its OWN PipelineState, so each has an independent stale cache
+    — the same shape as N detached children, and the shape that lost writes before."""
+    import threading
+    a = _state(tmp_path)
+    pid = a.start("p", "d")["pipeline_id"]
+
+    def worker(tag):
+        st = _state(tmp_path)
+        for i in range(40):
+            st.add_install_step(pid, {"command": f"{tag}-{i}", "returncode": 0})
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in ("a", "b", "c")]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    steps = _state(tmp_path).get_draft(pid)["install_steps"]
+    assert len(steps) == 120, f"lost {120 - len(steps)} of 120 concurrent appends"
+    assert [s["step"] for s in steps] == list(range(1, 121)), "step numbering is not contiguous"
 
 
 # ---------------------------------------------------------------------------

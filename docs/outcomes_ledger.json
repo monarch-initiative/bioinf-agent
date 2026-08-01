@@ -4190,23 +4190,13 @@
     "named_in_test": false
   },
   {
-    "code": "pipeline_state.unknown_pipeline",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "patch",
-    "where": "agent/skills/pipeline_state.py:615",
-    "end_line": 615,
-    "named_in_test": false
-  },
-  {
     "code": "pipeline_state.blocked_keys",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:620",
-    "end_line": 631,
+    "where": "agent/skills/pipeline_state.py:611",
+    "end_line": 622,
     "named_in_test": true
   },
   {
@@ -4215,8 +4205,18 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:633",
-    "end_line": 641,
+    "where": "agent/skills/pipeline_state.py:624",
+    "end_line": 632,
+    "named_in_test": false
+  },
+  {
+    "code": "pipeline_state.unknown_pipeline",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:636",
+    "end_line": 637,
     "named_in_test": false
   },
   {
