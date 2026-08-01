@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.skills import evidence
+from agent.skills import store_lock
 from agent.skills.outcomes import proven, refused, broke
 
 #: How much of a step's stdout/stderr travels back into the agent's context.
@@ -159,10 +160,56 @@ class EnvManager:
         raise RuntimeError("No conda or mamba executable found in PATH")
 
     # -----------------------------------------------------------------------
+    # Cross-process serialization of one conda prefix
+    # -----------------------------------------------------------------------
+    #
+    # Two concurrent `conda install --prefix X` runs corrupt X: they race on the
+    # same package cache and the same prefix metadata, and conda has no locking
+    # of its own. Until installs could be DETACHED (@backgroundable) that needed
+    # two simultaneous MCP calls and effectively never happened; parallel builds
+    # are exactly what backgrounding is for, and a multi-tool env — talos +
+    # bcftools + echtvar, the 4-tool conda env — is the natural way to hit it.
+    #
+    # The lock is per-PREFIX, not global: two background installs into different
+    # envs still run fully in parallel, which is the whole point. Waiting is the
+    # correct behaviour for a queued install, so the timeout is the install
+    # timeout, not store_lock's 60 s default for quick record writes.
+    #
+    # store_lock is NOT re-entrant, so nothing under a lock may take it again.
+    # That is enforced STRUCTURALLY here rather than by comment: the locking
+    # `create`/`install` are thin, and the bodies they call (`_create`,
+    # `_install`) never lock — an inner path physically cannot reach an acquire.
+
+    def _env_lock(self, env_name: str):
+        return store_lock.locked(
+            self.envs_dir / env_name,
+            timeout=float(self.config["agent"]["install_timeout_seconds"]))
+
+    def _lock_timeout(self, env_name: str, exc: Exception) -> dict[str, Any]:
+        return refused(
+            "env_manager.env_busy", success=False, env_name=env_name,
+            error=f"another process is installing into {env_name}: {exc}",
+            fix="wait for the in-flight install to finish (list_jobs shows the "
+                "detached ones), or install into a different env_name")
+
+    # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
 
     def create(
+        self,
+        env_name: str,
+        python_version: str | None = None,
+        subdir: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a conda env. Serialized against any other writer of this prefix."""
+        try:
+            with self._env_lock(env_name):
+                return self._create(env_name, python_version, subdir)
+        except store_lock.StoreLockTimeout as e:
+            return self._lock_timeout(env_name, e)
+
+    def _create(
         self,
         env_name: str,
         python_version: str | None = None,
@@ -231,6 +278,14 @@ class EnvManager:
         )
 
     def install(self, env_name: str, packages: list[dict]) -> dict[str, Any]:
+        """Install conda packages. Serialized against any other writer of this prefix."""
+        try:
+            with self._env_lock(env_name):
+                return self._install(env_name, packages)
+        except store_lock.StoreLockTimeout as e:
+            return self._lock_timeout(env_name, e)
+
+    def _install(self, env_name: str, packages: list[dict]) -> dict[str, Any]:
         """
         Install a list of packages into env_name.
 
@@ -245,7 +300,9 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            create_result = self.create(env_name)
+            # `_create`, not `create` — we already hold this prefix's lock and
+            # store_lock is not re-entrant.
+            create_result = self._create(env_name)
             if not create_result.get("success"):
                 return broke(
                     "env_manager.install_autocreate_failed",

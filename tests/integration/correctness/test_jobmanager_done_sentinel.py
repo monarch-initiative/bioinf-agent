@@ -97,7 +97,7 @@ def test_polling_loop_pattern_via_check_job_writes_done(tmp_path):
     without ever calling check() will never observe the sentinel — the
     SUBPROCESS does not write .done; the parent does, on the FIRST check()
     after the child exits. This is the contract the test pins; the docstring
-    on _done_path slightly oversells the "shell loop" pattern."""
+    on done_path slightly oversells the "shell loop" pattern."""
     jm = _jm(tmp_path)
     jm.start("sleep 0.2 && echo hello", job_id="sleepy")
     done_file = jm.jobs_dir / "sleepy.done"

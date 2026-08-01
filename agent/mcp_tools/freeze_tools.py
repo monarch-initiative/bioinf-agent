@@ -21,7 +21,21 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.models.core_data import ShippedBinary as _ShippedBinary
+from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke, degraded
+
+
+def _image_build_preflight():
+    """The machine-level checks every image-producing tool makes anyway, hoisted so
+    they can also run BEFORE a detached spawn.
+
+    Disk first, then docker — the disk failsafe names a specific cleanup command,
+    and a full disk with a live daemon should say "full disk". Both are cheap
+    reads, so running them here AND in the body costs nothing and buys an
+    instant, correctly-named refusal instead of a job that dies minutes later
+    inside a log somebody has to go find.
+    """
+    return _ms._check_disk_failsafe() or _ms._check_docker_available()
 
 
 def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dict]:
@@ -83,6 +97,7 @@ def _shipped_binary_entry(step: dict) -> dict:
 
 
 @mcp.tool()
+@backgroundable("pipeline_name", "env_name", preflight=_image_build_preflight)
 def freeze(
     env_name: str,
     tools: StrList,
@@ -97,7 +112,6 @@ def freeze(
     gpu_required: bool = False,
     cuda_version: str = "",
     pipeline_id: str = "",
-    background: bool = False,
 ) -> dict:
     """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
 
@@ -132,24 +146,11 @@ def freeze(
     dependency closure. Returns {mode, image, image_digest, content_digest,
     request_key, hpc_delivery, cache_hit, …}.
 
-    `background` (W1 mitigation): when True, spawns freeze in a detached
-    subprocess via JobManager and returns IMMEDIATELY with a job_id. Use this
-    for large builds (CUDA tools, ML/AI models, big release binaries) where the
-    synchronous in-call time would exceed the MCP stream-watchdog window (~10 min).
-    The subprocess writes the full freeze result JSON to
-    `data/jobs/{job_id}.result.json` when it finishes; poll `check_job(job_id)`
-    until state=='exited', then read that file. The standard env_report/attestation/
-    recipe artifacts are written by the subprocess too, on success.
+    Reach for `background=True` on a large build (CUDA tools, ML/AI models, big
+    release binaries) — the in-call time there routinely exceeds the watchdog
+    window, and the deliverables (ENV.html / attestation / recipe) are written by
+    the detached run exactly as they would be in-process.
     """
-    if background:
-        return _ms._freeze_in_background(
-            env_name=env_name, tools=tools, pipeline_name=pipeline_name,
-            pipeline_description=pipeline_description, version=version,
-            platform=platform, accel=accel, gated=gated,
-            licenses=list(licenses or []), push_target=push_target,
-            gpu_required=gpu_required, cuda_version=cuda_version,
-            pipeline_id=pipeline_id,
-        )
     # A1 failsafe (Apollo3 stress, batch-2): disk pre-check. 4 parallel freezes
     # piled buildkit intermediates to 80 GB / 92% capacity → infinite retry loop.
     # Refuse here with a diagnostic that names the cleanup command, BEFORE any
@@ -851,6 +852,7 @@ def generate_user_guide(
 
 
 @mcp.tool()
+@backgroundable("name", preflight=_image_build_preflight)
 def freeze_from_image(
     image: str,
     tools: list,
@@ -880,9 +882,9 @@ def freeze_from_image(
     {repo, commit, tag} so the recipe records the pinned source). Writes the four Layer-1
     deliverables (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from
     the verified record. Docker required."""
-    _docker_refusal = _ms._check_docker_available()
-    if _docker_refusal:
-        return _docker_refusal
+    _stop = _image_build_preflight()
+    if _stop:
+        return _stop
     from agent.skills import freeze_from_image as _ffi
     return _ffi.freeze_from_image(
         image=image, tools=[dict(t) for t in tools], name=name, version=version,
@@ -894,6 +896,7 @@ def freeze_from_image(
 
 
 @mcp.tool()
+@backgroundable("name", preflight=_image_build_preflight)
 def build_env_from_authors_recipe(
     repo: str,
     tools: list,
@@ -921,9 +924,9 @@ def build_env_from_authors_recipe(
     Docker + git (+ network for a remote repo) required."""
     # Guard BEFORE the git clone (which happens inside build_from_authors_recipe),
     # so a docker-down machine is told "docker unavailable", never "clone failed".
-    _docker_refusal = _ms._check_docker_available()
-    if _docker_refusal:
-        return _docker_refusal
+    _stop = _image_build_preflight()
+    if _stop:
+        return _stop
     from agent.skills import freeze_from_image as _ffi
     return _ffi.build_from_authors_recipe(
         repo=repo, tools=[dict(t) for t in tools], name=name, recipe=recipe, ref=ref,

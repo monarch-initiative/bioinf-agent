@@ -314,3 +314,97 @@ def test_no_shared_job_index_appears_alongside_the_per_job_files(tmp_path):
         f"JobManager wrote {stray} outside the per-job files. A shared document is a "
         f"read-modify-write, and read-modify-write without a lock is what erased 96 "
         f"EnvCache records. Re-examine whether the lock is now required.")
+
+
+# ---------------------------------------------------------------------------
+# The conda prefix.
+#
+# The other stores here are documents that lose records. A conda prefix loses
+# something worse: two concurrent `conda install --prefix X` runs race on the
+# same package cache and the same prefix metadata, and conda has no locking of
+# its own, so X ends up in a state neither caller asked for.
+#
+# This became reachable when installs could be DETACHED. Before that it needed
+# two simultaneous MCP calls; parallel builds are exactly what backgrounding is
+# for, and a multi-tool env is the natural way to hit it.
+# ---------------------------------------------------------------------------
+
+def _env_mgr(tmp_path):
+    import agent.mcp_server as ms
+    from agent.skills.env_manager import EnvManager
+    m = EnvManager(ms.config)
+    m.envs_dir = tmp_path / "envs"
+    m.envs_dir.mkdir(parents=True, exist_ok=True)
+    # A contended install must REFUSE inside the test, not queue for the real
+    # install timeout (an hour).
+    m.config = {**ms.config, "agent": {**ms.config["agent"],
+                                       "install_timeout_seconds": 0.3}}
+    return m
+
+
+@pytest.mark.parametrize("call", [
+    lambda m: m.install("shared_env", [{"spec": "samtools", "channel": "bioconda"}]),
+    lambda m: m.create("shared_env"),
+])
+def test_a_conda_prefix_admits_one_writer_at_a_time(tmp_path, call):
+    """Held by another PROCESS, so this is real exclusion and not a GIL artifact.
+
+    The refusal matters as much as the exclusion: an install that quietly
+    proceeded into a prefix another process is rewriting would produce a green
+    result over a corrupt env, which is the failure the whole honesty contract
+    exists to prevent.
+    """
+    m = _env_mgr(tmp_path)
+    prefix = m.envs_dir / "shared_env"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import sys, time; sys.path.insert(0, {str(ROOT)!r})
+            from agent.skills.store_lock import locked
+            with locked({str(prefix)!r}):
+                print("HELD", flush=True)
+                time.sleep(20)
+        """)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "HELD"
+        out = call(m)
+        assert out["success"] is False
+        assert out["code"] == "env_manager.env_busy"
+        assert "shared_env" in out["error"]
+        assert not prefix.exists(), (
+            "conda ran against a prefix another process holds — the refusal is "
+            "the whole point of the lock")
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_the_prefix_lock_is_per_env_not_global(tmp_path):
+    """Two background installs into DIFFERENT envs must still run in parallel.
+    A global install lock would serialize the whole batch and quietly undo the
+    reason for backgrounding at all."""
+    m = _env_mgr(tmp_path)
+    other = m.envs_dir / "other_env"
+    with locked(m.envs_dir / "shared_env"):
+        # Not contended: acquiring the sibling must not block. (We take the raw
+        # lock rather than run conda — the property under test is the KEY, and
+        # a real solve would make this a network test.)
+        with locked(other, timeout=0.3):
+            pass
+
+
+def test_the_auto_create_inside_install_does_not_deadlock(tmp_path, monkeypatch):
+    """`install` auto-creates a missing env while holding the prefix lock, and
+    store_lock is NOT re-entrant — so the inner path must reach the UNLOCKED
+    `_create`. Pre-fix this self-deadlocked on the first install into a new env,
+    i.e. on the single most common call in the system."""
+    m = _env_mgr(tmp_path)
+    calls = []
+    monkeypatch.setattr(type(m), "_run",
+                        lambda self, cmd, **kw: (calls.append(cmd[1]),
+                                                 {"returncode": 0, "stdout": "", "stderr": ""})[1])
+    monkeypatch.setattr(type(m), "apply",
+                        lambda self, *a, **kw: {"success": True, "stdout": "",
+                                                "stderr": "", "returncode": 0})
+    out = m.install("brand_new_env", [{"spec": "samtools", "channel": "bioconda"}])
+    assert out["success"] is True
+    assert "create" in calls, "the auto-create never ran"

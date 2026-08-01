@@ -18,6 +18,7 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.skills.pipeline_state import validation_key as _validation_key
+from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -188,6 +189,7 @@ def run_pipeline_step(
 
 
 @mcp.tool()
+@backgroundable("tool", "pipeline_id")
 def run_step_in_container(
     freeze_request_key: str,
     command: str,

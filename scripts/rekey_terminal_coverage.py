@@ -115,6 +115,20 @@ def pair_key(entry: dict, ordinal: int) -> tuple:
             ordinal)
 
 
+def _sortable(key: tuple) -> tuple:
+    """`sorted()` over pair_keys, made total.
+
+    A `raw` terminal (a bare `return {...}` the extractor could not tag) carries
+    `code: None`, so two keys that agree on file+func but differ there compare
+    None against str and TypeError out. That only fires when the added/gone sets
+    are non-empty AND span such a pair — which is why it sat here unhit until a
+    commit both moved lines and introduced new terminals. Sort on a stringified
+    view; the pairing itself still uses the real tuple, so None stays distinct
+    from the empty string where it matters.
+    """
+    return tuple("" if x is None else str(x) for x in key)
+
+
 def keyed(ledger: list[dict]) -> dict[tuple, dict]:
     seen: dict[tuple, int] = {}
     out: dict[tuple, dict] = {}
@@ -268,9 +282,9 @@ def rekey(check_only: bool = False) -> int:
     old_keyed, new_keyed = keyed(old_ledger), keyed(new_ledger)
     baseline_sha = _git("rev-parse", "--short", BASELINE_REV).strip()
 
-    paired = sorted(set(old_keyed) & set(new_keyed))
-    added = sorted(set(new_keyed) - set(old_keyed))
-    gone = sorted(set(old_keyed) - set(new_keyed))
+    paired = sorted(set(old_keyed) & set(new_keyed), key=_sortable)
+    added = sorted(set(new_keyed) - set(old_keyed), key=_sortable)
+    gone = sorted(set(old_keyed) - set(new_keyed), key=_sortable)
 
     # Nothing to do is worth saying out loud rather than writing an identical file.
     moved = [k for k in paired if old_keyed[k]["where"] != new_keyed[k]["where"]]

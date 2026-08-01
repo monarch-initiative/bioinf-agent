@@ -138,14 +138,16 @@ That's the local-validation protocol. To execute the *same* frozen env ON HPC, t
 
 ## Async pattern — for anything that may run silently >5 minutes
 
-The agent's stream-watchdog kills a tool call that goes silent for ~600s. Use `run_in_background` + `check_job` for big downloads, long conda solves, multi-hour assemblies. `download_reference_database` already does this internally.
+The agent's stream-watchdog kills a tool call that goes silent for ~600s. Six primitives can legitimately run past it and carry **`background=True`** — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe`, `install_conda_packages`, `run_step_in_container`, `seal_workflow`. Pass it and the call returns a `job_id` immediately; `check_job` then carries the tool's **real return value inline under `result`** once `state=='exited'`, so there is no second file to read. Prefer the flag over hand-rolling the same thing with `run_in_background`, which is for arbitrary shell (`download_reference_database` backgrounds itself internally).
 
 ```python
-job = run_in_background(command="...", env_name="bioinf_x")
-while check_job(job["job_id"])["state"] == "running":
-    # do other work; the agent stays alive because check_job is constantly producing output
-    pass
+job = freeze(env_name="x", tools=["dorado"], background=True)
+while (r := check_job(job["job_id"]))["state"] == "running":
+    pass                      # do other work; polling keeps the stream alive
+r["result"]                   # the freeze record itself, or result_missing saying why not
 ```
+
+Parallel background installs into ONE conda prefix are serialized (different envs still run fully in parallel), so a batch can fan out freely.
 
 ---
 

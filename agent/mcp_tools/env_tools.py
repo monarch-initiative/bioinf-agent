@@ -27,6 +27,7 @@ from typing import Annotated, Any, Optional
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -215,6 +216,7 @@ def create_conda_env(
 
 
 @mcp.tool()
+@backgroundable("env_name")
 def install_conda_packages(
     env_name: str,
     packages: list[dict],
