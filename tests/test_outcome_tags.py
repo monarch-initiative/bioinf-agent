@@ -180,6 +180,47 @@ def test_dashboard_renders_every_terminal_deterministically():
     assert "NOT measured" not in rd.render(ledger, {e["where"]: True for e in ledger})
 
 
+def test_dashboard_declares_a_partially_stale_overlay_instead_of_counting_it_dark():
+    """A PARTIAL join is the failure the `file:line` key makes routine, and it is the
+    one the page used to render silently.
+
+    `_cover_state` maps a key the overlay has never heard of to "dark". That is right
+    for one terminal and a fabricated blackout for a file that shifted two lines: on
+    real history, the ledger at 4adf7c8 against the overlay from 513fbbd renders
+    95/149/310 where the truth is 129/160/265. Nothing in the page said so — the only
+    banner distinguished "overlay present" from "overlay absent", and a partial overlay
+    is present.
+
+    The CI-blocking test above stops that reaching main. This one is about the hours
+    before the push, when the page is the only thing you are reading."""
+    import json
+    rd = _load_dashboard()
+    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
+    full = {e["where"]: True for e in ledger}
+
+    assert "overlay does not match" not in rd.render(ledger, full), \
+        "a fully-joining overlay must render no staleness banner"
+
+    # Drop five keys, exactly as a five-line-motion diff would.
+    dropped = sorted(full)[:5]
+    partial = {k: v for k, v in full.items() if k not in dropped}
+    html = rd.render(ledger, partial)
+
+    assert "overlay does not match" in html, (
+        "a partially-joining overlay rendered no warning — the page is counting "
+        "unmeasured terminals as dark and presenting that as a measurement")
+    assert "NOT measured" not in html, \
+        "a partial overlay is not the same state as no overlay; don't conflate them"
+    # The count must be the number of unjoined KEYS, and it must be visible. (Keys, not
+    # rows: `where` is not unique — freeze_tools.py:747 is a one-line ternary holding two
+    # terminals — so one dropped key can darken two rows. The banner counts what it can
+    # name, and says "terminals have no measurement", which is true of both.)
+    assert f"{len(dropped)} of {len(ledger)}" in html, (
+        f"banner must name how many terminals are unmeasured out of how many exist; "
+        f"expected '{len(dropped)} of {len(ledger)}'")
+    assert dropped[0] in html, "banner must name a concrete unjoined key to chase"
+
+
 @pytest.mark.integration
 def test_seaworthy_scope_is_well_defined_and_measurable():
     """The Seaworthy milestone rests on a machine-derived load-bearing surface

@@ -97,7 +97,12 @@ def _run_suite_under_coverage() -> dict:
                    f"--data-file={datafile}", "--source=agent",
                    "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
                    *NO_XDIST, "--deselect", _DESELECT]
-        print("  running suite under coverage (this takes ~1 min)…")
+        # ~3.5 min, MEASURED (2026-07-31, 2314 passed / 102 skipped in 202s wall) — not
+        # the "~1 min" this line claimed for months. Coverage tracing plus the forced -n0
+        # is ~7x the 28s parallel fast tier. Understating the cost of a measurement, on
+        # the tooling whose whole job is honest measurement, is the same species of defect
+        # as everything else this dashboard exists to catch.
+        print("  running suite under coverage (this takes ~3.5 min)…")
         r = subprocess.run(env_run, cwd=str(ROOT), capture_output=True, text=True)
         tail = "\n".join(r.stdout.strip().splitlines()[-2:])
         print(f"    pytest: {tail or r.stderr.strip()[-200:]}")

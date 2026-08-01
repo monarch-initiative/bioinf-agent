@@ -108,7 +108,18 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
               "clause walks. A test_data.r1 of /nope/ghost.fastq.gz sealed green. Closed "
               "2026-07-31 (I8.test_data_missing/_empty/_mutated/_size_mismatch/"
               "_kind_changed) against anchors select_test_data records at SELECTION "
-              "time; seal only ever compares, never writes one."),
+              "time; seal only ever compares, never writes one. "
+              "STATED LIMITS of the test_data clause, in the same spirit as I10's "
+              "admission below — the checker resolves every path against the LOCAL "
+              "filesystem and only inspects values core_data.test_data_paths recognizes "
+              "as paths. A cluster-namespace path is therefore not found and REFUSES the "
+              "seal (a false refusal, the safe direction); a value under an unrecognized "
+              "key or behind a scheme/variable is not checked at all and the block reads "
+              "`not_attempted`. Neither is reachable through the MCP surface today — "
+              "select_test_data reads local disk and is the sole producer, and test_data "
+              "is in BLOCKED_PATCH_KEYS — but a hand-edited *.draft.yaml is adopted "
+              "in-process by pipeline_state.mutate_on_disk, so the draft file is not a "
+              "sealed surface and these are limits, not impossibilities."),
     _inv(id="I10", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every declared service_dependency has at least one HEALTHY probe in its "
                    "health_check_log",

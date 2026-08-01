@@ -1192,7 +1192,21 @@ def verify_test_data(spec: dict) -> dict:
         how I5's cluster branch spent months proving nothing.
       - A path with no anchor is `unanchored` — reported as a third state, never rounded
         up to a pass. That is the honest landing for the specs sealed before anchors
-        existed and for any block that reached the draft outside the primitive."""
+        existed and for any block that reached the draft outside the primitive.
+
+    TWO SCOPE LIMITS, both stated rather than implied, because a checker silent about
+    what it does not look at reads as one that looked at everything:
+      - Every path resolves against the LOCAL filesystem (`core_data.resolve_data_path`).
+        A path in another namespace — a cluster path — is not found here and lands as
+        `I8.test_data_missing`, i.e. a FALSE REFUSAL, not a false pass. That is the safe
+        direction and it is deliberate; no MCP primitive writes a non-local path into
+        `test_data` today (`select_test_data` reads local disk and is the sole producer).
+      - Only values `core_data.test_data_paths` recognizes as paths are checked at all.
+        A value under an unrecognized key, or one starting with a scheme/variable
+        (`s3://…`, `$SCRATCH/…`), is not a violation — it is simply not a path we claim
+        to have checked, and a block of only such values is `not_attempted`. The backstop
+        is that the same reader seeds I8's traceable universe, so a path this filter drops
+        cannot be silently CONSUMED by a step either: it is refused as an orphan input."""
     td = spec.get("test_data")
     paths = _core_data.test_data_paths(td)
     if not paths:
@@ -1209,9 +1223,11 @@ def verify_test_data(spec: dict) -> dict:
         if not p.exists():
             violations.append({
                 "invariant": "I8.test_data_missing",
-                "message":   f"test_data.{key} points at {raw}, which is not on disk — the "
-                             f"run's declared input is gone, so nothing about this workflow's "
-                             f"inputs can be reproduced or re-checked",
+                "message":   f"test_data.{key} points at {raw}, which is not on the LOCAL "
+                             f"filesystem (resolved to {p}) — so nothing about this workflow's "
+                             f"inputs can be reproduced or re-checked. Either the input is gone, "
+                             f"or it is a path in another namespace (a cluster path is not "
+                             f"resolvable here; see the I8 note in agent/skills/invariants.py)",
                 "where": where, "path": str(p),
             })
             continue
