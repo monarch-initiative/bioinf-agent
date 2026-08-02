@@ -26,6 +26,7 @@ repo is supplied (you can't probe a release asset from a bare tool name).
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -519,6 +520,22 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
         out["has_release_assets"] = bool(assets)
         out["assets"] = assets[:10]
         out["tag"] = rel.get("tag_name")
+    # VENDOR-CDN FALLBACK, asked HERE rather than in resolve() for two reasons. It is the
+    # same question this function already answers — "what can this repo give us as a
+    # binary?" — and it is the same I/O SEAM, so every existing stub of probe_github
+    # covers it. Hanging it off a second probe in resolve() sent 29 hermetic tests to
+    # api.github.com, which is the conftest guard telling us the seam was in the wrong
+    # place. Only when the release offers nothing, so the better-anchored answer always
+    # wins and the common path pays no extra request.
+    if out["repo_exists"] and not out["has_release_assets"] and not out.get("releases_probe_error"):
+        vend = probe_readme_assets(repo, timeout)
+        if vend.get("probe_error"):
+            out["vendor_probe_error"] = vend["probe_error"]
+        elif vend.get("found"):
+            out["vendor_asset"] = vend["url"]
+            out["vendor_asset_version"] = vend["version"]
+            out["vendor_asset_reachable"] = vend["reachable"]
+            out["asset_source"] = "readme"
     return out
 
 
@@ -700,6 +717,88 @@ def _pick_platform_asset(
         return None
     pool.sort(key=lambda u: (0 if u.lower().endswith(_ARCHIVE_SUFFIXES) else 1, len(u)))
     return pool[0]
+
+
+#: A URL in a README that looks like a downloadable build artifact rather than a doc link.
+_DOWNLOADABLE = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip", ".deb", ".rpm", ".AppImage")
+
+
+def probe_readme_assets(repo: str, timeout: int = 12, target_os: str = "linux",
+                        target_arch: str = "amd64") -> dict[str, Any]:
+    """WHERE DOES A VENDOR SAY TO DOWNLOAD, when the release carries no assets?
+
+    The binary tier's availability was `gh["has_release_assets"]` and nothing else, so a
+    project that publishes builds on its OWN CDN read as "no binary exists" and fell
+    through to a multi-hour source build. Measured (Phase D): `nanoporetech/dorado` at
+    v2.1.1 has **0 release assets** and a 402-byte release body with **no URLs in it** —
+    while its README names
+    `https://cdn.oxfordnanoportal.com/software/analysis/dorado-2.1.1-linux-x64.tar.gz`
+    (3.47 GB, 200). `install_release_binary` and `resolve_linux_asset` route B already
+    accept a direct vendor URL; only DISCOVERY was github-shaped.
+
+    The README is the authors' own instruction for how to get their software
+    ([[feedback-prioritize-authors-own-env-recipe]]), which is why it is the right place
+    to look and not a scrape of convenience. Reading the release BODY first would be
+    better anchored — it is tied to a tag — and it was tried: dorado's is empty, so this
+    reads the README.
+
+    SELECTION IS NOT A SECOND COPY of the platform rules — it calls `_pick_platform_asset`,
+    the same function the github-asset path uses, so a URL naming a foreign os/arch is
+    rejected identically. Only URLs that look like build artifacts are considered at all
+    (`_DOWNLOADABLE`), which is what keeps a docs link out of the pool.
+
+    KNOWN WEAKER THAN A RELEASE ASSET, and the caller must say so. A release asset is
+    pinned to a tag; a README lives on the default branch and therefore tracks whatever
+    the authors last shipped. So this returns the version token it found in the filename
+    and refuses to guess: matching that against a requested pin is the caller's job (see
+    resolve(), which will not offer a README asset for a pin the filename contradicts —
+    the somalier 0.2.15→v0.3.3 failure class).
+
+    Returns {found, url, version, candidates, reachable, probe_error}. A probe failure is
+    UNCHECKED, never "there is no vendor build"."""
+    out: dict[str, Any] = {"found": False, "url": "", "version": "", "candidates": [],
+                           "reachable": None}
+    if not repo or "/" not in repo:
+        return out
+    data, err = _fetch_json(f"https://api.github.com/repos/{repo}/readme", timeout)
+    if err:
+        out["probe_error"] = err
+        return out
+    if not isinstance(data, dict) or not data.get("content"):
+        return out                                   # GitHub answered: no README
+    try:
+        text = base64.b64decode(data["content"]).decode("utf-8", "replace")
+    except Exception as e:                           # a README we cannot decode is UNCHECKED
+        out["probe_error"] = f"readme undecodable: {type(e).__name__}: {e}"
+        return out
+
+    seen: set[str] = set()
+    cands: list[str] = []
+    for u in re.findall(r'https?://[^\s\)\]"\'<>]+', text):
+        u = u.rstrip(".,;")
+        # github.com/<repo>/releases/download/... is a RELEASE asset and belongs to the
+        # tier above; if the release had one we would not be here. Anything else on
+        # github.com is a doc/source link, never a vendor build.
+        if u.startswith("https://github.com/") or not u.endswith(_DOWNLOADABLE):
+            continue
+        if u not in seen:
+            seen.add(u)
+            cands.append(u)
+    out["candidates"] = cands
+    pick = _pick_platform_asset(cands, target_os, target_arch)
+    if not pick:
+        return out
+    out["url"] = pick
+    m = re.search(r"(\d+\.\d+(?:\.\d+)*)", pick.rsplit("/", 1)[-1])
+    out["version"] = m.group(1) if m else ""
+    # "the README says" and "we checked" are different claims. A HEAD costs nothing next
+    # to a multi-GB download and stops us advertising a link the vendor has since moved.
+    ok, ok_err = _fetch_ok(pick, timeout)
+    out["reachable"] = None if ok_err else ok
+    if ok_err:
+        out["reachable_probe_error"] = ok_err
+    out["found"] = ok or bool(ok_err)   # unreachable-and-we-know-it is the one hard no
+    return out
 
 
 def resolve_linux_asset(
@@ -1377,6 +1476,9 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
                      f"https://github.com/{github_repo}/releases; do NOT use latest>")
         if not asset:
             asset = (_pick_platform_asset(detail.get("assets") or [])
+                     # ...then the vendor's own CDN, named in their README. Last among the
+                     # real answers because a release asset is tag-pinned and this is not.
+                     or detail.get("vendor_asset")
                      or (detail.get("assets") or ["<release-asset-url>"])[0])
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
     if tier == "synthesis":
@@ -1529,6 +1631,30 @@ def resolve(
     if github_repo:
         gh = probe_github(github_repo, timeout)
         availability["binary"]    = {"available": gh["has_release_assets"], **gh}
+        # THE VENDOR-CDN DECISION. `probe_github` OBSERVED the README build; whether it
+        # may be offered is a ranking question and belongs here (this file's own split:
+        # "the probes are observations, the ranking is the decision").
+        #
+        # A README tracks the DEFAULT BRANCH, not a tag, so if a pin was requested and the
+        # filename does not carry it, this URL is latest's bytes wearing the requested
+        # version's name — the somalier 0.2.15→v0.3.3 class, which shipped fully green.
+        # Record the candidate and WHY it was not offered; never quietly serve it.
+        if gh.get("vendor_asset"):
+            # `_version_present`, not a string ==: it already normalises PEP440 so a pin
+            # of `2.1` matches a filename's `2.1.0`, with the exact-string fallback for
+            # what neither side can parse. A second comparison rule here is how this
+            # file's defects start.
+            pin_ok = (not version) or _version_present(version,
+                                                       [gh.get("vendor_asset_version") or ""])
+            availability["binary"] = {
+                **availability["binary"],
+                "available": bool(pin_ok),
+                **({} if pin_ok else {"vendor_asset_pin_mismatch": (
+                    f"the vendor build named in the README is "
+                    f"{gh.get('vendor_asset_version') or 'un-versioned'}, not the requested "
+                    f"{version} — a README tracks the default branch, not a tag, so this URL "
+                    f"cannot honor the pin. Enumerate the vendor's archive for {version}.")}),
+            }
         # synthesis ranks above source (both need only repo_exists): the agent reads
         # the repo's real build, so it's the robust default; source is the fast-path.
         availability["synthesis"] = {"available": gh["repo_exists"], **gh}
@@ -1554,8 +1680,17 @@ def resolve(
                     "resolved_asset": binary_ver["asset"],
                     "resolved_tag": binary_ver["tag"], "binary_version": binary_ver}
             elif binary_ver["status"] in ("absent", "no_asset"):
+                # These two were one branch, and collapsing them is what made the
+                # vendor-CDN fallback unreachable for a PINNED version. `no_asset` is
+                # exactly the vendor shape — the tag EXISTS, github just carries no bytes
+                # for it — so a README build already version-matched above is a real
+                # answer and must survive. `absent` is a different fact (no such tag) and
+                # no vendor URL rescues it: dorado==2.0.0 must still refuse.
+                vendor_holds = (binary_ver["status"] == "no_asset"
+                                and availability["binary"].get("asset_source") == "readme"
+                                and availability["binary"].get("available"))
                 availability["binary"] = {
-                    **availability["binary"], "available": False,
+                    **availability["binary"], "available": bool(vendor_holds),
                     "binary_version": binary_ver}
             else:   # error / incomplete → UNCHECKED: keep the latest-derived availability
                     # but flag it, so _install_call emits a verify-manually placeholder rather
@@ -2099,6 +2234,29 @@ def resolve(
                   + f"Confirm it IS the tool before building; re-run with "
                     f"github_repo='{github_repo}' to state that deliberately.",
                   "NOTHING vouched for this repo — we matched a name")
+    # A vendor-CDN asset is a real answer and a weaker anchor than a release asset, and
+    # both halves have to reach the caller. `install_release_binary` will sha256-pin
+    # whatever bytes it gets, but a README is not tag-pinned, so WHICH bytes is the part
+    # nobody else can check for us.
+    bin_detail = availability.get("binary") or {}
+    if chosen == "binary" and bin_detail.get("asset_source") == "readme":
+        reach = bin_detail.get("vendor_asset_reachable")
+        _disclose(decision,
+                  f"VENDOR-CDN ASSET, NOT A RELEASE ASSET — {github_repo} attaches no "
+                  f"assets to its release, so this URL comes from the README "
+                  f"({'HEAD 200 confirmed' if reach else 'reachability UNCHECKED'}). A "
+                  f"README lives on the default branch, so it names whatever the authors "
+                  f"last shipped"
+                  + (f" (filename says {bin_detail['vendor_asset_version']})"
+                     if bin_detail.get("vendor_asset_version") else "")
+                  + ". Pin the sha256 you actually download; do not assume this URL is "
+                    "stable across releases.",
+                  "the download URL is tied to a branch, not a tag")
+    if bin_detail.get("vendor_asset_pin_mismatch"):
+        _disclose(decision,
+                  f"VENDOR BUILD DOES NOT MATCH THE PIN — "
+                  f"{bin_detail['vendor_asset_pin_mismatch']}",
+                  "the binary tier was NOT offered for this version")
     if img_err:
         _disclose(decision,
                   f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' "

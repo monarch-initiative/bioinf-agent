@@ -1,8 +1,8 @@
 {
   "measured_terminals": 560,
   "verified": 133,
-  "exercised": 163,
-  "dark": 264,
+  "exercised": 164,
+  "dark": 263,
   "by_where": {
     "agent/mcp_tools/env_tools.py:503": true,
     "agent/mcp_tools/freeze_tools.py:411": true,
@@ -46,7 +46,7 @@
     "agent/skills/container_build.py:714": false,
     "agent/skills/container_build.py:723": false,
     "agent/skills/container_build.py:762": false,
-    "agent/skills/container_build.py:776": false,
+    "agent/skills/container_build.py:776": true,
     "agent/skills/container_build.py:836": true,
     "agent/skills/core_test_data.py:276": true,
     "agent/skills/core_test_data.py:296": false,
@@ -62,7 +62,7 @@
     "agent/skills/env_build.py:136": true,
     "agent/skills/env_build.py:194": true,
     "agent/skills/env_build.py:201": true,
-    "agent/skills/env_build.py:281": false,
+    "agent/skills/env_build.py:281": true,
     "agent/skills/env_freeze.py:446": false,
     "agent/skills/env_freeze.py:451": false,
     "agent/skills/env_freeze.py:659": false,
@@ -223,7 +223,7 @@
     "agent/skills/container_build.py:653": false,
     "agent/skills/container_build.py:675": false,
     "agent/skills/container_build.py:730": true,
-    "agent/skills/container_build.py:778": true,
+    "agent/skills/container_build.py:778": false,
     "agent/skills/container_build.py:835": true,
     "agent/skills/core_test_data.py:125": false,
     "agent/skills/core_test_data.py:548": true,
@@ -559,9 +559,9 @@
     "agent/skills/authors_sources.py:232": true,
     "agent/skills/authors_sources.py:253": false,
     "agent/skills/backgroundable.py:176": true,
-    "agent/skills/resolver.py:876": false,
-    "agent/skills/resolver.py:880": false,
-    "agent/skills/resolver.py:882": false,
-    "agent/skills/resolver.py:909": false
+    "agent/skills/resolver.py:1008": false,
+    "agent/skills/resolver.py:975": false,
+    "agent/skills/resolver.py:979": false,
+    "agent/skills/resolver.py:981": false
   }
 }
