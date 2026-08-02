@@ -318,7 +318,16 @@ def test_resolve_auto_discovers_and_adopts_dominant_repo(monkeypatch):
     assert d["repo_auto_adoptable"] is True
     assert d["recommended_repo"] == "jiabowang/GAPIT"
     assert d["github_repo"] == "jiabowang/GAPIT"
-    assert 'install_r_package(env, "GAPIT", source="github:jiabowang/GAPIT")' == d["install_call"]
+    # The RUNNABLE line is unchanged — auto-discovery still delivers an executable plan.
+    # It is now preceded by comment lines, because a discovered repo is a name match and
+    # nothing more, even when (as here) the match is correct. GAPIT is the case that
+    # proves the disclaimer is about PROVENANCE rather than suspicion: jiabowang/GAPIT
+    # really is GAPIT, and "nothing vouched for this" is still the true statement.
+    assert d["install_call"].endswith(
+        '\ninstall_r_package(env, "GAPIT", source="github:jiabowang/GAPIT")')
+    assert "IDENTITY NOT CORROBORATED" in d["install_call"]
+    assert all(l.startswith("#") for l in d["install_call"].splitlines()[:-1]), \
+        "the caveat must be COMMENTS above a still-pasteable call, not prose around it"
     assert "AUTO-DISCOVERED" in d["rationale"]
 
 

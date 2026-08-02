@@ -246,3 +246,112 @@ def test_identity_facts_read_the_anchoring_decision_never_re_decide_it():
                            {"author_image": {"repo": "MultiQC/MultiQC", "repo_source": "pip",
                                              "repo_anchored": True}})
     assert out["repo_anchored"] is True
+
+
+# ---------------------------------------------------------------------------
+# AUTO-DISCOVERY: the case with the LEAST corroboration must not read as the most
+# confident one. Measured on the real registries (Phase D, 2026-08-02):
+#
+#   resolve('cellranger')  -> a real CRAN entry, and a loud "AUTHORS-PATH NOT ASSESSED
+#                             ... a repo is not the tool's just because it shares its name"
+#   resolve('bcl2fastq')   -> NO registry hit at all; adopted brwnj/bcl2fastq (57*) whose
+#                             own description reads "NextSeq specific bcl2fastq2 wrapper",
+#                             with a CLEAN uncommented install_call and the rationale
+#                             "proceeding without a human."
+#
+# The disclaimer that describes bcl2fastq exactly was rendered for cellranger and
+# suppressed for bcl2fastq. Cause: auto-adopt re-enters resolve() with `github_repo=` set,
+# and inside that call our own guess is byte-identical to the user's instruction — the
+# strongest anchor in the file. Fixed by threading the discovery record, NOT by adding a
+# domain heuristic: whether brwnj/bcl2fastq IS bcl2fastq stays the ride's judgment.
+# ---------------------------------------------------------------------------
+
+_WRAPPER = {"repo": "brwnj/bcl2fastq", "stars": 57, "exact_name_match": True,
+            "description": "NextSeq specific bcl2fastq2 wrapper.", "language": "Python"}
+
+
+def _discovery(monkeypatch, cands):
+    """No registry hit anywhere, and github search returns `cands` — the dead-end route."""
+    for fn in ("probe_conda", "probe_pypi", "probe_cran", "probe_bioconductor"):
+        monkeypatch.setattr(R, fn, lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    monkeypatch.setattr(R, "probe_github", lambda repo, t=12: {
+        "repo_exists": True, "has_release_assets": False, "assets": [], "is_fork": False,
+        "parent": "", "upstream": "", "full_name": repo, "default_branch": "main"})
+    monkeypatch.setattr(R, "_canon_repo",
+                        lambda repo, t=12: ((repo or "").strip().strip("/").lower(), "present"))
+    monkeypatch.setattr(R, "probe_github_search",
+                        lambda *a, **k: {"found": True, "candidates": cands})
+
+
+def test_an_auto_discovered_repo_does_not_claim_the_user_vouched_for_it(monkeypatch):
+    """`repo_source: "user"` is a claim about WHO vouched. On this route nobody did."""
+    _discovery(monkeypatch, [_WRAPPER])
+    d = R.resolve("bcl2fastq")
+    assert d["auto_discovered"] is True
+    assert d["identity"]["repo_source"] == R.REPO_FROM_GITHUB_SEARCH
+    assert d["identity"]["repo_source"] != "user"
+
+
+def test_the_auto_discovery_disclaimer_reaches_BOTH_rationale_and_install_call(monkeypatch):
+    """THE INVERSION. A reader stopping at either field must see it — that asymmetry is
+    exactly what `_disclose` exists for, and an undisclosed install_call is the artifact
+    a batch run would actually execute."""
+    _discovery(monkeypatch, [_WRAPPER])
+    d = R.resolve("bcl2fastq")
+    for field in ("rationale", "install_call"):
+        assert "IDENTITY NOT CORROBORATED" in (d[field] or ""), f"{field} is undisclosed"
+
+
+def test_the_disclaimer_quotes_the_repos_own_words_rather_than_judging_them(monkeypatch):
+    """The decisive fact in the real case is the repo calling ITSELF a wrapper. We already
+    fetched it, so telling the agent to go read it was withholding evidence we held. Quoted
+    verbatim — no word-list, no domain test, no re-scoring of the pick."""
+    _discovery(monkeypatch, [_WRAPPER])
+    d = R.resolve("bcl2fastq")
+    assert "NextSeq specific bcl2fastq2 wrapper." in d["install_call"]
+    assert "57" in d["install_call"], "the star count it was adopted on must be stated too"
+    # ...and it lands in the structured facts block, not only the prose.
+    assert d["identity"]["self_description"] == "NextSeq specific bcl2fastq2 wrapper."
+    assert d["identity"]["has_description"] is True
+
+
+def test_a_discovered_repo_with_no_description_says_so_rather_than_going_quiet(monkeypatch):
+    """MISSING evidence must never render as an absence of concern. With nothing to read,
+    the caller has LESS to go on than the wrapper case, and the note says which."""
+    _discovery(monkeypatch, [{**_WRAPPER, "description": ""}])
+    d = R.resolve("bcl2fastq")
+    assert "publishes NO description" in d["install_call"]
+    assert d["identity"]["has_description"] is False
+
+
+def test_discovery_still_probes_the_authors_path_it_just_stops_claiming_an_anchor(monkeypatch):
+    """The fix is DISCLOSURE, not routing. Refusing to probe a dominant exact-name hit
+    would cost auto-discovery its whole point (the authors' own image/recipe outranks a
+    reconstruction). `anchored` stays True; only the reported SOURCE and the note change."""
+    _discovery(monkeypatch, [_WRAPPER])
+    seen: list[str] = []
+    monkeypatch.setattr(R, "probe_authors_sources",
+                        lambda tool, owner="", repo="", **k: seen.append(f"{owner}/{repo}") or {})
+    d = R.resolve("bcl2fastq")
+    assert seen == ["brwnj/bcl2fastq"], f"the authors path stopped being probed: {seen}"
+    assert d["identity"]["repo_anchored"] is True
+    assert "authors_gate_not_assessed" not in d["probed"]
+
+
+def test_a_user_supplied_repo_is_still_treated_as_a_deliberate_act(monkeypatch):
+    """The other direction, so the fix cannot drift into nagging on every call: when the
+    caller NAMES the repo, that IS the confirmation the disclaimer asks for."""
+    _discovery(monkeypatch, [_WRAPPER])
+    d = R.resolve("bcl2fastq", github_repo="brwnj/bcl2fastq")
+    assert d["identity"]["repo_source"] == "user"
+    assert "IDENTITY NOT CORROBORATED" not in (d["rationale"] or "")
+
+
+def test_a_registry_summary_outranks_the_repo_blurb():
+    """`or`, never override: the chosen ENTRY's own words are the better self-description
+    when they exist. The discovery blurb fills a hole; it does not compete."""
+    facts = R.identity_facts(
+        "x", "conda", {"conda": {"summary": "the registry's words"}},
+        discovery={"description": "the repo's words"})
+    assert facts["self_description"] == "the registry's words"

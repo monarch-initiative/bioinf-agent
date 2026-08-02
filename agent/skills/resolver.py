@@ -986,7 +986,8 @@ _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # ---------------------------------------------------------------------------
 
 def identity_facts(tool: str, chosen: str, availability: dict,
-                   github_repo: str = "", repo_ev: Optional[dict] = None) -> dict:
+                   github_repo: str = "", repo_ev: Optional[dict] = None,
+                   discovery: Optional[dict] = None) -> dict:
     """The evidence an identity judgment needs — FACTS, never a verdict.
 
     "Is this the tool you MEANT?" is the ride's call to make (see the block comment
@@ -1017,6 +1018,13 @@ def identity_facts(tool: str, chosen: str, availability: dict,
     states what is true and gets out of the way (Phase 2, 2026-07-17)."""
     detail = availability.get(chosen) or {}
     desc = (detail.get("summary") or "").strip()
+    # A DISCOVERED tool has no registry entry, so no tier has a `summary` and this — the
+    # signal the docstring above calls the single most useful one — came back empty on
+    # exactly the route with the least corroboration. The repo's own blurb is the only
+    # self-description that exists there, and we already fetched it. `or`, not override:
+    # a real registry summary is the chosen ENTRY's words and outranks a repo blurb.
+    if not desc and discovery:
+        desc = (discovery.get("description") or "").strip()
     ev = repo_ev or {}
     repo = detail.get("repo") or ev.get("repo") or github_repo or ""
     repo_source = (detail.get("repo_source") or ev.get("source")
@@ -1039,7 +1047,17 @@ def identity_facts(tool: str, chosen: str, availability: dict,
 _REPO_SOURCES = ("conda", "pip", "cran")
 
 
-def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
+#: How we came to be looking at a repo. `github_repo` alone cannot say: the auto-adopt
+#: path re-enters `resolve` WITH the repo it just guessed, so inside that call a repo
+#: found by a name search is byte-identical to one the user named — and "the user named
+#: it" is the strongest anchor in this file. That laundering is what let the least
+#: corroborated case produce the most confident output (Phase D, bcl2fastq).
+REPO_FROM_USER = "user"                    # the caller stated it — a deliberate act
+REPO_FROM_GITHUB_SEARCH = "github_search"  # we guessed it from a name search
+
+
+def repo_evidence(availability: dict, github_repo: str = "",
+                  discovery: Optional[dict] = None) -> dict[str, Any]:
     """WHICH repo is this tool's, and WHAT vouches for that claim? Pure.
 
     Returns `{repo, source, detail}` — or `{}` when nothing vouches for any repo, which is
@@ -1078,6 +1096,17 @@ def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
         # though NOT, on its own, evidence that the repo IS the tool (a 200 from
         # github.com/torvalds/linux proves the repo exists, nothing more). See
         # `assess_identity`, which must still find a repo<->tool link.
+        #
+        # ...unless WE supplied it. `anchored` stays True either way, deliberately: it
+        # governs whether the repo is worth handing to the author tiers, and a dominant
+        # exact-name hit IS worth probing — refusing to look would cost auto-discovery
+        # the whole point of [[feedback-prioritize-authors-own-env-recipe]]. What changes
+        # is the SOURCE we report, because "user" is a claim about who vouched, and
+        # nobody did. The disclosure hangs off this, not off routing.
+        if discovery:
+            return {"repo": github_repo.strip().strip("/"), "source": REPO_FROM_GITHUB_SEARCH,
+                    "anchored": True,
+                    "detail": "a github name search we ran ourselves — nobody vouched for it"}
         return {"repo": github_repo.strip().strip("/"), "source": "user", "anchored": True,
                 "detail": "caller-supplied github_repo"}
 
@@ -1424,6 +1453,8 @@ def resolve(
     prefer: Optional[str] = None,
     language: str = "",
     timeout: int = 12,
+    *,
+    repo_discovery: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Probe the applicable tiers for `tool` and return a ResolutionDecision:
     chosen tier + the concrete install primitive call + rationale + the rejected
@@ -1540,7 +1571,7 @@ def resolve(
     # Best-effort: any probe failure simply leaves the author tiers unavailable, so the
     # registry route is unaffected. This is what makes the agent 'thread the needle'
     # automatically on tools like Talos (PyPI hit, but a Dockerfile compiling a fork).
-    ev = repo_evidence(availability, github_repo)
+    ev = repo_evidence(availability, github_repo, repo_discovery)
     if ev and not ev.get("anchored"):
         # NOT ASSESSED — and that is a THIRD state, distinct from "fired" and "errored".
         # Running the gate here is what probed Mucephie/DORADO and autonomio/talos; skipping
@@ -1709,8 +1740,16 @@ def resolve(
                 # executable plan (synthesis/source/binary + install_call), not a
                 # "re-run please" stub. The honesty contract validates the actual
                 # build, so a rare wrong pick fails SAFE rather than shipping silently.
+                # `repo_discovery` is what stops the re-entry laundering our own guess
+                # into a caller-supplied anchor. Without it the inner call sees only
+                # `github_repo=` and reports `repo_source: "user"` about a repo the user
+                # never named — and suppresses the not-assessed disclaimer on the way.
+                # It carries the whole candidate, not a provenance flag, so the repo's
+                # OWN description reaches the disclosure and `identity.self_description`
+                # instead of being thrown away here and asked for again downstream.
                 auto = resolve(tool, version=version, prefer=prefer, language=language,
-                               github_repo=rec["repo"], timeout=timeout)
+                               github_repo=rec["repo"], timeout=timeout,
+                               repo_discovery=rec)
                 auto["discovered_repos"]    = cands
                 auto["recommended_repo"]    = rec["repo"]
                 auto["repo_auto_adoptable"] = True
@@ -1958,7 +1997,8 @@ def resolve(
         # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
         # `confirmed` or poisons `install_call` with an identity warning (Phase 2 —
         # judgment moves to the ride). `install_call` stays a clean, runnable one-liner.
-        decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev)
+        decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev,
+                                              repo_discovery)
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
@@ -2027,6 +2067,38 @@ def resolve(
                   f"bundles compiled or vendored pieces, a conda/pip reconstruction can "
                   f"silently drop them.",
                   "the authors' own install path was NOT ruled out")
+    # THE INVERSION, closed. Measured on the real registries: `cellranger` (a real CRAN
+    # entry) got a loud "A repo is not the tool's just because it shares its name", while
+    # `bcl2fastq` — no registry hit AT ALL, adopted purely because a github name search
+    # returned a 57-star repo whose own description calls it a "wrapper" — got a clean,
+    # uncommented install_call and the line "proceeding without a human." The case with
+    # the LEAST corroboration produced the MOST confident output, because auto-adopt
+    # re-entered resolve with `github_repo=` set and the inner call could not tell our
+    # guess from the user's instruction.
+    #
+    # Stated as PROVENANCE, not judgement: no domain heuristics, no "is this a bio tool",
+    # no star threshold reinterpreted as identity. Whether brwnj/bcl2fastq IS bcl2fastq
+    # is the ride's call — this only refuses to imply the question was settled.
+    if repo_discovery and github_repo:
+        # The repo's OWN words, quoted rather than judged — the same signal
+        # `identity_evidence` calls "the single most useful" one, which the discovery
+        # path was collecting and discarding. For bcl2fastq it reads "NextSeq specific
+        # bcl2fastq2 wrapper", which settles the question the star count cannot.
+        says = (repo_discovery.get("description") or "").strip()
+        _disclose(decision,
+                  f"AUTO-DISCOVERED REPO, IDENTITY NOT CORROBORATED — '{tool}' hit NO "
+                  f"registry, so {github_repo} was chosen by a github search on the NAME "
+                  f"and adopted because it leads on stars "
+                  f"({repo_discovery.get('stars', '?')}★). Stars measure popularity, not "
+                  f"identity: the top exact-name hit is routinely a third-party wrapper, a "
+                  f"fork, or an unrelated project. "
+                  + (f"The repo describes ITSELF as: \"{says}\" — read that against what "
+                     f"you asked for. " if says else
+                     "The repo publishes NO description, so there is nothing to read it "
+                     "against — which is less to go on, not more. ")
+                  + f"Confirm it IS the tool before building; re-run with "
+                    f"github_repo='{github_repo}' to state that deliberately.",
+                  "NOTHING vouched for this repo — we matched a name")
     if img_err:
         _disclose(decision,
                   f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' "

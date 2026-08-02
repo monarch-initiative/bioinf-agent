@@ -3905,8 +3905,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:658",
-    "end_line": 660,
+    "where": "agent/skills/env_honesty.py:676",
+    "end_line": 678,
     "named_in_test": true
   },
   {
@@ -3915,22 +3915,12 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:664",
-    "end_line": 666,
+    "where": "agent/skills/env_honesty.py:682",
+    "end_line": 684,
     "named_in_test": true
   },
   {
     "code": "VALIDATED_IN_IMAGE.no_evidence",
-    "outcome": "refused",
-    "source": "invariant",
-    "tagged": true,
-    "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:680",
-    "end_line": 682,
-    "named_in_test": true
-  },
-  {
-    "code": "VALIDATED_IN_IMAGE.evidence_shape",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
@@ -3940,13 +3930,33 @@
     "named_in_test": true
   },
   {
+    "code": "VALIDATED_IN_IMAGE.evidence_shape",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:716",
+    "end_line": 718,
+    "named_in_test": true
+  },
+  {
     "code": "VALIDATED_IN_IMAGE.evidence_passed",
     "outcome": "refused",
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:702",
-    "end_line": 706,
+    "where": "agent/skills/env_honesty.py:720",
+    "end_line": 724,
+    "named_in_test": true
+  },
+  {
+    "code": "VALIDATED_IN_IMAGE.vacuous_evidence",
+    "outcome": "refused",
+    "source": "invariant",
+    "tagged": true,
+    "func": "evaluate_build",
+    "where": "agent/skills/env_honesty.py:762",
+    "end_line": 769,
     "named_in_test": true
   },
   {
