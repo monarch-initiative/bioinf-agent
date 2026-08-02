@@ -87,6 +87,33 @@ _RC_LAUNDERED = re.compile(rf"(?:\|\||;)\s*{_TRUE_WORD}\s*$", re.I)
 #: mentions the tool, may never run at all. This is `true || samtools`: the audit's headline
 #: bypass, which passed every rule here and was rated `functional`, the strongest class.
 _SHORT_CIRCUITED = re.compile(rf"^\s*{_TRUE_WORD}\s*\|\|", re.I)
+#: PIPED — a TOP-LEVEL `|` (never `||`). A shell pipeline exits with its LAST stage's
+#: status, so anything piped into `head`/`grep`/`tail` reports THAT command's rc and
+#: discards the tool's. Unlike the three shapes above this is not a cheat anyone writes
+#: on purpose, which is exactly why it got through: it is what you write to keep the
+#: output short. Measured 2026-08-02: `exomiser --help 2>&1 | head -20` exits 0 in a
+#: stock debian that has no exomiser, and a freeze registered `proven` on it.
+#:
+#: TOP-LEVEL is the whole difficulty, and the first version of this rule got it wrong.
+#: A pipe inside `$( )`, backticks, quotes or a `( )` subshell does NOT launder the
+#: outer status — and this codebase's OWN generated conda probe contains three of them
+#: (`$(sed -nE 's|...|\1|p' "$f" | sort -u)`). Blanket-matching `|` refused the system's
+#: own honest evidence, which is a neat demonstration of the module docstring's thesis:
+#: a string rule cannot win this game. So this stays deliberately narrow — strip every
+#: nested span first, then look at what is left — and the load-bearing check remains
+#: the control-image experiment, which needs to parse nothing.
+_PIPED = re.compile(r"(?<!\|)\|(?!\|)")
+#: Spans whose contents are not top-level: quoted strings, command substitutions,
+#: backticks, and parenthesised subshells. Innermost-first, applied repeatedly.
+_NESTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"|\$\([^()]*\)|`[^`]*`|\([^()]*\)")
+
+
+def _top_level(ex: str) -> str:
+    """`ex` with every nested span blanked out, so only top-level operators remain."""
+    prev = None
+    while prev != ex:
+        prev, ex = ex, _NESTED_SPAN.sub(" ", ex)
+    return ex
 # probe verbs that prove SOMETHING even when no tool token is known (e.g. an
 # authored file's `test -f {path}`), so the shape rule has a positive anchor.
 _PROBE_HINTS = ("command -v", "which ", "--version", "-version", "version",
@@ -247,6 +274,20 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
     if _RC_LAUNDERED.search(ex):
         return (f"evidence {ev!r} ends by forcing exit 0 — the recorded `passed` would be "
                 f"true whatever the tool did, so the check cannot fail and proves nothing")
+    if _PIPED.search(_top_level(ex)) and "pipefail" not in ex:
+        # The FOURTH laundering shape, and the one a careful agent reaches for by
+        # accident: a shell pipeline exits with its LAST stage's status, so
+        # `exomiser --help | head -20` is rc=0 even when exomiser is not installed
+        # at all. Measured 2026-08-02 in a stock debian image: piped rc=0,
+        # unpiped rc=127 — and a freeze had already registered `proven` on it.
+        # Trimming output is a completely reasonable thing to want; `head` is not
+        # a cheat, it is a convenience that silently disables the check. So name
+        # the two honest ways to keep it.
+        return (f"evidence {ev!r} pipes into another command, and a pipeline exits with "
+                f"its LAST stage's status — so the recorded `passed` reports `head`/`grep`, "
+                f"not the tool. It would pass in an image without the tool at all. "
+                f"Either drop the pipe (redirect instead: `... > /dev/null`) or make the "
+                f"pipeline honest: `set -o pipefail; ...`")
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:

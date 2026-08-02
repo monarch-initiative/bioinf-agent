@@ -562,6 +562,7 @@ def synth_build(
 
 
 @mcp.tool()
+@backgroundable("tool_name", "env_name")
 def install_release_binary(
     env_name: str,
     tool_name: str,

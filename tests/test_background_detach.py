@@ -45,6 +45,12 @@ MINIMAL_ARGS: dict[str, dict] = {
         "name": "detach_recipe"},
     "install_conda_packages": {
         "env_name": "detach_conda", "packages": [{"spec": "samtools=1.21", "channel": "bioconda"}]},
+    # Added on EVIDENCE, not prediction: dorado's ONT tarball is 3.47 GB, which is a
+    # real >600s call. The background-safety audit cleared this tool once the conda
+    # prefix lock landed, and it was left undecorated until a Band-1 case needed it.
+    "install_release_binary": {
+        "env_name": "detach_bin", "tool_name": "dorado",
+        "url": "https://example.invalid/dorado.tar.gz"},
     "run_step_in_container": {
         "freeze_request_key": "rk-detach", "command": "samtools --version",
         "pipeline_id": "pid-detach", "tool": "samtools"},
@@ -59,6 +65,7 @@ EXPECTED_SLUG = {
     "freeze_from_image": "detach_img",
     "build_env_from_authors_recipe": "detach_recipe",
     "install_conda_packages": "detach_conda",
+    "install_release_binary": "dorado",        # tool_name before env_name
     "run_step_in_container": "samtools",         # `tool` before pipeline_id
     "seal_workflow": "detach_wf",                # workflow_name before pipeline_id
 }

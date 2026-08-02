@@ -560,13 +560,23 @@
     "named_in_test": true
   },
   {
+    "code": "env_build.vacuous_evidence",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "verify_in_image",
+    "where": "agent/skills/env_build.py:194",
+    "end_line": 198,
+    "named_in_test": true
+  },
+  {
     "code": "env_build.verification_in_image_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "verify_in_image",
-    "where": "agent/skills/env_build.py:173",
-    "end_line": 173,
+    "where": "agent/skills/env_build.py:201",
+    "end_line": 201,
     "named_in_test": true
   },
   {
@@ -575,8 +585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/env_build.py:253",
-    "end_line": 253,
+    "where": "agent/skills/env_build.py:281",
+    "end_line": 281,
     "named_in_test": false
   },
   {
@@ -2265,8 +2275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_in_image",
-    "where": "agent/skills/env_build.py:172",
-    "end_line": 172,
+    "where": "agent/skills/env_build.py:200",
+    "end_line": 200,
     "named_in_test": true
   },
   {
@@ -2955,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:1010",
-    "end_line": 1011,
+    "where": "agent/mcp_tools/env_tools.py:1011",
+    "end_line": 1012,
     "named_in_test": false
   },
   {
@@ -3805,8 +3815,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:444",
-    "end_line": 447,
+    "where": "agent/skills/env_honesty.py:485",
+    "end_line": 488,
     "named_in_test": true
   },
   {
@@ -3815,8 +3825,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:450",
-    "end_line": 452,
+    "where": "agent/skills/env_honesty.py:491",
+    "end_line": 493,
     "named_in_test": true
   },
   {
@@ -3825,8 +3835,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:455",
-    "end_line": 458,
+    "where": "agent/skills/env_honesty.py:496",
+    "end_line": 499,
     "named_in_test": true
   },
   {
@@ -3835,8 +3845,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:460",
-    "end_line": 462,
+    "where": "agent/skills/env_honesty.py:501",
+    "end_line": 503,
     "named_in_test": true
   },
   {
@@ -3845,8 +3855,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:488",
-    "end_line": 491,
+    "where": "agent/skills/env_honesty.py:529",
+    "end_line": 532,
     "named_in_test": true
   },
   {
@@ -3855,8 +3865,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:497",
-    "end_line": 500,
+    "where": "agent/skills/env_honesty.py:538",
+    "end_line": 541,
     "named_in_test": true
   },
   {
@@ -3865,8 +3875,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:502",
-    "end_line": 506,
+    "where": "agent/skills/env_honesty.py:543",
+    "end_line": 547,
     "named_in_test": true
   },
   {
@@ -3875,8 +3885,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_license",
-    "where": "agent/skills/env_honesty.py:534",
-    "end_line": 536,
+    "where": "agent/skills/env_honesty.py:575",
+    "end_line": 577,
     "named_in_test": true
   },
   {
@@ -3885,8 +3895,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_license",
-    "where": "agent/skills/env_honesty.py:538",
-    "end_line": 540,
+    "where": "agent/skills/env_honesty.py:579",
+    "end_line": 581,
     "named_in_test": true
   },
   {
@@ -3895,8 +3905,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:617",
-    "end_line": 619,
+    "where": "agent/skills/env_honesty.py:658",
+    "end_line": 660,
     "named_in_test": true
   },
   {
@@ -3905,8 +3915,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:623",
-    "end_line": 625,
+    "where": "agent/skills/env_honesty.py:664",
+    "end_line": 666,
     "named_in_test": true
   },
   {
@@ -3915,8 +3925,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:639",
-    "end_line": 641,
+    "where": "agent/skills/env_honesty.py:680",
+    "end_line": 682,
     "named_in_test": true
   },
   {
@@ -3925,8 +3935,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:657",
-    "end_line": 659,
+    "where": "agent/skills/env_honesty.py:698",
+    "end_line": 700,
     "named_in_test": true
   },
   {
@@ -3935,8 +3945,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:661",
-    "end_line": 665,
+    "where": "agent/skills/env_honesty.py:702",
+    "end_line": 706,
     "named_in_test": true
   },
   {

@@ -236,6 +236,13 @@ def test_degrade_rule_ignores_evidence_depth():
     ("# samtools --version",        "the whole command is a comment"),
     ("samtools --version || true",  "rc laundered: `passed` is true whatever the tool did"),
     ("samtools --version ; true",   "`;` launders rc exactly as `||` does"),
+    # MEASURED 2026-08-02, not reasoned: `exomiser --help 2>&1 | head -20` returned
+    # rc=0 from a stock debian image containing no exomiser (unpiped: rc=127) — and a
+    # freeze had already registered `proven` on exactly that evidence. This case used
+    # to live in the ACCEPTS list below; it was moved on the strength of that run, not
+    # on a change of opinion.
+    ("samtools --version 2>&1 | head -1", "a pipeline exits with its LAST stage's rc, "
+                                          "so `head` reports success for a missing tool"),
     ('echo "samtools 99.9.9"',      "the classic library-only echo cheat"),
     ("true",                        "bare constant-true"),
     ("",                            "empty"),
@@ -252,8 +259,13 @@ def test_shape_rule_rejects_evidence_that_cannot_fail(cheat, why):
     "command -v samtools",
     "samtools view -H /data/x.bam",
     "samtools --version && true",          # `&&` does NOT launder — failure propagates
-    "samtools --version 2>&1 | head -1",
+    "set -o pipefail; samtools --version 2>&1 | head -1",   # pipefail makes a pipe honest
+    "samtools --version > /dev/null",                       # redirect, don't pipe
     "command -v samtools || ( for f in /opt/conda/envs/*/conda-meta/samtools-*.json; do :; done )",
+    # A pipe NESTED inside $( ) / quotes / a subshell does not launder the outer rc.
+    # freeze's own generated probe contains all three, and the first version of the
+    # pipe rule refused it — the reason the rule strips nested spans before looking.
+    """command -v samtools || ( for b in $(sed -nE 's|.*"bin/([^"/]+)".*|\\1|p' f | sort -u); do command -v "$b" && exit 0; done; exit 1 )""",
 ])
 def test_shape_rule_accepts_real_evidence(ok):
     """The rules must not cost a single legitimate shape — including freeze's OWN

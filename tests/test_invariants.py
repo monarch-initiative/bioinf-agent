@@ -4849,6 +4849,11 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
                     "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {"seqtk": "Version: 1.4-r122"}}
 
+    # Stub the control experiment: it spawns a real container, and this test is about
+    # threading captured facts, not about docker. Its own coverage is below.
+    monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
+                        lambda platform, ev: ("discriminating", f"stub on {platform}"))
+
     inst = eb.EnvBuild.__new__(eb.EnvBuild)
     inst.cb = FakeCB()
     inst.verifications = [{"label": "seqtk", "tool": "seqtk",
@@ -4857,6 +4862,34 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
     assert res["success"]
     assert res["verifications"][0]["banner"] == "Version: 1.4-r122"
     assert res["verifications"][0]["tool"] == "seqtk"
+    # ...and the control verdict rides along, on the container-native path too.
+    assert res["verifications"][0]["control"] == "discriminating"
+    assert "linux/amd64" in res["verifications"][0]["control_note"]
+
+
+def test_envbuild_refuses_evidence_that_passes_without_the_tool(monkeypatch):
+    """The container-native path must run the control experiment, not just the string
+    rule. MEASURED: `exomiser --help 2>&1 | head -20` exits 0 in a stock debian with no
+    exomiser, and freeze registered `proven` on it — because `_evidence_discriminates`
+    was wired to `freeze_from_image` and nowhere else."""
+    from agent.skills import env_build as eb
+
+    class FakeCB:
+        platform = "linux/amd64"
+        def validate_in_image(self, image, checks, probe_tools=None):
+            return {"success": True, "checks": {checks[0]: {"rc": 0, "out": ""}},
+                    "banners": {}}
+
+    monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
+                        lambda platform, ev: ("vacuous", "also exits 0 without the tool"))
+    inst = eb.EnvBuild.__new__(eb.EnvBuild)
+    inst.cb = FakeCB()
+    inst.verifications = [{"label": "exomiser", "tool": "exomiser",
+                           "check": "exomiser --help | head -20", "engine_coupled": False}]
+    res = inst.verify_in_image("image:tag")
+    assert res["success"] is False, "a vacuous evidence must REFUSE, not degrade"
+    assert res["code"] == "env_build.vacuous_evidence"
+    assert "exomiser" in res["error"]
 
 
 def test_mcp_freeze_evicted_image_falls_through_to_rebuild(monkeypatch, tmp_path):
