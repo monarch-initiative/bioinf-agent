@@ -159,7 +159,7 @@ def test_suite_risk_allows_an_added_test_and_says_so(repo):
 
 
 def test_suite_risk_refuses_an_edited_test(repo):
-    """Rule 3, the one the freeze-tier precedent does not have. Coverage is a property of
+    """Rule 3, the one the earlier carry-forward implementation did not have. Coverage is a property of
     the SUITE: an edited test can flip a terminal to dark with its function untouched, and
     carrying the old verdict would OVER-report."""
     (repo / "tests" / "test_a.py").write_text(_BASE.replace("return 1", "return 2"))

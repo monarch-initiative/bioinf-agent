@@ -1,7 +1,7 @@
 """Freeze-path regression tests for the PERL tier (P2-C tier-breadth slice).
 
-Anchored to a REAL build: the freeze-tier grid now bakes an engine-coupled CPAN
-module container-native and proves it with a run-on-data smoke —
+The tier recipe (scripts/freeze_tiers.py) names an engine-coupled CPAN module with a
+run-on-data smoke —
 
   perl → Set::IntervalTree 0.12 (Ben Booth), a real Ensembl VEP dependency and a
          genomic interval tree. It's a C++ XS module, so the build compiles XS
@@ -134,9 +134,9 @@ def test_grid_recipe_evidence_depth_is_import_an_honest_underdisclosure():
 
 
 def test_grid_perl_recipe_is_a_wired_container_native_probe():
-    """The perl row is now a real probe (builder set + a build recipe, version-
-    PINNED via cpanm Module@version), so the breadth meter counts it; the drift guard
-    asserts the tier set stays == InstallMethod.type."""
+    """The perl row is a real probe (builder set + a build recipe, version-PINNED via
+    cpanm Module@version), so the recipe stays reproducible; the drift guard asserts the
+    tier set stays == InstallMethod.type."""
     row = _ft().tier("perl")
     assert row["builder"] == "container_native"
     assert row["probe_tool"] == "Set::IntervalTree"

@@ -1,7 +1,7 @@
 """Freeze-path regression tests for the CARGO + GO tiers (P2-C tier-breadth slice).
 
-Anchored to a REAL build: the freeze-tier grid now bakes two engine-coupled tools
-container-native and proves each with FUNCTIONAL evidence (validated==ran) —
+The tier recipes (scripts/freeze_tiers.py) name two engine-coupled tools, each with
+FUNCTIONAL evidence (validated==ran) —
 
   cargo → nanoq 0.10.0 (esteinig/nanoq, a real Nanopore read-QC tool): filters an
           inline fastq and writes output.
@@ -137,7 +137,7 @@ def test_grid_recipe_evidence_passes_the_anti_cheat_shape_rule(tname, tool):
 
 def test_grid_cargo_recipe_is_a_wired_container_native_probe():
     """The cargo row is now a real probe (builder set + a build recipe, version-
-    PINNED), so the breadth meter counts it; the drift guard asserts the tier set."""
+    PINNED), so the recipe stays reproducible; the drift guard asserts the tier set."""
     row = _ft().tier("cargo")
     assert row["builder"] == "container_native"
     assert row["probe_tool"] == "nanoq"

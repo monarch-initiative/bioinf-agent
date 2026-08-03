@@ -1,10 +1,11 @@
 """Freeze-path regression tests for the JAR tier (P2-C tier-breadth slice).
 
-Anchored to a REAL build: the freeze-tier grid now bakes Picard 3.4.0 (Broad) —
-the canonical Java bioinformatics tool — via the container-native jar path and
-proves it with FUNCTIONAL evidence (CreateSequenceDictionary RUNS on an inline
-fasta and writes a .dict). Two gaps surfaced and are each pinned here so they
-can't silently regress:
+The tier recipe (scripts/freeze_tiers.py) names Picard 3.4.0 (Broad) — the canonical
+Java bioinformatics tool — with FUNCTIONAL evidence (CreateSequenceDictionary RUNS on
+an inline fasta and writes a .dict). These tests pin the WIRING of that recipe; no
+real-bytes build result is committed anywhere (the freeze-tier meter that used to
+publish one was deleted for counting hand-built records). Two gaps surfaced while the
+recipe was authored, and are each pinned here so they can't silently regress:
 
   #A evidence-threading — before this slice, the jar branch of `_map_install`
      was the ONE non-conda tier that dropped a recorded smoke: it always fell
@@ -180,7 +181,7 @@ def test_install_jar_tool_without_a_smoke_records_no_verify_command(tmp_path, mo
 
 def test_grid_jar_recipe_is_a_wired_container_native_probe():
     """The jar row is now a real probe (builder set + a build recipe), so the
-    breadth meter counts it — the drift guard already asserts the tier set."""
+    recipe stays reproducible — the drift guard already asserts the tier set."""
     import importlib.util
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]

@@ -589,7 +589,7 @@ def build_env_image(
         # further; a timestamp at the current instant routinely 404s with "does not have
         # a Release file" until Debian has created AND mirrored it. A WARM apt cache hides
         # this (the apt layer isn't re-run); a COLD build fails hard — the exact break a
-        # tier-grid cold rebuild surfaced. `_APT_SNAPSHOT_LAG` points at a snapshot that is
+        # from-scratch rebuild surfaced. `_APT_SNAPSHOT_LAG` points at a snapshot that is
         # reliably already published + fully mirrored (security included). Reproducibility
         # is unaffected: a pinned 2-day-old archive is exactly as deterministic as now().
         from datetime import datetime, timezone
