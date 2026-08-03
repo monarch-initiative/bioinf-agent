@@ -6,7 +6,7 @@ none of that appears in a commit message, a PR body, or any tracked artifact; th
 says "the cluster".
 
 WHY A TEST AND NOT A HABIT. The rule has been broken twice and needed two scrub commits
-(docs/audit_2026-07-16.md, docs/tier7_verification.md). The mechanism both times was a
+(both in write-ups that have since been deleted). The mechanism both times was a
 human reading live run output and pasting a fragment into curated prose — so it is not a
 property of any one generator, and a redaction step inside any one renderer would not have
 caught either. 170 gitignored artifacts on disk carry the real name today (145 transfer
@@ -49,7 +49,7 @@ PUBLIC_BY_DESIGN = {
     # Project name shipped in the tracked template agent/skills/projects_access.yaml.example
     # and used by the env-inventory tests. Generic; names no institution.
     "envs_catalog",
-    # The local (laptop) compute env in the zone-parity setup. Named in docs/audit_2026-07-16.md.
+    # The local (laptop) compute env in the zone-parity setup. Generic; names no institution.
     "my_mac",
     # The demo project in docs/hpc_bridge_phase_b_playbook.md — a worked example, not a
     # real workspace.
