@@ -166,9 +166,12 @@ FREEZE_TIERS: list[dict] = [
                 "type": "jar", "name": "picard",
                 # Picard 3.4.0 — the canonical Java bioinformatics tool (Broad
                 # Institute), shipped as a single fat jar. Arch-independent bytecode,
-                # so the jar bytes are identical cross-platform; container_build adds
+                # so the jar bytes are identical cross-platform. No `java_version` is
+                # asked, so the tier takes its apt route: ic.jar DECLARES
                 # default-jre-headless (OpenJDK 17 on bookworm — Picard 3.x needs 17+)
-                # to the RUNTIME stage when a (java jar) longtail step exists.
+                # in `runtime_packages` and container_build unions that into the
+                # RUNTIME stage. (It used to sniff the "(java jar)" prose in `purpose`;
+                # that rule is gone — a declaration is what earns a runtime package.)
                 "source": "https://github.com/broadinstitute/picard/releases/download/3.4.0/picard.jar",
                 # FUNCTIONAL evidence (validated==ran, NOT presence): actually RUN
                 # Picard on an inline-generated fasta and assert it produced a .dict.

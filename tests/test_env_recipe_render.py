@@ -168,3 +168,19 @@ def test_step_command_renderer_covers_each_tier():
         assert lines, f"{tier} rendered nothing"
         joined = "\n".join(lines)
         assert im["name"] in joined
+
+
+def test_jar_recipe_names_the_jre_it_was_actually_built_with():
+    """A jar tool is useless without a JRE, and the two routes are not swappable:
+    apt's default is 17, and a tool that asked for 21 will not run on it. The rebuild
+    recipe has to say WHICH — it used to mention java only inside a wrapper comment."""
+    apt = "\n".join(R.render_step_commands(
+        {"tool": "picard", "install_method": {"type": "jar", "name": "picard",
+                                              "source": "https://x/picard.jar"}}))
+    assert "default-jre-headless" in apt and "openjdk=" not in apt
+
+    conda = "\n".join(R.render_step_commands(
+        {"tool": "exomiser", "install_method": {"type": "jar", "name": "exomiser",
+                                                "source": "https://x/e.zip",
+                                                "java_version": "21"}}))
+    assert "openjdk=21" in conda and "default-jre" not in conda

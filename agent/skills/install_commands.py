@@ -17,20 +17,19 @@ engine env at runtime.
 TOOLCHAIN-COUPLED tiers: cargo→rust, go→go, perl→perl, r_package→R, pip-with-flags
 →python all need a conda-provided toolchain to BUILD, so each sets
 `engine_coupled: True` and its command is wrapped in `engine.run(...)` — it executes
-with the solved env on PATH, not just the pixi launcher. `synthesized` and
-`script_repo` set it conditionally, from their commands / interpreter.
+with the solved env on PATH, not just the pixi launcher. `synthesized`, `script_repo`
+and `jar` set it conditionally, from their commands / interpreter / requested java.
 
-The three that DELIBERATELY stay uncoupled, and why — do not "fix" these:
+The two that DELIBERATELY stay uncoupled, and why — do not "fix" these:
   - `release_binary` — a static prebuilt binary needs no toolchain at all.
   - `source` — builds with the apt C toolchain (`build-essential`) by design.
-  - `jar` — the JRE comes from apt on the base PATH, so a jar wrapper runs without
-    `pixi run`.
 
 WHAT THE SHIPPED IMAGE NEEDS IS DECLARED, NOT SNIFFED. Every generator returns
 `runtime_packages: list[str]` — the apt packages its tool needs AT RUNTIME, which
 `emit_dockerfile` unions into the slim runtime stage. Today only `jar` names one
-(`_JRE_APT`); the rest state `[]` explicitly, because absence must be STATED by the
-producer rather than defaulted into existence (the ShippedBinary rule, core_data.py).
+(`_JRE_APT`, and only on its apt route); the rest state `[]` explicitly, because
+absence must be STATED by the producer, not defaulted into existence (the
+ShippedBinary rule, core_data.py).
 `source`, `synthesized` and `script_repo` also ACCEPT the field, since only their
 caller knows what an arbitrary entrypoint execs.
 
@@ -44,13 +43,18 @@ evidence ends in `command -v {wrap}`, which passes on a wrapper whose interprete
 gone. Names are filtered through `container_build._SAFE_APT_PKG` before reaching the
 Dockerfile — the apt line is bare-interpolated into a RUN.
 
-STILL OPEN: the JRE *version* is not selectable. `_JRE_APT` is apt's default, which
-on the `debian:bookworm-slim` base (container_build.py:144 — NOT the ubuntu:22.04 in
-config/agent_config.yaml, which nothing in the build path reads) is Java 17, and
-Exomiser needs 21. Measured 2026-08-03: openjdk-21 is in bookworm main, security AND
-backports for neither amd64 nor arm64, so this cannot be fixed by naming a different
-apt package; the route is a conda-forge `openjdk=21` toolchain injection, which
-makes the versioned case engine-coupled.
+THE JRE VERSION IS SELECTABLE — `jar(java_version=...)`, and the request is OBSERVED,
+not just honoured. Apt's default on the `debian:bookworm-slim` base (container_build.py
+:144 — NOT the ubuntu:22.04 in config/agent_config.yaml, which nothing in the build
+path reads) is Java 17, and Exomiser needs 21. Measured 2026-08-03 in real containers
+on both arches: openjdk-21 has no candidate in bookworm main, security OR backports,
+so no apt package name fixes this. A requested version therefore comes from conda-forge
+(`jar_conda_specs` → `openjdk={v}`, solved into pixi.lock), and it is VERIFIED as its
+own in-image row against the openjdk package (`java_version_check`, wired by
+env_freeze) rather than on the jar tool's evidence — which an authored functional
+smoke replaces outright, taking any assertion parked there with it. A request the
+solve didn't satisfy therefore refuses at freeze instead of shipping. Unset stays
+byte-identical to the apt route it always was.
 
 THIS PARAGRAPH USED TO SAY cargo/go/perl were "handled in a later phase". That phase
 had already shipped, and the stale sentence was read as evidence that the builder
@@ -136,24 +140,80 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
             "runtime_packages": []}
 
 
+def jar_conda_specs(java_version: str = "") -> list[str]:
+    """The conda specs a jar tool adds to the solved env — `[]` unless a specific
+    java was REQUESTED, in which case conda-forge is the only route that has it
+    (see the module docstring for the measurement).
+
+    THE one reading of what `java_version` means. `jar()` below reads it to decide
+    engine coupling and the runtime apt package; `env_freeze.plan_conda` reads it to
+    decide what to solve. Those two answers have to agree — a hand-copy in the second
+    place is exactly the drift this codebase keeps paying for."""
+    v = (java_version or "").strip()
+    return [f"openjdk={v}"] if v else []
+
+
+def java_version_check(version: str) -> str:
+    """In-image evidence that the `java` on PATH IS the requested version — the
+    verification for the openjdk CONDA PACKAGE a versioned jar pulls in, not for the
+    jar tool itself. Keeping it on the package is what makes the claim survive: a jar
+    that records a functional smoke REPLACES `ic.jar`'s default evidence outright, so
+    a version assertion living there would silently vanish in exactly the case a real
+    tool is being installed. The JRE is a package; verify the package.
+
+    `java -version` writes `openjdk version "21.0.9" 2025-10-21` to STDERR, hence the
+    2>&1. The `openjdk` token is what conda-forge's build actually prints (and anchors
+    env_honesty's word-boundary rule on the package name); the trailing boundary stops
+    a request for `2` from matching `21`.
+
+    `set -o pipefail` LEADS the list, and that placement is load-bearing twice over.
+    Without it at all the pipeline reports grep's status and passes in an image with
+    no java — env_honesty's fourth laundering shape, which its shape rule refuses.
+    And moved to the right of an `&&`, as in `command -v X && set -o pipefail; java …
+    | grep …`, it is worse than useless: the `;` closes the `&&` list, so a failing
+    left side SKIPS the pipefail and leaves the pipeline as the last command, whose
+    status becomes the answer."""
+    pat = 'openjdk version "' + version.strip().replace(".", r"\.") + '([."]|$)'
+    return f"set -o pipefail; java -version 2>&1 | grep -Eq {shlex.quote(pat)}"
+
+
 def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | None = None,
-        wrapper: str = "", evidence: str = "") -> dict[str, Any]:
-    """Java tool (SELF-CONTAINED): ensure a JRE is on PATH (apt default-jre-headless,
-    only if `java` is absent — so N jars don't re-apt), download the jar (arch-
-    independent bytecode), optional sha256 verify, then write a `java -jar` wrapper
-    on PATH. A single-.jar URL (Picard/GATK) and a .zip distribution (Exomiser; the
-    jar is auto-located) are both handled. The JRE comes from apt (base PATH), NOT
-    the engine, so a jar wrapper runs without `pixi run` — locus-clean, no engine
-    coupling. Default evidence proves the wrapper is installed AND the JRE runs; the
-    jar's actual execution is proven at workflow-run time (run_step_in_container)."""
+        wrapper: str = "", evidence: str = "", java_version: str = "") -> dict[str, Any]:
+    """Java tool: get a JRE, download the jar (arch-independent bytecode), optional
+    sha256 verify, then write a `java -jar` wrapper on PATH. A single-.jar URL
+    (Picard/GATK) and a .zip distribution (Exomiser; the jar is auto-located) are
+    both handled.
+
+    TWO JRE ROUTES, and `java_version` picks between them:
+
+    - **unset (default) — apt `default-jre-headless`**, installed only when `java` is
+      absent so N jars don't re-apt. SELF-CONTAINED: base PATH, no engine coupling,
+      so the wrapper runs under a plain `apptainer exec`. Java 17 on this base.
+    - **set — conda-forge `openjdk={java_version}`** (`jar_conda_specs`), solved into
+      pixi.lock by `env_freeze.plan_conda`. No apt JRE is installed and none is
+      declared as a runtime package. The command and evidence become `engine_coupled`,
+      because only `pixi run` reaches the solved env in the BUILDER stage — the
+      shipped image needs no coupling, since the runtime stage bakes the env prefix
+      onto PATH (`container_build.PixiEngine.runtime_lines`), which is also the PATH
+      in-image validation re-runs the raw evidence under.
+
+    The requested version is asserted on the openjdk PACKAGE (`java_version_check`,
+    wired by env_freeze), never here — see that function for why putting it on the
+    tool's evidence would lose it precisely when the tool is a real one.
+
+    Default evidence proves the wrapper is installed AND the JRE runs; the jar's own
+    execution is proven at workflow-run time (run_step_in_container)."""
     wrap = wrapper or name
     flags = " ".join(java_flags or ["-Xmx4g"])
     asset = jar_url.rsplit("/", 1)[-1] or f"{name}.jar"
     dest = f"{_TOOLS}/{name}"
-    parts = [
+    coupled = bool(jar_conda_specs(java_version))
+    parts = [] if coupled else [
         'command -v java >/dev/null 2>&1 || { apt-get update && '
         f'apt-get install -y --no-install-recommends {_JRE_APT} && '
         'rm -rf /var/lib/apt/lists/*; }',
+    ]
+    parts += [
         f"mkdir -p {dest}",
         f"curl -fsSL -o {dest}/{asset} {shlex.quote(jar_url)}",
     ]
@@ -171,9 +231,12 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
             f"printf '#!/bin/sh\\nexec java {flags} -jar {dest}/{asset} \"$@\"\\n' > /usr/local/bin/{wrap}")
     parts.append(f"chmod +x /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    ev = evidence or f"command -v {wrap} && java -version"
-    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (java jar)",
-            "runtime_packages": [_JRE_APT]}
+    return {"command": cmd, "evidence": evidence or f"command -v {wrap} && java -version",
+            "tool": wrap, "purpose": f"{name} (java jar)", "engine_coupled": coupled,
+            # The conda route ships its JRE inside the env prefix the runtime stage
+            # copies, so declaring the apt one too would install a SECOND, older java
+            # into the shipped image — one the baked PATH would then shadow anyway.
+            "runtime_packages": [] if coupled else [_JRE_APT]}
 
 
 def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "make",

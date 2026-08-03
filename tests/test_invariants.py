@@ -3673,6 +3673,80 @@ def test_install_command_jar_generator_self_contained():
     assert "-Xmx8g" in z["command"]
 
 
+def test_install_command_jar_java_version_switches_the_jre_route():
+    """`java_version` moves the JRE from apt to conda-forge — the ONLY route that
+    has 21 (measured: no candidate in bookworm main/security/backports). The apt
+    default must stay byte-identical, since every jar frozen to date took it."""
+    from agent.skills import install_commands as ic
+    apt = ic.jar("picard", "https://x/picard.jar")
+    conda = ic.jar("exomiser", "https://x/e.zip", java_version="21")
+
+    # apt route: unchanged in every field this switch touches
+    assert apt.get("engine_coupled") is False
+    assert apt["runtime_packages"] == ["default-jre-headless"]
+    assert "apt-get install" in apt["command"] and "command -v java" in apt["command"]
+
+    # conda route: no apt JRE anywhere — not installed in the builder, and NOT
+    # declared for the runtime stage, which would ship a second, older java that
+    # the baked env-prefix PATH would then shadow.
+    assert "apt-get" not in conda["command"] and "default-jre" not in conda["command"]
+    assert conda["runtime_packages"] == []
+    # coupled, because only `pixi run` reaches the solved env in the BUILDER stage
+    assert conda["engine_coupled"] is True
+    assert ic.jar_conda_specs("21") == ["openjdk=21"] and ic.jar_conda_specs("") == []
+
+    # The tool's OWN evidence is the same on both routes. The version claim lives on
+    # the openjdk package instead, because an authored functional smoke replaces this
+    # string wholesale — and it must still win here, with nothing appended to it.
+    assert conda["evidence"] == "command -v exomiser && java -version"
+    assert ic.jar("x", "https://x/x.jar", java_version="21",
+                  evidence="x --version")["evidence"] == "x --version"
+
+
+def test_java_version_check_observes_the_version_in_a_real_shell(tmp_path):
+    """The version claim is worth exactly what a shell does with it. Runs the probe
+    against stub `java` scripts on PATH — no container, no network."""
+    import os, shutil, subprocess
+    bash, grep = shutil.which("bash"), shutil.which("grep")
+    if not (bash and grep):
+        pytest.skip("needs bash + grep")
+    from agent.skills import install_commands as ic
+    probe = ic.java_version_check("21")
+
+    def rc(java_version):
+        # PATH is ONLY this dir, so "no java" means no java — a host JDK under
+        # /usr/bin can't leak in and make a negative case pass by accident. grep is
+        # symlinked in because the probe pipes into it.
+        binp = tmp_path / f"bin_{java_version}"
+        binp.mkdir()
+        os.symlink(grep, binp / "grep")
+        if java_version:
+            j = binp / "java"
+            j.write_text(f"#!/bin/sh\necho 'openjdk version \"{java_version}\" 2025-10-21' >&2\n")
+            j.chmod(0o755)
+        return subprocess.run([bash, "-c", probe], env={"PATH": str(binp)},
+                              capture_output=True, text=True).returncode
+
+    assert rc("21.0.9") == 0     # what was asked for
+    assert rc("17.0.1") != 0     # the apt default — the entire reason the flag exists
+    assert rc("21") == 0         # a bare major release still satisfies a bare request
+    assert rc("2.1.0") != 0      # `2` must not match inside `21`
+    assert rc(None) != 0         # no java at all
+
+
+def test_java_version_check_satisfies_the_evidence_shape_rule(tmp_path):
+    """It pipes into grep, which env_honesty refuses without `set -o pipefail` — that
+    is the fourth laundering shape, where the pipeline reports grep's status. The
+    probe is labelled on `openjdk`, so it must also carry that token."""
+    from agent.skills import install_commands as ic
+    from agent.skills import env_honesty
+    probe = ic.java_version_check("21")
+    assert env_honesty.evidence_shape_violation(probe, "openjdk") is None
+    # …and the pipefail is what earns that, not an accident of wording
+    assert env_honesty.evidence_shape_violation(
+        probe.replace("set -o pipefail; ", ""), "openjdk") is not None
+
+
 # ---------------------------------------------------------------------------
 # C3 — env_freeze: the container-native freeze translator (spec -> ContainerBuild).
 # Pure parts (install_method -> generator mapping + toolchain injection) tested with
@@ -3720,8 +3794,56 @@ def test_env_freeze_injects_engine_toolchains_for_coupled_tiers():
     assert set(out[1:]) == {"rust", "go", "perl", "perl-app-cpanminus", "c-compiler", "cxx-compiler"}
     # dedup: a toolchain already declared isn't doubled
     assert plan_conda(["rust"], [{"type": "cargo"}]) == ["rust"]
+    # …and dedup is BY PACKAGE NAME, not by exact spec string. A user who pinned
+    # `r-base=4.4.1` used to ALSO get the injected bare `r-base`, handing `pixi add`
+    # the same package twice with two different constraints.
+    assert plan_conda(["r-base=4.4.1"], [{"type": "r_install"}])[0:2] == ["r-base=4.4.1", "c-compiler"]
     # no coupled tiers → unchanged
     assert plan_conda(["bwa=0.7.18"], [{"type": "binary"}]) == ["bwa=0.7.18"]
+
+
+def test_env_freeze_injects_conda_openjdk_only_for_a_version_requesting_jar():
+    """A jar's toolchain spec depends on the RECORD (`java_version`), not just its
+    tier, so it can't live in the static `_TOOLCHAIN_SPECS` table — plan_conda asks
+    ic.jar_conda_specs, the same function ic.jar() reads to decide engine coupling."""
+    from agent.skills.env_freeze import plan_conda
+    plain = {"type": "jar", "name": "picard", "install_method": {"source": "https://x/p.jar"}}
+    versioned = {"type": "jar", "name": "exomiser",
+                 "install_method": {"source": "https://x/e.zip", "java_version": "21"}}
+    # no version asked ⇒ nothing injected: the apt JRE route is untouched
+    assert plan_conda(["samtools"], [plain]) == ["samtools"]
+    assert plan_conda(["samtools"], [{"type": "jar"}]) == ["samtools"]     # no install_method at all
+    assert plan_conda([], [{"type": "jar", "install_method": None}]) == []  # not even a dict
+    # a version asked ⇒ conda-forge openjdk, because apt has no candidate for 21
+    assert plan_conda(["samtools"], [versioned]) == ["samtools", "openjdk=21"]
+    # two jars wanting the same java don't double it
+    assert plan_conda([], [versioned, dict(versioned)]) == ["openjdk=21"]
+    # an EXPLICIT openjdk in the env wins and nothing is appended beside it — handing
+    # `pixi add` the same package under two constraints is not a fix. The mismatch is
+    # not lost, though: the openjdk verification below greps for 21 in the image, so
+    # this env refuses at freeze rather than shipping a jar onto the wrong runtime.
+    assert plan_conda(["openjdk=17"], [versioned]) == ["openjdk=17"]
+
+
+def test_env_freeze_verifies_a_requested_java_as_a_conda_package():
+    """The version claim gets its OWN in-image verification row, on the package that
+    provides it — so it survives a jar that records a functional smoke (which replaces
+    the tool's evidence entirely) and so a conflicting explicit openjdk still refuses."""
+    from agent.skills.env_freeze import _java_version_verifications, plan_conda
+    from agent.skills import install_commands as ic
+    jar21 = {"type": "jar", "name": "exomiser", "install_method": {"java_version": "21"}}
+    jar17 = {"type": "jar", "name": "picard", "install_method": {"java_version": "17"}}
+    plain = {"type": "jar", "name": "gatk", "install_method": {"source": "https://x/g.jar"}}
+
+    assert _java_version_verifications([plain, {"type": "cargo"}]) == []
+    assert _java_version_verifications([jar21]) == [("java", ic.java_version_check("21"))]
+    # two jars, same java ⇒ one row
+    assert len(_java_version_verifications([jar21, dict(jar21)])) == 1
+    # two jars, DIFFERENT javas ⇒ two rows. plan_conda can only solve the first, so
+    # the second row is exactly what makes this env refuse instead of silently
+    # running one of the tools on a JVM it did not ask for.
+    assert len(_java_version_verifications([jar21, jar17])) == 2
+    assert plan_conda([], [jar21, jar17]) == ["openjdk=21"]
 
 
 def test_env_freeze_build_refuses_nonreplayable_before_building(monkeypatch):
@@ -4721,14 +4843,44 @@ def test_validate_in_image_probe_command_uses_only_tool_token(monkeypatch):
     probe_argvs = [a for a in invocations
                    if any("seqtk" in x and "samtools" not in x for x in a)]
     assert probe_argvs, "expected probe invocations for seqtk"
+    # The probe is a FIXED template with the sanitized token as its only variable
+    # part — asserted whole rather than by banned characters, since the on-PATH
+    # guard legitimately needs a `;` and a character blacklist would have to be
+    # loosened (and thereby weakened) every time the template grows.
+    import re
+    allowed = re.compile(
+        r"^command -v seqtk >/dev/null 2>&1 \|\| exit 0; seqtk( --version)? 2>&1 \|\| true$")
     for argv in probe_argvs:
         shell_cmd = argv[-1]   # docker run ... bash -c <cmd>
-        # the probe command must mention ONLY the tool token + flags + the 2>&1 || true tail
-        assert shell_cmd.startswith("seqtk")
+        assert allowed.match(shell_cmd), f"unexpected probe command: {shell_cmd!r}"
         assert "samtools" not in shell_cmd   # other tools never leak in
-        # no agent-payload metacharacters beyond the fixed `2>&1 || true` suffix
-        assert ";" not in shell_cmd and "$" not in shell_cmd and "`" not in shell_cmd
     assert res["banners"]["seqtk"].startswith("Version: 1.4-r122")
+
+
+def test_validate_in_image_banner_is_empty_when_the_token_is_not_on_path():
+    """A version field must be empty when there is nothing to report — never a shell
+    error. `<tool> --version 2>&1 || true` captures bash's own `command not found`,
+    and the renderer reads banners as VERSION material, so an absent token used to
+    render as the tool's self-reported version. Not every verification row is
+    labelled on a binary: a requested-java row is labelled `java` precisely because
+    `openjdk` produced exactly this."""
+    from agent.skills import container_build as cb
+    cb_inst = cb.ContainerBuild.__new__(cb.ContainerBuild)
+    cb_inst.platform = "linux/amd64"
+    cb_inst.workdir = "/work"
+
+    def fake_sh(argv, timeout=300):
+        # emulate the guard: the shell short-circuits before the tool ever runs
+        cmd = argv[-1]
+        if cmd.startswith("command -v ghosttool"):
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        return {"returncode": 127,
+                "stdout": "bash: line 1: ghosttool: command not found\n", "stderr": ""}
+
+    cb_inst._sh = fake_sh
+    res = cb_inst.validate_in_image("image:tag", checks=[], probe_tools=["ghosttool"])
+    assert res["banners"]["ghosttool"] == ""
+    assert "command not found" not in res["banners"]["ghosttool"]
 
 
 def test_validate_in_image_unsafe_tool_token_is_skipped(monkeypatch):
