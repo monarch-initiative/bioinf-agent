@@ -373,6 +373,7 @@ def _map_install_spec(
                 # entrypoint (Talos → cpg_flow+hail), `--help` runs minutes under QEMU
                 # cross-arch and blows the evidence timeout; `import talos` is seconds.
                 evidence=im.get("verify_command") or "",
+                runtime_packages=im.get("runtime_packages") or [],
                 wrapper=name)}
         if not im.get("build_command") or not im.get("bin_path"):
             return refused("build.source_non_replayable",
@@ -384,7 +385,8 @@ def _map_install_spec(
         return {"spec": ic.source(name, im.get("source") or "",
                                   ref=im.get("commit_sha") or im.get("ref") or "",
                                   build_command=im.get("build_command"),
-                                  bin_path=im.get("bin_path"), wrapper=name)}
+                                  bin_path=im.get("bin_path"), wrapper=name,
+                                  runtime_packages=im.get("runtime_packages") or [])}
 
     if t == "synthesized":
         # The UNIVERSAL tail: a validated, provenance-tagged command sequence the
@@ -398,7 +400,8 @@ def _map_install_spec(
                                        evidence=im.get("evidence") or "",
                                        engine_coupled=im.get("engine_coupled", False),
                                        repo=im.get("source") or "",
-                                       commit=im.get("commit_sha") or "")}
+                                       commit=im.get("commit_sha") or "",
+                                       runtime_packages=im.get("runtime_packages") or [])}
 
     if t == "cargo":
         # A recorded functional smoke becomes the VALIDATED_IN_IMAGE evidence → freeze

@@ -295,6 +295,7 @@ class EnvBuild:
                 "conda_specs": list(self.conda_specs),
                 "longtail_steps": [{"command": s["command"], "purpose": s["purpose"],
                                     "tool": s.get("tool", ""),
+                                    "runtime_packages": list(s.get("runtime_packages") or []),
                                     **({"provenance": s["provenance"]} if s.get("provenance") else {})}
                                    for s in self.cb.longtail],
                 "verifications": v["verifications"],
