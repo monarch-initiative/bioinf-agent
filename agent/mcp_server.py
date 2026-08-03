@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 import sys
 import urllib.request
@@ -121,7 +120,7 @@ _env_cache      = _freeze.EnvCache(_env_mgr.project_root / "env_reports" / "_env
 # already exited. Living services owned by other processes are left alone.
 #
 # N5 fix (batch-3): the reaper used to run at MODULE-IMPORT time, which meant
-# the W1 freeze_runner subprocess (which `from agent.mcp_server import freeze`)
+# the W1 job_runner subprocess (which imports the tool it was asked to run)
 # also ran it on startup — and `start_service` writes the PID of the
 # nohup-backgrounded `bash` wrapper (via `echo $!`), NOT the daemon PID that
 # the wrapper spawned. By the time the freeze subprocess imports this module,
@@ -131,7 +130,7 @@ _env_cache      = _freeze.EnvCache(_env_mgr.project_root / "env_reports" / "_env
 # parent's stop_service() finds no PID file and orphans the real daemon.
 #
 # Fix: only reap in the actual MCP-server process (the __main__ entrypoint).
-# Any other importer (W1 freeze_runner, tests, ad-hoc tooling) keeps its
+# Any other importer (a detached job_runner, tests, ad-hoc tooling) keeps its
 # hands off the parent's service registry. The reaper still runs once at
 # server startup — just not in every subprocess that imports this module.
 def _reap_orphan_service_pids() -> None:
@@ -153,7 +152,7 @@ _CONDA_TO_DOCKER_PLATFORM = {
 # Tool definitions live in agent/mcp_tools/ — see the index at the end of
 # this file. The helpers below stay here because (a) they're called from
 # multiple submodules (`_shrink_stdio_for_response`, `_merge_simple_install`,
-# `_summarize_sbom_in_response`), (b) freeze() needs them (`_freeze_in_background`,
+# `_summarize_sbom_in_response`), (b) freeze() needs them (
 # `_check_disk_failsafe`, `_prune_buildkit_after_failure`, `_effective_push_target`,
 # `_synth_accelerator_from_request`, `_resolve_versions_from_install_record`), and
 # (c) tests reach in to test them directly via `from agent.mcp_server import ...`.
@@ -491,84 +490,6 @@ def _prune_buildkit_after_failure() -> dict:
             "reclaimed": reclaimed, "rc": r.returncode}
 
 
-def _freeze_in_background(**args) -> dict:
-    """Spawn freeze() in a detached subprocess via JobManager. Returns
-    immediately with {job_id, result_path, log_path, state="running"}.
-
-    W1 mitigation: the synchronous freeze() can run for 10-60 minutes on a
-    CUDA-tier build (download a multi-GB tarball, build a multi-stage image,
-    pull deps under emulation). The MCP stream-watchdog kills any tool call
-    that produces no stdout for ~600s, so the in-call freeze drops the
-    transport mid-build — the build succeeds inside the container but freeze
-    can never return its final JSON (no EnvCache record, no env report).
-
-    The background mode spawns a Python subprocess that calls freeze() in
-    SYNCHRONOUS mode (with `background=False`), writes the result JSON to
-    data/jobs/{job_id}.result.json, and exits. The parent agent polls
-    check_job(job_id) at its own cadence; when state=='exited', it reads the
-    result file for the full freeze record. Standard env_report/attestation/
-    recipe artifacts are written by the subprocess too — pure pass-through.
-
-    Args are passed via a JSON file (not argv) to avoid shell-quoting hell
-    with lists/dicts. The subprocess's stdout/stderr stream into the
-    JobManager log, so `check_job(job_id)`'s log_tail surfaces high-level
-    progress markers (start, mode, result-path) and any exception traceback.
-
-    Defaults: license-gated/redistributable carry verbatim from the caller;
-    push_target/registry behave the same in-subprocess as in-process; the
-    EnvCache write happens in the subprocess so the parent's cache is updated
-    on disk (and the next call sees it).
-    """
-    import json as _json
-    import uuid as _uuid
-    name = (args.get("pipeline_name") or args.get("env_name") or "freeze").strip()
-    # `freeze.{name}.{8-char-hex}` — readable in `list_jobs` AND unique across
-    # repeated background freezes of the same env.
-    job_id = f"freeze.{name}.{_uuid.uuid4().hex[:8]}"
-    # W1 ephemera (args + result JSON) live in data/jobs/ next to the
-    # JobManager log/status files for the same job — env_reports/ stays
-    # clean as the Layer-1 deliverables dir (HTML / attestation / recipe).
-    # Configurable via paths.jobs_dir; back-compat falls back to env_reports.
-    jobs_rel = config.get("paths", {}).get("jobs_dir") or "data/jobs"
-    jobs_dir = _env_mgr.project_root / jobs_rel
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    args_path = jobs_dir / f"{job_id}.args.json"
-    result_path = jobs_dir / f"{job_id}.result.json"
-    # erase any prior result so a stale file can't fool a polling caller
-    if result_path.exists():
-        result_path.unlink()
-    args_path.write_text(_json.dumps(args, default=str))
-    # Drive the synchronous freeze from a small runner script that imports the
-    # MCP module and calls freeze() with background=False. The runner captures
-    # exceptions into the result JSON so the agent gets a structured failure
-    # instead of a crashed subprocess.
-    cmd = (
-        f"python -m agent.skills.freeze_runner "
-        f"{shlex.quote(str(args_path))} {shlex.quote(str(result_path))}"
-    )
-    job = _job_manager.start(cmd, job_id=job_id)
-    if "error" in job:
-        return {"success": False, "stage": "background_spawn", **job}
-    return {
-        "success":     True,
-        "background":  True,
-        "job_id":      job_id,
-        "result_path": str(result_path),
-        "log_path":    job.get("log_path", ""),
-        "state":       "running",
-        "note": ("freeze running in background; poll check_job(job_id) until "
-                 "state='exited', then read the JSON at result_path for the full "
-                 "freeze record. Shell loops can also `until [ -f {job_id}.done ]; "
-                 "do sleep N; done` against data/jobs/ — the .done sentinel is "
-                 "written atomically on exit (status.json exists from t=0, so "
-                 "file-existence checks on it fire immediately and misfire). "
-                 "The standard ENV.html / attestation.json / recipe.yaml are "
-                 "also written by the subprocess on success."),
-        "done_marker": str((_env_mgr.project_root / jobs_rel /
-                            f"{job_id}.done")),
-    }
-
-
 def _effective_push_target(push_target: str, registry: str, name: str,
                            version: str, gated: bool) -> str:
     """The registry ref to push a built image to. An explicit push_target wins;
@@ -691,7 +612,7 @@ if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
             _importlib.reload(sys.modules[_full])
 from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level state)
 
-# Back-compat re-exports — `freeze_runner` (subprocess), tests, and any
+# Back-compat re-exports — `job_runner` (the detached subprocess), tests, and any
 # external caller continues to `from agent.mcp_server import <tool>`. This
 # list grows alongside the mcp_tools package; populated per phase as tools
 # move out.

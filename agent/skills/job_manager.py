@@ -48,7 +48,12 @@ class JobManager:
     def __init__(self, config: dict):
         self.config = config
         self.project_root = Path(__file__).parent.parent.parent.resolve()
-        self.jobs_dir = self.project_root / "data" / "jobs"
+        # `paths.jobs_dir` used to be honoured by the freeze background path and
+        # hardcoded here — two spellings of one directory, identical only for as
+        # long as nobody set the key. One reading: everything that needs the jobs
+        # dir asks THIS attribute.
+        rel = (config or {}).get("paths", {}).get("jobs_dir") or "data/jobs"
+        self.jobs_dir = (self.project_root / rel).resolve()
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         # Lazy import to avoid circular reference at module load time.
         from agent.skills.env_manager import EnvManager
@@ -214,7 +219,42 @@ class JobManager:
 
         # Always include a log tail so the caller has *something* recent to look at.
         status["log_tail"] = self._read_log_tail(job_id, log_tail_lines)
+        self._inline_tool_result(job_id, status)
         return status
+
+    def _inline_tool_result(self, job_id: str, status: dict) -> None:
+        """For a job spawned by `@backgroundable`, carry the tool's real return
+        value on the status once the job is over.
+
+        This is what makes `check_job` the ONE place a detached outcome is read.
+        Before it, the caller polled here, saw `state='exited'`, and then had to
+        remember to open `result_path` — two calls, and a forgotten second one
+        looks exactly like success while the draft never got its step.
+
+        A job with no args file is a raw `run_in_background` shell command; it
+        was never going to produce a result and none is claimed. A job that WAS
+        a tool run and exited without writing one gets `result: None` plus an
+        explicit `result_missing` — the hole is stated, never left to look like
+        a pass.
+        """
+        if status.get("state") == "running" or not self.args_path(job_id).exists():
+            return
+        p = self.result_path(job_id)
+        if p.exists():
+            try:
+                status["result"] = json.loads(p.read_text())
+                return
+            except Exception as e:
+                status["result"] = None
+                status["result_missing"] = (
+                    f"result file at {p} is unreadable ({e!r}); the tool may have "
+                    f"been killed mid-write — see log_tail")
+                return
+        status["result"] = None
+        status["result_missing"] = (
+            "the detached tool exited without writing a result — see log_tail for "
+            "the traceback. Work already done on disk (images, installs) may be "
+            "partially complete; re-run the tool synchronously to find out.")
 
     def cancel(self, job_id: str, force: bool = False) -> dict[str, Any]:
         """Terminate a running job. SIGTERM by default; force=True sends SIGKILL.
@@ -322,7 +362,22 @@ class JobManager:
     def _status_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.status.json"
 
-    def _done_path(self, job_id: str) -> Path:
+    # --- the @backgroundable pair -------------------------------------------
+    # A detached TOOL run (as opposed to a raw run_in_background shell command)
+    # owns two extra files in this same directory. Both spellings live here so
+    # the writer (backgroundable.spawn_detached / job_runner) and the reader
+    # (check) cannot drift apart on where they are.
+
+    def args_path(self, job_id: str) -> Path:
+        """The kwargs the parent wrote before spawning. Its EXISTENCE is also how
+        `check` knows this job was a detached tool and therefore owes a result."""
+        return self.jobs_dir / f"{job_id}.args.json"
+
+    def result_path(self, job_id: str) -> Path:
+        """Where the detached tool's real return value lands."""
+        return self.jobs_dir / f"{job_id}.result.json"
+
+    def done_path(self, job_id: str) -> Path:
         """The completion sentinel file. Created ONLY when the job has exited
         (atomic by touch). The CORRECT polling pattern is `while check_job(id)
         != "exited"` OR a file-existence loop run BY THE OWNING AGENT (which
@@ -398,7 +453,7 @@ class JobManager:
         # existence fired immediately. Status.json content stays the truth;
         # .done is the atomic 'is it over' signal a polling loop can rely on.
         if status.get("state") != "running":
-            done = self._done_path(job_id)
+            done = self.done_path(job_id)
             if not done.exists():
                 done.touch()
 

@@ -37,7 +37,8 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
 
 ALL helpers, types (StrList/OptStrList), and skill singletons live in
 `agent.mcp_server` — submodules import what they need from there. This keeps
-the back-compat surface (tests / freeze_runner subprocess) trivially
+the back-compat surface (tests / the detached job_runner, which resolves a
+backgrounded tool with `getattr(agent.mcp_server, name)`) trivially
 preserved: `from agent.mcp_server import freeze` still resolves because the
 tool functions are re-exported there after `from . import mcp_tools` fires.
 

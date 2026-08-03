@@ -277,8 +277,12 @@ def test_e2e_seal_refuses_step_without_resource_usage(_staged_pipeline):
     """I7 — every rc=0 pipeline_step must have resource_usage. Stripping it
     from the draft must refuse at seal."""
     pipeline_id, request_key, *_ = _staged_pipeline
-    draft = m._pipeline_state.get_draft(pipeline_id)
-    draft["pipeline_steps"][0].pop("resource_usage", None)
+    # Strip it ON DISK. `get_draft` returns a COPY (it re-reads under a shared lock), so
+    # mutating its result changes nothing seal will ever see — and this test would then
+    # pass a draft that still HAS resource_usage and assert it was refused, i.e. it would
+    # silently stop testing I7.
+    m._pipeline_state.mutate_on_disk(
+        pipeline_id, lambda d: d["pipeline_steps"][0].pop("resource_usage", None))
 
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
                               workflow_name="e2e_seal_no_rss")
@@ -443,8 +447,12 @@ def test_e2e_seal_marks_unshipped_when_digest_mismatch(_staged_pipeline, tmp_pat
     This is the inverse of the positive headline: we PROVE the digest-match
     check is real by giving it a non-matching digest."""
     pipeline_id, request_key, *_, out_dir = _staged_pipeline
-    draft = m._pipeline_state.get_draft(pipeline_id)
-    draft["pipeline_steps"][0]["container_image_digest"] = "sha256:" + ("ff" * 32)
+    # ON DISK — `get_draft` hands back a copy, so mutating it would leave the real digest
+    # in place and this test would "prove" the check by feeding it a MATCHING digest.
+    m._pipeline_state.mutate_on_disk(
+        pipeline_id,
+        lambda d: d["pipeline_steps"][0].__setitem__(
+            "container_image_digest", "sha256:" + ("ff" * 32)))
 
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
                               workflow_name="e2e_seal_unshipped")

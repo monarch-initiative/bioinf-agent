@@ -87,6 +87,33 @@ _RC_LAUNDERED = re.compile(rf"(?:\|\||;)\s*{_TRUE_WORD}\s*$", re.I)
 #: mentions the tool, may never run at all. This is `true || samtools`: the audit's headline
 #: bypass, which passed every rule here and was rated `functional`, the strongest class.
 _SHORT_CIRCUITED = re.compile(rf"^\s*{_TRUE_WORD}\s*\|\|", re.I)
+#: PIPED — a TOP-LEVEL `|` (never `||`). A shell pipeline exits with its LAST stage's
+#: status, so anything piped into `head`/`grep`/`tail` reports THAT command's rc and
+#: discards the tool's. Unlike the three shapes above this is not a cheat anyone writes
+#: on purpose, which is exactly why it got through: it is what you write to keep the
+#: output short. Measured 2026-08-02: `exomiser --help 2>&1 | head -20` exits 0 in a
+#: stock debian that has no exomiser, and a freeze registered `proven` on it.
+#:
+#: TOP-LEVEL is the whole difficulty, and the first version of this rule got it wrong.
+#: A pipe inside `$( )`, backticks, quotes or a `( )` subshell does NOT launder the
+#: outer status — and this codebase's OWN generated conda probe contains three of them
+#: (`$(sed -nE 's|...|\1|p' "$f" | sort -u)`). Blanket-matching `|` refused the system's
+#: own honest evidence, which is a neat demonstration of the module docstring's thesis:
+#: a string rule cannot win this game. So this stays deliberately narrow — strip every
+#: nested span first, then look at what is left — and the load-bearing check remains
+#: the control-image experiment, which needs to parse nothing.
+_PIPED = re.compile(r"(?<!\|)\|(?!\|)")
+#: Spans whose contents are not top-level: quoted strings, command substitutions,
+#: backticks, and parenthesised subshells. Innermost-first, applied repeatedly.
+_NESTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"|\$\([^()]*\)|`[^`]*`|\([^()]*\)")
+
+
+def _top_level(ex: str) -> str:
+    """`ex` with every nested span blanked out, so only top-level operators remain."""
+    prev = None
+    while prev != ex:
+        prev, ex = ex, _NESTED_SPAN.sub(" ", ex)
+    return ex
 # probe verbs that prove SOMETHING even when no tool token is known (e.g. an
 # authored file's `test -f {path}`), so the shape rule has a positive anchor.
 _PROBE_HINTS = ("command -v", "which ", "--version", "-version", "version",
@@ -247,6 +274,20 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
     if _RC_LAUNDERED.search(ex):
         return (f"evidence {ev!r} ends by forcing exit 0 — the recorded `passed` would be "
                 f"true whatever the tool did, so the check cannot fail and proves nothing")
+    if _PIPED.search(_top_level(ex)) and "pipefail" not in ex:
+        # The FOURTH laundering shape, and the one a careful agent reaches for by
+        # accident: a shell pipeline exits with its LAST stage's status, so
+        # `exomiser --help | head -20` is rc=0 even when exomiser is not installed
+        # at all. Measured 2026-08-02 in a stock debian image: piped rc=0,
+        # unpiped rc=127 — and a freeze had already registered `proven` on it.
+        # Trimming output is a completely reasonable thing to want; `head` is not
+        # a cheat, it is a convenience that silently disables the check. So name
+        # the two honest ways to keep it.
+        return (f"evidence {ev!r} pipes into another command, and a pipeline exits with "
+                f"its LAST stage's status — so the recorded `passed` reports `head`/`grep`, "
+                f"not the tool. It would pass in an image without the tool at all. "
+                f"Either drop the pipe (redirect instead: `... > /dev/null`) or make the "
+                f"pipeline honest: `set -o pipefail; ...`")
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:
@@ -545,6 +586,24 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
 # The contract.
 # ---------------------------------------------------------------------------
 
+#: The `control` verdicts a producer writes onto a verification record — the result of
+#: re-running that evidence in a digest-pinned image that LACKS the tool. Named here
+#: because the serve side reads them and the two producers write them
+#: (`env_build.verify_in_image`, `freeze_from_image._probe_tools`); three spellings of
+#: "discriminating" across three files is how this codebase's defects start.
+CONTROL_DISCRIMINATING = "discriminating"   # failed without the tool — the pass means something
+CONTROL_VACUOUS = "vacuous"                 # passed without the tool — it proves nothing
+CONTROL_UNCHECKED = "unchecked"             # the experiment could not be run — absence, not a pass
+
+#: The invariant ids the base VALIDATED_IN_IMAGE clause accounts for. Spelled out rather
+#: than left as the `VALIDATED_IN_IMAGE` prefix because `.discriminates` below is a
+#: SEPARATE clause under the same prefix, and the coverage lint requires every emitted id
+#: to be claimed by exactly one clause.
+_VII_COVERS = ("VALIDATED_IN_IMAGE.no_evidence",
+               "VALIDATED_IN_IMAGE.evidence_shape",
+               "VALIDATED_IN_IMAGE.evidence_passed")
+
+
 def check_build(result: dict) -> list[dict]:
     """The container-native Layer-1 honesty contract over a BuildResult dict.
     Returns a list of violations (empty == honest). EnvBuild.run() calls this and
@@ -634,7 +693,7 @@ def evaluate_build(result: dict) -> BuildContract:
     # (b) is validated==shipped — strictly stronger than the host verify.
     verifications = [v for v in (result.get("verifications") or []) if isinstance(v, dict)]
     if not verifications:
-        coverage.append(ClauseCoverage("VALIDATED_IN_IMAGE", ("VALIDATED_IN_IMAGE",), UNOBSERVED, 0,
+        coverage.append(ClauseCoverage("VALIDATED_IN_IMAGE", _VII_COVERS, UNOBSERVED, 0,
                                        "no evidence was run in the shipped image"))
         violations.append({"invariant": "VALIDATED_IN_IMAGE.no_evidence", "where": "verifications",
                            "message": "the build declared no tool evidence — an env with nothing "
@@ -646,7 +705,7 @@ def evaluate_build(result: dict) -> BuildContract:
         depths = [evidence_depth(v.get("check", ""), v.get("tool", "")) for v in verifications]
         deep = sum(1 for d in depths if d not in _SHALLOW_DEPTHS and d != "unknown")
         coverage.append(ClauseCoverage(
-            "VALIDATED_IN_IMAGE", ("VALIDATED_IN_IMAGE",), CHECKED, len(verifications),
+            "VALIDATED_IN_IMAGE", _VII_COVERS, CHECKED, len(verifications),
             f"{len(verifications)} evidence command(s) re-run in the shipped image; "
             f"{deep} of them RUN the tool (the rest are presence/version/help probes) "
             f"[{', '.join(sorted(set(depths)))}]"))
@@ -663,6 +722,89 @@ def evaluate_build(result: dict) -> BuildContract:
                                "message": f"{label}: evidence {ver.get('check','')!r} did not pass "
                                           f"(rc={ver.get('rc')}) in the shipped image — the tool is "
                                           f"not provably present/runnable in what we ship."})
+
+    # -- VALIDATED_IN_IMAGE.discriminates --------------------------------
+    # THE SERVE-SIDE HALF of the control experiment. The two producers re-run each
+    # PASSING evidence in a digest-pinned image that lacks the tool and refuse to
+    # register when it passes there too. That gate lives at the WRITER, and tier 5's
+    # lesson is that a writer-only gate grandfathers every record written before it
+    # existed. Measured when this landed: 9 of the 10 records in the EnvCache carried
+    # no `control` verdict at all, and every one of them served `contract_ok: true`
+    # with nothing behind it but the string rule the audit had already walked through
+    # (`true || samtools`, `true # samtools`, and the trailing pipe that started this).
+    #
+    # This function is PURE — it cannot run a container, so it cannot re-run the
+    # experiment. It can only report who asked. That asymmetry decides both verdicts:
+    #
+    #   vacuous            VIOLATION. The record states IN ITS OWN BYTES that its
+    #                      evidence passes without the tool. Refusing that needs no
+    #                      container, and the writer's refusal is not a reason for the
+    #                      reader to stay silent — that is the whole tier-5 lesson.
+    #   absent/unchecked   UNOBSERVED, never a violation. "Nobody asked" is not "it
+    #                      failed": refusing here would condemn correct records over
+    #                      missing data, and passing silently is the defect being
+    #                      fixed. The third state is the only honest answer, and it
+    #                      costs the record its `proven` tag and prints the gap.
+    #
+    # A re-freeze earns it back ([[feedback-existing-installs-not-precious]]). There is
+    # deliberately NO backfill: a `control` field written without running the control
+    # is the anchor-laundering I5 already paid for once.
+    # `unasked` is the COMPLEMENT of a closed set of verdicts, not a match on the two
+    # spellings we happen to know ("unchecked", absent). An unrecognized verdict from a
+    # future producer must land in the gap, not sail through as if it had been asked.
+    _ASKED = (CONTROL_DISCRIMINATING, CONTROL_VACUOUS)
+    passing = [v for v in verifications if v.get("passed")]
+    vacuous = [v for v in passing if v.get("control") == CONTROL_VACUOUS]
+    asked = [v for v in passing if v.get("control") in _ASKED]
+    unasked = [v for v in passing if v.get("control") not in _ASKED]
+    for ver in vacuous:
+        label = ver.get("label", "?")
+        violations.append({
+            "invariant": "VALIDATED_IN_IMAGE.vacuous_evidence",
+            "where": f"verifications[{label}]",
+            "message": f"{label}: evidence {ver.get('check','')!r} is recorded as VACUOUS — it "
+                       f"exits 0 in a control image that does NOT contain the tool "
+                       f"({ver.get('control_note') or 'no note recorded'}), so its pass in the "
+                       f"shipped image proves nothing about the shipped image. Re-freeze with "
+                       f"evidence that runs the tool."})
+    _disc = "VALIDATED_IN_IMAGE.discriminates"
+    _disc_covers = ("VALIDATED_IN_IMAGE.vacuous_evidence",)
+    if vacuous:
+        # It looked and it OBJECTED — CHECKED, even if other evidence went unasked. A
+        # clause that raised a violation must never report that it declined to look.
+        coverage.append(ClauseCoverage(
+            _disc, _disc_covers, CHECKED, len(asked),
+            f"{len(asked)} of {len(passing)} passing evidence command(s) were re-run in a "
+            f"control image without the tool, and {len(vacuous)} passed there too (VACUOUS)"))
+    elif passing and not unasked:
+        coverage.append(ClauseCoverage(
+            _disc, _disc_covers, CHECKED, len(asked),
+            f"all {len(asked)} passing evidence command(s) FAILED in a control image without "
+            f"the tool, so each pass in the shipped image is about the shipped image"))
+    elif not passing:
+        # NOT `NOT_APPLICABLE`, though the producers do write `control: "not_applicable"`
+        # on an individual failing verification. That is a different question: theirs is
+        # "was a control run owed for THIS evidence?" (no — paying to learn why a failure
+        # failed buys nothing); this clause's is "did we establish that this IMAGE's
+        # evidence discriminates?" — and the answer is no, we established nothing.
+        #
+        # NOT_APPLICABLE would mean the absence is itself a FACT about the artifact, the
+        # way "claims no GPU" is. An artifact with no passing evidence is not a fact, it
+        # is a broken artifact, and the attestation proves the difference matters: a
+        # NOT_APPLICABLE clause earns a place in `honesty_contract`, so an adopt record
+        # with no evidence at all would have claimed a validation guarantee — the exact
+        # thing L4's roundtrip test exists to forbid.
+        coverage.append(ClauseCoverage(
+            _disc, _disc_covers, UNOBSERVED, 0,
+            "no evidence passed in the shipped image, so nothing here establishes that "
+            "its evidence can tell this image from one without the tool"))
+    else:
+        coverage.append(ClauseCoverage(
+            _disc, _disc_covers, UNOBSERVED, 0,
+            f"{len(unasked)} of {len(passing)} passing evidence command(s) were never re-run in "
+            f"a control image lacking the tool "
+            f"({', '.join(sorted((v.get('label') or '?') for v in unasked))}) — so nothing here "
+            f"distinguishes this image from an image without the tool. Re-freeze to earn it"))
 
     # -- POLICY_CLEAN + PROVENANCE_CLEAN ---------------------------------
     # PROVENANCE_CLEAN is the firewall around the synthesis tier: a synthesized

@@ -30,8 +30,14 @@ def _clean_record(**over) -> dict:
     rec = {
         "image": "x:1",
         "image_digest": "sha256:abc",
+        # `control` is part of "every clause observed": without it the record cannot say
+        # its evidence distinguishes this image from any image, and the discriminates
+        # clause below reads UNOBSERVED. A fixture that omitted it would quietly stop
+        # being the fully-observed record this helper promises.
         "verifications": [{"label": "samtools", "tool": "samtools",
-                           "check": "samtools --version", "rc": 0, "passed": True}],
+                           "check": "samtools --version", "rc": 0, "passed": True,
+                           "control": "discriminating",
+                           "control_note": "fails in a control image without the tool (rc=127)"}],
         "shipped_binaries": [{"tool": "samtools", "version": "1.21", "provenance": "conda",
                               "install_command": None, "tier": None, "verified": None,
                               "assurance": None}],
@@ -40,6 +46,17 @@ def _clean_record(**over) -> dict:
     }
     rec.update(over)
     return rec
+
+
+def _claims(clause: eh.ClauseCoverage, invariant: str) -> bool:
+    """Does this clause account for that invariant id?
+
+    ONE reading, used by both lints below. They used to differ: the ownership lint
+    matched `covers` exactly-or-as-a-dotted-prefix, while the not-applicable lint
+    compared only the leading segment. That was indistinguishable while every prefix had
+    exactly one clause — and wrong the moment `VALIDATED_IN_IMAGE.discriminates` joined
+    `VALIDATED_IN_IMAGE`, because a sibling's violation read as this clause's."""
+    return any(invariant == p or invariant.startswith(p + ".") for p in clause.covers)
 
 
 def _clause(contract, name: str) -> eh.ClauseCoverage:
@@ -92,11 +109,11 @@ def test_a_clause_that_objects_is_never_reported_as_not_applicable():
     ):
         c = eh.evaluate_build(rec)
         assert c.violations, rec
-        objected = {v["invariant"].split(".")[0] for v in c.violations}
         for cl in c.coverage:
             if cl.status == eh.NOT_APPLICABLE:
-                assert not (objected & {p.split(".")[0] for p in cl.covers}), (
-                    f"{cl.clause} declared itself not-applicable yet emitted a violation")
+                mine = [v["invariant"] for v in c.violations if _claims(cl, v["invariant"])]
+                assert not mine, (
+                    f"{cl.clause} declared itself not-applicable yet emitted {mine}")
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +133,9 @@ def test_every_violation_is_claimed_by_exactly_one_coverage_clause():
                                       "check": "echo hi", "rc": 0, "passed": True}]),
         _clean_record(verifications=[{"label": "x", "tool": "samtools",
                                       "check": "samtools --version", "rc": 1, "passed": False}]),
+        _clean_record(verifications=[{"label": "x", "tool": "samtools",
+                                      "check": "samtools --version", "rc": 0, "passed": True,
+                                      "control": "vacuous", "control_note": "passes anywhere"}]),
         _clean_record(accelerator={"type": "cuda"}),
         _clean_record(accelerator={"type": "mps"}),
         _clean_record(accelerator={"type": "cuda", "toolkit_version": "12.1",
@@ -137,14 +157,13 @@ def test_every_violation_is_claimed_by_exactly_one_coverage_clause():
         for v in c.violations:
             inv = v["invariant"]
             seen.add(inv)
-            owners = [cl.clause for cl in c.coverage
-                      if any(inv == p or inv.startswith(p + ".") for p in cl.covers)]
+            owners = [cl.clause for cl in c.coverage if _claims(cl, inv)]
             assert len(owners) == 1, (
                 f"invariant {inv!r} is claimed by {owners} — every violation must be "
                 f"accounted for by exactly one coverage clause")
     # A canary on the fixture set itself: if a clause is added and this list is not
     # extended, coverage of the LINT silently drops even though the lint still passes.
-    assert len(seen) >= 12, f"only provoked {len(seen)} distinct invariants: {sorted(seen)}"
+    assert len(seen) >= 17, f"only provoked {len(seen)} distinct invariants: {sorted(seen)}"
 
 
 def test_coverage_fields_are_well_formed():
@@ -212,11 +231,103 @@ def test_degrade_rule_ignores_evidence_depth():
     coverage detail and nowhere load-bearing."""
     shallow = _clean_record(verifications=[{"label": "s", "tool": "samtools",
                                             "check": "command -v samtools",
-                                            "rc": 0, "passed": True}])
+                                            "rc": 0, "passed": True,
+                                            "control": "discriminating"}])
     c = eh.evaluate_build(shallow)
     assert c.ok and not c.unobserved, "presence-only evidence must not degrade the tag"
     detail = _clause(c, "VALIDATED_IN_IMAGE").detail
     assert "0 of them RUN the tool" in detail, "...but it MUST be disclosed: " + detail
+
+
+# ---------------------------------------------------------------------------
+# 4. The SERVE-SIDE half of the control experiment (tier 5: a producer-only gate
+#    grandfathers every record written before it existed).
+# ---------------------------------------------------------------------------
+
+def _ver(**over) -> dict:
+    v = {"label": "samtools", "tool": "samtools", "check": "samtools --version",
+         "rc": 0, "passed": True, "control": "discriminating"}
+    v.update(over)
+    return v
+
+
+def test_a_record_whose_evidence_was_never_control_tested_is_not_fully_observed():
+    """THE GRANDFATHERING FIX. When this landed, 9 of the 10 records in the real EnvCache
+    carried no `control` verdict — the producers had started running the experiment, but
+    every record written before that still served `contract_ok: true` on the strength of
+    a string rule the audit had already walked through. Absence of the verdict now costs
+    the record its fully-observed status, which is what turns `proven` into `degraded`."""
+    rec = _clean_record(verifications=[_ver(control=None)])
+    del rec["verifications"][0]["control"]
+    c = eh.evaluate_build(rec)
+
+    assert c.ok, "nobody asked is not a violation — it must not refuse a correct record"
+    assert _clause(c, "VALIDATED_IN_IMAGE.discriminates").status == eh.UNOBSERVED
+    assert c.as_dict()["fully_observed"] is False
+    advisory = eh.coverage_disclosure(c)["coverage_advisory"]
+    assert "VALIDATED_IN_IMAGE.discriminates" in advisory and "assurance" in advisory
+
+
+def test_an_unchecked_control_is_absence_not_compliance():
+    """`unchecked` means the experiment could not be run (no docker, no network). The
+    producer already refuses to treat that as a pass; the reader must not either."""
+    c = eh.evaluate_build(_clean_record(verifications=[_ver(control="unchecked")]))
+    assert c.ok and _clause(c, "VALIDATED_IN_IMAGE.discriminates").status == eh.UNOBSERVED
+
+
+def test_an_unrecognized_control_verdict_lands_in_the_gap_not_the_pass():
+    """`unasked` is the COMPLEMENT of a closed set, so a verdict from a future producer
+    that this reader does not understand degrades rather than sails through. The opposite
+    default — match the spellings we know are bad — is how a new value becomes a silent
+    pass."""
+    c = eh.evaluate_build(_clean_record(verifications=[_ver(control="probably_fine")]))
+    assert _clause(c, "VALIDATED_IN_IMAGE.discriminates").status == eh.UNOBSERVED
+
+
+def test_a_record_that_admits_its_own_evidence_is_vacuous_is_REFUSED_at_serve_time():
+    """The one case the pure reader can gate on with no container: the record states in
+    its own bytes that its evidence passes in an image without the tool. The producer
+    refuses to write this — and that is exactly why the reader must refuse it too, or
+    the check only ever applies to records written after the check existed."""
+    c = eh.evaluate_build(_clean_record(
+        verifications=[_ver(control="vacuous",
+                            control_note="also exits 0 in a stock debian without the tool")]))
+    assert not c.ok
+    v = [x for x in c.violations if x["invariant"] == "VALIDATED_IN_IMAGE.vacuous_evidence"]
+    assert len(v) == 1 and "proves nothing" in v[0]["message"]
+    # ...and a clause that objected never reports that it declined to look.
+    assert _clause(c, "VALIDATED_IN_IMAGE.discriminates").status == eh.CHECKED
+
+
+@pytest.mark.parametrize("vers", [
+    [],                                                              # nothing declared
+    [_ver(rc=1, passed=False, control="not_applicable")],            # declared, all failed
+], ids=["no-evidence", "all-evidence-failed"])
+def test_no_passing_evidence_establishes_nothing_rather_than_being_not_applicable(vers):
+    """UNOBSERVED, NOT `NOT_APPLICABLE` — and the attestation is why the difference is
+    load-bearing, not pedantry. A NOT_APPLICABLE clause EARNS a place in
+    `honesty_contract`, so calling this inapplicable would have let an adopt record with
+    no evidence at all ship an attestation claiming a validation guarantee. That is the
+    precise claim L4's roundtrip test exists to forbid. The producers' per-verification
+    `control: "not_applicable"` answers a different question (was a control owed for THIS
+    evidence) and does not transfer to the clause."""
+    c = eh.evaluate_build(_clean_record(verifications=vers))
+    assert _clause(c, "VALIDATED_IN_IMAGE.discriminates").status == eh.UNOBSERVED
+
+    from agent.skills.attestation import build_attestation
+    guarantees = (build_attestation(_clean_record(verifications=vers, mode="adopt"))
+                  ["predicate"]["buildDefinition"]["internalParameters"]["honesty_contract"])
+    assert not any(g.startswith("VALIDATED_IN_IMAGE") for g in guarantees), guarantees
+
+
+def test_the_serve_side_verdicts_are_the_ones_the_producers_actually_write():
+    """The two halves must agree on the spelling. This reads the CONSTANTS the producers
+    import, so a rename cannot leave the reader matching a string nobody writes."""
+    from agent.skills import freeze_from_image as ffi
+    assert ffi._evidence_discriminates.__doc__ is not None
+    for verdict in (eh.CONTROL_DISCRIMINATING, eh.CONTROL_VACUOUS, eh.CONTROL_UNCHECKED):
+        assert f'"{verdict}"' in ffi._evidence_discriminates.__doc__, (
+            f"{verdict!r} is not among the verdicts the producer documents writing")
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +347,13 @@ def test_degrade_rule_ignores_evidence_depth():
     ("# samtools --version",        "the whole command is a comment"),
     ("samtools --version || true",  "rc laundered: `passed` is true whatever the tool did"),
     ("samtools --version ; true",   "`;` launders rc exactly as `||` does"),
+    # MEASURED 2026-08-02, not reasoned: `exomiser --help 2>&1 | head -20` returned
+    # rc=0 from a stock debian image containing no exomiser (unpiped: rc=127) — and a
+    # freeze had already registered `proven` on exactly that evidence. This case used
+    # to live in the ACCEPTS list below; it was moved on the strength of that run, not
+    # on a change of opinion.
+    ("samtools --version 2>&1 | head -1", "a pipeline exits with its LAST stage's rc, "
+                                          "so `head` reports success for a missing tool"),
     ('echo "samtools 99.9.9"',      "the classic library-only echo cheat"),
     ("true",                        "bare constant-true"),
     ("",                            "empty"),
@@ -252,8 +370,13 @@ def test_shape_rule_rejects_evidence_that_cannot_fail(cheat, why):
     "command -v samtools",
     "samtools view -H /data/x.bam",
     "samtools --version && true",          # `&&` does NOT launder — failure propagates
-    "samtools --version 2>&1 | head -1",
+    "set -o pipefail; samtools --version 2>&1 | head -1",   # pipefail makes a pipe honest
+    "samtools --version > /dev/null",                       # redirect, don't pipe
     "command -v samtools || ( for f in /opt/conda/envs/*/conda-meta/samtools-*.json; do :; done )",
+    # A pipe NESTED inside $( ) / quotes / a subshell does not launder the outer rc.
+    # freeze's own generated probe contains all three, and the first version of the
+    # pipe rule refused it — the reason the rule strips nested spans before looking.
+    """command -v samtools || ( for b in $(sed -nE 's|.*"bin/([^"/]+)".*|\\1|p' f | sort -u); do command -v "$b" && exit 0; done; exit 1 )""",
 ])
 def test_shape_rule_accepts_real_evidence(ok):
     """The rules must not cost a single legitimate shape — including freeze's OWN

@@ -30,6 +30,7 @@ from typing import Any, Optional
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
+from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
 
 
@@ -362,6 +363,7 @@ def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[boo
 
 
 @mcp.tool()
+@backgroundable("workflow_name", "pipeline_id")
 def seal_workflow(
     pipeline_id: str,
     freeze_request_key: str,

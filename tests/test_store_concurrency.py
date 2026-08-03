@@ -183,12 +183,15 @@ def test_mutate_on_disk_reports_a_missing_draft_rather_than_creating_one(tmp_pat
     assert _state(tmp_path).mutate_on_disk("never-existed", lambda d: None) is False
 
 
-def test_ordinary_mutators_remain_single_writer_by_design(tmp_path):
-    """A STATED limitation, pinned so it stays stated. `add_step` and friends still edit
-    the in-memory copy and persist it wholesale, so two processes mutating the same draft
-    through them lose one side's edits. Only the cross-process pointer writes go through
-    `mutate_on_disk` today. This test documents the boundary; when batch install lands and
-    the boundary moves, it should fail and be rewritten — not deleted."""
+def test_ordinary_mutators_are_cross_process_safe(tmp_path):
+    """THE BOUNDARY MOVED. This test used to assert the opposite — that A's write was
+    ERASED — and carried an instruction to rewrite it rather than delete it when the
+    ordinary mutators started re-reading. They now do: every mutator goes through
+    `_mutate` (lock, re-read from disk, apply, write), `_persist` is gone, and there is
+    no longer a door that writes a cached copy.
+
+    B's snapshot deliberately predates A's write, which is the whole point: a writer
+    holding a stale view must not be able to roll back a write it never saw."""
     a, b = _state(tmp_path), _state(tmp_path)
     pid = a.start("p", "d")["pipeline_id"]
     b._drafts[pid] = json.loads(json.dumps(a.get_draft(pid)))
@@ -198,9 +201,44 @@ def test_ordinary_mutators_remain_single_writer_by_design(tmp_path):
 
     final = _state(tmp_path).get_draft(pid)
     assert final["notes"] == ["from B"]
-    assert final["description"] != "from A", (
-        "if this now passes, the ordinary mutators became cross-process safe — good; "
-        "rewrite this test to assert that instead of the old boundary")
+    assert final["description"] == "from A", \
+        "B's stale snapshot rolled back A's write — the mutators are not re-reading"
+
+
+def test_start_resumes_another_processes_draft_instead_of_wiping_it(tmp_path):
+    """The CREATE-side of the same bug, and the destructive one. `start` decided
+    resume-vs-new from `self._drafts`, so a second process saw the id missing from its
+    OWN map, built a fresh empty draft and persisted it over one already being filled —
+    reporting a clean new pipeline rather than an error."""
+    a = _state(tmp_path)
+    pid = a.start("p", "d")["pipeline_id"]
+    a.add_install_step(pid, {"command": "conda install samtools", "returncode": 0})
+
+    b = _state(tmp_path)                       # a second process, cold cache
+    assert b.start("p", "d")["resumed"] is True
+    assert b.get_draft(pid)["install_steps"], "start() wiped a draft it should have resumed"
+
+
+def test_forty_appends_from_three_processes_all_survive(tmp_path):
+    """The reproduction that matters for a batch: concurrent step appends. Threads share
+    a process but each gets its OWN PipelineState, so each has an independent stale cache
+    — the same shape as N detached children, and the shape that lost writes before."""
+    import threading
+    a = _state(tmp_path)
+    pid = a.start("p", "d")["pipeline_id"]
+
+    def worker(tag):
+        st = _state(tmp_path)
+        for i in range(40):
+            st.add_install_step(pid, {"command": f"{tag}-{i}", "returncode": 0})
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in ("a", "b", "c")]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    steps = _state(tmp_path).get_draft(pid)["install_steps"]
+    assert len(steps) == 120, f"lost {120 - len(steps)} of 120 concurrent appends"
+    assert [s["step"] for s in steps] == list(range(1, 121)), "step numbering is not contiguous"
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +314,97 @@ def test_no_shared_job_index_appears_alongside_the_per_job_files(tmp_path):
         f"JobManager wrote {stray} outside the per-job files. A shared document is a "
         f"read-modify-write, and read-modify-write without a lock is what erased 96 "
         f"EnvCache records. Re-examine whether the lock is now required.")
+
+
+# ---------------------------------------------------------------------------
+# The conda prefix.
+#
+# The other stores here are documents that lose records. A conda prefix loses
+# something worse: two concurrent `conda install --prefix X` runs race on the
+# same package cache and the same prefix metadata, and conda has no locking of
+# its own, so X ends up in a state neither caller asked for.
+#
+# This became reachable when installs could be DETACHED. Before that it needed
+# two simultaneous MCP calls; parallel builds are exactly what backgrounding is
+# for, and a multi-tool env is the natural way to hit it.
+# ---------------------------------------------------------------------------
+
+def _env_mgr(tmp_path):
+    import agent.mcp_server as ms
+    from agent.skills.env_manager import EnvManager
+    m = EnvManager(ms.config)
+    m.envs_dir = tmp_path / "envs"
+    m.envs_dir.mkdir(parents=True, exist_ok=True)
+    # A contended install must REFUSE inside the test, not queue for the real
+    # install timeout (an hour).
+    m.config = {**ms.config, "agent": {**ms.config["agent"],
+                                       "install_timeout_seconds": 0.3}}
+    return m
+
+
+@pytest.mark.parametrize("call", [
+    lambda m: m.install("shared_env", [{"spec": "samtools", "channel": "bioconda"}]),
+    lambda m: m.create("shared_env"),
+])
+def test_a_conda_prefix_admits_one_writer_at_a_time(tmp_path, call):
+    """Held by another PROCESS, so this is real exclusion and not a GIL artifact.
+
+    The refusal matters as much as the exclusion: an install that quietly
+    proceeded into a prefix another process is rewriting would produce a green
+    result over a corrupt env, which is the failure the whole honesty contract
+    exists to prevent.
+    """
+    m = _env_mgr(tmp_path)
+    prefix = m.envs_dir / "shared_env"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import sys, time; sys.path.insert(0, {str(ROOT)!r})
+            from agent.skills.store_lock import locked
+            with locked({str(prefix)!r}):
+                print("HELD", flush=True)
+                time.sleep(20)
+        """)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "HELD"
+        out = call(m)
+        assert out["success"] is False
+        assert out["code"] == "env_manager.env_busy"
+        assert "shared_env" in out["error"]
+        assert not prefix.exists(), (
+            "conda ran against a prefix another process holds — the refusal is "
+            "the whole point of the lock")
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_the_prefix_lock_is_per_env_not_global(tmp_path):
+    """Two background installs into DIFFERENT envs must still run in parallel.
+    A global install lock would serialize the whole batch and quietly undo the
+    reason for backgrounding at all."""
+    m = _env_mgr(tmp_path)
+    other = m.envs_dir / "other_env"
+    with locked(m.envs_dir / "shared_env"):
+        # Not contended: acquiring the sibling must not block. (We take the raw
+        # lock rather than run conda — the property under test is the KEY, and
+        # a real solve would make this a network test.)
+        with locked(other, timeout=0.3):
+            pass
+
+
+def test_the_auto_create_inside_install_does_not_deadlock(tmp_path, monkeypatch):
+    """`install` auto-creates a missing env while holding the prefix lock, and
+    store_lock is NOT re-entrant — so the inner path must reach the UNLOCKED
+    `_create`. Pre-fix this self-deadlocked on the first install into a new env,
+    i.e. on the single most common call in the system."""
+    m = _env_mgr(tmp_path)
+    calls = []
+    monkeypatch.setattr(type(m), "_run",
+                        lambda self, cmd, **kw: (calls.append(cmd[1]),
+                                                 {"returncode": 0, "stdout": "", "stderr": ""})[1])
+    monkeypatch.setattr(type(m), "apply",
+                        lambda self, *a, **kw: {"success": True, "stdout": "",
+                                                "stderr": "", "returncode": 0})
+    out = m.install("brand_new_env", [{"spec": "samtools", "channel": "bioconda"}])
+    assert out["success"] is True
+    assert "create" in calls, "the auto-create never ran"

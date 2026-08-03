@@ -31,6 +31,40 @@ _TOOLS = "/opt/tools"
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
 
 
+def _jar_select_sh(dest: str, name: str) -> str:
+    """Shell that picks the PRIMARY jar out of an unpacked distribution.
+
+    THE RULE, and it is `EnvManager._select_jar`'s: among jars whose BASENAME contains
+    the tool name, take the shortest basename; with `name=""`, take the shortest basename
+    overall (the fallback). `tests/test_jar_selection.py` runs this shell and that Python
+    over the same trees and requires the same answer, because the two cannot share code
+    across the language boundary and this repo's signature defect is one truth in N
+    places, drifting in N-1.
+
+    WHAT IT REPLACED, and why it only broke in the shipped artifact:
+
+        find /opt/tools/exomiser -name '*.jar' | grep -i exomiser | head -n1
+
+    `grep` matches the whole PATH, and the unpack destination is `/opt/tools/<name>` — so
+    for exomiser EVERY jar line contains "exomiser", including
+    `.../exomiser-cli-15.1.0/lib/ontologizer-0.0.1.jar`. The filter selected nothing and
+    `head -n1` took `find`'s directory order, so the wrapper ran a DEPENDENCY jar. The
+    host picked correctly the whole time (it matched `Path.name`), which is exactly why
+    this was invisible until VALIDATED_IN_IMAGE re-ran the evidence in the image that
+    ships — the class of bug that clause exists for.
+
+    `awk -F/` so `$NF` IS the basename: matching the path was the whole bug, so the
+    program is written in the one form that cannot see a directory."""
+    prog = ('BEGIN{best="";bl=0} '
+            '{b=$NF; lb=tolower(b); '
+            + (f'if (index(lb, tolower(n))==0) next; ' if name else '')
+            + 'if (best=="" || length(b)<bl) {best=$0; bl=length(b)}} '
+            'END{print best}')
+    awk = (f"awk -F/ -v n={shlex.quote(name)} {shlex.quote(prog)}" if name
+           else f"awk -F/ {shlex.quote(prog)}")
+    return f"find {dest} -name '*.jar' | {awk}"
+
+
 def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: str = "",
                    wrapper: str = "", evidence: str = "") -> dict[str, Any]:
     """Precompiled binary on a release/vendor URL: download → optional sha256
@@ -83,8 +117,8 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
     if asset.lower().endswith(".zip"):
         parts += [
             f"unzip -o {dest}/{asset} -d {dest}",
-            f"JAR=\"$(find {dest} -name '*.jar' | grep -i {shlex.quote(name)} | head -n1)\"",
-            f'JAR="${{JAR:-$(find {dest} -name \'*.jar\' | head -n1)}}"', 'test -n "$JAR"',
+            f'JAR="$({_jar_select_sh(dest, name)})"',
+            f'JAR="${{JAR:-$({_jar_select_sh(dest, "")})}}"', 'test -n "$JAR"',
             f"printf '#!/bin/sh\\nexec java {flags} -jar %s \"$@\"\\n' \"$JAR\" > /usr/local/bin/{wrap}",
         ]
     else:

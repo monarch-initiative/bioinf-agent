@@ -1,11 +1,11 @@
 """
 N5 (batch-3 Apollo3 stress): the orphan-service-PID reaper must run ONLY in
 the actual MCP server process (the __main__ entrypoint), NOT at module
-import. Pre-fix it ran at module-import; the W1 freeze_runner subprocess
+import. Pre-fix it ran at module-import; the W1 background subprocess
 (`from agent.mcp_server import freeze`) imported it on startup, which then
 reaped PID files belonging to the PARENT's still-running services (because
 start_service writes the wrapper bash's PID, not the daemon's, and by the
-time freeze_runner imported the wrapper bash had often exited). The
+time the runner imported the wrapper bash had often exited). The
 parent's later stop_service() then found no PID file and orphaned the real
 daemon. Apollo3 left a real mongod running on port 27027 because of this.
 

@@ -159,15 +159,43 @@ class EnvBuild:
                                    if v.get("tool")))
         res = self.cb.validate_in_image(image, [c for _, c in finals], probe_tools=tools)
         banners = res.get("banners", {}) or {}
-        records = []
+        # The control experiment, on THIS path too. It was written for the agent-
+        # authored `freeze_from_image` and wired only there — so the container-native
+        # path, which is the busy one, had a string rule and nothing behind it. Phase D
+        # walked straight through: `exomiser --help 2>&1 | head -20` exits 0 in a stock
+        # debian image that has no exomiser, and a freeze registered `proven` on it.
+        # Imported rather than reimplemented — a second copy of a check is how the
+        # first copy stops being the truth (audit: every lesson applied at one site).
+        from agent.skills.freeze_from_image import _evidence_discriminates
+
+        records, vacuous = [], []
         for v, run_cmd in finals:
             r = res["checks"].get(run_cmd, {})
             tool = v.get("tool", "")
+            passed = r.get("rc") == 0
+            # Only interrogate evidence that PASSED — a failing check is already
+            # refusing, and the control run costs a container.
+            # self.cb.platform, not self.platform: the control must run on the SAME
+            # platform the image was validated on, and that is the container build's.
+            control, note = (_evidence_discriminates(self.cb.platform, run_cmd)
+                             if passed else ("not_applicable", "evidence did not pass"))
+            if control == "vacuous":
+                vacuous.append(f"{tool or v['label']}: {v['check']!r} — {note}")
             records.append({"label": v["label"], "tool": tool,
                             "check": v["check"], "engine_coupled": v["engine_coupled"],
-                            "rc": r.get("rc"), "passed": r.get("rc") == 0,
+                            "rc": r.get("rc"), "passed": passed,
                             "out": r.get("out", ""),
-                            "banner": banners.get(tool, "")})
+                            "banner": banners.get(tool, ""),
+                            "control": control, "control_note": note})
+        if vacuous:
+            # REFUSE, never degrade: we RAN the experiment and it came back negative.
+            # `unchecked` (no docker, no network) is the state that degrades; this is
+            # the state where the evidence is proven not to be evidence.
+            return broke("env_build.vacuous_evidence", success=False,
+                         verifications=records,
+                         error="evidence that passes with or without the tool installed, "
+                               "so it cannot prove the image carries what you asked for: "
+                               + "; ".join(vacuous))
         if res["success"]:
             return proven("env_build.verified_in_image", success=True, verifications=records)
         return broke("env_build.verification_in_image_failed", success=False, verifications=records)

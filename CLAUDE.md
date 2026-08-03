@@ -138,14 +138,16 @@ That's the local-validation protocol. To execute the *same* frozen env ON HPC, t
 
 ## Async pattern — for anything that may run silently >5 minutes
 
-The agent's stream-watchdog kills a tool call that goes silent for ~600s. Use `run_in_background` + `check_job` for big downloads, long conda solves, multi-hour assemblies. `download_reference_database` already does this internally.
+The agent's stream-watchdog kills a tool call that goes silent for ~600s. Six primitives can legitimately run past it and carry **`background=True`** — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe`, `install_conda_packages`, `run_step_in_container`, `seal_workflow`. Pass it and the call returns a `job_id` immediately; `check_job` then carries the tool's **real return value inline under `result`** once `state=='exited'`, so there is no second file to read. Prefer the flag over hand-rolling the same thing with `run_in_background`, which is for arbitrary shell (`download_reference_database` backgrounds itself internally).
 
 ```python
-job = run_in_background(command="...", env_name="bioinf_x")
-while check_job(job["job_id"])["state"] == "running":
-    # do other work; the agent stays alive because check_job is constantly producing output
-    pass
+job = freeze(env_name="x", tools=["dorado"], background=True)
+while (r := check_job(job["job_id"]))["state"] == "running":
+    pass                      # do other work; polling keeps the stream alive
+r["result"]                   # the freeze record itself, or result_missing saying why not
 ```
+
+Parallel background installs into ONE conda prefix are serialized (different envs still run fully in parallel), so a batch can fan out freely.
 
 ---
 
@@ -162,16 +164,15 @@ Generated artifacts:
 
 ## Schema cheatsheet (avoid seal rejection)
 
-- `notes`: `list[str]` (a bare string is auto-wrapped)
-- `runtime_configs[*].format`: `yaml | properties | java_properties | ini | json | xml | tsv | txt`
-- `OutputFile.type`: see the FileType union in `agent/models/core_data.py` (includes `jsonl`, `bedgraph`, `methylation_report`, `sqlite`, etc.)
-- `install_method.type`: `conda | jar | pip | r_install | binary | source | perl | cargo | go | synthesized`
-- `runtime_environment.type`: `conda | jar | r | docker | native`
+**THE GATE IS THE GUIDE** — knowledge about satisfying a check lives AT the check, so you
+pay for it only when you trip it. Enums, missing seal-required fields (incl.
+`usage.description`), undetected step outputs and mutated `test_data` all name their own
+remedy when they fire; that is why they are not listed here. Delete a bullet from this
+list only once its gate teaches.
+
 - `usage.trials[*]`: `{name, substitutions: {PLACEHOLDER: abs_path}, description?}` — declare one trial per input shape (paired-gz, single-uncompressed, …) so I4 proves multi-shape coverage. Empty list ⇒ single inferred trial (backward-compatible).
 - **`usage.command_template`: `str | list[str]`.** Use a LIST for a multi-phase how-to — one command per entry, run in order in one shared working dir, so `{OUTPUT_DIR}/a.bam` written by command 1 is the input to command 2. A bare string still means exactly what it always did. Every consumer (I4, I6, the RUN dashboard, `generate_user_guide`) reads it through `core_data.usage_commands()`; if you add a consumer, use that function rather than touching the field — two readings of one field is how this codebase's defects start.
-- **The one-reading leaves live together in `core_data`, and a new consumer MUST use them rather than re-spell the logic** (`tests/test_one_reading_per_field.py` enforces it for the fields it names): `usage_commands()` (the `command_template` shape), `usage_status()`/`usage_label()` (the three-state how-to verdict), `record_is_gated()` (I13's license question), `test_data_paths()`/`test_data_anchors()`/`resolve_data_path()` (which `test_data` values are paths, what they were anchored to, and where a relative one resolves — the key set was spelled FOUR times: seal, the production data-pin check, and the RUN dashboard, all disagreeing), and `step_is_validated()` (did a step's outputs get validated — the per-file `validation` records **OR** the narrow `mark_step_validated` override; BOTH halves, always). Each became a leaf only after the hand-copies had already drifted in production. The last one was written out seven times; six spellings had both halves and the seventh — the `list_installed_pipelines` row, the one facing the user — kept only the override, so it reported `steps_validated: 0` for every workflow ever sealed, including a five-step run with a complete set of passing records. It was plausible, it was advertised in the tool's own description, and the two tests covering that row both passed because both built their fixtures out of the override shape that almost no real step has.
-- **Seal-required field the invariants DON'T catch**: `usage.description` (a one-line string — required by the model whenever a `usage` block is present; surfaces only as a pydantic `WorkflowSpec validation failed` at write time, *after* every invariant passes). Fill it before `seal_workflow`. (`reference_databases[*].source_url` is now optional — a locally-staged reference with no download origin may omit it; I5 pins content by sha256, not URL.)
-- **`test_data` inputs must still be on disk at seal, and unchanged since selection.** I8 stats and re-hashes every path in the block, so a scratch dir cleaned up between the run and the seal now refuses instead of sealing green. If a workflow legitimately no longer has its inputs, re-run the step against data that is there — there is no override, because the whole point is that a spec's claim about its inputs keeps matching reality up to the moment we freeze the record.
+- **One reading per field.** A new consumer MUST use the `core_data` leaves rather than re-spell the logic (`tests/test_one_reading_per_field.py` enforces it): `usage_commands()`, `usage_status()`/`usage_label()`, `record_is_gated()`, `test_data_paths()`/`test_data_anchors()`/`resolve_data_path()`, `step_is_validated()`. Each became a leaf only after its hand-copies had already drifted in production — the war stories are in [docs/primitives.md](docs/primitives.md). `reference_databases[*].source_url` is optional; I5 pins content by sha256, not URL.
 - **Output placeholders in `usage.command_template`**: write every output path through an OUTPUT slot — one named `{OUTPUT_DIR}`/`{OUT_DIR}` or containing `output`. The I4 self-test runs each trial in a fresh scratch dir and fills THAT path into output slots, then scans it for `usage.outputs[*].files`. An output written via an unrecognized slot (e.g. `-o {OUT_TSV}`) lands outside the scratch dir → I4 fails with `produced_files: []`. Correct idiom: `-o {OUTPUT_DIR}/stats.tsv` (declare the glob in `usage.outputs[*].files`).
 - **`run_pipeline_step` output detection**: the step only detects files created/modified under `watch_dir` (default: the input's directory). If your command writes elsewhere via `-o <path>`/`> <path>`, pass `watch_dir=<that dir>` — an undetected output has no validation and fails I3 at seal. A rc=0 run with no `detected_outputs` returns an `output_detection_hint`.
 

@@ -26,6 +26,7 @@ repo is supplied (you can't probe a release asset from a bare tool name).
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -351,13 +352,10 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     return {"available": False, **({"probe_error": err} if err else {})}
 
 
-def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
-    """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
-    resolve() can confirm a same-name CRAN hit references the same project.
-
-    `summary` is CRAN's Title + Description — the identity evidence. CRAN's
-    `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
-    10x Genomics' Cell Ranger; the name is all they share."""
+def _probe_cran_exact(name: str, timeout: int) -> dict[str, Any]:
+    """One crandb lookup, exactly as spelled. `resolved_name` is ALWAYS set on a
+    hit — the name CRAN actually knows the package by, which is not necessarily
+    the name that was asked for (see `probe_cran`)."""
     data, err = _fetch_json(f"https://crandb.r-pkg.org/{name}", timeout)
     if isinstance(data, dict) and data.get("Package"):
         summary = " — ".join(x for x in ((data.get("Title") or "").strip(),
@@ -368,8 +366,64 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
             "summary": re.sub(r"\s+", " ", summary)[:400],
             "url": data.get("URL") or "",
             "bug_reports": data.get("BugReports") or "",
+            # CRAN's own spelling, not ours. `install.packages()` is case-SENSITIVE,
+            # so this is what has to reach the install_call — never the query.
+            "resolved_name": data.get("Package"),
         }
     return {"available": False, **({"probe_error": err} if err else {})}
+
+
+def _cran_case_variants(name: str) -> list[str]:
+    """Mechanical capitalizations to retry a CLEAN CRAN miss with, at most 2.
+
+    Deliberately mechanical and tiny rather than smart: CRAN package names are
+    case-sensitive but conventionally either all-lower (`ggplot2`, `data.table`)
+    or capitalized (`Seurat`, `Matrix`). A caller who typed mixed case meant it,
+    so we do not second-guess them — only an all-one-case query is retried."""
+    if not name or not (name.islower() or name.isupper()):
+        return []
+    lower = name.lower()
+    out: list[str] = []
+    for cand in (lower.capitalize(),
+                 re.sub(r"(^|[-._])([a-z])", lambda m: m.group(1) + m.group(2).upper(), lower)):
+        if cand != name and cand not in out:
+            out.append(cand)
+    return out[:2]
+
+
+def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
+    """CRAN metadata. Captures URL + BugReports so a github_repo-supplied
+    resolve() can confirm a same-name CRAN hit references the same project.
+
+    `summary` is CRAN's Title + Description — the identity evidence. CRAN's
+    `cellranger` is "Translate Spreadsheet Cell Ranges to Rows and Columns", not
+    10x Genomics' Cell Ranger; the name is all they share.
+
+    CASE. crandb.r-pkg.org is case-SENSITIVE: `/seurat` 404s while `/Seurat`
+    returns 5.5.1. Before this, the resolver's answer depended on the shift key —
+    `resolve('seurat')` returned `install_pip_package(env, "seurat", version="0.0.2")`,
+    an empty PyPI squat with no summary at all and no warning, while `resolve('Seurat')`
+    correctly refused as ambiguous. So a clean miss is retried against at most two
+    mechanical capitalizations.
+
+    TWO RULES, both load-bearing:
+      * Only a CLEAN miss is retried. A `probe_error` means crandb did not ANSWER,
+        and retrying it into an absence is the ABSENT-≠-UNCHECKED failure that
+        `test_probe_honesty.py` exists to prevent. On an error we stop and report it.
+      * The hit carries `resolved_name` — CRAN's spelling — and callers must build
+        the install_call from THAT, never from the query. `install.packages()` is
+        itself case-sensitive, so a probe that found `Seurat` while the call still
+        said `seurat` would trade a wrong package for a broken one."""
+    rec = _probe_cran_exact(name, timeout)
+    if rec.get("available") or rec.get("probe_error"):
+        return rec
+    for cand in _cran_case_variants(name):
+        alt = _probe_cran_exact(cand, timeout)
+        if alt.get("available"):
+            return {**alt, "queried_name": name}
+        if alt.get("probe_error"):
+            break                      # never retry an error into an absence
+    return rec
 
 
 def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
@@ -466,6 +520,22 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
         out["has_release_assets"] = bool(assets)
         out["assets"] = assets[:10]
         out["tag"] = rel.get("tag_name")
+    # VENDOR-CDN FALLBACK, asked HERE rather than in resolve() for two reasons. It is the
+    # same question this function already answers — "what can this repo give us as a
+    # binary?" — and it is the same I/O SEAM, so every existing stub of probe_github
+    # covers it. Hanging it off a second probe in resolve() sent 29 hermetic tests to
+    # api.github.com, which is the conftest guard telling us the seam was in the wrong
+    # place. Only when the release offers nothing, so the better-anchored answer always
+    # wins and the common path pays no extra request.
+    if out["repo_exists"] and not out["has_release_assets"] and not out.get("releases_probe_error"):
+        vend = probe_readme_assets(repo, timeout)
+        if vend.get("probe_error"):
+            out["vendor_probe_error"] = vend["probe_error"]
+        elif vend.get("found"):
+            out["vendor_asset"] = vend["url"]
+            out["vendor_asset_version"] = vend["version"]
+            out["vendor_asset_reachable"] = vend["reachable"]
+            out["asset_source"] = "readme"
     return out
 
 
@@ -647,6 +717,88 @@ def _pick_platform_asset(
         return None
     pool.sort(key=lambda u: (0 if u.lower().endswith(_ARCHIVE_SUFFIXES) else 1, len(u)))
     return pool[0]
+
+
+#: A URL in a README that looks like a downloadable build artifact rather than a doc link.
+_DOWNLOADABLE = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip", ".deb", ".rpm", ".AppImage")
+
+
+def probe_readme_assets(repo: str, timeout: int = 12, target_os: str = "linux",
+                        target_arch: str = "amd64") -> dict[str, Any]:
+    """WHERE DOES A VENDOR SAY TO DOWNLOAD, when the release carries no assets?
+
+    The binary tier's availability was `gh["has_release_assets"]` and nothing else, so a
+    project that publishes builds on its OWN CDN read as "no binary exists" and fell
+    through to a multi-hour source build. Measured (Phase D): `nanoporetech/dorado` at
+    v2.1.1 has **0 release assets** and a 402-byte release body with **no URLs in it** —
+    while its README names
+    `https://cdn.oxfordnanoportal.com/software/analysis/dorado-2.1.1-linux-x64.tar.gz`
+    (3.47 GB, 200). `install_release_binary` and `resolve_linux_asset` route B already
+    accept a direct vendor URL; only DISCOVERY was github-shaped.
+
+    The README is the authors' own instruction for how to get their software
+    ([[feedback-prioritize-authors-own-env-recipe]]), which is why it is the right place
+    to look and not a scrape of convenience. Reading the release BODY first would be
+    better anchored — it is tied to a tag — and it was tried: dorado's is empty, so this
+    reads the README.
+
+    SELECTION IS NOT A SECOND COPY of the platform rules — it calls `_pick_platform_asset`,
+    the same function the github-asset path uses, so a URL naming a foreign os/arch is
+    rejected identically. Only URLs that look like build artifacts are considered at all
+    (`_DOWNLOADABLE`), which is what keeps a docs link out of the pool.
+
+    KNOWN WEAKER THAN A RELEASE ASSET, and the caller must say so. A release asset is
+    pinned to a tag; a README lives on the default branch and therefore tracks whatever
+    the authors last shipped. So this returns the version token it found in the filename
+    and refuses to guess: matching that against a requested pin is the caller's job (see
+    resolve(), which will not offer a README asset for a pin the filename contradicts —
+    the somalier 0.2.15→v0.3.3 failure class).
+
+    Returns {found, url, version, candidates, reachable, probe_error}. A probe failure is
+    UNCHECKED, never "there is no vendor build"."""
+    out: dict[str, Any] = {"found": False, "url": "", "version": "", "candidates": [],
+                           "reachable": None}
+    if not repo or "/" not in repo:
+        return out
+    data, err = _fetch_json(f"https://api.github.com/repos/{repo}/readme", timeout)
+    if err:
+        out["probe_error"] = err
+        return out
+    if not isinstance(data, dict) or not data.get("content"):
+        return out                                   # GitHub answered: no README
+    try:
+        text = base64.b64decode(data["content"]).decode("utf-8", "replace")
+    except Exception as e:                           # a README we cannot decode is UNCHECKED
+        out["probe_error"] = f"readme undecodable: {type(e).__name__}: {e}"
+        return out
+
+    seen: set[str] = set()
+    cands: list[str] = []
+    for u in re.findall(r'https?://[^\s\)\]"\'<>]+', text):
+        u = u.rstrip(".,;")
+        # github.com/<repo>/releases/download/... is a RELEASE asset and belongs to the
+        # tier above; if the release had one we would not be here. Anything else on
+        # github.com is a doc/source link, never a vendor build.
+        if u.startswith("https://github.com/") or not u.endswith(_DOWNLOADABLE):
+            continue
+        if u not in seen:
+            seen.add(u)
+            cands.append(u)
+    out["candidates"] = cands
+    pick = _pick_platform_asset(cands, target_os, target_arch)
+    if not pick:
+        return out
+    out["url"] = pick
+    m = re.search(r"(\d+\.\d+(?:\.\d+)*)", pick.rsplit("/", 1)[-1])
+    out["version"] = m.group(1) if m else ""
+    # "the README says" and "we checked" are different claims. A HEAD costs nothing next
+    # to a multi-GB download and stops us advertising a link the vendor has since moved.
+    ok, ok_err = _fetch_ok(pick, timeout)
+    out["reachable"] = None if ok_err else ok
+    if ok_err:
+        out["reachable_probe_error"] = ok_err
+    out["found"] = ok or bool(ok_err)   # unreachable-and-we-know-it is the one hard no
+    return out
 
 
 def resolve_linux_asset(
@@ -933,7 +1085,8 @@ _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # ---------------------------------------------------------------------------
 
 def identity_facts(tool: str, chosen: str, availability: dict,
-                   github_repo: str = "", repo_ev: Optional[dict] = None) -> dict:
+                   github_repo: str = "", repo_ev: Optional[dict] = None,
+                   discovery: Optional[dict] = None) -> dict:
     """The evidence an identity judgment needs — FACTS, never a verdict.
 
     "Is this the tool you MEANT?" is the ride's call to make (see the block comment
@@ -964,6 +1117,13 @@ def identity_facts(tool: str, chosen: str, availability: dict,
     states what is true and gets out of the way (Phase 2, 2026-07-17)."""
     detail = availability.get(chosen) or {}
     desc = (detail.get("summary") or "").strip()
+    # A DISCOVERED tool has no registry entry, so no tier has a `summary` and this — the
+    # signal the docstring above calls the single most useful one — came back empty on
+    # exactly the route with the least corroboration. The repo's own blurb is the only
+    # self-description that exists there, and we already fetched it. `or`, not override:
+    # a real registry summary is the chosen ENTRY's words and outranks a repo blurb.
+    if not desc and discovery:
+        desc = (discovery.get("description") or "").strip()
     ev = repo_ev or {}
     repo = detail.get("repo") or ev.get("repo") or github_repo or ""
     repo_source = (detail.get("repo_source") or ev.get("source")
@@ -986,7 +1146,17 @@ def identity_facts(tool: str, chosen: str, availability: dict,
 _REPO_SOURCES = ("conda", "pip", "cran")
 
 
-def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
+#: How we came to be looking at a repo. `github_repo` alone cannot say: the auto-adopt
+#: path re-enters `resolve` WITH the repo it just guessed, so inside that call a repo
+#: found by a name search is byte-identical to one the user named — and "the user named
+#: it" is the strongest anchor in this file. That laundering is what let the least
+#: corroborated case produce the most confident output (Phase D, bcl2fastq).
+REPO_FROM_USER = "user"                    # the caller stated it — a deliberate act
+REPO_FROM_GITHUB_SEARCH = "github_search"  # we guessed it from a name search
+
+
+def repo_evidence(availability: dict, github_repo: str = "",
+                  discovery: Optional[dict] = None) -> dict[str, Any]:
     """WHICH repo is this tool's, and WHAT vouches for that claim? Pure.
 
     Returns `{repo, source, detail}` — or `{}` when nothing vouches for any repo, which is
@@ -1025,6 +1195,17 @@ def repo_evidence(availability: dict, github_repo: str = "") -> dict[str, Any]:
         # though NOT, on its own, evidence that the repo IS the tool (a 200 from
         # github.com/torvalds/linux proves the repo exists, nothing more). See
         # `assess_identity`, which must still find a repo<->tool link.
+        #
+        # ...unless WE supplied it. `anchored` stays True either way, deliberately: it
+        # governs whether the repo is worth handing to the author tiers, and a dominant
+        # exact-name hit IS worth probing — refusing to look would cost auto-discovery
+        # the whole point of [[feedback-prioritize-authors-own-env-recipe]]. What changes
+        # is the SOURCE we report, because "user" is a claim about who vouched, and
+        # nobody did. The disclosure hangs off this, not off routing.
+        if discovery:
+            return {"repo": github_repo.strip().strip("/"), "source": REPO_FROM_GITHUB_SEARCH,
+                    "anchored": True,
+                    "detail": "a github name search we ran ourselves — nobody vouched for it"}
         return {"repo": github_repo.strip().strip("/"), "source": "user", "anchored": True,
                 "detail": "caller-supplied github_repo"}
 
@@ -1227,6 +1408,36 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
     }
 
 
+def registry_name(detail: dict, tool: str) -> str:
+    """THE one reading of "what does this registry ACTUALLY call this package?".
+
+    A registry's name for a package is frequently not the name a user types:
+      * bioconda ships DESeq2 as `bioconductor-deseq2` — there is no bare `deseq2`
+      * conda-forge ships R packages as `r-{name}`
+      * CRAN knows Seurat as `Seurat`, and `install.packages()` is case-SENSITIVE
+
+    Three keys, one question. They were spelled separately at three call sites and
+    the third — the DISCLOSURE that tells the user the name changed — read only
+    `bioc_spec`, so `resolve('Seurat', language='r')` emitted an install of
+    `r-Seurat` with no mention that the name had been rewritten at all. That is the
+    `feedback-reports-never-lie` failure (requested-vs-installed at a glance) and
+    the repo's signature defect (one truth in N places, drifting in N−1) in one
+    line. Add a fourth registry convention HERE, never at a call site."""
+    return (detail.get("bioc_spec") or detail.get("r_spec")
+            or detail.get("resolved_name") or tool)
+
+
+def registry_name_note(detail: dict, tool: str) -> str:
+    """The disclosure for `registry_name`, or "" when the name was not rewritten.
+    Always emitted alongside a rewritten name — a silent rewrite is the thing this
+    pair exists to prevent."""
+    name = registry_name(detail, tool)
+    if name == tool:
+        return ""
+    return (f"  # NAME MAPPED: you asked for '{tool}'; this registry's package is "
+            f"'{name}' — verify that is the tool you meant")
+
+
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:
     v = version or detail.get("latest") or ""
     if tier == "author_image":
@@ -1243,11 +1454,7 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
                 f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
                 f'  # build the authors\' {path}, don\'t reconstruct')
     if tier == "conda":
-        # bioc_spec: `bioconductor-{name}` when a bare Bioconductor name resolved via the
-        # bioconda fallback; r_spec: `r-{name}` for an R tool via conda. Either overrides the
-        # bare tool name so the emitted call names the package that ACTUALLY exists on the
-        # channel (bioconda has no `deseq2`, only `bioconductor-deseq2`).
-        base = detail.get("bioc_spec") or detail.get("r_spec") or tool
+        base = registry_name(detail, tool)
         spec = f"{base}={v}" if v else base
         return f'install_conda_packages(env, [{{"spec": "{spec}", "channel": "{detail.get("channel","bioconda")}"}}])'
     if tier == "pip":
@@ -1269,6 +1476,9 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
                      f"https://github.com/{github_repo}/releases; do NOT use latest>")
         if not asset:
             asset = (_pick_platform_asset(detail.get("assets") or [])
+                     # ...then the vendor's own CDN, named in their README. Last among the
+                     # real answers because a release asset is tag-pinned and this is not.
+                     or detail.get("vendor_asset")
                      or (detail.get("assets") or ["<release-asset-url>"])[0])
         return f'install_release_binary(env, "{tool}", url="{asset}", sha256="<published>")'
     if tier == "synthesis":
@@ -1324,7 +1534,7 @@ def pullable_image(availability: dict[str, dict], tool: str,
 
     conda = availability.get("conda") or {}
     if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
-        spec = conda.get("bioc_spec") or conda.get("r_spec") or tool
+        spec = registry_name(conda, tool)
         try:
             bc = _resolve_biocontainer(
                 [(spec, version or conda.get("latest") or None)], timeout=timeout)
@@ -1345,6 +1555,8 @@ def resolve(
     prefer: Optional[str] = None,
     language: str = "",
     timeout: int = 12,
+    *,
+    repo_discovery: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Probe the applicable tiers for `tool` and return a ResolutionDecision:
     chosen tier + the concrete install primitive call + rationale + the rejected
@@ -1365,7 +1577,13 @@ def resolve(
     if language == "r":
         rconda = probe_conda(f"r-{tool}", timeout)
         if rconda.get("available"):
-            rconda["r_spec"] = f"r-{tool}"
+            # LOWERCASE, like the bioc producer below. The anaconda API is case-TOLERANT
+            # (`r-Seurat` and `r-seurat` both answer 5.5.1), so the probe passes either way and
+            # the bug hides — but `spec` flows verbatim into `conda install` (env_manager.py),
+            # where channel package names are canonically lowercase. Without this,
+            # `resolve('Seurat', language='r')` emitted `r-Seurat=5.5.1`: the CALLER's spelling
+            # presented as the channel's.
+            rconda["r_spec"] = f"r-{tool.lower()}"
         availability["conda"]        = rconda
         availability["cran"]         = probe_cran(tool, timeout)
         availability["bioconductor"] = probe_bioconductor(tool, timeout)
@@ -1413,6 +1631,30 @@ def resolve(
     if github_repo:
         gh = probe_github(github_repo, timeout)
         availability["binary"]    = {"available": gh["has_release_assets"], **gh}
+        # THE VENDOR-CDN DECISION. `probe_github` OBSERVED the README build; whether it
+        # may be offered is a ranking question and belongs here (this file's own split:
+        # "the probes are observations, the ranking is the decision").
+        #
+        # A README tracks the DEFAULT BRANCH, not a tag, so if a pin was requested and the
+        # filename does not carry it, this URL is latest's bytes wearing the requested
+        # version's name — the somalier 0.2.15→v0.3.3 class, which shipped fully green.
+        # Record the candidate and WHY it was not offered; never quietly serve it.
+        if gh.get("vendor_asset"):
+            # `_version_present`, not a string ==: it already normalises PEP440 so a pin
+            # of `2.1` matches a filename's `2.1.0`, with the exact-string fallback for
+            # what neither side can parse. A second comparison rule here is how this
+            # file's defects start.
+            pin_ok = (not version) or _version_present(version,
+                                                       [gh.get("vendor_asset_version") or ""])
+            availability["binary"] = {
+                **availability["binary"],
+                "available": bool(pin_ok),
+                **({} if pin_ok else {"vendor_asset_pin_mismatch": (
+                    f"the vendor build named in the README is "
+                    f"{gh.get('vendor_asset_version') or 'un-versioned'}, not the requested "
+                    f"{version} — a README tracks the default branch, not a tag, so this URL "
+                    f"cannot honor the pin. Enumerate the vendor's archive for {version}.")}),
+            }
         # synthesis ranks above source (both need only repo_exists): the agent reads
         # the repo's real build, so it's the robust default; source is the fast-path.
         availability["synthesis"] = {"available": gh["repo_exists"], **gh}
@@ -1438,8 +1680,17 @@ def resolve(
                     "resolved_asset": binary_ver["asset"],
                     "resolved_tag": binary_ver["tag"], "binary_version": binary_ver}
             elif binary_ver["status"] in ("absent", "no_asset"):
+                # These two were one branch, and collapsing them is what made the
+                # vendor-CDN fallback unreachable for a PINNED version. `no_asset` is
+                # exactly the vendor shape — the tag EXISTS, github just carries no bytes
+                # for it — so a README build already version-matched above is a real
+                # answer and must survive. `absent` is a different fact (no such tag) and
+                # no vendor URL rescues it: dorado==2.0.0 must still refuse.
+                vendor_holds = (binary_ver["status"] == "no_asset"
+                                and availability["binary"].get("asset_source") == "readme"
+                                and availability["binary"].get("available"))
                 availability["binary"] = {
-                    **availability["binary"], "available": False,
+                    **availability["binary"], "available": bool(vendor_holds),
                     "binary_version": binary_ver}
             else:   # error / incomplete → UNCHECKED: keep the latest-derived availability
                     # but flag it, so _install_call emits a verify-manually placeholder rather
@@ -1455,7 +1706,7 @@ def resolve(
     # Best-effort: any probe failure simply leaves the author tiers unavailable, so the
     # registry route is unaffected. This is what makes the agent 'thread the needle'
     # automatically on tools like Talos (PyPI hit, but a Dockerfile compiling a fork).
-    ev = repo_evidence(availability, github_repo)
+    ev = repo_evidence(availability, github_repo, repo_discovery)
     if ev and not ev.get("anchored"):
         # NOT ASSESSED — and that is a THIRD state, distinct from "fired" and "errored".
         # Running the gate here is what probed Mucephie/DORADO and autonomio/talos; skipping
@@ -1624,8 +1875,16 @@ def resolve(
                 # executable plan (synthesis/source/binary + install_call), not a
                 # "re-run please" stub. The honesty contract validates the actual
                 # build, so a rare wrong pick fails SAFE rather than shipping silently.
+                # `repo_discovery` is what stops the re-entry laundering our own guess
+                # into a caller-supplied anchor. Without it the inner call sees only
+                # `github_repo=` and reports `repo_source: "user"` about a repo the user
+                # never named — and suppresses the not-assessed disclaimer on the way.
+                # It carries the whole candidate, not a provenance flag, so the repo's
+                # OWN description reaches the disclosure and `identity.self_description`
+                # instead of being thrown away here and asked for again downstream.
                 auto = resolve(tool, version=version, prefer=prefer, language=language,
-                               github_repo=rec["repo"], timeout=timeout)
+                               github_repo=rec["repo"], timeout=timeout,
+                               repo_discovery=rec)
                 auto["discovered_repos"]    = cands
                 auto["recommended_repo"]    = rec["repo"]
                 auto["repo_auto_adoptable"] = True
@@ -1815,17 +2074,30 @@ def resolve(
     # NAME-MAPPING HONESTY. When the pick came via the bioconductor→conda fold, the emitted
     # call names `bioconductor-{tool}`, not the `{tool}` the caller typed — say so up front so
     # a reader sees requested-vs-installed at a glance, never a silent substitution.
-    _bioc_spec = availability.get("conda", {}).get("bioc_spec") if chosen == "conda" else None
-    if _bioc_spec:
-        # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror), so
-        # hardcoding "not on CRAN" would contradict the resolver's own probe (and the `cran`
-        # that appears in this same rationale as a lower-priority alternative) — a report lie.
-        _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
-        decision["rationale"] = (
-            f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
-            f"'{_bioc_spec}' (not the bare name{_cran_clause}). "
-            + decision.get("rationale", "")
-        )
+    # This clause used to read ONLY `bioc_spec`, so the two OTHER ways a name gets rewritten
+    # went out silently: `r_spec` (`resolve('Seurat', language='r')` installed `r-Seurat` with
+    # no mention) and CRAN's `resolved_name` (crandb is case-sensitive, so the query and the
+    # package name differ). It now asks `registry_name` — the same leaf the install_call and
+    # the biocontainer lookup use — so the disclosure cannot disagree with what gets installed.
+    _chosen_detail = availability.get(chosen, {}) if chosen else {}
+    _mapped_name = registry_name(_chosen_detail, tool)
+    if _mapped_name != tool:
+        if _chosen_detail.get("bioc_spec"):
+            # The CRAN clause is CHECKED, not assumed: `limma` IS on CRAN (an archived mirror),
+            # so hardcoding "not on CRAN" would contradict the resolver's own probe (and the
+            # `cran` in this same rationale as a lower-priority alternative) — a report lie.
+            _cran_clause = "" if availability.get("cran", {}).get("available") else ", and not on CRAN"
+            decision["rationale"] = (
+                f"BIOCONDUCTOR: '{tool}' is an R/Bioconductor package — bioconda ships it as "
+                f"'{_mapped_name}' (not the bare name{_cran_clause}). "
+                + decision.get("rationale", "")
+            )
+        else:
+            decision["rationale"] = (
+                f"NAME MAPPED: you asked for '{tool}'; the {chosen} registry knows this package "
+                f"as '{_mapped_name}', and the emitted call installs THAT — confirm it is the "
+                f"tool you meant. " + decision.get("rationale", "")
+            )
     if cross_namespace_collisions:
         # Surface the rejection prominently so an agent reading the rationale
         # sees WHY pip/cran was disqualified — silence here would mask the very
@@ -1860,7 +2132,8 @@ def resolve(
         # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
         # `confirmed` or poisons `install_call` with an identity warning (Phase 2 —
         # judgment moves to the ride). `install_call` stays a clean, runnable one-liner.
-        decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev)
+        decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev,
+                                              repo_discovery)
         decision["install_call"] = _install_call(
             chosen, tool, version, availability.get(chosen, {}), github_repo
         )
@@ -1929,6 +2202,61 @@ def resolve(
                   f"bundles compiled or vendored pieces, a conda/pip reconstruction can "
                   f"silently drop them.",
                   "the authors' own install path was NOT ruled out")
+    # THE INVERSION, closed. Measured on the real registries: `cellranger` (a real CRAN
+    # entry) got a loud "A repo is not the tool's just because it shares its name", while
+    # `bcl2fastq` — no registry hit AT ALL, adopted purely because a github name search
+    # returned a 57-star repo whose own description calls it a "wrapper" — got a clean,
+    # uncommented install_call and the line "proceeding without a human." The case with
+    # the LEAST corroboration produced the MOST confident output, because auto-adopt
+    # re-entered resolve with `github_repo=` set and the inner call could not tell our
+    # guess from the user's instruction.
+    #
+    # Stated as PROVENANCE, not judgement: no domain heuristics, no "is this a bio tool",
+    # no star threshold reinterpreted as identity. Whether brwnj/bcl2fastq IS bcl2fastq
+    # is the ride's call — this only refuses to imply the question was settled.
+    if repo_discovery and github_repo:
+        # The repo's OWN words, quoted rather than judged — the same signal
+        # `identity_evidence` calls "the single most useful" one, which the discovery
+        # path was collecting and discarding. For bcl2fastq it reads "NextSeq specific
+        # bcl2fastq2 wrapper", which settles the question the star count cannot.
+        says = (repo_discovery.get("description") or "").strip()
+        _disclose(decision,
+                  f"AUTO-DISCOVERED REPO, IDENTITY NOT CORROBORATED — '{tool}' hit NO "
+                  f"registry, so {github_repo} was chosen by a github search on the NAME "
+                  f"and adopted because it leads on stars "
+                  f"({repo_discovery.get('stars', '?')}★). Stars measure popularity, not "
+                  f"identity: the top exact-name hit is routinely a third-party wrapper, a "
+                  f"fork, or an unrelated project. "
+                  + (f"The repo describes ITSELF as: \"{says}\" — read that against what "
+                     f"you asked for. " if says else
+                     "The repo publishes NO description, so there is nothing to read it "
+                     "against — which is less to go on, not more. ")
+                  + f"Confirm it IS the tool before building; re-run with "
+                    f"github_repo='{github_repo}' to state that deliberately.",
+                  "NOTHING vouched for this repo — we matched a name")
+    # A vendor-CDN asset is a real answer and a weaker anchor than a release asset, and
+    # both halves have to reach the caller. `install_release_binary` will sha256-pin
+    # whatever bytes it gets, but a README is not tag-pinned, so WHICH bytes is the part
+    # nobody else can check for us.
+    bin_detail = availability.get("binary") or {}
+    if chosen == "binary" and bin_detail.get("asset_source") == "readme":
+        reach = bin_detail.get("vendor_asset_reachable")
+        _disclose(decision,
+                  f"VENDOR-CDN ASSET, NOT A RELEASE ASSET — {github_repo} attaches no "
+                  f"assets to its release, so this URL comes from the README "
+                  f"({'HEAD 200 confirmed' if reach else 'reachability UNCHECKED'}). A "
+                  f"README lives on the default branch, so it names whatever the authors "
+                  f"last shipped"
+                  + (f" (filename says {bin_detail['vendor_asset_version']})"
+                     if bin_detail.get("vendor_asset_version") else "")
+                  + ". Pin the sha256 you actually download; do not assume this URL is "
+                    "stable across releases.",
+                  "the download URL is tied to a branch, not a tag")
+    if bin_detail.get("vendor_asset_pin_mismatch"):
+        _disclose(decision,
+                  f"VENDOR BUILD DOES NOT MATCH THE PIN — "
+                  f"{bin_detail['vendor_asset_pin_mismatch']}",
+                  "the binary tier was NOT offered for this version")
     if img_err:
         _disclose(decision,
                   f"AUTHOR-IMAGE PROBE FAILED ({img_err}) — 'the authors publish no image' "

@@ -2,9 +2,12 @@
 
 The four-call shape for anything that can run silently >10 minutes:
 `run_in_background` to spawn → `check_job` to poll → `cancel_job` to stop →
-`list_jobs` to enumerate. Used for big downloads, long conda solves, multi-
-hour assemblies, and any background `freeze` (via `_freeze_in_background` in
-mcp_server.py).
+`list_jobs` to enumerate.
+
+`run_in_background` is for ARBITRARY SHELL. A long-running PRIMITIVE detaches
+itself instead — `background=True`, via `@backgroundable` — and its jobs land in
+the same JobManager, so `check_job` polls both kinds. For those, check_job also
+carries the tool's real return value inline; see `JobManager._inline_tool_result`.
 """
 from __future__ import annotations
 
@@ -73,9 +76,21 @@ def check_job(job_id: str, log_tail_lines: int = 30) -> dict:
     file. `bytes_logged` is the size of the log so far — a download's progress
     can be inferred from this.
 
+    `elapsed_seconds` is measured to THIS OBSERVATION, not to the exit: state
+    flips on the first check after the subprocess died, so a job left unpolled
+    for an hour reports an hour. Read a detached tool's true runtime off the
+    runner's own `returned in Ns` line in `log_tail`, or poll on a tight cadence.
+
     For a job that has just exited, this is also where you learn it terminated —
     the state flips from "running" to "exited" on the first check after the
     subprocess died.
+
+    For a job spawned by a primitive's `background=True`, an exited job ALSO
+    carries that tool's real return value inline under `result` — this is the one
+    place a detached outcome is read, so there is no second file to open. If the
+    tool died before writing one, `result` is None and `result_missing` says so;
+    the hole is stated rather than rounded up to a pass. A plain
+    `run_in_background` shell job never owed a result and claims neither key.
     """
     return _ms._job_manager.check(job_id, log_tail_lines=log_tail_lines)
 

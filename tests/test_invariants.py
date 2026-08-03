@@ -4001,7 +4001,7 @@ def test_add_install_step_replace_works_when_prior_step_was_successful(tmp_path)
 def test_orphan_service_pid_reaper_does_not_fire_on_module_import(monkeypatch):
     """N5 (batch-3) — the orphan reaper must NOT run at module-import time;
     only the actual MCP-server entrypoint (__main__) is authorized. The W1
-    freeze_runner subprocess and tests import agent.mcp_server and must
+    detached job_runner subprocess and tests import agent.mcp_server and must
     NEVER touch the parent's service registry (which would delete PID files
     belonging to services the parent started — observed Apollo3 mongod
     being orphaned this way)."""
@@ -4022,7 +4022,7 @@ def test_orphan_service_pid_reaper_does_not_fire_on_module_import(monkeypatch):
     importlib.reload(ms)
     assert call_count["n"] == 0, (
         "the orphan reaper ran at module-import time — this is the N5 bug "
-        "(W1 freeze_runner subprocess would clobber the parent's services)")
+        "(a detached job_runner would clobber the parent's services)")
 
 
 def test_orphan_service_pid_reaper_runs_when_called_directly():
@@ -4849,6 +4849,11 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
                     "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {"seqtk": "Version: 1.4-r122"}}
 
+    # Stub the control experiment: it spawns a real container, and this test is about
+    # threading captured facts, not about docker. Its own coverage is below.
+    monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
+                        lambda platform, ev: ("discriminating", f"stub on {platform}"))
+
     inst = eb.EnvBuild.__new__(eb.EnvBuild)
     inst.cb = FakeCB()
     inst.verifications = [{"label": "seqtk", "tool": "seqtk",
@@ -4857,6 +4862,34 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
     assert res["success"]
     assert res["verifications"][0]["banner"] == "Version: 1.4-r122"
     assert res["verifications"][0]["tool"] == "seqtk"
+    # ...and the control verdict rides along, on the container-native path too.
+    assert res["verifications"][0]["control"] == "discriminating"
+    assert "linux/amd64" in res["verifications"][0]["control_note"]
+
+
+def test_envbuild_refuses_evidence_that_passes_without_the_tool(monkeypatch):
+    """The container-native path must run the control experiment, not just the string
+    rule. MEASURED: `exomiser --help 2>&1 | head -20` exits 0 in a stock debian with no
+    exomiser, and freeze registered `proven` on it — because `_evidence_discriminates`
+    was wired to `freeze_from_image` and nowhere else."""
+    from agent.skills import env_build as eb
+
+    class FakeCB:
+        platform = "linux/amd64"
+        def validate_in_image(self, image, checks, probe_tools=None):
+            return {"success": True, "checks": {checks[0]: {"rc": 0, "out": ""}},
+                    "banners": {}}
+
+    monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
+                        lambda platform, ev: ("vacuous", "also exits 0 without the tool"))
+    inst = eb.EnvBuild.__new__(eb.EnvBuild)
+    inst.cb = FakeCB()
+    inst.verifications = [{"label": "exomiser", "tool": "exomiser",
+                           "check": "exomiser --help | head -20", "engine_coupled": False}]
+    res = inst.verify_in_image("image:tag")
+    assert res["success"] is False, "a vacuous evidence must REFUSE, not degrade"
+    assert res["code"] == "env_build.vacuous_evidence"
+    assert "exomiser" in res["error"]
 
 
 def test_mcp_freeze_evicted_image_falls_through_to_rebuild(monkeypatch, tmp_path):
@@ -5774,8 +5807,13 @@ def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
         return {"job_id": job_id, "log_path": started_jobs["log_path"],
                 "state": "running", "pid": 12345}
 
+    jobs_dir = tmp_path / "data" / "jobs"
+    jobs_dir.mkdir(parents=True)
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
-    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
+    # Patch the jobs dir on the JobManager — the ONE attribute every side of
+    # the detachment reads (args/result/log/.done all hang off it). Patching
+    # _env_mgr.project_root, as this test used to, redirected only half of it.
+    monkeypatch.setattr(ms._job_manager, "jobs_dir", jobs_dir)
 
     out = ms.freeze(env_name="bgsmoke", tools=["samtools=1.21"], background=True)
     assert out["success"] is True
@@ -5787,15 +5825,21 @@ def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
     # keyed by job_id, NOT in env_reports/ (which is deliverables-only).
     assert out["result_path"].endswith(f"{started_jobs['job_id']}.result.json")
     assert "/data/jobs/" in out["result_path"]
-    # the subprocess must be invoked via the dedicated runner script
-    assert "agent.skills.freeze_runner" in started_jobs["command"]
+    # the subprocess must be invoked via the generic runner, TOLD which tool
+    assert "agent.skills.job_runner" in started_jobs["command"]
+    assert " freeze " in started_jobs["command"], (
+        "the runner is generic — the tool name is argv[1], not baked into the "
+        f"module path: {started_jobs['command']}")
     # and the args file must exist BEFORE spawn (the runner reads it)
-    args_files = list((tmp_path / "data" / "jobs").glob(f"{started_jobs['job_id']}.args.json"))
+    args_files = list(jobs_dir.glob(f"{started_jobs['job_id']}.args.json"))
     assert args_files, "args file must be written BEFORE the subprocess spawns"
     import json
     args = json.loads(args_files[0].read_text())
     assert args["env_name"] == "bgsmoke"
     assert args["tools"] == ["samtools=1.21"]
+    assert "background" not in args, (
+        "`background` leaked into the args file — the child would re-detach, "
+        "spawning a router with no terminator")
 
 
 def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
@@ -5812,7 +5856,6 @@ def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
     """
     from agent import mcp_server as ms
 
-    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
     # Force a deterministic job_id so we know which result path to pre-stale.
     import uuid as _u
     fake_uuid = type("FU", (), {"hex": "deadbeefdeadbeef"})()
@@ -5820,6 +5863,7 @@ def test_freeze_background_clears_stale_result_file(monkeypatch, tmp_path):
 
     jobs_dir = tmp_path / "data" / "jobs"
     jobs_dir.mkdir(parents=True)
+    monkeypatch.setattr(ms._job_manager, "jobs_dir", jobs_dir)
     stale = jobs_dir / "freeze.bgstale.deadbeef.result.json"
     stale.write_text('{"stale": true, "value": "from a prior run"}')
 
@@ -5850,12 +5894,18 @@ def test_freeze_background_surfaces_spawn_failure(monkeypatch):
     assert "error" in out
 
 
-def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
+def test_job_runner_writes_failure_result_on_exception(tmp_path):
     """W1 — the runner script's structural guarantee: ANY exception raised out
-    of freeze() (including KeyboardInterrupt / SystemExit — the runner catches
+    of the tool (including KeyboardInterrupt / SystemExit — the runner catches
     BaseException) is captured into the result file. Without this, a crashed
     subprocess leaves NO record and the polling caller is stuck (state=exited
     but no result file = ambiguous).
+
+    Driven through `freeze` on purpose: the runner is generic now, and freeze is
+    the tool whose detachment has actually shipped, so it stays covered BY NAME
+    rather than only as one row of a parametrized sweep. This is also the one
+    REAL-SUBPROCESS test in the suite — a fresh interpreter that imports the
+    server, resolves the tool off the allowlist, and writes a result.
 
     We force a deterministic exception by passing a kwarg freeze() does not
     accept, so `freeze(**args)` raises a TypeError inside the runner's try —
@@ -5880,7 +5930,7 @@ def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
         "background": True,
     }))
     proc = sp.Popen(
-        [sys.executable, "-m", "agent.skills.freeze_runner",
+        [sys.executable, "-m", "agent.skills.job_runner", "freeze",
          str(args_path), str(result_path)],
         cwd=str(repo_root),
         stdout=sp.PIPE, stderr=sp.STDOUT, text=True,
@@ -5892,7 +5942,7 @@ def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
         proc.communicate()
 
     assert result_path.exists(), (
-        "freeze_runner died without writing a result file. The whole W1 "
+        "job_runner died without writing a result file. The whole W1 "
         "contract is 'every subprocess outcome leaves a result' — broken."
     )
     result = json.loads(result_path.read_text())
@@ -5902,14 +5952,14 @@ def test_freeze_runner_writes_failure_result_on_exception(tmp_path):
     assert "definitely_not_a_freeze_kwarg" in (result.get("error", "") + result.get("traceback", ""))
 
 
-def test_freeze_runner_force_overrides_background_arg(tmp_path):
+def test_job_runner_force_overrides_background_arg(tmp_path):
     """W1 — even if the caller passes background=True in the args file (a
     bug or copy-paste mistake), the runner MUST force background=False
     before calling freeze. Otherwise the runner recursively spawns another
     background job and exits without doing the actual work — the subprocess
     becomes a router with no terminator."""
     import json
-    from agent.skills.freeze_runner import main as _runner_main
+    from agent.skills.job_runner import main as _runner_main
     args_path = tmp_path / "args.json"
     result_path = tmp_path / "result.json"
     # Capture what the runner passes to freeze
@@ -5925,7 +5975,7 @@ def test_freeze_runner_force_overrides_background_arg(tmp_path):
     }))
     import sys
     old_argv = sys.argv
-    sys.argv = ["freeze_runner", str(args_path), str(result_path)]
+    sys.argv = ["job_runner", "freeze", str(args_path), str(result_path)]
     try:
         import agent.mcp_server as ms_mod
         old_freeze = ms_mod.freeze
@@ -5938,7 +5988,7 @@ def test_freeze_runner_force_overrides_background_arg(tmp_path):
         sys.argv = old_argv
     # the runner must have force-disabled background before calling freeze
     assert captured["background"] is False, (
-        "freeze_runner.main passed background=True through to freeze() — "
+        "job_runner.main passed background=True through to freeze() — "
         "this would recursively spawn another job and exit silently"
     )
 
@@ -6809,7 +6859,10 @@ def test_freeze_background_writes_args_to_jobs_dir(monkeypatch, tmp_path):
         started["log_path"] = str(tmp_path / f"{job_id}.log")
         return {"job_id": job_id, "log_path": started["log_path"], "state": "running"}
 
+    jobs_dir = tmp_path / "data" / "jobs"
+    jobs_dir.mkdir(parents=True)
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
+    monkeypatch.setattr(ms._job_manager, "jobs_dir", jobs_dir)
     monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
     out = ms.freeze(env_name="bgrelocation", tools=["samtools=1.21"], background=True)
     assert out["background"] is True
