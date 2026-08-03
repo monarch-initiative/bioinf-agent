@@ -54,6 +54,12 @@ from agent.skills.outcomes import proven, refused, broke
 # works IN the shipped image (exact peak RSS for I7); without it, sub-second tools
 # fall back to a single docker-stats sample that reads 0.
 _RUNTIME_APT = "ca-certificates procps time zlib1g libbz2-1.0 liblzma5 libcurl4 libssl3"
+# A generator-declared runtime apt package name. `runtime_packages` reaches the
+# RUNTIME stage's apt line, which is bare-interpolated into a Dockerfile RUN — so a
+# value like `x && curl y | sh` would be baked into the shipped image. Same posture
+# as `_SAFE_TOOL` below: a token that is not a plain Debian package name is DROPPED,
+# never shell-escaped-and-run. Debian policy: lowercase alnum start, then alnum . + -
+_SAFE_APT_PKG = re.compile(r"^[a-z0-9][a-z0-9.+-]*$")
 # `jq` is in the BUILD set (not RUNTIME) because the SWH-fallback helper that
 # the source-tier installs call uses jq to parse SWH's vault API JSON. Tiny
 # (~1MB) and only present in the BUILDER stage — never ships.
@@ -409,14 +415,28 @@ def emit_dockerfile(
     Multi-stage (Phase D): a `builder` stage carries the full toolchain + engine +
     long-tail builds; the shipped RUNTIME stage starts slim and COPYs only the engine
     env (at identical paths, so conda/pixi prefixes stay valid) + /usr/local + /opt/
-    tools from the builder, with just the *.so RUNTIME apt (plus a JRE when a jar tool
-    is present). build-essential / -dev headers / git / the engine installer never
+    tools from the builder, with just the *.so RUNTIME apt plus the union of every
+    recorded step's DECLARED `runtime_packages` (that is how a jar tool's JRE reaches
+    the shipped stage; names that aren't plain Debian package tokens are dropped). build-essential / -dev headers / git / the engine installer never
     ship. Engine-specific lines come from `engine`; long-tail commands are baked
     VERBATIM (the exact commands that ran + validated in the build container)."""
     build_apt = _BUILD_APT + (f" {apt_extra}" if apt_extra.strip() else "")
     runtime_apt = _RUNTIME_APT
-    if any(str(s.get("purpose", "")).endswith("(java jar)") for s in longtail_steps):
-        runtime_apt += " default-jre-headless"   # jar wrappers need a JRE at runtime
+    # What the SHIPPED stage needs is DECLARED by each generator as data. This used to
+    # read `purpose.endswith("(java jar)")` — a human-facing prose string, rendered two
+    # lines down as a Dockerfile comment — which meant only the jar tier could ever
+    # earn a JRE. A java tool delivered by synthesized / script_repo / release_binary
+    # (an snpEff or Trimmomatic zip is exactly that shape) apt-installed its JRE into
+    # the BUILDER, and the runtime stage COPYs only /usr/local + /opt/tools, so
+    # /usr/bin/java never shipped. VALIDATED_IN_IMAGE did not catch it: those tiers'
+    # default evidence ends in `command -v {wrap}`, which passes on a wrapper script
+    # whose interpreter is missing.
+    extra_runtime = sorted({
+        pkg for s in longtail_steps for pkg in (s.get("runtime_packages") or [])
+        if _SAFE_APT_PKG.match(str(pkg))
+    })
+    if extra_runtime:
+        runtime_apt += " " + " ".join(extra_runtime)
 
     def _labels():
         out = ['LABEL build_method="container-native"']
@@ -690,6 +710,7 @@ class ContainerBuild:
     # -- DECLARE: long-tail command (binary/jar/source/cargo/go/perl) ------
     def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
+            runtime_packages: list[str] | None = None,
             timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
@@ -722,7 +743,8 @@ class ContainerBuild:
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
-        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd, "tool": tool}
+        rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd, "tool": tool,
+               "runtime_packages": list(runtime_packages or [])}
         if provenance:                       # synthesis tier: carry the per-command
             rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
         self.longtail.append(rec)
@@ -739,7 +761,8 @@ class ContainerBuild:
         return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
                         tool=spec.get("tool", ""),
                         engine_coupled=spec.get("engine_coupled", False),
-                        provenance=spec.get("provenance"), timeout=timeout)
+                        provenance=spec.get("provenance"),
+                        runtime_packages=spec.get("runtime_packages"), timeout=timeout)
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""

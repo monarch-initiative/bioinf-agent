@@ -160,7 +160,7 @@ def render(entries: list[dict], overlay: dict | None, source_stamp: str = "",
     # (test_coverage_overlay_keys_resolve_against_the_ledger) stops that reaching main,
     # so this banner is not the trust boundary; it is for the hours BEFORE the push, when
     # the page is the only thing you are reading and it is quietly lying to you. The
-    # freeze grid has had its own staleness banner all along — this one did not.
+    # page is the only thing you are reading and it is quietly lying to you.
     unjoined = sorted({e["where"] for e in entries} - set(overlay)) if measured else []
     if not measured:
         banner = ('<div class="nocov">⚠ coverage NOT measured — showing the weak grep '

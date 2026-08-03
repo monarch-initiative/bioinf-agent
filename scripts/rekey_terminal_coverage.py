@@ -23,14 +23,14 @@ Zero. On real history a re-key would have been perfectly faithful every time.
 WHAT MAKES THIS HONEST RATHER THAN LAUNDERING
 ---------------------------------------------
 Carrying a measurement across a code change is exactly the move this repo distrusts. Three
-rules, borrowed from `measure_freeze_tier_coverage.carry_forward()` which had to learn them
-first, plus one this codebase's own history demanded:
+rules — two learned by an earlier carry-forward implementation in the since-deleted
+freeze-tier meter, plus one this codebase's own history demanded:
 
   1. PAIR ON MEANING, NOT POSITION. `(file, func, code, outcome, source, ordinal)` — never
      the line. Ordinal disambiguates a function emitting the same code twice.
   2. REFUSE WHEN THE CODE ACTUALLY CHANGED. If a terminal's enclosing function is not
      byte-identical between the two revisions, its verdict is not transferable.
-  3. REFUSE WHEN THE TEST SUITE SHRANK. This is the rule the freeze-tier precedent does
+  3. REFUSE WHEN THE TEST SUITE SHRANK. This is the rule that earlier implementation did
      NOT have, and it is the one that matters most here: coverage is a property of the
      SUITE, not of the function. Deleting or editing a test flips a terminal's verdict with
      its enclosing function untouched. Tests that are only ADDED are safe in one direction

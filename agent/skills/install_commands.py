@@ -24,8 +24,33 @@ The three that DELIBERATELY stay uncoupled, and why — do not "fix" these:
   - `release_binary` — a static prebuilt binary needs no toolchain at all.
   - `source` — builds with the apt C toolchain (`build-essential`) by design.
   - `jar` — the JRE comes from apt on the base PATH, so a jar wrapper runs without
-    `pixi run`. This one has a REAL gap: the apt package is hardcoded (see `jar()`),
-    so a draft declaring `openjdk=21` still gets apt's default JRE.
+    `pixi run`.
+
+WHAT THE SHIPPED IMAGE NEEDS IS DECLARED, NOT SNIFFED. Every generator returns
+`runtime_packages: list[str]` — the apt packages its tool needs AT RUNTIME, which
+`emit_dockerfile` unions into the slim runtime stage. Today only `jar` names one
+(`_JRE_APT`); the rest state `[]` explicitly, because absence must be STATED by the
+producer rather than defaulted into existence (the ShippedBinary rule, core_data.py).
+`source`, `synthesized` and `script_repo` also ACCEPT the field, since only their
+caller knows what an arbitrary entrypoint execs.
+
+This replaced a branch that decided the runtime JRE by string-matching a step's
+`purpose` — a human-facing prose field rendered as a Dockerfile comment. Under that
+rule only the jar tier could ever earn a JRE, so a java tool arriving via
+synthesized / script_repo / release_binary (an snpEff or Trimmomatic zip is exactly
+that shape) installed its JRE into the BUILDER and then shipped a runtime image with
+no `/usr/bin/java`. VALIDATED_IN_IMAGE did not catch it: those tiers' default
+evidence ends in `command -v {wrap}`, which passes on a wrapper whose interpreter is
+gone. Names are filtered through `container_build._SAFE_APT_PKG` before reaching the
+Dockerfile — the apt line is bare-interpolated into a RUN.
+
+STILL OPEN: the JRE *version* is not selectable. `_JRE_APT` is apt's default, which
+on the `debian:bookworm-slim` base (container_build.py:144 — NOT the ubuntu:22.04 in
+config/agent_config.yaml, which nothing in the build path reads) is Java 17, and
+Exomiser needs 21. Measured 2026-08-03: openjdk-21 is in bookworm main, security AND
+backports for neither amd64 nor arm64, so this cannot be fixed by naming a different
+apt package; the route is a conda-forge `openjdk=21` toolchain injection, which
+makes the versioned case engine-coupled.
 
 THIS PARAGRAPH USED TO SAY cargo/go/perl were "handled in a later phase". That phase
 had already shipped, and the stale sentence was read as evidence that the builder
@@ -43,6 +68,10 @@ from pathlib import PurePosixPath
 from typing import Any
 
 _TOOLS = "/opt/tools"
+# The apt package a `java -jar` wrapper needs AT RUNTIME. Stated ONCE here and
+# carried to the shipped image as data (`runtime_packages`), never re-derived by
+# string-matching a step's human-facing `purpose`.
+_JRE_APT = "default-jre-headless"
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
 
 
@@ -103,7 +132,8 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
         parts.append(f"install -m 0755 {asset} /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
     ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
-    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)"}
+    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)",
+            "runtime_packages": []}
 
 
 def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | None = None,
@@ -122,7 +152,7 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
     dest = f"{_TOOLS}/{name}"
     parts = [
         'command -v java >/dev/null 2>&1 || { apt-get update && '
-        'apt-get install -y --no-install-recommends default-jre-headless && '
+        f'apt-get install -y --no-install-recommends {_JRE_APT} && '
         'rm -rf /var/lib/apt/lists/*; }',
         f"mkdir -p {dest}",
         f"curl -fsSL -o {dest}/{asset} {shlex.quote(jar_url)}",
@@ -142,11 +172,13 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
     parts.append(f"chmod +x /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
     ev = evidence or f"command -v {wrap} && java -version"
-    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (java jar)"}
+    return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (java jar)",
+            "runtime_packages": [_JRE_APT]}
 
 
 def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "make",
-           bin_path: str = "", wrapper: str = "", evidence: str = "") -> dict[str, Any]:
+           bin_path: str = "", wrapper: str = "", evidence: str = "",
+           runtime_packages: list[str] | None = None) -> dict[str, Any]:
     """Git-source tool built with the apt C toolchain: clone → checkout pinned ref
     → build → MANUAL install of the built binary to /usr/local/bin (most academic
     tools have no `make install` target — that's the half-baked norm). Locally
@@ -176,7 +208,8 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
         f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
     )
     return {"command": cmd, "evidence": ev, "tool": wrap,
-            "purpose": f"{name} (source @ {ref or 'HEAD'})"}
+            "purpose": f"{name} (source @ {ref or 'HEAD'})",
+            "runtime_packages": list(runtime_packages or [])}
 
 
 def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
@@ -199,7 +232,8 @@ def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
                 f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
                 f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
             "tool": binp,
-            "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True}
+            "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True,
+            "runtime_packages": []}
 
 
 def go(name: str, package: str, *, version: str = "latest", binary_name: str = "",
@@ -214,7 +248,8 @@ def go(name: str, package: str, *, version: str = "latest", binary_name: str = "
                 f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
                 f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
             "tool": binp,
-            "purpose": f"{name} (go, via engine go)", "engine_coupled": True}
+            "purpose": f"{name} (go, via engine go)", "engine_coupled": True,
+            "runtime_packages": []}
 
 
 def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--notest",
@@ -237,7 +272,8 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
     shim = 'printf "#include <locale.h>\\n" > "$CONDA_PREFIX/include/xlocale.h" 2>/dev/null || true'
     return {"command": f"{shim}; {pre}cpanm {cpanm_flags} {shlex.quote(target)}",
             "evidence": evidence or f"perl -M{module} -e1", "tool": module,
-            "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True}
+            "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True,
+            "runtime_packages": []}
 
 
 def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-project.org",
@@ -295,7 +331,8 @@ def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-
         f"{shlex.quote(f'suppressPackageStartupMessages(library({name})); cat(as.character(packageVersion(' + repr(name) + ')))')}"
     )
     return {"command": cmd, "evidence": ev, "tool": name,
-            "purpose": f"{name} (R {source})", "engine_coupled": True}
+            "purpose": f"{name} (R {source})", "engine_coupled": True,
+            "runtime_packages": []}
 
 
 def pip_install_with_flags(name: str, *, version: str = "",
@@ -341,11 +378,13 @@ def pip_install_with_flags(name: str, *, version: str = "",
         f"python -c \"import importlib.metadata as _m; _m.version({name!r})\""
     )
     return {"command": cmd, "evidence": ev, "tool": name,
-            "purpose": f"{name} (pip with flags)", "engine_coupled": True}
+            "purpose": f"{name} (pip with flags)", "engine_coupled": True,
+            "runtime_packages": []}
 
 
 def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: str = "",
-                engine_coupled: bool = False, repo: str = "", commit: str = "") -> dict[str, Any]:
+                engine_coupled: bool = False, repo: str = "", commit: str = "",
+                runtime_packages: list[str] | None = None) -> dict[str, Any]:
     """The UNIVERSAL long-tail installer — the ONE shape the bespoke tail (compiled
     source / run-by-path script / release binary / jar / half-baked) collapses into.
     Instead of enumerating a generator per tool, the AGENT reads the tool's own
@@ -365,6 +404,7 @@ def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: st
     coupled = engine_coupled or any(c.get("engine_coupled") for c in commands)
     return {"command": cmd, "evidence": evidence or f"command -v {wrap}", "tool": wrap,
             "purpose": f"{name} (synthesized @ {(commit or 'HEAD')[:12]})",
+            "runtime_packages": list(runtime_packages or []),
             "engine_coupled": coupled,
             "provenance": {"source": "synthesized", "repo": repo, "commit": commit,
                            "commands": [{"command": c.get("command"),
@@ -373,7 +413,8 @@ def synthesized(name: str, commands: list[dict], *, tool: str = "", evidence: st
 
 def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = "",
                 interpreter: str = "", build_command: str = "",
-                wrapper: str = "", evidence: str = "") -> dict[str, Any]:
+                wrapper: str = "", evidence: str = "",
+                runtime_packages: list[str] | None = None) -> dict[str, Any]:
     """Clone-and-run script repo, with optional in-image build step.
 
     Three shapes, one generator:
@@ -438,4 +479,5 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     engine_coupled = interpreter in {"python", "python3", "Rscript", "perl"}
     return {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (script repo @ {ref or 'HEAD'})",
+            "runtime_packages": list(runtime_packages or []),
             "engine_coupled": engine_coupled}

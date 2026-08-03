@@ -49,8 +49,8 @@ def _ft():
     return _load("freeze_tiers")
 
 
-def _gen():
-    return _load("measure_freeze_tier_coverage")
+def _probes():
+    return _load("freeze_tier_probes")
 
 
 def _synth_spec() -> dict:
@@ -86,8 +86,8 @@ def _patch_fetch(monkeypatch, readme_text: str, commit: str = COMMIT):
 # ── #A the grid recipe shape (pure) ───────────────────────────────────────────
 
 def test_grid_synthesized_is_a_wired_container_native_probe():
-    """The synthesized row is now a REAL probe (builder set + a synth_spec recipe), so the
-    breadth meter counts it and the drift guard keeps the tier set == InstallMethod.type."""
+    """The synthesized row is a REAL probe (builder set + a synth_spec recipe), and the
+    drift guard keeps the tier set == InstallMethod.type."""
     row = _ft().tier("synthesized")
     assert row["builder"] == "container_native"
     assert row["probe_tool"] == "bwa"
@@ -148,9 +148,9 @@ def test_synth_install_method_ships_runtime_verified_provenance(monkeypatch):
     OWN fetched bytes, so the shipped `commands` carry provenance the RUNTIME produced — an
     extracted command's origin_sha256 is the fetch's hash of README.md, not the recipe's
     word. The result is PROVENANCE_CLEAN (what the 2026-07-20 hand-tag failed)."""
-    gen = _gen()
+    probes = _probes()
     _patch_fetch(monkeypatch, _REAL_README)
-    im = gen._synth_install_method(_synth_spec())
+    im = probes._synth_install_method(_synth_spec())
 
     assert im["type"] == "synthesized" and im["tool"] == "bwa"
     assert im["commit_sha"] == COMMIT
@@ -175,21 +175,21 @@ def test_synth_install_method_refuses_a_paraphrase(monkeypatch):
     is a paraphrase, not an extraction. Here the fetched README omits the build line, so
     validate_submission rejects `cd bwa; make` and `_synth_install_method` RAISES — the
     recipe cannot smuggle an unverifiable command past the runtime's own bytes."""
-    gen = _gen()
+    probes = _probes()
     readme_missing_build = "## Getting started\n\n\tgit clone https://github.com/lh3/bwa.git\n"
     _patch_fetch(monkeypatch, readme_missing_build)
     with pytest.raises(RuntimeError, match="provenance violation"):
-        gen._synth_install_method(_synth_spec())
+        probes._synth_install_method(_synth_spec())
 
 
 def test_synth_install_method_refuses_an_anchor_mismatch(monkeypatch):
     """The reproducibility anchor: if the re-fetch resolves a DIFFERENT commit than the
     recipe pinned (the source moved / the ref isn't immutable), the build is refused before
     any validation — the same guard synth_build makes."""
-    gen = _gen()
+    probes = _probes()
     _patch_fetch(monkeypatch, _REAL_README, commit="deadbeef" * 5)  # != pinned COMMIT
     with pytest.raises(RuntimeError, match="anchor mismatch"):
-        gen._synth_install_method(_synth_spec())
+        probes._synth_install_method(_synth_spec())
 
 
 def test_build_tier_drives_the_synth_machinery_for_a_synth_spec(monkeypatch):
@@ -197,7 +197,7 @@ def test_build_tier_drives_the_synth_machinery_for_a_synth_spec(monkeypatch):
     (real provenance) and hands build_env_image a draft whose install_method carries the
     runtime-verified commands — not the raw recipe submission. Hermetic: the actual docker
     build + honesty contract are faked; what's under test is the WIRING to the machinery."""
-    gen = _gen()
+    probes = _probes()
     _patch_fetch(monkeypatch, _REAL_README)
     captured = {}
 
@@ -209,7 +209,7 @@ def test_build_tier_drives_the_synth_machinery_for_a_synth_spec(monkeypatch):
     monkeypatch.setattr(env_freeze, "build_env_image", _fake_build)
     monkeypatch.setattr("agent.skills.env_honesty.check_build", lambda res: [])
 
-    out = gen.build_tier(_ft().tier("synthesized"))
+    out = probes.build_tier(_ft().tier("synthesized"))
     assert out["ok"] is True and out["image_digest"] == "sha256:x"
     im = captured["draft"]["install_steps"][0]["installed_packages"][0]["install_method"]
     assert im["type"] == "synthesized"

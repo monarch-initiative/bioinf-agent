@@ -1,39 +1,42 @@
 #!/usr/bin/env python3
 """
-freeze_tiers — the canonical definition of the freeze TIERS, imported by the
-generator, the render, and the ratchet test so all three share ONE source of
-truth (the sibling of seaworthy_scope.py for the outcomes dashboard).
+freeze_tiers — the canonical DECLARATION of the freeze tiers: one row per tier,
+naming the tier, a probe tool, and a build recipe. Data plus one lint. It is the
+sibling of seaworthy_scope.py for the outcomes dashboard.
 
-WHY THIS EXISTS. The headline promise is "call once for ANY tool, get a
-trustworthy artifact." That promise is only as true as the number of install
-tiers a REAL container-native docker build has actually baked AND passed
-`env_honesty.check_build` on. The P2 tier-breadth recon measured that number at
-**1 of 11** (only conda, via L15/pigz) — every other tier was implemented and
-wired but never baked. This module enumerates every tier so the grid can measure
-that number honestly, and can never let it be confused with resolver-decision
-coverage (the intent grid) or terminal coverage (the outcomes dashboard) — three
-orthogonal maps, each blind to the others' half.
+THIS MODULE MAKES NO COVERAGE CLAIM, and that is deliberate. It used to be read
+alongside a meter — scripts/measure_freeze_tier_coverage.py, which projected
+docs/freeze_tier_coverage.json + docs/freeze_tier_grid.html and published
+`install_tiers_proven: 10`. That meter was deleted because it hand-built its own
+`{"install_steps": [{"installed_packages": [...]}]}` input and called NO install
+primitive: it genuinely proved generator + freeze + honesty-contract given a
+hand-authored record, and skipped exactly one hop — whether the PRIMITIVE writes
+a record the freeze dispatch can consume. A number that omits the hop it implies
+it covers is worse than no number.
+
+So: a row here says "this tier exists and here is a recipe that would exercise
+it." It does NOT say the tier has been proven. Any 'proven' claim belongs to a
+real driven run, not to this table.
 
 TWO KINDS OF ROW:
   - install tiers  — the InstallMethod.type members the container-native build
-                     bakes (conda + the 9 non-conda). Proven by build_env_image.
+                     bakes (conda + the 9 non-conda), via build_env_image.
   - build methods  — the ADOPT/AUTHORS routes that ship an image WITHOUT a
                      container-native reconstruction: adopt a biocontainer / the
                      author's own image / build the author's Dockerfile.
 
-DRIFT GUARD. `assert_tiers_match_model()` checks the install-tier set equals the
-InstallMethod.type Literal. A tier added to the union with no grid row (or a grid
-row for a tier that left the union) fails the hermetic test — the same ledger-vs-
-source posture extract_outcomes takes on the outcome enum. Adding a tier to the
-model is therefore not optional bookkeeping here; it is what keeps the breadth
-meter honest.
+DRIFT GUARD — the one load-bearing thing in this file. `assert_tiers_match_model()`
+checks the install-tier set equals the InstallMethod.type Literal. A tier added to
+the union with no declared row (or a row for a tier that left the union) fails
+tests/test_freeze_tiers.py — the same ledger-vs-source posture extract_outcomes
+takes on the outcome enum. Adding a tier to the model is therefore not optional
+bookkeeping here.
 
-FLOORS are a REVIEWED ratchet, kept in CODE (not auto-written by the generator),
-exactly like the intent corpus's `expect`: the generator re-measures
-`passed/attempts`; a human raises a floor only after a tier's real build lands.
-The ratchet test asserts `floor <= measured` for every measured tier and
-`floor == 0` for every unmeasured one — so a floor can only ever be earned, and a
-regressed measurement reddens.
+FLOORS is a completeness table: it must name exactly every tier, which is the
+other half of what the drift guard asserts. It is NOT a ratchet — nothing measures
+`passed/attempts` any more, so there is no measurement for a floor to be compared
+against. The executable counterpart of the build recipes lives in
+scripts/freeze_tier_probes.py (a library, no main, no counter).
 """
 from __future__ import annotations
 
@@ -61,7 +64,7 @@ FREEZE_TIERS: list[dict] = [
         "tier": "conda", "kind": "install", "builder": "container_native",
         "probe_tool": "pigz",
         "build": {"conda_deps": ["pigz"], "primary_tools": ["pigz"]},
-        "note": "pixi engine lock (URL + sha256). The proven seed "
+        "note": "pixi engine lock (URL + sha256). The seed "
                 "(also L15/test_real_container_build.py).",
     },
     {
@@ -92,7 +95,7 @@ FREEZE_TIERS: list[dict] = [
         "note": "flagless pip → declared THROUGH the pixi engine (`pixi add --pypi` "
                 "→ uv, in-lock); reproducible via the engine lock. In-image "
                 "evidence = importlib.metadata.version (the pixi/uv env ships no "
-                "`pip` binary). Proven 2026-07-20 (pyfaidx). Flag-bearing pip is a "
+                "`pip` binary). Recipe exercises pyfaidx. Flag-bearing pip is a "
                 "distinct engine-coupled longtail RUN, not yet separately baked.",
     },
     {
@@ -117,7 +120,7 @@ FREEZE_TIERS: list[dict] = [
                 "ENGINE-COUPLED tool (like cargo/go/perl — the command runs with the "
                 "conda r-base active) via a DISTINCT install-command generator "
                 "(ic.r_package → BiocManager), so it adds genuinely new coverage over "
-                "the source tier. Proven 2026-07-20 via BiocGenerics (BIOCONDUCTOR "
+                "the source tier. Recipe exercises BiocGenerics (BIOCONDUCTOR "
                 "branch: BioC_mirror pin + BiocManager bootstrap). VALIDATED_IN_IMAGE "
                 "evidence is the DEFAULT IMPORT-LEVEL check — library(BiocGenerics) "
                 "(namespace load, executes R in the shipped image) + packageVersion() "
@@ -151,8 +154,8 @@ FREEZE_TIERS: list[dict] = [
             },
             "primary_tools": ["mosdepth"],
         },
-        "note": "re-fetch + sha256 firewall (F2) + PATH wrapper. Proven 2026-07-20 "
-                "(mosdepth v0.3.8). A darwin→linux asset is a CORRECT "
+        "note": "re-fetch + sha256 firewall (F2) + PATH wrapper. Recipe exercises "
+                "mosdepth v0.3.8. A darwin→linux asset is a CORRECT "
                 "unanchored_cross_platform disclosure, not a fail.",
     },
     {
@@ -182,7 +185,7 @@ FREEZE_TIERS: list[dict] = [
             "primary_tools": ["picard"],
         },
         "note": "JRE-ensure + jar download + `java -jar` wrapper; the runtime stage "
-                "carries default-jre-headless. Proven 2026-07-21 via Picard 3.4.0 "
+                "carries default-jre-headless. Recipe exercises Picard 3.4.0 "
                 "(Broad) with FUNCTIONAL evidence — CreateSequenceDictionary RUNS on "
                 "an inline fasta and writes a .dict (validated==ran, not the presence "
                 "default). Version-PINNED asset URL, sha256-anchored best-effort at "
@@ -222,7 +225,7 @@ FREEZE_TIERS: list[dict] = [
         "note": "cargo install --root /usr/local --locked, engine rust toolchain "
                 "(conda `rust`, auto-injected). ENGINE-COUPLED like go/perl/r_install — "
                 "the build runs with the conda env active; the OUTPUT binary is self-"
-                "contained and COPYed to the slim runtime. Proven via nanoq 0.10.0 with "
+                "contained and COPYed to the slim runtime. Recipe exercises nanoq 0.10.0 with "
                 "FUNCTIONAL evidence — filters an inline fastq and writes output "
                 "(validated==ran, not the `--version` default). STRONGEST reproducibility "
                 "shape: tool-version pinned (--version 0.10.0) + crate Cargo.lock (--locked) "
@@ -267,7 +270,7 @@ FREEZE_TIERS: list[dict] = [
         },
         "note": "GOBIN=/usr/local/bin go install pkg@version, engine go toolchain "
                 "(conda `go` 1.26.5, auto-injected). ENGINE-COUPLED like cargo/perl/r_install. "
-                "Proven via gofasta v1.2.3 (virus-evolution) with FUNCTIONAL evidence — "
+                "Recipe exercises gofasta v1.2.3 (virus-evolution) with FUNCTIONAL evidence — "
                 "`gofasta snps` calls a SNP between two inline aligned fastas and writes a CSV "
                 "(validated==ran). Reproducibility: module version pinned (@v1.2.3) + module "
                 "go.sum + engine-lock-anchored go toolchain; pure-Go static binary. NOTE: the "
@@ -320,8 +323,8 @@ FREEZE_TIERS: list[dict] = [
             },
             "primary_tools": ["Set::IntervalTree"],
         },
-        "note": "cpanm --notest into the conda perl + xlocale shim for XS. Proven "
-                "2026-07-21 via Set::IntervalTree 0.12 (a real Ensembl VEP dep; C++ XS) "
+        "note": "cpanm --notest into the conda perl + xlocale shim for XS. Recipe "
+                "exercises Set::IntervalTree 0.12 (a real Ensembl VEP dep; C++ XS) "
                 "with a run-on-data smoke — builds an interval tree and asserts fetch() "
                 "discriminates an overlapping from a non-overlapping interval (exercises "
                 "the compiled XS query methods, not just XSLoader). Version-pinned via "
@@ -394,7 +397,7 @@ FREEZE_TIERS: list[dict] = [
                 # output — build a tiny reference, `bwa index` it, and check the FM-index
                 # (.bwt) was written. Leads with `cd` (shape-clean, not an echo cheat);
                 # references `bwa` as a real token; the `index` subcommand + .fa operand
-                # classify it 'functional'. Proven locally on a 217bp ref (bwa 0.7.19).
+                # classify it 'functional'. Exercised on a 217bp inline ref.
                 "evidence": (
                     "cd /tmp && printf '>chrT\\n"
                     "ACGTACGTACGTTGCAAGCTAGCTAGCTAACGGTACCGGATCGATCGATTACGACTAGCTAGC"
@@ -409,7 +412,7 @@ FREEZE_TIERS: list[dict] = [
                 "submits a provenance-tagged command sequence; the generator DRIVES the "
                 "real synth_fetch + validate_submission machinery (build_tier's synth_spec "
                 "branch), so the shipped provenance is the runtime's own re-verification, "
-                "NOT a hand-tag. Proven 2026-07-21 via bwa 0.7.18 (lh3/bwa): 2 commands "
+                "NOT a hand-tag. Recipe exercises bwa 0.7.18 (lh3/bwa): 2 commands "
                 "EXTRACTED VERBATIM from bwa's README (clone + `cd bwa; make`, sha256-"
                 "anchored to README.md) + 2 grounded AGENT_AUTHORED local verbs (a checkout "
                 "PINNING the v0.7.18 commit for reproducibility + the README-described copy "
@@ -447,7 +450,7 @@ FREEZE_TIERS: list[dict] = [
             "primary_tools": ["samtools"],
         },
         "note": "pull a BioContainer by MANIFEST DIGEST + in-image evidence — the "
-                "DEFAULT production path. Proven 2026-07-21 via samtools 1.21: "
+                "DEFAULT production path. Recipe exercises samtools 1.21: "
                 "resolve_biocontainer picks the quay.io/biocontainers image, "
                 "freeze_from_image pulls it by digest and RUNS `samtools --version` in "
                 "it (VALIDATED_IN_IMAGE), honesty contract clean. Evidence depth is "
@@ -471,7 +474,7 @@ FREEZE_TIERS: list[dict] = [
             "primary_tools": ["uv"],
         },
         "note": "freeze_from_image on the AUTHOR'S OWN image, adopted by registry manifest "
-                "digest. Proven 2026-07-21 via uv 0.11.30 (ghcr.io/astral-sh/uv, the "
+                "digest. Recipe exercises uv 0.11.30 (ghcr.io/astral-sh/uv, the "
                 "codebase's canonical author_image exemplar): pull by digest, RUN "
                 "`uv --version` in-image (VALIDATED_IN_IMAGE), honesty contract clean, "
                 "registry manifest digest pinned for re-pull. A real tool's own published "
@@ -496,7 +499,7 @@ FREEZE_TIERS: list[dict] = [
             "primary_tools": ["diamond"],
         },
         "note": "build_env_from_authors_recipe (git clone @ pinned ref → docker build -f "
-                "the author's Dockerfile → adopt the built image). Proven 2026-07-21 via "
+                "the author's Dockerfile → adopt the built image). Recipe exercises "
                 "diamond v2.2.4 (bbuchfink/diamond): a real multi-stage ubuntu Dockerfile "
                 "that COMPILES diamond from source (cmake/make, zlib/zstd/sqlite) — the "
                 "authors-dockerfile point (a compiled toolchain a conda reconstruction "
@@ -511,21 +514,36 @@ BUILD_METHODS: list[str] = [t["tier"] for t in FREEZE_TIERS if t["kind"] == "bui
 ALL_TIERS: list[str] = [t["tier"] for t in FREEZE_TIERS]
 
 
-# ── reviewed floors (the ratchet — raised by a human, never by the generator) ─
+# ── tier completeness table ───────────────────────────────────────────────────
+# NOT A RATCHET, and NOT A COVERAGE CLAIM. Its only live reader is
+# `assert_tiers_match_model()`, which asserts this dict names exactly every tier —
+# so its job is completeness, nothing else. The values are inert.
+#
+# Every entry here used to carry a "proven <date> via <tool>" comment. Those were
+# stripped, not moved: each one recorded what the RETIRED meter observed on a
+# HAND-BUILT install record (it called no install primitive), so none of them was
+# evidence that the tier works when driven through its own primitive. Keeping them
+# after deleting docs/freeze_tier_coverage.json would have relocated the dishonest
+# claim into the file we chose to keep rather than removing it.
+#
+# The concrete reason this matters: the perl row was stamped "proven 2026-07-21 via
+# Set::IntervalTree 0.12". Driving that exact tier, tool and version through
+# install_perl_package → freeze on 2026-08-03 FAILED to compile in the ship image.
+# A hand-built record cannot prove a primitive path.
 FLOORS: dict[str, float] = {
-    "conda":  1.0,   # L15/pigz + the generator
-    "source": 1.0,   # seqtk v1.4 — proven 2026-07-20 (P2 slice 2)
-    "pip":    1.0,   # pyfaidx  — proven 2026-07-20 (P2 slice 3, pixi --pypi)
-    "binary": 1.0,   # mosdepth v0.3.8 — proven 2026-07-20 (P2 slice 3, F2 firewall)
-    "r_install": 1.0,   # BiocGenerics — proven 2026-07-20 (P2 slice 4, BiocManager path)
-    "jar":    1.0,   # Picard 3.4.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
-    "cargo":  1.0,   # nanoq 0.10.0 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
-    "go":     1.0,   # gofasta v1.2.3 — proven 2026-07-21 (P2-C, FUNCTIONAL evidence)
-    "perl":   1.0,   # Set::IntervalTree 0.12 — proven 2026-07-21 (P2-C, XS run-on-data smoke)
-    "synthesized": 1.0,   # bwa 0.7.18 — proven 2026-07-21 (P2-C, README-extracted + validate_submission)
-    "adopt-biocontainer": 1.0,   # samtools 1.21 biocontainer — proven 2026-07-21 (pull by manifest digest)
-    "adopt-image":        1.0,   # uv 0.11.30 author image — proven 2026-07-21 (adopt by digest)
-    "authors-dockerfile": 1.0,   # diamond v2.2.4 Dockerfile — proven 2026-07-21 (compiled-from-source build)
+    "conda":  1.0,
+    "source": 1.0,
+    "pip":    1.0,
+    "binary": 1.0,
+    "r_install": 1.0,
+    "jar":    1.0,
+    "cargo":  1.0,
+    "go":     1.0,
+    "perl":   1.0,
+    "synthesized": 1.0,
+    "adopt-biocontainer": 1.0,
+    "adopt-image":        1.0,
+    "authors-dockerfile": 1.0,
 }
 
 
@@ -573,24 +591,25 @@ def buildable_install_types() -> list[str]:
     if not args:
         raise AssertionError(
             "could not read the InstallMethod.type Literal — the model shape "
-            "changed; the tier-grid drift guard needs updating")
+            "changed; assert_tiers_match_model needs updating")
     return args
 
 
 def assert_tiers_match_model() -> None:
-    """The drift guard. The grid's install-tier set MUST equal the
+    """The drift guard. The declared install-tier set MUST equal the
     InstallMethod.type union — no more, no less. A new tier in the union with no
-    grid row is a breadth hole the meter would silently omit; a grid row for a
+    declared row is an install path this table does not describe; a row for a
     tier no longer in the union is a ghost."""
     model = set(buildable_install_types())
     grid = set(INSTALL_TIERS)
     missing = model - grid   # in the model, no grid row
     extra = grid - model     # grid row, not in the model
     assert not missing, (
-        f"{sorted(missing)} are InstallMethod.type members with NO freeze-tier "
-        f"grid row — add them to FREEZE_TIERS so the breadth meter counts them.")
+        f"{sorted(missing)} are InstallMethod.type members with NO row in "
+        f"FREEZE_TIERS — an install tier the freeze can dispatch but this table "
+        f"does not declare. Add a row (tier, probe_tool, build recipe).")
     assert not extra, (
-        f"{sorted(extra)} are freeze-tier grid rows that are NOT InstallMethod.type "
+        f"{sorted(extra)} are FREEZE_TIERS rows that are NOT InstallMethod.type "
         f"members — they left the model; remove the ghost rows.")
     # floors must cover exactly every tier (install + build method)
     fl = set(FLOORS)
