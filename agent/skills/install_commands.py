@@ -14,9 +14,24 @@ ContainerBuild.run — no generator needed; the container is the captured state,
 so there are no host orphans). These install to /usr/local/bin and need no
 engine env at runtime.
 
-TOOLCHAIN-COUPLED tiers (follow-up): cargo→rust, go→go, perl→perl all need a
-conda-provided toolchain to BUILD, so their build command must run with the engine
-env active (engine.run(...)). Handled in a later phase alongside that wrapping.
+TOOLCHAIN-COUPLED tiers: cargo→rust, go→go, perl→perl, r_package→R, pip-with-flags
+→python all need a conda-provided toolchain to BUILD, so each sets
+`engine_coupled: True` and its command is wrapped in `engine.run(...)` — it executes
+with the solved env on PATH, not just the pixi launcher. `synthesized` and
+`script_repo` set it conditionally, from their commands / interpreter.
+
+The three that DELIBERATELY stay uncoupled, and why — do not "fix" these:
+  - `release_binary` — a static prebuilt binary needs no toolchain at all.
+  - `source` — builds with the apt C toolchain (`build-essential`) by design.
+  - `jar` — the JRE comes from apt on the base PATH, so a jar wrapper runs without
+    `pixi run`. This one has a REAL gap: the apt package is hardcoded (see `jar()`),
+    so a draft declaring `openjdk=21` still gets apt's default JRE.
+
+THIS PARAGRAPH USED TO SAY cargo/go/perl were "handled in a later phase". That phase
+had already shipped, and the stale sentence was read as evidence that the builder
+stage has no conda on PATH — a false belief that survived two working sessions,
+because prose sitting next to correct code is trusted like the code. Check
+`engine_coupled` at the generator, not this docstring.
 
 Pure (params in → command string out), unit-testable.
 """

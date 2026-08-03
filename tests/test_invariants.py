@@ -1245,9 +1245,9 @@ def test_build_env_image_propagates_binary_integrity_firewall_code(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # C2 firewall certification — the honesty gates that catch a false-green must
-# each have an ADVERSARIAL test that triggers their REJECT branch (per
-# docs/seaworthiness.md). A firewall that never fires under test is an unproven
-# claim under full-auto. These attack the previously-dark reject terminals.
+# each have an ADVERSARIAL test that triggers their REJECT branch. A firewall
+# that never fires under test is an unproven claim under full-auto. These attack
+# the previously-dark reject terminals.
 # ---------------------------------------------------------------------------
 
 def test_verify_env_recipe_load_failed_is_refused_firewall():
