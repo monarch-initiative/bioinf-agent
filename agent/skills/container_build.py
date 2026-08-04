@@ -39,6 +39,10 @@ import subprocess
 from typing import Any, Optional
 
 from agent.skills.outcomes import proven, refused, broke
+# Where a human-supplied artifact lands inside the BUILD stage — ONE definition,
+# imported from the generator module that writes the commands that read it.
+# See `ContainerBuild.stage_artifact` and `install_commands.local_artifact`.
+from agent.skills.install_commands import STAGED as _STAGED
 
 # Base apt for the build/ship image: curl+certs for the engine installer and any
 # long-tail download; the common archive + C-build tools + bioinformatics dev libs
@@ -409,6 +413,7 @@ def emit_dockerfile(
     apt_extra: str = "",
     apt_snapshot: str = "",
     activation_env: Optional[dict[str, str]] = None,
+    staged_artifacts: Optional[list[str]] = None,
 ) -> str:
     """Assemble the ship-image Dockerfile from a recorded build (pure — no docker).
 
@@ -467,6 +472,17 @@ def emit_dockerfile(
     # for the contract. Stays in the BUILDER stage; never ships to runtime.
     lines += _swh_clone_install_lines()
     lines += ["RUN mkdir -p /opt/tools", ""]     # so the runtime COPY of /opt/tools always resolves
+    # HUMAN-SUPPLIED ARTIFACTS — carried IN from the build context, never re-fetched.
+    # Every other long-tail tier ships by replaying a download (`curl <url>`) inside
+    # this build. That is impossible for an artifact the operator obtained by hand
+    # (a licence click-through, an internal mirror, a USB stick): the bytes exist only
+    # on the agent's disk, which the build container cannot reach. COPY is the honest
+    # mechanism — the bytes travel with the build context, so the RUN step that
+    # installs them is replayable by anyone who has the same artifact.
+    for art in (staged_artifacts or []):
+        lines.append(f"COPY {art} {_STAGED}/{art}")
+    if staged_artifacts:
+        lines.append("")
     if has_env_layer:
         lines += engine.bootstrap_lines()
         lines += engine.materialize_lines()
@@ -528,6 +544,10 @@ class ContainerBuild:
         self.has_env_layer = False
         self._engine_installed = False
         self.longtail: list[dict] = []
+        # Human-supplied artifacts to carry into the image: [{local_path, name}].
+        # Kept separate from `longtail` because they are DATA the build consumes,
+        # not commands the build replays.
+        self.staged: list[dict] = []
         self.log: list[str] = []
 
     def _emulated(self) -> bool:
@@ -751,13 +771,64 @@ class ContainerBuild:
         self.log.append(f"run [{purpose}] rc=0 ev_ok coupled={engine_coupled}")
         return proven("container_build.run_ok", success=True, evidence_output=(ev["stdout"] or "").strip()[:200])
 
+    def stage_artifact(self, local_path: str, timeout: int = 600) -> dict[str, Any]:
+        """Carry a HUMAN-SUPPLIED artifact into the build: `docker cp` it into the live
+        builder at `{_STAGED}/<basename>`, and remember it so `freeze()` puts the same
+        bytes in the build context and `emit_dockerfile` emits the matching `COPY`.
+
+        This exists because the binary tier's shipping model — replay the download
+        inside the Dockerfile — is structurally impossible for an artifact the OPERATOR
+        obtained (a licence click-through, an internal mirror). Those bytes live only on
+        the agent's disk. Passing a `file://` URL through the normal tier LOOKS like it
+        works, all the way to a Dockerfile that runs `curl file:///Users/...` inside a
+        container that has no such path, and fails there — after the record has already
+        claimed the asset was fetched and authenticated. Staging is the honest route:
+        the bytes are carried, not re-fetched, and the record says so.
+
+        The artifact is COPYd into the BUILD stage only. The runtime stage COPYs
+        `/opt/tools`, so the extracted product ships and the source tarball does not —
+        which is what keeps a gated artifact from riding along inside the image.
+        """
+        from pathlib import Path
+        assert self.cid, "call start() first"
+        src = Path(local_path)
+        if not src.is_file():
+            return broke("container_build.stage_artifact_missing", success=False,
+                         error=f"no such artifact to stage: {local_path}", path=local_path)
+        name = src.name
+        cp = self._sh(["docker", "cp", str(src), f"{self.cid}:{_STAGED}/{name}"], timeout=timeout)
+        if cp["returncode"] != 0:
+            # `docker cp` will not create intermediate dirs — mkdir then retry once.
+            mk = self.exec(f"mkdir -p {_STAGED}")
+            if mk.get("returncode") == 0:
+                cp = self._sh(["docker", "cp", str(src), f"{self.cid}:{_STAGED}/{name}"],
+                              timeout=timeout)
+        if cp["returncode"] != 0:
+            return broke("container_build.stage_artifact_failed", success=False,
+                         error=f"docker cp of {name} into the builder failed",
+                         stderr=(cp["stderr"] or "")[-400:])
+        self.staged.append({"local_path": str(src), "name": name})
+        self.log.append(f"staged artifact {name} -> {_STAGED}/{name}")
+        return proven("container_build.artifact_staged", success=True,
+                      name=name, staged_path=f"{_STAGED}/{name}")
+
     def install(self, spec: dict, timeout: int = 1800) -> dict[str, Any]:
         """Run an install_commands generator's spec ({command, evidence, tool, purpose,
         engine_coupled?}). The single entry point for every long-tail tier — the
         generator carries the per-tier knowledge; the locus just runs+bakes it.
 
+        A spec may also carry `stage_artifact` (a local path): the bytes are carried
+        into the builder FIRST, so the command — which reads them from `{_STAGED}` —
+        has something to read. Routed here rather than at the caller so every path
+        that installs a spec gets it (the propagation rule: a lesson wired at one of
+        several call sites is a lesson half-applied).
+
         `spec["tool"]` is emitted by ALL TEN generators and was dropped here until the
         2026-07-16 audit — see `run()`'s docstring for what that cost downstream."""
+        if spec.get("stage_artifact"):
+            st = self.stage_artifact(spec["stage_artifact"])
+            if not st.get("success"):
+                return st
         return self.run(spec["command"], spec["evidence"], spec.get("purpose", ""),
                         tool=spec.get("tool", ""),
                         engine_coupled=spec.get("engine_coupled", False),
@@ -787,10 +858,23 @@ class ContainerBuild:
         # activated PATH from the live builder, to BAKE them into the runtime image
         # (apptainer exec can't run an activation hook — the env must be static).
         activation_env = self.capture_activation_env()
+        # Human-supplied artifacts must be IN the build context for their `COPY` to
+        # resolve. Copied from the operator's original path (not out of the builder):
+        # the builder holds the same bytes, but the local file is the anchor the
+        # install record hashed, so the context gets exactly what was validated.
+        import shutil
+        for art in self.staged:
+            try:
+                shutil.copyfile(art["local_path"], build_dir / art["name"])
+            except OSError as e:
+                return broke("container_build.stage_context_failed", success=False,
+                             stage="stage_context", file=art["name"],
+                             error=f"could not place staged artifact in the build context: {e}")
         dockerfile = emit_dockerfile(self.base, engine=self.engine,
                                      has_env_layer=self.has_env_layer, longtail_steps=self.longtail,
                                      apt_snapshot=self.apt_snapshot,
-                                     activation_env=activation_env)
+                                     activation_env=activation_env,
+                                     staged_artifacts=[a["name"] for a in self.staged])
         (build_dir / "Dockerfile").write_text(dockerfile)
         tag = f"{name}:{version}" if version else f"{name}:latest"
         b = self._sh(["docker", "buildx", "build", "--platform", self.platform,

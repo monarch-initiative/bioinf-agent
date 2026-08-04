@@ -1017,7 +1017,7 @@ def test_install_release_binary_archive_anchors_extracted_binary(tmp_path, monke
 
         res = em.install_release_binary(
             env_name=env_name, tool_name="sometool",
-            url=f"file://{archive}", binary_in_archive="sometool",
+            url=f"https://example.invalid/{archive.name}", binary_in_archive="sometool",
         )
         assert res["success"], res
         im = res["install_method"]
@@ -1064,7 +1064,7 @@ def test_install_release_binary_sha256_mismatch_is_refused_firewall(tmp_path, mo
 
         res = em.install_release_binary(
             env_name=env_name, tool_name="tool",
-            url=f"file://{asset}", sha256=published_sha,
+            url=f"https://example.invalid/{asset.name}", sha256=published_sha,
         )
         # 1) firewall FIRED as a clean, legible refusal — not a crash, not a green.
         assert res.get("success") is False, res
@@ -1208,14 +1208,14 @@ def test_install_release_binary_records_asset_authenticated(tmp_path, monkeypatc
 
         # WITH the publisher checksum → authenticated.
         res = em.install_release_binary(env_name=env_name, tool_name="tool",
-                                        url=f"file://{asset}", sha256=real_sha)
+                                        url=f"https://example.invalid/{asset.name}", sha256=real_sha)
         assert res["success"] and res["asset_authenticated"] is True, res
         assert res["install_method"]["asset_authenticated"] is True
 
         # WITHOUT → pinned TOFU, honestly marked not-authenticated.
         _sh.rmtree(env_path / "share", ignore_errors=True)
         res2 = em.install_release_binary(env_name=env_name, tool_name="tool2",
-                                         url=f"file://{asset}")
+                                         url=f"https://example.invalid/{asset.name}")
         assert res2["success"] and res2["asset_authenticated"] is False, res2
         assert res2["install_method"]["asset_authenticated"] is False
     finally:

@@ -72,6 +72,14 @@ from pathlib import PurePosixPath
 from typing import Any
 
 _TOOLS = "/opt/tools"
+#: Where a HUMAN-SUPPLIED artifact lands inside the BUILD stage. Deliberately NOT
+#: under `_TOOLS`, which the runtime stage COPYs wholesale — a licence-gated tarball
+#: must not ride into the shipped image as a redistributable copy of itself. The
+#: install extracts FROM here INTO `_TOOLS`; only the extracted product ships.
+#: Defined here, beside `_TOOLS`, because it is the same kind of thing: a path
+#: contract between the generator that writes the command and the locus that puts
+#: the bytes there. `container_build` imports it rather than re-spelling it.
+STAGED = "/opt/staged"
 # The apt package a `java -jar` wrapper needs AT RUNTIME. Stated ONCE here and
 # carried to the shipped image as data (`runtime_packages`), never re-derived by
 # string-matching a step's human-facing `purpose`.
@@ -138,6 +146,49 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
     ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
     return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)",
             "runtime_packages": []}
+
+
+def local_artifact(name: str, artifact_name: str, *, sha256: str = "",
+                   binary_in_archive: str = "", wrapper: str = "",
+                   evidence: str = "") -> dict[str, Any]:
+    """A HUMAN-SUPPLIED artifact, already carried into the build at `STAGED`:
+    verify → extract (archive) or place (bare) → chmod → /usr/local/bin wrapper.
+
+    The same shape as `release_binary` MINUS the download, and that subtraction is
+    the whole point. `release_binary` bakes `curl <url>` into the Dockerfile, which
+    presumes the bytes are re-fetchable at build time. A licence-gated tarball is
+    exactly the artifact for which that is false, so its bytes are COPYd into the
+    build context instead (see `ContainerBuild.stage_artifact`) and this generator
+    reads them from disk.
+
+    The sha256 check is KEPT even though nothing was downloaded. It is no longer
+    proving the network delivered the right bytes — it proves the COPY did, i.e.
+    that the artifact the operator handed us at install time is the artifact baked
+    into the image. That is the only install→ship integrity statement available on
+    this path, and unlike the URL tier's it is not a comparison of a file with
+    itself: the install-time hash was taken on the operator's disk, this one runs
+    inside the image on bytes that crossed the build-context boundary."""
+    wrap = wrapper or name
+    is_archive = artifact_name.lower().endswith(_ARCHIVE_SUFFIXES)
+    dest = f"{_TOOLS}/{name}"
+    src = f"{STAGED}/{artifact_name}"
+    parts = [f"mkdir -p {dest}", f"test -f {shlex.quote(src)}"]
+    if sha256:
+        parts.append(f'echo "{sha256.lower()}  {src}" | sha256sum -c -')
+    if is_archive:
+        parts.append(f"unzip -o {shlex.quote(src)} -d {dest}"
+                     if artifact_name.lower().endswith(".zip")
+                     else f"tar -xf {shlex.quote(src)} -C {dest}")
+        base = PurePosixPath(binary_in_archive or name).name
+        parts += [f'BIN="$(find {dest} -type f -name {shlex.quote(base)} | head -n1)"',
+                  'test -n "$BIN"',
+                  'chmod +x "$BIN"', f'ln -sf "$BIN" /usr/local/bin/{wrap}']
+    else:
+        parts.append(f"install -m 0755 {shlex.quote(src)} /usr/local/bin/{wrap}")
+    cmd = "set -eux; " + "; ".join(parts)
+    ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
+    return {"command": cmd, "evidence": ev, "tool": wrap,
+            "purpose": f"{name} (operator-supplied artifact)", "runtime_packages": []}
 
 
 def jar_conda_specs(java_version: str = "") -> list[str]:

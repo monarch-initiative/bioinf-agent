@@ -23,7 +23,7 @@ the network. `build_env_image` drives a real ContainerBuild and is live-proven.
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 from agent.skills import freeze as _freeze
@@ -453,6 +453,52 @@ def _map_install_spec(
                                      evidence=im.get("functional_evidence") or "")}
 
     if t == "binary":
+        # ── OPERATOR-SUPPLIED ARTIFACT ──────────────────────────────────────
+        # Bytes the human handed us (a licence click-through, an internal mirror).
+        # They are NOT re-fetchable, so this branch must run BEFORE the URL machinery
+        # below — and must not touch it at all. Measured 2026-08-04 on a real drive:
+        # a `file://` URL satisfies `resolve_linux_asset` AND `sha256_of_url`, so the
+        # whole URL tier accepted a path on the agent's laptop, "re-verified" it by
+        # reading the same file twice, awarded `assurance: authenticated /
+        # verified: True` (the TOP tier) — and then emitted a Dockerfile that ran
+        # `curl file:///Users/...` inside a container with no such path, which is the
+        # only reason nothing shipped. Comparing a file with itself and calling the
+        # agreement integrity is the I5 laundering shape, here in the binary tier.
+        if im.get("artifact_source") == "operator_supplied":
+            art = (im.get("artifact_name") or "").strip()
+            local = (im.get("artifact_local_path") or "").strip()
+            if not art or not local:
+                return broke("build.local_artifact_incomplete",
+                             error=(f"'{name}' is recorded as operator-supplied but the record is "
+                                    f"missing artifact_name/artifact_local_path — the bytes cannot "
+                                    f"be carried into the build."))
+            if not Path(local).is_file():
+                return refused("build.local_artifact_missing",
+                               error=(f"'{name}' was installed from an artifact the operator "
+                                      f"supplied at {local}, and that file is no longer there. "
+                                      f"These bytes are not re-fetchable — nothing can download "
+                                      f"them for you. Re-obtain the artifact and re-run the "
+                                      f"install, or freeze from a machine that still has it."),
+                               path=local)
+            gen = ic.local_artifact(name, art,
+                                    sha256=(im.get("asset_sha256") or "").strip().lower(),
+                                    binary_in_archive=PurePosixPath(
+                                        im.get("local_path") or name).name,
+                                    wrapper=name)
+            gen["stage_artifact"] = local
+            # `human_supplied` is its OWN assurance value and is never `verified`.
+            # It is not a weaker `authenticated`; it is a different claim: we know
+            # WHAT the bytes are (hashed at install, re-checked in-image after the
+            # COPY) and we know nobody else can obtain them from us. Folding it into
+            # any existing tier would say something false in both directions.
+            gen["provenance"] = {"tier": "binary", "verified": False,
+                                 "assurance": "human_supplied",
+                                 "asset_url": None,
+                                 "asset_sha256": (im.get("asset_sha256") or "").lower() or None,
+                                 "install_asset_sha256": (im.get("asset_sha256") or "").lower() or None,
+                                 "artifact_name": art}
+            return {"spec": gen}
+
         la = resolve_linux_asset(im.get("binary_url") or "")
         if not la.get("found"):
             return broke("build.binary_asset_unresolved",

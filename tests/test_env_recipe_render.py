@@ -19,15 +19,27 @@ from env_records import shipped_binary as _shipped_binary
 # build_method coverage — a recipe renders for every install path
 # ---------------------------------------------------------------------------
 def _build_recipe():
+    # `install_method` NESTED under installed_packages — the shape every install
+    # primitive in agent/mcp_tools/env_tools.py actually writes (six producers, all
+    # via an `ip_record`). This fixture used to put it at the STEP level, which no
+    # producer has ever written, and the renderer read it there: so these assertions
+    # passed against a shape that only existed in this file, while the real
+    # "Option B — rebuild from scratch" section shipped EMPTY for every env ever
+    # built. Confirmed 2026-08-04 on artifacts on disk — tier_onehop, the env whose
+    # whole purpose was proving five non-conda tiers, listed none of them.
     return er.extract_recipe(
         {"install_steps": [
-            {"tool": "seqtk", "install_method": {
-                "type": "source", "name": "seqtk",
-                "source": "https://github.com/lh3/seqtk",
-                "commit_sha": "a" * 40, "build_command": "make", "bin_path": "seqtk"}},
-            {"tool": "mosdepth", "install_method": {
-                "type": "binary", "name": "mosdepth",
-                "binary_url": "https://example/mosdepth", "asset_sha256": "d" * 64}},
+            {"tool": "seqtk", "returncode": 0, "installed_packages": [
+                {"name": "seqtk", "channel": "source", "install_method": {
+                    "type": "source", "name": "seqtk",
+                    "source": "https://github.com/lh3/seqtk",
+                    "commit_sha": "a" * 40, "build_command": "make",
+                    "bin_path": "seqtk"}}]},
+            {"tool": "curl", "returncode": 0, "installed_packages": [
+                {"name": "mosdepth", "channel": "binary", "install_method": {
+                    "type": "binary", "name": "mosdepth",
+                    "binary_url": "https://example/mosdepth",
+                    "asset_sha256": "d" * 64}}]},
         ]},
         name="demo", version="1.0", conda_deps=["samtools=1.21", "bcftools=1.21"],
         primary_tools=["seqtk", "mosdepth", "samtools"], content_digest="sha256:" + "ab" * 32,

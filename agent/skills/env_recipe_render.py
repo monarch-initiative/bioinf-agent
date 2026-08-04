@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from agent.skills import freeze as _freeze
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
 
@@ -117,8 +118,36 @@ def render_step_commands(step: dict) -> list[str]:
                         + (f" @ {im.get('commit_sha')}" if im.get("commit_sha") else ""))
         return head + list(cmds)
     if t == "binary":
-        url = im.get("binary_url") or "<binary_url>"
         sha = (im.get("asset_sha256") or "").strip()
+        # AN ARTIFACT ONLY THE OPERATOR CAN OBTAIN GETS AN INSTRUCTION, NOT A COMMAND.
+        # This branch used to render `curl -fL -o x.tar '<binary_url>'` unconditionally,
+        # and for an operator-supplied install that URL was the path on the agent's own
+        # laptop (`file:///private/tmp/.../scratchpad/...`) — a copy-pasteable line that
+        # cannot work anywhere else, in a scratch dir that no longer exists. The same
+        # doctrine already stated forty lines down for an unpinned source checkout
+        # applies verbatim here: an instruction you can paste is worse than none,
+        # because it looks like one. (The lesson existed in this file and had been
+        # applied at exactly one site — the propagation defect, again.)
+        if im.get("artifact_source") == "operator_supplied":
+            art = im.get("artifact_name") or f"{name}-artifact"
+            out = [f"# {name}: installed from an artifact THE OPERATOR SUPPLIED.",
+                   f"#",
+                   f"# There is no download command for this step, and that is not an",
+                   f"# omission — these bytes are not ours to distribute or re-fetch.",
+                   f"# Obtain `{art}` from the tool's vendor yourself (this normally means",
+                   f"# accepting a licence), then:"]
+            if sha:
+                out.append(f"#   1. verify it:  echo '{sha}  {art}' | sha256sum -c")
+                out.append(f"#   2. re-run:     install_release_binary(env, '{name}',")
+                out.append(f"#                      local_path='/path/to/{art}',")
+                out.append(f"#                      sha256='{sha}')")
+            else:
+                out.append(f"#   re-run: install_release_binary(env, '{name}', "
+                           f"local_path='/path/to/{art}')")
+                out.append(f"# NOTE: no asset sha256 was recorded, so a rebuild cannot prove it")
+                out.append(f"# obtained the SAME artifact this image was built from.")
+            return out
+        url = im.get("binary_url") or "<binary_url>"
         out = [f"# {name}: precompiled release binary",
                f"curl -fL -o {name}.tar '{url}'"]
         if sha:
@@ -213,12 +242,23 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
            "pinned by digest in the machine recipe):", ""]
     out += _apt_block(record)
     out += _conda_block(recipe)
-    steps = [s for s in (recipe.get("install_steps") or []) if isinstance(s, dict)]
-    longtail = [s for s in steps if render_step_commands(s)]
+    # RENDER THE VIEW THE BUILDER REPLAYS, not a second view of the same steps.
+    # `render_step_commands` reads `install_method` off the record handed to it, and
+    # this loop used to hand it the RAW install_step — where no producer writes that
+    # key. Every release-binary/jar/source install lands under
+    # `install_steps[].installed_packages[].install_method`, so the reader saw `{}`,
+    # returned [], and the step was dropped from its own rebuild instructions with no
+    # sign anything was missing. Found 2026-08-04: the operator-supplied-artifact step
+    # — the ONE step a human MUST be told about, because only they can obtain it —
+    # rendered as nothing at all, under a heading that says "install the non-conda
+    # tools". `non_conda_installs` is the accessor freeze itself uses to decide what to
+    # replay, so rendering from it makes this function's docstring claim ("the SAME
+    # install_method fields env_freeze._map_install replays") true instead of aspirational.
+    longtail = [p for p in _freeze.non_conda_installs(recipe) if render_step_commands(p)]
     if longtail:
         out += ["# 2. install the non-conda tools (each baked + validated in the image):"]
-        for s in longtail:
-            cmds = render_step_commands(s)
+        for p in longtail:
+            cmds = render_step_commands(p)
             if cmds:
                 out += _fence(cmds)
     out += ["# 3. bake into an image, then convert to a cluster .sif:"]

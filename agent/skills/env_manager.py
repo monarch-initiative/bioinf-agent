@@ -1226,15 +1226,30 @@ class EnvManager:
         self,
         env_name: str,
         tool_name: str,
-        url: str,
+        url: str = "",
         sha256: str = "",
         binary_in_archive: str = "",
         wrapper_name: str = "",
+        local_path: str = "",
     ) -> dict[str, Any]:
         """Install a precompiled release binary — the Tier-3 resolver path for
         tools that ship a static binary on GitHub releases / a vendor URL
-        (mosdepth, somalier, slivar, sylph, dorado, cellranger). No conda, no
+        (mosdepth, somalier, slivar, sylph, dorado). No conda, no
         build: download → sha256-anchor → (extract) → chmod → PATH launcher.
+
+        `local_path` — THE ARTIFACT THE OPERATOR ALREADY HAS, instead of `url`.
+        This is the licence-gated route (Cell Ranger, ANNOVAR, GeneMark, bcl-convert,
+        SignalP): the vendor will hand the bytes to a human who accepted a licence,
+        and will not hand them to us. Exactly one of `url` / `local_path` is required.
+
+        The two are NOT interchangeable spellings of the same thing, which is why
+        `file://` in `url` is REFUSED rather than quietly accepted. A URL install
+        ships by replaying its download inside the container build; an operator's
+        artifact has no URL that resolves anywhere but this machine. It is instead
+        carried into the build as data (`ContainerBuild.stage_artifact`) and the
+        record says `artifact_source: operator_supplied`, which keeps it out of the
+        `authenticated` assurance tier it cannot honestly earn and out of a rebuild
+        recipe as a paste-able `curl` that would fail for every other reader.
 
             asset      → {env}/share/{tool_name}/
             launcher   → {env}/bin/{wrapper_name or tool_name}
@@ -1266,20 +1281,60 @@ class EnvManager:
         share_dir.mkdir(parents=True, exist_ok=True)
         log: list[str] = []
 
-        asset_name = Path(urlparse(url).path).name or f"{tool_name}.download"
-        download_target = share_dir / asset_name
+        # ── WHICH ROUTE? Exactly one of url / local_path. ────────────────────
+        if url and local_path:
+            return refused("env_manager.binary_source_ambiguous", success=False,
+                           error=("pass either `url` (we fetch it) or `local_path` (you already "
+                                  "have it) — not both. They record different provenance and "
+                                  "ship by different mechanisms, so there is no merge of the two."))
+        if not url and not local_path:
+            return refused("env_manager.binary_source_missing", success=False,
+                           error=("need `url` (a release/vendor URL we can fetch) or `local_path` "
+                                  "(an artifact you already downloaded — the licence-gated route)."))
+        # A `file://` URL is the SAME REQUEST as `local_path`, spelled in a way that
+        # makes it look fetchable. It is refused rather than rewritten, because every
+        # downstream reader treats a URL as re-fetchable: measured 2026-08-04, a
+        # `file://` install sailed through the whole tier and earned
+        # `assurance: authenticated / verified: True` — the top tier — for a file in a
+        # scratch dir, "verified" by hashing it twice, before the build died on
+        # `curl file:///Users/...` inside a container. Name the route you mean.
+        if url.strip().lower().startswith("file://"):
+            return refused("env_manager.binary_url_is_local_file", success=False,
+                           error=("`url` points at this machine's filesystem "
+                                  f"({url[:120]}). A URL install ships by replaying its download "
+                                  "INSIDE the container build, which cannot reach your disk — it "
+                                  "would fail at build time after the record already claimed the "
+                                  "asset was fetched and authenticated. Pass the same file as "
+                                  "`local_path=` instead: the bytes are then carried into the "
+                                  "build and recorded as operator-supplied."))
 
-        # --fail so an HTML 404 isn't silently saved as the "binary".
-        curl = self.run_in_env(
-            env_name,
-            f"curl -L --fail --progress-bar -o {shlex.quote(str(download_target))} {shlex.quote(url)}",
-            timeout=3600,
-        )
-        log.append(f"curl rc={curl['returncode']}")
-        if curl["returncode"] != 0 or not download_target.exists():
-            return broke("env_manager.binary_download_failed",
-                         success=False, error="binary download failed",
-                         stderr=(curl.get("stderr") or "")[-500:], log=log)
+        if local_path:
+            src = Path(local_path).expanduser()
+            if not src.is_file():
+                return refused("env_manager.binary_local_missing", success=False,
+                               error=f"no such artifact: {src}", log=log)
+            asset_name = src.name
+            download_target = share_dir / asset_name
+            # COPY, never move or symlink. The operator's file is theirs; the env keeps
+            # its own copy so a later freeze has bytes to stage even if they tidy up.
+            import shutil as _shutil
+            _shutil.copyfile(src, download_target)
+            log.append(f"copied operator-supplied artifact {src} -> {download_target}")
+        else:
+            asset_name = Path(urlparse(url).path).name or f"{tool_name}.download"
+            download_target = share_dir / asset_name
+
+            # --fail so an HTML 404 isn't silently saved as the "binary".
+            curl = self.run_in_env(
+                env_name,
+                f"curl -L --fail --progress-bar -o {shlex.quote(str(download_target))} {shlex.quote(url)}",
+                timeout=3600,
+            )
+            log.append(f"curl rc={curl['returncode']}")
+            if curl["returncode"] != 0 or not download_target.exists():
+                return broke("env_manager.binary_download_failed",
+                             success=False, error="binary download failed",
+                             stderr=(curl.get("stderr") or "")[-500:], log=log)
 
         # The download-time anchor is the ASSET (what the publisher checksums:
         # the .tar.gz / .zip / single binary as shipped). A user-supplied sha256
@@ -1310,27 +1365,46 @@ class EnvManager:
 
         # Did we authenticate the asset against a PUBLISHER checksum, or merely
         # pin whatever came down the wire (trust-on-first-use)? `asset_authenticated`
-        # is the honest anchor freeze reads to decide the shipped binary's assurance
+        # is the anchor freeze reads to decide the shipped binary's assurance
         # (authenticated vs pinned-TOFU vs unanchored) — see env_freeze binary branch.
-        asset_authenticated = bool(sha256)
+        #
+        # A caller-supplied sha256 is meaningful ONLY over a fetch: the bytes crossed
+        # a network we do not control, and a hash known BEFOREHAND would have caught a
+        # swapped upload or a poisoned mirror. Over an operator-supplied artifact the
+        # same check crosses nothing — the caller hashes a local file and hands back
+        # its own hash, so "authenticated" would be the record agreeing with itself.
+        # That is the I5 laundering shape, and it is refused the same way here.
+        asset_authenticated = bool(sha256) and not local_path
+        install_method: dict[str, Any] = {
+            "type":                "binary",
+            "binary_url":          url,
+            "sha256":              binary_digest,
+            "asset_sha256":        recorded_asset_sha,
+            "asset_authenticated": asset_authenticated,
+            "local_path":          staged["binary_path"],
+        }
+        if local_path:
+            # STATE the route, never leave it inferable from an absent URL. freeze
+            # dispatches on `artifact_source` and will refuse a record that claims
+            # operator-supplied without the bytes to carry.
+            install_method.update({
+                "binary_url":            None,
+                "artifact_source":       "operator_supplied",
+                "artifact_name":         asset_name,
+                "artifact_local_path":   str(download_target),
+            })
         return proven(
             "env_manager.binary_installed",
             success=True,
             tool_name=tool_name,
             binary_path=staged["binary_path"],
             wrapper_path=staged["wrapper_path"],
-            url=url,
+            url=url or None,
+            local_path=str(download_target) if local_path else None,
             sha256=binary_digest,
             asset_sha256=recorded_asset_sha,
             asset_authenticated=asset_authenticated,
-            install_method={
-                "type":                "binary",
-                "binary_url":          url,
-                "sha256":              binary_digest,
-                "asset_sha256":        recorded_asset_sha,
-                "asset_authenticated": asset_authenticated,
-                "local_path":          staged["binary_path"],
-            },
+            install_method=install_method,
             log=log,
         )
 
