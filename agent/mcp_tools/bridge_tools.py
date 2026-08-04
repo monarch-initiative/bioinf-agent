@@ -464,23 +464,30 @@ def stage_apptainer_image(project_name: str,
                           sif_subpath: str = "") -> dict:
     """Get the apptainer .sif for a frozen env onto a compute env.
 
-    Mode-aware (auto-determined from the EnvCache record):
-      ADOPT (pure-conda + public BioContainer):
-        ONE ssh hop: `apptainer pull <sif> docker://<image_by_digest>`.
-        No bytes move through us. Idempotent — re-stages are a no-op
-        when the .sif already exists.
-      BUILD with push_target:
-        Same shape as adopt — pull from the configured registry.
-      BUILD registry-free (default for non-conda):
-        Two steps: (1) upload .tar via `transfer.upload` (wire protocol
-        scp_head_node vs globus is picked by the env's
-        `data_transfer.type`); (2) ssh `apptainer build <sif>
-        docker-archive://<tar>` on the cluster.
+    LOCAL-BUILD-AND-SHIP — every EnvCache mode converges on one flow, and
+    NOTHING heavy runs on the cluster:
+      1. Obtain a local docker image — `docker pull` for an adopt record or a
+         pushed `push_target` ref, otherwise the locally-built image tag or
+         freeze's docker-save tarball.
+      2. Build the .sif ON THE AGENT MACHINE (`local_sif.build_sif_locally`,
+         which runs apptainer inside a pinned linux container, so a macOS host
+         with no apptainer binary works).
+      3. `transfer.upload` the FINISHED .sif; wire protocol (scp_head_node vs
+         globus) comes from the env's `data_transfer.type`.
+    The only cluster interaction is a read-only `test -f` probe and the upload.
+    The image -> .sif conversion (unpack + mksquashfs) is heavy and never runs
+    on the shared head node, and we never `apptainer pull` a multi-GB image
+    there either ([[feedback-no-head-node-image-builds]]).
 
-    Where container artifacts land:
+    Budget for it accordingly: the .sif is built and transferred by US, so a
+    multi-GB env costs local disk, local CPU and a real transfer — this is not
+    a cheap one-hop cluster-side pull. Idempotent: re-stages are a no-op when
+    the .sif already exists, so the cost is paid once per (env, digest).
+
+    Where the container artifact lands:
       .sif: `<env.container_upload_target>/<env_name>_<digest>.sif`
-      .tar: `<env.container_upload_target>/apptainer_sources/<basename>.tar`
-      Override the .sif subpath via `sif_subpath` (relative, no `..`).
+      Override the subpath via `sif_subpath` (relative, no `..`); it still
+      resolves against `container_upload_target`.
 
     Authorization: project must have a `compute_env_access` entry for
     the env, AND the env must declare a `container_upload_target` with
@@ -490,9 +497,13 @@ def stage_apptainer_image(project_name: str,
     [[project-container-artifacts-routing]]).
 
     Returns {success, mode, sif_path, image_digest, request_key,
-    skipped, staged_at} on success; {"error": ..., hint?, ...} on
-    failure. `skipped: true` means the .sif already existed —
-    re-stages are intentionally idempotent."""
+    skipped, staged_at, local_sif?, builder_image?} on success;
+    {"error": ..., hint?, ...} on failure. `skipped: true` means the .sif
+    already existed — re-stages are intentionally idempotent. `mode` is the
+    EnvCache record's mode with a `_local_sif` suffix when a build actually
+    ran (e.g. `adopt_local_sif`, `build_local_sif`), and the bare record mode
+    on a skip — so the suffix tells you whether this call paid the build cost
+    or just found the artifact already there."""
     from agent.skills import stage_apptainer
     return stage_apptainer.stage_apptainer_image(
         project_name=project_name,

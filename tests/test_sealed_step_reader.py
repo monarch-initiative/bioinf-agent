@@ -30,7 +30,8 @@ import yaml
 from agent import mcp_server as ms
 from agent.mcp_tools import sealed_tools as ST
 from agent.models.core_data import WorkflowSpec
-from agent.skills.spec_writer import load_workflow_spec, select_pipeline_step
+from agent.skills.spec_writer import (
+    load_workflow_spec, select_pipeline_step, write_workflow_spec)
 
 
 # ---------------------------------------------------------------------------
@@ -65,13 +66,18 @@ def _spec_dict(name: str = "talos_wf", steps=None) -> dict:
 
 
 def _write_spec(dir_, spec_dict: dict) -> str:
-    """Write a spec exactly as write_workflow_spec does: validate → model_dump →
-    yaml → {name}.workflow.yaml. Returns the path."""
-    wf = WorkflowSpec.model_validate(spec_dict)
-    path = dir_ / f"{wf.workflow_name}.workflow.yaml"
-    path.write_text(yaml.dump(wf.model_dump(exclude_none=True),
-                              default_flow_style=False, sort_keys=False))
-    return str(path)
+    """Write a spec by CALLING `write_workflow_spec` — never by re-implementing it.
+
+    This helper used to hand-copy the writer's body ("validate → model_dump →
+    yaml"), so every round-trip test below round-tripped the COPY. That is why the
+    writer's `exclude_none=True` could strip a required-but-nullable field and
+    produce specs `load_workflow_spec` refused, while this file stayed green: the
+    tests were exercising a parallel implementation that merely happened to agree.
+    Call the real writer and a change in it reaches these tests.
+    """
+    res = write_workflow_spec(spec_dict, {"paths": {"pipelines_dir": str(dir_)}})
+    assert "workflow_spec_path" in res, f"write_workflow_spec refused the fixture: {res}"
+    return res["workflow_spec_path"]
 
 
 @pytest.fixture()
@@ -113,6 +119,42 @@ def test_load_workflow_spec_preserves_runtime_extra_keys(tmp_path):
     st = spec.pipeline_steps[0]
     assert st.detected_outputs == ["/data/step1.vcf"]          # extra, preserved
     assert st.container_image_digest == "sha256:deadbeefcafe"  # extra, preserved
+
+
+def test_a_written_spec_survives_a_required_field_whose_value_is_None(tmp_path):
+    """THE round-trip property, on the shape that actually broke it.
+
+    A directory content-anchor has no single hash, so `ContentAnchor` requires
+    `sha256`/`size_bytes` and expects the producer to STATE `None` (its docstring
+    says so in as many words). The writer used to dump with `exclude_none=True`,
+    which turned that statement into an ABSENCE — and absence of a required field
+    is exactly what the reader refuses. Net effect: `seal_workflow` reported
+    success while writing a spec `describe_sealed_step` would not open.
+
+    Found on a real cluster seal, not in review. It is pinned here rather than at
+    the reader because the reader was never wrong — the writer was.
+    """
+    sd = _spec_dict()
+    sd["test_data"] = {
+        "genome_build": "hg38",
+        "r1": "/data/reads_R1.fastq.gz",
+        "core_data_dir": "/data/core",
+        "content_anchors": {
+            "r1": {"kind": "file", "sha256": "a" * 64, "size_bytes": 1234},
+            # The one that matters: a stated None, not an omission.
+            "core_data_dir": {"kind": "directory", "sha256": None, "size_bytes": None},
+        },
+    }
+    path = _write_spec(tmp_path, sd)
+
+    on_disk = yaml.safe_load(open(path))["test_data"]["content_anchors"]["core_data_dir"]
+    assert "sha256" in on_disk and "size_bytes" in on_disk, (
+        "a required-but-nullable field was dropped on write, so the sealed spec no "
+        f"longer satisfies its own model: {on_disk}")
+
+    spec = load_workflow_spec(path)          # must not raise
+    assert isinstance(spec, WorkflowSpec)
+    assert spec.test_data.content_anchors["core_data_dir"].sha256 is None
 
 
 def test_load_workflow_spec_refuses_a_spec_missing_a_required_field(tmp_path):

@@ -23,6 +23,10 @@ from typing import Any
 
 from agent.skills.outcomes import proven, refused, broke
 
+# `samtools quickcheck` exits with a BITMASK of complaints. This is the only
+# bit that is not a defect — see `OutputValidator._check_sam`.
+_QC_NO_TARGETS = 8
+
 
 class OutputValidator:
     def __init__(self, config: dict):
@@ -110,10 +114,29 @@ class OutputValidator:
     # -----------------------------------------------------------------------
 
     def _check_sam(self, path: Path) -> dict:
-        """SAM and BAM — samtools quickcheck + flagstat."""
-        ret = self._run_tool(["samtools", "quickcheck", str(path)], timeout=60)
+        """SAM and BAM — samtools quickcheck + flagstat.
+
+        quickcheck's exit status is a BITMASK of complaints, and exactly one of
+        them is not a defect: `_QC_NO_TARGETS`, "no targets in header", is the
+        defining property of an UNALIGNED bam — what `picard FastqToSam` and
+        `samtools import` produce, and the raw-read format GATK's best
+        practices are built on. Every other bit is a real rejection (4 = not
+        sequence data, 16 = missing EOF / truncated).
+
+        Bit 8 ALONE is therefore re-checked POSITIVELY rather than waved
+        through (`_check_unaligned_sam`): the file must still read back a
+        header and a record count. What makes that safe rather than the H1
+        laundering the clause below exists to prevent is that the bits
+        compose — a truncated uBAM scores 24 (8|16), never 8, so a broken
+        file cannot reach the lenient path at all. Measured against samtools
+        1.23.1; a future samtools that renumbers the bit fails a valid uBAM
+        loudly instead of passing a broken one, which is the safe direction.
+        """
+        ret = self._run_tool(["samtools", "quickcheck", "-v", str(path)], timeout=60)
         if ret.returncode != 0:
             if getattr(ret, "tool_found", False):
+                if ret.returncode == _QC_NO_TARGETS:
+                    return self._check_unaligned_sam(path)
                 # samtools RAN and rejected the file — a truncated/corrupt BAM.
                 # Falling back to the lenient text check here would launder a
                 # real rejection into a pass (H1). Fail loudly instead.
@@ -127,6 +150,41 @@ class OutputValidator:
                           passed=True, validation_method="tool", flagstat=stat.stdout[:500])
         return proven("validate.sam_quickcheck_ok",
                       passed=True, validation_method="tool", note="samtools quickcheck passed")
+
+    def _check_unaligned_sam(self, path: Path) -> dict:
+        """Prove an UNALIGNED bam POSITIVELY — reached only when quickcheck's
+        sole complaint was "no targets in header" (see `_check_sam`).
+
+        The point of this method is that it does not take quickcheck's silence
+        on the other bits as proof of anything: it reads the header and counts
+        the records back out. An empty record set is refused rather than
+        passed, because "the tool exited 0 and wrote a file with nothing in it"
+        is the silent-empty-success trap I3 exists to catch, and `touch` clears
+        any bar lower than this one.
+        """
+        hdr = self._run_tool(["samtools", "view", "-H", str(path)], timeout=60)
+        if hdr.returncode != 0 or not hdr.stdout.strip():
+            return broke("validate.sam_tool_rejected",
+                    passed=False, validation_method="tool",
+                    error="samtools reported no targets in header, and the header "
+                          "could not be read back either — this is not a readable "
+                          f"unaligned BAM: {hdr.stderr.strip()[:200]}")
+        cnt = self._run_tool(["samtools", "view", "-c", str(path)], timeout=120)
+        count = cnt.stdout.strip()
+        if cnt.returncode != 0 or not count.isdigit():
+            return broke("validate.sam_tool_rejected",
+                    passed=False, validation_method="tool",
+                    error="samtools could not count records in an apparently "
+                          f"unaligned BAM: {cnt.stderr.strip()[:200]}")
+        if int(count) == 0:
+            return refused("validate.sam_no_records",
+                    passed=False, validation_method="tool",
+                    error="unaligned BAM has a readable header but zero records")
+        return proven("validate.sam_unaligned_ok",
+                      passed=True, validation_method="tool", records=int(count),
+                      note="unaligned BAM/SAM (no @SQ targets, as produced by "
+                           "picard FastqToSam / samtools import); header and "
+                           "records read back")
 
     def _sam_text_fallback(self, path: Path) -> dict:
         lines = self._head_lines(path, 20)
