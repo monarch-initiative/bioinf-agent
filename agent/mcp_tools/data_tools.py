@@ -524,7 +524,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "install_conda_packages: bioconda / conda-forge / defaults",
         "install_r_package(source=cran|bioconductor|github:owner/repo): handles library isolation + load-or-die",
         "install_pip_package: handles import verification",
-        "install_jar_tool: Java tools — openjdk dep + JAR download + wrapper",
+        "install_jar_tool(java_version=…): Java tools — JAR download + `java -jar` wrapper. Pass java_version when the tool needs a specific JRE (Exomiser 14+ wants 21); the shipped image otherwise gets apt's default, which is Java 17",
         "install_git_repo(repo_url, tool_name, ref=…): clone-and-run repos that aren't packages (academic script collections) — clones into {env}/share/{tool}, pins commit SHA, optional build + smoke verify; sets install_method.type=source. Pin ref to a tag/commit.",
         "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
         "run_pipeline_step: run + auto-validate every detected output in one call",

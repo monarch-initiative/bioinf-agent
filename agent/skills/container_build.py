@@ -846,8 +846,17 @@ class ContainerBuild:
             parts: list[str] = []
             for flag in self._BANNER_VARIANTS:
                 cmd = f"{tool} {flag}".strip()
+                # Bail out BEFORE invoking when the token isn't on PATH. `2>&1 || true`
+                # captures the shell's own `bash: line 1: X: command not found` as the
+                # banner text, and the renderer reads banners as VERSION material — so
+                # an absent token used to render as a tool's self-reported version. Not
+                # every verification is labelled on a binary (an `openjdk` row is
+                # verified by invoking `java`), and this is a version field: it must be
+                # empty when there is nothing to report, never a shell error.
                 p = self._sh(["docker", "run", "--rm", "--platform", self.platform, image,
-                              "bash", "-c", f"{cmd} 2>&1 || true"], timeout=60)
+                              "bash", "-c",
+                              f"command -v {tool} >/dev/null 2>&1 || exit 0; {cmd} 2>&1 || true"],
+                             timeout=60)
                 text = (p.get("stdout") or "").strip()
                 if text:
                     parts.append(text)

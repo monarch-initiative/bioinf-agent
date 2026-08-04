@@ -820,12 +820,26 @@ def install_jar_tool(
     java_flags: list[str] = [],
     wrapper_name: str = "",
     verify_command: str = "",
+    java_version: str = "",
     pipeline_id: str = "",
     step: int = 0,
 ) -> dict:
     """Install a Java JAR-based tool end-to-end (Exomiser, Picard, GATK, snpEff, …).
 
-    The env must already have `openjdk` (and `unzip` if `jar_url` is a .zip).
+    `java_version` = the JRE the tool REQUIRES, e.g. "21" for Exomiser 14+ (a bare
+    major is the normal form; "21.0.9" also works). Leave it empty and the frozen
+    image gets apt's default JRE, which on the shipped Debian base is Java 17 — fine
+    for Picard/GATK, wrong for anything needing a newer runtime. Naming a version
+    switches the frozen image to a conda-forge `openjdk={version}` instead, and adds
+    its OWN in-image check that greps `java -version` for it, so freeze REFUSES rather
+    than shipping a tool whose JRE requirement was not actually met. That check is a
+    separate row on the openjdk package — your `verify_command` below is untouched and
+    stays the tool's evidence. There is no apt route: openjdk-21 has no candidate in
+    Debian bookworm main, security or backports.
+
+    The env must already have `openjdk` (and `unzip` if `jar_url` is a .zip) — if you
+    passed `java_version`, install THAT openjdk here too, or the host smoke below runs
+    under a different JRE than the one the image will ship.
     Downloads the JAR (curl with a progress bar — watchdog-friendly), unpacks if
     it's a distribution zip, picks the primary jar (heuristic: name contains
     `tool_name`, shortest matches first), and writes a wrapper script at
@@ -871,6 +885,10 @@ def install_jar_tool(
         channel = "github" if "github.com" in host else "external"
         version = parse_version_from_url(jar_url)
         install_method = {"type": "jar", "source": jar_url}
+        # Recorded so freeze's _map_install jar branch can route the tier to
+        # conda-forge openjdk and assert the version in-image. Absent ⇒ apt default.
+        if java_version.strip():
+            install_method["java_version"] = java_version.strip()
         # The caller's smoke (empty ⇒ freeze uses the presence default). freeze's
         # _map_install jar branch re-runs THIS in-image as VALIDATED_IN_IMAGE
         # evidence, so a jar can prove validated==ran (parity with source's

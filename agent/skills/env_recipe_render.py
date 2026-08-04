@@ -83,7 +83,16 @@ def render_step_commands(step: dict) -> list[str]:
 
     if t == "jar":
         url = im.get("source") or im.get("jar_url") or "<jar_url>"
+        # WHICH JRE is not a detail a human can guess, and the two routes are not
+        # interchangeable: apt's default is Java 17 on the shipped Debian base, and
+        # a tool that asked for 21 will not run on it. Name the one this env used —
+        # a rebuild recipe silent about the runtime is not a rebuild recipe.
+        jv = str(im.get("java_version") or "").strip()
+        jre = (f"conda install -c conda-forge openjdk={jv}   # the JRE this env was built with"
+               if jv else
+               "apt-get install -y --no-install-recommends default-jre-headless   # Java 17 on bookworm")
         return [f"# {name}: Java jar tool",
+                jre,
                 f"wget -O {name}.jar '{url}'",
                 f"# wrapper: java {im.get('java_flags') or ''} -jar {name}.jar \"$@\""]
     if t == "source":

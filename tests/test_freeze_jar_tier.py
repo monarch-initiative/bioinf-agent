@@ -177,6 +177,64 @@ def test_install_jar_tool_without_a_smoke_records_no_verify_command(tmp_path, mo
                                jar_url="https://x/picard.jar", pipeline_id=pid)
     im = ps.get_draft(pid)["install_steps"][0]["installed_packages"][0]["install_method"]
     assert "verify_command" not in im
+    assert "java_version" not in im                # no version asked ⇒ nothing fabricated
+
+
+# ── #C java_version: the primitive → dispatch hop, end to end ─────────────────
+
+def test_map_install_jar_routes_a_requested_java_version_to_conda(monkeypatch):
+    """The dispatch half: a recorded `java_version` reaches ic.jar, which drops the
+    apt JRE and couples to the engine (only `pixi run` sees the solved env while
+    BUILDING). A recorded smoke still threads through untouched."""
+    smoke = "picard MarkDuplicates --version"
+    spec = _map_install(_jar_install({"java_version": "21", "evidence": smoke}),
+                        sha256_of_url=_OK_HASH)["spec"]
+    assert spec["engine_coupled"] is True and spec["runtime_packages"] == []
+    assert "apt-get" not in spec["command"]
+    assert spec["evidence"] == smoke
+    # and the tier's default is untouched when nothing was asked
+    plain = _map_install(_jar_install({}), sha256_of_url=_OK_HASH)["spec"]
+    assert plain.get("engine_coupled") is False
+    assert plain["runtime_packages"] == ["default-jre-headless"]
+
+
+def test_install_jar_tool_java_version_survives_the_hop_to_a_conda_spec(tmp_path, monkeypatch):
+    """THE HOP, which is the whole point of this tier's G1 slice: does the PRIMITIVE
+    write a record the freeze dispatch can act on? Drive install_jar_tool, then read
+    the draft the way freeze does — both _map_install (generator) and plan_conda
+    (what gets solved) must see the requested java. A generator that couples to a
+    JRE the env never solves builds an image with no `java` at all."""
+    from agent import mcp_server as _ms
+    from agent.mcp_tools import env_tools
+    from agent.skills import install_commands as ic
+    from agent.skills.env_freeze import _java_version_verifications, plan_conda
+    from agent.skills.pipeline_state import PipelineState
+
+    (tmp_path / "drafts").mkdir(); (tmp_path / "reports").mkdir()
+    cfg = {**_ms.config, "paths": {**_ms.config.get("paths", {}),
+                                   "drafts_dir": str(tmp_path / "drafts"),
+                                   "pipelines_dir": str(tmp_path / "reports")}}
+    ps = PipelineState(cfg)
+    monkeypatch.setattr(_ms, "_pipeline_state", ps)
+
+    class _FakeMgr:
+        def install_jar_tool(self, **k):
+            return {"success": True, "jar_path": "/e/e.jar", "wrapper_path": "/e/bin/exomiser"}
+    monkeypatch.setattr(_ms, "_env_mgr", _FakeMgr())
+
+    pid = ps.start("jar_javaver_test", "x")["pipeline_id"]
+    env_tools.install_jar_tool(env_name="e", tool_name="exomiser",
+                               jar_url="https://x/exomiser-cli-14.0.0-distribution.zip",
+                               java_version="21", pipeline_id=pid)
+
+    pkg = ps.get_draft(pid)["install_steps"][0]["installed_packages"][0]
+    assert pkg["install_method"]["java_version"] == "21"
+    # the record freeze actually consumes — same dict shape _map_install/plan_conda get
+    rec = {"name": pkg["name"], "type": "jar", "install_method": pkg["install_method"]}
+    assert _map_install(rec, sha256_of_url=_OK_HASH)["spec"]["engine_coupled"] is True
+    assert plan_conda(["samtools"], [rec]) == ["samtools", "openjdk=21"]
+    # …and the solved JRE is VERIFIED in the image, not merely solved
+    assert _java_version_verifications([rec]) == [("java", ic.java_version_check("21"))]
 
 
 def test_grid_jar_recipe_is_a_wired_container_native_probe():

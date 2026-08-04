@@ -125,11 +125,16 @@ class InstallMethod(BaseModel):
 
     Default is conda.  For Java tools (e.g. Exomiser, Picard, GATK):
       - type = "jar"
-      - openjdk is installed via conda in the same env
+      - openjdk is installed via conda in the HOST env (pre-freeze iteration)
       - the JAR is downloaded to {env}/share/{tool}/{tool}.jar
       - a wrapper script is written to {env}/bin/{tool}
-    The container-native freeze installs the JVM (openjdk) INTO the ship image, so
-    the shipped image is self-contained.
+      - optional `java_version` = the JRE the tool REQUIRES
+    The container-native freeze installs a JVM INTO the ship image, so the shipped
+    image is self-contained. WHICH JVM depends on `java_version`: absent ⇒ apt's
+    `default-jre-headless` (Java 17 on the bookworm base), set ⇒ conda-forge
+    `openjdk={version}`, which is the only route that has 21. See
+    install_commands.jar — the two are NOT interchangeable and the ship image
+    carries exactly one of them.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -240,9 +245,11 @@ class RuntimeEnvironment(BaseModel):
     How the pipeline is executed at runtime.
 
     type="conda"   — standard: activate env, call binary directly (default).
-    type="jar"     — Java tool: conda env contains openjdk (from conda-forge);
+    type="jar"     — Java tool: the HOST env contains openjdk (from conda-forge);
                      tool is invoked as `java <java_flags> -jar <jar_path>`.
-                     The container-native freeze bakes the JVM into the ship image.
+                     The container-native freeze bakes a JVM into the ship image —
+                     apt's default, or conda-forge openjdk when the install record
+                     asked for a version (see InstallMethod above).
     type="docker"  — tool is only available via a pre-pulled Docker image;
                      no conda env (use docker_image field).
     type="native"  — tool is a system binary, no special env needed.

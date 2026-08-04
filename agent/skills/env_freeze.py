@@ -42,6 +42,11 @@ _APT_SNAPSHOT_LAG = _timedelta(hours=48)
 # coupled tiers → the engine toolchain conda specs they need to BUILD in-container.
 # (pip is NOT here — it's declared through the engine directly via add_pip, not a
 # long-tail generator; it needs no extra toolchain.)
+#
+# STATIC only: one fixed list per tier. A toolchain whose SPEC depends on the record
+# rather than just its type — today `jar`'s requested `java_version` — cannot live in
+# this table; `plan_conda` asks the generator module instead, so the mapping from
+# `java_version` to a conda spec has exactly one reading (ic.jar_conda_specs).
 _TOOLCHAIN_SPECS = {
     "cargo":     ["rust"],
     # conda `go` activates with CGO_ENABLED=1 and CC=x86_64-conda-linux-gnu-cc, so a
@@ -339,6 +344,10 @@ def _map_install_spec(
         jar_sha = hh.get("sha256", "") if hh.get("ok") else ""
         gen = ic.jar(name, jar_url, sha256=jar_sha,
                      java_flags=im.get("java_flags"), wrapper=name,
+                     # An explicit JRE version routes the tier through conda-forge
+                     # (`plan_conda` solves the matching openjdk) instead of apt.
+                     # Absent ⇒ the apt default, byte-identical to before.
+                     java_version=im.get("java_version") or "",
                      # A jar tool that recorded a self-contained smoke becomes the
                      # VALIDATED_IN_IMAGE evidence → freeze proves the jar RAN, not
                      # merely that the wrapper + JRE resolve (ic.jar's presence
@@ -508,16 +517,60 @@ def _map_install_spec(
                    error=f"install_method.type {t!r} for '{name}' has no container-native generator")
 
 
+def spec_package_name(spec: str) -> str:
+    """The package name in a conda match-spec — `r-base=4.4.1` → `r-base`, bare
+    `rust` → `rust`. Used to answer "is this package already declared?" without
+    caring how it was pinned."""
+    return re.split(r"[=<>!~ \[]", str(spec).strip(), maxsplit=1)[0]
+
+
+def _requested_java_versions(non_conda: list[dict]) -> list[str]:
+    """Every distinct java version the jar records ask for, in declaration order."""
+    out: list[str] = []
+    for x in non_conda:
+        im = x.get("install_method") if isinstance(x.get("install_method"), dict) else {}
+        v = str(im.get("java_version") or "").strip()
+        if x.get("type") == "jar" and v and v not in out:
+            out.append(v)
+    return out
+
+
+def _java_version_verifications(non_conda: list[dict]) -> list[tuple[str, str]]:
+    """An in-image verification per requested java version — a row of its OWN, so the
+    claim survives a jar that records a functional smoke (which replaces that tool's
+    evidence outright). Two jars asking for the same version share one row; two asking
+    for DIFFERENT versions each get a row, and since `plan_conda` can only solve the
+    first, the second row is what refuses the freeze instead of shipping a jar onto a
+    JVM it never asked for.
+
+    Labelled `java`, not `openjdk`: the label is the token the shape rule anchors on
+    AND the token the banner probe invokes, and `java` is what the check actually
+    RUNS. Under `openjdk` the anchor was a string inside a grep pattern rather than an
+    invocation, and the banner probe rendered `openjdk: command not found` into the
+    report's version field."""
+    return [("java", ic.java_version_check(v)) for v in _requested_java_versions(non_conda)]
+
+
 def plan_conda(conda_deps: list[str], non_conda: list[dict]) -> list[str]:
-    """Conda specs for the env = the declared deps PLUS the engine toolchains the
-    coupled tiers (cargo/go/perl) need to BUILD in-container. Pure. Order-stable,
-    deduped (a toolchain already declared isn't doubled)."""
-    have = set(conda_deps)
+    """Conda specs for the env = the declared deps PLUS the toolchains the coupled
+    tiers need — a fixed list per tier (cargo/go/perl/r_install) to BUILD
+    in-container, plus `jar`'s requested java, whose spec depends on the record.
+    Pure. Order-stable.
+
+    Dedup is BY PACKAGE NAME, not by exact string. An explicitly declared
+    `openjdk=21` and an injected `openjdk=21` are the easy case; the one that
+    matters is a user who declared `r-base=4.4.1` and an r_install record that
+    injects bare `r-base`, which used to append BOTH and hand `pixi add` the same
+    package twice. That is the same explicit-match guard `ensure_python_for_pip`
+    below has always applied, read one way now instead of two."""
+    have = {spec_package_name(s) for s in conda_deps}
     extra: list[str] = []
     for x in non_conda:
-        for spec in _TOOLCHAIN_SPECS.get(x.get("type", ""), []):
-            if spec not in have:
-                have.add(spec)
+        im = x.get("install_method") if isinstance(x.get("install_method"), dict) else {}
+        for spec in (_TOOLCHAIN_SPECS.get(x.get("type", ""), [])
+                     + ic.jar_conda_specs(im.get("java_version", "") if x.get("type") == "jar" else "")):
+            if (nm := spec_package_name(spec)) not in have:
+                have.add(nm)
                 extra.append(spec)
     return list(conda_deps) + extra
 
@@ -542,14 +595,12 @@ def ensure_python_for_pip(conda_specs: list[str], has_pip: bool,
     if not (has_pip or has_flag_bearing_pip):
         return conda_specs
     out = list(conda_specs)
-    if not any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in out):
+    if not any(spec_package_name(s) == "python" for s in out):
         out.append("python")
     # For flag-bearing pip, declare `pip` itself — pixi/uv envs don't ship the
     # pip binary or the module by default; the long-tail's `python -m pip ...`
     # needs it.
-    if has_flag_bearing_pip and not any(
-        re.match(r"pip($|[=<>!~ ])", s.strip()) for s in out
-    ):
+    if has_flag_bearing_pip and not any(spec_package_name(s) == "pip" for s in out):
         out.append("pip")
     return out
 
@@ -694,7 +745,7 @@ def build_env_image(
         # create_conda_env python as scaffolding (freeze.py), so PIN the injected
         # python to the version the env was VALIDATED on (validated == shipped).
         _py = str(spec.get("python_version") or "").strip()
-        if _py and not any(re.match(r"python($|[=<>!~ ])", s.strip()) for s in _base_conda):
+        if _py and not any(spec_package_name(s) == "python" for s in _base_conda):
             _base_conda = [f"python={_py}"] + _base_conda
     all_conda = ensure_python_for_pip(
         _base_conda,
@@ -706,6 +757,7 @@ def build_env_image(
     if all_conda:
         non_conda_names = {x.get("name", "") for x in non_conda}
         verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]
+        verify += _java_version_verifications(non_conda)
         eb.add_conda(all_conda, verify=verify)
     if pip_installs:
         # Move-to-end dedup in installed_packages means a successful pip retry's
