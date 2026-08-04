@@ -35,9 +35,69 @@ def _sh(args: list[str], timeout: int = 30) -> dict[str, Any]:
         return {"rc": -1, "out": "", "err": str(e)}
 
 
+#: Every spelling of a platform this system actually writes down, mapped to the
+#: Go/Docker arch token. BOTH dialects reach here and the corpus contains both:
+#: freeze()'s `platform=` argument is a CONDA subdir ("linux-64") and is echoed
+#: verbatim onto every BUILD record, while container_build receives a DOCKER
+#: platform ("linux/amd64") which is what every ADOPT record carries.
+#: Kept in step with freeze._PLATFORM_CANON, which is the set of spellings that can
+#: reach a record's `platform` field — including the darwin/osx ones (a request_key
+#: may name them even though we never ship a darwin image).
+_ARCH_TOKENS = {
+    "linux-64": "amd64", "linux/amd64": "amd64", "amd64": "amd64", "x86_64": "amd64",
+    "osx-64": "amd64", "darwin/amd64": "amd64",
+    "linux-aarch64": "arm64", "linux-arm64": "arm64", "linux/arm64": "arm64",
+    "linux/arm64/v8": "arm64", "arm64": "arm64", "aarch64": "arm64",
+    "osx-arm64": "arm64", "darwin/arm64": "arm64",
+}
+
+
 def target_arch(platform: str) -> str:
-    """linux/amd64 -> amd64 ; linux/arm64 -> arm64. The Go/Docker arch token."""
-    return (platform.split("/")[-1] or "").strip() or "amd64"
+    """linux/amd64 -> amd64 ; linux-aarch64 -> arm64. The Go/Docker arch token.
+
+    Reads BOTH the conda-subdir and docker-platform spellings (see `_ARCH_TOKENS`).
+    It used to be `platform.split("/")[-1]`, which silently handled only the docker
+    form: "linux-aarch64" has no slash, so it parsed to ITSELF and compared unequal
+    to every real architecture — fine while the only consumer was
+    `detect_locus`-vs-daemon on amd64, and wrong the moment anything compared this
+    to an arch read off an image.
+
+    An unrecognized spelling returns "" — NOT the old "amd64" default. A caller
+    comparing architectures must be able to tell "this is amd64" from "I do not know
+    what this string means", and defaulting the unknown case to the commonest answer
+    is how a mismatch check silently passes.
+    """
+    p = (platform or "").strip().lower()
+    return _ARCH_TOKENS.get(p, "")
+
+
+def image_arch(ref: str) -> dict[str, Any]:
+    """What architecture the image at `ref` ACTUALLY is, read from the image itself.
+
+    `daemon_arch()`'s missing sibling, and the observation this whole module was
+    short of: every other architecture fact in the system is derived from the
+    caller's REQUEST (`platform=`), so a record could state its architecture three
+    times — `platform`, `validation_locus`, `image_digest` — without one of them
+    having looked at the artifact.
+
+    Returns {resolved, arch}. The two ways `arch` comes back empty are DIFFERENT
+    facts and this function will not flatten them:
+
+      resolved=False  — the ref does not inspect (image absent from the daemon).
+                        We failed to look; nothing is claimed about the artifact.
+      resolved=True, arch=""
+                      — the ref inspects but names NO architecture, because it is a
+                        MANIFEST LIST / OCI index: a digest addressing a *menu* of
+                        per-arch images rather than one image's bytes. Docker reports
+                        `.Architecture` as "" for these, correctly. This is a finding,
+                        not a gap — see BUILT.platform_pinned in env_honesty.
+    """
+    if not (ref or "").strip():
+        return {"resolved": False, "arch": ""}
+    r = _sh(["docker", "image", "inspect", "--format", "{{.Architecture}}", ref])
+    if r["rc"] != 0:
+        return {"resolved": False, "arch": ""}
+    return {"resolved": True, "arch": r["out"].strip().lower()}
 
 
 def daemon_is_remote() -> bool:

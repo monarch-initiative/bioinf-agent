@@ -55,6 +55,11 @@ from typing import Any, Optional
 # stdlib-pure, which is the price of the contract knowing what a record IS.
 from agent.models import core_data as _core_data
 
+# For BUILT.platform's ONE reading of a platform spelling. locus is a leaf too
+# (stdlib + subprocess), and only its PURE `target_arch` is used here — the contract
+# compares two recorded fields and never talks to Docker itself.
+from agent.skills import locus as _locus
+
 # ---------------------------------------------------------------------------
 # The anti-echo-cheat shape rule (carried from evidence.py / env_manager.verify).
 #
@@ -732,6 +737,87 @@ def evaluate_build(result: dict) -> BuildContract:
         built_seen += 1
     coverage.append(ClauseCoverage("BUILT", ("BUILT",), CHECKED, built_seen,
                                    f"{built_seen}/2 shipped-artifact handle(s) (image, image_digest) resolve"))
+
+    # -- BUILT.platform ---------------------------------------------------
+    # Does the artifact actually HAVE the architecture the record says it shipped?
+    #
+    # `platform` is the caller's REQUEST, echoed onto the record, and until this clause
+    # nothing ever compared it to the artifact. Neither did anything else that looks
+    # like it did: `validation_locus` is `detect_locus(REQUEST)`, i.e. the request
+    # compared against the local daemon — so a record could state its architecture
+    # three times over without one of those statements being an observation. Measured
+    # on a real arm64 freeze (G3 phase 6): `resolve_biocontainer` takes no platform
+    # argument at all, so an arm64 adopt binds bioconda's amd64-only image, and the
+    # refusal that followed named the WRONG CAUSE — "the tool is not provably
+    # present/runnable in what we ship", when samtools is present and fine and the
+    # only thing wrong is that no arm64 build of that image exists.
+    #
+    # THE OBSERVATION IS THE PRODUCER'S; this clause only COMPARES. freeze reads
+    # `.Architecture` off the shipped image and writes `image_arch`; here we hold it
+    # against `platform`. Those are two different fields — one an observation of the
+    # artifact, one the request — so the comparison means something. (Contrast I5's
+    # laundering bug, where an anchor written at seal was compared against itself
+    # moments later.) Re-deriving the arch here would also put a `docker image
+    # inspect` per env inside `list_installed_pipelines`, which re-earns every
+    # record's contract on every call.
+    recorded_arch = _locus.target_arch(result.get("platform") or "")
+    observed = result.get("image_arch")
+    if observed is None:
+        # Three-state, like every other clause here: a record written before freeze
+        # captured this proves nothing about its architecture either way, and saying
+        # so is not the same as failing it. Re-earned by a re-freeze, never a backfill
+        # ([[feedback-existing-installs-not-precious]]).
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), UNOBSERVED, 0,
+            f"no image_arch recorded — nothing read the architecture off the shipped "
+            f"image, so `platform: {result.get('platform') or '?'}` is the request "
+            f"repeated back rather than a fact about the artifact"))
+    elif not observed:
+        # NOT "we could not tell". An empty `.Architecture` on an image that inspects
+        # fine means the digest resolves to a MANIFEST LIST / OCI index — a menu of
+        # per-arch images, not one image's bytes. `multiqc` in this corpus pins one:
+        # a single digest serving an amd64 child and an arm64 child, recorded as
+        # `platform: linux/amd64`. Two machines pulling that digest ship different
+        # binaries, which is the one thing a content-addressed artifact may not do.
+        violations.append({
+            "invariant": "BUILT.platform_pinned", "where": "image_digest",
+            "message": "the recorded image_digest names no architecture — it resolves to a "
+                       "manifest list / OCI index, which addresses a MENU of per-arch images "
+                       "rather than one image's bytes, so two machines pulling this digest can "
+                       "ship different binaries. Record the per-architecture child digest for "
+                       "the platform actually validated (docker manifest inspect <ref> lists "
+                       "them) instead of the index digest."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            "the recorded digest resolves to a manifest index, so it names no architecture"))
+    elif recorded_arch and observed != recorded_arch:
+        violations.append({
+            "invariant": "BUILT.platform_matches", "where": "platform",
+            "message": f"record claims platform '{result.get('platform')}' ({recorded_arch}) but the "
+                       f"shipped image is {observed} — the artifact does not have the architecture "
+                       f"this record advertises, and an HPC target that honours it will get bytes it "
+                       f"cannot run. On the adopt path this is the usual shape: bioconda publishes "
+                       f"linux-64 biocontainers only, so an arm64 request binds an amd64 image. Ask "
+                       f"for the architecture the artifact really is, or take the container-native "
+                       f"build path, which builds FOR the requested platform and does produce a "
+                       f"genuine arm64 image."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image is {observed}; the record claims {recorded_arch}"))
+    elif not recorded_arch:
+        violations.append({
+            "invariant": "BUILT.platform_matches", "where": "platform",
+            "message": f"the shipped image is {observed}, but the record's platform "
+                       f"'{result.get('platform')}' is not a spelling this system recognises "
+                       f"(agent/skills/locus.py:_ARCH_TOKENS), so the claim cannot be checked "
+                       f"against the artifact at all."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image is {observed}; the recorded platform is unreadable"))
+    else:
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image really is {observed}, the architecture the record claims"))
 
     # -- VALIDATED_IN_IMAGE ----------------------------------------------
     # Every declared tool's evidence must (a) have a non-cheat shape and (b) have

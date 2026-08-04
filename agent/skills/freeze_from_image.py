@@ -336,9 +336,16 @@ def freeze_from_image(
     rkey = request_key or f"{primary}={version or (digest.split(':')[-1][:12])}|{platform}|none"
     mode = "adopt" if build_method == "adopt-image" else "build"
     from agent.skills import freeze as _freeze
+    from agent.skills import locus as _locus
+    # The authors' own image is the path most likely to be MULTI-ARCH — publishers
+    # push an index, not a per-arch tag — and an index digest names no architecture
+    # at all. Observing it here is what lets BUILT.platform say so instead of the
+    # record carrying `platform: linux/amd64` over a digest that serves both.
+    _arch = _locus.image_arch(image)
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=digest, mode=mode,
-        image=image, image_digest=digest, platform=platform, gated=gated)
+        image=image, image_digest=digest, platform=platform, gated=gated,
+        image_arch=_arch["arch"] if _arch["resolved"] else None)
     record["name"] = name
     record["version"] = version
     record["build_method"] = build_method

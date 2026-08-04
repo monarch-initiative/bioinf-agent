@@ -3204,10 +3204,24 @@ def test_envbuild_run_uses_check_build_as_the_gate(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_locus_target_arch_parsing():
+    """Both dialects, because the corpus contains both: freeze()'s `platform=` is a
+    CONDA subdir and every BUILD record carries it, while container_build receives a
+    DOCKER platform and every ADOPT record carries that.
+
+    The unknown case returns "" and NOT the former "amd64 — sane default". That default
+    was safe while the only consumer was detect_locus-vs-daemon, and became unsafe as
+    soon as BUILT.platform compared this to an arch read off an image: a comparison that
+    cannot tell "this is amd64" from "I cannot read this string" passes silently for
+    every unparseable platform. It also stops an empty platform earning `locus: native`
+    (and with it `i7_authoritative: True`) on an amd64 host purely by defaulting into
+    agreement — unknown now lands on `emulated`, the conservative side.
+    """
     from agent.skills import locus
     assert locus.target_arch("linux/amd64") == "amd64"
     assert locus.target_arch("linux/arm64") == "arm64"
-    assert locus.target_arch("") == "amd64"  # sane default
+    assert locus.target_arch("linux-64") == "amd64"
+    assert locus.target_arch("linux-aarch64") == "arm64"
+    assert locus.target_arch("") == ""
 
 
 def test_locus_native_when_daemon_matches_target(monkeypatch):
