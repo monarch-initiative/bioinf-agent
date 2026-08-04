@@ -1328,7 +1328,15 @@ def unchecked_tiers(availability: dict[str, dict]) -> dict[str, str]:
 #: value — and the corpus leaves those rows unassertable rather than demand a settled reason
 #: for an unsettled investigation.
 REFUSAL_REASONS = ("needs_user_input", "investigation_empty",
-                   "investigation_contradicted", "investigation_incomplete")
+                   "investigation_contradicted", "investigation_incomplete",
+                   # The first value that describes THE WORLD rather than our
+                   # investigation. The other four all say something about how far WE got
+                   # looking; this one says what the artifact IS. That asymmetry was a
+                   # named gap (G3 phase 1): a resolver whose whole refusal vocabulary is
+                   # self-referential can report a completed, uncontradicted, fully-probed
+                   # investigation and still have no way to say "the thing you named is
+                   # not the kind of thing that installs".
+                   "artifact_is_a_workflow")
 
 
 def _classify_refusal(decision: dict) -> str:
@@ -1343,13 +1351,20 @@ def _classify_refusal(decision: dict) -> str:
        contradiction found on tier X does not make an UNREACHED tier Y known-absent; the
        answer is still unsettled. It matches the resolve() body, which stamps exactly this
        case 'NOT A REFUSAL — UNRESOLVED' rather than 'nothing found'.
-    2. CONTRADICTED. A same-name registry hit was disqualified because its metadata does not
+    2. ARTIFACT_IS_A_WORKFLOW. The repo declares itself a Nextflow/Snakemake workflow and
+       carries nothing installable (`workflow_repo`). Ranked below UNREACHABLE for the same
+       reason everything else is — a pipeline repo can also be packaged, so an unreached
+       registry probe still leaves that open — but above the three below, because those all
+       describe how far we got and this one describes what the thing IS. Telling a caller
+       "we found nothing" about a repo whose own manifest names it a pipeline is a true
+       sentence that teaches the wrong lesson.
+    3. CONTRADICTED. A same-name registry hit was disqualified because its metadata does not
        reference the caller's authoritative repo (`cross_namespace_collisions`) — positive
        contrary evidence, stronger than a bare empty.
-    3. NEEDS_USER_INPUT. Discovery surfaced candidate repos but none dominant enough to
+    4. NEEDS_USER_INPUT. Discovery surfaced candidate repos but none dominant enough to
        auto-adopt (`discovered_repos`); the collision risk means we refuse to guess and ask
        the user to confirm one.
-    4. EMPTY. Every reachable tier answered AND discovery reached and found nothing — the one
+    5. EMPTY. Every reachable tier answered AND discovery reached and found nothing — the one
        genuine dead end.
     """
     if (decision.get("unchecked_tiers") or decision.get("discovery_error")
@@ -1358,6 +1373,8 @@ def _classify_refusal(decision: dict) -> str:
         # we could NOT reach (rate-limit / >100-release pagination): the version might exist
         # there, so the investigation did not COMPLETE — not a settled contradiction.
         return "investigation_incomplete"
+    if decision.get("workflow_repo"):
+        return "artifact_is_a_workflow"
     if (decision.get("cross_namespace_collisions") or decision.get("version_absent")
             or decision.get("declared_repo_contradiction")):
         # contrary evidence: a same-name hit that isn't the tool, a requested version the
@@ -1404,8 +1421,18 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
                 + (f" (available: {', '.join(available)})" if available else ""))
 
     if chosen is None:
-        rationale = ("no registry/repo tier found — pass a github_repo (or repo/archive URL) "
-                     "to unlock synthesis (the universal agent-read path), else manual")
+        # "pass a github_repo to unlock synthesis" is only true advice when the repo tiers
+        # were never walked. A workflow repo reaches this branch with synthesis PRESENT and
+        # deliberately unavailable, so the stock sentence would invite the caller to re-run
+        # the one route the decision just ruled out — advice aimed at the wrong problem,
+        # which the rate-limit hint above already establishes is worse than none.
+        _wf = (availability.get("synthesis") or {}).get("workflow_repo")
+        rationale = (
+            "no INSTALL tier applies: the repo is a workflow, not a tool — synthesis and "
+            "source were withheld deliberately, not found missing"
+            if _wf else
+            "no registry/repo tier found — pass a github_repo (or repo/archive URL) "
+            "to unlock synthesis (the universal agent-read path), else manual")
         if prefer_ignored_reason:
             rationale = f"{prefer_ignored_reason}. {rationale}"
         return {"chosen": None, "available": [], "alternatives": [],
@@ -1743,10 +1770,12 @@ def resolve(
                        f"because it shares its name — so the authors' path was NOT "
                        f"assessed, and nothing here says they publish no image or recipe.")}
     eff_repo = ev.get("repo", "") if ev.get("anchored") else ""
+    authors_assessment: dict = {}
     if eff_repo and "/" in eff_repo and probe_authors_sources is not None:
         try:
             owner, rp = eff_repo.split("/", 1)
             assessment = probe_authors_sources(tool, owner=owner, repo=rp, timeout=timeout)
+            authors_assessment = assessment or {}
             availability["author_image"] = {
                 "available": bool(assessment.get("author_image")),
                 "assessment": assessment, "repo": eff_repo,
@@ -1768,6 +1797,28 @@ def resolve(
             availability["authors_gate_error"] = {
                 "available": False, "repo": eff_repo,
                 "error": f"{type(e).__name__}: {e}"}
+
+    # A WORKFLOW REPO HAS NO BUILD TO SYNTHESIZE.
+    #
+    # `synthesis` and `source` are the only two tiers whose availability test is, verbatim,
+    # "does the repo exist" (see where they are set above). For everything with a real build
+    # that is a fine default — the agent reads the repo's own files and grounds an install in
+    # them. For a repo whose own manifest says it is a PIPELINE it is a category error, and
+    # it is not a quiet one: `synth_fetch("https://github.com/nf-core/rnaseq")` returns
+    # `outcome: proven` over a 41k-char corpus of nine CI workflows (top-ranked "most
+    # authoritative recipe": the check that PRs target `dev`), a `pyproject.toml` holding
+    # `[tool.black] line-length = 120`, and two READMEs. main.nf and nextflow.config are not
+    # in it. The agent is handed the pipeline's release-announcement tweet and asked how the
+    # pipeline installs.
+    #
+    # `workflow_only` is read, never re-derived — assess_tool_sources computes it beside the
+    # manifest it depends on, so the "is this installable" judgement has exactly one author.
+    if authors_assessment.get("workflow_only"):
+        wf_manifest = authors_assessment.get("workflow_manifest") or {}
+        for _t in ("synthesis", "source"):
+            if _t in availability:
+                availability[_t] = {**availability[_t], "available": False,
+                                    "workflow_repo": wf_manifest}
 
     # PROTECTIVE: cross-namespace name-collision guard. When `github_repo` is
     # provided, the user is signaling authoritative intent ("THIS repo is what I
@@ -1927,7 +1978,12 @@ def resolve(
                 f"search, none dominant enough to auto-adopt. Recommended: {rec['repo']} "
                 f"({rec['stars']}★{', exact-name' if rec['exact_name_match'] else ''}). "
                 f"Confirm with github_repo='{rec['repo']}' (or pick another from "
-                f"discovered_repos) to install via synthesis.")
+                # NOT "to install via synthesis". Nothing has read that repo yet — the
+                # authors' assessment only runs once a repo is ANCHORED — so naming the
+                # landing tier here promises an outcome we have not investigated. For a
+                # pipeline repo the honest landing is a refusal, and this sentence used to
+                # advertise the exact route that refusal exists to withhold.
+                f"discovered_repos) to route against that repo.")
 
     ambiguous = _is_ambiguous(availability, language)
     chosen = decision["chosen"]
@@ -2151,6 +2207,10 @@ def resolve(
     decision["identity"] = None
     decision["install_call"] = None
     decision["refusal_reason"] = None
+    # WHAT THE REPO SAYS IT IS. Stated on every decision, None included, for the reason the
+    # paragraph above gives — and stated BEFORE _classify_refusal, which reads it.
+    decision["workflow_repo"] = (authors_assessment.get("workflow_manifest")
+                                 if authors_assessment.get("workflow_only") else None)
     if chosen:
         # FACTS, not a verdict. The resolver surfaces the entry's self-description +
         # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
@@ -2201,6 +2261,68 @@ def resolve(
                           f"from them — this is the best answer among the tiers we could "
                           f"REACH, which is a different claim. {retry}",
                           "a higher-ranked tier was NOT ruled out, only unreachable")
+
+    # A WORKFLOW IS NOT A TOOL, AND SAYING SO IS THE WHOLE ANSWER.
+    #
+    # Disclosed whether or not we refused: a pipeline that ALSO has a registry entry gets a
+    # real install_call, and the caller still needs to know the repo they named is a
+    # pipeline. The note carries three things, and the third is the one that keeps the next
+    # agent from "fixing" this by wiring up the obvious route:
+    #   1. what it is, in its own manifest's words;
+    #   2. that the ENGINE is the installable part, and resolves cleanly today;
+    #   3. why we do not just freeze the engine and call the pipeline validated. `nextflow
+    #      run` spawns a container PER PROCESS, none of which this system froze, pinned or
+    #      validated. Sealing that would set `validated_in_shipped_image` on the launcher
+    #      while STAR and salmon ran in images nobody here ever looked at — green about the
+    #      thing that did no work, silent about everything that did. That is precisely the
+    #      false green the two-layer contract exists to prevent, so the honest landing is to
+    #      name the shape of the gap rather than paper it.
+    if decision.get("workflow_repo"):
+        _wf = decision["workflow_repo"]
+        _dec = _wf.get("declares") or {}
+        _eng = _wf.get("engine") or "workflow"
+        _needs = _dec.get("nextflowVersion")
+        # THE MANIFEST WAS READ AT HEAD, AND THE PIN IS THE CALLER'S.
+        #
+        # assess_tool_sources walks `ref="HEAD"` — deliberately, because a tag guessed wrong
+        # ('3.14.0' vs 'v3.14.0') 404s and loses the DETECTION, which matters more than the
+        # figure. But that makes the manifest's `version` an observation of the DEFAULT
+        # BRANCH, and the first cut of this message spent it as the `-r` operand: a caller
+        # who asked for 3.14.0 was handed `nextflow run nf-core/rnaseq -r 3.26.0`. That is
+        # the somalier 0.2.15→v0.3.3 class — latest wearing the requested version's name —
+        # reproduced in the message announcing that we caught a wrong answer. The revision
+        # to run is what the CALLER pinned; HEAD's figure is labelled as HEAD's.
+        _head_ver = _dec.get("version")
+        _run_rev = version or _head_ver
+        _self = " ".join(x for x in (_dec.get("name"), _head_ver) if x)
+        if _self and _head_ver:
+            _self += " on its default branch"
+        # A CONCRETE COMMAND ONLY WHERE WE CAN GROUND ONE. `nextflow run <name> -r <rev>` is
+        # the form nf-core's own README uses and the manifest hands us both operands. There
+        # is no equally canonical one-liner for Snakemake (--snakefile / --deploy-sources /
+        # a clone, depending on version and layout), so we say the SHAPE and stop. Emitting
+        # `snakemake run <repo>` — which is not a real invocation — would be the confident-
+        # wrong output the rest of this file exists to prevent, in the message announcing
+        # that we caught a confident-wrong output.
+        _howto = (f"`nextflow run {_dec.get('name') or github_repo or tool}"
+                  + (f" -r {_run_rev}" if _run_rev else "") + "`"
+                  if _eng == "nextflow" else
+                  f"the {_eng} CLI against a pinned revision of {github_repo or tool} — "
+                  f"see the repo's own README for the exact invocation")
+        _disclose(decision,
+                  f"THIS IS A {_eng.upper()} WORKFLOW, NOT AN INSTALLABLE TOOL — "
+                  + (f"the repo's own manifest calls it {_self}" if _self
+                     else f"the repo ships {', '.join(_wf.get('paths') or [])}")
+                  + " and carries no Dockerfile, env-spec or build script. A pipeline is RUN "
+                    f"by an engine, not installed: {_howto}. The INSTALLABLE part is the "
+                    f"engine — resolve_tool('{_eng.split('/')[0]}')"
+                  + (f", which this pipeline pins at '{_needs}'" if _needs else "")
+                  + ". Note what that does NOT buy you: the engine runs each step in its OWN "
+                    "environment, none of which this system freezes, pins or validates, so "
+                    "freezing the engine and sealing the run would mark the launcher "
+                    "validated-in-shipped-image while every tool that did the work ran "
+                    "somewhere we never looked.",
+                  "no install_call is emitted for a pipeline — the engine is the tool")
 
     # A BROKEN RELIABILITY GATE MUST REACH THE CALLER, not sit in `probed`.
     # `authors_gate_error` was recorded and then consumed by nobody: resolve() went on to

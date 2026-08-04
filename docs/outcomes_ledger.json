@@ -5695,8 +5695,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_default_probe_ghcr_image",
-    "where": "agent/skills/authors_sources.py:232",
-    "end_line": 232,
+    "where": "agent/skills/authors_sources.py:279",
+    "end_line": 279,
     "named_in_test": null
   },
   {
@@ -5705,8 +5705,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_default_probe_ghcr_image",
-    "where": "agent/skills/authors_sources.py:253",
-    "end_line": 253,
+    "where": "agent/skills/authors_sources.py:300",
+    "end_line": 300,
     "named_in_test": null
   },
   {

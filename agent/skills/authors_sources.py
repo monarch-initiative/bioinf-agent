@@ -41,6 +41,25 @@ _ENV_SPECS = ("environment.yml", "environment.yaml", "conda-lock.yml", "spack.ya
               "renv.lock")
 _BUILD_SCRIPTS = ("install.sh", "setup.sh", "build.sh", "Makefile", "makefile")
 
+# A repo can declare itself a WORKFLOW rather than a tool: an orchestrated graph of OTHER
+# tools, RUN by an engine, not installed. These are the files that say so — and the walk
+# above checked sixteen filenames without one of them, so nf-core/rnaseq (which ships no
+# Dockerfile, no environment.yml and no Makefile) came back "no recipe in the repo" and
+# fell through to the synthesis tier, whose only test is that the repo exists. The corpus
+# synthesis then handed the agent contained the pipeline's release-announcement TWEET
+# workflow and Black's line-length, and did NOT contain main.nf. Every signal saying "I am
+# a pipeline" was on the wire; nothing read one.
+_WORKFLOW_MANIFESTS = (
+    ("nextflow",  "nextflow.config"),
+    ("nextflow",  "main.nf"),
+    ("snakemake", "Snakefile"),
+    ("snakemake", "workflow/Snakefile"),
+)
+#: Of those, the only one carrying a DECLARATION worth parsing. The rest are presence.
+_WORKFLOW_MANIFEST_TEXT = {"nextflow.config"}
+#: The manifest keys we read. Four, named — not "whatever looks like a key".
+_NF_MANIFEST_KEYS = ("name", "version", "nextflowVersion", "description")
+
 # apt/yum/apk packages that are benign runtime plumbing — installing ONLY these is not
 # a "system dependency the reconstruction misses" signal.
 _BENIGN_SYSTEM_PKGS = {
@@ -149,6 +168,34 @@ def analyze_recipe_completeness(text: str, *, kind: str = "dockerfile",
         summary = (f"the authors' {kind} installs pieces a registry reconstruction would "
                    f"DROP ({', '.join(kinds)}) — follow the authors' recipe, don't reconstruct")
     return {"reconstruction_safe": safe, "signals": uniq, "summary": summary}
+
+
+def parse_nextflow_manifest(text: str) -> dict[str, str]:
+    """The `manifest { … }` block of a nextflow.config, flattened to the keys we name.
+
+    Deliberately NARROW, for the `_first_line` reason: a nextflow.config is Groovy, and a
+    regex clever enough to cover the general case is a regex confident enough to return
+    some OTHER block's `version` under the pipeline's name — the bcftools-reporting-
+    htslib's-version defect, re-run on a config file. So: only inside the manifest block,
+    only the four keys in `_NF_MANIFEST_KEYS`, only `key = 'quoted'`.
+
+    Unparseable ⇒ `{}`. That is not a loss: the load-bearing fact is the file's PRESENCE,
+    which the caller already has, and an absent declaration is honest where a guessed one
+    would not be.
+    """
+    m = re.search(r"\bmanifest\s*\{", text or "")
+    if not m:
+        return {}
+    block = (text or "")[m.end():]
+    end = block.find("}")            # nf-core manifest blocks do not nest
+    if end != -1:
+        block = block[:end]
+    out: dict[str, str] = {}
+    for key in _NF_MANIFEST_KEYS:
+        km = re.search(rf"^\s*{key}\s*=\s*['\"]([^'\"]*)['\"]", block, re.M)
+        if km and km.group(1).strip():
+            out[key] = km.group(1).strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +318,7 @@ def discover_authors_sources(
     the same discipline that keeps the real resolve→assess path under test."""
     probe_image = probe_image or _default_probe_ghcr_image
     out: dict[str, Any] = {"container_recipes": [], "env_specs": [],
-                           "build_scripts": [], "author_image": None}
+                           "build_scripts": [], "workflow_files": [], "author_image": None}
     if not owner or not repo:
         return out
 
@@ -290,6 +337,15 @@ def discover_authors_sources(
     for fn in _BUILD_SCRIPTS:
         if raw(fn) is not None:
             out["build_scripts"].append({"path": fn})
+    # workflow manifests — WHAT this repo is, which none of the three walks above ask.
+    for engine, fn in _WORKFLOW_MANIFESTS:
+        txt = raw(fn)
+        if txt is None:
+            continue
+        entry: dict[str, Any] = {"engine": engine, "path": fn}
+        if fn in _WORKFLOW_MANIFEST_TEXT:
+            entry["declares"] = parse_nextflow_manifest(txt)
+        out["workflow_files"].append(entry)
 
     # author-published image: ask the REGISTRY whether we can pull it, anonymously.
     # A publicly pullable ghcr image under the repo's own owner, named for the repo, is a
@@ -340,11 +396,18 @@ def assess_tool_sources(
             signals: [...], summary: str } | None,
         env_specs: [...], build_scripts: [...],
         reconstruction_incomplete: bool,         # THE gate: True => prefer authors' path
+        workflow_manifest: {engine, paths, declares} | None,
+        workflow_only: bool,                     # THE OTHER gate: True => not installable
         recommendation: str,
       }
     reconstruction_incomplete is True iff a container recipe carries a strong signal.
     When False, the authors ship nothing conda/pip would miss → the registry route
-    stays preferred (conda keeps winning for cleanly-packaged tools)."""
+    stays preferred (conda keeps winning for cleanly-packaged tools).
+
+    workflow_only answers a DIFFERENT question — not "how do we install this" but "is
+    this an installable thing at all". True means the repo declares itself a Nextflow /
+    Snakemake workflow and carries nothing installable, so the install tiers have nothing
+    to work with and the honest answer names the engine instead."""
     get_text = get_text or functools.partial(_default_get_text, timeout=timeout)
     get_json = get_json or functools.partial(_default_get_json, timeout=timeout)
     probe_image = probe_image or functools.partial(_default_probe_ghcr_image, timeout=timeout)
@@ -371,7 +434,45 @@ def assess_tool_sources(
     image_error = src.get("author_image_error")
     incomplete = bool(authors_recipe and not authors_recipe["reconstruction_safe"])
 
-    if author_image:
+    # IS THIS A TOOL AT ALL? Every check above asks "how would we install this"; none
+    # asks "is this an installable thing". A workflow repo is a graph of OTHER tools, run
+    # by an engine — `nextflow run nf-core/rnaseq -r 3.14.0`, not `install`. The two
+    # verdicts are computed HERE, together, so the router never re-derives either: a
+    # second reading of "is this workflow-only" is precisely the drift
+    # tests/test_one_reading_per_field.py exists to stop.
+    wf_files = src.get("workflow_files") or []
+    workflow_manifest = None
+    if wf_files:
+        engines: list[str] = []
+        declares: dict[str, str] = {}
+        for f in wf_files:
+            if f.get("engine") and f["engine"] not in engines:
+                engines.append(f["engine"])
+            declares.update(f.get("declares") or {})
+        workflow_manifest = {
+            # ONE field, joined, rather than a singular plus a list — a repo carrying both
+            # a Snakefile and a nextflow.config reads "nextflow/snakemake" and no consumer
+            # has to decide which of two fields is authoritative.
+            "engine": "/".join(engines),
+            "paths": [f.get("path", "") for f in wf_files],
+            "declares": declares,
+        }
+    # WORKFLOW-ONLY, not merely workflow-ISH. A repo may legitimately be both (a tool that
+    # ships a Snakefile for its own CI, say), and for that one the install tiers are right.
+    # The gate is: the repo declares itself a workflow AND carries nothing installable.
+    workflow_only = bool(workflow_manifest and not (
+        src.get("container_recipes") or src.get("env_specs") or src.get("build_scripts")))
+
+    if workflow_only:
+        _d = workflow_manifest["declares"]
+        _named = " ".join(x for x in (_d.get("name"), _d.get("version")) if x)
+        rec_txt = (f"THIS REPO IS A {workflow_manifest['engine'].upper()} WORKFLOW, NOT AN "
+                   f"INSTALLABLE TOOL"
+                   + (f" — it declares itself {_named}" if _named else "")
+                   + f" ({', '.join(workflow_manifest['paths'])}, and no Dockerfile, "
+                     f"env-spec or build script). It is RUN by an engine against a pinned "
+                     f"revision; there is nothing here to install")
+    elif author_image:
         rec_txt = (f"the authors publish an image ({author_image['ref']}) — adopt it by "
                    "digest (highest fidelity, lowest cost)")
     elif incomplete:
@@ -409,6 +510,8 @@ def assess_tool_sources(
         "env_specs": src.get("env_specs", []),
         "build_scripts": src.get("build_scripts", []),
         "reconstruction_incomplete": incomplete,
+        "workflow_manifest": workflow_manifest,
+        "workflow_only": workflow_only,
         "recommendation": rec_txt,
     }
     if image_error:
