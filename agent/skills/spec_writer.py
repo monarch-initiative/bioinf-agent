@@ -222,7 +222,23 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
 
     name = wf.workflow_name
     yaml_path = out_dir / f"{name}.workflow.yaml"
-    data = wf.model_dump(exclude_none=True)
+    # NOT `exclude_none=True`. That made this function a one-way door: the dict
+    # validated on the way IN, then every None was stripped on the way OUT, so a
+    # model field that is REQUIRED-but-nullable came back MISSING and
+    # `load_workflow_spec` — which advertises itself as the exact inverse of this
+    # function — refused the very spec this function had just written.
+    #
+    # Caught by sealing the first workflow to carry a directory content-anchor:
+    # `core_data_dir: {kind: directory, sha256: None, size_bytes: None}` landed on
+    # disk as `{kind: directory}`, and `describe_sealed_step` then rejected a
+    # freshly-sealed, fully-validated workflow. Nothing was wrong with the run —
+    # only with the spelling on disk.
+    #
+    # The typed-record rule this broke is the repo's own (see CLAUDE.md, the
+    # typed-record seam): every field required, `None` a value a producer must
+    # STATE. `exclude_none` un-states it. Explicit `null`s cost some YAML noise and
+    # buy a spec that round-trips, which is the whole point of a sealed artifact.
+    data = wf.model_dump()
     data.pop("user_guide", None)        # retired markdown guide — never persist it
     data.pop("user_guide_path", None)
     yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
