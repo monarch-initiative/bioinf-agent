@@ -251,6 +251,29 @@ class TestRenderRefusal:
         assert "error" in result and "ValueError" in result["error"]
         assert "undeclared" in result["error"]
         assert called == []
+        # `refused`, not `broke`: the agent branches on this class, and `broke`
+        # means "likely rebuild" — the wrong advice for a mistyped command.
+        assert result["outcome"] == "refused", result
+        assert result["code"] == "submit_workflow.refused", result
+
+    @pytest.mark.integration
+    def test_command_the_renderer_cannot_carry_is_refused_before_any_ssh(
+            self, tmp_path, monkeypatch):
+        """A single quote used to render silently and reach the compute node as a
+        different command (the quote closes main.nf's `bash -c '…'` argument).
+        It is now refused here, with nothing sent over the wire."""
+        access_path = _good_access(tmp_path)
+        called = []
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: called.append(a) or MagicMock())
+        result = submit_workflow.submit_workflow_job(
+            **{**_DEMO_KW,
+               "command": "samtools view ${input_bam} | tr -d \"'\" > ${output_bam}",
+               "access_path": str(access_path)})
+        assert result["outcome"] == "refused", result
+        assert result["code"] == "submit_workflow.refused", result
+        assert "single quote" in result["error"]
+        assert called == []
 
     @pytest.mark.integration
     def test_slurm_typo_refused_no_ssh(self, tmp_path, monkeypatch):

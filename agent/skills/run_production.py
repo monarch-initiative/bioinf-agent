@@ -49,7 +49,16 @@ def _render_local_command(command: str,
                           outputs: Mapping[str, str]) -> str:
     """Substitute every ${PLACEHOLDER} with its shell-quoted value, held to the
     exact contract the cluster path enforces: every placeholder declared (I6),
-    inputs ABSOLUTE, outputs BARE filenames written into workflow_dir."""
+    inputs ABSOLUTE, outputs BARE filenames written into workflow_dir.
+
+    One place the two loci deliberately DIVERGE: the command's own content. Here
+    the substituted command is shell-quoted once into `run.sh`, so quotes,
+    backslashes and bare `$VAR` arrive at docker intact and are accepted. The
+    cluster path refuses all three, because main.nf wraps the command in a Groovy
+    interpolated string that silently rewrites them
+    (`workflow_render._check_command_renders_faithfully`). That is a real
+    difference in what each locus can carry faithfully, not an oversight on
+    either side — do not "reconcile" them by loosening the cluster check."""
     subs = {**dict(inputs or {}), **dict(outputs or {})}
 
     undeclared = sorted(p for p in set(_PLACEHOLDER_RE.findall(command or ""))
@@ -500,7 +509,14 @@ def run_production_pipeline(project_name: str,
             f"run_production_pipeline supports 'local' and 'ssh'")
 
     except (ValueError, compute_access.PermissionDenied,
-            compute_access.ConfigError, FileNotFoundError, KeyError) as e:
+            compute_access.ConfigError) as e:
+        # Same split, same reason as submit_workflow_job's handler: a gate saying
+        # no before anything is written is `refused` (fix the call and retry),
+        # not `broke` (rebuild). This matters most HERE — run_production_pipeline
+        # is the front door, so it is where a misclassified refusal costs the
+        # most wasted work.
+        return refused("run_production.refused", error=f"{type(e).__name__}: {e}")
+    except (FileNotFoundError, KeyError) as e:
         return broke("run_production.failed", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
         return broke("run_production.timeout",

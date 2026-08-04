@@ -258,6 +258,13 @@ class TestLocalAuthWall:
             access_path=ap, _env_cache=_FakeCache(record=_REC),
             _job_manager=_FakeJobManager())
         assert "error" in r and "not authorized" in r["error"]
+        # A permission gate saying no is a REFUSAL, not a break. The class is a
+        # runtime affordance the agent branches on (outcomes.py: `refused` → fix
+        # inputs and retry, `broke` → likely rebuild), so reporting an
+        # unauthorized dir as `broke` sends it off rebuilding an env that was
+        # never the problem. This handler used to do exactly that.
+        assert r["outcome"] == "refused", r
+        assert r["code"] == "run_production.refused", r
 
     @pytest.mark.integration
     def test_missing_workflow_dir_refused(self, tmp_path, monkeypatch):
