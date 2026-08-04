@@ -322,7 +322,14 @@ def submit_workflow_job(project_name: str,
       tool_name          safe-token; identifies the tool in
                          process_name + comments.
       command            single-line shell command with `${name}`
-                         placeholders bound to inputs/outputs.
+                         placeholders bound to inputs/outputs. Every `$`
+                         must open a declared placeholder, and single
+                         quotes / backslashes / triple-double-quotes are
+                         REFUSED: main.nf would rewrite them in transit
+                         and the cluster would run a different command.
+                         Put awk/sed programs in a script baked into the
+                         image (see workflow_render
+                         `_check_command_renders_faithfully`).
       inputs             {placeholder_name: remote_abs_path} — what
                          the running process will read.
       outputs            {placeholder_name: bare_filename} — what the
@@ -399,6 +406,14 @@ def run_production_pipeline(project_name: str,
     Inputs:
       command            single-line shell command with ${PLACEHOLDER} slots —
                          the SAME syntax on both loci (one command, swap the env).
+                         The CLUSTER branch is stricter about the command's
+                         CONTENT: every `$` must open a declared placeholder, and
+                         single quotes / backslashes / triple-double-quotes are
+                         refused because main.nf's Groovy script block would
+                         rewrite them. The local branch accepts them (it shell-
+                         quotes straight into run.sh, no Groovy in between), so a
+                         command that runs locally may still be refused on ssh —
+                         keep it inside the cluster subset to stay portable.
       inputs             {PLACEHOLDER: absolute_path} — a real path on the
                          compute env. Every ${placeholder} must be declared.
       outputs            {PLACEHOLDER: bare_filename} — written into workflow_dir
@@ -536,6 +551,14 @@ def run_step_on_cluster(pipeline_id: str,
           a sealed WorkflowSpec with cluster-locus evidence
       (b) Call again with a different command — multi-step workflows
       (c) `discard_pipeline_draft(pipeline_id)` — run-and-go
+
+    `command`: single-line, with `${name}` placeholders bound to
+    inputs/outputs. Every `$` must open a declared placeholder, and single
+    quotes / backslashes / triple-double-quotes are REFUSED before any ssh —
+    main.nf's Groovy script block would rewrite them and the compute node
+    would run a different command (see workflow_render
+    `_check_command_renders_faithfully`). Put awk/sed programs in a script
+    baked into the image, where they become part of the frozen artifact.
 
     INPUT SEMANTICS — read this (differs from run_step_in_container):
     `inputs` values are REMOTE absolute paths that must ALREADY EXIST on

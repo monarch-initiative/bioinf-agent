@@ -484,7 +484,28 @@ def submit_workflow_job(project_name: str,
         )
 
     except (ValueError, compute_access.PermissionDenied,
-            compute_access.ConfigError, FileNotFoundError, KeyError) as e:
+            compute_access.ConfigError) as e:
+        # A gate said no before anything was written, so this is a REFUSAL, not a
+        # break. The distinction is a runtime affordance the agent branches on
+        # (outcomes.py: `refused` → fix inputs and retry; `broke` → likely
+        # rebuild), and lumping the two together actively misdirects: a mistyped
+        # command or a missing `directories[]` grant would tell the agent to go
+        # rebuild an env that was never the problem. Split out when
+        # workflow_render started refusing commands it cannot render faithfully
+        # and made this path a routine one.
+        return refused("submit_workflow.refused", error=f"{type(e).__name__}: {e}")
+    except (FileNotFoundError, KeyError) as e:
+        # Left as `broke` deliberately: a missing file or an absent key here is
+        # not a gate deciding anything, it is the code finding the world other
+        # than it assumed. Retrying with different inputs is not the fix.
+        #
+        # KNOWN DIVERGENCE, stated rather than left to be discovered: the four
+        # sibling handlers (stage_apptainer, cluster_modules, cluster_jobs ×2)
+        # fold FileNotFoundError/KeyError into their `refused` clause. They are
+        # query-shaped primitives where a missing file really does mean "you
+        # named the wrong one", so it has not misled anyone there. Not chased
+        # here — but if one of them ever reports a genuine bug as `refused`,
+        # this is the split to copy.
         return broke("submit_workflow.failed", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
         return broke("submit_workflow.sbatch_timeout", error=f"sbatch timed out after {e.timeout}s")

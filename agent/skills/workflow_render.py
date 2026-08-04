@@ -28,7 +28,12 @@ Input shape — `WorkflowSpec` namedtuple-ish dict
                   sbatch --job-name. Safe-token (alnum + `_-`).
   command         literal shell command with `${param}` placeholders.
                   e.g. `samtools view -b -h -F 4 ${input_bam} > ${output_bam}`.
-                  Placeholders MUST match keys in `inputs` ∪ `outputs`.
+                  Placeholders MUST match keys in `inputs` ∪ `outputs`, and
+                  every `$` in the command must open one of them. Single
+                  quotes, backslashes and a triple-double-quote are REFUSED —
+                  main.nf would rewrite them in transit and run something else
+                  on the cluster; see `_check_command_renders_faithfully` for
+                  the measurement and the workaround.
   inputs          {placeholder_name: remote_abs_path}. The remote path
                   is what the running process will see — the renderer
                   does NOT compute container paths; main.nf uses the
@@ -103,6 +108,85 @@ def _scan_placeholders(command: str) -> set[str]:
     """Find every `${name}` placeholder in `command`. Returns the set
     of names — the renderer cross-checks against `inputs ∪ outputs`."""
     return set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", command))
+
+
+def _check_command_renders_faithfully(command: str, declared: set[str]) -> None:
+    """Refuse a command whose rendered form would not BE the command that
+    was authored.
+
+    main.nf carries the command through two layers that both rewrite text: a
+    Groovy TRIPLE-DOUBLE-QUOTED string (the `script:` block, which does escape
+    processing and `$` interpolation) and then a `bash -c '…'` argument. Each
+    character below survives that trip only by changing meaning, and it changes
+    silently — the workflow renders, uploads and sbatches looking perfectly
+    well-formed, and the compute node runs something else. Measured, all four,
+    before this check existed:
+
+      `'`    closes the `bash -c '…'` argument early. `awk '{print $1}'` renders
+             as `bash -c '… | awk '{print $1}' > …'` — the middle escapes the
+             quoting and is re-parsed by the outer shell.
+      `\\`    Groovy processes escapes inside `\"\"\"…\"\"\"`, so `\\n` reaches the
+             cluster as a REAL NEWLINE that splits the command in half and `\\t`
+             as a tab. The worst of the four: it can produce a plausible wrong
+             answer rather than an error.
+      `$x`   Groovy interpolates it. `$PWD` raises MissingPropertyException at
+             run time; `$1` (every awk/sed field reference) is a PARSE error in
+             main.nf. Neither is visible until the job has already been queued.
+      `\"\"\"`  terminates the script block outright.
+
+    This is a refusal, not an escaping TODO. Escaping would mean layering Groovy
+    escapes under shell quoting inside main.nf, and the resulting line is no
+    longer something a human can read, copy and re-run from a terminal — which
+    is the ONLY reason this renderer exists rather than a Nextflow module library
+    ([[project-nextflow-module-principles]]). A command that genuinely needs
+    quoting or shell variables belongs in a script baked into the image and
+    invoked here by name; that also makes it part of the frozen, validated
+    artifact instead of a string typed at submit time.
+
+    Deliberate locus asymmetry: `run_production._render_local_command` ACCEPTS
+    all four, because a local run shell-quotes into `run.sh` with no Groovy layer
+    in between and the command really does arrive intact. Do not "fix" the
+    inconsistency by loosening this side — the two loci differ in what they can
+    faithfully carry, and the honest move is for each to refuse what it would
+    otherwise corrupt.
+    """
+    if '"""' in command:
+        raise ValueError(
+            'command contains `\"\"\"`, which terminates main.nf\'s script block. '
+            'Move it into a script baked into the image.')
+
+    if "'" in command:
+        raise ValueError(
+            "command contains a single quote. main.nf runs the command as "
+            "`bash -c '<command>'`, so the quote closes that argument early and "
+            "the remainder is re-parsed by the outer shell — the cluster would "
+            "run a DIFFERENT command than the one written here. Use double "
+            "quotes, or move the quoted fragment (awk/sed programs especially) "
+            "into a script baked into the image and call it by name.")
+
+    if "\\" in command:
+        raise ValueError(
+            "command contains a backslash. The Groovy script block in main.nf "
+            "processes escape sequences, so `\\n` arrives at the cluster as a "
+            "real newline (splitting the command in two) and `\\t` as a tab. "
+            "Move anything needing escapes into a script baked into the image.")
+
+    # Every `$` must open a placeholder this command DECLARED. Anything else is
+    # a Groovy interpolation we did not author — checked over the raw command,
+    # since the `${k}` → `${params.k}` rewrite below happens only for declared
+    # keys and would otherwise hide the stray ones.
+    for m in re.finditer(r"\$", command):
+        head = re.match(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", command[m.start():])
+        if head and head.group(1) in declared:
+            continue
+        snippet = command[m.start():m.start() + 12]
+        raise ValueError(
+            f"command has a `$` at offset {m.start()} ({snippet!r}) that does "
+            f"not open a declared placeholder (declared: {sorted(declared)}). "
+            f"main.nf embeds the command in a Groovy interpolated string, so a "
+            f"bare `$NAME` is resolved by Nextflow (MissingPropertyException) "
+            f"and `$1` fails to parse the file at all. Declare it as an input, "
+            f"or move the shell variable into a script baked into the image.")
 
 
 # The per-job resource request — a CONTROLLED vocabulary: the same key names and
@@ -310,6 +394,9 @@ def render_workflow(*,
     if overlap:
         raise ValueError(
             f"placeholders {sorted(overlap)} appear in BOTH inputs and outputs")
+    # LAST, so the more basic "you didn't declare it" errors above fire first
+    # on a command that trips both.
+    _check_command_renders_faithfully(command, declared)
 
     slurm_v = _check_slurm(slurm)
     _check_safe_token("nextflow_main_filename", nextflow_main_filename)

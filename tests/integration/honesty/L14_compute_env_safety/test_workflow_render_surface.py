@@ -427,6 +427,104 @@ class TestCommandLine:
 
 
 # ===========================================================================
+# What renders MUST be what was authored
+#
+# main.nf puts the command inside a Groovy triple-double-quoted string and then
+# inside a `bash -c '…'` argument. Both layers rewrite text. Before these tests
+# all four cases below rendered SILENTLY: the workflow looked well-formed, the
+# upload and the sbatch both succeeded, and the compute node ran a different
+# command (or failed to parse main.nf) hours later.
+# ===========================================================================
+
+def _render_command(command: str, **over):
+    kwargs = dict(
+        tool_name="samtools", command=command,
+        inputs=_DEMO_INPUTS, outputs=_DEMO_OUTPUTS, apptainer_sif=_DEMO_SIF,
+        apptainer_module="apptainer/1.4.1", nextflow_module="nextflow/25.04.7",
+        slurm=_DEMO_SLURM, workflow_name="fidelity")
+    kwargs.update(over)
+    return render_workflow(**kwargs)
+
+
+def _script_body(main_nf: str) -> str:
+    """The single line inside main.nf's `script:` block."""
+    return main_nf.split('    """\n')[1].split('\n    """')[0].strip()
+
+
+class TestCommandFidelity:
+    @pytest.mark.integration
+    def test_rendered_line_is_the_authored_command_verbatim(self):
+        """The renderer's whole reason to exist: a human reads main.nf, fills in
+        the params and re-runs the line from a terminal. That holds only if the
+        line IS the authored command with `${k}` → `${params.k}` and nothing
+        else. This test is deliberately verbatim — if a future change starts
+        escaping the command, this fails, and it SHOULD: an escaped line is no
+        longer copy-pasteable and the contract has changed."""
+        body = _script_body(_render_command(_DEMO_COMMAND)["main.nf"])
+        expected = (_DEMO_COMMAND
+                    .replace("${input_bam}", "${params.input_bam}")
+                    .replace("${output_bam}", "${params.output_bam}"))
+        assert body.endswith(f"bash -c '{expected}'")
+
+    @pytest.mark.integration
+    def test_refuses_single_quote_in_command(self):
+        """`awk '{print $1}'` — the single most common shell idiom in
+        bioinformatics one-liners. The quote closed the `bash -c '…'` argument
+        early and the outer shell re-parsed the remainder."""
+        with pytest.raises(ValueError) as exc:
+            _render_command(
+                "samtools view ${input_bam} | awk \"{print}\" "
+                "| tr -d \"'\" > ${output_bam}")
+        assert "single quote" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_backslash_in_command(self):
+        """Groovy processes escapes inside the script block, so `\\n` became a
+        REAL newline that split the command in two. The only one of the four
+        that can yield a plausible wrong answer instead of an error."""
+        with pytest.raises(ValueError) as exc:
+            _render_command(
+                'printf "a\\tb\\n" && samtools view ${input_bam} > ${output_bam}')
+        assert "backslash" in str(exc.value)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("bad", [
+        "echo $PWD && samtools view ${input_bam} > ${output_bam}",   # runtime blowup
+        "samtools view ${input_bam} | cut -f $1 > ${output_bam}",    # main.nf won't parse
+        "samtools view ${input_bam} > ${output_bam} # cost $5",      # bare $ anywhere
+    ])
+    def test_refuses_dollar_that_is_not_a_declared_placeholder(self, bad):
+        with pytest.raises(ValueError) as exc:
+            _render_command(bad)
+        assert "does not open a declared placeholder" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_refuses_triple_quote_in_command(self):
+        with pytest.raises(ValueError) as exc:
+            _render_command(
+                'echo """ && samtools view ${input_bam} > ${output_bam}')
+        assert "script block" in str(exc.value)
+
+    @pytest.mark.integration
+    def test_double_quotes_still_allowed(self):
+        """Refusing the single quote is only an EARNED refusal if the obvious
+        workaround the message names actually works."""
+        body = _script_body(_render_command(
+            'samtools view ${input_bam} | grep -v "^@" > ${output_bam}'
+        )["main.nf"])
+        assert 'grep -v "^@"' in body
+
+    @pytest.mark.integration
+    def test_undeclared_placeholder_reported_before_the_character_rules(self):
+        """A command that trips both should name the more basic problem. The
+        fidelity check runs last for exactly this reason."""
+        with pytest.raises(ValueError) as exc:
+            _render_command(
+                "samtools view ${input_bam} ${sample}' > ${output_bam}")
+        assert "undeclared placeholders" in str(exc.value)
+
+
+# ===========================================================================
 # The controlled SLURM convention: directives, defaults, email, GPU, and the
 # env-policy merge (added when the CPU-omits-partition + %j-directives +
 # job_manager-driven GPU design landed).

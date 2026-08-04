@@ -1195,8 +1195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:504",
-    "end_line": 504,
+    "where": "agent/skills/run_production.py:520",
+    "end_line": 520,
     "named_in_test": false
   },
   {
@@ -1205,8 +1205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:506",
-    "end_line": 507,
+    "where": "agent/skills/run_production.py:522",
+    "end_line": 523,
     "named_in_test": false
   },
   {
@@ -1305,8 +1305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:488",
-    "end_line": 488,
+    "where": "agent/skills/submit_workflow.py:509",
+    "end_line": 509,
     "named_in_test": false
   },
   {
@@ -1315,8 +1315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:490",
-    "end_line": 490,
+    "where": "agent/skills/submit_workflow.py:511",
+    "end_line": 511,
     "named_in_test": false
   },
   {
@@ -1915,8 +1915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_disclose",
-    "where": "agent/skills/run_production.py:313",
-    "end_line": 316,
+    "where": "agent/skills/run_production.py:322",
+    "end_line": 325,
     "named_in_test": true
   },
   {
@@ -1925,8 +1925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_disclose",
-    "where": "agent/skills/run_production.py:318",
-    "end_line": 321,
+    "where": "agent/skills/run_production.py:327",
+    "end_line": 330,
     "named_in_test": false
   },
   {
@@ -2525,8 +2525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:208",
-    "end_line": 212,
+    "where": "agent/skills/run_production.py:217",
+    "end_line": 221,
     "named_in_test": false
   },
   {
@@ -4355,8 +4355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:138",
-    "end_line": 139,
+    "where": "agent/skills/run_production.py:147",
+    "end_line": 148,
     "named_in_test": false
   },
   {
@@ -4365,8 +4365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:146",
-    "end_line": 148,
+    "where": "agent/skills/run_production.py:155",
+    "end_line": 157,
     "named_in_test": false
   },
   {
@@ -4375,8 +4375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_local",
-    "where": "agent/skills/run_production.py:154",
-    "end_line": 156,
+    "where": "agent/skills/run_production.py:163",
+    "end_line": 165,
     "named_in_test": false
   },
   {
@@ -4385,8 +4385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:231",
-    "end_line": 234,
+    "where": "agent/skills/run_production.py:240",
+    "end_line": 243,
     "named_in_test": false
   },
   {
@@ -4395,8 +4395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:239",
-    "end_line": 241,
+    "where": "agent/skills/run_production.py:248",
+    "end_line": 250,
     "named_in_test": false
   },
   {
@@ -4405,8 +4405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:247",
-    "end_line": 249,
+    "where": "agent/skills/run_production.py:256",
+    "end_line": 258,
     "named_in_test": false
   },
   {
@@ -4415,8 +4415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_cluster",
-    "where": "agent/skills/run_production.py:255",
-    "end_line": 259,
+    "where": "agent/skills/run_production.py:264",
+    "end_line": 268,
     "named_in_test": false
   },
   {
@@ -4425,8 +4425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:431",
-    "end_line": 434,
+    "where": "agent/skills/run_production.py:440",
+    "end_line": 443,
     "named_in_test": false
   },
   {
@@ -4435,8 +4435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:436",
-    "end_line": 437,
+    "where": "agent/skills/run_production.py:445",
+    "end_line": 446,
     "named_in_test": false
   },
   {
@@ -4445,8 +4445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:455",
-    "end_line": 459,
+    "where": "agent/skills/run_production.py:464",
+    "end_line": 468,
     "named_in_test": true
   },
   {
@@ -4455,8 +4455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:469",
-    "end_line": 470,
+    "where": "agent/skills/run_production.py:478",
+    "end_line": 479,
     "named_in_test": true
   },
   {
@@ -4465,9 +4465,19 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:498",
-    "end_line": 500,
+    "where": "agent/skills/run_production.py:507",
+    "end_line": 509,
     "named_in_test": false
+  },
+  {
+    "code": "run_production.refused",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_production_pipeline",
+    "where": "agent/skills/run_production.py:518",
+    "end_line": 518,
+    "named_in_test": true
   },
   {
     "code": "snapshot.no_env_access_blocks",
@@ -4938,6 +4948,16 @@
     "where": "agent/skills/submit_workflow.py:359",
     "end_line": 365,
     "named_in_test": false
+  },
+  {
+    "code": "submit_workflow.refused",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "submit_workflow_job",
+    "where": "agent/skills/submit_workflow.py:496",
+    "end_line": 496,
+    "named_in_test": true
   },
   {
     "code": "test_runner.unknown_resource_type",
