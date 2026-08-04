@@ -3338,19 +3338,34 @@ def test_base_image_is_pinned_by_digest():
 
 def test_resolved_packages_parses_conda_meta_and_dist_info(monkeypatch):
     """The closure is read engine-agnostically from conda-meta/*.json (name-version-
-    build) + site-packages/*.dist-info (name-version) — not a fragile engine table."""
+    build) + site-packages/*.dist-info (name-version) — not a fragile engine table.
+
+    A conda row carries its LICENCE after a tab, read out of the same conda-meta JSON the
+    scan was already opening. The tab has to be split off BEFORE the name/version parse,
+    which rsplits on "-": a licence like `GPL-3.0-or-later` folded into the build string
+    would silently rewrite the package's version."""
     from agent.skills.container_build import ContainerBuild
     cb = ContainerBuild()
     cb.cid, cb.has_env_layer = "fake", True
     monkeypatch.setattr(cb, "exec", lambda *a, **k: {"returncode": 0, "stderr": "",
-        "stdout": ("conda samtools-1.21-h50ea8bc_0\n"
-                   "conda libdeflate-1.19-hd590300_0\n"
+        "stdout": ("conda samtools-1.21-h50ea8bc_0\tMIT\n"
+                   "conda libdeflate-1.19-hd590300_0\tGPL-3.0-or-later\n"
+                   "conda novoalign-4.03.04-h1234_0\tCommercial (requires license for use)\n"
+                   "conda mystery-2.0-h9_0\t\n"
                    "pypi pyfaidx-0.8.1.1\n")})
     pkgs = cb.resolved_packages()
     by = {p["name"]: p for p in pkgs}
-    assert by["samtools"] == {"name": "samtools", "version": "1.21", "kind": "conda"}
-    assert by["libdeflate"]["version"] == "1.19"
-    assert by["pyfaidx"] == {"name": "pyfaidx", "version": "0.8.1.1", "kind": "pypi"}
+    assert by["samtools"] == {"name": "samtools", "version": "1.21", "kind": "conda",
+                              "license": "MIT"}
+    # the hyphens in the licence do NOT reach the version parse
+    assert by["libdeflate"] == {"name": "libdeflate", "version": "1.19", "kind": "conda",
+                                "license": "GPL-3.0-or-later"}
+    assert by["novoalign"]["license"] == "Commercial (requires license for use)"
+    # `"license": null` in the metadata, and a dist-info (whose licence this scan does not
+    # read at all) — both are "", which core_data reads as unrecognized, never as free.
+    assert by["mystery"]["license"] == ""
+    assert by["pyfaidx"] == {"name": "pyfaidx", "version": "0.8.1.1", "kind": "pypi",
+                             "license": ""}
 
 
 def _sample_record(locus="emulated"):

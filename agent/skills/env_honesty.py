@@ -562,23 +562,69 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
 
     Reads gatedness through `core_data.record_is_gated`, NOT a local `.get("license_gated")`:
     records on disk carry the legacy `gated` key, and a one-key read let those pass I13
-    unexamined."""
+    unexamined.
+
+    TWO WAYS TO BE GATED, and only one of them used to exist. `license_gated` is the
+    agent's DECLARATION, and `redistributable` is derived from it (`not gated`,
+    freeze_tools.py) — so an agent that simply never mentions a licence gets
+    `redistributable: true` and this clause early-returned NOT_APPLICABLE without looking
+    at anything. It did that on 13 of 13 registered envs: I13 had never once been CHECKED
+    on a real record. Self-certification arming its own firewall is the same shape as
+    `asset_authenticated = bool(sha256)` (2026-08-04, the operator hand-off) — a claim
+    standing in for an observation.
+
+    The second way is OBSERVED: the SBOM now carries the licence read out of each
+    package's `conda-meta/*.json` IN THE SHIPPED IMAGE, and a package whose licence
+    asserts a restriction makes the artifact gated as a matter of fact, whatever the
+    record declares. bioconda ships `novoalign` ("Commercial (requires license for use)")
+    and `sentieon`, both with a BioContainer the resolver will happily recommend adopting
+    by digest. An observation cannot be un-said by an assertion — the same rule I3 applies
+    to a failed validation — so it ARMS the clause rather than adding a parallel one, and
+    the two requirements below are then identical either way.
+
+    Coverage is reported honestly: `unrecognized` licences are counted and named in the
+    detail line, because this clause can only speak for the packages whose licence it
+    could read AND recognise. pip/dist-info packages carry no licence in the scan at all."""
     v: list[dict] = []
-    if not _core_data.record_is_gated(result):
-        return (ClauseCoverage("POLICY_CLEAN.license", ("I13",), NOT_APPLICABLE, 0,
-                               "not license-gated — the artifact is freely redistributable, "
-                               "so I13's republication firewall has nothing to guard"), v)
-    cov = ClauseCoverage("POLICY_CLEAN.license", ("I13",), CHECKED, 1,
-                         "license-gated — checked that it is marked non-redistributable "
-                         "and names its license(s)")
+    observed = _core_data.restricted_packages(result)
+    declared = _core_data.record_is_gated(result)
+    pkgs = [p for p in (result.get("resolved_packages") or []) if isinstance(p, dict)]
+    unknown = _core_data.unrecognized_packages(result)
+    # what this clause can and cannot speak for — appended to whichever verdict follows,
+    # so "nothing restricted" is never read as "every licence was understood".
+    reach = (f"{len(pkgs) - len(unknown)}/{len(pkgs)} package licences recognised"
+             + (f"; {len(unknown)} unrecognised ("
+                + ", ".join(p["name"] for p in unknown[:5]) + ")"
+                if unknown else "")) if pkgs else "no conda/pip closure to read licences from"
+
+    if not (declared or observed):
+        return (ClauseCoverage("POLICY_CLEAN.license", ("I13",), NOT_APPLICABLE, len(pkgs),
+                               "not license-gated: nothing declared it and no package's own "
+                               f"licence asserts a restriction — {reach}"), v)
+
+    why = ("declared license_gated=true" if declared and not observed else
+           "OBSERVED in the shipped image: " + ", ".join(
+               f"{p['name']} {p['version']} — {p['license']!r}" for p in observed[:4]))
+    cov = ClauseCoverage("POLICY_CLEAN.license", ("I13",), CHECKED, max(1, len(observed)),
+                         f"license-gated ({why}) — checked that it is marked "
+                         f"non-redistributable and names its license(s); {reach}")
     if result.get("redistributable", True):
         v.append({"invariant": "I13.gated_not_redistributable", "where": "redistributable",
-                  "message": "license_gated=true requires redistributable=false — a gated tool's "
-                             "image must never be marked redistributable."})
+                  "message": (
+                      "license_gated=true requires redistributable=false — a gated tool's "
+                      "image must never be marked redistributable."
+                      if declared and not observed else
+                      f"redistributable=true contradicts the shipped image's own package "
+                      f"metadata ({why}). Re-freeze with gated=True + licenses=[…]; that "
+                      f"sets redistributable=false and keeps the image out of any registry "
+                      f"push. If the licence genuinely permits redistribution, it still has "
+                      f"to be DECLARED — this artifact cannot claim it by default.")})
     if not (result.get("licenses") or []):
         v.append({"invariant": "I13.gated_license_recorded", "where": "licenses",
                   "message": "license_gated=true requires at least one entry in licenses[] naming "
-                             "the license/terms the artifact is bound by."})
+                             "the license/terms the artifact is bound by."
+                             + ("" if declared and not observed else
+                                f" Gatedness here was OBSERVED, not declared ({why}).")})
     return (cov, v)
 
 

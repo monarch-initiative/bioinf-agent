@@ -154,6 +154,31 @@ def _swh_clone_install_lines() -> list[str]:
 BASE_IMAGE = ("debian:bookworm-slim@sha256:"
               "0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb")
 
+# The conda-prefix SBOM scan, in ONE place because it has TWO producers — the live build
+# container (`resolved_packages`) and a shipped/adopted image (`conda_sbom_from_image`) —
+# whose output a single parser reads. Format `{ep}`; emits one `conda <stem>\t<license>`
+# line per package.
+#
+# The LICENCE is why this is a shared constant rather than two inline strings. Both
+# producers already opened this directory and read only the FILENAME, discarding a
+# `"license"` field that sits in every one of these files: bioconda's novoalign carries
+# "Commercial (requires license for use)" into the shipped image, and the artifact came out
+# stamped `redistributable: true` because nothing had ever looked. It is read HERE, at the
+# image, rather than from the registry, so it is an observation of what was actually built
+# — the registry answers what was asked for, and freeze ships what it got.
+#
+# `${f##*/}` instead of `basename`, and `[^"]*` instead of a greedy capture: a 300-package
+# closure forks twice per file otherwise, and a greedy `(.*)"` swallows a licence string's
+# own punctuation. `"license": null` matches nothing and yields "" — absent is a fact, and
+# core_data.license_disposition reads "" as `unrecognized`, never as free.
+_CONDA_META_SCAN = (
+    'for f in {ep}/conda-meta/*.json; do [ -e "$f" ] || continue; '
+    'b=${{f##*/}}; b=${{b%.json}}; '
+    'printf \'conda %s\\t%s\\n\' "$b" '
+    '"$(sed -nE \'s/.*"license"[[:space:]]*:[[:space:]]*"([^"]*)".*/\\1/p\' "$f" | head -1)"; '
+    'done;'
+)
+
 # docker platform → conda subdir token (for engines that need it in a URL).
 _PLATFORM_SUBDIR = {"linux/amd64": "linux-64", "linux/arm64": "linux-aarch64",
                     "linux/arm64/v8": "linux-aarch64"}
@@ -972,8 +997,7 @@ class ContainerBuild:
         if not self.cid or not self.has_env_layer:
             return []
         ep = self.engine.env_prefix()
-        cmd = (f'for f in {ep}/conda-meta/*.json; do [ -e "$f" ] && '
-               f'echo "conda $(basename "$f" .json)"; done; '
+        cmd = (f'{_CONDA_META_SCAN.format(ep=ep)} '
                f'for d in {ep}/lib/python*/site-packages/*.dist-info; do [ -e "$d" ] && '
                f'echo "pypi $(basename "$d" .dist-info)"; done')
         r = self.exec(cmd, timeout=120)
@@ -981,13 +1005,22 @@ class ContainerBuild:
 
     @staticmethod
     def _parse_prefix_scan(stdout: str) -> list[dict]:
-        """Parse the `conda <name-version-build>` / `pypi <name-version>` lines a
-        conda-prefix scan emits into a deduped, sorted [{name, version, kind}].
+        """Parse the `conda <name-version-build>\\t<license>` / `pypi <name-version>` lines
+        a conda-prefix scan emits into a deduped, sorted [{name, version, kind, license}].
         Shared by resolved_packages (live build container) and conda_sbom_from_image
-        (adopted image) so the two SBOM sources parse identically."""
+        (adopted image) so the two SBOM sources parse identically.
+
+        `license` is "" for a pypi row and for any conda row whose metadata had none —
+        a dist-info's licence lives in METADATA/classifiers, which this scan does not read.
+        That is a real gap in coverage and the contract reports it as one rather than
+        letting an all-"" closure read as a clean bill of health."""
         pkgs: dict[str, dict] = {}
         for line in (stdout or "").splitlines():
-            kind, _, stem = line.strip().partition(" ")
+            kind, _, rest = line.strip().partition(" ")
+            # the tab is the licence delimiter — split it off BEFORE the name/version
+            # parse, which rsplits on "-" and would otherwise fold the licence into the
+            # build string (and any "-" inside a licence into the version).
+            stem, _, lic = rest.partition("\t")
             if not stem:
                 continue
             if kind == "conda":           # name-version-build
@@ -998,7 +1031,8 @@ class ContainerBuild:
                 name = (name or stem).replace("_", "-")
             else:
                 continue
-            pkgs.setdefault(name.lower(), {"name": name, "version": ver, "kind": kind})
+            pkgs.setdefault(name.lower(), {"name": name, "version": ver, "kind": kind,
+                                           "license": lic.strip()})
         return sorted(pkgs.values(), key=lambda p: p["name"].lower())
 
     @staticmethod
@@ -1016,7 +1050,7 @@ class ContainerBuild:
         scan = (
             'for ep in /usr/local /opt/conda /opt/conda/envs/*; do '
             '[ -d "$ep/conda-meta" ] || continue; '
-            'for f in "$ep"/conda-meta/*.json; do [ -e "$f" ] && echo "conda $(basename "$f" .json)"; done; '
+            + _CONDA_META_SCAN.format(ep='"$ep"') + ' '
             'for d in "$ep"/lib/python*/site-packages/*.dist-info; do [ -e "$d" ] && echo "pypi $(basename "$d" .dist-info)"; done; '
             'done'
         )

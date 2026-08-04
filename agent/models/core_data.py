@@ -42,6 +42,7 @@ Used by:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
@@ -1027,6 +1028,98 @@ def record_is_gated(record: dict) -> bool:
     if "license_gated" in record:
         return bool(record.get("license_gated"))
     return bool(record.get("gated", False))
+
+
+#: Licence text that POSITIVELY ASSERTS a restriction. Deliberately short: every entry is a
+#: phrase a packager wrote to warn you, not a guess about one they didn't. Measured against
+#: 43 real bioconda licence strings (2026-08-04) — these matched exactly `novoalign`
+#: ("Commercial (requires license for use)") and `sentieon` ("…; redistribution allowed"),
+#: and nothing else.
+_LICENSE_RESTRICTED = (
+    r"commercial", r"proprietary", r"non-?free", r"non-?commercial", r"academic",
+    r"all rights reserved", r"evaluation only", r"internal use only",
+)
+
+#: Licence identifiers we RECOGNISE as free/open. Word-boundary matched — a bare `mit`
+#: substring lives inside "permitted", and `pd` inside dozens of words.
+#:
+#: Two entries carry an affix because the separator-less spellings are what registries
+#: ACTUALLY publish, and a `\b` between letters and digits does not exist: the GPL family
+#: is spelled five ways across bioconda's `bwa` (GPL3), `star` (GPLv3), `clustalo` and
+#: `cd-hit` (GPLv2); `bsd` appears as `0BSD`. Both were measured landing in `unrecognized`
+#: on a real 43-package prefix, which is harmless to the refusal but corrodes the coverage
+#: line — an "unknown" bucket full of obviously-free licences is one readers learn to skip.
+#: The self-named tail (`TCL`, `blessing`, `curl`, `bzip2-1.0.6`) came from that same
+#: prefix. This list is not, and will not be, all of SPDX; what it does not know it says
+#: it does not know.
+_LICENSE_PERMISSIVE = (
+    r"[0-9]*bsd", r"mit", r"apache", r"[ALG]?GPL[v]?[0-9.]*", r"mpl", r"mozilla", r"isc",
+    r"zlib", r"artistic", r"unlicen[cs]e", r"public[- ]domain", r"ncbi-?pd", r"cc0",
+    r"boost", r"epl", r"eclipse", r"open software licen[cs]e", r"osl", r"psf",
+    r"python-2", r"cecill", r"wtfpl", r"sil ofl", r"postgres",
+    r"tcl", r"blessing", r"curl", r"bzip2", r"libpng", r"openssl", r"ncurses", r"x11",
+)
+
+_LICENSE_RESTRICTED_RE = re.compile("|".join(_LICENSE_RESTRICTED), re.I)
+_LICENSE_PERMISSIVE_RE = re.compile(
+    r"\b(?:" + "|".join(_LICENSE_PERMISSIVE) + r")\b", re.I)
+
+
+def license_disposition(license_text: str) -> str:
+    """THE reader for "what does this licence string let us do?" — `restricted` |
+    `permissive` | `unrecognized`. Pure; the one definition both the resolver (a
+    registry's published licence) and the contract (a licence observed in the shipped
+    image) read, so a tool cannot be commercial at freeze and free at resolve.
+
+    THREE states, not two, and the third is the point. Rounding `unrecognized` up to
+    `permissive` is how a gated artifact ships; rounding it down to `restricted` blocks
+    every tool with a bespoke-but-fine licence. bioconda's `medaka` is the measured case:
+    "Oxford Nanopore Technologies PLC. Public License Version 1.0" asserts no restriction
+    and matches no OSI identifier, and the honest answer is that we do not know. Same
+    shape as `test_data_integrity`'s `unanchored` — a state that is STATED, never rounded.
+
+    RESTRICTED WINS a tie: "GPL-3.0 with a commercial exception" names both, and the one
+    that should reach a human is the restriction. An empty string is `unrecognized` —
+    absence of a licence is missing evidence, never a grant."""
+    text = (license_text or "").strip()
+    if not text:
+        return "unrecognized"
+    if _LICENSE_RESTRICTED_RE.search(text):
+        return "restricted"
+    if _LICENSE_PERMISSIVE_RE.search(text):
+        return "permissive"
+    return "unrecognized"
+
+
+def restricted_packages(record: dict) -> list[dict]:
+    """Every package in an EnvCache record's SBOM whose OBSERVED licence asserts a
+    restriction — [{name, version, license}], sorted. THE reader, so the contract, the
+    ENV report and the attestation cannot each walk `resolved_packages` differently.
+
+    Reads the licence the SBOM scan captured from the shipped image's own
+    `conda-meta/*.json`, so this is an OBSERVATION of what was built, not a claim about
+    what was asked for. Records frozen before the SBOM captured licences carry no
+    `license` key at all and yield [] — grandfathered, which is why the contract reports
+    coverage rather than treating an empty list as proof of freedom."""
+    return _packages_where(record, "restricted")
+
+
+def unrecognized_packages(record: dict) -> list[dict]:
+    """The other half of the same walk: packages whose licence this codebase could not
+    place. Kept BESIDE `restricted_packages` and not derived at the call site, because
+    the contract states both in one breath — what it refused on, and what it could not
+    speak for — and a coverage number computed somewhere else is how "nothing restricted"
+    quietly becomes "everything is fine"."""
+    return _packages_where(record, "unrecognized")
+
+
+def _packages_where(record: dict, disposition: str) -> list[dict]:
+    out = [{"name": p.get("name", ""), "version": p.get("version", ""),
+            "license": str(p.get("license") or "")}
+           for p in (record.get("resolved_packages") or [])
+           if isinstance(p, dict)
+           and license_disposition(str(p.get("license") or "")) == disposition]
+    return sorted(out, key=lambda p: p["name"].lower())
 
 
 class ContentAnchor(BaseModel):

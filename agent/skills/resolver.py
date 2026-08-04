@@ -35,6 +35,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+from agent.models import core_data as _core_data
+
 try:
     # the authors'-own-resources reliability gate (image / recipe completeness). Imported
     # softly so a resolver import never hard-depends on it; None disables the gate.
@@ -298,14 +300,22 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
                         repo = f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}"
                         field = f
                         break
+                # THE RECIPE'S OWN LICENSE — free, in this same response, and the ONLY
+                # signal that separates a commercial tool from a free one BEFORE anything
+                # is installed. bioconda's `novoalign` says "Commercial (requires license
+                # for use)" and its `sentieon` says "…; redistribution allowed"; samtools
+                # says "MIT". Every identity fact for novoalign is CORRECT — right tool,
+                # right channel, right description — so the ride has no reason to hesitate,
+                # and the artifact that comes out is a commercial binary in an image
+                # stamped redistributable. Absent is a fact, never "free".
                 best = (key, channel, ver, data.get("summary") or "", repo, field,
-                        [str(v) for v in data["versions"]])
+                        [str(v) for v in data["versions"]], str(data.get("license") or ""))
     if best:
         # `versions` = the WINNING channel's full list, so a version-existence check compares
         # against the channel actually being emitted (bioconda's abandoned hmmlearn ≠
         # conda-forge's maintained one — the pick already resolved that, and the list follows it).
         out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3],
-               "versions": best[6]}
+               "versions": best[6], "license": best[7]}
         if best[4]:
             out["repo"] = best[4]
             out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
@@ -1112,6 +1122,13 @@ def identity_facts(tool: str, chosen: str, availability: dict,
                          the repo, not a claim about identity.
       channel          — bioconda/bioconductor membership is a bio-only-channel fact
                          the ride will weigh heavily; conda-forge/PyPI is not.
+      license          — the registry's OWN published licence string, and our reading of
+                         it (`license_disposition`). The only fact here that is not about
+                         IDENTITY: bioconda's `novoalign` and `sentieon` are the RIGHT
+                         tools, correctly described, on the right channel — every identity
+                         signal says proceed, and they are commercial. Gatedness is a
+                         property of the ARTIFACT, invisible to a question about which
+                         package this is, so it needs its own fact or it has none.
 
     No `confirmed` boolean, no note, no poisoning of `install_call`. The resolver
     states what is true and gets out of the way (Phase 2, 2026-07-17)."""
@@ -1130,6 +1147,7 @@ def identity_facts(tool: str, chosen: str, availability: dict,
                    or ("user" if github_repo else ""))
     repo_anchored = (bool(github_repo) or bool(detail.get("repo_anchored"))
                      or bool(ev.get("anchored")))
+    lic = str(detail.get("license") or "")
     return {
         "chosen_tier": chosen,
         "self_description": desc,
@@ -1138,6 +1156,12 @@ def identity_facts(tool: str, chosen: str, availability: dict,
         "repo_source": repo_source,
         "repo_anchored": repo_anchored,
         "channel": detail.get("channel") or "",
+        "license": lic,
+        # read through the core_data leaf, never re-spelled here: the CONTRACT reads the
+        # same function over the licence observed in the shipped image, and a tool that
+        # is commercial at freeze and free at resolve is the drift this codebase keeps
+        # paying for.
+        "license_disposition": _core_data.license_disposition(lic),
     }
 
 
@@ -2271,6 +2295,22 @@ def resolve(
         _disclose(decision, decision["prefer_ignored_reason"],
                   f"this is the {decision.get('chosen')} tier, NOT the one you asked for")
 
+    # A RESTRICTED licence changes the CALL, so it is disclosed on the call. This is not
+    # the identity poisoning Phase 2 removed: identity asks "is this the tool you meant",
+    # and for novoalign the answer is an unqualified yes — right tool, right channel,
+    # correct description, a BioContainer ready to adopt. The licence is a third axis, and
+    # the only one whose consequence is a downstream REFUSAL: freeze will not stamp
+    # `redistributable: true` on an image whose own conda-meta says Commercial. Naming that
+    # here is the same forward-pointer discipline as THE GATE IS THE GUIDE — except the
+    # gate fires at freeze and the decision is made here, so the pointer has to travel.
+    if (decision.get("identity") or {}).get("license_disposition") == "restricted":
+        _disclose(decision,
+                  f"LICENSE-GATED — {decision['chosen']} publishes this as "
+                  f"{(decision['identity'].get('license') or '')!r}. It is the right tool; "
+                  f"the artifact is not freely redistributable",
+                  "freeze REFUSES this unless you declare it: "
+                  "freeze(…, gated=True, licenses=[…]) — which also keeps the image "
+                  "out of any registry push (I13)")
     # NO identity poisoning of install_call. Identity is the ride's judgment now
     # (Phase 2); the facts it judges on ride in `decision["identity"]` (self-description
     # + repo provenance), and install_call stays a clean, runnable one-liner. The

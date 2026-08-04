@@ -36,8 +36,19 @@ _PYPI_CYVCF2 = "fast vcf parsing with cython + htslib"
 
 
 #: the fact keys the ride judges on — and the verdict keys that must NOT reappear.
+#:
+#: `license` / `license_disposition` are admitted deliberately, and the distinction is
+#: worth stating because they LOOK like the thing this test bans. A verdict key answers
+#: "is this the tool you meant" — the judgement Phase 2 moved to the ride. These answer
+#: a different question the ride cannot ask any other way: what does the artifact's
+#: licence permit? Every identity signal for bioconda's `novoalign` is correct, and it is
+#: commercial. `license` is the registry's own string, quoted; `license_disposition` is
+#: `core_data.license_disposition` over it — three-state, with `unrecognized` for what it
+#: does not know, and the SAME function the contract runs against the licence observed in
+#: the shipped image, so the two cannot disagree.
 _FACT_KEYS = {"chosen_tier", "self_description", "has_description", "repo",
-              "repo_source", "repo_anchored", "channel"}
+              "repo_source", "repo_anchored", "channel",
+              "license", "license_disposition"}
 _VERDICT_KEYS = {"confirmed", "anchor", "evidence", "note", "reason"}
 
 

@@ -61,8 +61,17 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
     subject = [{"name": r.get("image", ""), "digest": _digest_dict(r.get("image_digest", ""))}]
 
     # the full SBOM: conda/pip closure + the apt/OS layer, all as purls
+    # The licence rides ALONG WITH each purl. An attestation's whole job is to let a
+    # downstream consumer decide what they may do with the artifact, and "may I
+    # redistribute this" is unanswerable from a bare package list — bioconda's novoalign
+    # and samtools produce identical-looking purls. Observed from the shipped image's own
+    # conda-meta, so it describes what is IN the artifact; omitted rather than blanked
+    # when the record predates the capture (an empty annotation reads as "no licence",
+    # which is a claim we would not be making).
     closure = (r.get("resolved_packages") or []) + (r.get("system_packages") or [])
-    resolved = [{"uri": _purl(p), "annotations": {"kind": p.get("kind", "")}}
+    resolved = [{"uri": _purl(p),
+                 "annotations": {"kind": p.get("kind", ""),
+                                 **({"license": p["license"]} if p.get("license") else {})}}
                 for p in closure if isinstance(p, dict) and p.get("name")]
     if base_image:
         resolved.append({"uri": f"docker:{base_image}",
