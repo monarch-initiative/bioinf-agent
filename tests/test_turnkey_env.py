@@ -88,3 +88,63 @@ def test_render_workflow_apptainer_exec_uses_cleanenv():
     assert "apptainer exec --cleanenv" in nf, (
         "apptainer exec must use --cleanenv so the sealed image env (baked "
         "JAVA_HOME) is not clobbered by host env vars")
+    assert "--nv" not in nf, (
+        "a CPU job must not carry --nv — on a node with no NVIDIA driver it is an "
+        "error, not a no-op")
+
+
+# ---- #10 apptainer exec --nv (a GPU job must be able to SEE the GPU) -----------
+
+def _render_gpu(gpus: int) -> str:
+    from agent.skills.workflow_render import render_workflow
+    return render_workflow(
+        tool_name="basecaller",
+        command="dorado basecaller ${model} ${reads} > ${calls}",
+        inputs={"model": "/ref/model", "reads": "/data/reads.pod5"},
+        outputs={"calls": "calls.bam"},
+        apptainer_sif="/work/u/CLAUDE_CONTAINERS/dorado_abc.sif",
+        apptainer_module="apptainer/1.5.0",
+        nextflow_module="nextflow/24.04.2",
+        slurm={"time": "01:00:00", "mem": "16G", "cpus": 4, "gpus": gpus,
+               "partition": "gpu", "qos": "gpu_access"},
+        workflow_name="dorado_basecall",
+    )["main.nf"]
+
+
+def test_a_gpu_job_binds_the_device_into_the_container():
+    """The renderer used to allocate a GPU and then hide it.
+
+    The launcher emits `#SBATCH --gres=gpu:N`, so the job LANDS on a GPU node — and
+    `apptainer exec` ran without --nv, which is what binds the driver userspace into
+    the container. Measured on a real GPU node (GTX 1080, driver 580.126.20):
+
+        apptainer exec --cleanenv       nvidia-smi  →  FATAL: not found in $PATH, rc=255
+        apptainer exec --nv --cleanenv  nvidia-smi  →  NVIDIA GeForce GTX 1080, rc=0
+
+    The quiet part: /dev/nvidia0 is visible inside the container in BOTH cases. The
+    device node is bound either way; --nv adds libcuda and the utilities. So a tool
+    that checks for the device finds it, proceeds, and falls back to CPU (or dies in
+    dlopen) — having consumed the scarcest allocation the cluster has.
+    """
+    nf = _render_gpu(1)
+    assert "apptainer exec --nv --cleanenv" in nf, (
+        f"a job that asked for a GPU must run the container with --nv: {nf}")
+
+
+def test_gres_and_nv_agree_about_whether_this_is_a_gpu_job():
+    """One decision, read twice — the shape this codebase keeps paying for. If the
+    header allocates a device the exec line must bind it, and vice versa."""
+    from agent.skills.workflow_render import render_workflow
+    for gpus in (0, 1, 4):
+        out = render_workflow(
+            tool_name="t", command="tool ${x} > ${y}",
+            inputs={"x": "/d/in"}, outputs={"y": "out.txt"},
+            apptainer_sif="/w/t.sif", apptainer_module="apptainer/1.5.0",
+            nextflow_module="nextflow/24.04.2",
+            slurm={"time": "00:10:00", "mem": "1G", "cpus": 1, "gpus": gpus,
+                   **({"partition": "gpu", "qos": "gpu_access"} if gpus else {})},
+            workflow_name="w")
+        allocates = "--gres=gpu:" in out["launcher.sh"]
+        binds = "--nv" in out["main.nf"]
+        assert allocates == binds == bool(gpus), (
+            f"gpus={gpus}: header allocates={allocates}, exec binds={binds}")

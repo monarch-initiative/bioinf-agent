@@ -100,6 +100,140 @@ def image_arch(ref: str) -> dict[str, Any]:
     return {"resolved": True, "arch": r["out"].strip().lower()}
 
 
+#: The in-image probe behind `image_accelerator`. ONE `docker run`, and every line
+#: it prints is a fact that needs no parsing to read back:
+#:
+#:   cudadir   the /usr/local/cuda-X.Y directory NAME — the version is the name.
+#:   condacuda the conda-meta filename for cuda-version/cudatoolkit — likewise, conda
+#:             writes `<name>-<version>-<build>.json`, so the version is the filename.
+#:   rocm      /opt/rocm/.info/version, a file whose entire contents ARE the version.
+#:   nvcc      presence only. `nvcc --version` prints prose ("Cuda compilation tools,
+#:             release 12.4, V12.4.131") and pulling a number out of it is a regex over
+#:             a blob — the shape that made the ENV report cite htslib's version for a
+#:             bcftools fork. We record that the compiler is THERE and take the version
+#:             from a source that doesn't need interpreting.
+#:
+#: Deliberately `|| true` throughout: this is an OBSERVATION, and an image without CUDA
+#: must return "no CUDA here", not a non-zero rc that the caller reads as "we failed to
+#: look". Those are the two different empties `resolved` exists to keep apart.
+_ACCEL_PROBE = (
+    'echo "cudadir=$(ls -d /usr/local/cuda-[0-9]* 2>/dev/null | sort | tail -1)"; '
+    'echo "nvcc=$(command -v nvcc 2>/dev/null)"; '
+    'echo "rocm=$(head -1 /opt/rocm/.info/version 2>/dev/null)"; '
+    'echo "condacuda=$(ls /opt/conda/conda-meta /usr/local/conda-meta 2>/dev/null '
+    '| grep -E "^(cuda-version|cudatoolkit|cuda-nvcc)-" | sort | tail -1)"'
+)
+
+
+def _accel_version_from_dirname(d: str) -> str:
+    """/usr/local/cuda-12.4 -> 12.4. The version IS the directory name's tail."""
+    base = (d or "").rstrip("/").rsplit("/", 1)[-1]
+    return base[len("cuda-"):] if base.startswith("cuda-") else ""
+
+
+def _accel_version_from_conda_meta(fn: str) -> str:
+    """cuda-version-12.4-h1234567_0.json -> 12.4. Conda's own filename convention is
+    `<name>-<version>-<build>.json`, so the version is a field, not a scrape."""
+    stem = (fn or "").strip()
+    if stem.endswith(".json"):
+        stem = stem[:-5]
+    parts = stem.rsplit("-", 2)          # name, version, build
+    return parts[1] if len(parts) == 3 else ""
+
+
+def image_accelerator(ref: str) -> dict[str, Any]:
+    """What accelerator toolkit the image at `ref` ACTUALLY contains, read from the
+    image itself. `image_arch`'s sibling, and the observation I12 was short of.
+
+    Before this, every accelerator fact on a record came from the caller: `freeze`'s
+    `accel=` / `cuda_version=` arguments, or an `accelerator` dict typed straight into
+    `patch_pipeline`. I12 then checked those fields against *each other* — that a
+    `cuda` claim carried SOME toolkit_version string, that a `runtime_verified` claim
+    carried SOME probe string — and never against the artifact. A record could state
+    `type: cuda, toolkit_version: 99.9` over an image with no CUDA in it and clear the
+    contract, because nothing in the system had ever opened the image to look.
+
+    Returns {resolved, type, version, source, driver_requirement}:
+
+      resolved=False           — we failed to LOOK (image absent from the daemon, or a
+                                 manifest index, which has no filesystem to probe). Says
+                                 nothing about the artifact. Never a pass, never a fail.
+      resolved=True,           — we looked and there is no accelerator toolkit here.
+        type="none"              A real, load-bearing observation: it is what refuses a
+                                 cuda claim over a CPU-only image.
+      resolved=True,           — we looked and found one. `source` names WHERE the
+        type="cuda"|"rocm"       version came from, so a reader never has to guess which
+                                 of four possible sources produced the number.
+
+    `driver_requirement` is the image's OWN statement of the host-driver floor it needs
+    (nvidia's `NVIDIA_REQUIRE_CUDA`), captured VERBATIM and never parsed into a number.
+    It reads `cuda>=12.4 brand=tesla,driver>=470,driver<471 brand=unknown,…` — a set of
+    per-brand windows, not a scalar, and squeezing it into one integer would be an
+    interpretation dressed up as a measurement. It is disclosure: the gate shows it
+    beside a claimed min_driver_version and lets a human compare.
+    """
+    if not (ref or "").strip():
+        return {"resolved": False, "type": "", "version": "", "source": "",
+                "driver_requirement": ""}
+
+    # 1. Metadata first — no container, no emulation, works on any image the daemon
+    #    holds. nvidia's official images bake CUDA_VERSION, which is exact.
+    env_ver, driver_req = "", ""
+    r = _sh(["docker", "image", "inspect", "--format",
+             "{{range .Config.Env}}{{println .}}{{end}}", ref])
+    if r["rc"] != 0:
+        return {"resolved": False, "type": "", "version": "", "source": "",
+                "driver_requirement": ""}
+    for line in r["out"].splitlines():
+        k, _, v = line.partition("=")
+        if k == "CUDA_VERSION":
+            env_ver = v.strip()
+        elif k == "NVIDIA_REQUIRE_CUDA":
+            driver_req = v.strip()
+    if env_ver:
+        return {"resolved": True, "type": "cuda", "version": env_ver,
+                "source": "image env CUDA_VERSION", "driver_requirement": driver_req}
+
+    # 2. Filesystem — one run, for images that carry a toolkit without advertising it
+    #    in ENV (our own conda-built images, rocm images, anything not from nvidia).
+    p = _sh(["docker", "run", "--rm", "--entrypoint", "sh", ref, "-c", _ACCEL_PROBE],
+            timeout=120)
+    if p["rc"] != 0:
+        # The image holds no `sh`, or won't start. We failed to look — and saying
+        # "no accelerator" here would turn a distroless image into a refusal.
+        return {"resolved": False, "type": "", "version": "", "source": "",
+                "driver_requirement": driver_req}
+    found = {}
+    for line in p["out"].splitlines():
+        k, _, v = line.partition("=")
+        found[k.strip()] = v.strip()
+
+    if found.get("rocm"):
+        return {"resolved": True, "type": "rocm", "version": found["rocm"],
+                "source": "/opt/rocm/.info/version", "driver_requirement": driver_req}
+    if found.get("cudadir"):
+        return {"resolved": True, "type": "cuda",
+                "version": _accel_version_from_dirname(found["cudadir"]),
+                "source": f"toolkit directory {found['cudadir']}",
+                "driver_requirement": driver_req}
+    if found.get("condacuda"):
+        return {"resolved": True, "type": "cuda",
+                "version": _accel_version_from_conda_meta(found["condacuda"]),
+                "source": f"conda-meta/{found['condacuda']}",
+                "driver_requirement": driver_req}
+    if found.get("nvcc"):
+        # The compiler is here but no source that states a version without being
+        # interpreted. An honest half-observation: the type is certain, the version
+        # is not recorded rather than guessed at.
+        return {"resolved": True, "type": "cuda", "version": "",
+                "source": f"nvcc at {found['nvcc']} (version not stated by a "
+                          f"non-prose source)", "driver_requirement": driver_req}
+    return {"resolved": True, "type": "none", "version": "",
+            "source": "no CUDA/ROCm toolkit found in the image "
+                      "(env, /usr/local/cuda-*, /opt/rocm, conda-meta, nvcc)",
+            "driver_requirement": driver_req}
+
+
 def daemon_is_remote() -> bool:
     """Is the active Docker daemon REMOTE (DOCKER_HOST=ssh://… or tcp://…)? The build
     + in-image validation path is daemon-agnostic — point DOCKER_HOST at a native

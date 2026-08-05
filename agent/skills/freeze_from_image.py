@@ -342,10 +342,17 @@ def freeze_from_image(
     # at all. Observing it here is what lets BUILT.platform say so instead of the
     # record carrying `platform: linux/amd64` over a digest that serves both.
     _arch = _locus.image_arch(image)
+    # The GPU claim gets the same treatment, and this path needs it most: an authors'
+    # image is exactly where "it's a CUDA build" is taken on trust from a README.
+    # Probed only when a claim is actually made — see freeze_tools for why.
+    _accel = (_locus.image_accelerator(image)
+              if (accelerator or {}).get("type", "none") not in ("none", "", None)
+              else None)
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=digest, mode=mode,
         image=image, image_digest=digest, platform=platform, gated=gated,
-        image_arch=_arch["arch"] if _arch["resolved"] else None)
+        image_arch=_arch["arch"] if _arch["resolved"] else None,
+        image_accelerator=_accel)
     record["name"] = name
     record["version"] = version
     record["build_method"] = build_method

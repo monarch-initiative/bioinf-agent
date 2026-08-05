@@ -419,6 +419,23 @@ def render_workflow(*,
     bind_flags = " ".join(
         f"--bind {shlex.quote(d)}" for d in bind_dirs)
 
+    # --nv when the job asked for GPUs. Without it this renderer allocated a GPU and
+    # then hid it: the launcher emits `#SBATCH --gres=gpu:N` so the job LANDS on a GPU
+    # node, and `apptainer exec` ran the container with none of the driver userspace
+    # bound in. Measured on a real GPU node (GTX 1080, driver 580.126.20):
+    #
+    #   apptainer exec --cleanenv       nvidia-smi  →  FATAL: not found in $PATH, rc=255
+    #   apptainer exec --nv --cleanenv  nvidia-smi  →  NVIDIA GeForce GTX 1080, rc=0
+    #
+    # and the trap that makes it quiet: /dev/nvidia0 is visible inside the container in
+    # BOTH cases. The device node is bound either way; what --nv adds is libcuda and
+    # the utilities. So a tool that checks for the device finds it, proceeds, and then
+    # falls back to CPU (or dies in dlopen) on the scarcest allocation the cluster has.
+    #
+    # Gated on gpus>0 because --nv on a node with no NVIDIA driver is an error, not a
+    # no-op — a CPU job must not carry it.
+    nv_flag = "--nv " if int(slurm_v.get("gpus", 0) or 0) > 0 else ""
+
     # Inside the script block, substitute ${param} → ${params.param}
     # so Nextflow's process scope resolves them.
     script_body = command
@@ -466,7 +483,7 @@ def render_workflow(*,
         # dies "java: No such file or directory". --cleanenv makes validated ==
         # shipped hold at the env level: the container runs the environment we
         # sealed, immune to whatever the login node happens to export.
-        f"    apptainer exec --cleanenv {bind_flags} ${{params.apptainer_sif}} "
+        f"    apptainer exec {nv_flag}--cleanenv {bind_flags} ${{params.apptainer_sif}} "
         f"bash -c '{script_body}'\n"
         f"    \"\"\"\n"
         f"}}\n"

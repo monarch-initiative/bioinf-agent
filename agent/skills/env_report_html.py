@@ -239,6 +239,41 @@ def _empty(msg: str) -> str:
     return f'<p class="empty">{_e(msg)}</p>'
 
 
+def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) -> str:
+    """The accelerator row: what was DECLARED, beside what the image actually carries.
+
+    The section this sits in is headed "submitter-declared … not a runtime-verified
+    fact", which was true of every accelerator field until freeze started reading the
+    toolkit off the shipped image. Showing only the claim would now hide the one part
+    of the row that IS an observation — and a GPU claim is precisely the thing a reader
+    cannot check for themselves before committing the allocation.
+
+    Three states, as everywhere: observed-and-agreeing, observed-and-absent (the
+    contract refuses this, so it can only appear on a record from before the check), and
+    nothing-looked. `none` declared shows the bare word — there is no claim to check.
+    """
+    declared = _e(accel_type)
+    if accel_type in ("", "none"):
+        return declared
+    tv = (accel or {}).get("toolkit_version") or ""
+    if tv:
+        declared = f"{declared} {_e(tv)}"
+
+    obs = r.get("image_accelerator")
+    if not isinstance(obs, dict) or not obs.get("resolved"):
+        return (f'{declared} <span class="muted">— declared only; nothing read the '
+                f'toolkit off the shipped image</span>')
+    otype = (obs.get("type") or "").strip().lower()
+    if otype == "none":
+        return (f'{declared} <span class="badge bad">shipped image carries no '
+                f'accelerator toolkit</span>')
+    over = obs.get("version") or ""
+    shown = f"{_e(otype)}{(' ' + _e(over)) if over else ''}"
+    src = _e(obs.get("source") or "the image")
+    return (f'{declared} <span class="badge ok">image carries {shown}</span> '
+            f'<span class="muted">({src})</span>')
+
+
 # --- Shared page shell + theme toggle -------------------------------------
 # The two reports (Layer-1 env report, Layer-2 run dashboard) open/close through
 # these so the theme machinery lives in ONE place. Cyberpunk is the default; the
@@ -726,7 +761,7 @@ def render_env_report_html(record: dict) -> str:
         ("Redistributable", "yes" if r.get("redistributable", not gated) else "no"),
         ("Licenses", ", ".join(_e(x) for x in licenses) if licenses
                      else '<span class="muted">— (none declared)</span>'),
-        ("Accelerator", _e(accel_type)),
+        ("Accelerator", _accel_declared_vs_observed(r, accel, accel_type)),
     ]
     P.append(_kv_table(pol_rows))
     P.append('</div></section>')

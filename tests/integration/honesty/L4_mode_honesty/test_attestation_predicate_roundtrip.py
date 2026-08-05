@@ -132,15 +132,22 @@ def test_build_mode_predicate_carries_built_validated_clean_triple():
     """The three-guarantee badge for build mode."""
     att = build_attestation(_build_record())
     internal = att["predicate"]["buildDefinition"]["internalParameters"]
-    # POLICY_CLEAN is now listed as its two INDEPENDENT clauses (I12 accelerator,
-    # I13 license). They reach separate verdicts on separate evidence — one name for
+    # POLICY_CLEAN is now listed as its INDEPENDENT clauses (I12 accelerator, I13
+    # license). They reach separate verdicts on separate evidence — one name for
     # two answers is the same collapse the coverage work exists to undo — and
     # PROVENANCE_CLEAN (the synthesis firewall) was always a clause and was simply
     # missing from this list. The guarantees are read off env_honesty.evaluate_build,
     # so this assertion tracks the contract instead of restating it from memory.
+    #
+    # I12 is TWO clauses for the same reason: `.accelerator` asks whether the claim is
+    # internally well-formed, `.accelerator_observed` asks whether the shipped image
+    # actually carries what it claims. Both can be true or false independently — a
+    # perfectly-formed block can describe an image that does not exist as described —
+    # and a single name could not report which half was missing.
     assert internal["honesty_contract"] == [
         "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
-        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
+        "POLICY_CLEAN.accelerator_observed", "POLICY_CLEAN.license",
+        "PROVENANCE_CLEAN"]
 
 
 @pytest.mark.integration
@@ -159,7 +166,8 @@ def test_adopt_predicate_claims_validation_only_when_evidence_exists():
     rec.pop("verifications", None)
     internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
     assert internal["honesty_contract"] == [
-        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.accelerator_observed",
+        "POLICY_CLEAN.license",
         "PROVENANCE_CLEAN"], \
         f"an adopt record with no evidence must not claim validation: {internal['honesty_contract']}"
 
@@ -167,7 +175,7 @@ def test_adopt_predicate_claims_validation_only_when_evidence_exists():
     internal = build_attestation(rec)["predicate"]["buildDefinition"]["internalParameters"]
     assert internal["honesty_contract"] == [
         "ADOPTED_BY_DIGEST", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
-        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"], internal["honesty_contract"]
+        "POLICY_CLEAN.accelerator_observed", "POLICY_CLEAN.license", "PROVENANCE_CLEAN"], internal["honesty_contract"]
 
 
 @pytest.mark.integration

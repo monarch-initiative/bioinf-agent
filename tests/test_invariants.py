@@ -3588,7 +3588,7 @@ def test_attestation_is_intoto_slsa_statement_from_record():
     # so this assertion tracks the contract instead of restating it from memory.
     assert ip["honesty_contract"] == [
         "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
-        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
+        "POLICY_CLEAN.accelerator_observed", "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
     assert ip["validation_locus"] == "native"
     # validated==shipped evidence is carried per tool
     assert any(v["tool"] == "samtools" and v["passed"] for v in ip["validated_in_image"])
@@ -6456,7 +6456,8 @@ def test_attestation_predicate_licenses_present_on_adopt_path():
     assert ip["license_gated"] is True
     # mode-aware honesty preserved (the adopt contract)
     assert ip["honesty_contract"] == [
-        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.accelerator_observed",
+        "POLICY_CLEAN.license",
         "PROVENANCE_CLEAN"]
 
     # ...and the legacy key really does gate now: drop the marking and I13 fires, so the

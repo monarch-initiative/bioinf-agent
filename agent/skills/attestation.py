@@ -186,6 +186,15 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # The accelerator policy that gated POLICY_CLEAN (I12). Pure
                 # metadata pass-through — the contract already enforces shape.
                 "accelerator": r.get("accelerator") or {},
+                # …and what the shipped image ACTUALLY carries, read off the image at
+                # freeze. The pair is the point: `accelerator` is the submitter's
+                # claim and travels as one, while this is the observation the
+                # contract checked it against. A verifier that saw only the claim
+                # could not tell a GPU env from a record that says it is one — which
+                # is exactly what a cuda claim over a CPU-only image used to be.
+                # Absent when nothing looked, never blanked to {} (see freeze_record).
+                **({"image_accelerator": r["image_accelerator"]}
+                   if r.get("image_accelerator") is not None else {}),
                 # IDENTITY DISCLOSURE (audit #8): each requested tool's OWN self-
                 # description, read at freeze from the registry the shipped package
                 # came from. AGENT-ASSERTED, not a verified capability — it lives in
