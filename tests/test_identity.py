@@ -458,3 +458,53 @@ def test_a_metadata_less_probe_is_never_called_meaningless(monkeypatch):
     assert "bioconductor" in d["available"], \
         "the tier must stay rankable — it was never a stub, only a probe that reads no prose"
     assert "DISQUALIFIED" not in d["rationale"]
+
+
+def test_a_channel_that_never_answered_does_not_make_a_version_the_latest(monkeypatch):
+    """A HIT is a fact; "this is the newer build" is a COMPARISON — and a comparison against
+    a channel that never answered is a claim about what we could REACH.
+
+    `probe_conda` queries bioconda AND conda-forge and returns the higher real version. That
+    comparison IS the guard against an abandoned build on one channel shadowing the
+    maintained package on the other, and it used to fail silently open: one channel down, the
+    guard runs on one input, and the output is indistinguishable from a real answer.
+
+    MEASURED LIVE 2026-08-06, driving `seurat` end to end. With conda-forge timing out,
+    `resolve('seurat', language='r')` emitted `r-seurat=3.0.2` — a 2019 build — while
+    conda-forge carries 5.5.1. Two calls seconds apart (`seurat` vs `Seurat`, which lowercase
+    to the SAME URL) disagreed by two major versions of the standard single-cell toolkit and
+    neither said why. The old code said so in a comment — "errors only matter when NOTHING
+    was found" — which is right about AVAILABILITY and wrong about the pick.
+
+    Hermetic: `_fetch_json` is stubbed for BOTH channels, so this drives the real
+    `probe_conda` merge without a socket. The stale-vs-current versions are the real ones
+    the live probe returned.
+
+    Break it: drop `channel_errors`, or disclose it only when nothing was found."""
+    def flaky(url, timeout=12):
+        if "conda-forge" in url:
+            return None, "TimeoutError: The read operation timed out"
+        return ({"versions": ["3.0.0", "3.0.2"], "latest_version": "3.0.2",
+                 "summary": "single cell toolkit", "license": "GPL-3"}, "")
+
+    monkeypatch.setattr(R, "_fetch_json", flaky)
+    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    monkeypatch.setattr(R, "_fetch_ok", lambda u, t=12: (False, ""))
+
+    rec = R.probe_conda("anytool")
+    assert rec["available"] and rec["channel"] == "bioconda" and rec["latest"] == "3.0.2"
+    assert rec["channel_errors"] == {
+        "conda-forge": "TimeoutError: The read operation timed out"}, \
+        "the probe kept a hit and threw away the fact that the comparison was one-sided"
+
+    d = R.resolve("anytool")
+    assert d["chosen"] == "conda", "a reachable hit is still a real answer — do not refuse"
+    assert "conda-forge" in d["conda_channel_unchecked"]
+    assert d["install_call"].lstrip().startswith("#"), \
+        "an unproven-latest version must not be pasted blind into a pin"
+    assert "NOT PROVEN LATEST" in d["install_call"]
+    assert d["install_call"].rstrip().endswith('])'), \
+        "the runnable line survives — this is a disclosure, not a refusal"

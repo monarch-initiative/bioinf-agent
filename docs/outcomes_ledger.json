@@ -5815,8 +5815,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1033",
-    "end_line": 1033,
+    "where": "agent/skills/resolver.py:1056",
+    "end_line": 1056,
     "named_in_test": null
   },
   {
@@ -5825,8 +5825,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1037",
-    "end_line": 1037,
+    "where": "agent/skills/resolver.py:1060",
+    "end_line": 1060,
     "named_in_test": null
   },
   {
@@ -5835,8 +5835,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1039",
-    "end_line": 1039,
+    "where": "agent/skills/resolver.py:1062",
+    "end_line": 1062,
     "named_in_test": null
   },
   {
@@ -5845,8 +5845,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1066",
-    "end_line": 1066,
+    "where": "agent/skills/resolver.py:1089",
+    "end_line": 1089,
     "named_in_test": null
   }
 ]

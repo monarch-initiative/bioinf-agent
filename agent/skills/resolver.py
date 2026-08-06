@@ -277,11 +277,16 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     first), so bio-primary tools are unaffected."""
     best = None  # (version_key, channel, version, summary, repo, repo_field)
     errors: list[str] = []
+    # Kept BESIDE `errors` rather than parsed back out of it: the joined strings are for a
+    # human, and re-splitting `"{channel}: {err}"` would break on the first err containing
+    # ": " — which every `TimeoutError: …` does.
+    channel_errors: dict[str, str] = {}
     for channel in ("bioconda", "conda-forge"):
         data, err = _fetch_json(
             f"https://api.anaconda.org/package/{channel}/{name.lower()}", timeout)
         if err:
             errors.append(f"{channel}: {err}")
+            channel_errors[channel] = err
             continue
         if isinstance(data, dict) and data.get("versions"):
             ver = _pick_latest(data["versions"], data.get("latest_version") or "")
@@ -319,6 +324,24 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
         if best[4]:
             out["repo"] = best[4]
             out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
+        if errors:
+            # A HIT IS A FACT; "THIS IS THE NEWER BUILD" IS A COMPARISON, and a comparison
+            # made against a channel that never answered is a claim about what we could
+            # REACH. This function's whole reason for probing both channels is the second
+            # thing — guarding against an abandoned build on one channel shadowing the
+            # maintained package on the other — and that guard used to fail SILENTLY open.
+            #
+            # Measured live 2026-08-06 while driving `seurat` end to end: with conda-forge
+            # timing out, `probe_conda('r-seurat')` returned bioconda's **3.0.2 (2019)** as a
+            # clean pick, indistinguishable from a real answer, while conda-forge carries
+            # **5.5.1**. Two calls one second apart — `language='r'` with the name spelled
+            # `seurat` vs `Seurat`, which lowercase to the SAME URL — disagreed by two major
+            # versions of the standard single-cell toolkit, and neither said why.
+            #
+            # The old comment here ("errors only matter when NOTHING was found") is right
+            # about availability and wrong about the pick, so the error is recorded either
+            # way now and `resolve` discloses it on a conda win.
+            out["channel_errors"] = channel_errors
         return out
     # A hit on either channel is a fact regardless of the other's health, so errors only
     # matter when NOTHING was found: then "not on conda" rests on a probe that never ran.
@@ -2447,6 +2470,32 @@ def resolve(
                           f"from them — this is the best answer among the tiers we could "
                           f"REACH, which is a different claim. {retry}",
                           "a higher-ranked tier was NOT ruled out, only unreachable")
+
+    # THE VERSION YOU ARE BEING HANDED IS THE BEST OF THE CHANNELS WE COULD REACH.
+    #
+    # `probe_conda` queries bioconda AND conda-forge and returns the higher real version —
+    # that comparison is the guard against an abandoned build on one channel shadowing the
+    # maintained package on the other. When a channel does not answer, the guard silently
+    # runs on one input and its output is indistinguishable from a real answer.
+    #
+    # Measured live: with conda-forge timing out, `resolve('seurat', language='r')` emitted
+    # `r-seurat=3.0.2` — a 2019 build — while conda-forge carries 5.5.1. Two calls seconds
+    # apart disagreed by two major versions of the standard single-cell toolkit and neither
+    # said why. Same shape as `unchecked_tiers` one level up ("the best among the tiers we
+    # could REACH is a different claim from the best there is"), one level down, and it was
+    # the only level not saying it.
+    if chosen == "conda" and decision.get("install_call"):
+        _cerr = (availability.get("conda") or {}).get("channel_errors") or {}
+        if _cerr:
+            decision["conda_channel_unchecked"] = _cerr
+            _won = availability["conda"].get("channel", "")
+            _disclose(decision,
+                      f"VERSION NOT PROVEN LATEST — {', '.join(f'{c} ({e})' for c, e in _cerr.items())}. "
+                      f"'{tool}' resolved on {_won}, but the other channel never answered, so the "
+                      f"higher-version comparison ran on ONE input. This is the newest build among "
+                      f"the channels we could REACH, which is a different claim from the newest "
+                      f"build. Re-run when the probe recovers before pinning this version.",
+                      "a channel that could carry a newer build was NOT ruled out, only unreachable")
 
     # THE NAME IS A LINEAGE, AND THE FIELD RENAMES THE PACKAGE WHEN THE LINEAGE MOVES.
     #

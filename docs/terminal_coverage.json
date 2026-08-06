@@ -584,9 +584,9 @@
     "agent/skills/authors_sources.py:279": true,
     "agent/skills/authors_sources.py:300": false,
     "agent/skills/backgroundable.py:176": true,
-    "agent/skills/resolver.py:1033": false,
-    "agent/skills/resolver.py:1037": false,
-    "agent/skills/resolver.py:1039": false,
-    "agent/skills/resolver.py:1066": false
+    "agent/skills/resolver.py:1056": false,
+    "agent/skills/resolver.py:1060": false,
+    "agent/skills/resolver.py:1062": false,
+    "agent/skills/resolver.py:1089": false
   }
 }
