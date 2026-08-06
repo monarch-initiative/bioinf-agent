@@ -105,6 +105,49 @@ class SourceHint(BaseModel):
     value: str = Field(min_length=1)
 
 
+class Resolution(BaseModel):
+    """WHAT THE RIDE BELIEVES THE USER MEANT, as a claim to be CHECKED — not a fact.
+
+    This is the slot the ride's world knowledge lives in, and its absence was a real
+    architectural hole. `resolve('gatk')` returned `gatk=3.8` — a 2017 release — because
+    this field versions tools by RENAMING the package and GATK4 ships as `gatk4`. An LLM
+    knows that instantly. The system did not, and could not: the intake recorded the user's
+    raw word and forbade normalizing it, then handed that word to a mechanical resolver, so
+    there was nowhere for the one participant who knew to say so. The user's question was
+    exactly right — "why are you so easily able to tell that gatk4 is the latest, but the
+    system shits itself when it tries to do it itself?" Because nothing ever asked.
+
+    The rule that forbade it is still right and is UNCHANGED: `ToolRequest.name` stays the
+    user's verbatim word. This is a SECOND field, so the two are never confused — the record
+    carries "the user said `gatk`, we installed `gatk4`, because …", which is precisely what
+    a human reviewing an ENV report needs in order to disagree with us.
+
+    AND IT IS VERIFIED, NEVER TRUSTED. `resolve_tool(tool=…, user_said=…)` checks that the
+    claimed package actually exists on a channel and belongs to the same name-family as the
+    user's word, and REFUSES when it does not. That keeps this from being a licence to
+    hallucinate a package name: it is the same posture the honesty contract takes to every
+    other agent-authored field, applied to the one that carries the most leverage.
+
+    `None` on ToolRequest.resolution is a STATED "I have no prior knowledge of this tool" —
+    it routes to INVESTIGATE, not to a silent install of the raw name."""
+    model_config = ConfigDict(extra="forbid")
+
+    package: str = Field(min_length=1)
+    """The canonical package/repo name the ride believes is meant — 'gatk4' for a request
+    that said 'gatk', 'Seurat' for 'seurat'. May equal the user's word; usually does."""
+
+    version: Optional[str]
+    """The specific version the ride believes is meant, or `None` for "the latest of that
+    package". `None` here is NOT the same as `ToolRequest.version is None`: that one means
+    the user did not say, this one means the ride deliberately wants latest."""
+
+    why: str = Field(min_length=1)
+    """The REASONING, in a sentence, and it is required. It goes into the ENV report so a
+    human can disagree with it — 'GATK4 is the current major line; bioconda ships it as
+    `gatk4`, while the bare `gatk` package is GATK3 (3.8, 2017)'. A claim with no stated
+    basis is indistinguishable from a guess, and this project does not ship those."""
+
+
 class ToolRequest(BaseModel):
     """One tool the user asked for, VERBATIM. The producer (the LLM's reading of the
     prompt) fills every field; `None` is a value it must STATE, never a default —
@@ -116,7 +159,10 @@ class ToolRequest(BaseModel):
     """The tool as the USER named it — 'cellranger', 'talos'. NEVER normalized to a
     package id here: identity is RESOLVE's job and the ride's judgment, not the
     intake's. Recording the raw name is what lets the ride later catch "green terminal,
-    wrong tool" (scenario 9: 'cellranger' the 10x pipeline vs the CRAN parser)."""
+    wrong tool" (scenario 9: 'cellranger' the 10x pipeline vs the CRAN parser).
+
+    The ride's normalization lives in `resolution`, a SEPARATE field, so this one keeps
+    meaning exactly what it always meant and the two can be shown side by side."""
 
     version: Optional[str]
     """Verbatim and UNRESOLVED. `None` means the user did not specify — it is NOT
@@ -132,6 +178,16 @@ class ToolRequest(BaseModel):
     """Domain context — 'for scRNA cell calling'. The disambiguator that separates a
     name collision (scenario 9). None when the user gave no context — stated, not
     guessed."""
+
+    resolution: Optional[Resolution] = None
+    """The ride's judgment about which package this request actually means, with its
+    reasoning — see `Resolution`. `None` is a STATED "I have no prior knowledge of this
+    tool", and routes to INVESTIGATE so the family and self-descriptions come back before
+    anything installs. Nothing is ever installed on a belief nobody wrote down.
+
+    Defaulted rather than required ONLY because every RequestIntent authored before this
+    field existed would otherwise fail to parse; the gate treats a missing one exactly as a
+    stated `None`, so absence buys no silent pass."""
 
 
 class DataOp(BaseModel):
@@ -308,6 +364,9 @@ def gate(intent: RequestIntent) -> GateResult:
                                                     the intent is underspecified)
           · else any unknown at all    → INVESTIGATE (findable; the ride fills it and
                                                     records how)
+          · any tool with no stated
+            `resolution`               → INVESTIGATE (the ride has not said WHICH package
+                                                    this request means — look, then re-state)
           · no unknowns                → PROCEED   (the LLM claims completeness)
     """
     rail = route(intent)
@@ -324,6 +383,35 @@ def gate(intent: RequestIntent) -> GateResult:
     unfindable = [u for u in intent.unknowns if not u.findable]
     if unfindable:
         return GateResult(outcome=Outcome.ask, rail=rail, blocking=unfindable)
-    if intent.unknowns:
-        return GateResult(outcome=Outcome.investigate, rail=rail, blocking=list(intent.unknowns))
+
+    # A TOOL WITH NO STATED `resolution` IS AN UNKNOWN, whether or not the ride listed it.
+    #
+    # This is the gate half of the hole `Resolution` fills. Before it, the intake recorded
+    # the user's raw word, forbade normalizing it, and PROCEEDED — so `gatk` went to the
+    # resolver as `gatk` and came back as GATK3 from 2017, with every mechanical check
+    # green. The ride knew better and was never asked.
+    #
+    # Synthesised here rather than trusted from `unknowns[]` on purpose: this is the ONE
+    # gap the code can see for itself (the field is either filled or it is not), so making
+    # the ride declare it would just be another chance to forget. Everything else in this
+    # function still routes purely on the ride's own declarations.
+    # ...EXCEPT when the user pinned the source themselves. "install talos from
+    # github.com/populationgenomics/talos" leaves nothing for the ride to normalize: the
+    # user named the artifact, and this codebase already treats a user-supplied repo as
+    # authoritative intent everywhere else (the cross-namespace collision guard, the
+    # fork-anchor reconciliation). Demanding a resolution there would be asking the ride to
+    # restate a decision the user already made, which is the "always ask taxes the 70%"
+    # failure in a new place.
+    unstated = [Unknown(field=f"{t.name}.resolution", findable=True,
+                        reason=("no canonical package stated for this request. Say WHICH "
+                                "package it means and WHY — this field renames packages "
+                                "across major versions (a request for 'gatk' resolves to "
+                                "GATK3), so the user's word is not reliably the package. "
+                                "If you do not know the tool, resolve_tool/discovery first "
+                                "and read the family + self-descriptions, then re-interpret."))
+                for t in intent.tools if t.resolution is None and t.source_hint is None]
+
+    blocking = list(intent.unknowns) + unstated
+    if blocking:
+        return GateResult(outcome=Outcome.investigate, rail=rail, blocking=blocking)
     return GateResult(outcome=Outcome.proceed, rail=rail, blocking=[])

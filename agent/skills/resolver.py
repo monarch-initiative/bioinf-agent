@@ -32,6 +32,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
@@ -459,52 +460,86 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
     return rec
 
 
-def probe_version_lineage(tool: str, detail: dict, timeout: int = 12) -> dict[str, Any]:
-    """Does the channel we picked from ALSO carry the NEXT major lineage under a different
-    package name? Returns {} when it doesn't, or the successor's facts when it does.
+def probe_package_family(tool: str, timeout: int = 12) -> dict[str, Any]:
+    """SEARCH the channels for every package that shares this tool's name-family, and return
+    them all. `{}` when the family has one member (the common case) — silence, not noise.
 
-    Bioinformatics versions its tools by RENAMING the package. bioconda's `gatk` is 3.8, a
-    2017 release, and GATK4 lives at `gatk4` (4.6.2.0) — a different package, not a version
-    of the same one. So "the latest version of the name you typed" is a decade stale, every
-    identity fact about it is CORRECT (right project, right channel, right description), and
-    `install_conda_packages(env, [{"spec": "gatk=3.8", ...}])` is emitted with nothing
-    anywhere saying that the thing almost everyone means is one character away.
+    THIS IS THE RESEARCH STEP, and it exists because the system used to stop investigating
+    the moment it found ANYTHING. `resolve('gatk')` hits bioconda's `gatk`, so the dead-end
+    discovery path never fires, and the answer is `gatk=3.8` — a 2017 release — because
+    bioinformatics versions its tools by RENAMING the package and GATK4 ships as `gatk4`.
+    Every identity fact about that pick is CORRECT: right project, right channel, right
+    description, a decade stale. A registry hit is not the same as an answer, and "we found
+    one, stop looking" is how a stale one gets shipped with full confidence.
 
-    It is a FACT, not a verdict, and deliberately so — this cannot be resolved mechanically
-    and must not pretend to be. `bowtie` 1.3.1 → `bowtie2` and `macs2` → `macs3` fire on the
-    same rule, and there the older lineage is a live, legitimately-wanted tool. Nothing here
-    knows that nobody in 2026 means GATK3 while plenty of people do mean bowtie1; that is
-    world knowledge, so it belongs to the ride, and the ride can only apply it if it is TOLD
-    the successor exists. Ranking on "newer is better" would silently swap tools; refusing
-    would tax `bowtie` for a question it already answered. Say the true thing and move on.
+    An earlier cut of this GUESSED one successor (`{base}{major+1}`) and probed for it. That
+    worked for gatk by arithmetic accident and could not see `macs` 1.4.3 sitting under
+    `macs2`/`macs3`. Searching returns the whole family for the same single HTTP call, and
+    stops encoding an assumption about how projects number themselves.
 
-    MEASURED (2026-08-06, 18 common bioconda tools): fires on exactly gatk, bowtie and macs2
-    — the three that really are split lineages — and stays silent for samtools, bcftools,
-    bwa, picard, salmon, star, kallisto, hisat2, fastqc, trimmomatic, cutadapt, minimap2,
-    freebayes, vcftools and tophat. tophat matters: it is 2.1.2 with no `tophat3`, so the
-    corpus's deprecated-tools guard row (a user reproducing an old paper must not be blocked)
-    is untouched.
+    IT DOES NOT RANK, AND MUST NOT. The family is evidence, and reading it needs world
+    knowledge the resolver has no business faking:
 
-    Costs ONE extra probe_conda, and the caller pays it only on a live conda pick with no
-    version requested — a caller who typed a version named their lineage."""
+        gatk    -> gatk 3.8 "The full Genome Analysis Toolkit (GATK) framework"
+                   gatk4 4.6.2.0 "Genome Analysis Toolkit (GATK4)"        <- same toolkit
+        bowtie  -> bowtie 1.3.1 "An ultrafast memory-efficient short read aligner"
+                   bowtie2 2.5.5 "A fast and sensitive gapped read aligner."
+                   ...different repos, different capabilities: two TOOLS, not two versions
+        macs2   -> macs 1.4.3 / macs2 2.2.9.1 / macs3 3.0.4, one project's whole history
+
+    "Newest wins" would swap bowtie1 for bowtie2. Refusing would tax every one of these for
+    a question most callers have already answered. Both were tried on paper; what the ride
+    actually needs is the TABLE, in one call, so it can pick without a second round trip —
+    which is the whole complaint against the previous behaviour.
+
+    Absent is not unchecked: a failed search returns `{"probe_error": ...}` rather than an
+    empty family, so "this tool has no siblings" is never inferred from a probe that did not
+    run."""
     base = re.match(r"^(.*?)\d*$", tool.strip().lower()).group(1)
     if not base:
         return {}
-    try:
-        major = int(str(detail.get("latest") or "").split(".")[0])
-    except ValueError:
-        return {}                       # a date-string or unparseable version: no successor to name
-    successor = f"{base}{major + 1}"
-    if successor == tool.strip().lower():
+    data, err = _fetch_json(
+        f"https://api.anaconda.org/search?name={urllib.parse.quote(base)}&type=conda", timeout)
+    if err:
+        return {"probe_error": err}
+    if not isinstance(data, list):
         return {}
-    found = probe_conda(successor, timeout)
-    if not found.get("available"):
-        return {}                       # includes probe_error: absent-vs-unchecked does not
-                                        # matter here, since silence is this probe's own no-op
-    return {"asked": tool, "asked_latest": detail.get("latest"),
-            "successor": successor, "successor_latest": found.get("latest"),
-            "successor_channel": found.get("channel"),
-            "successor_summary": found.get("summary") or ""}
+    # `^{base}\d*$` — the family is the bare name plus its numbered siblings, nothing else.
+    # A bare substring match drags in emacs/gromacs for `macs` and bioconductor-rbowtie2 for
+    # `bowtie`; those are different projects that merely contain the letters.
+    pat = re.compile(rf"^{re.escape(base)}\d*$")
+    members = []
+    for pkg in data:
+        if pkg.get("owner") not in ("bioconda", "conda-forge"):
+            continue
+        if not pat.match(str(pkg.get("name") or "")):
+            continue
+        m = _GH_REPO_RE.search(str(pkg.get("dev_url") or pkg.get("home") or ""))
+        members.append({
+            "name": pkg["name"], "channel": pkg["owner"],
+            "latest": pkg.get("latest_version"),
+            "summary": re.sub(r"\s+", " ", str(pkg.get("summary") or "")).strip()[:200],
+            "repo": f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}" if m else "",
+        })
+    if len(members) < 2:
+        return {}                      # a family of one is just the package; say nothing
+
+    # ...and say nothing when the caller ALREADY NAMED the newest member. `resolve('gatk4')`
+    # does not need to be told that `gatk` exists: the request names the current lineage, the
+    # pick is that lineage, and there is no decision left to inform. Same for bowtie2, macs3,
+    # hisat2. The bare name sorts lowest because it is the original — `gatk` is GATK3,
+    # `bowtie` is bowtie1 — so "highest numeric suffix" is "newest lineage", which is the one
+    # ordering claim this function makes and the only one the names actually support.
+    def _suffix(n: str) -> int:
+        m = re.match(rf"^{re.escape(base)}(\d*)$", n)
+        return int(m.group(1)) if m and m.group(1) else 0
+
+    asked = tool.strip().lower()
+    if any(m["name"] == asked for m in members) and \
+            _suffix(asked) == max(_suffix(m["name"]) for m in members):
+        return {}
+    members.sort(key=lambda x: (_suffix(x["name"]), x["name"]))
+    return {"base": base, "members": members}
 
 
 def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
@@ -1766,6 +1801,7 @@ def resolve(
     prefer: Optional[str] = None,
     language: str = "",
     timeout: int = 12,
+    user_said: str = "",
     *,
     repo_discovery: Optional[dict] = None,
 ) -> dict[str, Any]:
@@ -1782,7 +1818,14 @@ def resolve(
     `github_repo` ('owner/repo') unlocks the binary/source tiers (a release
     asset can't be probed from a bare tool name). `prefer` forces a tier when
     available; it composes with `language`.
-    """
+
+    `user_said` is THE USER'S OWN WORD when `tool` is the caller's NORMALIZATION of it —
+    'gatk' alongside `tool='gatk4'`. It turns a silent substitution into a checked one:
+    the two must belong to the same package family, and if they do not, this REFUSES
+    (`refusal_reason='investigation_contradicted'`) instead of installing something the
+    user never named. Passing it is how the ride's world knowledge gets USED without being
+    TRUSTED — the same posture every other agent-authored field in this codebase gets. Omit
+    it when `tool` is already the user's word."""
     language = (language or "").lower().strip()
     availability: dict[str, dict] = {}
     if language == "r":
@@ -2497,40 +2540,93 @@ def resolve(
                       f"build. Re-run when the probe recovers before pinning this version.",
                       "a channel that could carry a newer build was NOT ruled out, only unreachable")
 
-    # THE NAME IS A LINEAGE, AND THE FIELD RENAMES THE PACKAGE WHEN THE LINEAGE MOVES.
+    # THE RIDE'S NORMALIZATION IS A CLAIM, AND CLAIMS GET CHECKED.
     #
-    # `resolve('gatk')` emits `gatk=3.8` — a 2017 release — because bioconda ships GATK4 as
-    # `gatk4`, a different package. Every fact about the pick is CORRECT, which is exactly
-    # what makes it dangerous: right project, right channel, right description, and a decade
-    # stale. So say the true thing, once, and poison the call so it is not pasted blind.
+    # `user_said='gatk'` with `tool='gatk4'` says: the user typed one thing, I am installing
+    # another, on purpose. That is exactly what should happen — an LLM knows GATK4 is the
+    # current line and the bare `gatk` package is GATK3 from 2017, and the system's job is to
+    # USE that knowledge, not to re-derive it mechanically. But a substitution nobody checks
+    # is a substitution nobody can catch, so it is verified here, where the family evidence
+    # already is: the two names must belong to ONE package family.
     #
-    # NOT a refusal and NOT a re-rank. This fires equally on `bowtie` → `bowtie2` and
-    # `macs2` → `macs3`, where the older lineage is a live tool somebody may genuinely want,
-    # and nothing mechanical separates those from gatk — the separating knowledge is that
-    # nobody in 2026 means GATK3, which is world knowledge and therefore the ride's. Refusing
-    # would tax the two healthy cases for a question they had already answered, and the
-    # corpus's own tophat row exists to guard against precisely that over-correction.
+    # Same family (`gatk`/`gatk4`, `seurat`/`Seurat`, `macs2`/`macs3`) -> corroborated, and
+    # the record carries both names so the ENV report can show "asked X, installed Y".
+    # Different families -> REFUSE. A ride that answers 'bwa' with 'bowtie2' is not
+    # normalizing, it is substituting a different tool, and no amount of good intent makes
+    # that safe to do silently.
+    _user_word = (user_said or "").strip().lower()
+    if _user_word and _user_word != tool.strip().lower():
+        decision["normalized_from"] = user_said
+        _base = re.match(r"^(.*?)\d*$", _user_word).group(1)
+        _tbase = re.match(r"^(.*?)\d*$", tool.strip().lower()).group(1)
+        # `r-{name}` / `bioconductor-{name}` are this module's OWN channel conventions, not
+        # a rename by the ride — strip them before comparing, or every language='r' call
+        # would read as a cross-family substitution.
+        _tbase = re.sub(r"^(r-|bioconductor-)", "", _tbase)
+        if _base != _tbase:
+            decision["chosen"] = None
+            chosen = None
+            decision["install_call"] = None
+            decision["refusal_reason"] = "investigation_contradicted"
+            decision["normalization_rejected"] = {"user_said": user_said, "resolved_to": tool}
+            decision["rationale"] = (
+                f"NORMALIZATION REJECTED: the request named '{user_said}' and this call asks "
+                f"for '{tool}', which is not the same package family ('{_base}' vs "
+                f"'{_tbase}'). Renaming across a major version is expected here and is "
+                f"supported; substituting a DIFFERENT tool is not, and nothing in the "
+                f"registries can tell the user you did it. Resolve '{user_said}' as typed and "
+                f"read the family, or ask the user to confirm they want '{tool}'. || "
+                + decision.get("rationale", ""))
+
+    # THE NAME IS A FAMILY, AND A REGISTRY HIT IS NOT AN ANSWER.
     #
-    # It is also the counter-example to the flag deleted above: `ambiguous` on a correct
-    # conda pick was a VERDICT that was false in the healthy case, so it trained readers to
-    # ignore it. "bioconda also carries bowtie2 2.5.5" is a FACT that is true every time it
-    # fires. The test for a disclosure is not how rarely it appears but whether it is still
-    # true when it does.
+    # `resolve('gatk')` emitted `gatk=3.8` — a 2017 release — because bioinformatics versions
+    # its tools by RENAMING the package and GATK4 ships as `gatk4`. Every fact about that
+    # pick was correct, which is what made it dangerous, and nothing anywhere said the thing
+    # almost everyone means was one character away. The root cause is not the name: it is
+    # that this module STOPPED INVESTIGATING the moment a registry answered. Discovery fires
+    # only at a dead end, so a stale-but-present hit ends the search by succeeding.
+    #
+    # So we research on a hit too, and hand the ride the whole family in ONE call: every
+    # member's version, its own words, and a pasteable line for each. The ride reads
+    # "gatk 3.8 / gatk4 4.6.2.0, both the Genome Analysis Toolkit" and picks in the same
+    # turn — no second round trip, which was the whole complaint.
+    #
+    # AND WE DO NOT RANK. "Newest wins" swaps bowtie1 (an ungapped aligner, its own repo,
+    # its own users) for bowtie2. Refusing taxes every family for a question most callers
+    # already answered — the over-correction the corpus's tophat row exists to guard.
+    # What the pick loses is only its false confidence: with a family on the table the
+    # install_call is comment-prefixed, so the older member is never pasted as though it
+    # were the settled answer, and the runnable line survives for whoever did mean it.
     if chosen == "conda" and not version and decision.get("install_call"):
-        _lin = probe_version_lineage(tool, availability.get("conda", {}), timeout)
-        if _lin:
-            decision["version_lineage"] = _lin
+        _fam = probe_package_family(tool, timeout)
+        if _fam.get("probe_error"):
+            # ABSENT ≠ UNCHECKED. Staying silent here would assert "this tool has no
+            # siblings" on a search that never ran — the same lie the rest of this file
+            # spends its length refusing.
+            decision["package_family_unchecked"] = _fam["probe_error"]
             _disclose(decision,
-                      f"NEXT MAJOR LINEAGE IS A DIFFERENT PACKAGE: you asked for '{tool}', "
-                      f"whose latest on {_lin['successor_channel']} is {_lin['asked_latest']} "
-                      f"— and {_lin['successor_channel']} ALSO carries "
-                      f"'{_lin['successor']}' at {_lin['successor_latest']}"
-                      + (f" ({_lin['successor_summary']})" if _lin['successor_summary'] else "")
-                      + f". This field versions tools by RENAMING the package, so the newest "
-                        f"'{tool}' is not the newest of this tool. Confirm which lineage you "
-                        f"mean; if it is the newer one, re-run with "
-                        f"resolve_tool('{_lin['successor']}').",
-                      "the pick below is the OLDER lineage, by the literal name you typed")
+                      f"SIBLING PACKAGES NOT CHECKED: the channel search for the '{tool}' "
+                      f"family failed ({_fam['probe_error']}). This field renames packages "
+                      f"across major versions, so a newer lineage may exist under another "
+                      f"name and we did NOT rule it out — this is unchecked, not absent.",
+                      "we could not look for sibling packages")
+        elif _fam.get("members"):
+            decision["package_family"] = _fam
+            _rows = "\n".join(
+                f"#   {m['name']}={m['latest']} ({m['channel']})"
+                + (f" — {m['summary']}" if m['summary'] else "")
+                + (f" [{m['repo']}]" if m['repo'] else "")
+                for m in _fam["members"])
+            _disclose(decision,
+                      f"THIS NAME IS A FAMILY — {len(_fam['members'])} packages on the "
+                      f"channels carry it, and this field renames the package when a major "
+                      f"version lands, so the newest '{tool}' need not be the newest of this "
+                      f"tool. All of them, with their own descriptions:\n{_rows}\n"
+                      f"# Pick the one the request means and call resolve_tool with THAT name "
+                      f"(they are separate packages, not versions of one). The line below is "
+                      f"the literal name you typed, nothing more.",
+                      "the pick below is one member of a family — confirm it is the right one")
 
     # A WORKFLOW IS NOT A TOOL, AND SAYING SO IS THE WHOLE ANSWER.
     #

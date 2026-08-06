@@ -108,6 +108,36 @@ def _no_network_unless_marked(request):
 
 
 @pytest.fixture(autouse=True)
+def _quiet_package_family_search(request, monkeypatch):
+    """Answer the anaconda SEARCH endpoint with an empty family, for every hermetic test.
+
+    `probe_package_family` runs on every conda win — it is the research step that stops the
+    resolver from treating the first registry hit as the answer. That made four unrelated
+    stub helpers reach the network at once: each stubbed `probe_conda` and none knew about a
+    probe that did not exist when they were written. The right fix is not four copies of one
+    line in four files — that is the hand-copy disease this repo keeps paying for — it is
+    one default, here, where the socket guard already lives.
+
+    CHAINED, not replaced: only the search URL is intercepted, so a test stubbing some other
+    fetch is unaffected, and a test that monkeypatches `_fetch_json` in its own body (the
+    family tests do) overrides this wholesale. Skipped under `live`, which is allowed out.
+    """
+    if "live" in request.keywords:
+        yield
+        return
+    from agent.skills import resolver
+    _real_fetch = resolver._fetch_json
+
+    def guarded(url, timeout=12):
+        if "/search?" in url:
+            return [], ""          # a family of one is silence — the default for most tools
+        return _real_fetch(url, timeout)
+
+    monkeypatch.setattr(resolver, "_fetch_json", guarded)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_record_writers(tmp_path: Path, monkeypatch):
     """Redirect every repo-root-anchored record writer at tmp_path, for EVERY test.
 

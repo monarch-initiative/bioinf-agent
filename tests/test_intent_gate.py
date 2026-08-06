@@ -73,8 +73,25 @@ def _intent(
     }
 
 
-def _tool(name, version=None, source_hint=None, purpose=None) -> dict:
-    return {"name": name, "version": version, "source_hint": source_hint, "purpose": purpose}
+def _tool(name, version=None, source_hint=None, purpose=None, resolution=None) -> dict:
+    return {"name": name, "version": version, "source_hint": source_hint,
+            "purpose": purpose, "resolution": resolution}
+
+
+def _res(package, why, version=None) -> dict:
+    """The ride's stated judgment about WHICH package a request means.
+
+    A PROCEED now requires one (2026-08-06), and that is a deliberate change to the
+    acceptance surface, not a fixture tidy-up. The intake recorded the user's verbatim word
+    and FORBADE normalizing it, so `gatk` went to the resolver as `gatk` and came back as
+    GATK 3.8 from 2017 with every mechanical check green — because this field versions tools
+    by RENAMING the package and GATK4 ships as `gatk4`. An LLM knows that instantly; the one
+    participant who knew had nowhere to write it down. `resolution` is that place, and the
+    gate refuses to PROCEED without it so a raw user word can never install by default.
+
+    Exempt: a tool carrying a `source_hint`. The user pinned the artifact themselves, and
+    demanding the ride restate that is the always-ask tax in a new costume."""
+    return {"package": package, "version": version, "why": why}
 
 
 def _unknown(field, findable, reason) -> dict:
@@ -101,10 +118,16 @@ ROWS: list[tuple[str, dict, Outcome, Rail, str]] = [
         "s2-multi-tool-one-env",
         _intent(
             kind="install_env", raw_prompt="I want samtools, bcftools, and bwa in one env",
-            tools=[_tool("samtools"), _tool("bcftools"), _tool("bwa")],
+            tools=[_tool("samtools", resolution=_res(
+                       "samtools", "bioconda packages this under the tool's own name; no rename")),
+                   _tool("bcftools", resolution=_res(
+                       "bcftools", "bioconda packages this under the tool's own name; no rename")),
+                   _tool("bwa", resolution=_res(
+                       "bwa", "bioconda packages this under the tool's own name; no rename"))],
         ),
         Outcome.proceed, Rail.INSTALL_ENV,
-        "3 tools, one env → PROCEED; 3× RESOLVE/INSTALL → one FREEZE (already supported)",
+        "3 tools, one env → PROCEED; 3× RESOLVE/INSTALL → one FREEZE (already supported). "
+        "Each states a resolution — usually, as here, that the package name IS the tool name",
     ),
     (
         "s3-near-miss-version",
@@ -235,7 +258,9 @@ ROWS: list[tuple[str, dict, Outcome, Rail, str]] = [
         "s12-add-to-env",
         _intent(
             kind="add_to_env", raw_prompt="Add multiqc to my talos env",
-            tools=[_tool("multiqc")], target_env="talos",
+            tools=[_tool("multiqc", resolution=_res(
+                "multiqc", "bioconda's `multiqc` is the tool; no numbered siblings, no rename"))],
+            target_env="talos",
         ),
         Outcome.proceed, Rail.ADD_TO_ENV,
         "tool + target env clear → PROCEED → re-freeze",
@@ -377,3 +402,71 @@ def test_the_meter_is_visible():
     print(f"\nGATE CORPUS: {passed}/{len(ROWS)} §7 scenarios route to the intended "
           f"outcome + rail (scenarios 14 ride-level, 15 composite → declared gaps, Phase 4)")
     assert passed == len(ROWS)
+
+
+# ---------------------------------------------------------------------------
+# §4 — the ride's judgment has a slot, and no slot means INVESTIGATE
+# ---------------------------------------------------------------------------
+
+def test_a_tool_with_no_stated_resolution_cannot_proceed():
+    """THE HOLE THIS CLOSES. `ToolRequest.name` is the user's verbatim word and is
+    explicitly forbidden from being normalized — correctly, that is what lets a wrong tool
+    be caught later. But nothing else captured which PACKAGE the request meant, so the raw
+    word went to a mechanical resolver and whatever it found installed.
+
+    Measured: `resolve('gatk')` returns `gatk=3.8`, a 2017 release, because this field
+    versions tools by RENAMING the package and GATK4 ships as `gatk4`. Every mechanical
+    check passes — right project, right channel, right description, decade stale. An LLM
+    identifies that instantly. The system could not, and could not have: the only
+    participant that knew had nowhere to say so.
+
+    So a tool with no stated `resolution` is an INVESTIGATE, and the blocking Unknown says
+    what to do about it. Note this gap is SYNTHESISED, not read from `unknowns[]`: it is
+    the one thing the code can see for itself (the field is filled or it is not), so making
+    the ride declare it would just be another chance to forget.
+
+    Break it: default `resolution` to the raw name, or let a missing one PROCEED."""
+    g = gate(parse_intent(_intent(
+        kind="install_env", raw_prompt="install gatk", tools=[_tool("gatk")])))
+    assert g.outcome is Outcome.investigate
+    assert [u.field for u in g.blocking] == ["gatk.resolution"]
+    assert "renames packages" in g.blocking[0].reason
+
+
+def test_a_stated_resolution_proceeds():
+    """The other half: state which package and why, and the gate gets out of the way. The
+    point is not to add a hoop — it is that the judgment gets WRITTEN DOWN, so the ENV
+    report can show a human 'you asked for gatk, we installed gatk4, because …'."""
+    g = gate(parse_intent(_intent(
+        kind="install_env", raw_prompt="install the latest gatk",
+        tools=[_tool("gatk", resolution=_res(
+            "gatk4", "GATK4 is the current major line; bioconda ships it as `gatk4`, while "
+                     "the bare `gatk` package is GATK3 (3.8, 2017)"))])))
+    assert g.outcome is Outcome.proceed
+    assert g.rail is Rail.INSTALL_ENV
+
+
+def test_a_user_pinned_source_needs_no_resolution():
+    """"install talos from github.com/populationgenomics/talos" leaves nothing to normalize:
+    the user named the artifact. This codebase already treats a user-supplied repo as
+    authoritative intent everywhere else, and demanding the ride restate it is the
+    always-ask tax in a new costume.
+
+    Break it: require a resolution unconditionally and scenario 1 stops proceeding."""
+    g = gate(parse_intent(_intent(
+        kind="install_env", raw_prompt="install talos from github.com/populationgenomics/talos",
+        tools=[_tool("talos", source_hint={"kind": "github_repo",
+                                           "value": "populationgenomics/talos"})])))
+    assert g.outcome is Outcome.proceed
+
+
+def test_a_resolution_must_carry_its_reasoning():
+    """`why` is required, and required for the reason every other required field here is:
+    a claim with no stated basis is indistinguishable from a guess. It is also the sentence
+    the human reads in the ENV report when they want to disagree with us.
+
+    Break it: make `why` optional and the record can carry a substitution nobody can audit."""
+    with pytest.raises(Exception):
+        parse_intent(_intent(
+            kind="install_env", raw_prompt="install gatk",
+            tools=[_tool("gatk", resolution={"package": "gatk4", "version": None})]))

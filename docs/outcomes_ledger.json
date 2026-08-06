@@ -5,8 +5,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:536",
-    "end_line": 536,
+    "where": "agent/mcp_tools/env_tools.py:569",
+    "end_line": 569,
     "named_in_test": false
   },
   {
@@ -2015,8 +2015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:577",
-    "end_line": 578,
+    "where": "agent/mcp_tools/env_tools.py:610",
+    "end_line": 611,
     "named_in_test": false
   },
   {
@@ -3045,8 +3045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:1094",
-    "end_line": 1095,
+    "where": "agent/mcp_tools/env_tools.py:1127",
+    "end_line": 1128,
     "named_in_test": false
   },
   {
@@ -3055,8 +3055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:541",
-    "end_line": 543,
+    "where": "agent/mcp_tools/env_tools.py:574",
+    "end_line": 576,
     "named_in_test": false
   },
   {
@@ -3065,8 +3065,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:549",
-    "end_line": 551,
+    "where": "agent/mcp_tools/env_tools.py:582",
+    "end_line": 584,
     "named_in_test": false
   },
   {
@@ -3075,8 +3075,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:560",
-    "end_line": 565,
+    "where": "agent/mcp_tools/env_tools.py:593",
+    "end_line": 598,
     "named_in_test": false
   },
   {
@@ -5685,8 +5685,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:92",
-    "end_line": 92,
+    "where": "agent/mcp_tools/intent_tools.py:127",
+    "end_line": 127,
     "named_in_test": null
   },
   {
@@ -5695,8 +5695,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:94",
-    "end_line": 94,
+    "where": "agent/mcp_tools/intent_tools.py:129",
+    "end_line": 129,
     "named_in_test": null
   },
   {
@@ -5705,8 +5705,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:99",
-    "end_line": 99,
+    "where": "agent/mcp_tools/intent_tools.py:134",
+    "end_line": 134,
     "named_in_test": null
   },
   {
@@ -5815,8 +5815,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1056",
-    "end_line": 1056,
+    "where": "agent/skills/resolver.py:1091",
+    "end_line": 1091,
     "named_in_test": null
   },
   {
@@ -5825,8 +5825,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1060",
-    "end_line": 1060,
+    "where": "agent/skills/resolver.py:1095",
+    "end_line": 1095,
     "named_in_test": null
   },
   {
@@ -5835,8 +5835,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1062",
-    "end_line": 1062,
+    "where": "agent/skills/resolver.py:1097",
+    "end_line": 1097,
     "named_in_test": null
   },
   {
@@ -5845,8 +5845,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_release_for_version",
-    "where": "agent/skills/resolver.py:1089",
-    "end_line": 1089,
+    "where": "agent/skills/resolver.py:1124",
+    "end_line": 1124,
     "named_in_test": null
   }
 ]

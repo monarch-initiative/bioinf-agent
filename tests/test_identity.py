@@ -56,18 +56,26 @@ def _stub(monkeypatch, *, conda=None, pip=None, cran=None, gh=None):
     """Stub the registry probes; drive the REAL resolve().
 
     NAME-AWARE, and it has to be. These stubs used to answer for ANY name, so the moment
-    resolve() asked a second conda question — `probe_version_lineage` looks for the next
-    major lineage under a different package name — the stub cheerfully reported that
-    `samtools2` exists, and two tests asserting a clean install_call went red over a
-    package nobody had described. A stub that cannot tell two probes apart is not a stub of
-    the thing being tested. It answers for the FIRST name it is asked about and says no to
-    every other, which is what a registry does."""
+    resolve() asked a second conda question the stub cheerfully reported that `samtools2`
+    exists, and two tests asserting a clean install_call went red over a package nobody had
+    described. A stub that cannot tell two probes apart is not a stub of the thing being
+    tested. It answers for the FIRST name it is asked about and says no to every other,
+    which is what a registry does.
+
+    It also answers the anaconda SEARCH endpoint with an empty family, because
+    `probe_package_family` runs on every conda win. Left unstubbed, the hermetic tier's
+    socket guard fires — correctly: a test CI gates merges on must not be able to fail
+    because a registry rate-limited us. A test that is ABOUT families calls
+    `_family_search` afterwards to override this."""
     _first: dict[str, str] = {}
 
     def _conda(n, t=12):
         return dict(conda) if conda and n == _first.setdefault("conda", n) else {"available": False}
 
     monkeypatch.setattr(R, "probe_conda", _conda)
+    monkeypatch.setattr(R, "_fetch_json",
+                        lambda url, timeout=12: ([], "") if "/search?" in url
+                        else (None, "not stubbed in this test"))
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: pip or {"available": False})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: cran or {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
@@ -365,72 +373,149 @@ def test_a_conda_hit_is_never_muted_for_a_thin_recipe(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# the name is a LINEAGE — bioinformatics versions tools by renaming the package
+# the name is a FAMILY — a registry hit is not the same as an answer
 # ---------------------------------------------------------------------------
-def test_the_next_major_lineage_is_disclosed_when_it_is_a_different_package(monkeypatch):
-    """`resolve('gatk')` emits `gatk=3.8` — a 2017 release — because bioconda ships GATK4 as
-    `gatk4`, a different package. Every fact about that pick is CORRECT: right project, right
-    channel, right description, and a decade stale. Nothing anywhere said the thing almost
-    everyone means is one character away.
 
-    Break it: stop probing the successor, or stop poisoning the call."""
+def _family_search(monkeypatch, packages):
+    """Stub the anaconda SEARCH endpoint with a list of package records."""
+    monkeypatch.setattr(R, "_fetch_json",
+                        lambda url, timeout=12: (packages, "") if "/search?" in url
+                        else (None, "not stubbed"))
+
+
+_GATK_FAMILY = [
+    {"owner": "bioconda", "name": "gatk", "latest_version": "3.8",
+     "summary": "The full Genome Analysis Toolkit (GATK) framework, license restricted.",
+     "home": "https://www.broadinstitute.org/gatk/"},
+    {"owner": "bioconda", "name": "gatk4", "latest_version": "4.6.2.0",
+     "summary": "Genome Analysis Toolkit (GATK4)",
+     "dev_url": "https://github.com/broadinstitute/gatk"},
+    # the noise a substring match would drag in, and this one must not appear
+    {"owner": "bioconda", "name": "gatk4-spark", "latest_version": "4.0.0", "summary": ""},
+]
+
+
+def test_the_whole_family_reaches_the_ride_in_one_call(monkeypatch):
+    """THE DEFECT THIS EXISTS FOR: the resolver stopped investigating the moment a registry
+    answered. `resolve('gatk')` hits bioconda's `gatk`, so the dead-end discovery path never
+    fires, and the answer is `gatk=3.8` — a 2017 release — because this field versions tools
+    by RENAMING the package and GATK4 ships as `gatk4`. Every fact about that pick is
+    correct: right project, right channel, right description, a decade stale.
+
+    A registry hit is not an answer. So we research on a HIT too, and the family arrives in
+    ONE call with each member's version and its own words — the ride reads "gatk 3.8 /
+    gatk4 4.6.2.0, both the Genome Analysis Toolkit" and picks in the same turn. Requiring a
+    second round trip was the whole complaint against the earlier behaviour.
+
+    An earlier cut GUESSED one successor (`{base}{major+1}`); it worked for gatk by
+    arithmetic accident and could never have seen `macs` 1.4.3 under `macs2`/`macs3`.
+
+    Break it: drop the search, or emit a clean install_call over a multi-member family."""
     _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "3.8",
                               "summary": "The full Genome Analysis Toolkit (GATK) framework."})
-    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: (
-        {"available": True, "channel": "bioconda", "latest": "3.8",
-         "summary": "The full Genome Analysis Toolkit (GATK) framework."} if n == "gatk"
-        else {"available": True, "channel": "bioconda", "latest": "4.6.2.0",
-              "summary": "Genome Analysis Toolkit (GATK4)"} if n == "gatk4"
-        else {"available": False}))
+    _family_search(monkeypatch, _GATK_FAMILY)
     d = R.resolve("gatk")
     assert d["chosen"] == "conda", "a FACT, not a refusal — the pick stands"
-    assert d["version_lineage"]["successor"] == "gatk4"
-    assert d["version_lineage"]["successor_latest"] == "4.6.2.0"
-    assert d["install_call"].lstrip().startswith("#"), "do not paste this one blind"
-    assert "resolve_tool('gatk4')" in d["install_call"], "name the next call, not just the problem"
+    names = [m["name"] for m in d["package_family"]["members"]]
+    assert names == ["gatk", "gatk4"],         f"the family must be the bare name + numbered siblings only, got {names}"
+    assert d["package_family"]["members"][1]["repo"] == "broadinstitute/gatk"
+    assert d["install_call"].lstrip().startswith("#"), "do not paste one member of a family blind"
+    assert "gatk4=4.6.2.0" in d["install_call"], "the alternative must be pasteable, not hinted"
+    assert "Genome Analysis Toolkit (GATK4)" in d["install_call"],         "each member's OWN words are what the ride judges on"
     assert d["install_call"].rstrip().endswith(
-        'install_conda_packages(env, [{"spec": "gatk=3.8", "channel": "bioconda"}])'), \
-        "the runnable line survives — a caller who DID mean GATK3 is not blocked"
+        'install_conda_packages(env, [{"spec": "gatk=3.8", "channel": "bioconda"}])'),         "the runnable line survives — a caller who did mean GATK3 is not blocked"
 
 
-def test_a_pinned_version_names_its_own_lineage_and_costs_no_probe(monkeypatch):
-    """A caller who typed a version chose a lineage; asking them again is noise, and the
-    successor probe is one HTTP round trip we then owe nothing for.
+def test_the_family_is_never_ranked_for_the_ride(monkeypatch):
+    """NEWEST DOES NOT WIN, and this is the case that proves why. bowtie and bowtie2 are
+    different repos, different capabilities (ungapped vs gapped) and different user bases:
+    two TOOLS that share a prefix, not two versions of one. Auto-routing to the higher number
+    would hand a bowtie1 user a different aligner.
 
-    Break it: run the lineage probe unconditionally."""
-    asked = []
+    The resolver states the family and stops. Which member the request means is world
+    knowledge, and world knowledge belongs to the ride — the same ruling that deleted the
+    vendor name table.
 
-    def _conda(n, t=12):
-        asked.append(n)
-        return {"available": True, "channel": "bioconda", "latest": "3.8", "summary": "GATK"}
-
-    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
-    monkeypatch.setattr(R, "probe_conda", _conda)
-    d = R.resolve("gatk", version="3.8")
-    assert "version_lineage" not in d
-    assert asked == ["gatk"], f"one probe, not two: {asked}"
-
-
-def test_no_successor_no_noise(monkeypatch):
-    """The calibration half. bioconda carries no `tophat3`, so a user reproducing a 2013
-    paper with tophat 2.1.2 gets a clean call — the corpus's deprecated-tools row is a guard
-    against exactly this kind of over-correction, and it is not a hypothetical: the mechanism
-    fires on only 3 of 18 common bioconda tools (gatk, bowtie, macs2), each a real split.
-
-    Break it: disclose on any numbered name, or on a successor that does not exist."""
-    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
-    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
-    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: (
-        {"available": True, "channel": "bioconda", "latest": "2.1.2",
-         "summary": "A spliced read mapper"} if n == "tophat" else {"available": False}))
-    d = R.resolve("tophat")
+    Break it: re-rank on the numeric suffix, or refuse when a family has more than one member."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "1.3.1",
+                              "summary": "An ultrafast memory-efficient short read aligner"})
+    _family_search(monkeypatch, [
+        {"owner": "bioconda", "name": "bowtie", "latest_version": "1.3.1",
+         "summary": "An ultrafast memory-efficient short read aligner",
+         "home": "https://github.com/BenLangmead/bowtie"},
+        {"owner": "bioconda", "name": "bowtie2", "latest_version": "2.5.5",
+         "summary": "A fast and sensitive gapped read aligner.",
+         "dev_url": "https://github.com/BenLangmead/bowtie2"},
+    ])
+    d = R.resolve("bowtie")
     assert d["chosen"] == "conda"
-    assert "version_lineage" not in d
+    assert d["install_call"].rstrip().endswith(
+        'install_conda_packages(env, [{"spec": "bowtie=1.3.1", "channel": "bioconda"}])'),         "bowtie1 must still be installable — it is a live tool, not a stale lineage"
+    assert "BenLangmead/bowtie2" in d["install_call"],         "the DIFFERENT repo is the fact that tells a reader these are sibling projects"
+
+
+def test_naming_the_newest_member_earns_silence(monkeypatch):
+    """`resolve('gatk4')` does not need to be told `gatk` exists: the request names the
+    current lineage, the pick IS that lineage, and no decision is left to inform. Same for
+    bowtie2, macs3, hisat2 — which is most of the names anyone actually types.
+
+    A disclosure that fires when there is nothing to decide is the calibration failure the
+    `anndata` ambiguity flag was deleted for, one file over.
+
+    Break it: disclose whenever a family has more than one member."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "4.6.2.0",
+                              "summary": "Genome Analysis Toolkit (GATK4)"})
+    _family_search(monkeypatch, _GATK_FAMILY)
+    d = R.resolve("gatk4")
+    assert "package_family" not in d
+    assert d["install_call"].startswith("install_conda_packages(")
+
+
+def test_a_pinned_version_costs_no_family_search(monkeypatch):
+    """A caller who typed a version chose a lineage; the search is one HTTP round trip we
+    then owe nothing for.
+
+    Break it: run the family search unconditionally."""
+    seen = []
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "3.8",
+                              "summary": "GATK", "versions": ["3.7", "3.8"]})
+    monkeypatch.setattr(R, "_fetch_json",
+                        lambda url, timeout=12: (seen.append(url), (None, "unexpected"))[1])
+    d = R.resolve("gatk", version="3.8")
+    assert "package_family" not in d
+    assert not seen, f"a pinned version must not trigger the search: {seen}"
+
+
+def test_a_failed_family_search_is_unchecked_not_absent(monkeypatch):
+    """"This tool has no siblings" must never be inferred from a search that did not run.
+    The whole file spends its length on this distinction; a new probe does not get an
+    exemption.
+
+    Break it: return {} on a probe error and the caller reads silence as "no family"."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "3.8",
+                              "summary": "GATK"})
+    monkeypatch.setattr(R, "_fetch_json",
+                        lambda url, timeout=12: (None, "rate_limited: 429"))
+    d = R.resolve("gatk")
+    assert d["package_family_unchecked"] == "rate_limited: 429"
+    assert "package_family" not in d
+    assert "NOT CHECKED" in d["install_call"]
+    assert "unchecked, not absent" in d["install_call"]
+
+
+def test_a_single_member_family_is_silence(monkeypatch):
+    """Most tools. samtools has no numbered siblings, so the search returns one member and
+    the call stays a clean one-liner — the measured shape for 7 of 10 common tools."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "1.24",
+                              "summary": "Tools for dealing with SAM, BAM and CRAM files"})
+    _family_search(monkeypatch, [
+        {"owner": "bioconda", "name": "samtools", "latest_version": "1.24",
+         "summary": "Tools for dealing with SAM, BAM and CRAM files"},
+        {"owner": "bioconda", "name": "bioconductor-rsamtools", "latest_version": "2.0",
+         "summary": "an R binding"},          # shares the letters, not the family
+    ])
+    d = R.resolve("samtools")
+    assert "package_family" not in d
     assert d["install_call"].startswith("install_conda_packages(")
 
 
@@ -508,3 +593,59 @@ def test_a_channel_that_never_answered_does_not_make_a_version_the_latest(monkey
     assert "NOT PROVEN LATEST" in d["install_call"]
     assert d["install_call"].rstrip().endswith('])'), \
         "the runnable line survives — this is a disclosure, not a refusal"
+
+
+# ---------------------------------------------------------------------------
+# the ride's normalization is a CLAIM, and claims get checked
+# ---------------------------------------------------------------------------
+def test_a_rename_across_a_major_version_is_supported_and_recorded(monkeypatch):
+    """`user_said='gatk'` with `tool='gatk4'` says: the user typed one thing, I am installing
+    another, deliberately. That is what SHOULD happen — an LLM knows GATK4 is the current
+    line and the bare `gatk` package is GATK3 from 2017, and the system's job is to USE that
+    knowledge rather than re-derive it mechanically.
+
+    Both names are kept, because the pair is what a human reviewing the ENV report needs in
+    order to disagree with us: "you asked for X, we installed Y".
+
+    Break it: drop `normalized_from` and the substitution becomes invisible."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "4.6.2.0",
+                              "summary": "Genome Analysis Toolkit (GATK4)"})
+    d = R.resolve("gatk4", user_said="gatk")
+    assert d["chosen"] == "conda"
+    assert d["normalized_from"] == "gatk"
+    assert "normalization_rejected" not in d
+    assert d["install_call"].startswith("install_conda_packages(")
+
+
+def test_swapping_in_a_different_tool_is_refused(monkeypatch):
+    """The check that keeps the above from being a licence to hallucinate. A ride answering
+    'bwa' with 'bowtie2' is not normalizing across a major version, it is substituting a
+    different aligner — and nothing in the registries can tell the user it happened, because
+    both are real, correct, well-described packages.
+
+    Same family (gatk/gatk4, macs2/macs3) passes; different family refuses. This is the
+    posture every other agent-authored field in this codebase gets, applied to the one with
+    the most leverage.
+
+    Break it: trust `tool` and record `user_said` as decoration."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "2.5.5",
+                              "summary": "A fast and sensitive gapped read aligner."})
+    d = R.resolve("bowtie2", user_said="bwa")
+    assert d["chosen"] is None
+    assert d["install_call"] is None
+    assert d["refusal_reason"] == "investigation_contradicted"
+    assert d["normalization_rejected"] == {"user_said": "bwa", "resolved_to": "bowtie2"}
+    assert "NORMALIZATION REJECTED" in d["rationale"]
+
+
+def test_a_channel_naming_convention_is_not_a_substitution(monkeypatch):
+    """`r-{name}` and `bioconductor-{name}` are THIS MODULE's channel conventions, not a
+    rename by the ride. Comparing them raw would make every `language='r'` call look like a
+    cross-family substitution and refuse it.
+
+    Break it: drop the prefix strip and R packages stop resolving."""
+    _stub(monkeypatch, conda={"available": True, "channel": "conda-forge", "latest": "5.5.1",
+                              "summary": "Tools for Single Cell Genomics"})
+    d = R.resolve("r-seurat", user_said="seurat")
+    assert d["chosen"] == "conda"
+    assert "normalization_rejected" not in d
