@@ -245,6 +245,17 @@ def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
     # own `--version`, so the adopted fork ships with `9cef4057`, not None and not htslib.
     monkeypatch.setattr(F, "_image_present", lambda image: True)
     monkeypatch.setattr(F, "_image_digest", lambda image: "sha256:" + "cd" * 32)
+    # Same locus stub _mock_docker installs, and for the same reason — but this test
+    # builds its own stubs rather than calling it, so it did not get one. That made the
+    # `proven` assertion depend on AMBIENT MACHINE STATE: `talos-authors:11.0.0` happens
+    # to exist on the development laptop, so `docker image inspect` behind
+    # locus.image_arch resolved, BUILT.platform read CHECKED, and the test passed. On a
+    # runner with no Docker and no such image it reads UNOBSERVED — which is correct,
+    # and correctly downgrades the outcome to `degraded`. Green here, red in CI, and the
+    # difference was a leftover image nobody declared.
+    import agent.skills.locus as LOC
+    monkeypatch.setattr(LOC, "image_arch",
+                        lambda ref: {"resolved": True, "arch": "amd64"})
     import agent.skills.container_build as CB
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))
