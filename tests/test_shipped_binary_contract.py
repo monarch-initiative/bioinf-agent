@@ -229,7 +229,10 @@ def test_generators_all_emit_the_tool_name_so_it_can_be_recorded():
     # rather than hidden behind an underscore, because a leading `_` on a function
     # another module imports misdescribes it. Anything public and NOT on this list
     # must be a generator and must carry `tool`.
-    HELPERS = {"jar_conda_specs", "java_version_check"}
+    HELPERS = {"jar_conda_specs", "java_version_check",
+               # the per-tier version probes: they ask an ALREADY-installed artifact
+               # its version, so they emit no install spec and name no new tool.
+               "perl_version_probe", "r_version_probe"}
     public = {n: f for n, f in vars(IC).items()
               if inspect.isfunction(f) and not n.startswith("_") and f.__module__ == IC.__name__}
     gens = {n: f for n, f in public.items() if n not in HELPERS}

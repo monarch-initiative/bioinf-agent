@@ -5055,11 +5055,15 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
 
     class FakeCB:
         platform = "linux/amd64"
+        longtail = []
         def validate_in_image(self, image, checks, probe_tools=None):
             assert probe_tools == ["seqtk"], "tool tokens must be forwarded"
             return {"success": True,
                     "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {"seqtk": "Version: 1.4-r122"}}
+        def probe_versions(self, image, probes):
+            assert probes == {}, "no tier here declares a version probe"
+            return {}
 
     # Stub the control experiment: it spawns a real container, and this test is about
     # threading captured facts, not about docker. Its own coverage is below.
@@ -5088,9 +5092,12 @@ def test_envbuild_refuses_evidence_that_passes_without_the_tool(monkeypatch):
 
     class FakeCB:
         platform = "linux/amd64"
+        longtail = []
         def validate_in_image(self, image, checks, probe_tools=None):
             return {"success": True, "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {}}
+        def probe_versions(self, image, probes):
+            return {}
 
     monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
                         lambda platform, ev: ("vacuous", "also exits 0 without the tool"))

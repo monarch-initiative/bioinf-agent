@@ -159,7 +159,7 @@ def main() -> int:
     corpus = json.loads(CORPUS.read_text())
     rows = corpus.get("rows", [])
 
-    drift, flipped = [], []
+    drift, flipped, unstable = [], [], []
     for r in rows:
         if not r.get("expect", {}).get("assertable", True):
             continue
@@ -168,12 +168,36 @@ def main() -> int:
         except Exception as e:                      # a registry outage is not a verdict
             print(f"  !! {r['id']}: probe failed ({e}) — leaving the row untouched")
             continue
-        was = {k: r.get("actual_today", {}).get(k) for k in _OBSERVED}
-        if any(was.get(k) != actual.get(k) for k in _OBSERVED if k in r.get("actual_today", {})):
-            drift.append((r["id"], was, actual))
+        was_correct = r.get("is_correct_today")
         correct = _is_correct(r["expect"], actual)
-        if correct != r.get("is_correct_today"):
-            flipped.append((r["id"], r.get("is_correct_today"), correct))
+
+        # CONFIRM A REGRESSION BEFORE RECORDING IT. Everything else here is a refresh; a
+        # green->red flip is the corpus's one destructive write, and it is the one most
+        # easily manufactured by weather. A rate-limited github probe comes back as a clean
+        # `investigation_incomplete` — indistinguishable from the resolver having genuinely
+        # stopped finding the repo — and one unconfirmed write turns that into a permanent
+        # red row that the NEXT run then reads as the baseline, so the transient never
+        # surfaces as a transient. (Measured: exactly one such false regression in the
+        # 2026-08-06 re-probe, caught only because it was double-probed by hand.)
+        # Re-probing costs one call on the handful of rows that flipped; a laundered red
+        # costs the reader their trust in every other row on the page.
+        if was_correct is True and correct is False:
+            try:
+                second = probe(r["call"])
+            except Exception as e:
+                print(f"  !! {r['id']}: confirming probe failed ({e}) — leaving the row untouched")
+                continue
+            if _is_correct(r["expect"], second):
+                unstable.append((r["id"], actual, second))
+                continue                            # one no + one yes is not a verdict
+            actual = second                         # record the observation that CONFIRMED it
+
+        prev = r.get("actual_today", {})
+        was = {k: prev.get(k) for k in _OBSERVED}
+        if any(was.get(k) != actual.get(k) for k in _OBSERVED if k in prev):
+            drift.append((r["id"], was, actual))
+        if correct != was_correct:
+            flipped.append((r["id"], was_correct, correct))
         if not a.check:
             r["actual_today"] = actual
             r["is_correct_today"] = correct
@@ -183,13 +207,21 @@ def main() -> int:
     for rid, was, now in flipped:
         arrow = "FIXED" if now else "REGRESSED"
         print(f"  {arrow:9s} {rid}: is_correct_today {was} -> {now}")
+    for rid, first, second in unstable:
+        print(f"  UNSTABLE  {rid}: probed red then green in one run — row left as it was. "
+              f"first={first} second={second}")
 
     if a.check:
-        print(f"\n  {len(drift)} drifted · {len(flipped)} changed correctness (nothing written)")
+        print(f"\n  {len(drift)} drifted · {len(flipped)} changed correctness · "
+              f"{len(unstable)} unstable (nothing written)")
         return 1 if (drift or flipped) else 0
 
     corpus["probed_on"] = _dt.date.today().isoformat()
-    CORPUS.write_text(json.dumps(corpus, indent=1) + "\n")
+    # indent=2 + ensure_ascii=False MATCH THE COMMITTED FILE. They are not cosmetic: with
+    # indent=1 (and \u-escaped em-dashes) every run rewrote all 1,844 lines, so a two-line
+    # behaviour change arrived as a whole-file diff and the reviewer could not see what
+    # actually moved. A meter whose updates are unreviewable is a meter nobody checks.
+    CORPUS.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + "\n")
     ok = sum(1 for r in rows if r.get("is_correct_today"))
     print(f"\n  wrote {CORPUS.relative_to(ROOT)}  ({len(rows)} scenarios · {ok} reach intent · "
           f"{len(rows) - ok} do not · probed {corpus['probed_on']})")

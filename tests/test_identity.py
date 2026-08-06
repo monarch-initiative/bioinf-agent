@@ -103,10 +103,18 @@ def test_no_chosen_means_no_identity(monkeypatch):
 # the two real misroutes: the entry's OWN words are surfaced as the evidence
 # ---------------------------------------------------------------------------
 def test_wrong_tool_surfaces_its_own_words_for_the_ride(monkeypatch):
-    """resolve('cellranger') returns CRAN's spreadsheet-range parser, not 10x Genomics'
-    Cell Ranger. The resolver no longer flags it — but it MUST hand the ride the package's
-    own description, because that string ("Spreadsheet Cell Ranges") is exactly what lets
-    the LLM see it is the wrong tool."""
+    """resolve('cellranger') finds CRAN's spreadsheet-range parser — a real package, right
+    name, wrong project. The resolver does NOT stamp a verdict on that: it reports the
+    pick and attaches the package's OWN words, and the ride reads "Translate Spreadsheet
+    Cell Ranges" and knows this is not 10x's Cell Ranger.
+
+    A name-keyed refusal table lived here for one day (2026-08-06) and was removed: it was
+    the only hardcoded tool name in `agent/` that changed behaviour, and it duplicated —
+    in a list that can only rot — knowledge the ride already has. The seventh entry being
+    correct never made the eighth's absence honest. What the resolver owes is the
+    EVIDENCE, and that is what this test pins.
+
+    Break it: drop `self_description` and the ride is judging on a bare name."""
     _stub(monkeypatch, cran={"available": True, "latest": "1.1.0",
                              "summary": _CRAN_CELLRANGER,
                              "url": "https://github.com/rsheets/cellranger",
@@ -115,6 +123,7 @@ def test_wrong_tool_surfaces_its_own_words_for_the_ride(monkeypatch):
     assert d["chosen"] == "cran"
     assert "Spreadsheet" in d["identity"]["self_description"]
     assert d["identity"]["has_description"] is True
+    assert d["identity"]["repo_anchored"] is False    # scraped, so a CANDIDATE — not adopted
 
 
 def test_talos_keras_self_description_is_surfaced(monkeypatch):

@@ -163,6 +163,18 @@ def resolve_tool(
     ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
     reliability gate — pass it whenever you know the tool's repo.
 
+    A HUMAN MUST FETCH SOME OF THESE, and recognising which is YOUR job — the resolver
+    keeps no list of vendor-gated names, because a finite list of them rots and promises a
+    completeness it cannot keep. Some tools' runnable bytes sit behind a EULA
+    click-through or a customer account (Cell Ranger, DRAGEN, Guppy are the shape). For
+    those, no unattended install can reach the real artifact, so a public-registry hit
+    under that name is by construction a DIFFERENT project — CRAN's `cellranger` is a
+    spreadsheet cell-range parser, and installing it ships the wrong tool under the right
+    name. You will usually know this from the name alone; `self_description` confirms it.
+    Do not pass the `install_call` along. Tell the user where to get the bytes, then use
+    `install_release_binary(url=…, sha256=…)` on the URL they give you, or
+    `stage_authored_artifact` on a file they already have.
+
     Query-only: it does NOT install. Use the returned install_call with the
     matching primitive, then freeze() (except the author tiers, which freeze themselves).
     """

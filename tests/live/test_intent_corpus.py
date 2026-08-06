@@ -333,6 +333,17 @@ def test_deferred_rows_are_a_clean_third_state_not_a_hidden_failure():
     cannot rot into a silent pass (green with the wrong tool) or a silent red (claiming
     resolve failed a job that was never resolve's).
 
+    DO NOT EMPTY THIS SET BY TABLE. On 2026-08-06 a `resolver.VENDOR_GATED` dict — seven
+    proprietary names whose vendor gates the runnable bytes — promoted eight of these rows
+    for one day, and was removed the same day. The reasoning it rested on is sound (10x
+    does not publish Cell Ranger to CRAN, so a CRAN hit under that name is necessarily
+    another project) and it is exactly the reasoning THE RIDE should apply. Encoding it as
+    a name list made `resolver.py` the one place in `agent/` where a hardcoded tool name
+    changed behaviour, and bought eight green rows with a list that can only rot: the
+    seventh entry being right never made the eighth's absence honest. These rows are
+    deferred because grading them needs a reader with world knowledge, and the fix is to
+    build that reader — not to enumerate the cases it would have gotten right.
+
     A deferred row MUST:
       - carry graded_by == 'llm_identity_eval'  — the discriminator the grid buckets on
       - be assertable=false                     — the resolve-probe does NOT grade it, so it
@@ -419,3 +430,91 @@ def test_the_ratchet_meter_is_visible():
           f"rows reach the user's intent; {len(wrong)} do not — by gap: {by_gap}; "
           f"{len(deferred)} deferred → LLM identity eval")
     assert rows
+
+
+# ── 4. the WRITER's own honesty — the builder must not manufacture a red ───────
+#
+# Sections 1-3 police the corpus file. This one polices the script that rewrites it, which
+# is the only thing with write access to the meter. Pure — runs on every push.
+
+def _builder():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_build_intent_corpus",
+        Path(__file__).resolve().parents[2] / "scripts" / "build_intent_corpus.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_committed_corpus_is_in_the_form_the_builder_writes():
+    """Running the builder must produce a diff you can READ. It used to write `indent=1`
+    with \\u-escaped em-dashes over a file committed at `indent=2` UTF-8, so every re-probe
+    rewrote all ~1,800 lines and a two-line behaviour change arrived as a whole-file diff.
+    A meter whose updates are unreviewable is a meter nobody reviews.
+
+    Break it: change the `json.dumps` kwargs in build_intent_corpus.py without reformatting
+    the file, or hand-edit the corpus in a different style."""
+    text = CORPUS.read_text()
+    assert text == json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n", (
+        "docs/intent_corpus.json is not in the canonical form build_intent_corpus.py "
+        "writes — the next re-probe will reformat the whole file and bury the real change.")
+
+
+def _row(correct, chosen="conda"):
+    return {"id": "r", "call": {"tool": "t"}, "gap_class": "g", "intent": "i",
+            "expect": {"assertable": True, "chosen": chosen},
+            "actual_today": {"chosen": chosen}, "is_correct_today": correct}
+
+
+def _run(tmp_path, monkeypatch, row, answers):
+    """Drive the builder's main() over a one-row corpus with a scripted probe."""
+    mod = _builder()
+    p = tmp_path / "corpus.json"
+    p.write_text(json.dumps({"probed_on": "2026-01-01", "rows": [row],
+                             "known_gaps": []}, indent=2) + "\n")
+    monkeypatch.setattr(mod, "CORPUS", p)
+    monkeypatch.setattr(mod, "ROOT", tmp_path)          # main() prints CORPUS.relative_to(ROOT)
+    seq = list(answers)
+    monkeypatch.setattr(mod, "probe", lambda call: {"chosen": seq.pop(0)})
+    monkeypatch.setattr(mod.sys, "argv", ["build_intent_corpus.py"])
+    mod.main()
+    return json.loads(p.read_text())["rows"][0], seq
+
+
+def test_a_flip_to_red_is_confirmed_before_it_is_written(tmp_path, monkeypatch, capsys):
+    """THE DEFECT THIS EXISTS FOR. A green->red flip is the corpus's one destructive write
+    and the one most easily manufactured by weather: a rate-limited github probe returns a
+    clean `investigation_incomplete`, indistinguishable from the resolver genuinely having
+    stopped finding the repo. Written unconfirmed, the transient becomes the NEXT run's
+    baseline, so it never surfaces as a transient at all — it surfaces as a regression
+    nobody can reproduce. (One such false red was caught by hand in the 2026-08-06 re-probe.)
+
+    Break it: record the first observation without re-probing."""
+    row, left = _run(tmp_path, monkeypatch, _row(True), ["pip", "conda"])
+    assert row["is_correct_today"] is True, "an unreproduced red must not be recorded"
+    assert row["actual_today"]["chosen"] == "conda", "nor may the row keep the bad reading"
+    assert not left, "the confirming probe never ran"
+    assert "UNSTABLE" in capsys.readouterr().out, "and it must SAY so, not silently pass"
+
+
+def test_a_reproducible_regression_is_still_recorded(tmp_path, monkeypatch):
+    """The confirmation must not become a way to never go red — that would be the same lie
+    in the other direction. Two independent noes ARE a verdict.
+
+    Break it: `continue` on every flip instead of only on an unreproduced one."""
+    row, _ = _run(tmp_path, monkeypatch, _row(True), ["pip", "pip"])
+    assert row["is_correct_today"] is False
+    assert row["actual_today"]["chosen"] == "pip"
+
+
+def test_a_flip_to_green_is_taken_at_face_value(tmp_path, monkeypatch):
+    """Only the DESTRUCTIVE direction is double-checked. A red->green flip costs one probe
+    and is the outcome the ratchet exists to catch and promote; making it slower and rarer
+    would be paying the same price for the opposite of the problem.
+
+    Break it: confirm every flip and the second probe is consumed here too."""
+    row, left = _run(tmp_path, monkeypatch, _row(False), ["conda", "unused"])
+    assert row["is_correct_today"] is True
+    assert left == ["unused"], "a green flip must not spend a second probe"

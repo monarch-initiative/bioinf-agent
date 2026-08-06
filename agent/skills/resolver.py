@@ -2439,4 +2439,27 @@ def resolve(
     # disclosures that DO remain above (authors-path-not-assessed, gate-errored, unchecked
     # tiers, prefer-ignored) are about the ROUTING being incomplete — a different axis from
     # "is this the tool you meant", which no longer gets a resolver verdict.
+    #
+    # NO TOOL-NAME TABLE, EITHER. A `VENDOR_GATED` dict lived here briefly (2026-08-06):
+    # seven proprietary names — cellranger, dragen, guppy, … — that turned a working
+    # install_call into chosen=None because the vendor gates the real binary, so a
+    # same-name registry hit is necessarily a different project. The fact is true; the
+    # mechanism was wrong. It made this module the one place in `agent/` where a hardcoded
+    # tool name changed behaviour, and it duplicated, in a table that can only rot, world
+    # knowledge the ride already has. The seventh name being right does not make the
+    # eighth's absence honest: a finite list silently promises completeness it cannot keep.
+    #
+    # The division of labour stands as written above. The resolver surfaces FACTS — the
+    # chosen entry's own words, its repo provenance, its licence, which tiers went
+    # unprobed. Judging whether those facts describe the tool the user MEANT is the ride's
+    # call, and the ride is an LLM with the world knowledge to make it: to know that 10x
+    # gates Cell Ranger, that CRAN's `cellranger` parses spreadsheet ranges, and that a
+    # request naming single-cell RNA-seq cannot mean the latter. Where it genuinely cannot
+    # tell, the answer is to ASK the user, not to consult a list.
+    #
+    # The backstop is downstream and needs no names: `tool_identity` reads the shipped
+    # SBOM and prints the installed package's own words into the ENV report, so a wrong
+    # tool that got past the ride is legible to the human reading the artifact.
     return decision
+
+
