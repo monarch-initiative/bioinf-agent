@@ -140,11 +140,21 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
 
     # ---- Layer 1: the env image ----------------------------------------------------
     _inv(id="I12", layer=LAYER_ENV, status=ACTIVE,
-         statement="accelerator claims are structurally honest — cuda/rocm need a "
-                   "toolkit_version, runtime_verified needs a probe + min_driver_version, "
-                   "mps must be dev_only",
+         statement="accelerator claims are structurally honest AND the shipped image "
+                   "actually carries the toolkit claimed — cuda/rocm need a "
+                   "toolkit_version that matches what freeze read off the image, "
+                   "runtime_verified needs a CAPTURED probe (command/rc/locus) plus "
+                   "min_driver_version, mps must be dev_only",
          enforced_by="agent.skills.env_honesty.check_build",
-         note="the POLICY_CLEAN.accelerator coverage clause."),
+         note="TWO coverage clauses: POLICY_CLEAN.accelerator (the claim is "
+              "well-formed) and POLICY_CLEAN.accelerator_observed (the claim matches "
+              "the artifact). Split because both can be true or false independently — "
+              "a well-formed block can describe an image that does not exist as "
+              "described, which is what a cuda claim over a CPU-only image was. Each "
+              "names the EXACT violation ids it owns (_ACCEL_STRUCTURAL_COVERS / "
+              "_ACCEL_OBSERVED_COVERS); a shared `I12.` prefix would make every "
+              "accelerator violation doubly-owned and the anti-drift lint reads that "
+              "as owned by nobody."),
     _inv(id="I13", layer=LAYER_ENV, status=ACTIVE,
          statement="a license-gated artifact is marked non-redistributable and names its "
                    "license(s)",

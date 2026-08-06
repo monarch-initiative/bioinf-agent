@@ -13,6 +13,7 @@ from agent.models import core_data
 from agent.models.core_data import (USAGE_NOT_ATTEMPTED, USAGE_VERIFIED,
                                     record_is_gated as _record_is_gated,
                                     step_is_validated, usage_status)
+from agent.skills.env_honesty import ASSURANCE as _ASSURANCE
 from agent.skills.spec_writer import (TEST_DATA_NOT_ATTEMPTED, TEST_DATA_UNANCHORED,
                                       TEST_DATA_VERIFIED)
 
@@ -320,6 +321,35 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
             # what is wrong with an artifact we just told them not to trust.
             if violations:
                 row["contract_violations"] = violations
+            # A GREEN THAT PROVED LESS IS NOT THE SAME GREEN, and this is the row where
+            # that matters most.
+            #
+            # `contract_ok` is a two-state answer to a three-state question. A clause can
+            # PASS, FAIL, or have had nothing to look at — and only the first two reach a
+            # boolean. The detail=True branch below has carried this since it was written,
+            # with a comment saying an inventory that hid it "would be making exactly the
+            # claim this field exists to qualify". The compact branch is the DEFAULT, so
+            # the disclosure lived on the path almost nobody takes: the same
+            # one-fact-two-readings drift as `usage_verified`, where six call sites had
+            # both clauses and the seventh — the one facing the user — kept one.
+            #
+            # Measured on `repeatmasker_ancient` (G3 phase 5): freeze itself returned
+            # `outcome: degraded`, `VALIDATED_IN_IMAGE … 0 of them RUN the tool (the rest
+            # are presence/version/help probes) [presence]`, and `discriminates:
+            # unobserved`. Its inventory row was `contract_ok: true`, byte-identical in
+            # shape to `samtools_cluster_rung3` — whose tool was really run at a cluster
+            # locus and whose evidence really discriminated. An agent asking "what is
+            # already solved here" could not tell them apart.
+            #
+            # ASSURANCE clauses only. `WELL_FORMED.shipped_binaries` is unobserved on
+            # essentially every adopt record (there are no shipped_binaries to shape-check),
+            # so surfacing disclosure shortfalls here would put a constant on most rows —
+            # and a field that is always present carries no signal and trains the reader to
+            # skip it. The full list stays on detail=True, which is the full-disclosure view.
+            unproven = [c.clause for c in contract.unobserved
+                        if c.establishes == _ASSURANCE]
+            if unproven:
+                row["assurance_unproven"] = unproven
             if _record_is_gated(rec):
                 row["license_gated"] = True
             envs.append(row)

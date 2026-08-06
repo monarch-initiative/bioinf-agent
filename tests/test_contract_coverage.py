@@ -30,6 +30,13 @@ def _clean_record(**over) -> dict:
     rec = {
         "image": "x:1",
         "image_digest": "sha256:abc",
+        # Same shape as `control` below, one clause over: `platform` alone is the
+        # caller's REQUEST, and a record carrying only that has had nothing look at the
+        # artifact's architecture, so BUILT.platform reads UNOBSERVED. `image_arch` is
+        # the observation read off the shipped image, and a fully-observed record is by
+        # definition one that HAS it.
+        "platform": "linux-64",
+        "image_arch": "amd64",
         # `control` is part of "every clause observed": without it the record cannot say
         # its evidence distinguishes this image from any image, and the discriminates
         # clause below reads UNOBSERVED. A fixture that omitted it would quietly stop

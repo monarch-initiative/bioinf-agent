@@ -61,8 +61,17 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
     subject = [{"name": r.get("image", ""), "digest": _digest_dict(r.get("image_digest", ""))}]
 
     # the full SBOM: conda/pip closure + the apt/OS layer, all as purls
+    # The licence rides ALONG WITH each purl. An attestation's whole job is to let a
+    # downstream consumer decide what they may do with the artifact, and "may I
+    # redistribute this" is unanswerable from a bare package list — bioconda's novoalign
+    # and samtools produce identical-looking purls. Observed from the shipped image's own
+    # conda-meta, so it describes what is IN the artifact; omitted rather than blanked
+    # when the record predates the capture (an empty annotation reads as "no licence",
+    # which is a claim we would not be making).
     closure = (r.get("resolved_packages") or []) + (r.get("system_packages") or [])
-    resolved = [{"uri": _purl(p), "annotations": {"kind": p.get("kind", "")}}
+    resolved = [{"uri": _purl(p),
+                 "annotations": {"kind": p.get("kind", ""),
+                                 **({"license": p["license"]} if p.get("license") else {})}}
                 for p in closure if isinstance(p, dict) and p.get("name")]
     if base_image:
         resolved.append({"uri": f"docker:{base_image}",
@@ -177,6 +186,15 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # The accelerator policy that gated POLICY_CLEAN (I12). Pure
                 # metadata pass-through — the contract already enforces shape.
                 "accelerator": r.get("accelerator") or {},
+                # …and what the shipped image ACTUALLY carries, read off the image at
+                # freeze. The pair is the point: `accelerator` is the submitter's
+                # claim and travels as one, while this is the observation the
+                # contract checked it against. A verifier that saw only the claim
+                # could not tell a GPU env from a record that says it is one — which
+                # is exactly what a cuda claim over a CPU-only image used to be.
+                # Absent when nothing looked, never blanked to {} (see freeze_record).
+                **({"image_accelerator": r["image_accelerator"]}
+                   if r.get("image_accelerator") is not None else {}),
                 # IDENTITY DISCLOSURE (audit #8): each requested tool's OWN self-
                 # description, read at freeze from the registry the shipped package
                 # came from. AGENT-ASSERTED, not a verified capability — it lives in

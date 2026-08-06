@@ -393,6 +393,8 @@ def freeze_record(
     image_digest: str,
     platform: str,
     gated: bool,
+    image_arch: Optional[str] = None,
+    image_accelerator: Optional[dict] = None,
     lock_path: Optional[str] = None,
     conda_lock_path: Optional[str] = None,
     tarball: Optional[str] = None,
@@ -402,9 +404,24 @@ def freeze_record(
     """Assemble the artifact record stored in the EnvCache and returned by
     freeze(). `image` is the shipping handle (adopted digest ref or built tag);
     `image_digest` its immutable content id; redistributable is derived from
-    `gated` (the I13 firewall)."""
+    `gated` (the I13 firewall).
+
+    `image_arch` is the architecture READ OFF the shipped image (locus.image_arch),
+    as distinct from `platform`, which is what the caller ASKED FOR. Keeping both is
+    the whole point: BUILT.platform compares them, and it can only do that because
+    they have separate provenance. Pass None when nothing looked — the contract reads
+    an absent key as UNOBSERVED and refuses to treat it as agreement. An empty STRING
+    is a real observation with its own meaning (the digest is a manifest index and
+    names no architecture), so the two are not interchangeable.
+
+    `image_accelerator` is the same arrangement for the GPU claim: what toolkit the
+    shipped image ACTUALLY carries (locus.image_accelerator), as distinct from the
+    `accelerator` block, which is what the caller DECLARED. Before it, every field in
+    that block — including `runtime_probe`, which the model documents as "the proof" —
+    was written by the agent, so I12 compared a claim against itself and a cuda claim
+    over a CPU-only image cleared the contract. None means nothing looked."""
     from datetime import datetime, timezone
-    return {
+    rec = {
         "request_key":     request_key,
         "content_digest":  content_digest,
         "mode":            mode,                 # "adopt" | "build"
@@ -426,6 +443,11 @@ def freeze_record(
         "hpc_delivery":    hpc or {},
         "created_at":      created_at or datetime.now(timezone.utc).isoformat(),
     }
+    if image_arch is not None:
+        rec["image_arch"] = image_arch
+    if image_accelerator is not None:
+        rec["image_accelerator"] = image_accelerator
+    return rec
 
 
 class EnvCache:

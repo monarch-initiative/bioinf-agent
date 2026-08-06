@@ -21,6 +21,7 @@ workflow_tools.py.
 from __future__ import annotations
 
 import shlex
+from pathlib import PurePath as _PurePath
 from typing import Annotated, Any, Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
@@ -566,19 +567,33 @@ def synth_build(
 def install_release_binary(
     env_name: str,
     tool_name: str,
-    url: str,
+    url: str = "",
     sha256: str = "",
     binary_in_archive: str = "",
     wrapper_name: str = "",
     verify_command: str = "",
     pipeline_id: str = "",
     step: int = 0,
+    local_path: str = "",
 ) -> dict:
     """Install a precompiled release binary (Tier-3): the static-binary pattern
     conda/pip/jar/source don't cover — mosdepth, somalier, slivar, sylph,
-    dorado, cellranger. Downloads the asset, anchors it by sha256 (a mismatch is
+    dorado. Downloads the asset, anchors it by sha256 (a mismatch is
     a HARD FAIL), extracts if it's a tar/zip, chmods the executable, and writes a
     PATH launcher at {env}/bin/{wrapper_name or tool_name}.
+
+    local_path: THE LICENCE-GATED ROUTE — an artifact the USER already downloaded,
+    instead of `url`. Cell Ranger, ANNOVAR, GeneMark, bcl-convert, SignalP and
+    friends hand their bytes to a human who accepted a licence and to nobody else,
+    so there is no URL for us to fetch. Pass exactly one of `url` / `local_path`.
+    A `file://` URL is REFUSED, not silently accepted as the same thing: a URL
+    install ships by replaying its download inside the container build, which
+    cannot reach your disk. An operator artifact is instead CARRIED into the build,
+    and is recorded as `artifact_source: operator_supplied` — which keeps it out of
+    the `authenticated` assurance tier (nothing independent vouches for bytes you
+    hashed yourself) and out of the rebuild recipe as a paste-able `curl` that would
+    fail for every other reader. Gated tools additionally need
+    freeze(gated=True, licenses=[...]) — I13 then forbids redistribution.
 
     sha256: pass the published checksum of the ASSET (the .tar.gz/.zip the
     publisher ships) to guarantee you got the exact download — verified before
@@ -606,6 +621,7 @@ def install_release_binary(
         sha256            = sha256,
         binary_in_archive = binary_in_archive,
         wrapper_name      = wrapper_name,
+        local_path        = local_path,
     )
     if not result.get("success"):
         return result
@@ -638,14 +654,31 @@ def install_release_binary(
             "source":         url,
             "install_method": install_method,
         }
-        step_data = {
-            "tool":        "curl",
-            "subcommand":  "download",
-            "purpose":     f"Install release binary {tool_name} from {url}",
-            "command":     f"curl -L -o {tool_name} {url}",
-            "returncode":  0 if result.get("success") else 1,
-            "installed_packages": [ip_record],
-        }
+        # The step's `command`/`tool` describe HOW the artifact was obtained, and the
+        # two routes obtained it differently — so they must not share one string. The
+        # operator route runs no curl at all; saying it did would put a download in the
+        # record for bytes nobody can download, which is the whole failure this route
+        # exists to avoid. (The URL branch keeps the line it always had; note it is a
+        # SUMMARY of the fetch, not the verbatim command — the real one carries --fail
+        # and an absolute path.)
+        if local_path:
+            step_data = {
+                "tool":        "operator",
+                "subcommand":  "supply",
+                "purpose":     f"Install {tool_name} from an operator-supplied artifact",
+                "command":     f"# operator supplied {_PurePath(local_path).name} — no download",
+                "returncode":  0 if result.get("success") else 1,
+                "installed_packages": [ip_record],
+            }
+        else:
+            step_data = {
+                "tool":        "curl",
+                "subcommand":  "download",
+                "purpose":     f"Install release binary {tool_name} from {url}",
+                "command":     f"curl -L -o {tool_name} {url}",
+                "returncode":  0 if result.get("success") else 1,
+                "installed_packages": [ip_record],
+            }
         if verify_ok:
             step_data["verify_command"] = vcmd
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)

@@ -37,6 +37,15 @@ def _mock_docker(monkeypatch, *, evidence_rc=0, digest="sha256:" + "ab" * 32):
             return {"rc": 0, "out": json.dumps(["talos==11.0.0"])}
         return {"rc": evidence_rc, "out": "ran"}
     monkeypatch.setattr(F, "_run_in_image", _run)
+    # The pulled image is a real single-arch image of the platform requested. Without
+    # this the `docker image inspect` behind locus.image_arch finds nothing, freeze
+    # records no `image_arch`, and BUILT.platform correctly reads UNOBSERVED — turning
+    # every happy-path assertion here from `proven` into `degraded`. Patched on the
+    # locus module rather than on F because freeze_from_image imports it inside the
+    # function, so there is no F._locus attribute to replace.
+    import agent.skills.locus as LOC
+    monkeypatch.setattr(LOC, "image_arch",
+                        lambda ref: {"resolved": True, "arch": "amd64"})
     # SBOM-from-image best-effort → force the importlib fallback path
     import agent.skills.container_build as CB
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
@@ -236,6 +245,17 @@ def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
     # own `--version`, so the adopted fork ships with `9cef4057`, not None and not htslib.
     monkeypatch.setattr(F, "_image_present", lambda image: True)
     monkeypatch.setattr(F, "_image_digest", lambda image: "sha256:" + "cd" * 32)
+    # Same locus stub _mock_docker installs, and for the same reason — but this test
+    # builds its own stubs rather than calling it, so it did not get one. That made the
+    # `proven` assertion depend on AMBIENT MACHINE STATE: `talos-authors:11.0.0` happens
+    # to exist on the development laptop, so `docker image inspect` behind
+    # locus.image_arch resolved, BUILT.platform read CHECKED, and the test passed. On a
+    # runner with no Docker and no such image it reads UNOBSERVED — which is correct,
+    # and correctly downgrades the outcome to `degraded`. Green here, red in CI, and the
+    # difference was a leftover image nobody declared.
+    import agent.skills.locus as LOC
+    monkeypatch.setattr(LOC, "image_arch",
+                        lambda ref: {"resolved": True, "arch": "amd64"})
     import agent.skills.container_build as CB
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))

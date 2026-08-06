@@ -448,9 +448,25 @@ def freeze(
     content_digest = _ms._freeze.record_content_digest(
         mode, build_digest=build_cd, adopt_digest=adopt.get("digest", ""),
         fallback=content_digest)
+    # Read the architecture OFF the shipped image, so `platform` (the request) has
+    # something to be checked against — BUILT.platform. Both branches converge here,
+    # which matters: the adopt path is the one that can bind an image of an
+    # architecture nobody asked for, because resolve_biocontainer cannot express a
+    # platform. `resolved: False` (image somehow not inspectable) records nothing
+    # rather than guessing, and the clause reads that absence as UNOBSERVED.
+    _arch = _ms._locus.image_arch(image)
+    # And the same for the GPU claim, but ONLY when one is made. The probe costs a
+    # `docker run` and every accelerator=None env would pay it to be told what its
+    # absent claim already says; POLICY_CLEAN.accelerator_observed reads a claim of
+    # `none` as NOT_APPLICABLE, so there is nothing for the observation to serve.
+    _accel = (_ms._locus.image_accelerator(image)
+              if (effective_accel or {}).get("type", "none") not in ("none", "", None)
+              else None)
     record = _ms._freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
         image=image, image_digest=image_digest, platform=platform, gated=gated,
+        image_arch=_arch["arch"] if _arch["resolved"] else None,
+        image_accelerator=_accel,
         conda_lock_path=conda_lock_path, tarball=tarball, hpc=hpc,
     )
     if build_method:

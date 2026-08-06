@@ -55,6 +55,11 @@ from typing import Any, Optional
 # stdlib-pure, which is the price of the contract knowing what a record IS.
 from agent.models import core_data as _core_data
 
+# For BUILT.platform's ONE reading of a platform spelling. locus is a leaf too
+# (stdlib + subprocess), and only its PURE `target_arch` is used here — the contract
+# compares two recorded fields and never talks to Docker itself.
+from agent.skills import locus as _locus
+
 # ---------------------------------------------------------------------------
 # The anti-echo-cheat shape rule (carried from evidence.py / env_manager.verify).
 #
@@ -470,15 +475,40 @@ def coverage_disclosure(contract: BuildContract) -> dict:
 # paying for (audit RC2: one truth in N places, drifting in N-1).
 # ---------------------------------------------------------------------------
 
+#: I12 is answered by TWO clauses, so each must name the EXACT ids it owns rather than
+#: claim the whole `I12.` prefix — the `_VII_COVERS` discipline. A broad prefix on both
+#: makes every accelerator violation claimed twice, and the anti-drift lint reads a
+#: doubly-owned invariant as ownership by nobody in particular.
+_ACCEL_STRUCTURAL_COVERS = (
+    "I12.mps_dev_only",
+    "I12.accel_toolkit_version_required",
+    "I12.runtime_verified_needs_probe",
+    "I12.runtime_verified_needs_driver",
+    "I12.runtime_probe_not_captured",
+    "I12.runtime_probe_incomplete",
+    "I12.runtime_probe_failed",
+)
+_ACCEL_OBSERVED_COVERS = (
+    "I12.accel_absent_from_image",
+    "I12.accel_type_mismatch",
+    "I12.accel_version_mismatch",
+)
+
+
 def _clause_accelerator(acc: Any) -> tuple[ClauseCoverage, list[dict]]:
-    """I12 — hardware-acceleration claims must be structurally honest."""
+    """I12, first half — is the accelerator claim internally well-formed?
+
+    Everything this clause reads is written by the same agent that writes the claim,
+    so it cannot tell a true block from a well-typed false one. That is not a flaw in
+    it — a structural check is worth having — but it is the whole check I12 used to be.
+    `_clause_accelerator_observed` is the half that opens the image."""
     v: list[dict] = []
     if not isinstance(acc, dict) or (acc.get("type") or "none") == "none":
-        return (ClauseCoverage("POLICY_CLEAN.accelerator", ("I12",), NOT_APPLICABLE, 0,
+        return (ClauseCoverage("POLICY_CLEAN.accelerator", _ACCEL_STRUCTURAL_COVERS, NOT_APPLICABLE, 0,
                                "no accelerator claimed — I12 has nothing to check, "
                                "and the artifact claims no GPU capability"), v)
     atype = acc.get("type")
-    cov = ClauseCoverage("POLICY_CLEAN.accelerator", ("I12",), CHECKED, 1,
+    cov = ClauseCoverage("POLICY_CLEAN.accelerator", _ACCEL_STRUCTURAL_COVERS, CHECKED, 1,
                          f"accelerator.type={atype} — checked for toolkit/driver/runtime honesty")
     if atype == "mps":
         if not acc.get("dev_only"):
@@ -492,16 +522,181 @@ def _clause_accelerator(acc: Any) -> tuple[ClauseCoverage, list[dict]]:
                   "message": f"accelerator.type={atype} requires toolkit_version (the CUDA/ROCm "
                              f"toolkit baked into the image) — host-driver compatibility depends on it."})
     if (acc.get("runtime") or "build_only") == "runtime_verified":
-        if not (acc.get("runtime_probe") or "").strip():
+        probe = acc.get("runtime_probe")
+        if not probe or (isinstance(probe, str) and not probe.strip()):
             v.append({"invariant": "I12.runtime_verified_needs_probe", "where": "accelerator",
                       "message": f"accelerator.runtime=runtime_verified claims a kernel ran on a real "
                                  f"{atype} device, but no runtime_probe is recorded — without a GPU "
                                  f"runner this must stay runtime=build_only."})
+        elif not isinstance(probe, dict):
+            # A STRING here is the whole defect. `runtime_probe` is documented as "the
+            # proof", has no producer anywhere in this codebase, and is reachable only
+            # by typing it into patch_pipeline — so the strongest claim in the
+            # accelerator vocabulary was satisfiable by writing a sentence. Worse, the
+            # system cannot even produce the thing being claimed: `--gpus` and
+            # apptainer's `--nv` appear nowhere in it, so no container this system
+            # starts has ever had a device visible to it.
+            v.append({
+                "invariant": "I12.runtime_probe_not_captured", "where": "accelerator",
+                "message": f"accelerator.runtime_probe is a hand-written string "
+                           f"({str(probe)[:60]!r}), and a sentence is not evidence that a kernel "
+                           f"ran on a {atype} device. It must be a CAPTURED record — "
+                           f"{{command, returncode, output, locus}} — produced by actually "
+                           f"running the probe where the device is. No producer of one exists "
+                           f"yet, so today the honest setting is runtime=build_only: the image "
+                           f"carries the toolkit, and execution on hardware was not verified."})
+        else:
+            missing = [k for k in ("command", "returncode", "locus") if k not in probe]
+            if missing:
+                v.append({
+                    "invariant": "I12.runtime_probe_incomplete", "where": "accelerator",
+                    "message": f"accelerator.runtime_probe is a captured record but omits "
+                               f"{', '.join(missing)} — a probe that does not say what ran, "
+                               f"whether it succeeded, and WHERE cannot distinguish a real "
+                               f"{atype} device from a CPU fallback."})
+            elif probe.get("returncode") not in (0, "0"):
+                v.append({
+                    "invariant": "I12.runtime_probe_failed", "where": "accelerator",
+                    "message": f"accelerator.runtime=runtime_verified, but the recorded probe "
+                               f"exited {probe.get('returncode')!r} — evidence that exists and "
+                               f"says FAILED cannot be read as verification."})
         if not (acc.get("min_driver_version") or "").strip():
             v.append({"invariant": "I12.runtime_verified_needs_driver", "where": "accelerator",
                       "message": f"accelerator.runtime=runtime_verified for {atype} must record "
                                  f"min_driver_version (the host-driver floor the image needs)."})
     return (cov, v)
+
+
+def _accel_version_agrees(claimed: str, observed: str) -> bool:
+    """Does a claimed toolkit version agree with the one read off the image?
+
+    Deliberately a PREFIX test on dot-components, not equality. The image states its
+    version at whatever precision its packaging chose — nvidia's ENV says `12.4.1`,
+    the toolkit directory it ships alongside says `12.4`, conda says `12.4` — and all
+    three describe one toolkit. A record claiming `12.4` over an image reporting
+    `12.4.1` is accurate, and refusing it would train callers to copy whatever string
+    silences the gate, which is how a check stops being read.
+
+    What it must still catch is a DIFFERENT toolkit: 11.8 vs 12.4, or 99.9 vs
+    anything. Component-wise prefix does exactly that, and `12.4` vs `12.40` stays a
+    mismatch because the comparison is per-component, never per-character.
+    """
+    c = [x for x in (claimed or "").strip().split(".") if x]
+    o = [x for x in (observed or "").strip().split(".") if x]
+    if not c or not o:
+        return True                       # nothing to disagree about; handled by caller
+    n = min(len(c), len(o))
+    return c[:n] == o[:n]
+
+
+def _clause_accelerator_observed(acc: Any, observed: Any) -> tuple[ClauseCoverage, list[dict]]:
+    """I12, second half — the accelerator CLAIM against the shipped image.
+
+    `_clause_accelerator` above checks that an accelerator block is internally
+    well-formed: a cuda claim carries some toolkit_version, a runtime_verified claim
+    carries some probe string. Every one of those fields is written by the same agent
+    that writes the claim, so the whole clause compares a record against itself. On an
+    arm64 Mac with no NVIDIA hardware in the building, a record reading
+    `type: cuda, toolkit_version: 99.9, runtime: runtime_verified,
+    runtime_probe: "yes there is definitely a gpu"` cleared the contract over a
+    pyfaidx image that has never contained a line of CUDA — and the coverage line said
+    "checked for toolkit/driver/runtime honesty", one observation. It had observed
+    nothing; it had re-read the claim.
+
+    This clause is the observation. `image_accelerator` is captured by the producer at
+    freeze (locus.image_accelerator, which opens the image) and compared here — two
+    fields, separate provenance, exactly as BUILT.platform compares `image_arch`
+    against `platform`. Re-deriving it inside the contract would be the I5 laundering
+    shape, a value checked against itself, and would put a `docker run` per env inside
+    `list_installed_pipelines`.
+
+    Kept SEPARATE from the structural clause rather than folded into it because the
+    two can be true and false independently, and a single status could not say which
+    half was missing: a record can be perfectly well-formed and describe an image that
+    does not exist as described.
+    """
+    v: list[dict] = []
+    claimed_type = (acc or {}).get("type") if isinstance(acc, dict) else None
+    claimed_type = (claimed_type or "none").strip().lower()
+
+    if claimed_type in ("", "none"):
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, NOT_APPLICABLE, 0,
+            "no accelerator claimed — there is no claim to compare against the image"), v)
+
+    if claimed_type == "mps":
+        # Metal never survives containerization; _clause_accelerator forces dev_only
+        # for it. There is nothing to find in a linux image and its absence is not a
+        # finding — looking would manufacture a violation out of the expected case.
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, NOT_APPLICABLE, 0,
+            "accelerator.type=mps is dev-only by I12 and is not a property of the "
+            "shipped linux image — there is nothing in the image to observe"), v)
+
+    if not isinstance(observed, dict) or not observed.get("resolved"):
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, UNOBSERVED, 0,
+            f"no image_accelerator recorded — nothing opened the image to check whether "
+            f"the claimed {claimed_type} toolkit is actually in it, so "
+            f"`toolkit_version: {(acc or {}).get('toolkit_version') or '?'}` is the "
+            f"caller's word repeated back rather than a fact about the artifact"), v)
+
+    obs_type = (observed.get("type") or "").strip().lower()
+    obs_ver = (observed.get("version") or "").strip()
+    claimed_ver = ((acc or {}).get("toolkit_version") or "").strip()
+    src = observed.get("source") or "the image"
+
+    if obs_type == "none":
+        v.append({
+            "invariant": "I12.accel_absent_from_image", "where": "accelerator",
+            "message": f"the record claims accelerator.type={claimed_type}"
+                       f"{f' (toolkit {claimed_ver})' if claimed_ver else ''}, but the shipped "
+                       f"image contains no accelerator toolkit at all — {src}. A GPU claim is "
+                       f"the one thing a user cannot check before committing the allocation, so "
+                       f"it may not rest on the caller's say-so. Either ship an image that "
+                       f"actually carries the toolkit (build FROM a cuda/rocm base, or install "
+                       f"the toolkit into the env), or set accelerator.type=none."})
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+            f"the image was opened and carries no accelerator toolkit, against a "
+            f"{claimed_type} claim"), v)
+
+    if obs_type != claimed_type:
+        v.append({
+            "invariant": "I12.accel_type_mismatch", "where": "accelerator",
+            "message": f"the record claims accelerator.type={claimed_type} but the shipped "
+                       f"image carries {obs_type} ({src}). These are different vendors' "
+                       f"toolchains and a binary built against one does not run on the other."})
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+            f"the image carries {obs_type}, the record claims {claimed_type}"), v)
+
+    if claimed_ver and obs_ver and not _accel_version_agrees(claimed_ver, obs_ver):
+        v.append({
+            "invariant": "I12.accel_version_mismatch", "where": "accelerator",
+            "message": f"the record claims {claimed_type} toolkit {claimed_ver} but the shipped "
+                       f"image carries {obs_ver} ({src}). Host-driver compatibility is decided "
+                       f"by the toolkit actually in the image, so the wrong number here sends a "
+                       f"user to provision the wrong driver floor."})
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+            f"the image carries {claimed_type} {obs_ver}, the record claims {claimed_ver}"), v)
+
+    if claimed_ver and not obs_ver:
+        # The toolkit is there and is the right vendor, but no source in the image
+        # states a version without being interpreted (nvcc-only images). The type is
+        # confirmed; the number is not. Saying so beats both a silent pass and a
+        # refusal of something that is probably right.
+        return (ClauseCoverage(
+            "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+            f"the image really does carry a {claimed_type} toolkit ({src}), but states no "
+            f"version that can be read without interpreting prose — the claimed "
+            f"{claimed_ver} is unconfirmed"), v)
+
+    return (ClauseCoverage(
+        "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+        f"the image really does carry {obs_type}"
+        f"{f' {obs_ver}' if obs_ver else ''}, the accelerator the record claims ({src})"), v)
 
 
 def _clause_provenance(result: dict) -> tuple[ClauseCoverage, list[dict]]:
@@ -562,23 +757,69 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
 
     Reads gatedness through `core_data.record_is_gated`, NOT a local `.get("license_gated")`:
     records on disk carry the legacy `gated` key, and a one-key read let those pass I13
-    unexamined."""
+    unexamined.
+
+    TWO WAYS TO BE GATED, and only one of them used to exist. `license_gated` is the
+    agent's DECLARATION, and `redistributable` is derived from it (`not gated`,
+    freeze_tools.py) — so an agent that simply never mentions a licence gets
+    `redistributable: true` and this clause early-returned NOT_APPLICABLE without looking
+    at anything. It did that on 13 of 13 registered envs: I13 had never once been CHECKED
+    on a real record. Self-certification arming its own firewall is the same shape as
+    `asset_authenticated = bool(sha256)` (2026-08-04, the operator hand-off) — a claim
+    standing in for an observation.
+
+    The second way is OBSERVED: the SBOM now carries the licence read out of each
+    package's `conda-meta/*.json` IN THE SHIPPED IMAGE, and a package whose licence
+    asserts a restriction makes the artifact gated as a matter of fact, whatever the
+    record declares. bioconda ships `novoalign` ("Commercial (requires license for use)")
+    and `sentieon`, both with a BioContainer the resolver will happily recommend adopting
+    by digest. An observation cannot be un-said by an assertion — the same rule I3 applies
+    to a failed validation — so it ARMS the clause rather than adding a parallel one, and
+    the two requirements below are then identical either way.
+
+    Coverage is reported honestly: `unrecognized` licences are counted and named in the
+    detail line, because this clause can only speak for the packages whose licence it
+    could read AND recognise. pip/dist-info packages carry no licence in the scan at all."""
     v: list[dict] = []
-    if not _core_data.record_is_gated(result):
-        return (ClauseCoverage("POLICY_CLEAN.license", ("I13",), NOT_APPLICABLE, 0,
-                               "not license-gated — the artifact is freely redistributable, "
-                               "so I13's republication firewall has nothing to guard"), v)
-    cov = ClauseCoverage("POLICY_CLEAN.license", ("I13",), CHECKED, 1,
-                         "license-gated — checked that it is marked non-redistributable "
-                         "and names its license(s)")
+    observed = _core_data.restricted_packages(result)
+    declared = _core_data.record_is_gated(result)
+    pkgs = [p for p in (result.get("resolved_packages") or []) if isinstance(p, dict)]
+    unknown = _core_data.unrecognized_packages(result)
+    # what this clause can and cannot speak for — appended to whichever verdict follows,
+    # so "nothing restricted" is never read as "every licence was understood".
+    reach = (f"{len(pkgs) - len(unknown)}/{len(pkgs)} package licences recognised"
+             + (f"; {len(unknown)} unrecognised ("
+                + ", ".join(p["name"] for p in unknown[:5]) + ")"
+                if unknown else "")) if pkgs else "no conda/pip closure to read licences from"
+
+    if not (declared or observed):
+        return (ClauseCoverage("POLICY_CLEAN.license", ("I13",), NOT_APPLICABLE, len(pkgs),
+                               "not license-gated: nothing declared it and no package's own "
+                               f"licence asserts a restriction — {reach}"), v)
+
+    why = ("declared license_gated=true" if declared and not observed else
+           "OBSERVED in the shipped image: " + ", ".join(
+               f"{p['name']} {p['version']} — {p['license']!r}" for p in observed[:4]))
+    cov = ClauseCoverage("POLICY_CLEAN.license", ("I13",), CHECKED, max(1, len(observed)),
+                         f"license-gated ({why}) — checked that it is marked "
+                         f"non-redistributable and names its license(s); {reach}")
     if result.get("redistributable", True):
         v.append({"invariant": "I13.gated_not_redistributable", "where": "redistributable",
-                  "message": "license_gated=true requires redistributable=false — a gated tool's "
-                             "image must never be marked redistributable."})
+                  "message": (
+                      "license_gated=true requires redistributable=false — a gated tool's "
+                      "image must never be marked redistributable."
+                      if declared and not observed else
+                      f"redistributable=true contradicts the shipped image's own package "
+                      f"metadata ({why}). Re-freeze with gated=True + licenses=[…]; that "
+                      f"sets redistributable=false and keeps the image out of any registry "
+                      f"push. If the licence genuinely permits redistribution, it still has "
+                      f"to be DECLARED — this artifact cannot claim it by default.")})
     if not (result.get("licenses") or []):
         v.append({"invariant": "I13.gated_license_recorded", "where": "licenses",
                   "message": "license_gated=true requires at least one entry in licenses[] naming "
-                             "the license/terms the artifact is bound by."})
+                             "the license/terms the artifact is bound by."
+                             + ("" if declared and not observed else
+                                f" Gatedness here was OBSERVED, not declared ({why}).")})
     return (cov, v)
 
 
@@ -686,6 +927,87 @@ def evaluate_build(result: dict) -> BuildContract:
         built_seen += 1
     coverage.append(ClauseCoverage("BUILT", ("BUILT",), CHECKED, built_seen,
                                    f"{built_seen}/2 shipped-artifact handle(s) (image, image_digest) resolve"))
+
+    # -- BUILT.platform ---------------------------------------------------
+    # Does the artifact actually HAVE the architecture the record says it shipped?
+    #
+    # `platform` is the caller's REQUEST, echoed onto the record, and until this clause
+    # nothing ever compared it to the artifact. Neither did anything else that looks
+    # like it did: `validation_locus` is `detect_locus(REQUEST)`, i.e. the request
+    # compared against the local daemon — so a record could state its architecture
+    # three times over without one of those statements being an observation. Measured
+    # on a real arm64 freeze (G3 phase 6): `resolve_biocontainer` takes no platform
+    # argument at all, so an arm64 adopt binds bioconda's amd64-only image, and the
+    # refusal that followed named the WRONG CAUSE — "the tool is not provably
+    # present/runnable in what we ship", when samtools is present and fine and the
+    # only thing wrong is that no arm64 build of that image exists.
+    #
+    # THE OBSERVATION IS THE PRODUCER'S; this clause only COMPARES. freeze reads
+    # `.Architecture` off the shipped image and writes `image_arch`; here we hold it
+    # against `platform`. Those are two different fields — one an observation of the
+    # artifact, one the request — so the comparison means something. (Contrast I5's
+    # laundering bug, where an anchor written at seal was compared against itself
+    # moments later.) Re-deriving the arch here would also put a `docker image
+    # inspect` per env inside `list_installed_pipelines`, which re-earns every
+    # record's contract on every call.
+    recorded_arch = _locus.target_arch(result.get("platform") or "")
+    observed = result.get("image_arch")
+    if observed is None:
+        # Three-state, like every other clause here: a record written before freeze
+        # captured this proves nothing about its architecture either way, and saying
+        # so is not the same as failing it. Re-earned by a re-freeze, never a backfill
+        # ([[feedback-existing-installs-not-precious]]).
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), UNOBSERVED, 0,
+            f"no image_arch recorded — nothing read the architecture off the shipped "
+            f"image, so `platform: {result.get('platform') or '?'}` is the request "
+            f"repeated back rather than a fact about the artifact"))
+    elif not observed:
+        # NOT "we could not tell". An empty `.Architecture` on an image that inspects
+        # fine means the digest resolves to a MANIFEST LIST / OCI index — a menu of
+        # per-arch images, not one image's bytes. `multiqc` in this corpus pins one:
+        # a single digest serving an amd64 child and an arm64 child, recorded as
+        # `platform: linux/amd64`. Two machines pulling that digest ship different
+        # binaries, which is the one thing a content-addressed artifact may not do.
+        violations.append({
+            "invariant": "BUILT.platform_pinned", "where": "image_digest",
+            "message": "the recorded image_digest names no architecture — it resolves to a "
+                       "manifest list / OCI index, which addresses a MENU of per-arch images "
+                       "rather than one image's bytes, so two machines pulling this digest can "
+                       "ship different binaries. Record the per-architecture child digest for "
+                       "the platform actually validated (docker manifest inspect <ref> lists "
+                       "them) instead of the index digest."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            "the recorded digest resolves to a manifest index, so it names no architecture"))
+    elif recorded_arch and observed != recorded_arch:
+        violations.append({
+            "invariant": "BUILT.platform_matches", "where": "platform",
+            "message": f"record claims platform '{result.get('platform')}' ({recorded_arch}) but the "
+                       f"shipped image is {observed} — the artifact does not have the architecture "
+                       f"this record advertises, and an HPC target that honours it will get bytes it "
+                       f"cannot run. On the adopt path this is the usual shape: bioconda publishes "
+                       f"linux-64 biocontainers only, so an arm64 request binds an amd64 image. Ask "
+                       f"for the architecture the artifact really is, or take the container-native "
+                       f"build path, which builds FOR the requested platform and does produce a "
+                       f"genuine arm64 image."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image is {observed}; the record claims {recorded_arch}"))
+    elif not recorded_arch:
+        violations.append({
+            "invariant": "BUILT.platform_matches", "where": "platform",
+            "message": f"the shipped image is {observed}, but the record's platform "
+                       f"'{result.get('platform')}' is not a spelling this system recognises "
+                       f"(agent/skills/locus.py:_ARCH_TOKENS), so the claim cannot be checked "
+                       f"against the artifact at all."})
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image is {observed}; the recorded platform is unreadable"))
+    else:
+        coverage.append(ClauseCoverage(
+            "BUILT.platform", ("BUILT.platform",), CHECKED, 1,
+            f"the shipped image really is {observed}, the architecture the record claims"))
 
     # -- VALIDATED_IN_IMAGE ----------------------------------------------
     # Every declared tool's evidence must (a) have a non-cheat shape and (b) have
@@ -811,6 +1133,8 @@ def evaluate_build(result: dict) -> BuildContract:
     # (agent-as-generator) install must carry its provenance into the recipe, so
     # nothing untraceable to the tool's own files ships.
     for cov, viol in (_clause_accelerator(result.get("accelerator")),
+                      _clause_accelerator_observed(result.get("accelerator"),
+                                                   result.get("image_accelerator")),
                       _clause_license(result),
                       _clause_provenance(result)):
         coverage.append(cov)

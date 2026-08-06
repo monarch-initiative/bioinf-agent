@@ -720,10 +720,22 @@ def list_installed_pipelines(detail: bool = False) -> dict:
     that showed a stale record as usable would be precisely the false green tier 5
     closed.
 
+    **`assurance_unproven[]` — a green that rests on less.** `contract_ok` is a
+    two-state answer to a three-state question: a clause can pass, fail, or have had
+    NOTHING TO LOOK AT, and only the first two reach a boolean. This field names the
+    ASSURANCE clauses that reached no verdict, so a record which passed without ever
+    being tested on a point is distinguishable from one that was. Most commonly
+    `VALIDATED_IN_IMAGE.discriminates` — the evidence was never re-run in a control
+    image lacking the tool, so nothing establishes it would FAIL there. Absent when the
+    contract was fully observed; re-freeze to earn it. (Disclosure-only shortfalls, like
+    `shipped_binaries` on an adopt, stay on `detail=True` — they are unobserved on
+    nearly every adopt record, and a warning that is always present is one nobody reads.)
+
     Compaction never hides a problem: `contract_violations[]` (naming the failing
-    clause), a tool whose installed version DIVERGES from what was requested, and the
-    reason a how-to is unverified all appear in the compact form too. Omitting what is
-    absent or default is compression; omitting a warning is something else.
+    clause), `assurance_unproven[]`, a tool whose installed version DIVERGES from what
+    was requested, and the reason a how-to is unverified all appear in the compact form
+    too. Omitting what is absent or default is compression; omitting a warning is
+    something else.
     """
     return _ms._list_pipelines(_ms.config, env_cache=_ms._env_cache, detail=detail)
 

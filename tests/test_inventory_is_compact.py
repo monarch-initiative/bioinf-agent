@@ -13,8 +13,10 @@ reason a how-to was never proven — is a smaller payload that means something d
 and it is the exact substitution ("never present a request as an observation") the
 report-honesty work exists to prevent.
 
-So: three warnings must survive compaction, and each is tested against a record built
-to trigger it.
+So: four warnings must survive compaction, and each is tested against a record built
+to trigger it. The fourth arrived last and is the subtlest — not a failure but a PASS
+that rests on less, which `contract_ok: true` cannot express and which detail=True had
+been disclosing to almost nobody.
 """
 from __future__ import annotations
 
@@ -42,19 +44,21 @@ class _Cache:
     """Minimal EnvCache stand-in: `all()` + `contract_report()` is the whole surface
     list_pipelines uses."""
 
-    def __init__(self, records, violations=()):
+    def __init__(self, records, violations=(), unobserved=()):
         self._records = records
         self._violations = list(violations)
+        self._unobserved = list(unobserved)
 
     def all(self):
         return self._records
 
     def contract_report(self, rec):
         viol = self._violations
+        unobs = self._unobserved
 
         class _R:
             violations = viol
-            unobserved = []
+            unobserved = unobs
 
             def summary(self):
                 return {"observed": 3, "total": 4}
@@ -158,6 +162,47 @@ def test_a_verified_how_to_does_not_carry_a_redundant_reason(tmp_path):
     row = resources.list_pipelines(_cfg(tmp_path), env_cache=_Cache({}))["workflows"][0]
     assert row["usage_verification_status"] == "verified"
     assert "usage_verification_reason" not in row
+
+
+def test_a_green_that_proved_less_says_so_in_compact_form(tmp_path):
+    """The fourth warning, added after it was measured missing (G3 phase 5).
+
+    `contract_ok` is a two-state answer to a three-state question: a clause can pass,
+    fail, or have had NOTHING TO LOOK AT. Only the first two reach the boolean. detail=True
+    has carried `contract_unobserved` since it was written — with a comment saying an
+    inventory that hid it "would be making exactly the claim this field exists to
+    qualify" — but the compact branch is the DEFAULT, so the disclosure lived on the path
+    almost nobody takes.
+
+    Measured: `repeatmasker_ancient` froze `outcome: degraded` with
+    `VALIDATED_IN_IMAGE.discriminates` unobserved — nothing established its evidence would
+    FAIL in an image lacking the tool — and its inventory row was an unqualified
+    `contract_ok: true`. Across the real corpus the field separates 4 fully-proven envs
+    from 11 that were previously indistinguishable from them.
+    """
+    class _Clause:
+        def __init__(self, clause, establishes):
+            self.clause, self.establishes = clause, establishes
+
+    cache = _Cache({"k": _rec()}, unobserved=[
+        _Clause("VALIDATED_IN_IMAGE.discriminates", "assurance"),
+        _Clause("WELL_FORMED.shipped_binaries", "disclosure"),
+    ])
+    row = resources.list_pipelines(_cfg(tmp_path), env_cache=cache)["envs"][0]
+    assert row["contract_ok"] is True, "this is a PASS — the point is that it proved less"
+    assert row["assurance_unproven"] == ["VALIDATED_IN_IMAGE.discriminates"]
+    assert "WELL_FORMED.shipped_binaries" not in row["assurance_unproven"], (
+        "disclosure shortfalls stay on detail=True: shipped_binaries is unobserved on "
+        "essentially every adopt record, and a field that is always present carries no "
+        "signal and trains the reader to skip it")
+
+
+def test_a_fully_observed_env_carries_no_unproven_field(tmp_path):
+    """The other direction — compaction has to actually compact in the common case, and
+    an always-present warning is one nobody reads."""
+    row = resources.list_pipelines(_cfg(tmp_path),
+                                   env_cache=_Cache({"k": _rec()}))["envs"][0]
+    assert "assurance_unproven" not in row
 
 
 def test_a_gated_env_says_so_in_compact_form(tmp_path):

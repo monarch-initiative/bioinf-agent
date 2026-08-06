@@ -55,6 +55,12 @@ OWNED_BY = {
     # an hour of being introduced (the seal-side check and the production data-pin
     # check), which is how fast the class recurs when nothing is watching.
     "content_anchors":    "test_data_anchors",
+    # Also registered on arrival (2026-08-04). `license` has TWO natural readers from
+    # birth — the resolver classifying a registry's published string, and the contract
+    # classifying one observed in the shipped image — and the reading is a keyword match,
+    # the single easiest thing in this codebase to re-spell as `"commercial" in lic`. A
+    # tool that is commercial at freeze and free at resolve is the drift this prevents.
+    "license":            "license_disposition",
 }
 
 #: "<path>:<field>" -> why reading it raw here is correct.
@@ -86,6 +92,32 @@ ALLOWED = {
     "skills/env_recipe.py:license_gated":
         "Reads back a recipe dict this same module wrote ~20 lines earlier with the "
         "canonical key. A closed loop, so there is no second spelling to absorb.",
+    "skills/resolver.py:license":
+        "Three reads, none of them an interpretation. probe_conda CAPTURES the string "
+        "off the anaconda.org response into our record (a producer — the AST cannot see "
+        "the difference); identity_facts quotes it verbatim as a fact and hands that "
+        "same string to the leaf on the next line; the disclosure quotes it again in the "
+        "message so the agent sees the registry's own words. What must never be "
+        "re-spelled here is the CLASSIFICATION, and a sibling test asserts this module "
+        "holds no copy of the keyword lists.",
+    "skills/attestation.py:license":
+        "Passes the observed string through VERBATIM as a purl annotation. An attestation "
+        "quotes the publisher's own words so a downstream consumer can apply their own "
+        "policy; substituting our three-state reading for the licence text would be this "
+        "codebase deciding on their behalf, which is the opposite of what the field is "
+        "for. No classification happens here.",
+    "skills/env_honesty.py:license":
+        "Reads `license` off a row that core_data.restricted_packages ALREADY selected — "
+        "quoting the evidence back in the refusal so it names the package and its own "
+        "words. Reading the leaf's output is not a second reading of the field; the "
+        "selection it depends on happened in the leaf.",
+    "skills/package_search.py:license":
+        "Two CAPTURES, from the anaconda.org and PyPI responses, straight into the "
+        "search_package payload. search_package has surfaced the licence to the agent as "
+        "a bare string since long before anything classified it — that is precisely how "
+        "novoalign's 'Commercial (requires license for use)' stayed on the wire and "
+        "unread. Passing it through is right; deciding what it means here would be the "
+        "second reading.",
 }
 
 

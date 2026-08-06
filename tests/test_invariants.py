@@ -1017,7 +1017,7 @@ def test_install_release_binary_archive_anchors_extracted_binary(tmp_path, monke
 
         res = em.install_release_binary(
             env_name=env_name, tool_name="sometool",
-            url=f"file://{archive}", binary_in_archive="sometool",
+            url=f"https://example.invalid/{archive.name}", binary_in_archive="sometool",
         )
         assert res["success"], res
         im = res["install_method"]
@@ -1064,7 +1064,7 @@ def test_install_release_binary_sha256_mismatch_is_refused_firewall(tmp_path, mo
 
         res = em.install_release_binary(
             env_name=env_name, tool_name="tool",
-            url=f"file://{asset}", sha256=published_sha,
+            url=f"https://example.invalid/{asset.name}", sha256=published_sha,
         )
         # 1) firewall FIRED as a clean, legible refusal — not a crash, not a green.
         assert res.get("success") is False, res
@@ -1208,14 +1208,14 @@ def test_install_release_binary_records_asset_authenticated(tmp_path, monkeypatc
 
         # WITH the publisher checksum → authenticated.
         res = em.install_release_binary(env_name=env_name, tool_name="tool",
-                                        url=f"file://{asset}", sha256=real_sha)
+                                        url=f"https://example.invalid/{asset.name}", sha256=real_sha)
         assert res["success"] and res["asset_authenticated"] is True, res
         assert res["install_method"]["asset_authenticated"] is True
 
         # WITHOUT → pinned TOFU, honestly marked not-authenticated.
         _sh.rmtree(env_path / "share", ignore_errors=True)
         res2 = em.install_release_binary(env_name=env_name, tool_name="tool2",
-                                         url=f"file://{asset}")
+                                         url=f"https://example.invalid/{asset.name}")
         assert res2["success"] and res2["asset_authenticated"] is False, res2
         assert res2["install_method"]["asset_authenticated"] is False
     finally:
@@ -3204,10 +3204,24 @@ def test_envbuild_run_uses_check_build_as_the_gate(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_locus_target_arch_parsing():
+    """Both dialects, because the corpus contains both: freeze()'s `platform=` is a
+    CONDA subdir and every BUILD record carries it, while container_build receives a
+    DOCKER platform and every ADOPT record carries that.
+
+    The unknown case returns "" and NOT the former "amd64 — sane default". That default
+    was safe while the only consumer was detect_locus-vs-daemon, and became unsafe as
+    soon as BUILT.platform compared this to an arch read off an image: a comparison that
+    cannot tell "this is amd64" from "I cannot read this string" passes silently for
+    every unparseable platform. It also stops an empty platform earning `locus: native`
+    (and with it `i7_authoritative: True`) on an amd64 host purely by defaulting into
+    agreement — unknown now lands on `emulated`, the conservative side.
+    """
     from agent.skills import locus
     assert locus.target_arch("linux/amd64") == "amd64"
     assert locus.target_arch("linux/arm64") == "arm64"
-    assert locus.target_arch("") == "amd64"  # sane default
+    assert locus.target_arch("linux-64") == "amd64"
+    assert locus.target_arch("linux-aarch64") == "arm64"
+    assert locus.target_arch("") == ""
 
 
 def test_locus_native_when_daemon_matches_target(monkeypatch):
@@ -3338,19 +3352,34 @@ def test_base_image_is_pinned_by_digest():
 
 def test_resolved_packages_parses_conda_meta_and_dist_info(monkeypatch):
     """The closure is read engine-agnostically from conda-meta/*.json (name-version-
-    build) + site-packages/*.dist-info (name-version) — not a fragile engine table."""
+    build) + site-packages/*.dist-info (name-version) — not a fragile engine table.
+
+    A conda row carries its LICENCE after a tab, read out of the same conda-meta JSON the
+    scan was already opening. The tab has to be split off BEFORE the name/version parse,
+    which rsplits on "-": a licence like `GPL-3.0-or-later` folded into the build string
+    would silently rewrite the package's version."""
     from agent.skills.container_build import ContainerBuild
     cb = ContainerBuild()
     cb.cid, cb.has_env_layer = "fake", True
     monkeypatch.setattr(cb, "exec", lambda *a, **k: {"returncode": 0, "stderr": "",
-        "stdout": ("conda samtools-1.21-h50ea8bc_0\n"
-                   "conda libdeflate-1.19-hd590300_0\n"
+        "stdout": ("conda samtools-1.21-h50ea8bc_0\tMIT\n"
+                   "conda libdeflate-1.19-hd590300_0\tGPL-3.0-or-later\n"
+                   "conda novoalign-4.03.04-h1234_0\tCommercial (requires license for use)\n"
+                   "conda mystery-2.0-h9_0\t\n"
                    "pypi pyfaidx-0.8.1.1\n")})
     pkgs = cb.resolved_packages()
     by = {p["name"]: p for p in pkgs}
-    assert by["samtools"] == {"name": "samtools", "version": "1.21", "kind": "conda"}
-    assert by["libdeflate"]["version"] == "1.19"
-    assert by["pyfaidx"] == {"name": "pyfaidx", "version": "0.8.1.1", "kind": "pypi"}
+    assert by["samtools"] == {"name": "samtools", "version": "1.21", "kind": "conda",
+                              "license": "MIT"}
+    # the hyphens in the licence do NOT reach the version parse
+    assert by["libdeflate"] == {"name": "libdeflate", "version": "1.19", "kind": "conda",
+                                "license": "GPL-3.0-or-later"}
+    assert by["novoalign"]["license"] == "Commercial (requires license for use)"
+    # `"license": null` in the metadata, and a dist-info (whose licence this scan does not
+    # read at all) — both are "", which core_data reads as unrecognized, never as free.
+    assert by["mystery"]["license"] == ""
+    assert by["pyfaidx"] == {"name": "pyfaidx", "version": "0.8.1.1", "kind": "pypi",
+                             "license": ""}
 
 
 def _sample_record(locus="emulated"):
@@ -3559,7 +3588,7 @@ def test_attestation_is_intoto_slsa_statement_from_record():
     # so this assertion tracks the contract instead of restating it from memory.
     assert ip["honesty_contract"] == [
         "BUILT", "VALIDATED_IN_IMAGE", "POLICY_CLEAN.accelerator",
-        "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
+        "POLICY_CLEAN.accelerator_observed", "POLICY_CLEAN.license", "PROVENANCE_CLEAN"]
     assert ip["validation_locus"] == "native"
     # validated==shipped evidence is carried per tool
     assert any(v["tool"] == "samtools" and v["passed"] for v in ip["validated_in_image"])
@@ -6427,7 +6456,8 @@ def test_attestation_predicate_licenses_present_on_adopt_path():
     assert ip["license_gated"] is True
     # mode-aware honesty preserved (the adopt contract)
     assert ip["honesty_contract"] == [
-        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.license",
+        "ADOPTED_BY_DIGEST", "POLICY_CLEAN.accelerator", "POLICY_CLEAN.accelerator_observed",
+        "POLICY_CLEAN.license",
         "PROVENANCE_CLEAN"]
 
     # ...and the legacy key really does gate now: drop the marking and I13 fires, so the
