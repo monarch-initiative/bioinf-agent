@@ -392,7 +392,12 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
             d = yaml.safe_load(spec_file.read_text()) or {}
             steps = d.get("pipeline_steps") or []
             if not detail:
-                status = usage_status(d) or USAGE_NOT_ATTEMPTED
+                # NO `or USAGE_NOT_ATTEMPTED` FALLBACK. That default did the rounding the
+                # leaf now refuses: a spec with no `usage_verification` block was reported
+                # as "nobody attempted the self-test", which is a finding, from a field that
+                # is simply absent. `usage_status` returns `unrecorded` for it and `""` only
+                # for a spec that is not a mapping at all.
+                status = usage_status(d)
                 row = {
                     "workflow_name":   d.get("workflow_name"),
                     "env_request_key": d.get("env_request_key"),
@@ -435,10 +440,12 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
                 # former, false on disk always meant the latter, a verdict nobody
                 # reached. Consult this, not the bool.
                 #
-                # A missing key means the artifact predates the three-state field, so
-                # the honest read is the stated string "not_attempted" — never a
-                # fabricated False, which would be this row inventing the verdict the
-                # producer declined to make. (Unlike the envs[] half above, which
+                # A missing key means the artifact predates the field, so the honest read
+                # is `unrecorded` — never a fabricated False, and (since 2026-08-06) never
+                # `not_attempted` either. Both would be this row inventing the verdict the
+                # producer declined to make; the second just wore likelier clothes, and it
+                # made a structurally-unprovable multi-ENV how-to indistinguishable from one
+                # nobody bothered to author. (Unlike the envs[] half above, which
                 # RE-EARNS contract_ok at read time, this is disclosure of a stored
                 # claim: Layer 2 cannot re-anchor here, because
                 # check_workflow_invariants dials out over ssh on a locus:cluster I5
@@ -449,7 +456,7 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
                 # local version fell to "not_attempted" while `usage_verified: true` was
                 # printed directly above it, so one row contradicted itself about one
                 # workflow. samtools_cluster_rung3 is that artifact on disk.
-                "usage_verification_status": usage_status(d) or USAGE_NOT_ATTEMPTED,
+                "usage_verification_status": usage_status(d),
                 "usage_verification_reason": (
                     (d.get("usage_verification") or {}).get("reason") or ""),
                 "steps_total":     len(steps),

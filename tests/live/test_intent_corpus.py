@@ -412,23 +412,55 @@ def test_known_gaps_are_declared_not_discovered_later():
                 f"closing it is a shrug, and shrugs accumulate")
 
 
+def test_an_ungraded_row_never_carries_a_verdict():
+    """A row the harness does not grade must hold `is_correct_today: None`. Pure — every push.
+
+    The sibling of the deferred-rows test above, generalised, and it was bought with a real
+    miscount. `test_deferred_rows_...` already pinned None for the 12 domain decoys; nothing
+    pinned it for the OTHER 12 unassertable rows, and they sat on a `False` written back when
+    they were still assertable. `build_intent_corpus.py` skips them — correctly, they name
+    facts no assertion reads — so nothing revisited that False for a year, and
+    `render_intent_grid.py` folded every one into "gradeable, do not reach intent". The
+    headline read **16 failures** when the measured number was **4**. Nine of the twelve
+    carried an `unassertable_reason` stating, in their own words, that the DECISION is already
+    correct; the page printed "12 unassertable" as its own figure a few pixels from the 16.
+
+    Absence rounded up into a verdict, inside the meter this project uses to decide whether v1
+    is done — and it flattered us, which is the direction that gets believed. False is a
+    CLAIM ("we measured this and the resolver was wrong"); None is the truth ("nobody
+    measured this"). A harness that cannot tell them apart cannot be trusted about the rows it
+    CAN grade either."""
+    liars = [(r["id"], r.get("is_correct_today")) for r in _rows()
+             if not r.get("expect", {}).get("assertable", True)
+             and r.get("is_correct_today") is not None]
+    assert not liars, (
+        f"{len(liars)} unassertable row(s) carry a verdict nothing computed:\n"
+        + "\n".join(f"  {i}: is_correct_today={v!r}, want None" for i, v in liars)
+        + "\nRun `python scripts/build_intent_corpus.py` to clear them, or make the row "
+          "assertable and let the probe earn the verdict. Do not hand-write one.")
+
+
 def test_the_ratchet_meter_is_visible():
     """The count of not-yet-correct rows is the meter. Print it so a run states the
     number rather than burying it in xfail noise — the same reason the dashboard leads
     with its real coverage figure instead of a comfortable one."""
     rows = _rows()
-    # The deferred rows (graded by the LLM identity eval, not the resolve-probe) are a THIRD
-    # state — is_correct_today is None. They must NOT be counted as "do not reach intent": the
-    # meter is over what the resolve-probe can actually grade. Reported as their own figure.
+    # FOUR states. The deferred rows (graded by the LLM identity eval, not the resolve-probe)
+    # and the unassertable rows (naming a fact no assertion here reads) both hold
+    # is_correct_today=None. Neither may be counted as "do not reach intent" — the meter is
+    # over what the resolve-probe actually graded. Each is reported as its own figure.
     deferred = [r for r in rows if r.get("expect", {}).get("graded_by") == "llm_identity_eval"]
-    gradeable = [r for r in rows if r not in deferred]
-    wrong = [r for r in gradeable if not r.get("is_correct_today")]
+    unassertable = [r for r in rows if not r.get("expect", {}).get("assertable", True)
+                    and r not in deferred]
+    graded = [r for r in rows if r not in deferred and r not in unassertable]
+    wrong = [r for r in graded if not r.get("is_correct_today")]
     by_gap: dict[str, int] = {}
     for r in wrong:
         by_gap[r.get("gap_class", "?")] = by_gap.get(r.get("gap_class", "?"), 0) + 1
-    print(f"\nINTENT CORPUS: {len(gradeable) - len(wrong)}/{len(gradeable)} resolve-gradeable "
-          f"rows reach the user's intent; {len(wrong)} do not — by gap: {by_gap}; "
-          f"{len(deferred)} deferred → LLM identity eval")
+    print(f"\nINTENT CORPUS: {len(graded) - len(wrong)}/{len(graded)} graded rows reach the "
+          f"user's intent; {len(wrong)} measured wrong — by gap: {by_gap}; "
+          f"{len(deferred)} deferred → LLM identity eval; "
+          f"{len(unassertable)} the harness cannot check")
     assert rows
 
 
@@ -518,3 +550,25 @@ def test_a_flip_to_green_is_taken_at_face_value(tmp_path, monkeypatch):
     row, left = _run(tmp_path, monkeypatch, _row(False), ["conda", "unused"])
     assert row["is_correct_today"] is True
     assert left == ["unused"], "a green flip must not spend a second probe"
+
+
+def test_the_builder_clears_a_stale_verdict_it_will_never_recompute(tmp_path, monkeypatch):
+    """An unassertable row is SKIPPED, not graded — so the builder must not leave it wearing a
+    verdict from a life it no longer leads. Twelve rows did exactly that, and the grid read
+    them as failures (see `test_an_ungraded_row_never_carries_a_verdict`).
+
+    The skip itself is right: these rows name facts no assertion reads, or are a function of
+    the invisible github quota. What was wrong was skipping them SILENTLY over a value nothing
+    would ever revisit. Note the probe list is empty — clearing must cost no network call, so
+    a row parked for being unstable is never re-probed just to be nulled.
+
+    Break it: `continue` before the clear."""
+    stale = _row(False)
+    stale["expect"] = {"assertable": False, "unassertable_reason": "names a fact nothing reads"}
+    row, _ = _run(tmp_path, monkeypatch, stale, [])
+    assert row["is_correct_today"] is None, (
+        "an unassertable row kept a verdict the builder never recomputed — the next render "
+        "will charge it to the failure column")
+    assert row["actual_today"] == {"chosen": "conda"}, (
+        "clearing the verdict must not touch the OBSERVATION — that is the last real reading "
+        "this row has, and overwriting it with nothing loses history for no gain")

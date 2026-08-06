@@ -163,6 +163,26 @@ def resolve_tool(
     ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
     reliability gate — pass it whenever you know the tool's repo.
 
+    `ambiguous` is calibrated to fire only on a REAL fork in the road, because a flag that
+    fires on the healthy case is one you learn to strip on the case that matters. It takes
+    two STATED meanings and no arbiter: a conda pick RESOLVES the collision (so a correct
+    `anndata` is not also accused over a CRAN reticulate wrapper of the same project), and a
+    `degenerate_stub` — a registry hit with no summary, homepage, project URL or repo — is a
+    name reservation rather than a rival project, so it neither makes a name ambiguous nor
+    wins the ranking. When one is disqualified it is named in `degenerate_stubs` and the
+    rationale, never dropped silently. (PyPI's blank `seurat` 0.0.2 used to beat CRAN's
+    `Seurat` 5.5.1 two different ways at once.)
+
+    `version_lineage` — THE NAME IS A LINEAGE, and this field is a fact, not a warning.
+    Bioinformatics versions tools by RENAMING the package: bioconda's `gatk` is 3.8 and
+    GATK4 lives at `gatk4`, a different package. When the channel carries the next major
+    lineage under a different name you get `{successor, successor_latest, …}` and the
+    `install_call` is comment-prefixed — the runnable line survives underneath, so a caller
+    who genuinely wants the older lineage is not blocked. YOU decide which is meant: it also
+    fires on `bowtie` → `bowtie2` and `macs2` → `macs3`, where the older tool is a live and
+    legitimate choice, and nothing mechanical separates those from gatk. That separation is
+    world knowledge, which is yours.
+
     A HUMAN MUST FETCH SOME OF THESE, and recognising which is YOUR job — the resolver
     keeps no list of vendor-gated names, because a finite list of them rots and promises a
     completeness it cannot keep. Some tools' runnable bytes sit behind a EULA

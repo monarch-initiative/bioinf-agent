@@ -53,8 +53,21 @@ _VERDICT_KEYS = {"confirmed", "anchor", "evidence", "note", "reason"}
 
 
 def _stub(monkeypatch, *, conda=None, pip=None, cran=None, gh=None):
-    """Stub the registry probes; drive the REAL resolve()."""
-    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: conda or {"available": False})
+    """Stub the registry probes; drive the REAL resolve().
+
+    NAME-AWARE, and it has to be. These stubs used to answer for ANY name, so the moment
+    resolve() asked a second conda question — `probe_version_lineage` looks for the next
+    major lineage under a different package name — the stub cheerfully reported that
+    `samtools2` exists, and two tests asserting a clean install_call went red over a
+    package nobody had described. A stub that cannot tell two probes apart is not a stub of
+    the thing being tested. It answers for the FIRST name it is asked about and says no to
+    every other, which is what a registry does."""
+    _first: dict[str, str] = {}
+
+    def _conda(n, t=12):
+        return dict(conda) if conda and n == _first.setdefault("conda", n) else {"available": False}
+
+    monkeypatch.setattr(R, "probe_conda", _conda)
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: pip or {"available": False})
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: cran or {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
@@ -233,3 +246,215 @@ def test_repo_backed_tier_surfaces_the_repo(monkeypatch):
     assert d["chosen"] in ("source", "synthesis", "binary")
     assert d["identity"]["repo"] == "lh3/seqtk"
     assert d["identity"]["repo_anchored"] is True
+
+
+# ---------------------------------------------------------------------------
+# what counts as a COMPETING MEANING — the ambiguity flag's calibration
+#
+# Three defects, one theme: a flag that fires on the healthy case is not a cautious
+# flag, it is a broken one. The corpus's `false-accusation-noise` row states it as the
+# rule — "this is the false-ACCUSE half that makes the true-positive half worthless:
+# the banner is IDENTICAL in shape to cellranger's, so a reader who sees it on anndata
+# learns it means nothing and strips it on cellranger."
+# ---------------------------------------------------------------------------
+def test_a_conda_pick_resolves_the_collision_instead_of_also_accusing(monkeypatch):
+    """conda winning IS the disambiguation — this branch has always PROCEEDED on it — but
+    `ambiguous` stayed True on the way out, so one decision said "here is your package" and
+    "this name is dangerously ambiguous" at once.
+
+    MEASURED: `resolve('anndata')` returned conda-forge anndata 0.13.2 (scverse/anndata),
+    exactly what was asked for, flagged ambiguous because CRAN also has an `anndata` — which
+    is a reticulate WRAPPER around that same Python project. Not merely a false alarm: not
+    even a collision.
+
+    The FACT is not lost, which is the test's second half: both tiers stay in `available`,
+    so a reader still sees that the name exists in two ecosystems. What is removed is the
+    verdict laid over it.
+
+    Break it: raise `ambiguous` before checking what the ranking concluded."""
+    _stub(monkeypatch,
+          conda={"available": True, "channel": "conda-forge", "latest": "0.13.2",
+                 "summary": "An annotated data matrix.", "repo": "scverse/anndata"},
+          pip={"available": True, "latest": "0.13.2", "summary": "Annotated data.",
+               "home_page": "", "project_urls": {"Source": "https://github.com/scverse/anndata"}},
+          cran={"available": True, "latest": "0.8.0", "url": "https://github.com/dynverse/anndata",
+                "summary": "'anndata' for R — A 'reticulate' wrapper for the Python package."})
+    d = R.resolve("anndata")
+    assert d["chosen"] == "conda"
+    assert d["ambiguous"] is False, "a resolved collision must not also be reported as one"
+    assert not d["install_call"].lstrip().startswith("#")
+    assert {"pip", "cran"} <= set(d["available"]), \
+        "the fact must survive where it belongs — dropping the flag must not drop the tiers"
+
+
+def test_a_genuine_two_ecosystem_collision_still_refuses(monkeypatch):
+    """The half that has to keep working, or the change above is just deletion. PyPI `ape`
+    (a build system) and CRAN `ape` (phylogenetics) are two real projects with two real
+    descriptions and no conda pick to arbitrate — refuse and ask."""
+    _stub(monkeypatch,
+          pip={"available": True, "latest": "0.5.0", "summary": "A build system",
+               "home_page": "", "project_urls": {}},
+          cran={"available": True, "latest": "5.8", "url": "",
+                "summary": "Analyses of Phylogenetics and Evolution"})
+    d = R.resolve("ape")
+    assert d["chosen"] is None
+    assert d["ambiguous"] is True
+    assert d["refusal_reason"] == "needs_user_input"
+
+
+def test_a_registry_stub_that_states_no_meaning_neither_wins_nor_makes_a_name_ambiguous(monkeypatch):
+    """A name reservation is not a rival project, and it has to lose BOTH ways.
+
+    `resolve('seurat')` failed both ways at once — which is why one gate was not enough.
+    PyPI's `seurat` is version 0.0.2 with an empty summary, no homepage and no project URLs;
+    CRAN's `Seurat` is 5.5.1, "Tools for Single Cell Genomics …", the standard R single-cell
+    toolkit. The blank first COLLIDED with the real one into a refusal that asked the user
+    to choose between a described bio tool and a blank — a question with one possible answer,
+    and the taxes are what teach a ride to stop reading the asks. Lift only that, and the
+    blank simply WON on tier order: `install_pip_package(env, "seurat", version="0.0.2")`.
+
+    So the disqualification happens once, before ranking, and both consumers read it.
+
+    Break it: fix the ambiguity flag without fixing the ranking, or vice versa."""
+    _stub(monkeypatch,
+          pip={"available": True, "latest": "0.0.2", "summary": "",
+               "home_page": "", "project_urls": {}, "package_url": ""},
+          cran={"available": True, "latest": "5.5.1", "resolved_name": "Seurat",
+                "summary": "Tools for Single Cell Genomics — a toolkit for QC and analysis.",
+                "url": "", "bug_reports": ""})
+    d = R.resolve("seurat")
+    assert d["chosen"] == "cran", "the described package must win over the blank"
+    assert d["ambiguous"] is False, "a blank states no meaning, so there are not two meanings"
+    assert d["degenerate_stubs"] and d["degenerate_stubs"][0]["tier"] == "pip"
+    assert "DISQUALIFIED" in d["rationale"], "and never silently — say what lost, and why"
+    # CRAN is case-SENSITIVE and so is install.packages(). The case-retry landed `Seurat`;
+    # the emitted call spelled the QUERY, which does not install. Reachable only once the
+    # line above let `seurat` reach the cran tier at all — a wrong tool traded for a broken one.
+    assert 'install_r_package(env, "Seurat", source="cran")' in d["install_call"]
+
+
+def test_nothing_is_muted_when_every_registry_hit_is_equally_mute(monkeypatch):
+    """The floor: if all we have is a blank, a blank is all we have. Muting them all would
+    manufacture a dead end out of a thin one — the ABSENT-≠-UNCHECKED failure in a new
+    costume, since the caller would be told nothing was found when something was.
+
+    Break it: drop the `if not speaking` guard."""
+    _stub(monkeypatch, pip={"available": True, "latest": "0.0.1", "summary": "",
+                            "home_page": "", "project_urls": {}, "package_url": ""})
+    d = R.resolve("nobodyhome")
+    assert d["chosen"] == "pip"
+    assert "degenerate_stubs" not in d
+
+
+def test_a_conda_hit_is_never_muted_for_a_thin_recipe(monkeypatch):
+    """`channel` counts as a stated meaning, so this sniff can never overturn conda-first.
+
+    Not a carve-out: being carried on a curated bioinformatics channel IS a statement — the
+    ECOSYSTEM-not-identity distinction the corpus draws — and conda-first is a measured,
+    load-bearing rule that a metadata heuristic has no business relitigating. A bioconda
+    recipe with a terse summary is thin, not meaningless.
+
+    Break it: drop `channel` from `_states_a_meaning`."""
+    _stub(monkeypatch,
+          conda={"available": True, "channel": "bioconda", "latest": "1.0", "summary": ""},
+          pip={"available": True, "latest": "2.0", "summary": "A very well described package",
+               "home_page": "https://example.org", "project_urls": {}})
+    d = R.resolve("terse")
+    assert d["chosen"] == "conda"
+    assert "degenerate_stubs" not in d
+
+
+# ---------------------------------------------------------------------------
+# the name is a LINEAGE — bioinformatics versions tools by renaming the package
+# ---------------------------------------------------------------------------
+def test_the_next_major_lineage_is_disclosed_when_it_is_a_different_package(monkeypatch):
+    """`resolve('gatk')` emits `gatk=3.8` — a 2017 release — because bioconda ships GATK4 as
+    `gatk4`, a different package. Every fact about that pick is CORRECT: right project, right
+    channel, right description, and a decade stale. Nothing anywhere said the thing almost
+    everyone means is one character away.
+
+    Break it: stop probing the successor, or stop poisoning the call."""
+    _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "3.8",
+                              "summary": "The full Genome Analysis Toolkit (GATK) framework."})
+    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: (
+        {"available": True, "channel": "bioconda", "latest": "3.8",
+         "summary": "The full Genome Analysis Toolkit (GATK) framework."} if n == "gatk"
+        else {"available": True, "channel": "bioconda", "latest": "4.6.2.0",
+              "summary": "Genome Analysis Toolkit (GATK4)"} if n == "gatk4"
+        else {"available": False}))
+    d = R.resolve("gatk")
+    assert d["chosen"] == "conda", "a FACT, not a refusal — the pick stands"
+    assert d["version_lineage"]["successor"] == "gatk4"
+    assert d["version_lineage"]["successor_latest"] == "4.6.2.0"
+    assert d["install_call"].lstrip().startswith("#"), "do not paste this one blind"
+    assert "resolve_tool('gatk4')" in d["install_call"], "name the next call, not just the problem"
+    assert d["install_call"].rstrip().endswith(
+        'install_conda_packages(env, [{"spec": "gatk=3.8", "channel": "bioconda"}])'), \
+        "the runnable line survives — a caller who DID mean GATK3 is not blocked"
+
+
+def test_a_pinned_version_names_its_own_lineage_and_costs_no_probe(monkeypatch):
+    """A caller who typed a version chose a lineage; asking them again is noise, and the
+    successor probe is one HTTP round trip we then owe nothing for.
+
+    Break it: run the lineage probe unconditionally."""
+    asked = []
+
+    def _conda(n, t=12):
+        asked.append(n)
+        return {"available": True, "channel": "bioconda", "latest": "3.8", "summary": "GATK"}
+
+    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    monkeypatch.setattr(R, "probe_conda", _conda)
+    d = R.resolve("gatk", version="3.8")
+    assert "version_lineage" not in d
+    assert asked == ["gatk"], f"one probe, not two: {asked}"
+
+
+def test_no_successor_no_noise(monkeypatch):
+    """The calibration half. bioconda carries no `tophat3`, so a user reproducing a 2013
+    paper with tophat 2.1.2 gets a clean call — the corpus's deprecated-tools row is a guard
+    against exactly this kind of over-correction, and it is not a hypothetical: the mechanism
+    fires on only 3 of 18 common bioconda tools (gatk, bowtie, macs2), each a real split.
+
+    Break it: disclose on any numbered name, or on a successor that does not exist."""
+    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: (
+        {"available": True, "channel": "bioconda", "latest": "2.1.2",
+         "summary": "A spliced read mapper"} if n == "tophat" else {"available": False}))
+    d = R.resolve("tophat")
+    assert d["chosen"] == "conda"
+    assert "version_lineage" not in d
+    assert d["install_call"].startswith("install_conda_packages(")
+
+
+def test_a_metadata_less_probe_is_never_called_meaningless(monkeypatch):
+    """The disqualification must speak only about tiers whose probe COLLECTS a description.
+
+    Caught before landing: `probe_bioconductor` is an existence check — `_fetch_ok` on the
+    release HTML page, returning `{"available": bool}` and nothing else — so under a naive
+    reading it "states no meaning" for every package Bioconductor has ever shipped, and
+    `resolve('deseq2', language='r')` disqualified the tier with a rationale asserting that
+    the ENTRY says nothing about itself. That is a fact about our probe reported as a fact
+    about the package: the report lie this repo exists to refuse, and it would have been
+    invisible because cran outranks bioconductor anyway.
+
+    Break it: put a metadata-less tier back into `_REGISTRY_TIERS`."""
+    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": False})
+    monkeypatch.setattr(R, "probe_cran", lambda n, t=12: {
+        "available": True, "latest": "3.0", "summary": "a real R package",
+        "url": "", "bug_reports": ""})
+    monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": True})
+    monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
+    d = R.resolve("deseq2", language="r")
+    assert "degenerate_stubs" not in d
+    assert "bioconductor" in d["available"], \
+        "the tier must stay rankable — it was never a stub, only a probe that reads no prose"
+    assert "DISQUALIFIED" not in d["rationale"]

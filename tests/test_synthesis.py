@@ -344,6 +344,68 @@ def test_resolve_discovery_weak_candidate_needs_confirmation(monkeypatch):
     assert d["repo_auto_adoptable"] is False
 
 
+def test_star_dominance_never_breaks_a_tie_between_two_exact_name_repos(monkeypatch):
+    """POPULARITY IS NOT IDENTITY. Two projects own the name; the resolver must ask.
+
+    THE MEASURED CASE. `resolve('talos', language='r')` adopted siderolabs/talos — a
+    Kubernetes Linux distribution at 10893★ — over autonomio/talos at 1636★, because a
+    third disjunct in `auto_adoptable` read `stars >= 5 * runner_up.stars` and 6.6:1
+    cleared it. The tool meant is populationgenomics/talos, a rare-disease variant
+    reanalysis pipeline and this repo's own authors-recipe exemplar. Star rank in a
+    bio-tool search is if anything ANTI-correlated with the answer: general-purpose
+    software outstars every domain tool that exists.
+
+    Two things made it worse than a bad guess. The disclosure it printed said, in its own
+    words, "Stars measure popularity, not identity" — while the pick rested on exactly
+    that. And adoption re-enters resolve() with the repo as an anchor, so the author tiers
+    then grant a pure popularity guess a free identity pass.
+
+    Break it: restore any ranking clause keyed on star counts. The ratio is a knob, and
+    tuning it is not a fix — at ANY threshold this is the resolver deciding which project
+    a user meant by counting strangers' stars."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github_search", lambda *a, **k: {"found": True, "candidates": [
+        {"repo": "siderolabs/talos", "stars": 10893, "description": "Kubernetes OS",
+         "language": "Go", "exact_name_match": True},
+        {"repo": "autonomio/talos", "stars": 1636, "description": "Keras tuner",
+         "language": "Python", "exact_name_match": True},
+    ]})
+    d = resolver.resolve("talos", language="r")
+    assert d["repo_auto_adoptable"] is False, \
+        "10893★ vs 1636★ is 6.6:1 — and a ratio is not evidence about which project this is"
+    assert d["chosen"] is None
+    assert d["refusal_reason"] == "needs_user_input"
+    assert d["recommended_repo"] == "siderolabs/talos", \
+        "still RECOMMEND the top hit — the ride reads the candidates and picks; it just is " \
+        "not adopted on our behalf"
+
+
+def test_a_sole_exact_name_repo_is_still_adopted_without_a_human(monkeypatch):
+    """The other half, and it is why the fix is a deletion rather than a refusal.
+
+    When nothing else on github claims the name there is no choice being made silently, so
+    autonomy is free: adopt and return a complete plan. Removing auto-adoption wholesale
+    would tax every unregistered tool with a round trip to answer a question that has one
+    candidate — the same over-correction the corpus's tophat row guards against, one layer
+    down. Note the runner-up here is NOT an exact-name match, which is the whole predicate.
+
+    Break it: gate auto-adoption on anything beyond 'nobody else claims this name'."""
+    _dead_registries(monkeypatch)
+    monkeypatch.setattr(resolver, "probe_github_search", lambda *a, **k: {"found": True, "candidates": [
+        {"repo": "brwnj/bcl2fastq", "stars": 57, "description": "NextSeq wrapper",
+         "language": "Python", "exact_name_match": True},
+        {"repo": "zymo/docker-bcl2fastq", "stars": 13, "description": "",
+         "language": None, "exact_name_match": False},
+    ]})
+    monkeypatch.setattr(resolver, "probe_github",
+                        lambda *a, **k: {"repo_exists": True, "has_release_assets": False, "assets": []})
+    d = resolver.resolve("bcl2fastq")
+    assert d["repo_auto_adoptable"] is True
+    assert d["chosen"] == "synthesis"
+    assert d["install_call"].lstrip().startswith("#"), \
+        "adopted, but a name match is not an identity — the provenance disclosure stands"
+
+
 def test_r_github_tier_beats_synthesis_for_r_package(monkeypatch):
     """An R package on github (language='r' + repo) → the purpose-built r_github tier,
     NOT generic synthesis; install_call uses install_r_package(source=github:...)."""

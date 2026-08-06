@@ -159,9 +159,23 @@ def main() -> int:
     corpus = json.loads(CORPUS.read_text())
     rows = corpus.get("rows", [])
 
-    drift, flipped, unstable = [], [], []
+    drift, flipped, unstable, cleared = [], [], [], []
     for r in rows:
         if not r.get("expect", {}).get("assertable", True):
+            # AN UNMEASURED ROW CARRIES NO VERDICT. This loop skips unassertable rows — by
+            # design, they name a fact no assertion reads, or they are a function of an
+            # invisible global (the github 60/hr quota) — but for a year it skipped them
+            # holding a stale `is_correct_today: False` written back when they were still
+            # assertable. Nothing ever revisited it, and the grid folded every one of them
+            # into its "do not reach intent" bucket: 12 of the 16 red rows were rows the
+            # harness had never graded, and NINE carried a note saying, in their own words,
+            # that the decision is already correct. Absence rounded up into a verdict,
+            # inside the meter this project uses to judge whether v1 is done.
+            # None is the honest value and it is what the deferred rows already carry.
+            if r.get("is_correct_today") is not None:
+                cleared.append(r["id"])
+                if not a.check:
+                    r["is_correct_today"] = None
             continue
         try:
             actual = probe(r["call"])
@@ -210,11 +224,15 @@ def main() -> int:
     for rid, first, second in unstable:
         print(f"  UNSTABLE  {rid}: probed red then green in one run — row left as it was. "
               f"first={first} second={second}")
+    for rid in cleared:
+        print(f"  CLEARED  {rid}: unassertable row held a stale verdict — is_correct_today "
+              f"-> None (nobody graded it)")
 
     if a.check:
         print(f"\n  {len(drift)} drifted · {len(flipped)} changed correctness · "
-              f"{len(unstable)} unstable (nothing written)")
-        return 1 if (drift or flipped) else 0
+              f"{len(unstable)} unstable · {len(cleared)} stale verdicts on unassertable rows "
+              f"(nothing written)")
+        return 1 if (drift or flipped or cleared) else 0
 
     corpus["probed_on"] = _dt.date.today().isoformat()
     # indent=2 + ensure_ascii=False MATCH THE COMMITTED FILE. They are not cosmetic: with
@@ -222,9 +240,14 @@ def main() -> int:
     # behaviour change arrived as a whole-file diff and the reviewer could not see what
     # actually moved. A meter whose updates are unreviewable is a meter nobody checks.
     CORPUS.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + "\n")
-    ok = sum(1 for r in rows if r.get("is_correct_today"))
+    # Three counts, never two. `len(rows) - ok` used to be printed as "do not", which silently
+    # charged every ungraded row to the failure column — the same rounding the loop above now
+    # refuses. A row with is_correct_today None is neither.
+    ok = sum(1 for r in rows if r.get("is_correct_today") is True)
+    bad = sum(1 for r in rows if r.get("is_correct_today") is False)
+    ungraded = len(rows) - ok - bad
     print(f"\n  wrote {CORPUS.relative_to(ROOT)}  ({len(rows)} scenarios · {ok} reach intent · "
-          f"{len(rows) - ok} do not · probed {corpus['probed_on']})")
+          f"{bad} measured wrong · {ungraded} ungraded · probed {corpus['probed_on']})")
     print("  next: python scripts/render_intent_grid.py")
     return 0
 

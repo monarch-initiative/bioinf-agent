@@ -461,6 +461,38 @@ def seal_workflow(
                        stage="workflow_invariants",
                        violations=violations, violation_count=len(violations))
 
+    # WHICH FROZEN ENVS THIS RUN TOUCHED — computed BEFORE the I4 gate, because the I4
+    # gate's honest "why not" depends on it. A workflow whose steps ran in more than one
+    # shipped image CANNOT have a fully self-tested how-to: every command in
+    # `usage.command_template` executes inside the ONE image named by `freeze_request_key`,
+    # so a chain whose phases live in different images has no single image the template
+    # could run in. That is structural, not laziness, and until now the seal said the same
+    # sentence either way ("no usage block was authored"), leaving a reader unable to tell
+    # an unprovable how-to from an unwritten one.
+    #
+    # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
+    # frozen env (their own freeze). Validate every step's container digest against
+    # the set of ALL frozen env digests, not just the one we sealed from — so a
+    # multi-env workflow is still "validated == shipped" when every step ran in some
+    # shipped env. `fr` remains the PRIMARY env (the guide's get-the-image section).
+    from agent.models.core_data import step_is_validated
+    all_envs = _ms._env_cache.all()
+    valid_digests = {r.get("image_digest") for r in all_envs.values() if r.get("image_digest")}
+    by_digest = {r.get("image_digest"): (k, r) for k, r in all_envs.items() if r.get("image_digest")}
+    envs_used: list[dict] = []
+    seen_dig: set = set()
+    for s in draft.get("pipeline_steps", []):
+        if not isinstance(s, dict):
+            continue
+        d = s.get("container_image_digest")
+        is_validated = step_is_validated(s)
+        if d and is_validated and d not in seen_dig:
+            seen_dig.add(d)
+            rk, rr = by_digest.get(d, ("", {}))
+            envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
+                              "image_digest": d})
+    _spans_images = len(seen_dig) > 1
+
     # The usage.command_template IS the workflow's run contract — establish
     # usage_verified honestly by self-testing it (I4), since the draft doesn't
     # persist the field (it's derived only at validate/finalize). A verified
@@ -497,10 +529,26 @@ def seal_workflow(
     if not draft.get("usage"):
         usage_detail = {
             "ok": False, "status": "not_attempted",
-            "reason": "no usage block was authored on the draft, so I4 ran nothing — this "
-                      "seal proves the RUN happened, not how to re-run it. Add "
-                      "patch_pipeline(usage={command_template, description, inputs, outputs}) "
-                      "and re-seal to earn a verified how-to.",
+            # TWO REASONS, because they are two different facts about the artifact and a
+            # reader acts differently on each. Without a usage block both used to read
+            # "add one and re-seal" — advice that is right for a single-image run and
+            # WRONG for a chain across images, where authoring only the phase that happens
+            # to run in the pinned image earns a green self-test for a command that does
+            # half the work. That is the failure this contract exists to prevent, so the
+            # honest landing there is to author nothing and say why.
+            "reason": (
+                (f"this run spans {len(seen_dig)} shipped images, and every command in "
+                 f"usage.command_template executes inside the ONE image pinned by "
+                 f"freeze_request_key — so a fully self-tested how-to is STRUCTURALLY "
+                 f"impossible here, not merely absent. Authoring only the phase that runs "
+                 f"in the pinned image would earn a green badge for a command that does "
+                 f"part of the work. Read the per-step evidence for what actually ran."
+                 if _spans_images else
+                 "no usage block was authored on the draft, so I4 ran nothing — this "
+                 "seal proves the RUN happened, not how to re-run it. Add "
+                 "patch_pipeline(usage={command_template, description, inputs, outputs}) "
+                 "and re-seal to earn a verified how-to.")),
+            "spans_images": len(seen_dig),
         }
     else:
         runner = _image_usage_runner(fr, draft) or (_ms._env_mgr if draft.get("conda_env") else None)
@@ -531,27 +579,8 @@ def seal_workflow(
                 usage_self_test=usage_detail,
             )
 
-    # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
-    # frozen env (their own freeze). Validate every step's container digest against
-    # the set of ALL frozen env digests, not just the one we sealed from — so a
-    # multi-env workflow is still "validated == shipped" when every step ran in some
-    # shipped env. `fr` remains the PRIMARY env (the guide's get-the-image section).
-    from agent.models.core_data import step_is_validated
-    all_envs = _ms._env_cache.all()
-    valid_digests = {r.get("image_digest") for r in all_envs.values() if r.get("image_digest")}
-    by_digest = {r.get("image_digest"): (k, r) for k, r in all_envs.items() if r.get("image_digest")}
-    envs_used: list[dict] = []
-    seen_dig: set = set()
-    for s in draft.get("pipeline_steps", []):
-        if not isinstance(s, dict):
-            continue
-        d = s.get("container_image_digest")
-        is_validated = step_is_validated(s)
-        if d and is_validated and d not in seen_dig:
-            seen_dig.add(d)
-            rk, rr = by_digest.get(d, ("", {}))
-            envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
-                              "image_digest": d})
+    # (`envs_used` / `valid_digests` are computed above the I4 gate — that gate's honest
+    # "why not" needs to know whether this run spans images.)
 
     # The how-to is rendered from the verified `usage` block into the Layer-2 run
     # dashboard (HTML) below — NOT a markdown guide (retired). We still pull

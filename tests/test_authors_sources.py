@@ -116,7 +116,13 @@ def _stub_registries(monkeypatch, *, conda=False, pip=False, pip_repo="", conda_
     if conda_repo:
         cd["repo"] = conda_repo
         cd["repo_field"] = "dev_url"
-    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: dict(cd))
+    # NAME-AWARE: answer for the FIRST name asked, say no to every other. Answering for ANY
+    # name meant this stub invented a `samtools2` when `probe_version_lineage` went looking
+    # for the next major lineage, and the healthy-gate test below went red over a package
+    # nothing in it had described. A registry says no to names it does not carry.
+    _first: dict[str, str] = {}
+    monkeypatch.setattr(R, "probe_conda", lambda n, t=12: (
+        dict(cd) if n == _first.setdefault("conda", n) else {"available": False}))
     urls = {"Source": f"https://github.com/{pip_repo}"} if pip_repo else {}
     monkeypatch.setattr(R, "probe_pypi", lambda n, t=12: {"available": pip, "latest": "1.0",
                                                           "summary": pip_summary,

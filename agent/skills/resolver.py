@@ -436,6 +436,54 @@ def probe_cran(name: str, timeout: int = 12) -> dict[str, Any]:
     return rec
 
 
+def probe_version_lineage(tool: str, detail: dict, timeout: int = 12) -> dict[str, Any]:
+    """Does the channel we picked from ALSO carry the NEXT major lineage under a different
+    package name? Returns {} when it doesn't, or the successor's facts when it does.
+
+    Bioinformatics versions its tools by RENAMING the package. bioconda's `gatk` is 3.8, a
+    2017 release, and GATK4 lives at `gatk4` (4.6.2.0) — a different package, not a version
+    of the same one. So "the latest version of the name you typed" is a decade stale, every
+    identity fact about it is CORRECT (right project, right channel, right description), and
+    `install_conda_packages(env, [{"spec": "gatk=3.8", ...}])` is emitted with nothing
+    anywhere saying that the thing almost everyone means is one character away.
+
+    It is a FACT, not a verdict, and deliberately so — this cannot be resolved mechanically
+    and must not pretend to be. `bowtie` 1.3.1 → `bowtie2` and `macs2` → `macs3` fire on the
+    same rule, and there the older lineage is a live, legitimately-wanted tool. Nothing here
+    knows that nobody in 2026 means GATK3 while plenty of people do mean bowtie1; that is
+    world knowledge, so it belongs to the ride, and the ride can only apply it if it is TOLD
+    the successor exists. Ranking on "newer is better" would silently swap tools; refusing
+    would tax `bowtie` for a question it already answered. Say the true thing and move on.
+
+    MEASURED (2026-08-06, 18 common bioconda tools): fires on exactly gatk, bowtie and macs2
+    — the three that really are split lineages — and stays silent for samtools, bcftools,
+    bwa, picard, salmon, star, kallisto, hisat2, fastqc, trimmomatic, cutadapt, minimap2,
+    freebayes, vcftools and tophat. tophat matters: it is 2.1.2 with no `tophat3`, so the
+    corpus's deprecated-tools guard row (a user reproducing an old paper must not be blocked)
+    is untouched.
+
+    Costs ONE extra probe_conda, and the caller pays it only on a live conda pick with no
+    version requested — a caller who typed a version named their lineage."""
+    base = re.match(r"^(.*?)\d*$", tool.strip().lower()).group(1)
+    if not base:
+        return {}
+    try:
+        major = int(str(detail.get("latest") or "").split(".")[0])
+    except ValueError:
+        return {}                       # a date-string or unparseable version: no successor to name
+    successor = f"{base}{major + 1}"
+    if successor == tool.strip().lower():
+        return {}
+    found = probe_conda(successor, timeout)
+    if not found.get("available"):
+        return {}                       # includes probe_error: absent-vs-unchecked does not
+                                        # matter here, since silence is this probe's own no-op
+    return {"asked": tool, "asked_latest": detail.get("latest"),
+            "successor": successor, "successor_latest": found.get("latest"),
+            "successor_channel": found.get("channel"),
+            "successor_summary": found.get("summary") or ""}
+
+
 def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool:
     """True if any URL in `metadata_urls` references `github_repo` (owner/repo).
     The substring check is case-insensitive on the repo path because GitHub repo
@@ -1053,11 +1101,91 @@ def probe_bioconductor(name: str, timeout: int = 12) -> dict[str, Any]:
     return {"available": ok, **({"probe_error": err} if err else {})}
 
 
+# The tiers `_mute_registry_tiers` arbitrates between: exactly the ones whose probe RETURNS
+# METADATA. Deliberately not every tier, and the exclusions are the whole correctness of the
+# rule — muting a tier whose probe never collects a description would report a fact about OUR
+# PROBE as a fact about the PACKAGE, which is a report lie whatever it does to the ranking.
+#
+#   binary/synthesis/source — a github tier carries no registry metadata at all.
+#   bioconductor            — `probe_bioconductor` is an EXISTENCE check: `_fetch_ok` on the
+#                             release HTML page, returning `{"available": bool}` and nothing
+#                             else. Caught here before landing: with it in this tuple,
+#                             `resolve('deseq2', language='r')` disqualified the bioconductor
+#                             tier and said "the bioconductor entry states nothing about
+#                             itself", about a probe that is not built to read a description.
+#                             Harmless to the pick today (cran outranks bioconductor either
+#                             way) and false on the page regardless. Teach the probe to
+#                             capture a summary and it can rejoin this list.
+_REGISTRY_TIERS = ("conda", "pip", "cran")
+
+
+def _states_a_meaning(detail: dict) -> bool:
+    """Does this registry entry say what it IS? A DEGENERATE STUB — a reserved name with no
+    description, no homepage, no project URLs, no repo and no channel — states nothing.
+
+    PyPI `seurat` is the measured case: version 0.0.2, `summary` empty, `home_page` empty,
+    `project_urls` {}. Everything a reader could use to tell what it is, is absent.
+
+    Deliberately a test of PRESENCE, not of content: a one-word summary is real and counts,
+    and nothing here judges whether the meaning stated is the RIGHT one — that is the ride's
+    call, made on `identity.self_description`, which this does not touch. `channel` counts,
+    which is why a conda hit can never be muted by this: being carried on a curated
+    bioinformatics channel is itself a statement (ECOSYSTEM, not identity — the distinction
+    the corpus's `bioconda-membership-is-ecosystem-not-identity` row draws), and conda-first
+    is a measured, load-bearing rule that a metadata sniff has no business overturning."""
+    return bool((detail.get("summary") or "").strip()
+                or (detail.get("home_page") or "").strip()
+                or (detail.get("url") or "").strip()
+                or (detail.get("bug_reports") or "").strip()
+                or (detail.get("repo") or "").strip()
+                or (detail.get("channel") or "").strip()
+                or detail.get("project_urls"))
+
+
+def _mute_registry_tiers(availability: dict[str, dict]) -> list[dict]:
+    """Disqualify an available registry tier that states NO meaning when another one does.
+    Mutates `availability`; returns what was muted, for disclosure. Never silent.
+
+    A package that says nothing about itself is a name reservation, not a rival project, and
+    it must lose BOTH ways — it may not win the ranking, and it may not be counted as the
+    second meaning that makes a name ambiguous. `resolve('seurat')` failed both ways at once,
+    which is why one gate was not enough: PyPI's blank `seurat` 0.0.2 first collided with
+    CRAN's `Seurat` 5.5.1 ("Tools for Single Cell Genomics …") into a refusal that asked the
+    user to choose between a described bio tool and a blank — a question with one possible
+    answer — and when that ambiguity was lifted, the blank simply WON on tier order and
+    emitted `install_pip_package(env, "seurat", version="0.0.2")`. Two mechanisms would have
+    been two readings of one fact; this is the one, placed before ranking so both consumers
+    read the same disqualification.
+
+    Only fires when something else survives: if every registry hit is mute, they are all we
+    have and muting them all would manufacture a dead end out of a thin one."""
+    live = [t for t in _REGISTRY_TIERS if availability.get(t, {}).get("available")]
+    speaking = [t for t in live if _states_a_meaning(availability[t])]
+    if not speaking or len(speaking) == len(live):
+        return []
+    muted = []
+    for t in live:
+        if t in speaking:
+            continue
+        d = availability[t]
+        muted.append({"tier": t, "latest": d.get("latest"),
+                      "reason": (f"the {t} entry states nothing about itself — no summary, "
+                                 f"homepage, project URL or repo — while "
+                                 f"{'/'.join(speaking)} does. A name with no stated meaning "
+                                 f"is a reservation, not a competing project, so it neither "
+                                 f"wins the ranking nor makes this name ambiguous.")})
+        availability[t] = {**d, "available": False, "degenerate_stub": True}
+    return muted
+
+
 def _is_ambiguous(availability: dict[str, dict], language: str) -> bool:
     """A bare tool name is dangerously ambiguous when it resolves in BOTH a
     Python registry (PyPI) and an R registry (CRAN) with no language hint — they
     are almost certainly different packages (e.g. PyPI `ape` ≠ CRAN's R `ape`).
-    A language hint removes the ambiguity by construction."""
+    A language hint removes the ambiguity by construction.
+
+    Reads `available` AFTER `_mute_registry_tiers`, so a stub that states no meaning is
+    already gone — one disqualification, read here and by the ranking."""
     if language:
         return False
     return bool(availability.get("pip", {}).get("available")
@@ -1511,9 +1639,18 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     if tier == "pip":
         return f'install_pip_package(env, "{tool}"' + (f', version="{v}")' if v else ")")
     if tier == "cran":
-        return f'install_r_package(env, "{tool}", source="cran")'
+        # `registry_name`, never `tool`. crandb is case-SENSITIVE and so is
+        # `install.packages()`, and `probe_cran` retries a clean miss against mechanical
+        # capitalizations — so a query of `seurat` legitimately resolves CRAN's `Seurat` and
+        # carries `resolved_name` to say so. This branch read `tool` anyway and emitted
+        # `install_r_package(env, "seurat", source="cran")`, which does not install. The bug
+        # was UNREACHABLE until the degenerate-stub disqualification let `seurat` reach the
+        # cran tier at all: the case-retry landed the right package and the call spelled it
+        # wrong, trading a wrong tool for a broken one — exactly what `probe_cran`'s own
+        # docstring warns about, two functions away.
+        return f'install_r_package(env, "{registry_name(detail, tool)}", source="cran")'
     if tier == "bioconductor":
-        return f'install_r_package(env, "{tool}", source="bioconductor")'
+        return f'install_r_package(env, "{registry_name(detail, tool)}", source="bioconductor")'
     if tier == "r_github":
         return f'install_r_package(env, "{tool}", source="github:{github_repo}")'
     if tier == "binary":
@@ -1911,7 +2048,18 @@ def resolve(
                 f"project could not be verified ({cc_status}) — keeping conda; re-run or pass "
                 f"prefer='synthesis' to build the repo you named.")
 
+    # DEGENERATE STUBS. A registry hit that says nothing about itself loses to one that does
+    # — for the ranking AND for the ambiguity test below, which reads the same `available`.
+    # Runs after every probe and after the cross-namespace/fork guards, so it arbitrates over
+    # the tiers that actually survived to be ranked.
+    muted_stubs = _mute_registry_tiers(availability)
+
     decision = rank_decision(availability, prefer=prefer)
+    if muted_stubs:
+        decision["degenerate_stubs"] = muted_stubs
+        decision["rationale"] = (
+            "; ".join(f"{m['tier'].upper()} '{tool}' ({m['latest']}) DISQUALIFIED: {m['reason']}"
+                      for m in muted_stubs) + " || " + decision.get("rationale", ""))
 
     # DISCOVERY: the registries dead-ended and no repo was supplied. Instead of
     # stopping at "pass a github_repo", SEARCH github for the tool by name so an
@@ -1937,13 +2085,35 @@ def resolve(
         elif disc["found"]:
             cands = disc["candidates"]
             rec = cands[0]   # exact-name-then-stars sorted; the most-likely THE tool
-            # A confident auto-adopt candidate: an EXACT name match that clearly
-            # dominates. Else present candidates for a human/agent to confirm (the
+            # A confident auto-adopt candidate: an EXACT name match with NOTHING ELSE
+            # claiming the name. Else present candidates for a human/agent to confirm (the
             # GAB-collision guard: a same-name repo can still be the wrong project).
+            #
+            # POPULARITY IS NOT IDENTITY, AND IT NEVER BREAKS A TIE HERE. A third disjunct
+            # used to read `rec["stars"] >= 5 * cands[1]["stars"]` — adopt on star dominance
+            # when the runner-up ALSO matches the name exactly. That is the resolver settling
+            # a question about which PROJECT the user meant with a measure of how many people
+            # starred a repo, and the disclosure it then printed said so in its own words
+            # ("Stars measure popularity, not identity") while the pick rested on exactly
+            # that. Measured: `resolve('talos', language='r')` adopted siderolabs/talos, a
+            # Kubernetes Linux distribution, at 10893★ over autonomio/talos at 1636★ — 6.6:1,
+            # clearing the 5:1 bar — when the tool meant is populationgenomics/talos, a
+            # rare-disease variant-reanalysis pipeline that is this repo's own authors-recipe
+            # exemplar. Star rank in a bio-tool search is if anything ANTI-correlated with the
+            # answer: general-purpose software outstars every domain tool. Worse, adoption
+            # then re-enters resolve() with the repo as an anchor, so the author tiers grant
+            # it a free identity pass and a pure popularity guess ships as an anchored repo.
+            #
+            # What survives is not a weaker version of the same guess: `len(cands) == 1 or not
+            # cands[1]["exact_name_match"]` means NOTHING ELSE ON GITHUB CLAIMS THIS NAME, so
+            # there is no choice being made silently. The `stars >= 10` floor stays as a
+            # liveness sniff on that sole candidate, not as a ranking. When two projects do
+            # both own the name, that is a question, and asking it is the point — the ride
+            # gets `discovered_repos` with each repo's own description and re-calls with
+            # `github_repo=`, which is where the judgment belongs.
             auto_adoptable = bool(
                 rec["exact_name_match"] and rec["stars"] >= 10 and (
-                    len(cands) == 1 or not cands[1]["exact_name_match"]
-                    or rec["stars"] >= 5 * max(cands[1]["stars"], 1)))
+                    len(cands) == 1 or not cands[1]["exact_name_match"]))
             if auto_adoptable:
                 # AUTONOMY: it's confidently the tool → don't make a human re-run.
                 # Re-resolve WITH the discovered repo so the caller gets a COMPLETE,
@@ -1995,7 +2165,23 @@ def resolve(
     # the AMBIGUOUS rationale below already says how). conda winning IS a disambiguator (the
     # bioinformatics-channel package), so only a pip/cran pick is nulled; `available` keeps
     # BOTH tiers so the caller sees the two options it must choose between.
-    if ambiguous and chosen != "conda":
+    if ambiguous and chosen == "conda":
+        # RESOLVED, SO DO NOT ALSO ACCUSE. conda winning IS the disambiguation — this branch
+        # has always PROCEEDED on it — but `ambiguous` stayed True on the way out, so the
+        # decision said "here is your package" and "this name is dangerously ambiguous" in
+        # the same breath. `anndata` is the measured case: conda-forge anndata 0.13.2
+        # (scverse/anndata) is exactly what was asked for, and it shipped flagged because
+        # CRAN also has an `anndata` — which is a reticulate WRAPPER around that same Python
+        # project, i.e. the collision is not even a collision.
+        #
+        # This is the false-accuse half that makes the true-positive half worthless: the
+        # flag is identical in shape to the one raised over a genuine PyPI-vs-CRAN split, so
+        # a ride that sees it on a correct pick learns it means nothing and stops reading it
+        # on the pick where it does. A warning that fires on the healthy case is not a
+        # cautious warning, it is a broken one. The FACT survives where it belongs and is not
+        # lost: both tiers stay in `available`/`alternatives`, and the rationale names them.
+        ambiguous = False
+    elif ambiguous:
         chosen = None
         decision["chosen"] = None
     # VERSION EXISTENCE. A requested version the chosen tier does NOT carry must not be
@@ -2261,6 +2447,41 @@ def resolve(
                           f"from them — this is the best answer among the tiers we could "
                           f"REACH, which is a different claim. {retry}",
                           "a higher-ranked tier was NOT ruled out, only unreachable")
+
+    # THE NAME IS A LINEAGE, AND THE FIELD RENAMES THE PACKAGE WHEN THE LINEAGE MOVES.
+    #
+    # `resolve('gatk')` emits `gatk=3.8` — a 2017 release — because bioconda ships GATK4 as
+    # `gatk4`, a different package. Every fact about the pick is CORRECT, which is exactly
+    # what makes it dangerous: right project, right channel, right description, and a decade
+    # stale. So say the true thing, once, and poison the call so it is not pasted blind.
+    #
+    # NOT a refusal and NOT a re-rank. This fires equally on `bowtie` → `bowtie2` and
+    # `macs2` → `macs3`, where the older lineage is a live tool somebody may genuinely want,
+    # and nothing mechanical separates those from gatk — the separating knowledge is that
+    # nobody in 2026 means GATK3, which is world knowledge and therefore the ride's. Refusing
+    # would tax the two healthy cases for a question they had already answered, and the
+    # corpus's own tophat row exists to guard against precisely that over-correction.
+    #
+    # It is also the counter-example to the flag deleted above: `ambiguous` on a correct
+    # conda pick was a VERDICT that was false in the healthy case, so it trained readers to
+    # ignore it. "bioconda also carries bowtie2 2.5.5" is a FACT that is true every time it
+    # fires. The test for a disclosure is not how rarely it appears but whether it is still
+    # true when it does.
+    if chosen == "conda" and not version and decision.get("install_call"):
+        _lin = probe_version_lineage(tool, availability.get("conda", {}), timeout)
+        if _lin:
+            decision["version_lineage"] = _lin
+            _disclose(decision,
+                      f"NEXT MAJOR LINEAGE IS A DIFFERENT PACKAGE: you asked for '{tool}', "
+                      f"whose latest on {_lin['successor_channel']} is {_lin['asked_latest']} "
+                      f"— and {_lin['successor_channel']} ALSO carries "
+                      f"'{_lin['successor']}' at {_lin['successor_latest']}"
+                      + (f" ({_lin['successor_summary']})" if _lin['successor_summary'] else "")
+                      + f". This field versions tools by RENAMING the package, so the newest "
+                        f"'{tool}' is not the newest of this tool. Confirm which lineage you "
+                        f"mean; if it is the newer one, re-run with "
+                        f"resolve_tool('{_lin['successor']}').",
+                      "the pick below is the OLDER lineage, by the literal name you typed")
 
     # A WORKFLOW IS NOT A TOOL, AND SAYING SO IS THE WHOLE ANSWER.
     #
