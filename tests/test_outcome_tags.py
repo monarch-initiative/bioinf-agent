@@ -338,7 +338,6 @@ FULLY_TAGGED = [
     "agent/skills/env_recipe.py",
     "agent/mcp_tools/workflow_tools.py",
     "agent/skills/core_test_data.py",
-    "agent/skills/test_runner.py",
     "agent/skills/job_manager.py",
     "agent/skills/pipeline_state.py",
     "agent/skills/submit_workflow.py",

@@ -79,7 +79,6 @@ config = _load_config()
 
 from agent.skills.package_search import PackageSearch
 from agent.skills.env_manager import EnvManager
-from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
 from agent.skills import env_freeze as _env_freeze
@@ -109,7 +108,6 @@ from agent.skills.job_manager import JobManager
 
 _pkg_search     = PackageSearch(config)
 _env_mgr        = EnvManager(config)
-_test_runner    = TestRunner(config)
 _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
@@ -509,7 +507,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 # Tool surface — moved to agent/mcp_tools/
 # ---------------------------------------------------------------------------
 # data_tools           — add_core_*, phenopacket_*, select_test_data,
-#                        list_available_resources, download_resource,
+#                        list_available_resources,
 #                        download_reference_database, install_pipeline_brief
 # env_tools            — search_package, resolve_tool, create_conda_env,
 #                        install_conda_packages, install_git_repo, synth_fetch,
@@ -612,6 +610,23 @@ if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
             _importlib.reload(sys.modules[_full])
 from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level state)
 
+# COMPOSE THE ROUTING NOTES — and do it HERE, not only inside mcp_tools/__init__.py.
+#
+# The reload cascade above re-registers every tool from its docstring, producing FRESH
+# tool objects with fresh descriptions. `from agent import mcp_tools` on the line above
+# does not re-execute that package's __init__ when it is already in sys.modules, so the
+# guardrails were composed exactly once, at first import, and silently disappeared on
+# every reload — which is the default in this repo (BIOINF_MCP_AUTO_RELOAD=1). Caught by
+# tests/test_tool_surface.py, which reads descriptions back through the public
+# `list_tools()`: two of the eleven were missing under the full suite and none were
+# missing when the file ran alone.
+#
+# apply_to is idempotent (it skips a description that already carries the marker), so
+# calling it from both places costs nothing and means neither entry point can lose them.
+from agent.skills import tool_surface as _tool_surface  # noqa: E402
+
+_tool_surface.apply_to(mcp)
+
 # Back-compat re-exports — `job_runner` (the detached subprocess), tests, and any
 # external caller continues to `from agent.mcp_server import <tool>`. This
 # list grows alongside the mcp_tools package; populated per phase as tools
@@ -631,7 +646,6 @@ from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,
     acquire_reference_via_recipe,
     list_available_resources,
-    download_resource,
     add_core_test_data,
     add_core_pod5_data,
     add_phenopacket,

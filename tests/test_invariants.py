@@ -5706,6 +5706,95 @@ def test_env_mutating_pipeline_steps_ignores_unrelated_commands():
     assert "Rscript -e 'library(GAPIT)'" not in cmds
 
 
+def _pip_via(tool_kw: dict, pkgs: list) -> dict:
+    """One draft: a conda install plus a pip install, both recorded as install_steps.
+    `tool_kw`/`pkgs` vary only in HOW the pip step was recorded."""
+    return {"install_steps": [
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "command": "conda install samtools=1.21",
+         "installed_packages": [{"name": "samtools", "version": "1.21",
+                                 "install_method": {"type": "conda"}}]},
+        dict({"returncode": 0, "command": "pip install pysam==0.24.0",
+              "installed_packages": pkgs}, **tool_kw),
+    ]}
+
+
+def test_unaccounted_install_steps_catches_the_run_install_command_door():
+    """The OTHER door into the pysam-stress trust violation.
+
+    `env_mutating_pipeline_steps` closed run_in_env → pipeline_steps. This closes
+    run_install_command → install_steps. Measured before the fix: the same env built
+    with the typed primitives yields non_conda_installs=[('pysam','pip')] → BUILD,
+    and built with run_install_command yields [] → ADOPT, so freeze adopted a
+    BioContainer that does not contain pysam."""
+    from agent.skills import freeze
+
+    # declares nothing — the careless caller
+    bare = _pip_via({"tool": "pip"}, [])
+    # declares channel but no install_method — the CONSCIENTIOUS caller, who was
+    # bypassed identically because non_conda_installs reads install_method only
+    declared = _pip_via({"tool": "pip"},
+                        [{"name": "pysam", "version": "0.24.0", "channel": "pip"}])
+
+    for name, spec in (("bare", bare), ("declared", declared)):
+        assert not freeze.non_conda_installs(spec), (
+            f"{name}: precondition — this is exactly why the door was invisible")
+        assert freeze.unaccounted_install_steps(spec), (
+            f"{name}: a pip install recorded here must block adopt")
+
+
+def test_unaccounted_install_steps_leaves_the_typed_path_alone():
+    """A package installed through a typed primitive is ACCOUNTED FOR — it reaches
+    non_conda_installs on its own and must not be double-counted here."""
+    from agent.skills import freeze
+    typed = _pip_via({"tool": "pip"},
+                     [{"name": "pysam", "version": "0.24.0",
+                       "install_method": {"type": "pip"}}])
+    assert freeze.non_conda_installs(typed)          # already forces a build
+    assert not freeze.unaccounted_install_steps(typed)
+
+
+def test_unaccounted_install_steps_does_not_flip_a_pure_conda_adopt():
+    """THE FALSE-POSITIVE THAT MATTERS. A typed `conda install` step really does
+    match the env-mutating regex, so keying on the command alone would flip every
+    legitimate pure-conda env from adopt to container-native build. Measured on the
+    drafts on hand: 8 such steps, and align_suite / bg_canary / five others would
+    have flipped."""
+    from agent.skills import freeze
+    pure = {"install_steps": [
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "command": "conda install bwa=0.7.19 samtools=1.21",
+         "installed_packages": [{"name": "bwa", "version": "0.7.19",
+                                 "install_method": {"type": "conda"}}]},
+    ]}
+    assert not freeze.non_conda_installs(pure)
+    assert not freeze.unaccounted_install_steps(pure), (
+        "a typed conda install must stay adoptable")
+
+    # ...and the routed-but-untyped conda step is adoptable too: its specs DO reach
+    # requested_conda_specs, which is what puts them in the biocontainer request.
+    routed = {"install_steps": [
+        {"tool": "conda", "subcommand": "install", "returncode": 0,
+         "command": "conda install bwa=0.7.19", "installed_packages": []},
+    ]}
+    assert not freeze.unaccounted_install_steps(routed)
+
+
+def test_a_conda_install_that_misses_the_biocontainer_request_blocks_adopt():
+    """`requested_conda_specs` routes a step's specs into the biocontainer request
+    only when it carries BOTH tool=='conda' AND subcommand=='install'.
+    `run_install_command` sets `tool` from the command's first word but leaves
+    `subcommand` unset — so a conda install through that door reaches the request no
+    more than a pip install does, and must not license an adopt."""
+    from agent.skills import freeze
+    spec = {"install_steps": [
+        {"tool": "conda", "returncode": 0,           # no subcommand
+         "command": "conda install bwa=0.7.19", "installed_packages": []},
+    ]}
+    assert not freeze.requested_conda_specs(spec), "precondition: not in the request"
+    assert freeze.unaccounted_install_steps(spec)
+
+
 def test_resolve_versions_from_install_record_fills_unpinned():
     """When the caller asks tools=['busco'] (no version) and the draft says
     busco 6.0.0 was installed, the adopt lookup MUST see ('busco', '6.0.0'),
@@ -7537,3 +7626,39 @@ def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
     assert env["contract_ok"] is False, "a record failing check_build must not read as usable"
     assert env["contract_violations"], "the failing clause must be NAMED, not just flagged"
     assert r["counts"]["envs"] == 1 and r["counts"]["envs_contract_ok"] == 0
+
+
+def test_an_unpinned_request_discloses_that_a_cache_hit_is_a_reuse():
+    """An unpinned tool makes the request_key ambiguous, so a hit is a REUSE.
+
+    `_resolve_versions_from_install_record` fills a version from the install record,
+    which is what stopped busco 6.0.0 and 5.8.3 colliding. It cannot fill what was
+    never recorded — `run_install_command` derives no version — so the bare name
+    reaches request_key and two versions produce ONE key. Measured at HEAD.
+
+    Not a refusal: the artifact is honest (the record carries the OBSERVED version and
+    the ENV report renders it). What was missing is a word at the CALL."""
+    from agent.skills.freeze import request_key
+    import agent.mcp_server as ms
+
+    def draft_without_version(ver):
+        return {"install_steps": [{"tool": "pip", "returncode": 0,
+                                   "command": f"pip install busco=={ver}",
+                                   "installed_packages": [{"name": "busco"}]}]}
+
+    keys = {request_key(ms._resolve_versions_from_install_record(
+                [("busco", None)], draft_without_version(v)), "linux/amd64")
+            for v in ("6.0.0", "3.0.2")}
+    assert len(keys) == 1, "precondition: this is the collision being disclosed"
+    assert keys == {"busco|linux/amd64|none"}
+
+    # ...and when the version IS recorded, the two do not collide and nothing is disclosed.
+    def draft_with_version(ver):
+        return {"install_steps": [{"tool": "pip", "returncode": 0,
+                                   "command": f"pip install busco=={ver}",
+                                   "installed_packages": [{"name": "busco", "version": ver,
+                                                           "install_method": {"type": "pip"}}]}]}
+    pinned = {request_key(ms._resolve_versions_from_install_record(
+                  [("busco", None)], draft_with_version(v)), "linux/amd64")
+              for v in ("6.0.0", "3.0.2")}
+    assert len(pinned) == 2, "a recorded version must keep the two artifacts apart"

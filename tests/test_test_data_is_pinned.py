@@ -571,3 +571,80 @@ def test_the_inventory_does_not_touch_the_filesystem_to_answer(tmp_path):
     row = _inventory(tmp_path, _sealed("ghost", {"r1": "/nope/ghost.fastq.gz"},
                                        {"status": TEST_DATA_VERIFIED}), detail=True)
     assert row["test_data_status"] == TEST_DATA_VERIFIED
+
+
+# ---------------------------------------------------------------------------
+# WHAT KIND of data is a requirement; WHICH INSTANCE is a preference
+# ---------------------------------------------------------------------------
+#
+# Every criterion was additive with no requirement, and the only refusal was `score == 0`
+# — which `genome_build`, defaulting to "hg38" and worth 32 points, made unreachable.
+# Measured 2026-08-07 against the real core data:
+#
+#     select_test_data(assay_type="nonexistent_zzz")  ->  exome / HG00096
+#     select_test_data(assay_type="chipseq")          ->  exome / HG00096
+#
+# The second is the one that matters. chipseq is a REAL assay that is simply not on this
+# disk, and the answer was unrelated exome reads with nothing saying anything had been
+# substituted. This function is the SOLE producer of `test_data.content_anchors`, so the
+# wrong dataset gets sha256-anchored, I8 re-verifies those anchors happily at seal, and
+# the spec records a green ChIP-seq run performed on exome data. Every gate downstream is
+# satisfied, because each one is true of the data that was actually used.
+
+def test_a_requested_assay_that_is_not_on_disk_refuses_instead_of_substituting(tmp_path, monkeypatch):
+    from agent import mcp_server as m
+    config, _ = _manifest_config(tmp_path)      # this tree holds rnaseq and nothing else
+    monkeypatch.setattr(m, "config", config)
+
+    res = m.select_test_data(genome_build="hg38", assay_type="chipseq")
+    assert res["outcome"] == "refused"
+    assert res["code"] == "data.no_test_data_match"
+    assert res.get("test_data") is None, "a refusal must not hand back a substitute"
+    assert "assay_type" in res["unmet"]
+    # EARN THE REFUSAL: say what IS here, so the caller can re-ask or fetch.
+    assert any("rnaseq" in x for x in res["on_disk"])
+    assert "add_core_test_data" in res["error"]
+
+
+def test_a_requested_genome_build_that_is_not_on_disk_refuses(tmp_path, monkeypatch):
+    from agent import mcp_server as m
+    config, _ = _manifest_config(tmp_path)
+    monkeypatch.setattr(m, "config", config)
+    res = m.select_test_data(genome_build="mm10", assay_type="rnaseq")
+    assert res["outcome"] == "refused"
+    assert "genome_build" in res["unmet"]
+
+
+def test_a_requested_file_format_that_is_not_on_disk_refuses(tmp_path, monkeypatch):
+    """A basecaller asking for pod5 must never be handed FASTQ — it cannot run on it."""
+    from agent import mcp_server as m
+    config, _ = _manifest_config(tmp_path)
+    monkeypatch.setattr(m, "config", config)
+    res = m.select_test_data(genome_build="hg38", assay_type="rnaseq", file_format="pod5")
+    assert res["outcome"] == "refused"
+    assert "file_format" in res["unmet"]
+
+
+def test_an_unmet_PREFERENCE_still_returns_the_best_available_match(tmp_path, monkeypatch):
+    """The other half, and it is why the split exists rather than a blanket exact-match.
+    `end_type`, `sample` and `subset` name WHICH of several equivalent datasets to prefer;
+    substituting there is the useful best-effort behaviour this function was built for."""
+    from agent import mcp_server as m
+    config, _ = _manifest_config(tmp_path)
+    monkeypatch.setattr(m, "config", config)
+    res = m.select_test_data(genome_build="hg38", assay_type="rnaseq",
+                             sample="SOMEONE_ELSE", subset="999K")
+    assert res.get("outcome") != "refused", "an unmet preference is not a miss"
+    assert res["test_data"]["sample"] == "S"
+    assert res["test_data"]["assay_type"] == "rnaseq"
+
+
+def test_asking_for_nothing_in_particular_still_works(tmp_path, monkeypatch):
+    """The default call must keep behaving — genome_build defaults to hg38 and the tree
+    has hg38 data, so the requirement is met rather than merely scored."""
+    from agent import mcp_server as m
+    config, _ = _manifest_config(tmp_path)
+    monkeypatch.setattr(m, "config", config)
+    res = m.select_test_data()
+    assert res.get("outcome") != "refused"
+    assert res["test_data"]["assay_type"] == "rnaseq"

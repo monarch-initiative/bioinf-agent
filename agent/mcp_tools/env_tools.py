@@ -478,6 +478,50 @@ def install_git_repo(
     return _ms._shrink_stdio_for_response(result, label=f"git.{env_name}.{tool_name}")
 
 
+def _workflow_gate_or_none(repo_url: str, ref: str, tool: str = "") -> Optional[dict]:
+    """`authors_sources.workflow_gate`, made safe to call on the synthesis hot path.
+
+    The gate is ONE extra HTTP walk on a call that is already cloning a repository, so the
+    cost is not the concern — an import-time or network-level explosion is. A synthesis
+    install must not start failing because a manifest probe hiccuped, so anything
+    unexpected degrades to None and the caller proceeds WITHOUT claiming the check ran.
+    """
+    try:
+        from agent.skills.authors_sources import workflow_gate
+        return workflow_gate(repo_url, ref=ref, tool=tool)
+    except Exception:
+        return None
+
+
+def _refuse_workflow_repo(gate: dict, *, stage: str) -> dict:
+    """The refusal both synth tools return for a pipeline repo.
+
+    ONE wording, shared, because the router already refuses this case with its own
+    sentence (`resolver._classify_refusal` → `artifact_is_a_workflow`) and two surfaces
+    describing the same finding in two voices is how the roster drift in
+    `agent/skills/invariants.py` started.
+    """
+    manifest = gate.get("manifest") or {}
+    engine = manifest.get("engine") or "workflow"
+    declares = manifest.get("declares") or {}
+    named = " ".join(x for x in (declares.get("name"), declares.get("version")) if x)
+    return refused(
+        "install.synth_artifact_is_a_workflow",
+        success=False,
+        stage=stage,
+        workflow_repo=manifest,
+        error=(f"THIS REPO IS A {engine.upper()} WORKFLOW, NOT AN INSTALLABLE TOOL"
+               + (f" — it declares itself {named}" if named else "")
+               + f" ({', '.join(manifest.get('paths') or [])}, and no Dockerfile, env-spec "
+                 "or build script). A pipeline is RUN by an engine against a pinned "
+                 "revision; there is nothing here for the synthesis tier to build. "
+                 "Synthesizing from it would ground an install recipe in whatever "
+                 "incidental shell the repo happens to contain — a CI lint job, a "
+                 "dev-container setup script — and the provenance contract would sign it, "
+                 "because that command really is in that file."),
+    )
+
+
 @mcp.tool()
 def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     """Synthesis tier, call 1 of 2 — PROGRAMMATIC ground-truth fetch for a long-tail
@@ -503,6 +547,9 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     synth_build re-fetches at the SAME anchor and re-verifies every command against
     these exact bytes, so an extraction you claim must really be in the file and an
     authored command must be grounded. Nothing you state from memory can ship."""
+    gate = _workflow_gate_or_none(repo_url, ref)
+    if gate and gate["state"] == "workflow_only":
+        return _refuse_workflow_repo(gate, stage="fetch")
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):
@@ -510,6 +557,12 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     paths = [f["path"] for f in fetch["files"]]
     fetch["ranked_sources"] = _ms._synth.rank_build_sources(paths)
     fetch["corpus_chars"] = sum(len(f.get("text", "")) for f in fetch["files"])
+    # STATED, not implied. `installable` means we walked the manifests and found none;
+    # `unchecked` means the walk does not reach this host. A corpus that arrives with no
+    # word either way reads as "we checked and it's fine", which for a GitLab URL is a
+    # claim nobody made.
+    if gate:
+        fetch["workflow_gate"] = gate
     return fetch
 
 
@@ -561,6 +614,14 @@ def synth_build(
     tool as a real token — echo/true cheats are rejected by the contract). Default
     `command -v {tool_name}`. Returns {success, anchor, records, install_method,
     violations?, pipeline_merge?}."""
+    # THE SAME GATE, AGAIN, AT THE RECORDING END. Not redundant: an agent can call
+    # synth_build without ever calling synth_fetch, or with a corpus fetched before the
+    # gate existed. This is the call that WRITES an install_method into the draft, which
+    # freeze then replays into the shipped image — so it is the one that must not be
+    # skippable.
+    gate = _workflow_gate_or_none(repo_url, commit or ref, tool=tool_name)
+    if gate and gate["state"] == "workflow_only":
+        return _refuse_workflow_repo(gate, stage="build")
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, commit or ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):
@@ -1423,12 +1484,35 @@ def run_install_command(
     so the environment-build journey is recorded separately from the actual
     algorithm/analysis runs.
 
+    PREFER A TYPED INSTALL PRIMITIVE. `install_conda_packages`, `install_pip_package`,
+    `install_r_package`, `install_jar_tool`, `install_release_binary`,
+    `install_git_repo`, `install_perl_package`, `install_cargo_tool` and
+    `install_go_tool` each DERIVE an `install_method` onto every package they record,
+    and that derived type is what freeze's adopt-vs-build decision reads. This tool
+    derives none. Reach for it only when no typed primitive fits the install.
+
     installed_packages should list what this command installed:
         [{name: 'GAPIT', version: '4.1.0', channel: 'github', source: '...'}, ...]
-    These power the side-by-side "command → packages" rendering in the report,
-    AND each entry is appended to draft.packages as a PackageRecord (with an
-    install_method derived from `channel`) — closing the loop with verify_installation,
-    which can then patch verify_command / verify_output onto that record.
+    These power the side-by-side "command → packages" rendering in the report.
+
+    THEY DO NOT CARRY AN `install_method`, AND THAT HAS CONSEQUENCES. This docstring
+    used to promise the entries were "appended to draft.packages as a PackageRecord
+    (with an install_method derived from `channel`)". That dual-write was removed
+    (see the comment at the merge below); the sentence describing it was not, so the
+    docstring advertised the mechanism that would have made this tool safe for years
+    after it was deleted. Measured consequences, both real:
+
+      * freeze's adopt-vs-build gate reads `install_method.type` and defaults a
+        missing one to "conda", so a `pip install` recorded here USED TO leave the
+        env looking pure-conda and freeze adopted a BioContainer without the package.
+        `freeze.unaccounted_install_steps` now catches that by reading the COMMAND,
+        so the env correctly container-native-builds — but it builds because a gate
+        caught you, not because the record was right.
+      * freeze's version slot is filled from `installed_packages`
+        (`_resolve_versions_from_install_record`). With no version recorded here, a
+        request_key degrades from `busco=6.0.0|linux/amd64|none` to
+        `busco|linux/amd64|none`. NOTHING catches that one — record `version` on
+        every entry.
 
     Pass `step=N` to replace install_step N (for retries). Default is append.
 

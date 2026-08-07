@@ -137,7 +137,6 @@ def _battery():
         ("acquire_reference_via_recipe", D.acquire_reference_via_recipe,
          dict(name="", recipe_path="", compute_env=""), True),
         ("list_available_resources", D.list_available_resources, dict(resource_type="bogus"), False),
-        ("download_resource", D.download_resource, dict(resource_type="bogus", resource_id="bogus"), True),
         ("add_core_test_data", D.add_core_test_data, dict(accession="", assay_type="bogus_assay"), True),
         ("add_core_pod5_data", D.add_core_pod5_data, dict(accession="", sample="", source_url=""), True),
         ("add_phenopacket", D.add_phenopacket, dict(source_url="not://a-url"), True),

@@ -29,8 +29,11 @@ class DockerBuilder:
         self.config = config
         self.project_root = Path(__file__).parent.parent.parent.resolve()
         self.envs_dir = self.project_root / config["paths"]["conda_envs_prefix"]
-        self.output_dir = self.project_root / config["paths"]["docker_output_dir"]
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # NO `self.output_dir`. It was read from `paths.docker_output_dir`, used only
+        # to mkdir itself, and never consulted again — while the sole producer of a
+        # freeze tarball hardcodes `<repo>/docker_images/<name>/` and `save_archive`
+        # mkdirs that parent on demand. So setting the key created an empty directory
+        # and moved nothing. Deleted with the key on 2026-08-06.
 
     # -----------------------------------------------------------------------
     # Run a step INSIDE the env image — the validation-locus pivot.

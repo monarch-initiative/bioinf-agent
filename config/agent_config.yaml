@@ -1,8 +1,34 @@
+# EVERY KEY IN THIS FILE HAS A READER. If you add one, wire it up in the same
+# change — an unread knob is a lever someone will pull expecting an effect.
+#
+# Fourteen dead keys were deleted on 2026-08-06, each verified against every
+# config-access expression in agent/ and scripts/ rather than by name-grep. The
+# worst was `docker.base_image: "ubuntu:22.04"`, which nothing read while the
+# real build base is the digest-pinned constant `BASE_IMAGE` in
+# agent/skills/container_build.py. It cost a whole session once: an agent read
+# this file, concluded openjdk-21 was apt-installable (true on Ubuntu, false on
+# the actual debian:bookworm-slim base), and was wrong. The base image is
+# deliberately NOT configurable — it is an input to the content digest, and a
+# settable anchor is not an anchor.
+#
+# Also gone: docker.platform, docker.hpc.* (4), gpu.* (3), agent.model,
+# agent.max_iterations, agent.test_timeout_seconds, testing.max_reads,
+# testing.fallback_chromosome. Each had a working hardcoded counterpart that is
+# better placed. The gpu block was the most dangerous of the remainder: it
+# advertised a CUDA base image and a `test_cpu_fallback` safety switch that no
+# accelerator code path consults, sitting right beside an I12 accelerator
+# contract that IS enforced.
+
 paths:
   data_dir: ./data
   # WorkflowSpec final deliverables AND Layer-1 freeze deliverables
   # (ENV.html / attestation.json / recipe.yaml / _env_cache.json) live here.
   # env_reports/ is the SHIPPABLE deliverables dir — nothing transient.
+  #
+  # PARTIALLY HONOURED — do not assume this relocates Layer-1 state. Nine call
+  # sites read it; five others hardcode "env_reports" (mcp_server.py, env_manager.py,
+  # agent_status.py, scripts/rerender_run_dashboards.py). Changing it today would
+  # split the ENV cache and install logs away from the deliverables. Tracked.
   pipelines_dir: ./env_reports
   # In-progress pipeline drafts live in their own dir, NOT env_reports/, so
   # listing env_reports/ shows only what shipped. A draft is workspace state,
@@ -12,9 +38,17 @@ paths:
   # JobManager log/status files already there.
   jobs_dir: ./data/jobs
   conda_envs_prefix: ./envs
-  docker_output_dir: ./docker_images
   # Core test data convention: {data_dir}/core_test_data_{genome_build}/
   # Pipeline test data convention: {data_dir}/{pipeline_name}_test_data/
+  #
+  # NOTE: there is no `docker_output_dir`. The freeze tarball path is
+  # `<repo>/docker_images/<name>/<name>.tar`, written by exactly one producer
+  # (mcp_tools/freeze_tools.py), and `DockerBuilder.save_archive` creates the
+  # directory on demand. The key used to exist, was read into a field nothing
+  # else touched, and mkdir'd a directory no writer ever used — so setting it
+  # created an empty folder while every tarball still landed in docker_images/.
+  # A key that lies WITH a reader pointing at it survives a name-grep audit;
+  # that is why it is called out here rather than silently dropped.
 
 conda:
   base_channels:
@@ -27,12 +61,15 @@ conda:
 # Internal tooling the agent uses for its own operations: validating outputs
 # (samtools / bcftools / seqkit) and building genome indexes during bootstrap
 # (bwa). Created once by scripts/setup_core_test_data.sh.
+#
+# KEEP THIS ENV. agent/validators/output_validator.py resolves its samtools /
+# bcftools / seqkit binaries through this prefix; without it every SAM/BAM/FASTQ
+# validation silently degrades to a structural text fallback. Nothing fails —
+# the honesty surface just quietly gets weaker, which is the worse failure.
 core_tools:
   env_name: bioinf_core_tools
 
 docker:
-  base_image: "ubuntu:22.04"
-  platform: "linux/amd64"
   # Default push registry for freeze() delivery. Empty = registry-free default
   # (docker-save tarball → `apptainer build docker-archive`, zero config/auth). Set
   # e.g. "ghcr.io/myorg" and `docker login` once → every freeze pushes
@@ -40,32 +77,22 @@ docker:
   # docker://…`. Gated artifacts are never pushed (I13). A per-call push_target
   # overrides this.
   registry: ""
-  hpc:
-    singularity_compatible: true
-    no_root_user: true
-    labels:
-      hpc_compatible: "true"
-      maintainer: ""
 
 agent:
-  model: "claude-sonnet-4-6"
-  max_iterations: 60
   install_timeout_seconds: 3600
-  test_timeout_seconds: 1800
-
-gpu:
-  # CUDA base image used when RuntimeEnvironment.gpu_required=True
-  default_cuda_base: "nvidia/cuda:12.1.0-base-ubuntu22.04"
-  default_cuda_version: "12.1"
-  # Always validate GPU tools in CPU fallback mode so tests pass on machines
-  # without a GPU. Set to false only on dedicated GPU CI runners.
-  test_cpu_fallback: true
 
 testing:
-  # Max reads to subset from test FASTQ files for validation runs
-  max_reads: 10000
   # For human/mouse genomes, restrict the reference to this chromosome to keep
-  # index builds and alignments fast. Falls back to chr1 if not found.
+  # index builds and alignments fast.
+  #
+  # THREE READINGS, and they can disagree — do not change this without reading
+  # all three. scripts/bootstrap_core.py's GENOME_BUILDS table keys the chromosome
+  # per build (hg38→chr22, mm10→chr19), and test_runner.py hardcodes chr22 in the
+  # GTF filter. Setting this to chr1 today would download a chr1 FASTA and build a
+  # chr22-only GTF beside it: a silently mismatched reference pair.
+  #
+  # There is no fallback. This file used to claim "Falls back to chr1 if not
+  # found" next to a `fallback_chromosome: chr1` key; no such retry exists in
+  # test_runner.py, which returns broke/refused instead. Both are deleted.
   preferred_chromosome: "chr22"
-  fallback_chromosome: "chr1"
   # For non-standard organisms (no "chr" prefix), use the first sequence in the FASTA

@@ -20,8 +20,10 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.models import core_data as _core_data
 from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.backgroundable import backgroundable
+from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS
 from agent.skills.outcomes import proven, refused, broke, degraded
 
 
@@ -249,7 +251,42 @@ def freeze(
     # daemon (an evicted image gets re-built rather than returning a dangling
     # record). On hit we summarize the SBOM in the response only; the cached
     # record on disk keeps the full lists for env_report/attestation rendering.
+    # AN UNPINNED TOOL MAKES THE KEY AMBIGUOUS, AND A HIT ON IT MUST SAY SO.
+    #
+    # The fill above resolves a version from the install record, which is what stopped
+    # busco==6.0.0 and busco==5.8.3 colliding. It cannot resolve what was never
+    # recorded: `run_install_command` derives no version, so its packages arrive here
+    # as None, `request_key` renders the bare name, and TWO DIFFERENT VERSIONS PRODUCE
+    # THE IDENTICAL KEY. Measured at HEAD — busco 6.0.0 and busco 3.0.2 both key to
+    # `busco|linux/amd64|none`, so the second freeze is served the first's image.
+    #
+    # This is DISCLOSED rather than refused, because the artifact itself is honest: the
+    # record carries the version freeze OBSERVED in the shipped image (measured: 4 of
+    # the 5 ambiguous entries on hand have one), and the ENV report already renders it
+    # as "requested (any) -> installed 0.7.19". Refusing would force a rebuild on 5 of
+    # 18 real envs to re-derive a fact the artifact already states correctly. What was
+    # missing is at the CALL: nothing told the caller their request did not pin, so a
+    # six-month-old artifact came back looking like a fresh solve.
+    unpinned = sorted(n for n, v in parsed_filled if not v)
     cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
+    if cached and unpinned:
+        served = {}
+        try:
+            served = {b.tool: b.version for b in _core_data.shipped_binaries(cached)
+                      if b.tool in unpinned and b.version}
+        except Exception:
+            served = {}          # an unreadable record is WELL_FORMED's business, not ours
+        cached = {**cached, "unpinned_request": {
+            "tools": unpinned,
+            "served_versions": served,
+            "note": (f"{', '.join(unpinned)} was requested without a version, so the cache "
+                     f"key does not distinguish one version from another and this is a "
+                     f"REUSE of a previously frozen artifact"
+                     + (f" ({', '.join(f'{k} {v}' for k, v in sorted(served.items()))})"
+                        if served else " (no observed version on the record)")
+                     + ". Pin the version to guarantee which artifact you get; the ENV "
+                       "report states the version actually shipped."),
+        }}
     if cached:
         # Orientation pointer (Phase-3 Piece B) on the REUSE-BY-HASH branch too —
         # a cache hit is still a freeze, so current_state must read ENV_FROZEN for
@@ -299,7 +336,15 @@ def freeze(
     # BioContainer that omits the pip install. (pysam-stress: host-built
     # pysam==0.24.0 via run_in_env → freeze adopted pysam==0.23.3 biocontainer.)
     env_mutators = _ms._freeze.env_mutating_pipeline_steps(draft) if draft else []
-    has_env_mutations = bool(non_conda or env_mutators)
+    # BOTH doors. The line above closes run_in_env (-> pipeline_steps); this one
+    # closes run_install_command (-> install_steps), which was measured landing the
+    # same pysam-stress adopt-a-container-that-lacks-the-tool violation the line
+    # above exists to prevent. Keyed on whether the mutation is ACCOUNTED FOR by
+    # non_conda_installs or requested_conda_specs, not on the command alone — the
+    # typed conda primitive also runs `conda install`, and firing on that would flip
+    # every legitimate pure-conda adopt into a build.
+    unaccounted = _ms._freeze.unaccounted_install_steps(draft) if draft else []
+    has_env_mutations = bool(non_conda or env_mutators or unaccounted)
     can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
 
     # Registry push as a first-class delivery: an explicit push_target wins, else a
@@ -721,16 +766,34 @@ def verify_env_recipe(recipe_path: str) -> dict:
     commands + provenance + commit, jar/binary/source/...), so this rebuild uses NO
     draft / agent / pipeline-state.
 
+    WHAT IT DOES DEPENDS ON HOW THE ENV WAS BUILT — three methods, three behaviours, and
+    the tool SAYS which one it took rather than reporting them all the same way:
+      • container-native-build — a real rebuild in a container + content_digest compare.
+      • adopt — `docker pull` + registry-manifest-digest compare. Content-addressed
+        identical bytes, NOT a from-source rebuild.
+      • authors-dockerfile — REFUSED, and nothing runs. A Dockerfile build is not
+        bit-reproducible (apt mirrors, timestamps, upstream tags all move), so digest
+        convergence would fail for a CORRECT recipe. Declining is right; passing it off as
+        a check is not, so this returns `refused` with success=False.
+
     WHAT A MATCH PROVES (precisely — no overclaiming):
       • COMPLETENESS — the recipe is self-contained (rebuild from it alone succeeds).
-      • LOCAL DETERMINISM / CONVERGENCE — replaying it here yields the same content_digest;
-        the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
-        solve converged — the strongest same-machine signal for 'two runs → same result'.
-    It does NOT prove cross-machine reproducibility (different base cache / network / docker)
-    or independent-party tamper-evidence — those are this SAME rebuild run ELSEWHERE (CI, a
-    colleague) + signing. The recipe ENABLES them; this verifies the necessary local
-    conditions. Requires Docker. Returns {success, content_digest_match, rebuilt/expected
-    content_digest, proves, honesty_violations}."""
+      • LOCAL DETERMINISM / CONVERGENCE — every layer that is actually re-executed yields
+        the same content_digest.
+    IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. When the recipe carries a `conda_lock`
+    (all 12 container-native recipes in the corpus do, at 19–61 KB apiece) the replay runs
+    `pixi install --locked` — no solve, no channel consultation — so that layer is
+    identical BY CONSTRUCTION. This docstring used to claim the opposite in as many words
+    ("the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
+    solve converged"), which pointed the reader at the one layer that was never re-derived.
+    Replaying the lock is the right design — it is what makes the rebuild immune to
+    bioconda drift — but it is not evidence.
+
+    It also does NOT prove cross-machine reproducibility (different base cache / network /
+    docker) or independent-party tamper-evidence — those are this SAME rebuild run
+    ELSEWHERE (CI, a colleague) + signing. The recipe ENABLES them; this verifies the
+    necessary local conditions. Requires Docker. Returns {success, content_digest_match,
+    rebuilt/expected content_digest, proves, honesty_violations}."""
     import yaml as _yaml
     try:
         with open(recipe_path) as fh:
@@ -770,7 +833,7 @@ def verify_env_recipe(recipe_path: str) -> dict:
                   proves="ADOPT: the biocontainer re-pulls to the recorded manifest digest "
                          "(content-addressed — identical bytes). Not a from-source rebuild.")
         return proven("freeze.recipe_verified", **rf) if match else broke("freeze.recipe_not_reproduced", **rf)
-    if method in ("authors-dockerfile", "freeze-from-image"):
+    if method in _AUTHORS_METHODS:
         # NOT VERIFIED — and it must not be tagged as though it were. This returned
         # `proven(success=True, content_digest_match=None)` for a check that runs NOTHING:
         # an agent branching on `success` concludes the recipe was verified, and the only

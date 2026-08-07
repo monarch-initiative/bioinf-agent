@@ -148,7 +148,14 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
                   f"{freeze_request_key!r})")
 
     # 3. If it's a registry ref not already on disk, pull it locally.
-    if image_tag and not tarball:
+    #
+    # Test the RESOLVED FILE, not the recorded string. A freeze record keeps its
+    # `tarball` path forever, so once the tarball is deleted (they are large, and
+    # pruning them is routine) `tarball` stays TRUTHY and this branch was skipped —
+    # leaving the pull unreachable and `local_sif` to `docker save` a tag that may no
+    # longer exist. The precondition three lines above already resolves the path this
+    # way; one file, two readings of one fact, and this was the wrong half.
+    if image_tag and not (tarball and Path(str(tarball)).exists()):
         have = subprocess.run(["docker", "image", "inspect", image_tag],
                               capture_output=True, text=True, timeout=60)
         if have.returncode != 0:
