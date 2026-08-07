@@ -252,3 +252,134 @@ def test_the_walk_actually_requests_the_manifest_paths():
                                probe_image=lambda *a, **k: None)
     for want in ("main.nf", "nextflow.config", "Snakefile", "workflow/Snakefile"):
         assert want in asked, f"the discovery walk never looks for {want}"
+
+
+# ------------------------------------------------------- the gate AT THE TOOL, not the router
+#
+# Everything above this line tests the ROUTER. The module docstring has narrated the
+# `synth_fetch` failure since the day it was written, and no test drove it — so the fix
+# landed on one side of the door and the prose described the other. Measured 2026-08-07
+# against the live repo, at the commit those paragraphs were written for:
+#
+#     synth_fetch("https://github.com/nf-core/rnaseq")  ->  outcome: proven
+#         19 files, 66,816 chars, top-ranked recipe `.devcontainer/setup.sh`,
+#         main.nf and nextflow.config both absent from the corpus
+#     assess_tool_sources("rnaseq", owner="nf-core", repo="rnaseq")  ->  workflow_only: True
+#
+# Same repo, same session: the verdict existed and the tool that needed it read nothing.
+# `resolve()` meanwhile returned `available: []`, `chosen: None`,
+# `refusal_reason: artifact_is_a_workflow` — the router is genuinely well protected, which
+# is what made the tool-level hole the only door left open.
+#
+# These drive the TOOLS. Network is injected, so they run in the normal suite.
+
+def _workflow_assessment(**over):
+    """A stand-in for `assess_tool_sources` that answers as it does for nf-core/rnaseq."""
+    def _fn(tool, **kw):
+        return {"workflow_only": True,
+                "workflow_manifest": {"engine": "nextflow",
+                                      "paths": ["nextflow.config", "main.nf"],
+                                      "declares": {"name": "nf-core/rnaseq",
+                                                   "version": "3.14.0"}},
+                "recommendation": "THIS REPO IS A NEXTFLOW WORKFLOW, NOT AN INSTALLABLE TOOL",
+                **over}
+    return _fn
+
+
+def test_the_gate_reports_workflow_only_for_a_pipeline_repo():
+    g = A.workflow_gate("https://github.com/nf-core/rnaseq", assess=_workflow_assessment())
+    assert g["state"] == "workflow_only"
+    assert g["manifest"]["engine"] == "nextflow"
+
+
+def test_the_gate_reports_installable_for_a_tool_repo():
+    g = A.workflow_gate("https://github.com/samtools/samtools",
+                        assess=_workflow_assessment(workflow_only=False))
+    assert g["state"] == "installable"
+
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/owner/repo",
+    "https://bitbucket.org/owner/repo",
+    "https://example.org/releases/tool-1.2.tar.gz",
+])
+def test_a_non_github_source_is_unchecked_and_never_silently_installable(url):
+    """THREE STATES, NOT TWO. The manifest walk reads raw.githubusercontent.com and nothing
+    else, so for a GitLab / self-hosted / archive source there is no verdict to be had.
+    Returning `installable` there would report an unrun check as a clean bill of health —
+    the absence-rounded-up-into-a-verdict shape refused everywhere else in this codebase."""
+    g = A.workflow_gate(url, assess=_workflow_assessment())
+    assert g["state"] == "unchecked"
+    assert "NOT checked" in g["reason"]
+
+
+def test_a_probe_that_raises_is_unchecked_not_installable():
+    def _boom(*a, **k):
+        raise RuntimeError("network is down")
+    g = A.workflow_gate("https://github.com/nf-core/rnaseq", assess=_boom)
+    assert g["state"] == "unchecked"
+    assert "RuntimeError" in g["reason"]
+
+
+def test_synth_fetch_refuses_a_workflow_repo(monkeypatch):
+    """THE TOOL, not the router. This is the call the docstring above narrates."""
+    from agent.mcp_tools import env_tools
+    monkeypatch.setattr(A, "assess_tool_sources", _workflow_assessment())
+
+    def _must_not_fetch(*a, **k):
+        raise AssertionError("synth_fetch cloned the repo before consulting the gate")
+    monkeypatch.setattr(env_tools._ms._env_mgr, "fetch_build_source", _must_not_fetch)
+
+    r = env_tools.synth_fetch("https://github.com/nf-core/rnaseq")
+    assert r["outcome"] == "refused"
+    assert r["code"] == "install.synth_artifact_is_a_workflow"
+    assert r["workflow_repo"]["engine"] == "nextflow"
+    assert "NOT AN INSTALLABLE TOOL" in r["error"]
+
+
+def test_synth_build_refuses_a_workflow_repo_independently(monkeypatch):
+    """synth_build is gated SEPARATELY on purpose: an agent can call it without ever calling
+    synth_fetch, or holding a corpus fetched before the gate existed. It is the call that
+    WRITES an install_method the freeze then replays into the shipped image, so it is the one
+    that must not be skippable."""
+    from agent.mcp_tools import env_tools
+    monkeypatch.setattr(A, "assess_tool_sources", _workflow_assessment())
+
+    def _must_not_fetch(*a, **k):
+        raise AssertionError("synth_build re-fetched before consulting the gate")
+    monkeypatch.setattr(env_tools._ms._env_mgr, "fetch_build_source", _must_not_fetch)
+
+    r = env_tools.synth_build(
+        env_name="x", repo_url="https://github.com/nf-core/rnaseq", tool_name="rnaseq",
+        commands=[{"command": "nextflow run nf-core/rnaseq", "source": "agent_authored"}],
+        evidence="command -v nextflow")
+    assert r["outcome"] == "refused"
+    assert r["code"] == "install.synth_artifact_is_a_workflow"
+
+
+def test_a_tool_repo_still_fetches_and_says_the_gate_ran(monkeypatch):
+    """The gate must not become a wall. A normal repo proceeds — and the corpus SAYS the
+    check ran, so `installable` is a statement rather than the silence of a check nobody
+    performed."""
+    from agent.mcp_tools import env_tools
+    monkeypatch.setattr(A, "assess_tool_sources", _workflow_assessment(workflow_only=False))
+    monkeypatch.setattr(env_tools._ms._env_mgr, "fetch_build_source",
+                        lambda *a, **k: {"success": True, "files": [
+                            {"path": "Dockerfile", "text": "FROM debian\n"}]})
+    r = env_tools.synth_fetch("https://github.com/samtools/samtools")
+    assert r["success"] is True
+    assert r["workflow_gate"]["state"] == "installable"
+
+
+def test_validate_submission_refuses_the_origin_file_shape_synth_fetch_returns():
+    """`synth_fetch`'s `ranked_sources` is `[{category, path}]`, and both synth docstrings
+    say to "pass its path as origin_file". An agent that passed the ENTRY instead of its
+    `path` got `TypeError: unhashable type: 'dict'` out of the validator — a traceback reads
+    as a bug in the runtime, not as a mistake the caller can fix. Refuse, and name the fix."""
+    from agent.skills import synthesis
+    out = synthesis.validate_submission(
+        {"files": [{"path": "install.sh", "text": "make install\n", "sha256": "x"}]},
+        [{"command": "make install", "source": "extracted",
+          "origin_file": {"category": "install_script", "path": "install.sh"}}])
+    assert out["ok"] is False
+    assert "must be the file's PATH" in out["violations"][0]["reason"]

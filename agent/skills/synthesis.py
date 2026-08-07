@@ -151,6 +151,22 @@ def validate_submission(fetch: dict, commands: list[dict]) -> dict[str, Any]:
         src = c.get("source")
         if src == _prov.EXTRACTED:
             of = c.get("origin_file")
+            if not isinstance(of, str):
+                # REFUSE, DO NOT RAISE — and this is the shape our OWN tool hands back.
+                # `synth_fetch` returns ranked_sources as [{category, path}], and both synth
+                # docstrings say to "pass its path as origin_file". An agent that passes the
+                # ELEMENT rather than its `path` used to get `TypeError: unhashable type:
+                # 'dict'` out of the line below, which reads as a bug in the runtime rather
+                # than a mistake it can correct. A refusal that names the fix is the whole
+                # difference.
+                violations.append({
+                    "command": cmd,
+                    "reason": (f"origin_file must be the file's PATH (a string); got "
+                               f"{type(of).__name__}. synth_fetch's ranked_sources entries "
+                               "are {category, path} dicts — pass the `path` value, not the "
+                               "entry."),
+                })
+                continue
             f = files.get(of)
             if not f:
                 violations.append({"command": cmd,

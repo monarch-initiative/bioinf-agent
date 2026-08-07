@@ -478,6 +478,50 @@ def install_git_repo(
     return _ms._shrink_stdio_for_response(result, label=f"git.{env_name}.{tool_name}")
 
 
+def _workflow_gate_or_none(repo_url: str, ref: str, tool: str = "") -> Optional[dict]:
+    """`authors_sources.workflow_gate`, made safe to call on the synthesis hot path.
+
+    The gate is ONE extra HTTP walk on a call that is already cloning a repository, so the
+    cost is not the concern — an import-time or network-level explosion is. A synthesis
+    install must not start failing because a manifest probe hiccuped, so anything
+    unexpected degrades to None and the caller proceeds WITHOUT claiming the check ran.
+    """
+    try:
+        from agent.skills.authors_sources import workflow_gate
+        return workflow_gate(repo_url, ref=ref, tool=tool)
+    except Exception:
+        return None
+
+
+def _refuse_workflow_repo(gate: dict, *, stage: str) -> dict:
+    """The refusal both synth tools return for a pipeline repo.
+
+    ONE wording, shared, because the router already refuses this case with its own
+    sentence (`resolver._classify_refusal` → `artifact_is_a_workflow`) and two surfaces
+    describing the same finding in two voices is how the roster drift in
+    `agent/skills/invariants.py` started.
+    """
+    manifest = gate.get("manifest") or {}
+    engine = manifest.get("engine") or "workflow"
+    declares = manifest.get("declares") or {}
+    named = " ".join(x for x in (declares.get("name"), declares.get("version")) if x)
+    return refused(
+        "install.synth_artifact_is_a_workflow",
+        success=False,
+        stage=stage,
+        workflow_repo=manifest,
+        error=(f"THIS REPO IS A {engine.upper()} WORKFLOW, NOT AN INSTALLABLE TOOL"
+               + (f" — it declares itself {named}" if named else "")
+               + f" ({', '.join(manifest.get('paths') or [])}, and no Dockerfile, env-spec "
+                 "or build script). A pipeline is RUN by an engine against a pinned "
+                 "revision; there is nothing here for the synthesis tier to build. "
+                 "Synthesizing from it would ground an install recipe in whatever "
+                 "incidental shell the repo happens to contain — a CI lint job, a "
+                 "dev-container setup script — and the provenance contract would sign it, "
+                 "because that command really is in that file."),
+    )
+
+
 @mcp.tool()
 def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     """Synthesis tier, call 1 of 2 — PROGRAMMATIC ground-truth fetch for a long-tail
@@ -503,6 +547,9 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     synth_build re-fetches at the SAME anchor and re-verifies every command against
     these exact bytes, so an extraction you claim must really be in the file and an
     authored command must be grounded. Nothing you state from memory can ship."""
+    gate = _workflow_gate_or_none(repo_url, ref)
+    if gate and gate["state"] == "workflow_only":
+        return _refuse_workflow_repo(gate, stage="fetch")
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):
@@ -510,6 +557,12 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     paths = [f["path"] for f in fetch["files"]]
     fetch["ranked_sources"] = _ms._synth.rank_build_sources(paths)
     fetch["corpus_chars"] = sum(len(f.get("text", "")) for f in fetch["files"])
+    # STATED, not implied. `installable` means we walked the manifests and found none;
+    # `unchecked` means the walk does not reach this host. A corpus that arrives with no
+    # word either way reads as "we checked and it's fine", which for a GitLab URL is a
+    # claim nobody made.
+    if gate:
+        fetch["workflow_gate"] = gate
     return fetch
 
 
@@ -561,6 +614,14 @@ def synth_build(
     tool as a real token — echo/true cheats are rejected by the contract). Default
     `command -v {tool_name}`. Returns {success, anchor, records, install_method,
     violations?, pipeline_merge?}."""
+    # THE SAME GATE, AGAIN, AT THE RECORDING END. Not redundant: an agent can call
+    # synth_build without ever calling synth_fetch, or with a corpus fetched before the
+    # gate existed. This is the call that WRITES an install_method into the draft, which
+    # freeze then replays into the shipped image — so it is the one that must not be
+    # skippable.
+    gate = _workflow_gate_or_none(repo_url, commit or ref, tool=tool_name)
+    if gate and gate["state"] == "workflow_only":
+        return _refuse_workflow_repo(gate, stage="build")
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, commit or ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):

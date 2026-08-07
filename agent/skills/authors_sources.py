@@ -517,3 +517,97 @@ def assess_tool_sources(
     if image_error:
         out["author_image_error"] = image_error
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# The gate, packaged for callers that hold a URL rather than an owner/repo pair.
+# ---------------------------------------------------------------------------------------
+
+_GIT_HOST_RE = re.compile(
+    r"^(?:https?://|git@|ssh://git@)"
+    r"(?P<host>[^/:]+)[/:]"
+    r"(?P<owner>[^/]+)/"
+    r"(?P<repo>[^/]+?)(?:\.git)?/?$"
+)
+
+
+def parse_owner_repo(repo_url: str) -> Optional[tuple[str, str]]:
+    """`(owner, repo)` for a GitHub URL, else None.
+
+    None is a real answer, not a failure: `discover_authors_sources` reads exclusively from
+    raw.githubusercontent.com, so for a GitLab, Bitbucket, self-hosted or archive URL there
+    is no verdict to be had — and the caller must say UNCHECKED rather than assume clean.
+    """
+    m = _GIT_HOST_RE.match((repo_url or "").strip())
+    if not m or m.group("host").lower() not in ("github.com", "www.github.com"):
+        return None
+    return m.group("owner"), m.group("repo")
+
+
+def workflow_gate(repo_url: str, *, ref: str = "", tool: str = "",
+                  assess: Optional[Callable[..., dict]] = None) -> dict:
+    """Is the artifact at `repo_url` a WORKFLOW rather than an installable tool?
+
+    Returns `{state, manifest?, recommendation?, reason?}` where state is one of:
+
+      * ``"workflow_only"`` — the repo declares itself a Nextflow/Snakemake pipeline and
+        carries nothing installable. The caller must refuse.
+      * ``"installable"``   — checked, and it is not workflow-only.
+      * ``"unchecked"``     — NOBODY LOOKED, with `reason` saying why (not a GitHub URL,
+        or the probe raised). Distinct from "installable" on purpose: the discovery walk
+        is GitHub-only, and reporting an unrun check as a clean bill of health is the
+        absence-rounded-up-into-a-verdict shape this codebase refuses everywhere else.
+
+    WHY THIS FUNCTION EXISTS. `workflow_only` had exactly two readers, both in the router
+    (`resolver.resolve`), which withholds the `synthesis` and `source` tiers entirely and
+    refuses with `artifact_is_a_workflow`. The two MCP tools that IMPLEMENT the synthesis
+    tier — `synth_fetch` / `synth_build` — sit directly behind that router and an agent can
+    call them without passing through it. Measured 2026-08-07 against the live repo:
+
+        synth_fetch("https://github.com/nf-core/rnaseq")
+          -> outcome: proven, 19 files, 66,816 chars
+          -> top-ranked "most authoritative recipe": .devcontainer/setup.sh
+          -> main.nf in the corpus: False;  nextflow.config in the corpus: False
+
+    while `assess_tool_sources` on the SAME repo in the SAME session returned
+    `workflow_only: True` with a manifest naming the engine, both paths, and the
+    pipeline's own name and version. The verdict existed and nothing read it.
+
+    The corpus makes it quiet rather than loud. `synthesis._BUILD_SOURCES` has no pattern
+    for `main.nf` / `nextflow.config` / `Snakefile`, so `is_build_relevant` filters the
+    pipeline out of its own build corpus: the agent is handed 66 KB about the repository —
+    CI lint jobs, the release-announcement tweet workflow, two READMEs — and not one byte
+    of the pipeline. Every signal that would let a careful reader notice "this is a
+    workflow" is precisely what was excluded.
+
+    And the honesty layer cannot catch it, because it is answering a different question.
+    Feeding `synth_build` the first real line of that top-ranked recipe —
+    `echo "export PROMPT_DIRTRIM=2" >> $HOME/.bashrc` — returns `proven` with no
+    violations on the `extracted` path, the one the docstring marks PREFERRED. The
+    provenance contract is working exactly as designed: the command really does occur
+    verbatim in the named file. **Provenance answers "did you make this up", never "is
+    this the right thing".** So a dev-container shell-prompt tweak gets recorded as the
+    install method for an RNA-seq pipeline, signed.
+
+    The verdict is one HTTP walk away and was never taken. This takes it.
+    """
+    parsed = parse_owner_repo(repo_url)
+    if parsed is None:
+        return {"state": "unchecked",
+                "reason": (f"{repo_url!r} is not a github.com URL, and the workflow-manifest "
+                           "walk reads raw.githubusercontent.com only. Whether this artifact "
+                           "is a pipeline rather than an installable tool was NOT checked")}
+    owner, repo = parsed
+    fn = assess or assess_tool_sources
+    try:
+        a = fn(tool or repo, owner=owner, repo=repo, **({"ref": ref} if ref else {}))
+    except Exception as e:
+        return {"state": "unchecked",
+                "reason": (f"the workflow-manifest walk for {owner}/{repo} raised "
+                           f"{type(e).__name__}: {e} — whether this artifact is a pipeline "
+                           "was NOT checked")}
+    if not (a or {}).get("workflow_only"):
+        return {"state": "installable"}
+    return {"state": "workflow_only",
+            "manifest": a.get("workflow_manifest") or {},
+            "recommendation": a.get("recommendation") or ""}
