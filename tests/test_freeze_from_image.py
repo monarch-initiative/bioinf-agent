@@ -340,3 +340,87 @@ def test_run_in_image_double_failure_returns_the_natural_error(monkeypatch):
     monkeypatch.setattr(F, "_sh", fake_sh)
     r = F._run_in_image("img", "linux/amd64", "missing --version")
     assert r["rc"] == 2 and r["out"] == "natural-err"
+
+
+# ---------------------------------------------------------------------------
+# An ADOPT record must be pinned to what SOMEONE ELSE can pull
+# ---------------------------------------------------------------------------
+#
+# `_image_digest` is `docker image inspect --format {{.Id}}` — the daemon's LOCAL content
+# id — and it fed BOTH `image_digest` (right: BUILT asks whether the image resolves in this
+# daemon) and `content_digest` (wrong: `verify_env_recipe`'s adopt branch compares
+# content_digest against `registry_manifest_digest(image)`).
+#
+# Measured 2026-08-07 on quay.io/biocontainers/miniprot: the manifest digest is
+# sha256:2eb53fea… and the config-blob digest `.Id` returns is sha256:65a4f971…. Two
+# different values. It shipped green only because THIS machine runs the containerd
+# snapshotter, where `.Id` happens to equal the manifest digest; on a classic overlay2
+# daemon — the common case, and what a colleague or CI has — the recorded anchor is a
+# string nobody can pull, and verify_env_recipe returns `broke /
+# freeze.recipe_not_reproduced` for a recipe that is entirely correct.
+#
+# container_build.py:209-216 documents this exact confusion as already fixed, and the
+# adopt_image block in the same function already used registry_manifest_digest. The fix
+# had landed on the reader and on the sibling field, never on this producer.
+
+def _mock_registry_digest(monkeypatch, manifest_digest):
+    import agent.skills.container_build as CB
+    monkeypatch.setattr(CB, "registry_manifest_digest", lambda ref: manifest_digest)
+
+
+def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_path, monkeypatch):
+    local_id = "sha256:" + "65" * 32          # what `docker image inspect .Id` returns
+    manifest = "sha256:" + "2e" * 32          # what anyone else can pull
+    _mock_docker(monkeypatch, digest=local_id)
+    _mock_registry_digest(monkeypatch, manifest)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+
+    # the PULLABLE address is the reproducibility anchor…
+    assert out["content_digest"] == manifest
+    # …while the LOCAL handle stays local, because that is what BUILT resolves.
+    assert out["image_digest"] == local_id
+
+    import yaml
+    recipe = yaml.safe_load((tmp_path / "miniprot_bc.recipe.yaml").read_text())
+    assert recipe["content_digest"] == manifest, (
+        "the recipe's content_digest is what verify_env_recipe compares against "
+        "registry_manifest_digest — a local .Id there cannot be reproduced by anyone else")
+
+
+def test_an_unpullable_adopt_image_keeps_the_local_id_and_says_it_is_unpinnable(tmp_path, monkeypatch):
+    """No registry digest means the image was never pulled from a registry. Say so — do not
+    invent a pin — and do not lose the local handle BUILT needs."""
+    local_id = "sha256:" + "65" * 32
+    _mock_docker(monkeypatch, digest=local_id)
+    _mock_registry_digest(monkeypatch, "")
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="local-only:latest", name="localish", version="1",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    assert out["content_digest"] == local_id
+    rec = list(cache.registered.values())[0]
+    assert rec.get("image_by_digest") in (None, "")
+    assert "cannot be pinned" in rec["adopt_pin_error"]
+
+
+def test_the_cached_record_carries_the_pin_the_recipe_carries(tmp_path, monkeypatch):
+    """`env_cache.register` fired BEFORE `image_by_digest` was assigned, so every cached
+    adopt-image record held `image_by_digest: None` while the recipe beside it held a
+    correct `…@sha256:…`. `attestation.py:152-153` reads the cached key, so the provenance
+    document lost the pin. Measured: all three adopt-image entries in the corpus."""
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, "sha256:" + "2e" * 32)
+    cache = _Cache()
+    F.freeze_from_image(
+        image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+    rec = list(cache.registered.values())[0]
+    assert rec["image_by_digest"] == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32

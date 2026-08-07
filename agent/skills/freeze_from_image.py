@@ -348,8 +348,34 @@ def freeze_from_image(
     _accel = (_locus.image_accelerator(image)
               if (accelerator or {}).get("type", "none") not in ("none", "", None)
               else None)
+    # THE ANCHOR AN ADOPT RECORD IS CHECKED AGAINST MUST BE THE ONE ANYONE CAN PULL.
+    #
+    # `digest` is `docker image inspect --format {{.Id}}` — the daemon's LOCAL content
+    # id. That is the right value for `image_digest` (BUILT asks whether the image
+    # resolves in THIS daemon) and the wrong one for `content_digest`, because
+    # `verify_env_recipe`'s adopt branch compares content_digest against
+    # `registry_manifest_digest(image)`. Those are two different values: measured on
+    # quay.io/biocontainers/miniprot, the manifest digest is sha256:2eb53fea… and the
+    # config-blob digest that `.Id` returns is sha256:65a4f971….
+    #
+    # The reason this shipped green is machine-specific luck. On a daemon using the
+    # containerd snapshotter, `.Id` IS the manifest digest, so every adopt recipe this
+    # function produced verified perfectly here. On a classic overlay2 daemon — the common
+    # case, and what a colleague or CI has — `.Id` is the config blob, and the recorded
+    # anchor is a string no one can pull: feeding it to verify_env_recipe returns
+    # `broke / freeze.recipe_not_reproduced` for a recipe that is entirely correct.
+    #
+    # container_build.py:209-216 documents this exact confusion as already fixed, and the
+    # block ~70 lines below uses `registry_manifest_digest` for `adopt_image`. The fix
+    # landed on the READER and on the sibling field, and never on this producer.
+    content_digest = digest
+    if mode == "adopt":
+        from agent.skills.container_build import registry_manifest_digest
+        _md = registry_manifest_digest(image)
+        if _md:
+            content_digest = _md
     record = _freeze.freeze_record(
-        request_key=rkey, content_digest=digest, mode=mode,
+        request_key=rkey, content_digest=content_digest, mode=mode,
         image=image, image_digest=digest, platform=platform, gated=gated,
         image_arch=_arch["arch"] if _arch["resolved"] else None,
         image_accelerator=_accel)
@@ -408,7 +434,6 @@ def freeze_from_image(
                        honesty_violations=violations, verifications=verifications)
 
     # -- register + deliverables (rendered purely from the record) --
-    env_cache.register(rkey, record)
     # ADOPT MUST RECORD WHAT SOMEONE ELSE CAN PULL, NOT WHAT WE HAPPEN TO CALL IT.
     # This passed `image` through verbatim — a MUTABLE TAG — while the rendered recipe
     # printed it under "pulling that image BY DIGEST (content-addressed — the digest
@@ -422,8 +447,9 @@ def freeze_from_image(
     # registry, so there is nothing to pin: say so rather than emit an unpullable string.
     adopt_ref = ""
     if build_method == "adopt-image":
-        from agent.skills.container_build import registry_manifest_digest
-        md = registry_manifest_digest(image)
+        # `content_digest` above already resolved the manifest digest for this image;
+        # reuse it rather than making a second registry call that could answer differently.
+        md = content_digest if content_digest != digest else ""
         adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{md}" if md else ""
         if adopt_ref:
             record["image_by_digest"] = adopt_ref
@@ -431,11 +457,18 @@ def freeze_from_image(
             record["adopt_pin_error"] = (
                 f"{image} carries no registry manifest digest — it was not pulled from a "
                 f"registry, so it cannot be pinned or re-pulled by anyone else")
+    # REGISTER AFTER THE PIN IS ON THE RECORD, NOT BEFORE.
+    # `env_cache.register` used to fire above this block, so the cached record was written
+    # without `image_by_digest` — measured across the corpus, all three adopt-image entries
+    # in _env_cache.json carry `image_by_digest: None` while their recipes carry a correct
+    # `adopt_image@sha256:…`. `attestation.py:152-153` reads the cached key, so the
+    # provenance document lost the pin the recipe beside it had.
+    env_cache.register(rkey, record)
     recipe = env_recipe.extract_recipe(
         None, name=name, version=version, conda_deps=[],
         primary_tools=[t["name"] for t in tools], platform=platform,
         accelerator=accelerator, license_gated=gated, licenses=licenses,
-        redistributable=not gated, content_digest=digest,
+        redistributable=not gated, content_digest=content_digest,
         build_method=("authors-dockerfile" if build_method == "authors-dockerfile" else "adopt"),
         adopt_image=adopt_ref,
         dockerfile_source=dockerfile_source or {})
@@ -484,7 +517,7 @@ def freeze_from_image(
     # scripts/extract_outcomes.py still harvests both terminals (see coverage_disclosure).
     fields = dict(success=True, cache_hit=False,
                   request_key=rkey, image=image, image_digest=digest,
-                  content_digest=digest, build_method=build_method, platform=platform,
+                  content_digest=content_digest, build_method=build_method, platform=platform,
                   verifications=verifications, shallow_evidence=shallow,
                   evidence_advisory=advisory,
                   **env_honesty.coverage_disclosure(contract), **out_paths)
