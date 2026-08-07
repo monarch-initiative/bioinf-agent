@@ -1,7 +1,7 @@
 """data_tools — test data + reference data + the autonomous install brief.
 
 What gets ACQUIRED (test_data, reference databases, phenopackets, raw pod5),
-what's AVAILABLE (list/download_resource), and what to feed an autonomous
+what's AVAILABLE (list_available_resources), and what to feed an autonomous
 installer (install_pipeline_brief).
 
 phenopacket_to_vcf lives here too — it materializes a VCF from registered
@@ -224,13 +224,6 @@ def list_available_resources(resource_type: str = "both") -> dict:
     """List genomes and/or test datasets on disk.
     resource_type: 'genomes' | 'test_data' | 'both'"""
     return _ms._list_resources({"resource_type": resource_type}, _ms.config)
-
-
-@mcp.tool()
-def download_resource(resource_type: str, resource_id: str) -> dict:
-    """Download a reference genome not yet on disk.
-    resource_type: 'genome', resource_id: e.g. 'hg38_chr22'"""
-    return _ms._test_runner.download_resource(resource_type, resource_id)
 
 
 @mcp.tool()

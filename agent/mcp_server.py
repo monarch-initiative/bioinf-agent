@@ -79,7 +79,6 @@ config = _load_config()
 
 from agent.skills.package_search import PackageSearch
 from agent.skills.env_manager import EnvManager
-from agent.skills.test_runner import TestRunner
 from agent.skills.docker_builder import DockerBuilder
 from agent.skills import biocontainers as _biocontainers
 from agent.skills import env_freeze as _env_freeze
@@ -109,7 +108,6 @@ from agent.skills.job_manager import JobManager
 
 _pkg_search     = PackageSearch(config)
 _env_mgr        = EnvManager(config)
-_test_runner    = TestRunner(config)
 _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
@@ -509,7 +507,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 # Tool surface — moved to agent/mcp_tools/
 # ---------------------------------------------------------------------------
 # data_tools           — add_core_*, phenopacket_*, select_test_data,
-#                        list_available_resources, download_resource,
+#                        list_available_resources,
 #                        download_reference_database, install_pipeline_brief
 # env_tools            — search_package, resolve_tool, create_conda_env,
 #                        install_conda_packages, install_git_repo, synth_fetch,
@@ -631,7 +629,6 @@ from agent.mcp_tools.data_tools import (  # noqa: E402,F401
     download_reference_database,
     acquire_reference_via_recipe,
     list_available_resources,
-    download_resource,
     add_core_test_data,
     add_core_pod5_data,
     add_phenopacket,

@@ -18,7 +18,7 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
                         fetch_r_package_deps + list_installed_pipelines
                         (Layer-2 surface + draft-state machinery)
   data_tools          — add_core_*, phenopacket_*, select_test_data,
-                        list_available_resources, download_resource,
+                        list_available_resources,
                         download_reference_database, install_pipeline_brief
                         (test-data + reference-data acquisition)
   service_tools       — start_service / stop_service / check_service_health /
@@ -56,7 +56,7 @@ from __future__ import annotations
 # original tool(s) from mcp_server.py + the back-compat re-export at the
 # bottom of mcp_server.py.
 from . import bridge_tools         # noqa: F401  (upload, download, stage_apptainer_image, submit_workflow_job, run_step_on_cluster, cluster_job_status, cluster_module_avail, globus_task_status)
-from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, download_resource, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
+from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
 from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)
 from . import intent_tools         # noqa: F401  (interpret_request — the typed front door: RequestIntent → completeness gate → rail)
@@ -67,3 +67,4 @@ from . import observability_tools  # noqa: F401  (agent_status, snapshot_project
 from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in_container, verify_installation, run_in_env, validate_output)
 from . import service_tools        # noqa: F401  (check_gpu, start_service, stop_service, check_service_health, verify_service_dependency)
 from . import workflow_tools       # noqa: F401  (seal_workflow, list_installed_pipelines, fetch_r_package_deps, start_pipeline, discard_pipeline_draft, show_pipeline_draft, patch_pipeline, stage_authored_artifact, mark_step_validated)
+
