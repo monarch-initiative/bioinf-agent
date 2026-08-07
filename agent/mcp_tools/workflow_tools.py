@@ -184,6 +184,69 @@ def _image_usage_runner(fr: dict, draft: dict):
     return _ImageUsageRunner(image, platform, mounts)
 
 
+#: Bounds on what a proven-trial record may carry onto disk. The self-test's own
+#: result is a debugging structure — it holds a stderr tail, up to 20 produced
+#: paths per trial and a scratch dir that no longer exists by the time anyone reads
+#: the spec. A sealed WorkflowSpec is digest-pinned provenance a human opens, so it
+#: takes the reader-facing subset, capped: the commands, the substitution map, and a
+#: sample of what landed.
+_TRIAL_MAX_COMMANDS = 24
+_TRIAL_MAX_SUBS = 32
+_TRIAL_MAX_PRODUCED = 12
+
+
+def _proven_trial_records(usage_detail: dict) -> list[dict]:
+    """Distil `self_test_usage`'s per-trial results into the durable record the
+    sealed spec carries — what the I4 self-test actually ran.
+
+    Carried: the trial's name/description, whether it passed, the LITERAL commands
+    executed (`commands_run`, already substituted), the substitution map, which of
+    those slots were the ephemeral scratch-dir override, and a sample of the files
+    that landed. Read back through `core_data.usage_proven_trials`.
+
+    Deliberately NOT carried: `scratch_dir` (a temp path deleted before the report is
+    read — printing it would hand a reader a command pointing at nothing) and
+    `stderr_tail` (arbitrary bytes from a run that, since seal refuses a failed
+    self-test, cannot reach disk anyway).
+
+    Defensive about shape because the alternative is worse than a missing panel: a
+    malformed self-test result must degrade to "unrecorded" on the dashboard, not
+    break the seal of an otherwise valid run."""
+    trials = usage_detail.get("trials")
+    if not isinstance(trials, list):
+        return []
+    out: list[dict] = []
+    for t in trials:
+        if not isinstance(t, dict):
+            continue
+        cmds = t.get("commands_run")
+        if not isinstance(cmds, list):
+            # Pre-multi-command shape (and the placeholder-resolution failure path,
+            # which never ran anything): fall back to the single string, or nothing.
+            one = t.get("command_run")
+            cmds = [one] if isinstance(one, str) and one.strip() else []
+        subs = t.get("substitutions")
+        subs = subs if isinstance(subs, dict) else {}
+        slots = t.get("output_slots")
+        slots = [s for s in slots if isinstance(s, str)] if isinstance(slots, list) else []
+        produced = t.get("produced_files")
+        produced = ([p for p in produced if isinstance(p, str)]
+                    if isinstance(produced, list) else [])
+        rec = {
+            "name": str(t.get("name") or "trial"),
+            "ok": bool(t.get("ok")),
+            "commands_run": [str(c) for c in cmds[:_TRIAL_MAX_COMMANDS] if isinstance(c, str)],
+            "substitutions": {str(k): str(v) for k, v
+                              in list(subs.items())[:_TRIAL_MAX_SUBS]},
+            "output_slots": slots,
+            "produced_files": produced[:_TRIAL_MAX_PRODUCED],
+        }
+        if t.get("description"):
+            rec["description"] = str(t["description"])
+        out.append(rec)
+    return out
+
+
 def _derive_step_dependencies(pipeline_steps: list) -> list:
     """Materialize each step's `depends_on` (prior step numbers it consumes an
     output of) into the sealed spec.
@@ -619,7 +682,17 @@ def seal_workflow(
                                "reason": usage_detail.get("reason", ""),
                                "locus":  usage_detail.get("locus", ""),
                                "trial_count": usage_detail.get("trial_count", 0),
-                               "passed": usage_detail.get("passed", 0)},
+                               "passed": usage_detail.get("passed", 0),
+                               # WHAT WAS RUN, not just how many of them passed. The
+                               # self-test resolves every {PLACEHOLDER} to a concrete
+                               # path and executes the result; seal kept the two counts
+                               # and discarded the commands and the substitution map.
+                               # So the how-to panel — the one a reader consults to
+                               # review a pipeline's parameters before committing real
+                               # data to it — could only show the template, and the
+                               # question "proven against WHICH genome, WHICH reads"
+                               # had no answer anywhere in the sealed artifact.
+                               "trials": _proven_trial_records(usage_detail)},
         "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),

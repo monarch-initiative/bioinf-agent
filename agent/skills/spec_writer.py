@@ -521,9 +521,17 @@ def _run_one_trial(
     scratch    = Path(tempfile.mkdtemp(prefix=f"selftest_{spec.get('pipeline_name','x')}_{trial_name}_"))
 
     # Always override output slots with this trial's scratch dir.
-    for slot in placeholders:
-        if _is_output_slot(slot):
-            subs[slot] = str(scratch)
+    # `output_slots` travels WITH the substitution map because the two halves of that
+    # map have different lifetimes and a reader must be able to tell them apart: an
+    # input slot holds a durable path to real test data, an output slot holds a temp
+    # directory that is deleted before anyone reads the report. Without this the run
+    # dashboard would have to re-derive the distinction by re-implementing
+    # `_is_output_slot` at the render site — a second reading of the convention that
+    # decides where the self-test looks for outputs, which is exactly the shape of
+    # drift this codebase keeps paying for.
+    output_slots = sorted(s for s in placeholders if _is_output_slot(s))
+    for slot in output_slots:
+        subs[slot] = str(scratch)
 
     missing = [s for s in placeholders if s not in subs or not subs[s]]
     if missing:
@@ -531,7 +539,7 @@ def _run_one_trial(
         return {
             "name": trial_name, "ok": False,
             "reason": f"could not resolve placeholders: {missing}",
-            "substitutions": subs,
+            "substitutions": subs, "output_slots": output_slots,
         }
 
     def _fill(cmd: str) -> str:
@@ -556,7 +564,7 @@ def _run_one_trial(
                 "command_run": command, "commands_run": ran,
                 "failed_index": i, "scratch_dir": str(scratch),
                 "stderr_tail": (result.get("stderr") or "")[-500:],
-                "substitutions": subs,
+                "substitutions": subs, "output_slots": output_slots,
             }
 
     # Every command succeeded. From here on the trial is judged on its OUTPUTS, and
@@ -600,7 +608,7 @@ def _run_one_trial(
             "produced_files": produced[:20],
             "recognized_output_slots": recognized,
             "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
-            "substitutions": subs,
+            "substitutions": subs, "output_slots": output_slots,
         }
         if not produced:
             out["hint"] = (
@@ -645,12 +653,13 @@ def _run_one_trial(
                 "validation_results": validation_results[:20],
                 "produced_files": produced[:20],
                 "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
-                "substitutions": subs,
+                "substitutions": subs, "output_slots": output_slots,
             }
 
     return {
         "name": trial_name, "ok": True,
         "command_run": command_run, "commands_run": ran, "substitutions": subs,
+        "output_slots": output_slots,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
         "validation_results": validation_results[:20],
         "description": plan.get("description"),
@@ -1066,7 +1075,10 @@ def _check_service_health(spec: dict) -> list[dict]:
     service that never became healthy (a status=failed / zero-healthy record). The
     ServiceDependency docstring even promises 'health_check_log: … I10 requires ≥1
     healthy', so the firewall was advertised but a no-op. A probe counts healthy
-    when its `healthy` is truthy OR returncode == 0; the log is runtime-populated
+    when its `healthy` is truthy OR returncode == 0 — the predicate now lives in
+    `core_data.service_healthy_probes`, because the RUN dashboard needs the same answer
+    to badge the service and a hand-copy there would have put the strict form in this
+    gate and a looser one in front of the reader. The log is runtime-populated
     (start_service / verify_service_dependency), so the agent can't fabricate it. A
     service that was healthy then cleanly stopped (status=stopped, ≥1 healthy probe)
     PASSES — the check is 'did it ever come up', not 'is it up now'."""
@@ -1075,9 +1087,8 @@ def _check_service_health(spec: dict) -> list[dict]:
         if not isinstance(sd, dict):
             continue
         name = sd.get("name") or sd.get("service_name") or f"service[{i}]"
-        log = sd.get("health_check_log") or []
-        healthy = [e for e in log if isinstance(e, dict)
-                   and (e.get("healthy") is True or e.get("returncode") == 0)]
+        log = _core_data.service_probe_log(sd)
+        healthy = _core_data.service_healthy_probes(sd)
         if not healthy:
             violations.append({
                 "invariant": "I10.service_never_healthy",

@@ -15,6 +15,16 @@ This is the sibling of env_report_html. The split mirrors the two-layer spine:
     compute locus it ran on (host / local container / cluster). The how-to guide is
     a DISTINCT panel rendered from the same verified usage block (no markdown).
 
+THE PAGE MUST SHOW EVERYTHING THE SEAL GATED ON. A field the invariants read and the
+renderer does not is a fact the record knows and the artifact will not say — and the
+reader's recourse is to open the yaml, which is the thing these pages exist to spare
+them. Three were in that state and are now rendered: the I4 self-test's actual
+invocation (the substituted commands, not just the template), `runtime_configs` (in
+I8's traceable universe — it carries the filters and thresholds a reader is reviewing),
+and `service_dependencies` with its health probes (I10 refuses a seal on them). When
+you add a field a gate reads, render it here, or add it to the list of things this
+docstring admits are invisible.
+
 Accretion is per-workflow-per-digest. A workflow's dashboard accretes loci as the
 SAME env (pinned by digest) is validated on more compute resources. The moment the
 env is REBUILT (new digest), a step whose evidence ran against the old digest is
@@ -385,21 +395,152 @@ def _render_howto(spec: dict) -> str:
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Name</th><th>Files</th><th>Type</th></tr>'
                  + rows + '</table></div>')
-    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
-    if trials:
+    P.append(_render_trials(spec, usage, status))
+    P.append("</div></div></section>")
+    return "".join(P)
+
+
+def _subs_table(subs: dict, output_slots: list, proven: bool) -> str:
+    """Slot → the concrete value, with the ephemeral half named as such.
+
+    The two kinds of substitution have different lifetimes and a reader must not
+    confuse them. An INPUT slot holds a durable path to real data — the answer to
+    "proven against which genome, which reads", which is the whole reason this table
+    exists. An OUTPUT slot holds the fresh scratch dir the self-test created and then
+    deleted; showing it beside the others without comment would hand a reader a path
+    that no longer exists and invite them to reuse it.
+
+    `output_slots` comes from the record (spec_writer stamps it when it overrides the
+    slot), never from re-deriving `_is_output_slot` here."""
+    outs = set(output_slots or [])
+    rows = []
+    for slot in sorted(subs):
+        val = subs[slot]
+        if slot in outs:
+            note = ('<span class="note">the fresh scratch directory the self-test '
+                    'created for this trial — already deleted; supply your own '
+                    'output directory</span>' if proven else
+                    '<span class="note">output directory — filled by the self-test '
+                    'at run time</span>')
+            rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{_e(val)}</code></td>'
+                        f'<td>{note}</td></tr>')
+        else:
+            rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{_e(val)}</code></td>'
+                        f'<td></td></tr>')
+    if not rows:
+        return ""
+    return ('<div class="tbl-wrap"><table>'
+            '<tr><th>Placeholder</th><th>Value</th><th></th></tr>'
+            + "".join(rows) + "</table></div>")
+
+
+def _render_trials(spec: dict, usage: dict, status: str) -> str:
+    """The input shapes the how-to was tested against — and, when the record has it,
+    the LITERAL invocation each one ran.
+
+    This panel used to be a bare list of trial names. That is the least useful half of
+    what the seal knows: the self-test resolves every {PLACEHOLDER} to a concrete path
+    and executes the result, so `hisat2 -x {OUTPUT_DIR}/idx -1 {R1} -2 {R2}` was
+    actually run as a fully-substituted command against a specific genome and specific
+    reads — and none of that reached the page a human reads to decide whether to run
+    the pipeline on their own data. "Which reference did you prove this against" had no
+    answer in the artifact.
+
+    THREE cases, kept apart, because the difference between them is the difference
+    between evidence and a plan:
+
+      * PROVEN — `usage_verification.trials` carries the transcript. Every command
+        shown is the literal text that ran; the substitutions are the values it ran
+        with. This is an observation.
+      * DECLARED ONLY — the record has no transcript, but `usage.trials` declares
+        substitutions. Those are AUTHORED values. They may be exactly what ran (on a
+        verified spec sealed before the transcript was captured) or values nothing ever
+        executed (on an unverified one), and this page cannot tell which — so it says
+        so instead of picking.
+      * NEITHER — nothing to show, said plainly rather than by rendering an empty box.
+    """
+    # `status` alone, never a `verified` bool passed in beside it: two spellings of one
+    # verdict travelling together is how a panel ends up saying "not self-tested" above
+    # "Self-tested against 1 shape", which this very function did.
+    verified = status == "verified"
+    proven = _core_data.usage_proven_trials(spec)
+    declared = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
+
+    if proven:
+        n_ok = sum(1 for t in proven if t.get("ok"))
+        lead = (f'Self-tested against {len(proven)} input shape(s), '
+                f'{n_ok} passing. Each command below is the LITERAL text that was '
+                f'executed, with every placeholder resolved — not the template above.')
+        P = [f'<p class="note">{_e(lead)}</p>']
+        for t in proven:
+            ok = bool(t.get("ok"))
+            badge = ('<span class="pill ok">✓ ran, outputs validated</span>' if ok
+                     else '<span class="pill bad">✗ this trial FAILED</span>')
+            # `run-card`, not `how`: these are nested INSIDE the how-to panel, and a
+            # `how` inside a `how` doubles the cyan border and the gradient wash into
+            # a muddy box-in-a-box. run-card is the neutral nested card the locus
+            # groups already use.
+            P.append(f'<div class="run-card"><div class="run-title">'
+                     f'{_e(t.get("name", "trial"))} {badge}</div>')
+            if t.get("description"):
+                P.append(f'<p class="note">{_e(t["description"])}</p>')
+            cmds = [c for c in (t.get("commands_run") or []) if isinstance(c, str)]
+            if cmds:
+                P.append('<p class="note"><b>Ran</b></p>')
+                if len(cmds) == 1:
+                    P.append(f"<pre>{_e(cmds[0])}</pre>")
+                else:
+                    P.append("<pre>" + "\n".join(f"{i}. {_e(c)}" for i, c
+                                                 in enumerate(cmds, 1)) + "</pre>")
+            tbl = _subs_table(t.get("substitutions") or {},
+                              t.get("output_slots") or [], proven=True)
+            if tbl:
+                P.append('<p class="note"><b>With</b></p>')
+                P.append(tbl)
+            prod = [p for p in (t.get("produced_files") or []) if isinstance(p, str)]
+            if prod:
+                P.append('<p class="note"><b>Produced</b> '
+                         '<span class="note">(relative to the scratch dir; each was '
+                         'type-validated)</span></p><ul class="foot">')
+                P.extend(f"<li><code>{_e(p)}</code></li>" for p in prod)
+                P.append("</ul>")
+            P.append("</div>")
+        return "".join(P)
+
+    if declared:
         # Guarded by `verified`. This line used to render unconditionally, so a dashboard
         # could say "not self-tested" and "Self-tested against 1 declared input shape(s)"
         # in the same panel — cluster_refdata_validation did exactly that.
-        lead = (f'Self-tested against {len(trials)} declared input shape(s):' if verified
-                else f'{len(trials)} declared input shape(s) (NOT self-tested — see above):')
-        P.append(f'<p class="note">{lead}</p><ul class="foot">')
-        for t in trials:
-            P.append(f'<li><b>{_e(t.get("name","trial"))}</b>'
-                     + (f' — {_e(t.get("description"))}' if t.get("description") else "")
-                     + '</li>')
-        P.append("</ul>")
-    P.append("</div></div></section>")
-    return "".join(P)
+        if verified:
+            lead = (f'Self-tested against {len(declared)} declared input shape(s). The '
+                    f'values below are what the author DECLARED for the self-test; this '
+                    f'spec was sealed before the exact invocation was recorded, so this '
+                    f'page cannot show the transcript of what ran. Re-seal to capture it.')
+        else:
+            lead = (f'{len(declared)} declared input shape(s) — NOT self-tested (see '
+                    f'above). Nothing below was executed; these are authored values.')
+        P = [f'<p class="note">{_e(lead)}</p>']
+        for t in declared:
+            P.append(f'<div class="run-card"><div class="run-title">'
+                     f'{_e(t.get("name", "trial"))}</div>')
+            if t.get("description"):
+                P.append(f'<p class="note">{_e(t["description"])}</p>')
+            subs = t.get("substitutions") if isinstance(t.get("substitutions"), dict) else {}
+            tbl = _subs_table(subs, [], proven=False)
+            P.append(tbl or _empty("(no substitutions declared for this trial)"))
+            P.append("</div>")
+        return "".join(P)
+
+    if status == "verified":
+        # The inferred-trial path: no `usage.trials` was authored, so the self-test built
+        # one from pipeline_steps[*].inputs and ran it. Nothing on an old spec records
+        # what it chose. Absence, stated — the alternative is a verified how-to whose page
+        # is silent about ever having been tested with anything.
+        return ('<p class="note">The self-test passed, but this spec records neither '
+                'declared trials nor the invocation that ran — it was sealed before the '
+                'transcript was captured, so what the how-to was proven against is '
+                '<b>unrecorded</b> here. Re-seal to record it.</p>')
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +591,17 @@ def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
 def _render_inputs(spec: dict) -> str:
     rdbs = [d for d in (spec.get("reference_databases") or []) if isinstance(d, dict)]
     arts = [a for a in (spec.get("authored_artifacts") or []) if isinstance(a, dict)]
+    # RUNTIME CONFIGS — the fourth member of I8's external universe, and the only one
+    # this page never showed. `_walk_input_provenance` widens the traceable universe
+    # with `runtime_configs[*].path`, so a step consuming an Exomiser analysis YAML or a
+    # GATK interval list seals cleanly on the strength of a record the reader could not
+    # see. That is the same shape as the how-to gap above: the seal knows, the artifact
+    # does not say. And a config is not incidental — it carries the HPO terms, the
+    # filters, the memory settings; "review all the parameters before running on real
+    # data" is unanswerable without it.
+    cfgs = [c for c in (spec.get("runtime_configs") or []) if isinstance(c, dict)]
     td = spec.get("test_data") if isinstance(spec.get("test_data"), dict) else None
-    if not (rdbs or arts or td):
+    if not (rdbs or arts or td or cfgs):
         return ""
     P = ['<section class="bx">']
     P.append('<h2>Inputs &amp; external sources '
@@ -499,6 +649,120 @@ def _render_inputs(spec: dict) -> str:
             f'<td><code>{_e((a.get("sha256") or "")[:19])}…</code></td></tr>' for a in arts)
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Role</th><th>Path</th><th>sha256</th></tr>' + rows + '</table></div>')
+    if cfgs:
+        # THE COLUMN SAYS WHAT IT IS. Every other sha256 on this page was verified by a
+        # seal-side gate — authored_artifacts are re-hashed by I8, reference_databases by
+        # I5. A runtime_config's hash is neither: nothing at seal reads it. It is an
+        # anchor the producer recorded which `run_production_pipeline`'s data-pin check
+        # compares BEFORE a production run. That is a real guarantee and a different one,
+        # and a column that looked identical to the two above it would borrow their
+        # meaning. These entries are also agent-authored (patch_pipeline's allowlist), so
+        # the whole row is a claim until that later check runs.
+        P.append('<h3 class="sub">Runtime configuration '
+                 '<span class="note">files the tools read at run time — part of the '
+                 'I8 traceable universe, so a step may legitimately consume one. '
+                 'Agent-authored; the hashes below are NOT verified at seal (unlike '
+                 'authored artifacts and reference DBs above) — they are anchors '
+                 'run_production_pipeline re-checks before a production run</span>'
+                 '</h3>')
+        rows = []
+        for c in cfgs:
+            sha = c.get("sha256") or ""
+            # `sha256` is optional on RuntimeConfig, unlike on an authored artifact.
+            # Absent means unpinned, and it says so — rendering an empty cell beside
+            # the pinned rows above would read as pinned at a glance.
+            pin = (f'<code>{_e(sha[:19])}…</code>' if sha else "<em>not pinned</em>")
+            rows.append(f'<tr><td>{_e(c.get("name",""))}</td>'
+                        f'<td>{_e(c.get("format",""))}</td>'
+                        f'<td><code>{_e(c.get("path",""))}</code></td>'
+                        f'<td>{pin}</td></tr>')
+        P.append('<div class="tbl-wrap"><table>'
+                 '<tr><th>Name</th><th>Format</th><th>Path</th><th>sha256</th></tr>'
+                 + "".join(rows) + "</table></div>")
+        # The inline snapshot, when the producer took one. A reader reviewing parameters
+        # before committing an allocation should not have to go find the file — and on a
+        # cluster run they often cannot, because it lives at a locus they have no shell on.
+        for c in cfgs:
+            content = c.get("content")
+            if isinstance(content, str) and content.strip():
+                P.append(f'<p class="note"><b>{_e(c.get("name",""))}</b> — recorded '
+                         f'contents</p><pre>{_e(content)}</pre>')
+    P.append("</div></section>")
+    return "".join(P)
+
+
+# ---------------------------------------------------------------------------
+# Runtime prerequisites — the services that had to be up (I10).
+# ---------------------------------------------------------------------------
+
+def _render_services(spec: dict) -> str:
+    """Services this workflow depends on, with the health evidence I10 gated on.
+
+    Rendered because a service dependency is a PREREQUISITE, not an input: a reader
+    who stages the image, uploads the data and submits the job still has nothing if
+    the pipeline needs Redis on :6379 and nobody started it. I10 refuses a seal for a
+    service that never showed a healthy probe, so a sealed spec's services did come up
+    — but which ones, on which ports, started how, was recorded and never shown.
+
+    The healthy/total split comes from `core_data.service_healthy_probes`, the same
+    leaf I10 refuses on. A service with zero healthy probes cannot pass the seal, so
+    the ✗ badge should be unreachable on any spec sealed since I10 was restored; it is
+    rendered anyway rather than assumed away, because an older artifact predates the
+    gate and this page is where a reader would find out."""
+    svcs = [s for s in (spec.get("service_dependencies") or []) if isinstance(s, dict)]
+    if not svcs:
+        return ""
+    P = ['<section class="bx">']
+    P.append('<h2>Runtime prerequisites '
+             '<span class="note">background services that must be running — each was '
+             'observed healthy during the run (I10)</span></h2>')
+    P.append('<div class="bx-body">')
+    for s in svcs:
+        probes = _core_data.service_probe_log(s)
+        healthy = _core_data.service_healthy_probes(s)
+        if healthy:
+            badge = (f'<span class="pill ok">✓ observed healthy '
+                     f'({len(healthy)}/{len(probes)} probe(s))</span>')
+        else:
+            badge = (f'<span class="pill bad">✗ never observed healthy '
+                     f'({len(probes)} probe(s), 0 healthy)</span>')
+        name = s.get("name") or s.get("service_name") or "service"
+        title = _e(name)
+        if s.get("version"):
+            title += f' <span class="note">{_e(s["version"])}</span>'
+        P.append(f'<div class="run-card"><div class="run-title">{title} {badge}</div>')
+        rows: list[tuple[str, str]] = [
+            ("Type", _e(s.get("type", ""))),
+            ("Port", _e(s.get("port")) if s.get("port") else ""),
+            # `status` is the LIFECYCLE, distinct from the badge above: "stopped" beside
+            # a green badge is the normal, correct end state for a run that finished —
+            # the badge asks whether it ever came up, this says where it ended.
+            ("Lifecycle", _e(s.get("status", ""))),
+            ("Start", f'<pre>{_e(s["start_command"])}</pre>' if s.get("start_command") else ""),
+            ("Health check",
+             f'<pre>{_e(s["health_check_command"])}</pre>'
+             if s.get("health_check_command") else ""),
+            ("Stop", f'<pre>{_e(s["stop_command"])}</pre>' if s.get("stop_command") else ""),
+        ]
+        env_vars = s.get("env_vars") if isinstance(s.get("env_vars"), dict) else {}
+        if env_vars:
+            rows.append(("Environment",
+                         ", ".join(f'<code>{_e(k)}={_e(v)}</code>'
+                                   for k, v in sorted(env_vars.items()))))
+        P.append(_kv_table(rows))
+        if probes:
+            # The probe log itself. This is the machine-observed half — the one thing on
+            # the panel the agent cannot author — so it is shown rather than summarized
+            # into the badge alone.
+            prows = "".join(
+                f'<tr><td>{_e(p.get("timestamp",""))}</td>'
+                f'<td>{_badge(_core_data.probe_is_healthy(p))}</td>'
+                f'<td>{_e(p.get("returncode"))}</td>'
+                f'<td><code>{_e(p.get("command",""))}</code></td></tr>' for p in probes)
+            P.append('<div class="tbl-wrap"><table>'
+                     '<tr><th>Probed at</th><th>Healthy</th><th>rc</th><th>Command</th></tr>'
+                     + prows + '</table></div>')
+        P.append("</div>")
     P.append("</div></section>")
     return "".join(P)
 
@@ -574,6 +838,11 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     P.append(_render_validated_evidence(s, primary_digest))
     P.append(_render_howto(s))
     P.append(_render_env_panel(s, env_record))
+    # BEFORE the inputs, because it is a precondition rather than a consumable: if the
+    # service isn't up, the inputs are moot.
+    services = _render_services(s)
+    if services:
+        P.append(services)
     inputs = _render_inputs(s)
     if inputs:
         P.append(inputs)
@@ -583,13 +852,22 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     # patch_pipeline's agent-authored allowlist (CLAUDE.md). A page that overstates its own
     # purity is the same defect class it exists to prevent — so it now says which parts are
     # machine-observed and which are authored, and lets the reader weigh them differently.
+    # HONEST PROVENANCE, AND THE LIST HAS TO KEEP UP WITH THE PAGE. This paragraph
+    # enumerates which side of the line each thing on the dashboard falls, so it goes
+    # stale the moment a panel is added and not accounted for — which is the same
+    # failure it was rewritten to fix (it used to claim NOTHING here was authored,
+    # while rendering three fields from patch_pipeline's allowlist). `runtime_configs`
+    # is agent-authored and now rendered; the self-test transcript and the service
+    # health probes are runtime-captured and now rendered. Both sides updated together.
     P.append('<p class="gen">Generated deterministically from the sealed WorkflowSpec. '
              'The <b>evidence</b> — commands run, exit codes, outputs, validations, '
-             'digests, resource usage — is machine-observed and cannot be authored by the '
-             'agent. The <b>prose</b> — this workflow\'s description, the how-to '
-             'description, and the command template itself — IS agent-authored (it is in '
-             'patch_pipeline\'s allowlist); the how-to\'s self-test status above says '
-             'whether that command was actually executed. The env report (Layer 1) is a '
-             'separate, immutable page.</p>')
+             'digests, resource usage, the self-test transcript (what each trial '
+             'actually executed, and with which files), and the service health probes — '
+             'is machine-observed and cannot be authored by the agent. The '
+             '<b>agent-authored</b> parts — this workflow\'s description, the how-to '
+             'description, the command template itself, and the runtime configuration '
+             'entries — are in patch_pipeline\'s allowlist; the how-to\'s self-test '
+             'status above says whether that command was actually executed. The env '
+             'report (Layer 1) is a separate, immutable page.</p>')
     P.append(_close_page())
     return "\n".join(P)

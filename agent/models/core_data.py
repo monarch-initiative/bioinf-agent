@@ -366,6 +366,68 @@ class HealthCheckProbe(BaseModel):
     output_excerpt: Optional[str] = None   # last ~500 chars of stdout+stderr
 
 
+def service_probe_log(service: Any) -> list[dict]:
+    """THE one reading of a ServiceDependency's `health_check_log` — every observed
+    probe, normalized to dicts, whatever shape the record arrived in.
+
+    Its companion `service_healthy_probes` answers which of them counted. Both are
+    needed together (a message that says "3 probe(s), 0 healthy" reads both), which is
+    precisely why they are two leaves and not one predicate plus a raw `len()` at the
+    call site."""
+    if service is None:
+        return []
+    get = (service.get if isinstance(service, dict)
+           else lambda k, d=None: getattr(service, k, d))
+    log = get("health_check_log") or []
+    if not isinstance(log, list):
+        return []
+    out: list[dict] = []
+    for e in log:
+        if isinstance(e, dict):
+            out.append(e)
+        elif hasattr(e, "model_dump"):
+            out.append(e.model_dump())
+    return out
+
+
+def service_healthy_probes(service: Any) -> list[dict]:
+    """THE one reading of "did this service dependency ever come up" — the HEALTHY
+    subset of a ServiceDependency's `health_check_log`.
+
+    Two clauses, and both have to be read: a probe counts when `healthy` is True OR
+    when its `returncode` is 0. `start_service` and `verify_service_dependency` both
+    set `healthy` explicitly, but the rc fallback is what makes the predicate robust
+    to a probe recorded by anything that only captured an exit status.
+
+    Registered as a leaf ON ARRIVAL rather than after it drifted. It is the second
+    reader that creates the defect, and this fact was one line away from having one:
+    I10 asks it to refuse a seal, and the RUN dashboard asks it to badge a service on
+    the page a human reads before committing an allocation. Re-spelling `healthy is
+    True or returncode == 0` at the render site would put the strict form in the gate
+    and whatever got typed second in front of the user — the exact asymmetry that made
+    `steps_validated: 0` ship for every workflow ever sealed.
+
+    Note the question is "did it EVER come up", not "is it up now": a service that was
+    healthy and then cleanly stopped passes. Accepts a dict or a ServiceDependency."""
+    return [e for e in service_probe_log(service) if probe_is_healthy(e)]
+
+
+def probe_is_healthy(probe: Any) -> bool:
+    """Did ONE health-check probe count as healthy — the two-clause rule itself.
+
+    Split out from `service_healthy_probes` because the RUN dashboard renders the probe
+    log row by row and needs to badge each line. Matching rows against the aggregate
+    list by identity would work today and break the moment a probe arrives as a model
+    rather than a dict (the leaf dumps those, so the objects differ). Re-typing
+    `healthy is True or returncode == 0` at the render site is the other option, and it
+    is the one this file exists to refuse."""
+    if probe is None:
+        return False
+    get = (probe.get if isinstance(probe, dict)
+           else lambda k, d=None: getattr(probe, k, d))
+    return get("healthy") is True or get("returncode") == 0
+
+
 class ServiceDependency(BaseModel):
     """
     A background process that must be running while the pipeline executes.
@@ -1689,6 +1751,41 @@ def usage_status(spec: Any) -> str:
     if status:
         return str(status)
     return USAGE_VERIFIED if get("usage_verified") else USAGE_UNRECORDED
+
+
+def usage_proven_trials(spec: Any) -> list[dict]:
+    """THE one reading of *what the I4 self-test actually ran* — the per-trial record
+    of the literal commands executed, the substitutions they were executed with, and
+    which of those substitutions were the ephemeral scratch dir.
+
+    `usage_status` above answers "was the how-to proven". This answers "proven with
+    WHAT" — and it is a separate fact, because the panel a human reads to decide
+    whether to run a pipeline on real data shows `hisat2 -x {OUTPUT_DIR}/idx -1 {R1}`
+    and nothing about which genome, which GTF, which reads. The self-test resolved
+    every one of those slots to a concrete path and ran the result; seal used to keep
+    only the count of trials that passed and drop the rest on the floor.
+
+    This is an OBSERVATION carried through, never a re-derivation. A renderer could in
+    principle re-substitute `usage.trials[*].substitutions` into `command_template`
+    itself — and that would be a second spelling of a command `_run_one_trial` already
+    produced exactly, differing on the two things that are easy to get wrong (how a
+    multi-command template is joined, and that output slots are overridden with a
+    scratch dir rather than taking their declared value). The producer captures; the
+    reader must not scrape.
+
+    Returns `[]` for a spec sealed before the record existed, which is the UNRECORDED
+    state — indistinguishable here from "no trials ran", so a caller that needs to tell
+    those apart must read `usage_status` too. Accepts a dict or a WorkflowSpec."""
+    if spec is None:
+        return []
+    get = (spec.get if isinstance(spec, dict)
+           else lambda k, d=None: getattr(spec, k, d))
+    uv = get("usage_verification") or {}
+    trials = (uv.get("trials") if isinstance(uv, dict)
+              else getattr(uv, "trials", None)) or []
+    if not isinstance(trials, list):
+        return []
+    return [t for t in trials if isinstance(t, dict)]
 
 
 class WorkflowSpec(BaseModel):
