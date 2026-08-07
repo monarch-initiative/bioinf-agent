@@ -231,6 +231,72 @@ def env_mutating_pipeline_steps(spec: dict) -> list[dict]:
     return out
 
 
+def unaccounted_install_steps(spec: dict) -> list[dict]:
+    """Install_steps that MUTATED the env but whose effect reaches neither of the
+    two views the adopt-vs-build decision actually reads.
+
+    THE OTHER DOOR. `env_mutating_pipeline_steps` above closed the `run_in_env`
+    route into `pipeline_steps`; its own docstring says the mutation "lands in
+    `pipeline_steps` (not `install_steps`)". `run_install_command` lands in
+    `install_steps`, and that door stayed open. Measured, same env built twice:
+
+        install_conda_packages + install_pip_package
+            -> non_conda_installs = [('pysam','pip')]  -> BUILD
+        run_install_command x2, identical commands
+            -> non_conda_installs = []                 -> ADOPT
+
+    i.e. freeze adopts a BioContainer that does not contain pysam — byte for byte
+    the pysam-stress trust violation the sibling was written to end, through the
+    door it did not check.
+
+    WHY THE TEST IS "ACCOUNTED FOR" AND NOT "MUTATES THE ENV". A conda install_step
+    written by the typed primitive ALSO matches `_ENV_MUTATING_RE` — it really does
+    run `conda install`. Measured: 8 such steps across the drafts on hand, and
+    firing on the command alone would flip `align_suite`, `bg_canary` and five other
+    legitimate pure-conda adopts into container-native builds. So the question is
+    not "did this mutate the env" but "does anything downstream SEE the mutation":
+
+      * `non_conda_installs` sees a package only through `install_method.type`, and
+        that is derived by the typed primitives. `run_install_command` derives none
+        — so its packages default to "conda" (the `or "conda"` at the bottom of
+        that function) and vanish from the non-conda view. This is why declaring
+        `installed_packages=[{name: pysam, channel: pip}]` does NOT save you: the
+        conscientious caller is bypassed exactly like the careless one. Measured.
+      * `requested_conda_specs` sees a conda install only when the step carries
+        BOTH `tool == "conda"` and `subcommand == "install"`, which is what routes
+        its specs into the biocontainer request. `run_install_command` sets `tool`
+        from the command's first word but leaves `subcommand` unset unless the
+        caller passes it — so a `conda install` through this door reaches the
+        biocontainer resolution no more than a `pip install` does.
+
+    A step seen by neither is an env mutation nothing downstream can account for,
+    and adopt is not safe over it. Measured against every draft on hand: 0 false
+    positives (no legitimate adopt flips), and both bypass shapes are caught.
+
+    Deliberately NOT filtered on returncode, matching `non_conda_installs`, whose
+    docstring explains why a failed install must still block adopt. Measured to
+    change no answer on the drafts on hand; the consistency is the point.
+
+    Pure / no network."""
+    out: list[dict] = []
+    for st in (spec.get("install_steps") or []):
+        if not isinstance(st, dict):
+            continue
+        if not _ENV_MUTATING_RE.search(st.get("command", "") or ""):
+            continue
+        pkgs = st.get("installed_packages") or []
+        typed = bool(pkgs) and all(
+            isinstance(p, dict)
+            and isinstance(p.get("install_method"), dict)
+            and p["install_method"].get("type")
+            for p in pkgs
+        )
+        conda_routed = st.get("tool") == "conda" and st.get("subcommand") == "install"
+        if not typed and not conda_routed:
+            out.append(st)
+    return out
+
+
 def non_conda_installs(spec: dict) -> list[dict]:
     """Packages installed by anything OTHER than conda (binary/source/jar/perl/
     cargo/go). These cannot be represented by adopting a bioconda biocontainer

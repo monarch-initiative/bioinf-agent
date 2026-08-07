@@ -299,7 +299,15 @@ def freeze(
     # BioContainer that omits the pip install. (pysam-stress: host-built
     # pysam==0.24.0 via run_in_env → freeze adopted pysam==0.23.3 biocontainer.)
     env_mutators = _ms._freeze.env_mutating_pipeline_steps(draft) if draft else []
-    has_env_mutations = bool(non_conda or env_mutators)
+    # BOTH doors. The line above closes run_in_env (-> pipeline_steps); this one
+    # closes run_install_command (-> install_steps), which was measured landing the
+    # same pysam-stress adopt-a-container-that-lacks-the-tool violation the line
+    # above exists to prevent. Keyed on whether the mutation is ACCOUNTED FOR by
+    # non_conda_installs or requested_conda_specs, not on the command alone — the
+    # typed conda primitive also runs `conda install`, and firing on that would flip
+    # every legitimate pure-conda adopt into a build.
+    unaccounted = _ms._freeze.unaccounted_install_steps(draft) if draft else []
+    has_env_mutations = bool(non_conda or env_mutators or unaccounted)
     can_adopt = bool(adopt.get("found") and adopt.get("image_by_digest") and not gated)
 
     # Registry push as a first-class delivery: an explicit push_target wins, else a

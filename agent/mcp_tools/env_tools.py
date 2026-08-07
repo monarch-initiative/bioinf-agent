@@ -1423,12 +1423,35 @@ def run_install_command(
     so the environment-build journey is recorded separately from the actual
     algorithm/analysis runs.
 
+    PREFER A TYPED INSTALL PRIMITIVE. `install_conda_packages`, `install_pip_package`,
+    `install_r_package`, `install_jar_tool`, `install_release_binary`,
+    `install_git_repo`, `install_perl_package`, `install_cargo_tool` and
+    `install_go_tool` each DERIVE an `install_method` onto every package they record,
+    and that derived type is what freeze's adopt-vs-build decision reads. This tool
+    derives none. Reach for it only when no typed primitive fits the install.
+
     installed_packages should list what this command installed:
         [{name: 'GAPIT', version: '4.1.0', channel: 'github', source: '...'}, ...]
-    These power the side-by-side "command → packages" rendering in the report,
-    AND each entry is appended to draft.packages as a PackageRecord (with an
-    install_method derived from `channel`) — closing the loop with verify_installation,
-    which can then patch verify_command / verify_output onto that record.
+    These power the side-by-side "command → packages" rendering in the report.
+
+    THEY DO NOT CARRY AN `install_method`, AND THAT HAS CONSEQUENCES. This docstring
+    used to promise the entries were "appended to draft.packages as a PackageRecord
+    (with an install_method derived from `channel`)". That dual-write was removed
+    (see the comment at the merge below); the sentence describing it was not, so the
+    docstring advertised the mechanism that would have made this tool safe for years
+    after it was deleted. Measured consequences, both real:
+
+      * freeze's adopt-vs-build gate reads `install_method.type` and defaults a
+        missing one to "conda", so a `pip install` recorded here USED TO leave the
+        env looking pure-conda and freeze adopted a BioContainer without the package.
+        `freeze.unaccounted_install_steps` now catches that by reading the COMMAND,
+        so the env correctly container-native-builds — but it builds because a gate
+        caught you, not because the record was right.
+      * freeze's version slot is filled from `installed_packages`
+        (`_resolve_versions_from_install_record`). With no version recorded here, a
+        request_key degrades from `busco=6.0.0|linux/amd64|none` to
+        `busco|linux/amd64|none`. NOTHING catches that one — record `version` on
+        every entry.
 
     Pass `step=N` to replace install_step N (for retries). Default is append.
 
