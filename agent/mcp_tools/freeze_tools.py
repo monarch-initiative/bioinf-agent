@@ -75,9 +75,13 @@ def _shipped_binary_entry(step: dict) -> dict:
     not just binary.
 
     Fields state absence explicitly rather than defaulting it (see `ShippedBinary`):
-    `version` is None because this tier does not probe the built binary for one —
-    "we did not capture it" is the honest record, and a reader must render it as
-    absence, never scrape a number out of a banner to fill the hole.
+    `version` carries what the artifact ITSELF answered when its tier's version probe
+    was run in the SHIPPED image (`captured_version`), and stays None when no probe
+    was declared or the probe came back empty. None means "we did not capture it" —
+    a reader must render it as absence, never scrape a number out of a banner to fill
+    the hole. The probe is what un-entangled the version from the evidence command:
+    an R package's version used to ride along in whatever the evidence happened to
+    print, so passing a stronger `functional_check` silently cost you the version.
 
     `tool` (the PATH command) and `install_command` (the literal baked shell line)
     used to share one `command` key with opposite meanings across the two producers,
@@ -87,7 +91,7 @@ def _shipped_binary_entry(step: dict) -> dict:
     prov = step.get("provenance") or {}
     return _ShippedBinary(
         tool=step.get("tool") or "",
-        version=None,
+        version=(step.get("captured_version") or "").strip() or None,
         provenance=step.get("purpose") or None,
         install_command=step.get("command") or None,
         tier=prov.get("tier") if prov.get("assurance") else None,
@@ -437,7 +441,11 @@ def freeze(
             conda_lock=br.get("lock_files") or None,
             # snapshot.debian.org timestamp the BUILDER + RUNTIME stages pinned
             # apt to — replay points at the same snapshot, same apt bytes.
-            apt_snapshot=br.get("apt_snapshot") or "")
+            apt_snapshot=br.get("apt_snapshot") or "",
+            # the SAME longtail_steps shipped_binaries is built from above, and the
+            # same list emit_dockerfile bakes as `RUN <command>`: the transcript the
+            # human recipe prints verbatim instead of re-authoring it per tier.
+            built_commands=br.get("longtail_steps") or None)
         if conda_deps:  # portable lock for the conda layer (image digest is the real anchor)
             plats = [platform] if platform.startswith("linux") else ["linux-64", platform]
             cl = _ms._env_mgr.generate_lock(env_name, platforms=plats)

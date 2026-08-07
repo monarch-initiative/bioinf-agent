@@ -1577,17 +1577,30 @@ def step_is_validated(step: Any) -> bool:
 USAGE_VERIFIED = "verified"
 USAGE_FAILED = "failed"
 USAGE_NOT_ATTEMPTED = "not_attempted"
+#: FOUR states, because "nobody tried" and "we have no record of whether anybody tried"
+#: are different facts and only one of them is a finding. A spec sealed before the
+#: producer was required to state its I4 outcome (pre-2026-07-31) carries no
+#: `usage_verification` block at all, and `usage_verified: False` on it has never meant
+#: anything — seal refuses a real failure, so the bool could only ever be a default.
+#: Rendering that as "not attempted" is the meter's own sin one layer down: absence
+#: rounded up into a verdict, printed in the artifact the user reads to decide whether to
+#: trust the how-to. Measured on disk 2026-08-06: 4 of 7 sealed specs are in this state,
+#: and one of the four (`rnaseq_deseq2_chr22_cluster`) is a MULTI-ENV chain whose how-to
+#: is structurally unprovable — the honest `degraded(seal.sealed_howto_unproven)` landing —
+#: which a reader could not tell apart from a workflow where nobody bothered.
+USAGE_UNRECORDED = "unrecorded"
 
 
 #: How each state is SHOWN. In the leaf with `usage_status` for the same reason the
 #: status is: the dashboard rendered "not attempted" while the markdown guide printed
 #: the raw enum, so two artifacts about one workflow read differently. One fact, one
-#: reading, one wording. "" is the pre-three-state fallback and means the same thing.
+#: reading, one wording.
 USAGE_LABELS = {
     USAGE_VERIFIED:      "yes",
     USAGE_FAILED:        "NO — self-test failed",
     USAGE_NOT_ATTEMPTED: "not attempted",
-    "":                  "not attempted",
+    USAGE_UNRECORDED:    "unrecorded — this spec predates the I4 outcome being stated",
+    "":                  "unrecorded",
 }
 
 
@@ -1613,6 +1626,13 @@ def usage_status(spec: Any) -> str:
     raw bool, so one page said "not attempted — <reason>" and another said `False`
     about the same workflow. A shared fact belongs in a leaf, or it is not shared.
 
+    AND THE FALLBACK IS `unrecorded`, NOT `not_attempted`. The bool's asymmetry cuts one
+    way only: `True` is a positive claim the producer made, so it still reads as verified;
+    `False` is what the field defaults to, and on a spec with no `usage_verification` block
+    it has never carried information. Reading it as "nobody attempted the self-test" states
+    a finding on evidence that does not exist — the same rounding this codebase refuses at
+    Layer 1, where a clause with no observation is UNOBSERVED rather than a pass.
+
     Accepts a dict or a WorkflowSpec."""
     if spec is None:
         return ""
@@ -1622,7 +1642,7 @@ def usage_status(spec: Any) -> str:
     status = uv.get("status") if isinstance(uv, dict) else getattr(uv, "status", None)
     if status:
         return str(status)
-    return USAGE_VERIFIED if get("usage_verified") else ""
+    return USAGE_VERIFIED if get("usage_verified") else USAGE_UNRECORDED
 
 
 class WorkflowSpec(BaseModel):

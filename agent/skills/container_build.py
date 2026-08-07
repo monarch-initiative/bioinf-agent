@@ -756,7 +756,7 @@ class ContainerBuild:
     def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
             runtime_packages: list[str] | None = None,
-            timeout: int = 1800) -> dict[str, Any]:
+            version_probe: str = "", timeout: int = 1800) -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
         baking; `evidence` is re-run in the built image at freeze.
@@ -772,7 +772,15 @@ class ContainerBuild:
         engine_coupled: the command (and evidence) need the engine env active — the
         BUILD uses an engine-provided toolchain (rust/go/perl) or the artifact lives
         in the engine env. Wrapped with engine.run() so it's correct both in the
-        build container AND when baked (the engine layer is in the image)."""
+        build container AND when baked (the engine layer is in the image).
+
+        `version_probe` is the generator's tier-specific way to ASK the installed
+        artifact its version (`packageVersion()`, `$Module::VERSION`) — carried on
+        the step so `EnvBuild.verify_in_image` can run it in the SHIPPED image. It
+        exists because the generic `<tool> --version` banner probe is structurally
+        meaningless for a tier whose artifact is not a PATH command: an R package
+        and a perl module have versions, but `BiocGenerics --version` is a shell
+        error, so those two tiers were the ones recording `version: None`."""
         cmd = self.engine.run(command) if engine_coupled else command
         ev_cmd = self.engine.run(evidence) if engine_coupled else evidence
         inst = self.exec(cmd, timeout=timeout)
@@ -789,6 +797,7 @@ class ContainerBuild:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
         rec = {"command": cmd, "purpose": purpose, "evidence": ev_cmd, "tool": tool,
+               "version_probe": version_probe or "",
                "runtime_packages": list(runtime_packages or [])}
         if provenance:                       # synthesis tier: carry the per-command
             rec["provenance"] = provenance   # provenance into the recipe (audit + verify)
@@ -858,7 +867,8 @@ class ContainerBuild:
                         tool=spec.get("tool", ""),
                         engine_coupled=spec.get("engine_coupled", False),
                         provenance=spec.get("provenance"),
-                        runtime_packages=spec.get("runtime_packages"), timeout=timeout)
+                        runtime_packages=spec.get("runtime_packages"),
+                        version_probe=spec.get("version_probe", ""), timeout=timeout)
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""
@@ -975,6 +985,40 @@ class ContainerBuild:
         if ok:
             return proven("container_build.validated_in_image", success=True, checks=results, banners=banners)
         return broke("container_build.validation_in_image_failed", success=False, checks=results, banners=banners)
+
+    # A probe's WHOLE stdout must be the version and nothing else — these commands
+    # are ours, so we know the output format and can VALIDATE it rather than search
+    # it. That is the difference between this and `_extract_version`: searching a
+    # blob for a version-shaped token is what let a dependency's number be reported
+    # under a tool's name, and a searching reader would happily "find" a version in
+    # an R startup warning. A probe whose output doesn't match returns '' (absence).
+    _PROBE_VERSION = re.compile(r"^[Vv]?\d+(\.\d+)*([._-][A-Za-z0-9]+)*$")
+
+    def probe_versions(self, image: str, probes: dict[str, str]) -> dict[str, str]:
+        """tool → the version the ARTIFACT ITSELF reports, asked in the SHIPPED image.
+
+        Each probe is the tier generator's own interrogation (`packageVersion()`,
+        `$Module::VERSION`), synthesized from a validated name token — so this is a
+        RECORDED fact from the producer's perspective, not a scrape of prose, and it
+        outranks the banner in `_resolved_version`'s honesty ordering.
+
+        Run PLAIN, exactly like `validate_in_image`'s checks: the shipped image is
+        self-activating, so this is how `apptainer exec <image> Rscript …` runs on
+        HPC. A probe that errors, prints nothing, or prints something that isn't
+        version-shaped yields NO entry — the tool keeps `version: None`, which the
+        readers already render as "unrecorded"."""
+        out: dict[str, str] = {}
+        for tool, probe in (probes or {}).items():
+            if not tool or not probe:
+                continue
+            r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image,
+                          "bash", "-c", probe], timeout=120)
+            if r["returncode"] != 0:
+                continue
+            text = (r.get("stdout") or "").strip().split("\n", 1)[0].strip()
+            if text and self._PROBE_VERSION.match(text):
+                out[tool] = text
+        return out
 
     def image_digest(self, image: str) -> str:
         """The built image's content id (sha256), the local shipping handle.

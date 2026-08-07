@@ -196,3 +196,126 @@ def test_jar_recipe_names_the_jre_it_was_actually_built_with():
                                                 "source": "https://x/e.zip",
                                                 "java_version": "21"}}))
     assert "openjdk=21" in conda and "default-jre" not in conda
+
+
+# ---------------------------------------------------------------------------
+# the transcript — the recipe quotes what BUILT the image, it does not re-author it
+# ---------------------------------------------------------------------------
+def _transcript_recipe(built_commands):
+    """A container-native recipe whose install_method would DERIVE one command while
+    the build actually ran another — the production divergence, in miniature."""
+    return er.extract_recipe(
+        {"install_steps": [
+            {"tool": "cargo", "returncode": 0, "installed_packages": [
+                {"name": "nanoq", "channel": "cargo", "install_method": {
+                    "type": "cargo", "name": "nanoq", "crate": "nanoq",
+                    "version": "0.10.0"}}]},
+        ]},
+        name="demo", conda_deps=["python=3.11"], primary_tools=["nanoq"],
+        content_digest="sha256:" + "cd" * 32, built_commands=built_commands)
+
+
+def test_the_recipe_quotes_the_command_that_built_the_image():
+    """THE POINT OF THE WHOLE SECTION. `render_step_commands` re-derives an install
+    line from `install_method`; the build recorded the line it actually exec'd. They
+    diverged in production — the image was built by `cargo install nanoq --version
+    0.10.0` while the recipe handed the reader `cargo install nanoq@0.10.0 --root
+    $PREFIX`, a different flag spelling against an undefined variable.
+
+    When a transcript exists it is the recipe. The derived form must not appear."""
+    md = R.render_recipe_markdown(_transcript_recipe(
+        [{"tool": "nanoq", "purpose": "Install Rust tool nanoq",
+          "command": "cargo install nanoq --version 0.10.0"}]), None)
+
+    assert "cargo install nanoq --version 0.10.0" in md, "the recorded command must be quoted"
+    assert "nanoq@0.10.0" not in md, \
+        "the DERIVED line must not appear alongside the recorded one — two spellings of " \
+        "one command is the defect this replaced"
+    assert "Derived, not recorded" not in md, "a recipe WITH a transcript is not derived"
+
+
+def test_a_recipe_without_a_transcript_says_the_commands_are_reconstructed():
+    """Absence stated, never rounded up (the `test_data_integrity: unanchored` rule).
+    An env frozen before the transcript was captured still renders useful commands —
+    but the reader must be able to tell a quoted command from a reconstructed one,
+    because only the first is evidence of how these bytes came to exist."""
+    md = R.render_recipe_markdown(_transcript_recipe([]), None)
+
+    assert "Derived, not recorded" in md
+    assert "nanoq" in md, "the fallback still has to tell the reader how to install it"
+
+
+def test_the_derived_r_command_routes_on_the_recorded_source():
+    """It rendered `install.packages("X")` for EVERY R package and demoted the real
+    source to a trailing comment — so a Bioconductor package's recipe led with a CRAN
+    call that FAILS. An instruction you can paste is worse than none (this file's own
+    doctrine, previously applied at exactly one branch)."""
+    bioc = "\n".join(R.render_step_commands(
+        {"tool": "BiocGenerics", "install_method": {
+            "type": "r_install", "name": "BiocGenerics", "source": "bioconductor"}}))
+    assert "BiocManager::install" in bioc
+    assert 'install.packages("BiocGenerics")' not in bioc, \
+        "the CRAN call fails for a Bioconductor package — it must not be the printed line"
+
+    cran = "\n".join(R.render_step_commands(
+        {"tool": "ape", "install_method": {
+            "type": "r_install", "name": "ape", "source": "cran"}}))
+    assert 'install.packages("ape"' in cran and "BiocManager" not in cran
+
+
+def test_pip_renders_a_command_at_all():
+    """There was no pip branch: the commonest long-tail tier fell through to the
+    generic 'see machine recipe' line, naming the tool and giving nothing to run."""
+    lines = R.render_step_commands({"tool": "pyfaidx", "install_method": {
+        "type": "pip", "name": "pyfaidx", "spec": "pyfaidx", "version": "0.8.1.4"}})
+    joined = "\n".join(lines)
+    assert "pip install" in joined and "pyfaidx==0.8.1.4" in joined
+    assert "see machine recipe" not in joined
+
+
+def test_no_rendered_command_references_an_undefined_variable():
+    """`$PREFIX` appeared in the cargo/go lines and was defined NOWHERE in the
+    document — a paste that installs somewhere else, or fails under `set -u`."""
+    md = R.render_recipe_markdown(er.extract_recipe(
+        {"install_steps": [{"tool": "cargo", "returncode": 0, "installed_packages": [
+            {"name": "nanoq", "channel": "cargo", "install_method": {
+                "type": "cargo", "name": "nanoq", "crate": "nanoq", "version": "0.10.0"}}]}]},
+        name="d", conda_deps=["python=3.11"], primary_tools=["nanoq"]), None)
+    if "$PREFIX" in md:
+        assert "export PREFIX=" in md, "a variable a command depends on must be defined"
+
+
+def test_the_apt_inventory_is_not_presented_as_a_runnable_command():
+    """It rendered `apt-get install -y \\` + 24 names + `\\  # +85 more …` — a line
+    continuation followed by a comment, which BREAKS the continuation, so pasting it
+    ran an apt-get that ended mid-list. It was also led by the base image's own
+    contents (`bash`, `dpkg`, `base-files`), which nobody installs."""
+    md = R.render_recipe_markdown(
+        er.extract_recipe(None, name="d", conda_deps=[], primary_tools=["x"]),
+        {"system_packages": [{"name": n} for n in ("bash", "dpkg", "libcurl4")]})
+    assert "libcurl4" in md, "the inventory is still disclosed"
+    assert "apt-get install" not in md, \
+        "an inventory of the base image's own packages is not a build step"
+
+
+def test_a_lock_only_env_still_gets_an_environment_step():
+    """`conda_deps` is the REQUEST; `conda_lock` is what was GOT. An env solved from an
+    install primitive's own specs records an EMPTY conda_deps and a full pixi lock — and
+    the conda block early-returned on the empty request, so the recipe rendered no step 1
+    while step 2 said `pixi run bash -c '...'`. The reader was told to run a command
+    inside an environment the document never created.
+
+    Caught on real bytes: env `recipe_transcript_probe`, freeze 2026-08-06."""
+    md = R.render_recipe_markdown(er.extract_recipe(
+        {"install_steps": [{"tool": "pip", "returncode": 0, "installed_packages": [
+            {"name": "pyfaidx", "channel": "pip", "install_method": {
+                "type": "pip", "name": "pyfaidx", "spec": "pyfaidx"}}]}]},
+        name="d", conda_deps=[], primary_tools=["pyfaidx"],
+        conda_lock={"pixi.toml": "...", "pixi.lock": "..."},
+        built_commands=[{"tool": "pyfaidx", "purpose": "pyfaidx",
+                         "command": "pixi run bash -c 'python -m pip install pyfaidx'"}]), None)
+
+    assert "pixi install --locked" in md, \
+        "an env the reader must run commands INSIDE has to be created by the recipe"
+    assert md.index("pixi install --locked") < md.index("pixi run bash"), \
+        "and created BEFORE the commands that run inside it"

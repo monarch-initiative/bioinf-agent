@@ -45,8 +45,17 @@ from agent.skills.spec_writer import EXTERNAL_SOURCE_KINDS, I8_STATEMENT
 # fills the whole canonical shape; no hidden defaults).
 # ---------------------------------------------------------------------------
 
-def _tool(name, version=None, source_hint=None, purpose=None) -> dict:
-    return {"name": name, "version": version, "source_hint": source_hint, "purpose": purpose}
+def _tool(name, version=None, source_hint=None, purpose=None, resolution=None) -> dict:
+    # `resolution` DEFAULTS to "the package name is the tool name", because that is the
+    # honest reading of these fixtures: they use invented names (toolx/tooly/toolz) whose
+    # package id can only be the name itself. The gate requires a STATED resolution before
+    # it will PROCEED (2026-08-06) — a raw user word must never install by default, since
+    # this field renames packages across major versions — and a plan corpus about GRAPH
+    # shape should not go red over a per-tool judgment it is not testing.
+    return {"name": name, "version": version, "source_hint": source_hint,
+            "purpose": purpose,
+            "resolution": resolution or {"package": name, "version": version,
+                                         "why": "the package name is the tool name here"}}
 
 
 def _unknown(field, findable, reason) -> dict:

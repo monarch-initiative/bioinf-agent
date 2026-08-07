@@ -252,6 +252,13 @@ def _render_howto(spec: dict) -> str:
         tag = f'<span class="pill ok">✓ self-tested{_e(where)}</span>'
     elif status == "not_attempted":
         tag = '<span class="pill na">not self-tested — not attempted</span>'
+    elif status == "unrecorded":
+        # NOT the same pill as not_attempted, which is what it used to get. This spec was
+        # sealed before the producer was required to state its I4 outcome, so nothing here
+        # knows whether the self-test ran. Saying "not attempted" would be a finding
+        # invented out of a missing field — and it lands on the panel a reader consults to
+        # decide whether the how-to can be trusted.
+        tag = '<span class="pill na">self-test outcome UNRECORDED</span>'
     else:
         tag = '<span class="pill na">not self-tested</span>'
     # The subtitle used to assert "self-tested against every declared input shape (I4)"
@@ -278,6 +285,13 @@ def _render_howto(spec: dict) -> str:
         P.append('<p class="note"><b>Not self-tested here:</b> '
                  f'{_e(uv["reason"])} — this is missing evidence about the command, '
                  'not evidence against it.</p>')
+    elif status == "unrecorded":
+        # The reason field does not exist on these specs — that IS the state. Say what the
+        # page does not know rather than filling the gap with the nearest verdict.
+        P.append('<p class="note"><b>Self-test outcome unrecorded:</b> this workflow was '
+                 'sealed before the seal was required to state what I4 concluded, so this '
+                 'page cannot tell you whether the command below was self-tested. It is '
+                 'neither a pass nor a failure — re-seal to earn a stated outcome.</p>')
     if usage.get("description"):
         P.append(f'<p class="note">{_e(usage["description"])}</p>')
     # Numbered when there's more than one, because the ORDER is part of the contract:

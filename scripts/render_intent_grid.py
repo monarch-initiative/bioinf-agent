@@ -109,6 +109,20 @@ def _reason_pill(reason, cls: str = "") -> str:
     return f' <span class="pill {cls}">{_e(reason)}</span>'
 
 
+def _is_unassertable(row: dict) -> bool:
+    """The harness cannot check this row — so it has no verdict, and must not be shown wearing
+    one. Distinct from `_is_deferred`, which is a specific KIND of unassertable (a domain
+    decoy waiting on the identity eval); this is the general case: a row naming a fact no
+    assertion reads, or one that is a function of an invisible global (the github 60/hr
+    quota), or one that contradicts a sibling on an identical call.
+
+    These were folded into `wrong` until 2026-08-06 — 12 of the 16 red rows were rows nobody
+    had ever graded, and nine of the twelve carried an `unassertable_reason` saying in their
+    own words that the DECISION is already correct. The page showed "12 unassertable" as its
+    own figure AND counted all 12 as failures a few pixels away."""
+    return not row.get("expect", {}).get("assertable", True)
+
+
 def _is_deferred(row: dict) -> bool:
     """A domain-decoy row graded by the LLM identity eval, not the resolve-probe (Decision 1).
     resolve() surfaces the off-domain identity.self_description; refusing a VALID, repo-real,
@@ -138,6 +152,15 @@ def _chain(row: dict) -> str:
         return (f'<code>{_e(typed)}</code><span class="arrow">→</span>{got_s}'
                 f'<span class="arrow">·want</span>'
                 f'<span class="note">refuse+ask (the LLM\'s call)</span>')
+    if _is_unassertable(row):
+        # No colour. `got` here is whatever was observed the last time this row WAS graded —
+        # the builder does not re-probe an unassertable row, so painting it green-or-red
+        # would be a verdict rendered from a stale observation on top of an expectation the
+        # harness has already declared it cannot read.
+        return (f'<code>{_e(typed)}</code><span class="arrow">→</span>'
+                f'<span class="note">last seen: {_e(got)}</span>'
+                f'<span class="arrow">·want</span>'
+                f'<span class="note">{"refuse+ask" if want is None else _e(want)}</span>')
     got_s = f'<span class="bad">{_e(got)}</span>' if got != want else f'<span class="ok">{_e(got)}</span>'
     if got is None:
         # a refusal TODAY — badge the reason it named, green if it matches the earned target
@@ -160,11 +183,16 @@ def render(corpus: dict) -> str:
     # resolve failure. They come out of BOTH ok and wrong; the meter's % is over what the
     # resolve-probe can actually grade. Counting them as red claimed resolve failed a job
     # that was never resolve's — the exact dishonesty this re-scope removes.
+    # FOUR states, not three (2026-08-06). `wrong` was every gradeable row without a True
+    # verdict, which swept in the 12 unassertable rows the builder never grades — the page
+    # then printed them a second time as their own figure. A row the harness cannot check is
+    # not a row the resolver got wrong; it is a row nobody measured, and the whole value of
+    # this page is that it does not round absence up into a verdict.
     deferred = [r for r in rows if _is_deferred(r)]
-    gradeable = [r for r in rows if not _is_deferred(r)]
-    ok = [r for r in gradeable if r.get("is_correct_today")]
-    wrong = [r for r in gradeable if not r.get("is_correct_today")]
-    unassertable = [r for r in gradeable if not r.get("expect", {}).get("assertable", True)]
+    unassertable = [r for r in rows if _is_unassertable(r) and not _is_deferred(r)]
+    graded = [r for r in rows if not _is_deferred(r) and not _is_unassertable(r)]
+    ok = [r for r in graded if r.get("is_correct_today")]
+    wrong = [r for r in graded if not r.get("is_correct_today")]
 
     by_gap: dict[str, list] = {}
     for r in wrong:
@@ -180,25 +208,34 @@ def render(corpus: dict) -> str:
              'no answer — and a terminal can be green with the wrong tool in it.</p>')
 
     # -- the meter -----------------------------------------------------------
-    # % is over GRADEABLE rows — the ones a resolve()-probe can actually judge. The deferred
-    # bucket is shown as its own figure, never folded into a denominator it doesn't belong in.
-    denom = len(gradeable)
+    # % is over GRADED rows — the ones a resolve()-probe actually judged. The deferred and
+    # unassertable buckets are shown as their own figures, never folded into a denominator
+    # (or a numerator) they don't belong in.
+    denom = len(graded)
     pct = (100 * len(ok) // denom) if denom else 0
     P.append('<div class="meter">')
     P.append(f'<div class="m"><div class="n">{total}</div><div class="l">scenarios</div></div>')
     P.append(f'<div class="m"><div class="n ok">{len(ok)}</div>'
              f'<div class="l">reach intent</div></div>')
     P.append(f'<div class="m"><div class="n bad">{len(wrong)}</div>'
-             f'<div class="l">gradeable, do not</div></div>')
+             f'<div class="l">measured wrong</div></div>')
     P.append(f'<div class="m"><div class="n">{pct}%</div>'
-             f'<div class="l">correct of {denom} gradeable</div></div>')
+             f'<div class="l">correct of {denom} graded</div></div>')
     if deferred:
         P.append(f'<div class="m"><div class="n defer">{len(deferred)}</div>'
                  f'<div class="l">deferred → identity eval</div></div>')
     if unassertable:
         P.append(f'<div class="m"><div class="n warn">{len(unassertable)}</div>'
-                 f'<div class="l">unassertable</div></div>')
+                 f'<div class="l">harness cannot check</div></div>')
     P.append("</div>")
+    P.append(f'<p class="sub">Four states, and the last two are not failures. '
+             f'<b class="ok">{len(ok)}</b> graded rows reach the intent · '
+             f'<b class="bad">{len(wrong)}</b> were measured and do NOT · '
+             f'<b class="defer">{len(deferred)}</b> await a grader that does not exist yet · '
+             f'<b class="warn">{len(unassertable)}</b> name a fact no assertion here can read. '
+             f'The last two carry <b>no verdict at all</b> — not a red one. Counting them as '
+             f'failures (which this page did until 2026-08-06) rounds absence up into a '
+             f'judgement, in the one meter that exists to refuse exactly that.</p>')
     if denom:
         w_ok = 100 * len(ok) // denom
         P.append(f'<div class="bar"><i class="bg-ok" style="width:{w_ok}%"></i>'
@@ -209,7 +246,9 @@ def render(corpus: dict) -> str:
     P.append('<p class="sub">intent <span class="arrow">→[1]→</span> interpretation '
              '<span class="arrow">→[2]→</span> outcome <span class="arrow">→[3]→</span> report. '
              'Ordered by consequence: a silently wrong tool outranks a loud failure, because '
-             'a failure tells you it failed.</p>')
+             'a failure tells you it failed. <b>Counts are of MEASURED failures only</b> — a '
+             'row the harness cannot check contributes to no gap, because attributing it to '
+             'one would be the verdict it is marked as unable to support.</p>')
     P.append('<div class="scroll"><table>')
     P.append("<tr><th></th><th>gap</th><th>count</th><th>what it means</th></tr>")
     for gap, (glyph, cls, meaning) in GAPS.items():
@@ -244,7 +283,7 @@ def render(corpus: dict) -> str:
 
     # -- the rows, worst first (deferred sink to the bottom — they aren't failures) ---------
     order = {"interpretation": 0, "report": 1, "outcome": 2, "none": 3}
-    rows_sorted = sorted(rows, key=lambda r: (1 if _is_deferred(r) else 0,
+    rows_sorted = sorted(rows, key=lambda r: (1 if (_is_deferred(r) or _is_unassertable(r)) else 0,
                                               order.get(r.get("gap_class"), 9),
                                               r.get("is_correct_today", False),
                                               r.get("id", "")))
@@ -267,9 +306,12 @@ def render(corpus: dict) -> str:
         glyph, cls, _ = GAPS.get(gap, ("?", "warn", ""))
         if _is_deferred(r):
             glyph, flag = "⏸", ""
+        elif _is_unassertable(r):
+            # the gap glyph is a verdict too — 🎯 says "we resolved to the wrong tool", which
+            # is precisely the claim this row is marked as unable to support
+            glyph, flag = "❓", ' <span class="pill warn">harness cannot check</span>'
         else:
-            flag = "" if r.get("expect", {}).get("assertable", True) else \
-                ' <span class="pill warn">unassertable</span>'
+            flag = ""
         P.append(f'<tr><td>{glyph}</td><td>{_chain(r)}{flag}<br>'
                  f'<span class="note">{_e(r.get("id"))}</span></td>'
                  f'<td class="note">{_e(r.get("intent", ""))[:150]}</td>'
@@ -299,11 +341,13 @@ def main() -> int:
     OUT.write_text(render(corpus))
     rows = corpus.get("rows", [])
     deferred = sum(1 for r in rows if _is_deferred(r))
-    gradeable = len(rows) - deferred
+    unassertable = sum(1 for r in rows if _is_unassertable(r) and not _is_deferred(r))
+    graded = len(rows) - deferred - unassertable
     ok = sum(1 for r in rows if r.get("is_correct_today"))
-    print(f"  wrote {OUT.relative_to(ROOT)}  ({len(rows)} scenarios · {ok}/{gradeable} "
-          f"gradeable reach intent · {gradeable - ok} do not · {deferred} deferred → identity "
-          f"eval · probed {corpus.get('probed_on', '?')})")
+    print(f"  wrote {OUT.relative_to(ROOT)}  ({len(rows)} scenarios · {ok}/{graded} "
+          f"graded reach intent · {graded - ok} measured wrong · {deferred} deferred → identity "
+          f"eval · {unassertable} the harness cannot check · "
+          f"probed {corpus.get('probed_on', '?')})")
     return 0
 
 

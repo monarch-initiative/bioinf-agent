@@ -43,10 +43,14 @@ def interpret_request(intent_json: str) -> dict:
           "kind": one of install_env | add_to_env | run_step | transfer_data |
                   reproduce | out_of_scope | ambiguous,
           "raw_prompt": the user's words, verbatim,
-          "tools": [ { "name": str, "version": str|null,
+          "tools": [ { "name": str,                 // the USER'S word, verbatim
+                       "version": str|null,        // the user's version, verbatim
                        "source_hint": {"kind": github_repo|release_url|channel|image|recipe,
                                        "value": str} | null,
-                       "purpose": str|null } ],   // [] when there are no tools
+                       "purpose": str|null,
+                       // YOUR judgment about which package this actually means. See below.
+                       "resolution": {"package": str, "version": str|null,
+                                      "why": str} | null } ],   // [] when there are no tools
           "target_env": str|null,                 // an existing env, for add/run/reproduce
           "compute": local | cluster | unspecified,
           "data_ops": [ { "direction": upload|download,
@@ -65,6 +69,37 @@ def interpret_request(intent_json: str) -> dict:
                       (`findable: true`). Look it up (resolve_tool / discovery / a
                       near-miss resolve), RECORD how, then re-interpret to PROCEED.
       - proceed     → every required field is known. Run the rail named in `rail`.
+
+    ⭐ `resolution` — WHERE YOUR KNOWLEDGE GOES, AND IT IS REQUIRED TO PROCEED.
+
+    `name` stays the user's verbatim word; `resolution` is which PACKAGE you believe that
+    word means, and why. They are separate fields so the record can show a human "you asked
+    for X, we installed Y, because Z" — which is what lets them disagree with you.
+
+        "install the latest gatk"
+          name: "gatk"
+          resolution: {"package": "gatk4", "version": null,
+                       "why": "GATK4 is the current major line; bioconda ships it as
+                               `gatk4`, while the bare `gatk` package is GATK3 (3.8, 2017)"}
+
+    This exists because it was MISSING, and the cost was concrete: with only the raw word to
+    go on, the resolver returned `gatk=3.8` — a 2017 release — and every mechanical check
+    passed, because this field VERSIONS TOOLS BY RENAMING THE PACKAGE and both packages are
+    real, correct and well-described. You identify that instantly. Nothing else here can.
+
+    Most of the time `resolution.package` equals `name` and the `why` is one clause ("the
+    bioconda package name is the tool name; no rename"). Write it anyway — a claim with no
+    stated basis is indistinguishable from a guess.
+
+    `null` is a STATED "I have no prior knowledge of this tool" and routes to INVESTIGATE:
+    call `resolve_tool` with the raw name, read `package_family` and
+    `identity.self_description`, then re-interpret WITH a resolution. Nothing installs on a
+    belief nobody wrote down. Exempt: a tool with a `source_hint` — the user pinned the
+    artifact themselves, so there is nothing for you to normalize.
+
+    Then pass it on: `resolve_tool(tool=resolution.package, user_said=name)`. That call
+    VERIFIES your claim — the two must be one package family — and refuses a substitution
+    (answering 'bwa' with 'bowtie2') rather than installing a different tool silently.
 
     `findable` is the whole ask/investigate split: a version omitted is findable
     (INVESTIGATE — find latest); two versions transposed by accident (scenario 4) are

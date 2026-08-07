@@ -5055,11 +5055,15 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
 
     class FakeCB:
         platform = "linux/amd64"
+        longtail = []
         def validate_in_image(self, image, checks, probe_tools=None):
             assert probe_tools == ["seqtk"], "tool tokens must be forwarded"
             return {"success": True,
                     "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {"seqtk": "Version: 1.4-r122"}}
+        def probe_versions(self, image, probes):
+            assert probes == {}, "no tier here declares a version probe"
+            return {}
 
     # Stub the control experiment: it spawns a real container, and this test is about
     # threading captured facts, not about docker. Its own coverage is below.
@@ -5088,9 +5092,12 @@ def test_envbuild_refuses_evidence_that_passes_without_the_tool(monkeypatch):
 
     class FakeCB:
         platform = "linux/amd64"
+        longtail = []
         def validate_in_image(self, image, checks, probe_tools=None):
             return {"success": True, "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {}}
+        def probe_versions(self, image, probes):
+            return {}
 
     monkeypatch.setattr("agent.skills.freeze_from_image._evidence_discriminates",
                         lambda platform, ev: ("vacuous", "also exits 0 without the tool"))
@@ -7392,8 +7399,16 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
         "never", {"status": "not_attempted", "reason": "inputs live on the cluster"})))
     (tmp_path / "ran.workflow.yaml").write_text(yaml.safe_dump(_spec(
         "ran", {"status": "verified", "reason": ""})))
-    # An artifact sealed BEFORE the field existed: the honest read is the stated
-    # "not_attempted", never a fabricated False the producer never wrote.
+    # An artifact sealed BEFORE the field existed: the honest read is `unrecorded`, never a
+    # fabricated False the producer never wrote — and, since 2026-08-06, never
+    # `not_attempted` either. That was this test's original expectation and it was wrong in
+    # the same shape as the bool it replaced, one step further along: `not_attempted` is a
+    # FINDING ("the self-test did not run"), asserted here about a spec whose producer
+    # recorded nothing at all. Measured on disk: 4 of 7 sealed specs are in this state, and
+    # one of them is a multi-ENV chain whose how-to is structurally unprovable — the honest
+    # `degraded(seal.sealed_howto_unproven)` landing — which a reader could not tell apart
+    # from a workflow where nobody bothered to author one. That is the exact distinction the
+    # three-state field was introduced to draw, lost again at the fallback.
     (tmp_path / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
 
     # Checked in BOTH forms. This is the highest-value property in the row, and adding a
@@ -7409,7 +7424,7 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
         assert rows["never"]["usage_verification_status"] == "not_attempted", detail
         assert "cluster" in rows["never"]["usage_verification_reason"], detail
         assert rows["ran"]["usage_verification_status"] == "verified", detail
-        assert rows["legacy"]["usage_verification_status"] == "not_attempted", detail
+        assert rows["legacy"]["usage_verification_status"] == "unrecorded", detail
 
     # ...and the bare bool genuinely cannot tell the first two apart, which is why the
     # field above has to exist rather than the reader being told to be careful. Only the

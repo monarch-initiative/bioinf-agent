@@ -53,6 +53,10 @@ class EnvBuild:
         self.verifications: list[dict] = []   # [{label, tool, check, engine_coupled}]
         self.lock_text = ""
         self.lock_files: dict[str, str] = {}  # engine lock artifacts {name: content}
+        # tool → the version the artifact reported when asked in the shipped image
+        # (filled by verify_in_image's per-tier probes). Empty until then, and a tool
+        # missing from it stays `version: None` — "not captured", stated not guessed.
+        self.captured_versions: dict[str, str] = {}
         # If set, REPLAY from these instead of solving — the recipe-replay path.
         # The lock files (pixi.toml + pixi.lock for pixi; environment-lock.txt for
         # micromamba) were captured at a prior freeze and carried verbatim in the
@@ -159,6 +163,16 @@ class EnvBuild:
                                    if v.get("tool")))
         res = self.cb.validate_in_image(image, [c for _, c in finals], probe_tools=tools)
         banners = res.get("banners", {}) or {}
+        # Per-tier VERSION PROBES — the tiers whose artifact is not a PATH command
+        # (an R package, a perl module) have a version but no banner, so the generic
+        # `<tool> --version` above can only ever return a shell error for them. Their
+        # generator carries the right question instead (`packageVersion()`,
+        # `$Module::VERSION`); ask it here, in the shipped image, and the answer is
+        # RECORDED on shipped_binaries[].version rather than left for a reader to
+        # scrape out of whatever the evidence command happened to print.
+        self.captured_versions = self.cb.probe_versions(
+            image, {s.get("tool", ""): s.get("version_probe", "")
+                    for s in self.cb.longtail if s.get("version_probe")})
         # The control experiment, on THIS path too. It was written for the agent-
         # authored `freeze_from_image` and wired only there — so the container-native
         # path, which is the busy one, had a string rule and nothing behind it. Phase D
@@ -295,6 +309,10 @@ class EnvBuild:
                 "conda_specs": list(self.conda_specs),
                 "longtail_steps": [{"command": s["command"], "purpose": s["purpose"],
                                     "tool": s.get("tool", ""),
+                                    # what the artifact answered when asked in the
+                                    # shipped image, or "" for "not captured".
+                                    "captured_version": self.captured_versions.get(
+                                        s.get("tool", ""), ""),
                                     "runtime_packages": list(s.get("runtime_packages") or []),
                                     **({"provenance": s["provenance"]} if s.get("provenance") else {})}
                                    for s in self.cb.longtail],

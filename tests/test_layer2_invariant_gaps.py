@@ -349,16 +349,52 @@ def test_seal_writes_every_field_the_artifact_re_verifies_against():
     ({"usage_verification": {"status": "verified"}, "usage_verified": False}, "verified"),
     # pre-three-state artifacts fall back to the bool
     ({"usage_verified": True}, "verified"),
-    # ...and a bare False resolves to "", NOT "failed". seal REFUSES a real I4 failure,
-    # so false on a sealed spec never meant the command was tested and broken. Reading it
-    # as "failed" would be the same fabrication in the opposite direction.
-    ({"usage_verified": False}, ""),
-    ({}, ""),
+    # ...and a bare False resolves to `unrecorded` — NOT "failed", and NOT "not_attempted".
+    # seal REFUSES a real I4 failure, so false on a sealed spec never meant the command was
+    # tested and broken; reading it as "failed" would be a fabrication in one direction.
+    # Reading it as "not_attempted" is a fabrication in the other, and a subtler one: that
+    # is a FINDING ("the self-test did not run"), asserted from a field the producer never
+    # wrote. `unrecorded` is what the record actually supports. Measured 2026-08-06: 4 of 7
+    # sealed specs land here, one of them a multi-ENV chain whose how-to is structurally
+    # unprovable — indistinguishable, under the old reading, from one nobody authored.
+    ({"usage_verified": False}, "unrecorded"),
+    ({}, "unrecorded"),
+    # ...but a spec that is not a mapping at all yields "": there is no record to read,
+    # which is a different thing from a record that omits this field.
     (None, ""),
 ])
 def test_usage_status_is_one_reading_of_the_three_state_verdict(spec, expected):
     from agent.models.core_data import usage_status
     assert usage_status(spec) == expected
+
+
+def test_an_unrecorded_outcome_is_not_rendered_as_a_finding():
+    """The artifact half of the state above. A spec sealed before the producer stated its
+    I4 outcome must not have "not attempted" printed over it — that is a claim about what
+    the self-test did, made from a field nobody wrote, on the panel a reader consults to
+    decide whether the how-to can be trusted.
+
+    Break it: map `unrecorded` back onto the not_attempted label or pill."""
+    from agent.skills.run_dashboard_html import render_run_dashboard_html
+    from agent.models.core_data import usage_label
+
+    legacy = {
+        "workflow_name": "sealed_before_the_field", "description": "d",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "env_request_key": "fake=1.0|linux/amd64|none",
+        "env_image": "fake:1.0", "env_content_digest": "sha256:" + "a" * 64,
+        "usage_verified": False,                      # the default, never a statement
+        "usage": {"description": "how to run it",
+                  "command_template": "fake --go {INPUT} -o {OUTPUT_DIR}/r.txt"},
+        "pipeline_steps": [{"step": 1, "tool": "fake", "command": "fake --go",
+                            "returncode": 0, "validation_status": "passed"}],
+    }
+    page = render_run_dashboard_html(legacy)
+    assert "unrecorded" in page.lower()
+    assert "not attempted" not in page.lower(), (
+        "the page states a finding the record does not carry — nothing here knows whether "
+        "the self-test ran")
+    assert "unrecorded" in usage_label(legacy).lower()
 
 
 def test_no_rendered_artifact_prints_a_bare_usage_bool():

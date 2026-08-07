@@ -100,6 +100,7 @@ def resolve_tool(
     github_repo: str = "",
     prefer: str = "",
     language: str = "",
+    user_said: str = "",
 ) -> dict:
     """Decide WHICH install tier to use for `tool`, and record WHY (the
     ResolutionDecision). Probes availability independently per tier and ranks by:
@@ -138,6 +139,37 @@ def resolve_tool(
     If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
     ranking below it is registry-only — it is not evidence the authors ship nothing.
 
+    ⭐ NORMALIZE BEFORE YOU CALL, AND SAY SO. Pass the package name YOU believe the request
+    means, with the user's own word in `user_said`. Do not pass a raw user word and wait to
+    be corrected — you know things this module cannot derive, and this is where you use them.
+
+        user asks for "the latest gatk"
+          -> resolve_tool(tool="gatk4", user_said="gatk")     ✅ installs GATK 4.6.2.0
+          -> resolve_tool(tool="gatk")                        ❌ installs GATK 3.8 (2017)
+
+    Because this field VERSIONS TOOLS BY RENAMING THE PACKAGE, the user's word is often not
+    the package: bioconda's `gatk` is GATK3, `gatk4` is the current line, and both are
+    correct packages with correct descriptions. Same shape for CRAN's case-sensitive
+    `Seurat`, and for a vendor tool whose registry namesake is a different project. You can
+    tell these apart from the name and the request's context; nothing here can.
+
+    `user_said` is what keeps that from being a licence to substitute. The two names must
+    belong to one package family — a rename across a major version is supported, swapping in
+    a DIFFERENT tool is refused (`normalization_rejected`). The pair is recorded, so the ENV
+    report shows the human "you asked for X, we installed Y" instead of quietly shipping Y.
+
+    If you genuinely do not know the tool: call this with the raw name, read `package_family`
+    and `identity.self_description`, THEN decide. What you must not do is let the raw name
+    install by default.
+
+    `package_family` is the research step, and it runs on a HIT — not only at a dead end.
+    When the channels carry more than one package in this name's family and you did not name
+    the newest, you get every member with its version and its own words, and the install_call
+    is comment-prefixed so no member ships as the settled answer. It does NOT rank them:
+    `bowtie`→`bowtie2` looks identical to `gatk`→`gatk4` mechanically, and only one of those
+    is a stale lineage — bowtie1 is a live ungapped aligner with its own repo. Silent for the
+    ~7-in-10 tools that have no numbered siblings, and silent when you named the newest.
+
     IDENTITY — YOU are the judge; these are the FACTS. `identity` answers nothing on its
     own: it hands YOU the evidence to decide "is this registry entry the tool I MEANT?",
     which nothing else in this system checks (every other gate verifies integrity — it
@@ -163,11 +195,44 @@ def resolve_tool(
     ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
     reliability gate — pass it whenever you know the tool's repo.
 
+    `ambiguous` is calibrated to fire only on a REAL fork in the road, because a flag that
+    fires on the healthy case is one you learn to strip on the case that matters. It takes
+    two STATED meanings and no arbiter: a conda pick RESOLVES the collision (so a correct
+    `anndata` is not also accused over a CRAN reticulate wrapper of the same project), and a
+    `degenerate_stub` — a registry hit with no summary, homepage, project URL or repo — is a
+    name reservation rather than a rival project, so it neither makes a name ambiguous nor
+    wins the ranking. When one is disqualified it is named in `degenerate_stubs` and the
+    rationale, never dropped silently. (PyPI's blank `seurat` 0.0.2 used to beat CRAN's
+    `Seurat` 5.5.1 two different ways at once.)
+
+    `version_lineage` — THE NAME IS A LINEAGE, and this field is a fact, not a warning.
+    Bioinformatics versions tools by RENAMING the package: bioconda's `gatk` is 3.8 and
+    GATK4 lives at `gatk4`, a different package. When the channel carries the next major
+    lineage under a different name you get `{successor, successor_latest, …}` and the
+    `install_call` is comment-prefixed — the runnable line survives underneath, so a caller
+    who genuinely wants the older lineage is not blocked. YOU decide which is meant: it also
+    fires on `bowtie` → `bowtie2` and `macs2` → `macs3`, where the older tool is a live and
+    legitimate choice, and nothing mechanical separates those from gatk. That separation is
+    world knowledge, which is yours.
+
+    A HUMAN MUST FETCH SOME OF THESE, and recognising which is YOUR job — the resolver
+    keeps no list of vendor-gated names, because a finite list of them rots and promises a
+    completeness it cannot keep. Some tools' runnable bytes sit behind a EULA
+    click-through or a customer account (Cell Ranger, DRAGEN, Guppy are the shape). For
+    those, no unattended install can reach the real artifact, so a public-registry hit
+    under that name is by construction a DIFFERENT project — CRAN's `cellranger` is a
+    spreadsheet cell-range parser, and installing it ships the wrong tool under the right
+    name. You will usually know this from the name alone; `self_description` confirms it.
+    Do not pass the `install_call` along. Tell the user where to get the bytes, then use
+    `install_release_binary(url=…, sha256=…)` on the URL they give you, or
+    `stage_authored_artifact` on a file they already have.
+
     Query-only: it does NOT install. Use the returned install_call with the
     matching primitive, then freeze() (except the author tiers, which freeze themselves).
     """
     return _ms._resolver.resolve(tool, version=version, github_repo=github_repo,
-                             prefer=(prefer or None), language=language)
+                             prefer=(prefer or None), language=language,
+                             user_said=user_said)
 
 
 @mcp.tool()

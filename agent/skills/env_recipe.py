@@ -39,7 +39,8 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
                    apt_snapshot: str = "",
                    build_method: str = "container-native-build",
                    adopt_image: str = "",
-                   dockerfile_source: Optional[dict] = None) -> dict[str, Any]:
+                   dockerfile_source: Optional[dict] = None,
+                   built_commands: Optional[list[dict]] = None) -> dict[str, Any]:
     """Assemble the self-contained recipe from a draft + the freeze args. Carries the
     install_steps subset (which holds every non-conda install_method, incl. synthesized
     commands + provenance + commit) verbatim, so a rebuild needs nothing else.
@@ -72,6 +73,31 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
         "apt_snapshot": apt_snapshot or "",
         # install_steps carry the non-conda install_methods that build_env_image replays.
         "install_steps": [s for s in (draft.get("install_steps") or []) if isinstance(s, dict)],
+        # THE TRANSCRIPT — the literal commands that built the shipped image, captured
+        # from the BuildResult's longtail_steps (ContainerBuild.run_install records the
+        # exact string it exec'd, engine wrapper and all, and emit_dockerfile bakes that
+        # same string as `RUN <command>`).
+        #
+        # WHY IT IS RECORDED RATHER THAN RE-DERIVED. The human recipe used to re-author
+        # these lines from `install_method` in a per-tier renderer — a SECOND author of a
+        # string `install_commands` had already written. The two disagreed in production:
+        # the build ran `cargo install nanoq --version 0.10.0` while the recipe handed the
+        # reader `cargo install nanoq@0.10.0 --root $PREFIX` ($PREFIX undefined, different
+        # flag spelling), and for a Bioconductor package the reader was given
+        # `install.packages("BiocGenerics")` — a CRAN call that fails, with the working
+        # BiocManager line demoted to a trailing comment. Nobody had ever run the lines
+        # the human was told to run.
+        #
+        # So the producer captures and the reader does not scrape (the standing rule that
+        # also produced ShippedBinary). Recording beats recomputing for a second reason:
+        # replaying `_map_install` at render time answers "what would we run TODAY",
+        # which is a different question from "what built THIS image" whenever a generator
+        # has changed since. Absent (adopt / authors-dockerfile / a pre-2026-08 recipe) is
+        # a real state the renderer must state rather than paper over with a paraphrase.
+        "built_commands": [
+            {k: v for k, v in s.items() if k in ("tool", "purpose", "command", "evidence")}
+            for s in (built_commands or []) if isinstance(s, dict) and s.get("command")
+        ],
         # adopt: the biocontainer ref (image@sha256:…) the recipe pulls by digest.
         "adopt_image": adopt_image or "",
         # authors-dockerfile: the pinned source the Dockerfile builds against.

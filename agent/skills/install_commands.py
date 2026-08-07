@@ -67,6 +67,7 @@ Pure (params in → command string out), unit-testable.
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import PurePosixPath
 from typing import Any
@@ -387,7 +388,32 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
     return {"command": f"{shim}; {pre}cpanm {cpanm_flags} {shlex.quote(target)}",
             "evidence": evidence or f"perl -M{module} -e1", "tool": module,
             "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True,
+            "version_probe": perl_version_probe(module),
             "runtime_packages": []}
+
+
+# A CPAN module name: identifier segments joined by `::` (Statistics::Descriptive).
+_PERL_MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z0-9_]+)*$")
+# An R package name: CRAN/Bioconductor allow letters, digits and dots, leading letter.
+_R_PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9.]*$")
+
+
+def perl_version_probe(module: str) -> str:
+    """`$Module::VERSION` — the version perl ITSELF reports for an installed module,
+    read out of the loaded package's own symbol table. '' for a name that isn't a
+    plain module identifier (no probe rather than a crafted string in a shell line)."""
+    if not _PERL_MODULE.match(module or ""):
+        return ""
+    return f"perl -M{module} -e 'print $" + module + "::VERSION' 2>/dev/null"
+
+
+def r_version_probe(name: str) -> str:
+    """`packageVersion()` — the version R ITSELF reports, read from the installed
+    package's DESCRIPTION. '' for a name that isn't a plain R package identifier."""
+    if not _R_PACKAGE.match(name or ""):
+        return ""
+    inner = f'cat(as.character(packageVersion("{name}")))'
+    return f"Rscript -e {shlex.quote(inner)} 2>/dev/null"
 
 
 def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-project.org",
@@ -427,25 +453,23 @@ def r_package(name: str, *, source: str = "cran", repos: str = "https://cloud.r-
     else:  # cran (default)
         inst = f'install.packages("{name}",repos="{repos}"); {load_or_die}'
     cmd = f"Rscript -e {shlex.quote(inst)}"
-    # Evidence loads the package AND prints its version. The version cat is what
-    # lands "GAPIT 4.1.0" in the installed-version column of the env report:
-    # R packages installed via BiocManager / remotes::install_github don't show
-    # up in conda's package db (they're not conda-installed), so the report's
-    # SBOM has no entry for them — without the cat() the renderer falls all the
-    # way through `_resolved_version`'s chain (conda → banner → evidence-out →
-    # install-anchor) and prints '—'. With it, the version lands in
-    # verifications[].out where `_extract_version` finds it.
-    #
-    # Honesty preserved: the version is captured at validation time IN the
-    # shipped image, by R's own packageVersion() reading the installed
-    # package's DESCRIPTION. It's the same source of truth the install primitive
-    # uses on the host; just executed at the right locus.
+    # The default evidence loads the package and prints its version. The version
+    # is NOT this string's job, though — it is `version_probe`'s, and the split
+    # matters: `evidence` is OVERRIDDEN the moment the caller passes a
+    # `functional_check`, which the install primitive actively encourages ("so
+    # validated means RAN, not merely imported"). Piggy-backing the version onto
+    # it meant taking the better evidence COST you the version — an env with a
+    # real functional check for BiocGenerics rendered its installed version as
+    # '—' while an env with the weaker default check rendered 0.58.1. The probe
+    # below is separate, unconditional, and synthesized from the package token,
+    # so the two can never trade off against each other again.
     ev = evidence or (
         f"Rscript -e "
         f"{shlex.quote(f'suppressPackageStartupMessages(library({name})); cat(as.character(packageVersion(' + repr(name) + ')))')}"
     )
     return {"command": cmd, "evidence": ev, "tool": name,
             "purpose": f"{name} (R {source})", "engine_coupled": True,
+            "version_probe": r_version_probe(name),
             "runtime_packages": []}
 
 
