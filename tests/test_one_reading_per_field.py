@@ -61,6 +61,12 @@ OWNED_BY = {
     # the single easiest thing in this codebase to re-spell as `"commercial" in lic`. A
     # tool that is commercial at freeze and free at resolve is the drift this prevents.
     "license":            "license_disposition",
+    # Registered on arrival too (2026-08-07), and for the reason the file above states:
+    # I10 refuses a seal on it, and the RUN dashboard now badges a service with it, so
+    # it acquired its second reader the moment the dashboard learned to render services
+    # at all. The predicate has two clauses (`healthy is True` OR `returncode == 0`) —
+    # exactly the shape that gets re-typed with one clause missing.
+    "health_check_log":   "service_healthy_probes",
 }
 
 #: "<path>:<field>" -> why reading it raw here is correct.
@@ -85,6 +91,10 @@ ALLOWED = {
     "skills/run_dashboard_html.py:usage_verification":
         "Reads the `locus` sibling for display; the status two lines above comes from "
         "the leaf.",
+    "skills/pipeline_state.py:health_check_log":
+        "The field-MERGE, which concatenates a new probe onto the existing list. It "
+        "reads the old value only to append to it and never asks whether any probe was "
+        "healthy — the thing the leaf decides. Merging is the write path.",
     "mcp_tools/freeze_tools.py:license_gated":
         "Reads a pipeline DRAFT, not an EnvCache record. Drafts are written only by "
         "patch_pipeline, which writes the canonical key — the legacy `gated` spelling "

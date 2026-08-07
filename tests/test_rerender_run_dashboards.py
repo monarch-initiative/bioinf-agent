@@ -16,6 +16,7 @@ These tests cover `scripts/rerender_run_dashboards.py` — the instrument that c
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -141,3 +142,118 @@ def test_the_repo_dashboards_are_current():
         f"{len(specs)} sealed workflow(s) present and their .RUN.html has drifted from "
         f"what the renderer produces today. Run "
         f"`python scripts/rerender_run_dashboards.py`.\n" + r.stdout)
+
+
+# ---------------------------------------------------------------------------------------
+# A FAILED step must not render as a green run
+# ---------------------------------------------------------------------------------------
+#
+# `step_is_validated` asks whether validation RECORDS exist. It is not the negation of
+# failure, and a step that exited non-zero satisfies it — so every consumer that wanted
+# "is this step OK" got True for a failed run. On the panel the user reads to decide
+# whether to run a workflow ON REAL DATA, a spec containing one non-zero step rendered:
+#
+#   * header "Steps validated 2/2"          — counting the failed step
+#   * H1 pill "✓ validated in shipped image" — legitimately earned; it answers "did this
+#                                              run in the image we ship", not "did it work"
+#   * locus group "✓ validated here"         — for a group holding ONLY the failed step
+#   * pipeline_status: failed                — stated by the seal, rendered NOWHERE
+#
+# The single red mark anywhere on the page was one ✗ glyph in a per-output table below the
+# fold. The rc=0 route is closed (I3.validation_passed refuses a False validation record,
+# non-overridably), so the reachable shape is exactly a step that exited non-zero.
+
+def _spec_with_steps(steps, **over):
+    spec = {
+        "workflow_name": "wf", "created_at": "2026-01-01T00:00:00Z",
+        "env_request_key": "k", "env_image": "img:1", "env_content_digest": "sha256:d",
+        "validated_in_shipped_image": True,
+        "pipeline_steps": steps,
+    }
+    spec.update(over)
+    return spec
+
+
+def _ok_step(n=1):
+    return {"step": n, "tool": "samtools", "command": "samtools view a.bam",
+            "returncode": 0, "detected_outputs": ["/w/a.txt"],
+            "validation": {"/w/a.txt": {"passed": True, "validation_method": "samtools"}}}
+
+
+def _failed_step(n=2):
+    s = _ok_step(n)
+    s["returncode"] = 1
+    return s
+
+
+def _render(spec):
+    from agent.skills.run_dashboard_html import render_run_dashboard_html
+    return render_run_dashboard_html(spec, env_record=None)
+
+
+def test_a_failed_step_is_not_counted_as_validated():
+    html = _render(_spec_with_steps([_ok_step(1), _failed_step(2)]))
+    assert "Steps validated 1/2" in re.sub(r"<[^>]+>", "", html).replace("\n", " ") or \
+           "1/2" in html, "the failed step must not be counted"
+    assert "FAILED" in html
+
+
+def test_a_failed_step_flips_the_headline_pill():
+    """`validated_in_shipped_image` is TRUE on this spec and legitimately so — the digests
+    match. It answers a different question than "did it work", and the page presented it
+    as the verdict."""
+    html = _render(_spec_with_steps([_failed_step(1)]))
+    m = re.search(r'<span class="pill [a-z]+">([^<]*)</span>', html)
+    assert "FAILED" in m.group(1), m.group(1)
+    assert "✓ validated in shipped image" not in m.group(1)
+
+
+def test_a_locus_group_containing_a_failure_is_not_badged_validated_here():
+    html = _render(_spec_with_steps([_failed_step(1)]))
+    assert "✓ validated here" not in html
+    assert "FAILED here" in html
+
+
+def test_the_steps_own_exit_code_is_shown():
+    """Recorded by every run primitive, read by no renderer — while the page's own footer
+    asserts exit codes are part of the machine-observed evidence it shows. A cluster step
+    displayed the SLURM job's exit, which is the scheduler's, not the tool's."""
+    assert "exit 1" in _render(_spec_with_steps([_failed_step(1)]))
+    assert "exit 0" in _render(_spec_with_steps([_ok_step(1)]))
+
+
+def test_a_clean_run_still_reads_clean():
+    html = _render(_spec_with_steps([_ok_step(1), _ok_step(2)]))
+    m = re.search(r'<span class="pill [a-z]+">([^<]*)</span>', html)
+    assert "✓ validated in shipped image" in m.group(1)
+    assert "FAILED" not in html
+
+
+# --- pipeline_status: stated by the seal, rendered nowhere ------------------------------
+
+def test_the_sealed_run_status_is_rendered():
+    html = _render(_spec_with_steps([_ok_step(1)], pipeline_status="fully_validated"))
+    assert "Run status" in html
+    assert "fully_validated" in html
+
+
+def test_a_stale_stamped_status_is_shown_as_a_disagreement_not_printed_as_fact():
+    """`pipeline_status` replaced "the fabricated in_progress default that seal used to
+    stamp into every spec regardless of the run", and every spec sealed before that fix
+    still carries the fabrication — measured, 4 of 7 in the corpus say `in_progress` while
+    their steps derive `fully_validated`.
+
+    So rendering the stored value verbatim would print "in_progress" across the top of
+    four complete runs: a NEW falsehood introduced by the fix that ended one. Picking a
+    winner silently is wrong both ways — `stated` ships the stale default, `derived` hides
+    that the artifact is internally inconsistent."""
+    html = _render(_spec_with_steps([_ok_step(1)], pipeline_status="in_progress"))
+    assert "fully_validated" in html, "the derived truth must be shown"
+    assert "in_progress" in html, "the stale stored value must be shown too"
+    assert "does not match" in html
+
+
+def test_a_spec_with_no_status_field_says_unrecorded():
+    """Absence renders as absence — the same rule the I4 usage states follow one row up."""
+    html = _render(_spec_with_steps([_ok_step(1)]))
+    assert "unrecorded" in html

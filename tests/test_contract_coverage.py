@@ -243,7 +243,18 @@ def test_degrade_rule_ignores_evidence_depth():
     c = eh.evaluate_build(shallow)
     assert c.ok and not c.unobserved, "presence-only evidence must not degrade the tag"
     detail = _clause(c, "VALIDATED_IN_IMAGE").detail
-    assert "0 of them RUN the tool" in detail, "...but it MUST be disclosed: " + detail
+    # The DISCLOSURE is what this pins, and it is still here; only the wording moved.
+    # It used to read "0 of them RUN the tool", asserting a fact about the commands from a
+    # classifier whose own docstring says it "reads structure and is wrong often enough
+    # that gating on it was measured to refuse the CORRECT artifact". Measured over the 35
+    # real evidence commands, 5 of the 7 it calls `import` demonstrably run the tool — so
+    # `rnaseq_deseq2`'s page said "0 of them RUN the tool" about a command that calls
+    # DESeq() and asserts on its result. The line now reports a structural reading AS a
+    # structural reading, which is the same claim minus the overreach.
+    assert "0 of them LOOK like a functional run" in detail, (
+        "shallowness MUST still be disclosed: " + detail)
+    assert "heuristic over strings, not an observation" in detail, (
+        "and it must not be stated as an observation: " + detail)
 
 
 # ---------------------------------------------------------------------------
@@ -540,3 +551,48 @@ def test_i13_fires_on_the_legacy_gated_key():
     # ...and the canonical key still wins when both are present.
     both = _clean_record(license_gated=False, gated=True)
     assert _clause(eh.evaluate_build(both), "POLICY_CLEAN.license").status == eh.NOT_APPLICABLE
+
+
+# ---------------------------------------------------------------------------------------
+# The `-m` alternative caught CLI flags, not python modules
+# ---------------------------------------------------------------------------------------
+#
+# `evidence_depth`'s import branch ended in `-m\w*\s*[a-z]`, meant to catch
+# `python -m module`. It caught ordinary flags and hyphenated PATH segments instead — and
+# this branch runs BEFORE the functional check, so it DEMOTED commands that plainly move
+# data. Measured across the 35 real evidence commands in the corpus, narrowing it to an
+# actual python invocation changes ZERO classifications: a pure trap removal.
+#
+# Two corrections to how this was originally reported, kept because both were load-bearing
+# in deciding how much to do about it:
+#   * `samtools view -m 4 file.bam` was NEVER affected — the trailing `[a-z]` cannot match
+#     a digit, so the whole family of `-m <number>` memory flags never misfired.
+#   * the direction of error was SAFE. `import` is in `_SHALLOW_DEPTHS`, so a misfire
+#     always rendered the ⚠ "presence only" badge. It could only under-claim. That is the
+#     opposite of the green-badge-over-a-failed-contract pattern, and is why this got a
+#     narrow regex fix rather than the wholesale classifier replacement that was queued.
+
+@pytest.mark.parametrize("cmd", [
+    "bwa mem -M ref.fa",
+    "kraken2 --memory-mapping",
+    "bcftools call -mv -Oz -o out.vcf.gz",
+    "/opt/tool-manager/bin/run --check",
+    "minimap2 --max-chain-skip 25 ref.fa",
+])
+def test_an_ordinary_cli_flag_is_not_a_python_module_import(cmd):
+    assert eh.evidence_depth(cmd, "tool") != "import", (
+        f"{cmd!r} classified as `import` — the -m alternative is matching a flag or a "
+        "hyphenated path segment, and it runs BEFORE the functional check, so it demotes "
+        "commands that plainly move data."
+    )
+
+
+@pytest.mark.parametrize("cmd", ["python -m talos", "python3.11 -m mypkg", "python2 -m foo"])
+def test_a_real_python_module_invocation_is_still_an_import(cmd):
+    assert eh.evidence_depth(cmd, "talos") == "import"
+
+
+def test_a_digit_memory_flag_was_never_the_problem():
+    """Pinned because the claim named it as the headline example and it was wrong. Worth a
+    test so nobody 'fixes' it back on the strength of the same misremembering."""
+    assert eh.evidence_depth("samtools view -m 4 file.bam", "samtools") != "import"

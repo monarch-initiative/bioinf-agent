@@ -3526,10 +3526,25 @@ def test_env_report_html_sections_constant_across_modes():
         return out
 
     build = render_env_report_html(_sample_record())
+    # THE ADOPT FIXTURE NOW CARRIES EVIDENCE, and it always should have.
+    #
+    # It declared `requested_tools: ["samtools"]` and NO verifications, which is a
+    # contract VIOLATION (`VALIDATED_IN_IMAGE.no_evidence` — "an env with nothing proven
+    # in the shipped image is an unverified claim"). The page rendered it with exactly the
+    # same sections as a clean build, which is the defect that made this fixture pass:
+    # until 2026-08-07 the renderer never drew violations at all, so a record with no
+    # in-image evidence whatsoever was visually indistinguishable from a validated one.
+    #
+    # This test's subject is whether the page's shape varies by MODE. It must not be fed a
+    # record that also varies the CONTRACT STATE, or it silently tests two things and pins
+    # the wrong one. `test_env_report_contract.py` owns the violations-section behaviour.
     adopt = render_env_report_html({
         "name": "bt", "image": "biocontainers/x@sha256:d",
         "image_digest": "sha256:d", "mode": "adopt", "validation_locus": "adopted",
         "requested_tools": ["samtools"],
+        "verifications": [{"label": "samtools", "tool": "samtools",
+                           "check": "samtools --version", "rc": 0, "passed": True,
+                           "out": "samtools 1.21"}],
         "request_key": "samtools=1.21|linux/amd64|none",
     })
     build_titles = [t for t in section_titles(build) if t]
