@@ -12,13 +12,29 @@ content_digest. It is the artifact a colleague, CI, or verify-by-rebuild consume
 precisely (the honest standard — no overclaiming):
   • COMPLETENESS — the recipe is self-contained: a rebuild from it ALONE (fresh, no
     draft) succeeds. If anything were hiding in the draft, the rebuild would fail.
-  • LOCAL DETERMINISM / CONVERGENCE — replaying it HERE yields the same content_digest.
-    The conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
-    solve converged — the strongest same-machine signal for "two runs → same result".
+  • LOCAL DETERMINISM / CONVERGENCE — replaying it HERE yields the same content_digest
+    for every layer that is actually re-executed: the apt snapshot, the jar / binary /
+    source / cargo / go tiers, and the image assembly.
 It does NOT prove cross-machine reproducibility (different base cache / network bytes /
 docker) or independent-party tamper-evidence — those are this SAME rebuild run ELSEWHERE
 (CI, a colleague) + signing. The recipe ENABLES them; this verifies the necessary local
 conditions. Pure assembly here; the rebuild's I/O is injected for testing.
+
+AND IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. Those three lines used to end "the conda
+layer is RE-SOLVED (not cheated from a cached lock), so a match means the solve converged —
+the strongest same-machine signal for 'two runs → same result'". Measured 2026-08-07: the
+replay passes `conda_lock_files=recipe["conda_lock"]` (line ~132 below), every one of the
+12 container-native recipes in the corpus carries a 19–61 KB pixi.lock, `env_build` takes
+the `declare_locked` branch on a prebaked lock, and that runs `pixi install --locked` —
+whose own docstring reads "NO solve". Instrumenting a real verify run confirmed it:
+`declare_locked` fired, `declare` (the solve path) was never called.
+
+Replaying a lock is the RIGHT design — it is what makes the rebuild immune to bioconda
+drift. The defect was claiming credit for the opposite property. The conda package set is
+pinned BY CONSTRUCTION, so its agreement is not evidence of anything; naming it as the
+strongest signal pointed the reader at the one layer that was never re-derived. And the
+sentence was not confined to a docstring: `proves` (line ~141) ships it in the tool's
+return value, so the overclaim reached the reader at runtime.
 """
 
 from __future__ import annotations
@@ -28,6 +44,16 @@ from typing import Any, Callable, Optional
 from agent.skills.outcomes import proven, broke
 
 RECIPE_VERSION = 1
+
+#: The build_methods whose image came from a Dockerfile rather than from our own
+#: container-native path. Read by `verify_env_recipe` (which refuses to rebuild them) and
+#: by the recipe renderer (which must not tell the reader to run that refusal).
+#:
+#: `"freeze-from-image"` was in both of those tuples and is NOT here, because no producer
+#: has ever written it: `freeze_from_image.py` emits `"authors-dockerfile"` or `"adopt"`,
+#: full stop. A dead label sitting in a routing tuple reads as a supported method — three
+#: live methods were being maintained as four.
+AUTHORS_METHODS = ("authors-dockerfile",)
 
 
 def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
@@ -140,10 +166,23 @@ def rebuild_from_recipe(recipe: dict, *, engine=None,
     expected = recipe.get("content_digest") or ""
     got = br.get("content_digest") or ""
     match = bool(expected) and got == expected
-    proves = ("COMPLETENESS (rebuilt from the recipe alone) + LOCAL DETERMINISM "
-              "(conda layer re-solved → same content_digest). NOT cross-machine or "
-              "independent-party reproducibility — run this elsewhere (CI / a colleague) "
-              "for that.")
+    # WHAT THE REPLAY ACTUALLY RE-EXECUTES. This said "conda layer re-solved → same
+    # content_digest", of a replay that installs from the recipe's own pixi.lock with
+    # `pixi install --locked`. See the module docstring: the lock is replayed, never
+    # re-solved, so the conda set agrees by construction and its agreement evidences
+    # nothing. `proves` is RETURNED to the caller, which is why this string mattered more
+    # than the docstring that said the same thing.
+    _locked = bool(recipe.get("conda_lock"))
+    proves = ("COMPLETENESS (rebuilt from the recipe alone) + LOCAL DETERMINISM: every "
+              "layer that is re-executed (apt snapshot, jar/binary/source/cargo/go tiers, "
+              "image assembly) converged to the same content_digest."
+              + (" The conda layer was REPLAYED from the recipe's pinned lock, not "
+                 "re-solved, so that layer is identical by construction rather than by "
+                 "demonstration." if _locked else
+                 " This recipe carries no lock, so the conda layer WAS solved afresh and "
+                 "its agreement is part of what converged.")
+              + " NOT cross-machine or independent-party reproducibility — run this "
+                "elsewhere (CI / a colleague) for that.")
     if bool(br.get("success")) and match:
         return proven(
             "env_recipe.reproduced",

@@ -25,6 +25,7 @@ import re
 from typing import Any, Optional
 
 from agent.skills import freeze as _freeze
+from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
 
@@ -420,9 +421,10 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
                    f"docker build -t {tag} ."] if built else
                   [f"# (assemble the above into a Dockerfile and: docker build -t {tag} .)"])
     out += _local_sif_block(tag)
-    out += ["> The exact, byte-for-byte build instructions are re-derivable with "
-            "`verify_env_recipe` against the machine `*.recipe.yaml`, which rebuilds the "
-            "image and checks it converges to the recorded content digest.", ""]
+    # The "how do I check this rebuilt correctly" sentence is emitted ONCE, method-aware,
+    # by _verify_section at the end of the document. A second copy lived here and said the
+    # same thing in different words — and this codebase's stated failure mode is one claim
+    # in two places.
     return out
 
 
@@ -622,7 +624,7 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     # Option B — rebuild from scratch (method-specific)
     if method == "adopt":
         L += _section_adopt(recipe, record)
-    elif method in ("authors-dockerfile", "freeze-from-image"):
+    elif method in _AUTHORS_METHODS:
         L += _section_authors(recipe, record)
     else:
         L += _section_build(recipe, record)
@@ -686,11 +688,66 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
             L += [f"- `{i.tool}`{src}: {_md_inline(i.self_description)}"]
         L += [""]
 
-    # Verify
-    L += ["## Verify what you rebuilt", "",
-          "- **Exact bytes:** the shipped `.sif`'s sha256 is recorded in the run report / "
-          "delivery manifest — compare it after transfer.",
-          "- **From-source convergence:** run `verify_env_recipe` against the machine "
-          "`*.recipe.yaml` — it rebuilds the image and checks it converges to the recorded "
-          f"content digest (`{_short(content_digest)}`).", ""]
+    L += _verify_section(method, content_digest, recipe)
     return "\n".join(L)
+
+
+def _verify_section(method: str, content_digest: str, recipe: dict) -> list[str]:
+    """"Verify what you rebuilt" — SAYING WHAT verify_env_recipe WILL ACTUALLY DO TO THIS ENV.
+
+    This section used to be unconditional, and it told every reader that
+    `verify_env_recipe` "rebuilds the image and checks it converges to the recorded content
+    digest". Measured 2026-08-07 by rendering one recipe of each method and grepping the
+    output: all four carried the sentence, and for two of the three methods it is false.
+
+      * **authors-dockerfile** — `verify_env_recipe` runs NOTHING. It returns
+        `refused / freeze.recipe_verify_unavailable`, `success: false`, "no check was run",
+        because a Dockerfile build is not bit-reproducible so digest convergence would fail
+        for a CORRECT recipe. Declining to check is the right call; telling the reader to
+        run a check that will decline is not. The rendered document contained no caveat of
+        any kind — a scan for "refus", "not verifiable", "cannot be verified", "no check"
+        and "does not apply" found none of them.
+      * **adopt** — the branch does run, but it `docker pull`s and compares a registry
+        manifest digest. It does not rebuild anything. The branch's own return string says
+        so: "Not a from-source rebuild."
+
+    The build recipe is one of the three artifacts that ARE this project's acceptance
+    criterion — a human must be able to rebuild from it. A recipe that instructs its reader
+    to run a verification which will refuse is a recipe that lies to them, and it shipped:
+    the sentence is on disk in `talos_authors.recipe.md:72` and `multiqc.recipe.md:61`.
+
+    So the bullet is selected off `method`, right where every other method-specific choice
+    in this file is made. The wording tracks the refusal that `verify_env_recipe` itself
+    composes, so the two surfaces cannot drift into describing one behaviour two ways.
+    """
+    out = ["## Verify what you rebuilt", "",
+           "- **Exact bytes:** the shipped `.sif`'s sha256 is recorded in the run report / "
+           "delivery manifest — compare it after transfer."]
+    short = _short(content_digest)
+    if method == "adopt":
+        out += ["- **Re-pull convergence:** run `verify_env_recipe` against the machine "
+                "`*.recipe.yaml` — it re-pulls the published image and checks the registry "
+                f"manifest digest still matches what was recorded (`{short}`). This is a "
+                "content-address check on identical bytes, NOT a from-source rebuild."]
+    elif method in _AUTHORS_METHODS:
+        ds = recipe.get("dockerfile_source") or {}
+        rebuild = ", ".join(
+            f"{k}={v!r}" for k, v in (("repo", ds.get("repo")), ("ref", ds.get("commit")))
+            if v
+        )
+        out += ["- **From-source convergence: there is no digest check for this env, and "
+                "`verify_env_recipe` will say so rather than run one.** An authors-Dockerfile "
+                "build is not bit-reproducible — apt mirrors, timestamps and upstream tags all "
+                "move — so a digest comparison would fail for a recipe that is perfectly "
+                "correct. To reproduce it by hand, re-run "
+                + (f"`build_env_from_authors_recipe({rebuild})`" if rebuild
+                   else "`build_env_from_authors_recipe(...)` with the repo and ref recorded above")
+                + " and compare the tools' evidence output."]
+    else:
+        out += ["- **From-source convergence:** run `verify_env_recipe` against the machine "
+                "`*.recipe.yaml` — it rebuilds the image from this recipe alone and checks it "
+                f"converges to the recorded content digest (`{short}`). The conda layer is "
+                "REPLAYED from the pinned lock below rather than re-solved, so that layer is "
+                "identical by construction; what convergence demonstrates is that the recipe "
+                "is self-contained and that every other layer rebuilds the same way."]
+    return out + [""]

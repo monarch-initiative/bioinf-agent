@@ -319,3 +319,74 @@ def test_a_lock_only_env_still_gets_an_environment_step():
         "an env the reader must run commands INSIDE has to be created by the recipe"
     assert md.index("pixi install --locked") < md.index("pixi run bash"), \
         "and created BEFORE the commands that run inside it"
+
+
+# ---------------------------------------------------------------------------
+# "Verify what you rebuilt" — the section must describe THIS env's actual check
+# ---------------------------------------------------------------------------
+#
+# This section used to be emitted unconditionally, ~65 lines after the branch that
+# already knew the build_method, and it told every reader that `verify_env_recipe`
+# "rebuilds the image and checks it converges to the recorded content digest".
+# Measured 2026-08-07 by rendering one recipe of each method and grepping the output:
+# all of them carried the sentence, and for two of the three methods it is false.
+#
+#   authors-dockerfile -> verify_env_recipe runs NOTHING. It returns
+#                         `refused / freeze.recipe_verify_unavailable`, success=False,
+#                         "no check was run". The rendered document contained no caveat
+#                         of any kind: a scan for "refus", "not verifiable", "cannot be
+#                         verified", "no check" and "does not apply" found none of them.
+#   adopt              -> it `docker pull`s and compares a registry manifest digest. It
+#                         does not rebuild anything; the branch's own return string says
+#                         "Not a from-source rebuild."
+#
+# The build recipe is one of the three artifacts that ARE this project's acceptance
+# criterion — a human must be able to rebuild from it. A recipe instructing its reader to
+# run a verification that will refuse is a recipe that lies to them, and it shipped: the
+# sentence is on disk in talos_authors.recipe.md:72 and multiqc.recipe.md:61.
+
+def _verify_block(md: str) -> str:
+    return md.split("## Verify what you rebuilt", 1)[1]
+
+
+def test_the_container_native_recipe_promises_a_real_rebuild():
+    md = R.render_recipe_markdown(_build_recipe(), {})
+    v = _verify_block(md)
+    assert "rebuilds the image from this recipe alone" in v
+    # …and is honest about which layer that does NOT cover. The replay runs
+    # `pixi install --locked` — no solve — so conda agreement is by construction.
+    assert "REPLAYED from the pinned lock" in v and "rather than re-solved" in v
+
+
+def test_the_adopt_recipe_says_re_pull_not_rebuild():
+    r = er.extract_recipe(None, name="samtools", version="1.21",
+                          conda_deps=["samtools=1.21"], primary_tools=["samtools"],
+                          content_digest="sha256:" + "cd" * 32, build_method="adopt",
+                          adopt_image="quay.io/biocontainers/samtools@sha256:" + "ef" * 32)
+    v = _verify_block(R.render_recipe_markdown(r, {}))
+    assert "re-pulls the published image" in v
+    assert "NOT a from-source rebuild" in v
+    assert "rebuilds the image" not in v
+
+
+def test_the_authors_dockerfile_recipe_does_not_send_the_reader_to_a_refusal():
+    """The load-bearing one. It must say the check does not exist for this env, and point
+    at the thing that DOES reproduce it."""
+    r = er.extract_recipe(None, name="talos_authors", version="11.0.0", conda_deps=[],
+                          primary_tools=["talos"], content_digest="sha256:" + "7f" * 32,
+                          build_method="authors-dockerfile",
+                          dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                                             "commit": "c" * 40})
+    v = _verify_block(R.render_recipe_markdown(r, {}))
+    assert "there is no digest check for this env" in v
+    assert "will say so rather than run one" in v
+    assert "build_env_from_authors_recipe" in v
+    assert "populationgenomics/talos" in v, "the rebuild instruction must carry the pin"
+
+
+def test_the_verify_instruction_appears_exactly_once():
+    """A near-duplicate of this sentence lived inside _section_build as well, so a
+    container-native recipe carried the claim twice in different words — one claim in two
+    places is this codebase's stated failure mode."""
+    md = R.render_recipe_markdown(_build_recipe(), {})
+    assert md.count("verify_env_recipe") == 1

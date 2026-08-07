@@ -23,6 +23,7 @@ from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.models import core_data as _core_data
 from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.backgroundable import backgroundable
+from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS
 from agent.skills.outcomes import proven, refused, broke, degraded
 
 
@@ -765,16 +766,34 @@ def verify_env_recipe(recipe_path: str) -> dict:
     commands + provenance + commit, jar/binary/source/...), so this rebuild uses NO
     draft / agent / pipeline-state.
 
+    WHAT IT DOES DEPENDS ON HOW THE ENV WAS BUILT — three methods, three behaviours, and
+    the tool SAYS which one it took rather than reporting them all the same way:
+      • container-native-build — a real rebuild in a container + content_digest compare.
+      • adopt — `docker pull` + registry-manifest-digest compare. Content-addressed
+        identical bytes, NOT a from-source rebuild.
+      • authors-dockerfile — REFUSED, and nothing runs. A Dockerfile build is not
+        bit-reproducible (apt mirrors, timestamps, upstream tags all move), so digest
+        convergence would fail for a CORRECT recipe. Declining is right; passing it off as
+        a check is not, so this returns `refused` with success=False.
+
     WHAT A MATCH PROVES (precisely — no overclaiming):
       • COMPLETENESS — the recipe is self-contained (rebuild from it alone succeeds).
-      • LOCAL DETERMINISM / CONVERGENCE — replaying it here yields the same content_digest;
-        the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
-        solve converged — the strongest same-machine signal for 'two runs → same result'.
-    It does NOT prove cross-machine reproducibility (different base cache / network / docker)
-    or independent-party tamper-evidence — those are this SAME rebuild run ELSEWHERE (CI, a
-    colleague) + signing. The recipe ENABLES them; this verifies the necessary local
-    conditions. Requires Docker. Returns {success, content_digest_match, rebuilt/expected
-    content_digest, proves, honesty_violations}."""
+      • LOCAL DETERMINISM / CONVERGENCE — every layer that is actually re-executed yields
+        the same content_digest.
+    IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. When the recipe carries a `conda_lock`
+    (all 12 container-native recipes in the corpus do, at 19–61 KB apiece) the replay runs
+    `pixi install --locked` — no solve, no channel consultation — so that layer is
+    identical BY CONSTRUCTION. This docstring used to claim the opposite in as many words
+    ("the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
+    solve converged"), which pointed the reader at the one layer that was never re-derived.
+    Replaying the lock is the right design — it is what makes the rebuild immune to
+    bioconda drift — but it is not evidence.
+
+    It also does NOT prove cross-machine reproducibility (different base cache / network /
+    docker) or independent-party tamper-evidence — those are this SAME rebuild run
+    ELSEWHERE (CI, a colleague) + signing. The recipe ENABLES them; this verifies the
+    necessary local conditions. Requires Docker. Returns {success, content_digest_match,
+    rebuilt/expected content_digest, proves, honesty_violations}."""
     import yaml as _yaml
     try:
         with open(recipe_path) as fh:
@@ -814,7 +833,7 @@ def verify_env_recipe(recipe_path: str) -> dict:
                   proves="ADOPT: the biocontainer re-pulls to the recorded manifest digest "
                          "(content-addressed — identical bytes). Not a from-source rebuild.")
         return proven("freeze.recipe_verified", **rf) if match else broke("freeze.recipe_not_reproduced", **rf)
-    if method in ("authors-dockerfile", "freeze-from-image"):
+    if method in _AUTHORS_METHODS:
         # NOT VERIFIED — and it must not be tagged as though it were. This returned
         # `proven(success=True, content_digest_match=None)` for a check that runs NOTHING:
         # an agent branching on `success` concludes the recipe was verified, and the only
