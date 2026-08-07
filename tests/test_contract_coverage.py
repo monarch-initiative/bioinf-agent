@@ -540,3 +540,48 @@ def test_i13_fires_on_the_legacy_gated_key():
     # ...and the canonical key still wins when both are present.
     both = _clean_record(license_gated=False, gated=True)
     assert _clause(eh.evaluate_build(both), "POLICY_CLEAN.license").status == eh.NOT_APPLICABLE
+
+
+# ---------------------------------------------------------------------------------------
+# The `-m` alternative caught CLI flags, not python modules
+# ---------------------------------------------------------------------------------------
+#
+# `evidence_depth`'s import branch ended in `-m\w*\s*[a-z]`, meant to catch
+# `python -m module`. It caught ordinary flags and hyphenated PATH segments instead — and
+# this branch runs BEFORE the functional check, so it DEMOTED commands that plainly move
+# data. Measured across the 35 real evidence commands in the corpus, narrowing it to an
+# actual python invocation changes ZERO classifications: a pure trap removal.
+#
+# Two corrections to how this was originally reported, kept because both were load-bearing
+# in deciding how much to do about it:
+#   * `samtools view -m 4 file.bam` was NEVER affected — the trailing `[a-z]` cannot match
+#     a digit, so the whole family of `-m <number>` memory flags never misfired.
+#   * the direction of error was SAFE. `import` is in `_SHALLOW_DEPTHS`, so a misfire
+#     always rendered the ⚠ "presence only" badge. It could only under-claim. That is the
+#     opposite of the green-badge-over-a-failed-contract pattern, and is why this got a
+#     narrow regex fix rather than the wholesale classifier replacement that was queued.
+
+@pytest.mark.parametrize("cmd", [
+    "bwa mem -M ref.fa",
+    "kraken2 --memory-mapping",
+    "bcftools call -mv -Oz -o out.vcf.gz",
+    "/opt/tool-manager/bin/run --check",
+    "minimap2 --max-chain-skip 25 ref.fa",
+])
+def test_an_ordinary_cli_flag_is_not_a_python_module_import(cmd):
+    assert eh.evidence_depth(cmd, "tool") != "import", (
+        f"{cmd!r} classified as `import` — the -m alternative is matching a flag or a "
+        "hyphenated path segment, and it runs BEFORE the functional check, so it demotes "
+        "commands that plainly move data."
+    )
+
+
+@pytest.mark.parametrize("cmd", ["python -m talos", "python3.11 -m mypkg", "python2 -m foo"])
+def test_a_real_python_module_invocation_is_still_an_import(cmd):
+    assert eh.evidence_depth(cmd, "talos") == "import"
+
+
+def test_a_digit_memory_flag_was_never_the_problem():
+    """Pinned because the claim named it as the headline example and it was wrong. Worth a
+    test so nobody 'fixes' it back on the strength of the same misremembering."""
+    assert eh.evidence_depth("samtools view -m 4 file.bam", "samtools") != "import"

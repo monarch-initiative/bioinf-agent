@@ -224,7 +224,26 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
     if re.search(r"(--help|\s-h\b|\busage\b)", ev):
         return "help"
     # -- import / load-only: the module loads. Proves more than presence, still not a run.
-    if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m|-m\w*\s*[a-z]", low):
+    # `-m\w*\s*[a-z]` used to sit at the end of this alternation, meaning to catch
+    # `python -m module`. It caught ordinary CLI flags instead, and this branch runs BEFORE
+    # the functional check below, so it DEMOTED commands that plainly move data:
+    #
+    #     bwa mem -M ref.fa                    -> import   (a file operand!)
+    #     bcftools call -mv -Oz -o out.vcf.gz  -> import   (an -o operand!)
+    #     kraken2 --memory-mapping             -> import
+    #     /opt/tool-manager/bin/run --check    -> import   (a hyphenated PATH segment)
+    #
+    # Narrowed to an actual python module invocation. Measured across the 35 real evidence
+    # commands in the corpus: ZERO classifications change, so this removes a trap without
+    # touching a single shipped artifact.
+    #
+    # Worth stating precisely, because it was reported as worse than it is: the misfire was
+    # LATENT (no record on disk was affected) and its direction was SAFE — `import` is in
+    # _SHALLOW_DEPTHS, so a misfire always rendered the ⚠ "presence only" badge. It could
+    # only under-claim, never dress a shallow proof as a functional run. `samtools view -m 4`
+    # was never affected at all: the trailing `[a-z]` cannot match a digit.
+    if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m"
+                 r"|\bpython[\d.]*\s+-m\s", low):
         return "import"
     # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
     #    a file path operand, or an explicit -i/-o.

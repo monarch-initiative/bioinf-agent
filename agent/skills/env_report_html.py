@@ -163,6 +163,16 @@ margin-right:4px}
 .badge.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
 .note{color:var(--muted);font-size:12.5px;margin:6px 0}
 .muted{color:var(--muted)}
+/* THE CONTRACT-COVERAGE STATES. `.ok` and `.warn` are emitted as BARE spans by the
+   coverage table (`<span class="ok">checked</span>` / `<span class="warn">unobserved</span>`)
+   and neither had a bare selector — only the compound `.pill.ok` and `.badge.ok`, which a
+   plain span matches neither of. So the one table built to separate "we checked this"
+   from "NOBODY LOOKED" rendered both as identical unstyled text, while `n/a` WAS greyed
+   because `.muted` happens to be defined. Measured on talos_v11: three checked and three
+   unobserved rows, visually indistinguishable. Collapsing UNOBSERVED into CHECKED is
+   absence rounded up into a verdict, in pixels. */
+.ok{color:var(--ok);font-weight:700}
+.warn{color:var(--yellow);font-weight:700}
 .empty{background:var(--surface);border:1px dashed var(--border);padding:13px 16px;
 color:var(--muted);font-size:13px;font-style:italic;margin:4px 0}
 details{margin:6px 0;background:var(--surface);border:1px solid var(--border);
@@ -459,13 +469,54 @@ def render_env_report_html(record: dict) -> str:
     passed = sum(1 for v in verifs if isinstance(v, dict) and v.get("passed"))
     total = len(verifs)
 
+    # THE CONTRACT, COMPUTED BEFORE THE PILL — because the pill is a claim ABOUT it.
+    #
+    # This page drew `_contract.coverage` (whether each clause RAN) and never once drew
+    # `_contract.violations` (whether any clause FAILED). The word "violation" did not
+    # appear in this module. The pill was `passed == total` over the verifications list,
+    # which is a different and much weaker question, and for an adopted env it did not
+    # even ask that — `is_adopt` short-circuited straight to a neutral badge.
+    #
+    # Rendered from the real corpus on 2026-08-07, two of eighteen envs FAIL the contract
+    # and neither page said so:
+    #
+    #   talos_v11  1 violation (WELL_FORMED.shipped_binaries — the record uses the old
+    #              key dialect, so its contents cannot be read without guessing)
+    #              -> rendered "✓ Validated in shipped image"
+    #   multiqc    1 violation (VALIDATED_IN_IMAGE.evidence_shape — the evidence pipes
+    #              into `head -5`, so the recorded `passed` reports HEAD's exit status;
+    #              it would pass in an image without the tool at all)
+    #              -> rendered "Adopted by digest"
+    #
+    # A green tick over a failed honesty contract is the precise failure this codebase
+    # exists to prevent, in the one artifact the user actually opens. `check_build` is the
+    # SAME function `freeze` refuses on, so the page and the gate now answer alike.
+    from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
+                                          check_build, evaluate_build)
+    try:
+        _contract = evaluate_build(r)
+        _violations = list(check_build(r))
+    except Exception as e:                       # never let a report die on its own audit
+        _contract, _violations = None, []
+        _contract_error = f"{type(e).__name__}: {e}"
+    else:
+        _contract_error = ""
+
     P: list[str] = []
     P.append(_open_page(f"Environment report — {name}"))
 
     # -- HEADER BANNER ------------------------------------------------------
     # Yellow title "Bioinfo install report — {name}" + status pill, with a small
     # kv table of the run's at-a-glance facts inside the cyan-bordered banner.
-    if is_adopt:
+    if _violations:
+        # FIRST, AND UNCONDITIONALLY. A failed contract outranks every other thing this
+        # page could say about itself, including "adopted by digest" — an adopted image
+        # is still an image that has to earn its record.
+        pill = (f'<span class="pill bad">✗ FAILS the honesty contract — '
+                f'{len(_violations)} violation{"s" if len(_violations) != 1 else ""}</span>')
+    elif _contract_error:
+        pill = '<span class="pill bad">⚠ contract could not be evaluated</span>'
+    elif is_adopt:
         pill = '<span class="pill adopt">Adopted by digest</span>'
     elif total and passed == total:
         pill = '<span class="pill ok">✓ Validated in shipped image</span>'
@@ -501,6 +552,36 @@ def render_env_report_html(record: dict) -> str:
     # Shared header banner (the TL+BR corner-accent cyberpunk frame) — same
     # helper the Layer-2 run dashboard uses, so the two reports are one family.
     P.append(_header_banner(f"Bioinfo install report — {_e(name)}", pill, head_rows))
+
+    # -- HONESTY CONTRACT VIOLATIONS (first, or not at all) -----------------
+    # Placed ABOVE the tools table on purpose. The reader's question when they open this
+    # page is "can I trust what it says" — so anything that says NO has to arrive before
+    # the content it undermines, not in a coverage table 700 lines down.
+    if _violations:
+        P.append('<section class="bx"><h2>⛔ This env FAILS the honesty contract</h2>')
+        P.append('<div class="bx-body">')
+        P.append('<p><b>Do not treat the rest of this page as verified.</b> '
+                 f'{len(_violations)} clause{"s" if len(_violations) != 1 else ""} of the '
+                 'contract <code>freeze</code> enforces did not hold for this record. '
+                 '<code>freeze</code> refuses to register an env on any of these, so a '
+                 'record carrying one was either written before that clause existed or '
+                 'was assembled outside the primitive.</p>')
+        P.append('<div class="tbl-wrap"><table class="t">'
+                 '<thead><tr><th>Clause</th><th>Where</th><th>What is wrong</th></tr>'
+                 '</thead><tbody>')
+        for v in _violations:
+            if not isinstance(v, dict):
+                v = {"message": str(v)}
+            P.append(f'<tr><td><code>{_e(v.get("invariant", "?"))}</code></td>'
+                     f'<td><code>{_e(v.get("where", "—"))}</code></td>'
+                     f'<td>{_e(v.get("message", ""))}</td></tr>')
+        P.append('</tbody></table></div></div></section>')
+    elif _contract_error:
+        P.append('<section class="bx"><h2>⚠ The honesty contract could not be evaluated</h2>'
+                 '<div class="bx-body"><p>This page could not run the contract over its own '
+                 'record, so it makes <b>no claim either way</b> about whether the env '
+                 'satisfies it — that is UNCHECKED, not a pass. The evaluation raised: '
+                 f'<code>{_e(_contract_error)}</code></p></div></section>')
 
     # -- TOOLS (centerpiece — SAME columns for build & adopt) ---------------
     P.append('<section class="bx">')
@@ -808,9 +889,16 @@ def render_env_report_html(record: dict) -> str:
     # substitution [[feedback-reports-never-lie]] forbids, one level up: not a request
     # standing in for an observation, but a NON-observation standing in for one.
     # Rendered from env_honesty.evaluate_build, the same function the gate calls.
-    from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
-                                          evaluate_build)
-    _contract = evaluate_build(r)
+    # `_contract` was computed at the top of this function — the pill is a claim about it,
+    # so it has to exist before the pill. Recomputing here would be a second evaluation of
+    # one record, and two evaluations is how two answers to one question start.
+    if _contract is None:
+        P.append(_empty("the contract could not be evaluated over this record — "
+                        "see the notice at the top of the page"))
+        P.append('</div></section>')
+        P.append(_close_page('<p class="gen">Generated deterministically from the freeze '
+                             'record — no field on this page was authored by the agent.</p>'))
+        return "\n".join(P)
     _mark = {CHECKED: ('<span class="ok">checked</span>', ""),
              NOT_APPLICABLE: ('<span class="muted">n/a</span>', ""),
              UNOBSERVED: ('<span class="warn">unobserved</span>', "")}
