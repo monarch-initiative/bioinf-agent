@@ -7626,3 +7626,39 @@ def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
     assert env["contract_ok"] is False, "a record failing check_build must not read as usable"
     assert env["contract_violations"], "the failing clause must be NAMED, not just flagged"
     assert r["counts"]["envs"] == 1 and r["counts"]["envs_contract_ok"] == 0
+
+
+def test_an_unpinned_request_discloses_that_a_cache_hit_is_a_reuse():
+    """An unpinned tool makes the request_key ambiguous, so a hit is a REUSE.
+
+    `_resolve_versions_from_install_record` fills a version from the install record,
+    which is what stopped busco 6.0.0 and 5.8.3 colliding. It cannot fill what was
+    never recorded — `run_install_command` derives no version — so the bare name
+    reaches request_key and two versions produce ONE key. Measured at HEAD.
+
+    Not a refusal: the artifact is honest (the record carries the OBSERVED version and
+    the ENV report renders it). What was missing is a word at the CALL."""
+    from agent.skills.freeze import request_key
+    import agent.mcp_server as ms
+
+    def draft_without_version(ver):
+        return {"install_steps": [{"tool": "pip", "returncode": 0,
+                                   "command": f"pip install busco=={ver}",
+                                   "installed_packages": [{"name": "busco"}]}]}
+
+    keys = {request_key(ms._resolve_versions_from_install_record(
+                [("busco", None)], draft_without_version(v)), "linux/amd64")
+            for v in ("6.0.0", "3.0.2")}
+    assert len(keys) == 1, "precondition: this is the collision being disclosed"
+    assert keys == {"busco|linux/amd64|none"}
+
+    # ...and when the version IS recorded, the two do not collide and nothing is disclosed.
+    def draft_with_version(ver):
+        return {"install_steps": [{"tool": "pip", "returncode": 0,
+                                   "command": f"pip install busco=={ver}",
+                                   "installed_packages": [{"name": "busco", "version": ver,
+                                                           "install_method": {"type": "pip"}}]}]}
+    pinned = {request_key(ms._resolve_versions_from_install_record(
+                  [("busco", None)], draft_with_version(v)), "linux/amd64")
+              for v in ("6.0.0", "3.0.2")}
+    assert len(pinned) == 2, "a recorded version must keep the two artifacts apart"

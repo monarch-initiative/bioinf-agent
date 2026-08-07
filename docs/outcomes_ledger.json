@@ -15,8 +15,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:423",
-    "end_line": 425,
+    "where": "agent/mcp_tools/freeze_tools.py:459",
+    "end_line": 461,
     "named_in_test": false
   },
   {
@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:780",
-    "end_line": 780,
+    "where": "agent/mcp_tools/freeze_tools.py:816",
+    "end_line": 816,
     "named_in_test": true
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:826",
-    "end_line": 826,
+    "where": "agent/mcp_tools/freeze_tools.py:862",
+    "end_line": 862,
     "named_in_test": true
   },
   {
@@ -1945,8 +1945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:706",
-    "end_line": 706,
+    "where": "agent/mcp_tools/freeze_tools.py:742",
+    "end_line": 742,
     "named_in_test": false
   },
   {
@@ -2025,8 +2025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:265",
-    "end_line": 266,
+    "where": "agent/mcp_tools/freeze_tools.py:301",
+    "end_line": 302,
     "named_in_test": true
   },
   {
@@ -2035,8 +2035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:708",
-    "end_line": 708,
+    "where": "agent/mcp_tools/freeze_tools.py:744",
+    "end_line": 744,
     "named_in_test": false
   },
   {
@@ -2045,8 +2045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:780",
-    "end_line": 780,
+    "where": "agent/mcp_tools/freeze_tools.py:816",
+    "end_line": 816,
     "named_in_test": true
   },
   {
@@ -2055,8 +2055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:825",
-    "end_line": 825,
+    "where": "agent/mcp_tools/freeze_tools.py:861",
+    "end_line": 861,
     "named_in_test": true
   },
   {
@@ -2065,8 +2065,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:869",
-    "end_line": 875,
+    "where": "agent/mcp_tools/freeze_tools.py:905",
+    "end_line": 911,
     "named_in_test": false
   },
   {
@@ -3085,8 +3085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:197",
-    "end_line": 203,
+    "where": "agent/mcp_tools/freeze_tools.py:198",
+    "end_line": 204,
     "named_in_test": true
   },
   {
@@ -3095,8 +3095,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:198",
-    "end_line": 202,
+    "where": "agent/mcp_tools/freeze_tools.py:199",
+    "end_line": 203,
     "named_in_test": true
   },
   {
@@ -3105,8 +3105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:628",
-    "end_line": 632,
+    "where": "agent/mcp_tools/freeze_tools.py:664",
+    "end_line": 668,
     "named_in_test": true
   },
   {
@@ -3115,8 +3115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:633",
-    "end_line": 637,
+    "where": "agent/mcp_tools/freeze_tools.py:669",
+    "end_line": 673,
     "named_in_test": false
   },
   {
@@ -3125,8 +3125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:747",
-    "end_line": 748,
+    "where": "agent/mcp_tools/freeze_tools.py:783",
+    "end_line": 784,
     "named_in_test": true
   },
   {
@@ -3135,8 +3135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:750",
-    "end_line": 751,
+    "where": "agent/mcp_tools/freeze_tools.py:786",
+    "end_line": 787,
     "named_in_test": true
   },
   {
@@ -3145,8 +3145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:763",
-    "end_line": 764,
+    "where": "agent/mcp_tools/freeze_tools.py:799",
+    "end_line": 800,
     "named_in_test": false
   },
   {
@@ -3155,8 +3155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:793",
-    "end_line": 808,
+    "where": "agent/mcp_tools/freeze_tools.py:829",
+    "end_line": 844,
     "named_in_test": false
   },
   {
@@ -3165,8 +3165,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:864",
-    "end_line": 865,
+    "where": "agent/mcp_tools/freeze_tools.py:900",
+    "end_line": 901,
     "named_in_test": false
   },
   {

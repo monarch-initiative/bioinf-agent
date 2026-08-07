@@ -20,6 +20,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.models import core_data as _core_data
 from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke, degraded
@@ -249,7 +250,42 @@ def freeze(
     # daemon (an evicted image gets re-built rather than returning a dangling
     # record). On hit we summarize the SBOM in the response only; the cached
     # record on disk keeps the full lists for env_report/attestation rendering.
+    # AN UNPINNED TOOL MAKES THE KEY AMBIGUOUS, AND A HIT ON IT MUST SAY SO.
+    #
+    # The fill above resolves a version from the install record, which is what stopped
+    # busco==6.0.0 and busco==5.8.3 colliding. It cannot resolve what was never
+    # recorded: `run_install_command` derives no version, so its packages arrive here
+    # as None, `request_key` renders the bare name, and TWO DIFFERENT VERSIONS PRODUCE
+    # THE IDENTICAL KEY. Measured at HEAD — busco 6.0.0 and busco 3.0.2 both key to
+    # `busco|linux/amd64|none`, so the second freeze is served the first's image.
+    #
+    # This is DISCLOSED rather than refused, because the artifact itself is honest: the
+    # record carries the version freeze OBSERVED in the shipped image (measured: 4 of
+    # the 5 ambiguous entries on hand have one), and the ENV report already renders it
+    # as "requested (any) -> installed 0.7.19". Refusing would force a rebuild on 5 of
+    # 18 real envs to re-derive a fact the artifact already states correctly. What was
+    # missing is at the CALL: nothing told the caller their request did not pin, so a
+    # six-month-old artifact came back looking like a fresh solve.
+    unpinned = sorted(n for n, v in parsed_filled if not v)
     cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
+    if cached and unpinned:
+        served = {}
+        try:
+            served = {b.tool: b.version for b in _core_data.shipped_binaries(cached)
+                      if b.tool in unpinned and b.version}
+        except Exception:
+            served = {}          # an unreadable record is WELL_FORMED's business, not ours
+        cached = {**cached, "unpinned_request": {
+            "tools": unpinned,
+            "served_versions": served,
+            "note": (f"{', '.join(unpinned)} was requested without a version, so the cache "
+                     f"key does not distinguish one version from another and this is a "
+                     f"REUSE of a previously frozen artifact"
+                     + (f" ({', '.join(f'{k} {v}' for k, v in sorted(served.items()))})"
+                        if served else " (no observed version on the record)")
+                     + ". Pin the version to guarantee which artifact you get; the ENV "
+                       "report states the version actually shipped."),
+        }}
     if cached:
         # Orientation pointer (Phase-3 Piece B) on the REUSE-BY-HASH branch too —
         # a cache hit is still a freeze, so current_state must read ENV_FROZEN for
