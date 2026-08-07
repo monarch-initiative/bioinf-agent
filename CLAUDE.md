@@ -180,7 +180,7 @@ list only once its gate teaches.
 
 ## Configuration
 
-`config/agent_config.yaml` — Docker base image, conda channels, default Python, agent timeouts.
+`config/agent_config.yaml` — conda channels, default Python, paths, the install timeout. **NOT the Docker base image** — that is `BASE_IMAGE` in `agent/skills/container_build.py`, pinned by digest and deliberately not configurable (it is an input to the content digest). This line used to say "Docker base image", and a `base_image: ubuntu:22.04` key nothing read sat under it; an agent trusted both, concluded Java 21 was apt-installable, and lost a session to it. Every key in that file now has a reader.
 `config/core_datasets.yaml` — what gets bootstrapped by `setup_core_test_data.sh` (read datasets + phenopackets).
 `.claude/settings.json` — MCP server registration. Set `BIOINF_MCP_AUTO_RELOAD=1` (default in this repo) so the server hot-reloads on code changes; no manual `/mcp` reconnect needed.
 
