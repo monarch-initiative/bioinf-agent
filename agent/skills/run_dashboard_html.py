@@ -35,7 +35,8 @@ from __future__ import annotations
 from typing import Optional
 
 from agent.models import core_data as _core_data
-from agent.models.core_data import (USAGE_LABELS, step_is_validated, usage_commands,
+from agent.models.core_data import (USAGE_LABELS, step_is_validated, step_validation_failed,
+                                    usage_commands,
                                     usage_status)
 from agent.skills.env_report_html import (
     _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
@@ -137,6 +138,16 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
     if not is_current:
         title += (f' <span class="stale">⚠ stale — {_e(stale_note)}; '
                   're-run in the current env before trusting this</span>')
+    # THE STEP'S OWN EXIT CODE. `returncode` was recorded by every run primitive and read
+    # by no renderer, for any locus — while this page's own footer asserts that exit codes
+    # are part of the machine-observed evidence it shows. A cluster step displayed the
+    # SLURM job's `State / exit 0:0`, which is the scheduler's exit, not the tool's; the
+    # two can and do differ (a scheduler-killed job reports rc=0, which is why
+    # `cluster_job_status` tells you to read `verdict` instead).
+    rc = step.get("returncode")
+    if isinstance(rc, int):
+        cls = "ok" if rc == 0 else "bad"
+        title += f' <span class="pill {cls}">exit {rc}</span>'
     P.append(f'<p class="note"><b>{title}</b></p>')
     cmd = (step.get("command") or "").strip()
     if cmd:
@@ -171,10 +182,64 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
     return "".join(P)
 
 
+def _run_status_html(spec: dict, failed: list) -> str:
+    """The seal's OWN verdict on the run, rendered — with the three states kept apart.
+
+    `derive_pipeline_status` writes `pipeline_status` into every sealed spec, and no
+    renderer ever read it. A spec containing a step that exited non-zero carries
+    `pipeline_status: "failed"` while its dashboard reported "Steps validated 2/2" under a
+    green "✓ validated in shipped image" pill.
+
+    A spec sealed before that field existed carries nothing, and that is UNRECORDED, not
+    "passed" — the same rule the I4 usage states follow one row above. So absence renders
+    as absence, and a disagreement between the recorded status and what the steps actually
+    say is SHOWN rather than silently resolved: if they ever diverge, the reader should
+    see both and distrust the artifact, which is the honest outcome.
+    """
+    from agent.skills.spec_writer import derive_pipeline_status
+    stated = (spec.get("pipeline_status") or "").strip()
+    derived = derive_pipeline_status(spec.get("pipeline_steps") or [])
+
+    if not stated:
+        return '<span class="note">unrecorded — this spec predates the field</span>'
+    if stated == derived:
+        cls = "bad" if stated == "failed" else "ok"
+        return f'<span class="pill {cls}">{_e(stated)}</span>'
+
+    # THEY DISAGREE — SHOW BOTH, AND THIS IS NOT HYPOTHETICAL.
+    #
+    # `derive_pipeline_status`'s docstring says seal STORES the status and the renderer
+    # READS the stored value, "so there is no forked derivation". That is the right design
+    # and it is why this cross-check is not a fork: the SAME function is used, to ask
+    # whether the stored field still describes the steps beside it.
+    #
+    # It has to be asked, because the field was introduced to replace "the fabricated
+    # `pipeline_status = "in_progress"` default that seal used to stamp into every spec
+    # regardless of the run" — and every spec sealed before that fix still carries the
+    # fabrication. Measured on the corpus: 4 of 7 sealed specs say `in_progress` while
+    # their steps derive `fully_validated`. Rendering the stored value verbatim would have
+    # printed "in_progress" across the top of four complete, fully-validated runs — a new
+    # falsehood introduced by the fix that was meant to end one.
+    #
+    # Picking a winner silently is the wrong move in both directions: preferring `stated`
+    # ships the stale default, preferring `derived` re-computes a sealed field and hides
+    # that the artifact is internally inconsistent. So both are shown and named.
+    cls = "bad" if derived == "failed" else "na"
+    return (f'<span class="pill {cls}">{_e(derived)}</span> '
+            f'<span class="note">— derived from the steps on this page. The sealed record '
+            f'says <code>{_e(stated)}</code>, which does not match. A spec sealed before '
+            f'`derive_pipeline_status` landed carries a stamped default rather than a '
+            f'finding; re-seal to settle it.</span>')
+
+
 def _render_locus_group(locus: str, steps: list[dict], primary_digest: Optional[str]) -> str:
     P = ['<div class="run-card">']
     any_stale = any(not _digest_state(s, primary_digest)[0] for s in steps)
-    if any_stale:
+    n_failed = sum(1 for s in steps if step_validation_failed(s))
+    if n_failed:
+        # A locus group holding ONLY a failed step was badged "✓ validated here".
+        badge = (f'<span class="pill bad">✗ {n_failed} step(s) FAILED here</span>')
+    elif any_stale:
         badge = '<span class="pill na">stale — env rebuilt since</span>'
     else:
         badge = '<span class="pill ok">✓ validated here</span>'
@@ -452,8 +517,13 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     s = spec or {}
     name = s.get("workflow_name") or "workflow"
     steps = [st for st in (s.get("pipeline_steps") or []) if isinstance(st, dict)]
+    # VALIDATED AND NOT FAILED. `step_is_validated` asks whether validation RECORDS
+    # exist; it is not the negation of failure, and a step that exited non-zero satisfies
+    # it. The header counted such a step toward "Steps validated N/M", so a run containing
+    # a failure reported 2/2. See core_data.step_validation_failed.
+    failed = [st for st in steps if step_validation_failed(st)]
     validated = [st for st in steps
-                 if step_is_validated(st)]
+                 if step_is_validated(st) and not step_validation_failed(st)]
     loci = [locus for locus in _LOCUS_ORDER
             if any(_run_locus(st) == locus for st in steps)]
     # Primary digest for stale-detection MUST be a bare image digest (sha256:…),
@@ -464,7 +534,15 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     primary_digest = (env_record or {}).get("image_digest") or None
 
     shipped = bool(s.get("validated_in_shipped_image"))
-    if shipped:
+    if failed:
+        # A FAILED STEP OUTRANKS EVERY OTHER HEADLINE. `validated_in_shipped_image` was
+        # earned legitimately — the digests really do match — but it answers "did this run
+        # in the image we ship", not "did it work", and the page presented it as the
+        # verdict. A reader deciding whether to run this on real data must not have to
+        # find one ✗ glyph in a per-output table below the fold.
+        pill = (f'<span class="pill bad">✗ {len(failed)} step(s) FAILED — '
+                f'do not run this as-is</span>')
+    elif shipped:
         pill = '<span class="pill ok">✓ validated in shipped image</span>'
     elif steps:
         pill = '<span class="pill na">not shipped-image verified</span>'
@@ -474,7 +552,14 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     head_rows = [
         ("Sealed", _e(s.get("created_at", "—"))),
         ("Validated on", ", ".join(_e(x) for x in loci) if loci else "—"),
-        ("Steps validated", f"{len(validated)}/{len(steps)}"),
+        # STATED BY THE SEAL, NEVER RENDERED. `derive_pipeline_status` computes this
+        # correctly and writes it into the spec — a spec containing a failed step carries
+        # `pipeline_status: failed` — and no renderer read the field. The record knew; the
+        # view did not say. One line, and it is the most load-bearing byte on the page.
+        ("Run status", _run_status_html(s, failed)),
+        ("Steps validated", f"{len(validated)}/{len(steps)}"
+                            + (f' <span class="pill bad">{len(failed)} FAILED</span>'
+                               if failed else "")),
         ("Env image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
         ("Env content digest",
          f'<code>{_e(s.get("env_content_digest","—"))}</code>' if s.get("env_content_digest") else "—"),

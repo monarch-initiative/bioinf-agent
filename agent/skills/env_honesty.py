@@ -1097,10 +1097,37 @@ def evaluate_build(result: dict) -> BuildContract:
         # evidences are PATH lookups — the commonest real shape in this repo's records.
         depths = [evidence_depth(v.get("check", ""), v.get("tool", "")) for v in verifications]
         deep = sum(1 for d in depths if d not in _SHALLOW_DEPTHS and d != "unknown")
+        # STATE WHAT THE HEURISTIC SAW, NOT WHAT IS TRUE. This read
+        # "{deep} of them RUN the tool (the rest are presence/version/help probes)" — an
+        # assertion of fact about the commands, sourced from a classifier whose own
+        # docstring says "a string cannot tell you what a command does at runtime; this
+        # reads structure and is wrong often enough that gating on it was measured to
+        # refuse the CORRECT artifact".
+        #
+        # Measured 2026-08-07 over the 35 real evidence commands in the corpus: 7 classify
+        # as `import`, and 5 of those 7 demonstrably run the tool —
+        #   `perl -MStatistics::Descriptive … $s->add_data(1,2,3,4,100); die unless …`
+        #   `Rscript -e "library(BiocGenerics); x <- BiocGenerics::union(c(1,2,3), c(3,4)) …"`
+        #   `Rscript -e 'library(DESeq2); … DESeq(dds); res <- results(dds); stopifnot(nrow(res)==200)'`
+        # — because the load pattern (`library(`, `perl -M`, `import`) is tested BEFORE
+        # the functional signals and claims the command first. So `rnaseq_deseq2`'s page
+        # said "0 of them RUN the tool" about a command that runs DESeq() and asserts on
+        # its result. A flat falsehood, stated with the confidence of a measurement.
+        #
+        # Correctly SEPARATING those five from the two real imports
+        # (`python -c 'import pyfaidx; assert pyfaidx.Fasta is not None'`) needs a
+        # classifier that reasons about residue rather than patterns, which is a change
+        # with its own blast radius and is not made here. What is fixed is the CLAIM: the
+        # line now reports a structural reading as a structural reading. Depth is
+        # disclosure and never gates, so under-claiming costs a reader nothing; asserting
+        # it as fact cost them the truth.
         coverage.append(ClauseCoverage(
             "VALIDATED_IN_IMAGE", _VII_COVERS, CHECKED, len(verifications),
             f"{len(verifications)} evidence command(s) re-run in the shipped image; "
-            f"{deep} of them RUN the tool (the rest are presence/version/help probes) "
+            f"{deep} of them LOOK like a functional run to a structural reading of the "
+            f"command text (the rest read as presence/version/help/load probes). That "
+            f"reading is a heuristic over strings, not an observation of what ran — it "
+            f"under-reports commands that load a library and then use it "
             f"[{', '.join(sorted(set(depths)))}]"))
     for ver in verifications:
         label = ver.get("label", "?")

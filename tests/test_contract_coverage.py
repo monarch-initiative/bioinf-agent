@@ -243,7 +243,18 @@ def test_degrade_rule_ignores_evidence_depth():
     c = eh.evaluate_build(shallow)
     assert c.ok and not c.unobserved, "presence-only evidence must not degrade the tag"
     detail = _clause(c, "VALIDATED_IN_IMAGE").detail
-    assert "0 of them RUN the tool" in detail, "...but it MUST be disclosed: " + detail
+    # The DISCLOSURE is what this pins, and it is still here; only the wording moved.
+    # It used to read "0 of them RUN the tool", asserting a fact about the commands from a
+    # classifier whose own docstring says it "reads structure and is wrong often enough
+    # that gating on it was measured to refuse the CORRECT artifact". Measured over the 35
+    # real evidence commands, 5 of the 7 it calls `import` demonstrably run the tool — so
+    # `rnaseq_deseq2`'s page said "0 of them RUN the tool" about a command that calls
+    # DESeq() and asserts on its result. The line now reports a structural reading AS a
+    # structural reading, which is the same claim minus the overreach.
+    assert "0 of them LOOK like a functional run" in detail, (
+        "shallowness MUST still be disclosed: " + detail)
+    assert "heuristic over strings, not an observation" in detail, (
+        "and it must not be stated as an observation: " + detail)
 
 
 # ---------------------------------------------------------------------------

@@ -906,8 +906,24 @@ def render_env_report_html(record: dict) -> str:
              f'{_e(_contract.summary())}</span></h3>')
     P.append('<table class="t"><thead><tr><th>Clause</th><th>Ran?</th><th>Establishes</th>'
              '<th>What it examined</th></tr></thead><tbody>')
+    # A CLAUSE THAT RAN AND FAILED MUST NOT READ AS "checked" AND NOTHING ELSE.
+    # This column answers "did it run", which is genuinely a different question from "did
+    # it pass" — but for talos_v11 the effect was that the ONE mention of
+    # `WELL_FORMED.shipped_binaries` anywhere on the page was a row marked `checked`, for
+    # the clause that had just refused the record. That is worse than the violation being
+    # absent: it reads as a clean result for the thing that failed.
+    _failed_clauses = {v.get("invariant", "") for v in _violations if isinstance(v, dict)}
+
+    def _clause_failed(clause: str) -> bool:
+        # A clause owns its dotted children: `POLICY_CLEAN.accelerator` owns `I12.*` only
+        # via _covers, so match on the recorded ids AND on the clause prefix.
+        return any(fid == clause or fid.startswith(clause + ".") or clause.startswith(fid + ".")
+                   for fid in _failed_clauses)
+
     for c in _contract.coverage:
         badge = _mark.get(c.status, (_e(c.status), ""))[0]
+        if _clause_failed(c.clause) or any(_clause_failed(x) for x in (c.covers or ())):
+            badge += ' <span class="pill bad">and FAILED</span>'
         P.append(f'<tr><td><code>{_e(c.clause)}</code></td><td>{badge}</td>'
                  f'<td class="muted">{_e(c.establishes)}</td><td>{_e(c.detail)}</td></tr>')
     P.append('</tbody></table>')

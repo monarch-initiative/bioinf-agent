@@ -157,3 +157,59 @@ def test_the_report_survives_a_record_whose_contract_cannot_be_evaluated(monkeyp
     html = M.render_env_report_html(env_record(name="unevaluable"))
     assert "could not be evaluated" in html
     assert "✓ Validated in shipped image" not in _pill(html)
+
+
+# ---------------------------------------------------------------------------------------
+# The pill is blind to EVERY violation class, not just the two in the corpus
+# ---------------------------------------------------------------------------------------
+#
+# Injecting one violation at a time into a clean record and re-rendering, EIGHT of nine
+# classes produced a green page before this fix. Only `passed != total` on a BUILD record
+# reddened it — and on an ADOPT record even that rendered "Adopted by digest". So this is
+# structural blindness, not two unlucky records, and a test that only pinned the two
+# corpus cases would have missed most of it.
+
+def _clean() -> dict:
+    return env_record(name="clean", shipped_binaries=[])
+
+
+@pytest.mark.parametrize("label,mutate", [
+    ("evidence failed",       lambda r: r.update(verifications=[{**r["verifications"][0],
+                                                                "passed": False, "rc": 127}])),
+    ("echo-cheat evidence",   lambda r: r.update(verifications=[{**r["verifications"][0],
+                                                                "check": "true || samtools"}])),
+    ("piped evidence",        lambda r: r.update(verifications=_piped_evidence())),
+    ("cuda without toolkit",  lambda r: r.update(accelerator={"type": "cuda"})),
+    ("unparseable binaries",  lambda r: r.update(shipped_binaries=[{"command": "x", "name": "y"}])),
+])
+def test_every_violation_class_reddens_the_pill(label, mutate):
+    rec = _clean()
+    mutate(rec)
+    assert H.check_build(rec), f"fixture {label!r} did not actually violate the contract"
+    assert "FAILS the honesty contract" in _pill(render_env_report_html(rec)), label
+
+
+@pytest.mark.parametrize("mode", ["build", "adopt"])
+def test_the_adopt_branch_does_not_short_circuit_the_contract(mode):
+    """`is_adopt` was tested FIRST, so an adopted image skipped the question entirely."""
+    rec = env_record(name="x", mode=mode, verifications=_piped_evidence())
+    assert "FAILS the honesty contract" in _pill(render_env_report_html(rec))
+
+
+def test_a_clause_that_ran_and_failed_is_not_shown_as_merely_checked():
+    """The coverage column answers "did it run", which is a genuinely different question
+    from "did it pass". But for talos_v11 the effect was that the ONE mention of
+    `WELL_FORMED.shipped_binaries` anywhere on the page was a row marked `checked` — for
+    the clause that had just refused the record. That is worse than the violation being
+    absent: it reads as a clean result for the thing that failed."""
+    rec = env_record(name="x", shipped_binaries=[{"command": "x", "name": "y"}])
+    html = render_env_report_html(rec)
+    row = re.search(r"<tr><td><code>WELL_FORMED\.shipped_binaries</code></td><td>(.*?)</td>",
+                    html[html.index("Contract coverage"):])
+    assert row and "FAILED" in row.group(1), "the failing clause still reads as merely checked"
+
+
+def test_a_passing_clause_is_not_marked_failed():
+    html = render_env_report_html(_clean())
+    body = html[html.index("Contract coverage"):]
+    assert "and FAILED" not in body

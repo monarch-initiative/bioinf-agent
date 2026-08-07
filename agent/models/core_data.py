@@ -1572,6 +1572,52 @@ def step_is_validated(step: Any) -> bool:
     return bool(get("validation")) or get("validation_status") == "passed"
 
 
+def step_validation_failed(step: Any) -> bool:
+    """THE one reading of "did this step actually FAIL" — the sibling of
+    `step_is_validated`, and NOT its negation.
+
+    A step can be validated (it HAS validation records) and still have failed: the
+    records exist and say `passed: False`, or the command exited non-zero. Those are
+    different questions, and `step_is_validated` only ever answered the first. Every
+    consumer that wanted "is this step OK" read the validated predicate alone and got
+    `True` for a failed run.
+
+    Measured on the RUN dashboard, which is the panel the user reads to decide whether to
+    run a workflow on real data. For a sealed spec containing one step that exited
+    non-zero, the whole page went green:
+      * the header said "Steps validated 2/2" — counting the failed step,
+      * the H1 pill said "✓ validated in shipped image",
+      * the locus group holding ONLY the failed step was badged "✓ validated here",
+      * and the sealed spec ITSELF carried `pipeline_status: failed`, computed correctly
+        by `derive_pipeline_status`, which the dashboard never rendered at all.
+    The single red mark anywhere on the page was one ✗ glyph in a per-output table below
+    the fold.
+
+    This is a leaf rather than an expression at the call site for the reason spelled out
+    above in `step_is_validated`: that predicate was hand-copied into seven places, the
+    seventh drifted, and the drifted copy was the one facing the user. Read it here.
+
+    NOTE the rc=0 route is genuinely closed — `I3.validation_passed` refuses a step whose
+    validation says False and is not overridable by `mark_step_validated`. The reachable
+    shape is a step that exited NON-ZERO, which the run primitives record faithfully and
+    seal copies through. So this predicate has to read the returncode, not just the
+    validation records.
+
+    Accepts a dict or a PipelineStep; anything else has not failed (it is not a step)."""
+    if step is None:
+        return False
+    get = (step.get if isinstance(step, dict)
+           else lambda k, d=None: getattr(step, k, d))
+    rc = get("returncode")
+    if isinstance(rc, int) and rc != 0:
+        return True
+    for v in (get("validation") or []):
+        vget = (v.get if isinstance(v, dict) else lambda k, d=None: getattr(v, k, d))
+        if vget("passed") is False:
+            return True
+    return False
+
+
 #: What the I4 self-test actually concluded. `""` only for a spec so malformed it has
 #: neither field.
 USAGE_VERIFIED = "verified"
