@@ -845,6 +845,58 @@ _VII_COVERS = ("VALIDATED_IN_IMAGE.no_evidence",
                "VALIDATED_IN_IMAGE.evidence_passed")
 
 
+#: THE LAYER-1 ROSTER, AS DATA — the exact counterpart of `agent/skills/invariants.py`
+#: for Layer 2, and created for the same reason.
+#:
+#: `check_build` emits its clause names at runtime; nothing declared them, so anyone
+#: needing to TELL someone what the contract is had to hand-write the list. Two places
+#: did, and both went stale in the same direction. `install_pipeline_brief` — the brief
+#: handed to a subagent that installs WITHOUT SUPERVISION — listed three guarantees while
+#: this module enforced four, so a record with a malformed `shipped_binaries[]` is refused
+#: by a clause that brief never mentions. The irony was load-bearing: the comment beside
+#: that list explains that the hand-written LAYER-2 roster went stale and was replaced by
+#: registry derivation, and the LAYER-1 list immediately next to it was still hand-written
+#: and wrong in exactly the same way.
+#:
+#: `tests/test_invariant_registry.py` asserts every clause `check_build` actually emits is
+#: claimed by an entry here, so a fifth guarantee cannot appear without this roster
+#: learning about it.
+LAYER1_GUARANTEES: tuple[tuple[str, str], ...] = (
+    ("BUILT",
+     "the env image + image_digest resolve in the local Docker daemon, and the image is "
+     "the architecture the record claims (a digest naming NO architecture is a manifest "
+     "list — two machines pulling it ship different bytes — and is refused)"),
+    ("VALIDATED_IN_IMAGE",
+     "every tool's evidence command re-runs green INSIDE the shipped image AND "
+     "discriminates — it references the tool as a real token, is not a constant-true "
+     "short-circuit or rc-laundered, and on the agent-authored path must FAIL in a "
+     "digest-pinned control image that lacks the tool. Because install==ship, the bytes "
+     "validated are the bytes that run on HPC"),
+    ("POLICY_CLEAN",
+     "I12 accelerator honesty (cuda/rocm need toolkit_version; mps is dev_only; "
+     "runtime_verified needs a CAPTURED probe + min_driver_version) checked BOTH for "
+     "well-formedness and against the toolkit actually read off the shipped image, plus "
+     "I13 license firewall (gated => redistributable:false AND licenses[] recorded)"),
+    ("PROVENANCE_CLEAN",
+     "the firewall around the SYNTHESIS tier (agent-as-generator): a synthesized install "
+     "must carry its audit trail into the recipe — every sub-command tagged `extracted` "
+     "(lifted verbatim from a named repo file, anchored by that file's sha256) or "
+     "`agent_authored`. NOT_APPLICABLE when no step was synthesized"),
+    ("WELL_FORMED",
+     "every sub-record with a declared model parses — today `shipped_binaries[]` against "
+     "ShippedBinary. Asserted at BOTH ends: on write (EnvCache.register) and on serve "
+     "(check_build), because a gate only at the producer grandfathers in everything "
+     "frozen before it existed"),
+)
+#: PROVENANCE_CLEAN is the entry this roster was worth writing for. It refuses on three
+#: violations (synthesized_empty / untagged_command / extraction_unanchored) and, on
+#: 2026-08-07, was named in ZERO steering documents — not CLAUDE.md's honesty-contract
+#: table, not `install_pipeline_brief`, not docs/. Nobody had removed it; it was simply
+#: never written down, and every hand-written summary of "the Layer-1 contract" therefore
+#: described four guarantees where the code enforces five. That is the I5/I10 rot exactly,
+#: and the lint above it now makes the same omission impossible to repeat.
+
+
 def check_build(result: dict) -> list[dict]:
     """The container-native Layer-1 honesty contract over a BuildResult dict.
     Returns a list of violations (empty == honest). EnvBuild.run() calls this and

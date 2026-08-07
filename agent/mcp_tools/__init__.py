@@ -68,3 +68,12 @@ from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in
 from . import service_tools        # noqa: F401  (check_gpu, start_service, stop_service, check_service_health, verify_service_dependency)
 from . import workflow_tools       # noqa: F401  (seal_workflow, list_installed_pipelines, fetch_r_package_deps, start_pipeline, discard_pipeline_draft, show_pipeline_draft, patch_pipeline, stage_authored_artifact, mark_step_validated)
 
+
+# Every tool is registered by now, so the routing notes can be composed onto the ones
+# that need them. LAST LINE ON PURPOSE — a guardrail appended before its tool exists
+# reaches nothing, and reaching nothing is silent. See agent/skills/tool_surface.py for
+# why the notes are generated from data rather than written into 11 docstrings.
+from agent.mcp_server import mcp as _mcp  # noqa: E402
+from agent.skills import tool_surface as _tool_surface  # noqa: E402
+
+_tool_surface.apply_to(_mcp)

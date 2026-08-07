@@ -344,3 +344,81 @@ def test_claude_md_does_not_call_a_live_invariant_retired(live_id):
             assert "Layer 2" in sentence or "restored" in sentence.lower(), (
                 f"CLAUDE.md calls {live_id} retired/subsumed, but it is ACTIVE and refuses "
                 f"real seals today:\n    {sentence.strip()}")
+
+
+# ---------------------------------------------------------------------------------------
+# Layer 1 has a roster too, and it went stale in exactly the same way
+# ---------------------------------------------------------------------------------------
+#
+# The test above pins the brief's LAYER-2 roster, which was fixed by deriving it from the
+# registry. The LAYER-1 list sitting directly beneath the comment that explains that fix
+# was still hand-written, and by 2026-08-07 it was wrong the same way: three guarantees
+# listed, four enforced. A record with a malformed `shipped_binaries[]` is refused by
+# `WELL_FORMED.shipped_binaries` — a live clause the brief handed to an UNSUPERVISED
+# subagent never mentioned.
+
+def _emitted_layer1_clauses() -> set[str]:
+    """The clause names `check_build` can actually put on a coverage row.
+
+    Read from the source rather than by running a build: every `ClauseCoverage("X", ...)`
+    literal in env_honesty, reduced to its top-level guarantee (`POLICY_CLEAN.license` ->
+    `POLICY_CLEAN`). An f-string clause name (`f"WELL_FORMED.{key}"`) still yields its
+    prefix, which is the part the roster is responsible for naming.
+    """
+    src = (ROOT / "agent" / "skills" / "env_honesty.py").read_text()
+    names = re.findall(r'ClauseCoverage\(\s*f?["\']([A-Z_]+)', src)
+    return set(names)
+
+
+def test_the_layer1_roster_names_every_guarantee_check_build_enforces():
+    from agent.skills import env_honesty as honesty
+    declared = {name for name, _ in honesty.LAYER1_GUARANTEES}
+    emitted = _emitted_layer1_clauses()
+    missing = sorted(emitted - declared)
+    assert not missing, (
+        f"check_build emits the clause(s) {missing}, which LAYER1_GUARANTEES does not "
+        "declare. Anyone told what the Layer-1 contract is — the ENV report, the "
+        "autonomous install brief — will understate it, and an agent will be refused by a "
+        "gate it was told did not exist. This is the I5/I10 rot, at Layer 1."
+    )
+    ghosts = sorted(declared - emitted)
+    assert not ghosts, (
+        f"LAYER1_GUARANTEES advertises {ghosts}, which check_build never emits."
+    )
+
+
+def test_the_brief_states_all_four_layer1_guarantees():
+    """The consumer that made the staleness cost something: this brief is executed by a
+    subagent without human supervision."""
+    from agent.mcp_tools import data_tools
+    from agent.skills import env_honesty as honesty
+    brief = data_tools.install_pipeline_brief("samtools")
+    for name, _ in honesty.LAYER1_GUARANTEES:
+        assert any(line.startswith(f"{name}:") for line in brief["invariants"]), (
+            f"the install brief never names the Layer-1 guarantee {name}")
+
+
+def test_the_brief_can_reach_every_primitive():
+    """It listed ELEVEN primitives against 47 registered ones, and the 36 it omitted were
+    not marginal: `resolve_tool` ('start here when unsure which tier'), `freeze_from_image`
+    and `build_env_from_authors_recipe` (the use-the-authors'-own-machinery path), and four
+    whole install tiers — release_binary, perl, cargo, go. A subagent following the brief
+    could not reach any of them: the can't-see-the-menu defect `tool_surface` exists to
+    end, reproduced one level down."""
+    from agent.mcp_tools import data_tools
+    from agent.skills import tool_surface as ts
+    listed = {line.split(":", 1)[0].strip() for line in data_tools.install_pipeline_brief("x")["primitives"]}
+    missing = sorted(set(ts.positioned(ts.PRIMITIVE)) - listed)
+    assert not missing, f"the brief cannot reach {missing}"
+
+
+def test_primitive_notes_never_outlive_their_tool():
+    """Same rule `_BRIEF_HINTS` lives by: membership is derived, the practical note is
+    hand-written, and a note for a tool that is no longer a primitive is a stale copy."""
+    from agent.mcp_tools.data_tools import _PRIMITIVE_NOTES
+    from agent.skills import tool_surface as ts
+    unknown = sorted(set(_PRIMITIVE_NOTES) - set(ts.positioned(ts.PRIMITIVE)))
+    assert not unknown, (
+        f"_PRIMITIVE_NOTES explains {unknown}, which tool_surface does not position as a "
+        "PRIMITIVE — the note is either for a deleted tool or for one that moved below "
+        "the table.")

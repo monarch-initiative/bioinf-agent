@@ -610,6 +610,23 @@ if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
             _importlib.reload(sys.modules[_full])
 from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level state)
 
+# COMPOSE THE ROUTING NOTES — and do it HERE, not only inside mcp_tools/__init__.py.
+#
+# The reload cascade above re-registers every tool from its docstring, producing FRESH
+# tool objects with fresh descriptions. `from agent import mcp_tools` on the line above
+# does not re-execute that package's __init__ when it is already in sys.modules, so the
+# guardrails were composed exactly once, at first import, and silently disappeared on
+# every reload — which is the default in this repo (BIOINF_MCP_AUTO_RELOAD=1). Caught by
+# tests/test_tool_surface.py, which reads descriptions back through the public
+# `list_tools()`: two of the eleven were missing under the full suite and none were
+# missing when the file ran alone.
+#
+# apply_to is idempotent (it skips a description that already carries the marker), so
+# calling it from both places costs nothing and means neither entry point can lose them.
+from agent.skills import tool_surface as _tool_surface  # noqa: E402
+
+_tool_surface.apply_to(mcp)
+
 # Back-compat re-exports — `job_runner` (the detached subprocess), tests, and any
 # external caller continues to `from agent.mcp_server import <tool>`. This
 # list grows alongside the mcp_tools package; populated per phase as tools
