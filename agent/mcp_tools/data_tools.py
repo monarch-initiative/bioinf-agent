@@ -18,6 +18,7 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.models import core_data as _core_data
+from agent.skills import tool_surface as _tool_surface
 from agent.skills.outcomes import refused
 @mcp.tool()
 def download_reference_database(
@@ -376,33 +377,70 @@ def select_test_data(
     all_data = _ms._list_resources({"resource_type": "test_data"}, _ms.config).get("test_data", [])
     sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
 
+    # SOME CRITERIA SAY *WHAT KIND OF DATA*; OTHERS SAY *WHICH INSTANCE*. Only the
+    # second kind are preferences.
+    #
+    # Every criterion used to be additive with no requirement, and the ONLY refusal was
+    # `score == 0` — which `genome_build`, defaulting to "hg38" and worth 32 points, made
+    # unreachable in practice. Measured 2026-08-07 against the core data on disk:
+    #
+    #   select_test_data(assay_type="nonexistent_zzz")  -> exome / HG00096
+    #   select_test_data(assay_type="chipseq")          -> exome / HG00096
+    #
+    # The second is the one that matters: chipseq is a REAL assay that simply is not on
+    # this disk, and the answer was unrelated exome reads with no indication anything was
+    # substituted. This function is the sole producer of `test_data.content_anchors`, so
+    # the wrong dataset gets sha256-anchored, I8 re-verifies those anchors happily at
+    # seal, and the spec records a green ChIP-seq run performed on exome data. Every gate
+    # downstream is satisfied, because each is true of the data that was actually used.
+    #
+    # The split below is by what the caller MEANS. `genome_build` / `assay_type` /
+    # `file_format` / `accession` describe the KIND of data a step can consume at all —
+    # a pod5 basecaller cannot run on FASTQ, an aligner cannot use the wrong build. Those
+    # are requirements when stated, and a miss is a refusal. `end_type`, `sample` and
+    # `subset` name WHICH of several equivalent datasets to prefer; substituting there is
+    # the useful best-effort behaviour this function was built for, and it is kept.
+    _REQUIRED = (("genome_build", genome_build), ("assay_type", assay_type),
+                 ("file_format", file_format), ("accession", accession))
+
+    def _unmet(d: dict) -> list[str]:
+        return [k for k, want in _REQUIRED if want and d.get(k) != want]
+
     def _score(d: dict) -> int:
         s = 0
-        if genome_build and d.get("genome_build") == genome_build: s += 32
-        if assay_type   and d.get("assay_type")   == assay_type:   s += 16
-        if file_format  and d.get("file_format")  == file_format:  s += 12
-        if end_type     and d.get("end_type")     == end_type:     s += 8
-        if sample       and d.get("sample")       == sample:       s += 4
-        if accession    and d.get("accession")    == accession:    s += 2
-        if subset       and d.get("subset")       == subset:       s += 1
+        if end_type and d.get("end_type") == end_type: s += 8
+        if sample   and d.get("sample")   == sample:   s += 4
+        if subset   and d.get("subset")   == subset:   s += 1
         return s
 
-    scored = [(d, _score(d), bool(d.get("available"))) for d in sequencing]
-    if not scored:
+    if not sequencing:
         return refused("data.no_test_data_on_disk", error="no sequencing test data on disk")
-    scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    best, score, available = scored[0]
-    if score == 0:
+    eligible = [d for d in sequencing if not _unmet(d)]
+    if not eligible:
+        # EARN THE REFUSAL: say which requirement nothing met, and what IS here, so the
+        # caller can re-ask or reach for add_core_test_data instead of guessing.
+        missed = sorted({k for d in sequencing for k in _unmet(d)})
         return refused(
             "data.no_test_data_match",
-            error="no test data matches the requested criteria",
+            error=("no test data on disk satisfies " + ", ".join(missed)
+                   + ". Nothing was substituted — re-ask with different criteria, or "
+                     "fetch the dataset with add_core_test_data / add_core_pod5_data."),
+            unmet=missed,
             criteria={
                 "genome_build": genome_build, "assay_type": assay_type,
                 "end_type": end_type, "sample": sample,
                 "accession": accession, "subset": subset,
                 "file_format": file_format,
             },
+            on_disk=sorted({
+                f"{d.get('genome_build') or '?'}/{d.get('assay_type') or '?'}"
+                + (f"/{d['file_format']}" if d.get("file_format") else "")
+                for d in sequencing if d.get("available")
+            }),
         )
+    scored = [(d, _score(d), bool(d.get("available"))) for d in eligible]
+    scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
+    best, score, available = scored[0]
 
     test_data_ref = {
         "genome_build":    best.get("genome_build", ""),
@@ -452,6 +490,62 @@ def select_test_data(
 #: the roster, not a how-to. An autonomous agent needs the how-to, so it lives here,
 #: keyed by id and additive. Every key must be a live invariant (asserted in
 #: tests/test_invariant_registry.py) so a note cannot outlive the clause it explains.
+#: PRACTICAL notes for the brief's primitive list — the operational detail the routing
+#: table deliberately does not carry (which flag to pass, which trap it avoids). Keyed by
+#: tool name; MEMBERSHIP comes from `tool_surface.REGISTRY`, so a primitive with no note
+#: still appears, and `tests/test_invariants.py` asserts every key here is a registered
+#: primitive so a note cannot outlive its tool. Exactly the shape `_BRIEF_HINTS` uses for
+#: invariants, and for the same reason.
+_PRIMITIVE_NOTES = {
+    "resolve_tool": "START HERE when unsure which tier — ranks the install tiers for one "
+                    "tool and returns the concrete install_call. Query-only",
+    "install_conda_packages": "bioconda / conda-forge / defaults. Prefer this — a clean "
+                              "conda package ships as a BioContainer freeze ADOPTS by digest",
+    "install_r_package": "source=cran|bioconductor|github:owner/repo. Handles library "
+                         "isolation + load-or-die; pass functional_check so validated "
+                         "means RAN, not merely imported",
+    "install_pip_package": "handles import verification",
+    "install_jar_tool": "java_version=… — JAR download + `java -jar` wrapper. Pass "
+                        "java_version when the tool needs a specific JRE (Exomiser 14+ "
+                        "wants 21); the shipped image otherwise gets apt's default, Java 17",
+    "install_git_repo": "clone-and-run repos that aren't packages. Clones into "
+                        "{env}/share/{tool}, pins the commit SHA, optional build + smoke "
+                        "verify; sets install_method.type=source. PIN `ref` — a bare "
+                        "default branch drifts",
+    "install_release_binary": "precompiled static binaries; a sha256 mismatch is a hard fail",
+    "freeze_from_image": "the authors' OWN published image — route here from resolve_tool's "
+                         "author_image tier rather than reconstructing what they already ship",
+    "build_env_from_authors_recipe": "clone at a pinned ref, docker build their Dockerfile, "
+                                     "freeze that. Route here from the authors_recipe tier",
+    "download_reference_database": "watchdog-safe via run_in_background; auto-records a "
+                                   "ReferenceDatabase entry. Set compute_env to make a "
+                                   "compute node pull it straight onto the cluster",
+    "acquire_reference_via_recipe": "run the tool's OWN gather script on a compute node; "
+                                    "sha256-sidecars everything it produces",
+    "run_pipeline_step": "run + auto-validate every detected output in one call. Pass "
+                         "output_types to declare file types; pass watch_dir when the "
+                         "command writes outside the input's directory",
+    "run_step_in_container": "once frozen, use THIS — the recorded run is then the one "
+                             "that ships (validated==shipped) with in-container resource_usage",
+    "stage_authored_artifact": "record an agent-written file (driver script, synthetic test "
+                               "data, staged BAM/VCF/FASTA) with content or genesis command "
+                               "+ sha256 anchor — REQUIRED if any step input was made "
+                               "outside MCP, or the I8 walk treats it as an orphan",
+    "start_service": "pipeline_id=… — launch a companion service (Redis, Postgres, Spark) "
+                     "and record the readiness probe; satisfies I10 on a healthy start",
+    "verify_service_dependency": "append a further health probe to a declared service's log; "
+                                 "satisfies I10 when start_service's initial probe was not "
+                                 "recorded against this pipeline",
+    "phenopacket_to_vcf": "materialize a VCF from a registered phenopacket",
+    "list_installed_pipelines": "what is ALREADY built here — ask BEFORE solving a tool again",
+    "list_available_resources": "what data is already on disk — the only enumerator of "
+                                "reference-genome paths and phenopacket ids",
+    "show_pipeline_draft": "read the draft BEFORE sealing, rather than learning its gaps "
+                           "from a refusal",
+    "verify_env_recipe": "does the recipe actually rebuild? What it can prove depends on "
+                         "the build_method, and it says which rather than pretending",
+}
+
 _BRIEF_HINTS = {
     "I3": "declare types via run_pipeline_step's output_types",
     "I4": "type-aware validate_output (samtools/bcftools/json.loads/…), so touch-and-hope "
@@ -489,13 +583,18 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
 
     Returns: {pipeline_name, version, hints, invariants, primitives, protocol}.
     """
+    from agent.skills import env_honesty as _honesty
     invariants = [
         # Layer 1 — the env image (env_honesty.check_build; install==ship is ONE event,
         # so the per-tier env-build invariants (agent/skills/invariants.py) collapse
-        # into three structural guarantees enforced INSIDE the shipped image):
-        "BUILT: the env image + image_digest resolve in the local Docker daemon",
-        "VALIDATED_IN_IMAGE: every tool's evidence command re-runs green INSIDE the shipped image AND references the tool (echo/print/true cheats rejected) — because install==ship, the bytes validated are the bytes that run on HPC",
-        "POLICY_CLEAN: I12 accelerator honesty (cuda/rocm need toolkit_version; runtime_verified needs a captured probe + min_driver_version; mps is dev_only) + I13 license firewall (gated => redistributable:false AND licenses[] recorded)",
+        # into the structural guarantees enforced INSIDE the shipped image).
+        #
+        # DERIVED, for the same reason the Layer-2 run below is. This was three
+        # hand-written bullets and the contract enforces FOUR — WELL_FORMED was missing,
+        # so a subagent following this brief had no idea a malformed shipped_binaries[]
+        # would be refused. The stale list sat directly beneath a comment explaining that
+        # the LAYER-2 list had gone stale and been fixed by derivation.
+        *(f"{name}: {statement}" for name, statement in _honesty.LAYER1_GUARANTEES),
         # Layer 2 — the workflow run: DERIVED FROM THE REGISTRY, never hand-listed.
         # This was a hand-written run of six entries and it was already wrong — it
         # omitted I5 and I10, the two clauses that were called "retired" in prose for
@@ -513,18 +612,22 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
           + (f" — {_BRIEF_HINTS[inv.id]}" if inv.id in _BRIEF_HINTS else "")
           for inv in _layer2_brief_invariants()),
     ]
+    # THE PRIMITIVES, DERIVED — membership from tool_surface, practical notes by name.
+    #
+    # This was an 11-bullet hand list against 47 registered primitives. The 36 it omitted
+    # were not marginal: `resolve_tool` ("start here when unsure which tier"),
+    # `freeze_from_image` and `build_env_from_authors_recipe` (the use-the-authors'-own-
+    # machinery path), and four whole install tiers — release_binary, perl, cargo, go. A
+    # subagent following this brief could not reach any of them, which is the same
+    # can't-see-the-menu defect tool_surface was built to end, reproduced one level down.
+    #
+    # Membership comes from the registry so a new primitive appears here the day it is
+    # positioned; _PRIMITIVE_NOTES adds only the practical hint the routing table does
+    # not carry, and the test asserts every key is a registered primitive so a note
+    # cannot outlive its tool.
     primitives = [
-        "install_conda_packages: bioconda / conda-forge / defaults",
-        "install_r_package(source=cran|bioconductor|github:owner/repo): handles library isolation + load-or-die",
-        "install_pip_package: handles import verification",
-        "install_jar_tool(java_version=…): Java tools — JAR download + `java -jar` wrapper. Pass java_version when the tool needs a specific JRE (Exomiser 14+ wants 21); the shipped image otherwise gets apt's default, which is Java 17",
-        "install_git_repo(repo_url, tool_name, ref=…): clone-and-run repos that aren't packages (academic script collections) — clones into {env}/share/{tool}, pins commit SHA, optional build + smoke verify; sets install_method.type=source. Pin ref to a tag/commit.",
-        "download_reference_database: watchdog-safe via run_in_background; auto-records ReferenceDatabase",
-        "run_pipeline_step: run + auto-validate every detected output in one call",
-        "stage_authored_artifact: record an agent-written file (driver script, synthetic test data, staged BAM/VCF/FASTA) with verbatim content or genesis command + sha256 anchor — required if any step input is something the agent generated outside MCP",
-        "start_service(pipeline_id=…): launch a companion service (Redis, Postgres, web server, Spark) and record the readiness probe — required for service-dependent tools; satisfies I10 on a healthy start",
-        "verify_service_dependency: append an additional health probe to a declared service's log; satisfies I10 if start_service's initial probe wasn't recorded against this pipeline",
-        "phenopacket_to_vcf: materialize a VCF from a registered phenopacket",
+        f"{t}: {_PRIMITIVE_NOTES[t]}" if t in _PRIMITIVE_NOTES else t
+        for t in _tool_surface.positioned(_tool_surface.PRIMITIVE)
     ]
     protocol = [
         "1. start_pipeline(name) — get pipeline_id; thread it through everything",
@@ -533,7 +636,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
         "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
         "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
-        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + user guide rendered from the validated run.",
+        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + the {name}.RUN.html dashboard rendered from the validated run. (The markdown user guide is NOT a seal deliverable — generate_user_guide is opt-in.)",
     ]
     return {
         "pipeline_name": name,
