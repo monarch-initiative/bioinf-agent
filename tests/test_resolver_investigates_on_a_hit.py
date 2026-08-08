@@ -491,3 +491,91 @@ def test_the_classification_still_lives_in_exactly_one_place():
     src = inspect.getsource(R)
     assert "_LICENSE_RESTRICTED" not in src and "_LICENSE_PERMISSIVE" not in src
     assert "_core_data.license_disposition" in inspect.getsource(R.identity_facts)
+
+
+# ---------------------------------------------------------------------------
+# THE RECURRENCE, found by audit hours after this file's fix shipped.
+#
+# The divergence disclosure had two defects, both introduced BY the fix for F15
+# — the finding about name confusion:
+#
+#   1. it printed `divergent_repos[:3]` under a sentence stating how many repos
+#      own the name. On `dorado` that reads "4 repo(s) own the name" above three
+#      rows. One field, two readings, in the message built for comparing.
+#   2. the copy-pasteable remedy hard-named `divergent_repos[0]`. That list is
+#      ordered by STARS (github search, top 5 by stars), so we recommended the
+#      star maximum: for `dorado`, a 1222-star PowerShell Scoop bucket, over the
+#      859-star `nanoporetech/dorado` printed directly beneath it.
+#
+# Star-dominance is the heuristic this repo records as removed from
+# `auto_adoptable`. It came back inside the remedy string of the fix built to
+# cure name confusion, and it passed 37 tests, because every test used a fixture
+# where the star maximum happened to be the RIGHT answer.
+# ---------------------------------------------------------------------------
+
+def _diverging_note(monkeypatch, tool, repos, entry_repo=""):
+    """Drive resolve() to a `diverges` disclosure over a controlled candidate list."""
+    from agent.skills import resolver
+
+    monkeypatch.setattr(resolver, "probe_conda",
+                        lambda t, timeout=12, **kw: {"available": False}, raising=False)
+    monkeypatch.setattr(resolver, "probe_cran",
+                        lambda t, timeout=12, **kw: {"available": False}, raising=False)
+    monkeypatch.setattr(resolver, "probe_bioconductor",
+                        lambda t, timeout=12, **kw: {"available": False}, raising=False)
+    monkeypatch.setattr(resolver, "probe_pypi",
+                        lambda t, timeout=12, **kw: {"available": True, "version": "1.0",
+                                                     "home_page": "", "repo": entry_repo},
+                        raising=False)
+    monkeypatch.setattr(
+        resolver, "probe_github_search",
+        lambda *a, **kw: {"available": True,
+                          "candidates": [{**r, "exact_name_match": True} for r in repos]},
+        raising=False)
+    d = resolver.resolve(tool=tool, timeout=1)
+    return (d.get("install_call") or "") + " || " + (d.get("rationale") or "")
+
+
+#: Star order deliberately DISAGREES with relevance — the shape the fixture suite missed.
+_STARS_LIE = [
+    {"repo": "scoopbucket/thing", "stars": 1222, "description": "A Scoop bucket for Windows apps"},
+    {"repo": "realorg/thing", "stars": 859, "description": "The actual scientific tool"},
+    {"repo": "someone/thing", "stars": 40, "description": "A student reimplementation"},
+    {"repo": "other/thing", "stars": 3, "description": "Unrelated toy"},
+]
+
+
+def test_the_remedy_does_not_single_out_the_star_maximum(monkeypatch):
+    """THE defect. Naming exactly one candidate makes the resolver choose, and the
+    only ordering it has is popularity. The 2026-08-06 ruling puts that judgement
+    with the ride, which is the reader that has world knowledge."""
+    note = _diverging_note(monkeypatch, "thing", _STARS_LIE)
+    assert "SAME NAME, DIFFERENT PROJECTS" in note
+
+    named = [r["repo"] for r in _STARS_LIE if f"github_repo='{r['repo']}'" in note]
+    assert len(named) != 1, (
+        f"the disclosure offers exactly one repo ({named}) as THE next call. With the "
+        f"list ordered by stars that is a popularity guess wearing a remedy's clothes.")
+
+
+def test_every_candidate_is_equally_copy_pasteable(monkeypatch):
+    """Not-picking must not cost actionability: each row carries its own call."""
+    note = _diverging_note(monkeypatch, "thing", _STARS_LIE)
+    for r in _STARS_LIE:
+        assert f"github_repo='{r['repo']}'" in note, f"{r['repo']} has no copy-pasteable call"
+
+
+def test_the_count_and_the_rows_are_one_reading(monkeypatch):
+    """"4 repo(s) own the name" over three rows. The page said four and showed three."""
+    note = _diverging_note(monkeypatch, "thing", _STARS_LIE)
+    shown = sum(1 for r in _STARS_LIE if r["repo"] in note)
+    assert shown == len(_STARS_LIE), (
+        f"{shown} of {len(_STARS_LIE)} divergent repos reached the message, which states "
+        f"the full count — a reader cannot compare candidates they were not shown")
+
+
+def test_the_message_says_the_ordering_is_popularity_not_relevance(monkeypatch):
+    """A ranked list with no stated ordering reads as a recommendation. Saying what
+    the order MEANS is what stops the first row being taken as the answer."""
+    note = _diverging_note(monkeypatch, "thing", _STARS_LIE).lower()
+    assert "stars" in note and ("popularity, not relevance" in note or "not relevance" in note)

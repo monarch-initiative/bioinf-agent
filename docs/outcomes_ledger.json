@@ -565,8 +565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "save_archive",
-    "where": "agent/skills/docker_builder.py:254",
-    "end_line": 259,
+    "where": "agent/skills/docker_builder.py:267",
+    "end_line": 272,
     "named_in_test": false
   },
   {
@@ -2315,8 +2315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "save_archive",
-    "where": "agent/skills/docker_builder.py:248",
-    "end_line": 253,
+    "where": "agent/skills/docker_builder.py:261",
+    "end_line": 266,
     "named_in_test": false
   },
   {

@@ -22,7 +22,7 @@ of it.
 """
 from __future__ import annotations
 
-
+import re
 from pathlib import Path
 
 from agent.skills.env_honesty import (
@@ -283,3 +283,79 @@ def test_no_coverage_clause_is_orphaned_from_the_bullets():
     orphans = sorted({c.clause for c in contract.coverage} - claimed)
     assert not orphans, (
         f"{orphans} appear in the coverage table and under no guarantee bullet")
+
+
+# ---------------------------------------------------------------------------
+# THE RECURRENCE. Caught by an audit hours after the fix above shipped, in the
+# SAME commit that shipped it.
+#
+# The "Provenance of the bytes" block sits below the guarantee bullets and says
+# where the image came from. Its non-adopt branch read: "installed and VALIDATED
+# inside the image that ships … the bytes VALIDATED are the bytes that run on
+# HPC" — authored, branched on build method, emitted unconditionally, over a
+# record that may carry zero verifications. That is F2 exactly, at one-tenth the
+# size, reintroduced by the fix for F2.
+#
+# It slipped because the guards above check the guarantee bullets: the badge map
+# is exhaustive over verdicts, and the build-method test compares BADGES. Neither
+# looks at prose that is legitimately allowed to differ by build method. So the
+# lesson is not "add another string to a ban-list" — it is that a section allowed
+# to branch needs its own rule about what it may SAY.
+#
+# The rule: provenance describes where bytes CAME FROM. Any sentence about what
+# was checked in them belongs to the contract, which renders itself.
+# ---------------------------------------------------------------------------
+
+_PROVENANCE_HEAD = "<h3 style=\"margin-top:1.2rem\">Provenance of the bytes</h3>"
+
+#: Outcome verbs. In the guarantee bullets these come from the contract and are
+#: fine; in a hand-written provenance sentence every one of them is a claim
+#: nobody checked. Narrow list, narrow scope — that is what makes it usable.
+_OUTCOME_WORDS = ("validated", "verified", "proven", "passed", "re-ran green", "checked")
+
+
+def _provenance_block(html: str) -> str:
+    assert _PROVENANCE_HEAD in html, "the provenance block moved — update this guard deliberately"
+    block = html[html.index(_PROVENANCE_HEAD):].split("</ul>", 1)[0]
+    # Drop the heading (the word "Provenance" contains "proven") and the tagged
+    # cross-reference to the contract bullet, which is wanted — pointing AT the
+    # answer is the opposite of asserting it.
+    block = block.replace(_PROVENANCE_HEAD, "")
+    return re.sub(r"<code>[^<]*</code>", "", block)
+
+
+def test_the_provenance_block_makes_no_claim_about_what_was_checked():
+    """Both branches, because the defect was in the one nobody was looking at."""
+    for rec, what in ((_GOOD, "built"),
+                      ({**_GOOD, "mode": "adopt", "build_method": "adopt-image"}, "adopted")):
+        scanned = _provenance_block(render_env_report_html(rec)).lower()
+        offenders = [w for w in _OUTCOME_WORDS
+                     if re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", scanned)]
+        assert not offenders, (
+            f"the {what} provenance bullet asserts {offenders} — that is an outcome, and "
+            f"outcomes are rendered from the contract, not typed here")
+
+
+def test_a_record_with_no_evidence_gets_no_validation_claim_from_provenance():
+    """End to end on the record shape that makes the claim false: zero
+    verifications, on the BUILT branch where the recurrence lived.
+
+    Deliberately scoped to the provenance block rather than the whole page. A
+    first attempt banned the literal "the bytes validated are the bytes" document-
+    wide and failed — because that phrase is part of LAYER1_GUARANTEES' own
+    DEFINITION of what VALIDATED_IN_IMAGE means, rendered directly beside a FAILED
+    badge and the words "no evidence was run in the shipped image". Saying what a
+    guarantee would establish and saying that it did are different acts, and a
+    guard that cannot tell them apart would push the page toward explaining less.
+    """
+    bare = {"name": "bare", "image": "x@sha256:d", "image_digest": "sha256:d",
+            "mode": "build", "build_method": "container-native", "requested_tools": ["x"]}
+    html = render_env_report_html(bare)
+    assert "no evidence was run in the shipped image" in html
+
+    scanned = _provenance_block(html).lower()
+    offenders = [w for w in _OUTCOME_WORDS
+                 if re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", scanned)]
+    assert not offenders, (
+        f"provenance asserts {offenders} over a record whose contract established "
+        f"nothing — the exact shape of F2, in the block below the fix for F2")

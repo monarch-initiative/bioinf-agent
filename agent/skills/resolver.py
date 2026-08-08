@@ -2973,23 +2973,54 @@ def resolve(
             probe_github_search(tool, timeout))
         decision["identity_corroboration"] = _corr
         if _corr["status"] == "diverges":
+            # SHOW ALL OF THEM, AND NAME NONE OF THEM.
+            #
+            # Two defects lived in this block, both introduced by the fix for F15 —
+            # the finding about name confusion — and both found by audit hours later:
+            #
+            # 1. `[:3]` printed three rows under a sentence that said how many repos
+            #    own the name. Measured on `dorado`: "4 repo(s) own the name" above a
+            #    list of three. One field, two readings, in the message whose whole job
+            #    is to let a human compare candidates.
+            # 2. The copy-pasteable remedy hard-named `divergent_repos[0]`. That list
+            #    arrives ordered by STARS (github search, top 5 by stars), so the one
+            #    repo we singled out was the star maximum — for `dorado`, a 1222-star
+            #    PowerShell Scoop bucket, recommended over the 859-star
+            #    `nanoporetech/dorado` printed directly beneath it. Star-dominance is
+            #    the exact heuristic this codebase removed from `auto_adoptable`, and
+            #    it came back inside the remedy string of the fix built to cure name
+            #    confusion.
+            #
+            # The 2026-08-06 ruling is that judging WHICH project you meant is the
+            # ride's call, because the ride is the reader with the world knowledge to
+            # make it. A resolver that picks one is doing that judging with a star
+            # count. So the remedy offers the FORM and the reader picks the repo.
+            # Every row carries its OWN copy-pasteable next call, so the message stays
+            # as actionable as it was while privileging nobody. Naming one and only one
+            # was what smuggled the star ranking in.
+            _div = _corr["divergent_repos"]
             _rows = "\n".join(
                 f"#   {c['repo']} ({c['stars']}★)"
                 + (f" — \"{c['description']}\"" if c.get("description") else
                    " — publishes NO description, so there is nothing to read it against")
-                for c in _corr["divergent_repos"][:3])
+                + f"\n#       -> github_repo='{c['repo']}'"
+                for c in _div)
             _disclose(decision,
                       f"SAME NAME, DIFFERENT PROJECTS — we searched github for repos named "
                       f"exactly '{tool}' (the check a registry hit used to suppress). "
-                      f"{_corr['detail']}:\n{_rows}\n"
+                      f"{_corr['detail']}. All {len(_div)} of them, in the order github "
+                      f"ranked them BY STARS (which is popularity, not relevance — the "
+                      f"one you want may be last):\n{_rows}\n"
                       f"# A registry carrying the name proves the NAME is taken, not that "
                       f"this entry is the tool you meant — and this is the one question no "
                       f"gate downstream asks: a wrong-but-working tool builds, validates, "
                       f"and ships green with a digest and an attestation. Read each "
                       f"description above against what you asked for, then either proceed "
-                      f"(the line below is unchanged) or re-run with "
-                      f"github_repo='{_corr['divergent_repos'][0]['repo']}' to route "
-                      f"against that project instead.",
+                      f"(the line below is unchanged) or re-run with github_repo= set to "
+                      f"the value printed beside whichever project you meant. "
+                      f"We do not pick one for you: choosing between these is world "
+                      f"knowledge, and a resolver that guessed would be guessing by "
+                      f"star count.",
                       "another project owns this name — confirm which one you meant")
 
     # A WORKFLOW IS NOT A TOOL, AND SAYING SO IS THE WHOLE ANSWER.

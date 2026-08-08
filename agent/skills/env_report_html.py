@@ -1008,9 +1008,18 @@ def render_env_report_html(record: dict) -> str:
                  "you — whether the image carries the tool you asked for — is the "
                  "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
     else:
-        P.append("<li><b>BUILT IN-CONTAINER</b> — installed and validated inside the image that "
-                 "ships, so install and ship are one event and the bytes validated are the bytes "
-                 "that run on HPC.</li>")
+        # PROVENANCE ONLY — no outcome verb. This bullet said "installed and VALIDATED
+        # inside the image that ships … the bytes VALIDATED are the bytes that run on
+        # HPC", branched on build method, emitted unconditionally. That is F2's exact
+        # shape at one-tenth the size, and it was written INTO THE COMMIT THAT FIXED F2,
+        # over a record that may carry zero verifications, with the whole suite green.
+        # Where the bytes came from is a fact about the build; whether anything was
+        # exercised in them is the VALIDATED_IN_IMAGE bullet above, and this section
+        # must not answer that question a second time.
+        P.append("<li><b>BUILT IN-CONTAINER</b> — these bytes were assembled inside the image "
+                 "that ships, rather than built on the host and copied in, so install and ship "
+                 "are one event. What was exercised in them is the "
+                 "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
         P.append("<li><b>Reproducibility</b> — the content digest binds the conda/PyPI lock, the "
                  "long-tail commands, the platform, and the digest-pinned base image. Release "
                  "binaries are sha256-anchored. The apt runtime layer is captured but not "

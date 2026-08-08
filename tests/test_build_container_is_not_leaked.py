@@ -174,3 +174,74 @@ def test_start_sweeps_before_it_builds(monkeypatch):
     cb.start()
 
     assert order[:2] == ["sweep", "run"], order
+
+
+# ---------------------------------------------------------------------------
+# THE CLASS, not the instance.
+#
+# F16 was fixed at ONE launcher (ContainerBuild.start). An audit then found a
+# second, `docker_builder.py`'s `docker run -d`, launching an unlabelled detached
+# container holding a whole step's working set — one the sweep can never reap,
+# because the sweep is scoped by label. Fixing a leak at one site and leaving
+# another is how a class survives its own repair.
+#
+# So this is a SOURCE SWEEP rather than another per-site test: every detached
+# `docker run -d` in agent/ must carry the labels, including ones written after
+# this file. That is the difference between a guard against an instance and a
+# guard against a class, and it is the property the whole fix phase was judged on.
+# ---------------------------------------------------------------------------
+
+import ast
+from pathlib import Path
+
+_AGENT = Path(__file__).resolve().parents[1] / "agent"
+
+
+def _detached_run_sites():
+    """Every `docker run -d ...` argv list literal in agent/, with its labels."""
+    out = []
+    for py in sorted(_AGENT.rglob("*.py")):
+        try:
+            tree = ast.parse(py.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.List):
+                continue
+            head = [e.value for e in node.elts[:3]
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if head[:3] != ["docker", "run", "-d"]:
+                continue
+            literals = [e.value for e in node.elts
+                        if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            fstrings = [e for e in node.elts if isinstance(e, ast.JoinedStr)]
+            has_label_flag = "--label" in literals
+            # the owner label is an f-string (`f"{LABEL}={os.getpid()}"`), so its
+            # presence is checked structurally rather than by value
+            out.append({"file": str(py.relative_to(_AGENT.parent)), "line": node.lineno,
+                        "has_label_flag": has_label_flag,
+                        "fstring_count": len(fstrings)})
+    return out
+
+
+def test_every_detached_container_in_the_codebase_is_labelled():
+    sites = _detached_run_sites()
+    assert sites, "no `docker run -d` found — this sweep has stopped looking at anything"
+    unlabelled = [s for s in sites if not s["has_label_flag"]]
+    assert not unlabelled, (
+        "detached container launch(es) with no bioinf_agent label: "
+        + ", ".join(f"{s['file']}:{s['line']}" for s in unlabelled)
+        + ". sweep_leaked_build_containers() is scoped by label, so an unlabelled "
+          "container is one it can never reap. Add both labels (see "
+          "container_build.ContainerBuild.start) or the leak F16 fixed comes back "
+          "through this door.")
+
+
+def test_every_labelled_launch_also_records_its_owner():
+    """The label alone makes a container findable; the OWNER PID is what makes it
+    safe to reap. A site with the first and not the second would be swept while a
+    live build was using it."""
+    for s in _detached_run_sites():
+        assert s["fstring_count"] >= 2, (
+            f"{s['file']}:{s['line']} labels its container but interpolates fewer than "
+            f"two values — the owner pid label looks to be missing")

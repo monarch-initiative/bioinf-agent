@@ -1360,7 +1360,10 @@ def evaluate_build(result: dict) -> BuildContract:
             f"{len(unasked)} of {len(passing)} passing evidence command(s) were never re-run in "
             f"a control image lacking the tool "
             f"({', '.join(sorted((v.get('label') or '?') for v in unasked))}) — so nothing here "
-            f"distinguishes this image from an image without the tool. Re-freeze to earn it"))
+            f"distinguishes this image from an image without the tool. A re-freeze runs the "
+            f"control experiment; pass `evidence={{tool: command}}` with it if the default "
+            f"probe is presence-only, since a presence probe is what tends to leave this "
+            f"unasked in the first place"))
 
     # -- POLICY_CLEAN + PROVENANCE_CLEAN ---------------------------------
     # PROVENANCE_CLEAN is the firewall around the synthesis tier: a synthesized
