@@ -18,6 +18,7 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.models import core_data as _core_data
+from agent.skills import resources as _resources_skill
 from agent.skills import tool_surface as _tool_surface
 from agent.skills.outcomes import refused
 @mcp.tool()
@@ -370,11 +371,30 @@ def select_test_data(
     now". Consequence worth knowing before you seal: an input deleted, truncated
     or rewritten between the run and `seal_workflow` REFUSES the seal.
 
+    THE CORE GENOME COMES WITH IT. The matched dataset's core dir usually ships a
+    reference (`genome:` in its manifest), and this records it as
+    `test_data.reference_fasta` + `test_data.fai`, anchored like every other path —
+    so an aligner step whose input is that FASTA traces at seal instead of landing
+    as `I8.composition_coherence` with no field that would have accepted it
+    (`reference_databases` is for data BEYOND the genome FASTA, by its own model).
+    Aligner index families (`indexes:` in the manifest) are deliberately NOT
+    recorded: their prefix is the FASTA path already here, and pinning derived
+    files would refuse a workflow that legitimately re-runs `bwa index`.
+    The result says which of THREE things happened, under `genome_reference.state`:
+    `recorded` · `declared_but_not_on_disk` (the manifest names a FASTA that is
+    gone — nothing was recorded, run scripts/setup_core_test_data.sh) ·
+    `none_declared` (this core dir ships reads and no reference — declare yours
+    with download_reference_database / stage_authored_artifact). Absent is never
+    reported as recorded.
+
     `file_format` ("fastq" | "pod5" | "fast5" | …) lets a basecaller pipeline
     pick the raw-signal entry deterministically when both pod5 and the same
     project's basecalled FASTQ exist under the same assay_type. Defaults to
     "" (don't filter on format)."""
-    all_data = _ms._list_resources({"resource_type": "test_data"}, _ms.config).get("test_data", [])
+    # ONE read of the manifests: the datasets to match against, and the genome each
+    # core dir declares (the reference half, below).
+    _resources = _ms._list_resources({"resource_type": "both"}, _ms.config)
+    all_data = _resources.get("test_data", [])
     sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
 
     # SOME CRITERIA SAY *WHAT KIND OF DATA*; OTHERS SAY *WHICH INSTANCE*. Only the
@@ -462,6 +482,16 @@ def select_test_data(
     }
     test_data_ref = {k: v for k, v in test_data_ref.items() if v is not None}
 
+    # THE REFERENCE THE READS ALIGN TO. `test_data.reference_fasta` / `.fai` have been in
+    # TEST_DATA_PATH_KEYS — i.e. traceable and anchorable — since I8 learned about external
+    # sources, and no producer ever wrote them, while `test_data` is not patchable. So the
+    # most common shape in the field had no correct way to declare its reference, and every
+    # alignment workflow bought a refused seal. This is the door. `genome_reference_for`
+    # returns three states and writes paths ONLY for bytes that are actually there.
+    genome = _resources_skill.genome_reference_for(
+        best.get("core_dir") or "", _resources.get("genomes", []))
+    test_data_ref.update(genome["paths"])
+
     # CONTENT ANCHORS — pin the bytes at SELECTION time, so seal has something real to
     # re-verify against. Written here and nowhere else: an anchor first observed at seal
     # would be compared against itself moments later and prove nothing (the I5 laundering
@@ -475,7 +505,11 @@ def select_test_data(
     if anchors:
         test_data_ref["content_anchors"] = anchors
 
-    result = {"test_data": test_data_ref, "available": available, "match_score": score}
+    result = {"test_data": test_data_ref, "available": available, "match_score": score,
+              # STATED, never inferred from the absence of keys: a caller that reads
+              # "no reference_fasta" cannot tell a core dir that ships no genome from
+              # one whose genome was deleted, and the two have different remedies.
+              "genome_reference": genome}
     if pipeline_id:
         ok = _ms._pipeline_state.set_test_data(pipeline_id, test_data_ref)
         result["pipeline_merge"] = (

@@ -33,12 +33,13 @@ buildx — qemu on a non-linux/amd64 host (e.g. Apple Silicon), native on linux-
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 from typing import Any, Optional
 
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, degraded
 # Where a human-supplied artifact lands inside the BUILD stage — ONE definition,
 # imported from the generator module that writes the commands that read it.
 # See `ContainerBuild.stage_artifact` and `install_commands.local_artifact`.
@@ -153,6 +154,91 @@ def _swh_clone_install_lines() -> list[str]:
 # DELIBERATELY to take base security updates.
 BASE_IMAGE = ("debian:bookworm-slim@sha256:"
               "0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb")
+
+# Every build container is stamped with these two labels so a LEAKED one can be
+# told apart from a live one, and from any other container on the machine.
+#
+# `close()` removes the container on the normal path, and env_build's `finally:`
+# makes that survive an exception. Neither survives the process being KILLED —
+# the ~600 s stream-watchdog, or BIOINF_MCP_AUTO_RELOAD reloading the server
+# mid-freeze. There is no Python that runs after SIGKILL, so the container is
+# still there holding its whole install layer: ten of them (4.485 GB, the oldest
+# two weeks old) were found during the 2026-08-07 disk cleanup.
+#
+# `--rm` would fix only the future; the sweep below also reaps the leaks that
+# already happened. The OWNER PID is what makes the sweep safe under concurrent
+# freezes (different envs run fully in parallel): a container is reaped only when
+# no live process claims it. A recycled PID makes us SKIP a dead container — a
+# leak that persists one more round — never reap a live one.
+_BUILD_LABEL = "bioinf_agent_build"
+_BUILD_OWNER_LABEL = "bioinf_agent_build_pid"
+
+
+def _owner_is_alive(pid: str) -> bool:
+    """True when `pid` names a process that still exists. An unparseable or
+    absent label is treated as ALIVE — an unlabelled container predates the
+    sweep or came from somewhere else, and the sweep declines to guess."""
+    try:
+        n = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if n <= 0:
+        return True
+    try:
+        os.kill(n, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by another user
+    except OSError:
+        return True
+
+
+def sweep_leaked_build_containers() -> dict[str, Any]:
+    """Remove build containers whose owning process is gone.
+
+    Called at the top of every `ContainerBuild.start()`, so the machine is
+    cleaned by the next build rather than by a human noticing the disk. Returns
+    what it reaped and what it deliberately left alone — a sweep that silently
+    removed containers would be indistinguishable from one that never ran."""
+    fmt = "{{.ID}}\t{{.Label \"" + _BUILD_OWNER_LABEL + "\"}}"
+    try:
+        p = subprocess.run(["docker", "ps", "-aq", "--no-trunc",
+                            "--filter", f"label={_BUILD_LABEL}=1",
+                            "--format", fmt],
+                           capture_output=True, text=True, errors="replace", timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        # `broke`, not a silent empty sweep: "we could not look" and "there was
+        # nothing to reap" are the same two lines of JSON otherwise, and the
+        # difference is whether the disk is quietly filling up again.
+        return broke("container_build.sweep_unavailable", swept=[], kept=[],
+                     error=f"{type(e).__name__}: {e}")
+    if p.returncode != 0:
+        return broke("container_build.sweep_query_failed", swept=[], kept=[],
+                     error=(p.stderr or "").strip()[-300:])
+
+    swept, kept, failed = [], [], []
+    for line in (p.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        cid, _, owner = line.partition("\t")
+        cid = cid.strip()
+        if not cid:
+            continue
+        if _owner_is_alive(owner.strip()):
+            kept.append({"container": cid[:12], "owner_pid": owner.strip(), "reason": "owner_alive"})
+            continue
+        try:
+            r = subprocess.run(["docker", "rm", "-f", cid], capture_output=True,
+                               text=True, errors="replace", timeout=120)
+            (swept if r.returncode == 0 else failed).append(cid[:12])
+        except (subprocess.TimeoutExpired, OSError):
+            failed.append(cid[:12])
+    if failed:
+        return degraded("container_build.sweep_partial", swept=swept, kept=kept,
+                        failed=failed)
+    return proven("container_build.swept", swept=swept, kept=kept)
 
 # The conda-prefix SBOM scan, in ONE place because it has TWO producers — the live build
 # container (`resolved_packages`) and a shipped/adopted image (`conda_sbom_from_image`) —
@@ -650,7 +736,13 @@ class ContainerBuild:
         """Launch the build container for the ship platform + install the base
         toolchain. The conda/pip ENGINE is installed lazily on the first declare()
         — a pure binary/source/half-baked env carries no pixi/micromamba at all."""
+        sweep = sweep_leaked_build_containers()
+        if sweep.get("swept"):
+            self.log.append(f"swept {len(sweep['swept'])} leaked build container(s): "
+                            + ",".join(sweep["swept"]))
         r = self._sh(["docker", "run", "-d", "--platform", self.platform,
+                      "--label", f"{_BUILD_LABEL}=1",
+                      "--label", f"{_BUILD_OWNER_LABEL}={os.getpid()}",
                       self.base, "sleep", "infinity"], timeout=300)
         if r["returncode"] != 0:
             return broke("container_build.start_run_failed", success=False, stage="run", stderr=r["stderr"][-800:])
@@ -932,7 +1024,8 @@ class ContainerBuild:
     _BANNER_VARIANTS = ("--version", "")
 
     def validate_in_image(self, image: str, checks: list[str],
-                          probe_tools: Optional[list[str]] = None) -> dict[str, Any]:
+                          probe_tools: Optional[list[str]] = None,
+                          workdirs: Optional[dict] = None) -> dict[str, Any]:
         """Re-run checks in the BUILT image — proves validated==shipped. Runs each
         check PLAIN (no engine activation prefix): the runtime image is self-
         activating (env baked onto PATH), so this is byte-for-byte how `apptainer
@@ -948,10 +1041,22 @@ class ContainerBuild:
         own `banners` field, separate from the evidence-check `out` (the renderer
         prefers banners for version extraction; the evidence `out` is from a
         check-command that CAN be agent-supplied via install primitives)."""
+        # `workdirs` (F10): the cwd a specific check must run from, keyed by the check
+        # string. A run-by-path script repo's caller-supplied verify uses relative
+        # imports and is run on the HOST from the clone dir; without this it ran here
+        # from `/work` and failed for a DIFFERENT reason than it did on the host, so
+        # the refusal named a path artifact instead of the missing package that was
+        # the true cause. It is passed as execution metadata rather than prepended to
+        # the command because the clone path contains the tool name, and a `cd
+        # /opt/tools/<tool> && …` prefix would satisfy the anti-echo-cheat token rule
+        # on its own — laundering the one check that proves the evidence is about
+        # this image.
         results, ok = {}, True
+        wd = workdirs or {}
         for c in checks:
+            here = wd.get(c) or self.workdir
             r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
-                          f'cd {self.workdir} 2>/dev/null || true; {c}'],
+                          f'cd {here} 2>/dev/null || true; {c}'],
                          timeout=300)
             results[c] = {"rc": r["returncode"], "out": (r["stdout"] or "").strip()[:200]}
             ok = ok and r["returncode"] == 0

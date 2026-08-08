@@ -615,7 +615,32 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     # yarn (Apollo3) and make/gcc (C tools via the `source` gen) are system
     # toolchains → stay UNcoupled (still on PATH inside/outside pixi run anyway).
     engine_coupled = interpreter in {"python", "python3", "Rscript", "perl"}
-    return {"command": cmd, "evidence": ev, "tool": wrap,
+    spec = {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (script repo @ {ref or 'HEAD'})",
             "runtime_packages": list(runtime_packages or []),
             "engine_coupled": engine_coupled}
+    if evidence:
+        # F10. A caller-supplied `verify_command` runs on the HOST from the clone dir
+        # — `env_manager.py:889` passes `working_dir=share_dir`, and the docstring at
+        # `:771` promises exactly that. The same string arrives here as the IN-IMAGE
+        # evidence and used to execute from the container's default cwd, so one
+        # command was resolved against two roots. For a run-by-path repo the cwd IS
+        # part of how the tool is invoked.
+        #
+        # The cost was not a false green: freeze correctly refused. It was the
+        # DIAGNOSIS. A verify doing `sys.path.insert(0,'HIC_ASSEMBLER'); import
+        # scaffoldToChromosomes` failed on the host with the true cause
+        # (`No module named 'matplotlib'`) and in-image with a path artifact
+        # (`No module named 'scaffoldToChromosomes'`), sending the reader after a
+        # packaging bug in someone else's repo while the real fix — `conda install
+        # matplotlib` — had already been named by the host run and thrown away.
+        #
+        # A WORKDIR, NOT A `cd` PREFIX ON THE STRING. Wrapping the evidence as
+        # `cd /opt/tools/{name} && (…)` was tried first and is a trap: the clone path
+        # CONTAINS THE TOOL NAME, so it satisfies `evidence_shape_violation`'s
+        # word-boundary token rule all by itself. Measured — `python -c "import foo"`
+        # is correctly refused for never naming the tool, and the same string under
+        # that prefix passes. The anti-echo-cheat rule must keep seeing the author's
+        # raw command, so the cwd travels as execution metadata instead.
+        spec["evidence_workdir"] = clone
+    return spec

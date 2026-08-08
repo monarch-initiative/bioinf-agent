@@ -343,11 +343,11 @@ def freeze_from_image(
     # record carrying `platform: linux/amd64` over a digest that serves both.
     _arch = _locus.image_arch(image)
     # The GPU claim gets the same treatment, and this path needs it most: an authors'
-    # image is exactly where "it's a CUDA build" is taken on trust from a README.
-    # Probed only when a claim is actually made — see freeze_tools for why.
-    _accel = (_locus.image_accelerator(image)
-              if (accelerator or {}).get("type", "none") not in ("none", "", None)
-              else None)
+    # image is exactly where "it's a CUDA build" is taken on trust from a README —
+    # and, per F17, exactly where no claim gets made at all because this primitive has
+    # no `accelerator` parameter for the caller to make one with. Probed
+    # UNCONDITIONALLY since 2026-08-07; see freeze_tools for the measurement.
+    _accel = _locus.image_accelerator(image)
     # THE ANCHOR AN ADOPT RECORD IS CHECKED AGAINST MUST BE THE ONE ANYONE CAN PULL.
     #
     # `digest` is `docker image inspect --format {{.Id}}` — the daemon's LOCAL content

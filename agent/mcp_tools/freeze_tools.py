@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
 # so test monkeypatching on mcp_server reaches us.
@@ -40,8 +41,9 @@ def _image_build_preflight():
     return _ms._check_disk_failsafe() or _ms._check_docker_available()
 
 
-def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dict]:
-    """Run each tool's presence evidence INSIDE `image` and return the verification rows
+def _validate_tools_in_image(image: str, platform: str, tools: list,
+                             evidence: Optional[dict] = None) -> list[dict]:
+    """Run each tool's evidence INSIDE `image` and return the verification rows
     env_honesty.check_build consumes: [{label, tool, check, rc, passed, out}].
 
     Extracted for the ADOPT path, which previously validated nothing at all. It generates
@@ -54,18 +56,45 @@ def _validate_tools_in_image(image: str, platform: str, tools: list) -> list[dic
     computes its own request_key from tools[0] (dropping the policy facets this key folds
     in), writes no hpc_delivery, and records no validation_locus — reusing it would have
     quietly regressed the adopt record's shape to buy code-sharing.
+
+    `evidence` — F4. The synthesized probe is a conda-metadata presence check: it proves
+    the package is IN the image and says nothing about whether it runs. Until 2026-08-07
+    that was the ONLY evidence this path could ever produce, because `freeze` had no
+    parameter through which a caller could author a better one — so "presence-only" was
+    a property of the ROUTE, not a choice, and the ENV report's own remedy ("re-freeze to
+    earn it") named an action that could not change the outcome.
+
+    Caller-authored evidence is held to BOTH guards the agent-authored path uses, because
+    this is now agent-authored text: the cheap shape rule, and — load-bearing — the
+    control-image experiment. A string rule cannot police a string author; `true ||
+    samtools` walks through the shape rule and is caught by neither reading the string
+    nor trusting it, but by running it somewhere the tool does not exist.
     """
+    from agent.skills.env_honesty import evidence_shape_violation
+    from agent.skills.freeze_from_image import _evidence_discriminates
+
+    ev_map = {str(k): str(v) for k, v in (evidence or {}).items() if v}
     rows: list[dict] = []
     for tool in tools:
-        check = _ms._env_freeze._conda_presence_check(tool)
+        authored = ev_map.get(tool, "")
+        check = authored or _ms._env_freeze._conda_presence_check(tool)
         try:
             r = _ms._docker.run_in_container(image, check, platform=platform, timeout=300)
             rc = r.get("returncode", 1)
             out = (r.get("stdout") or r.get("stderr") or "")[:400]
         except Exception as e:
             rc, out = 1, f"{type(e).__name__}: {e}"
-        rows.append({"label": tool, "tool": tool, "check": check,
-                     "rc": rc, "passed": rc == 0, "out": out})
+        row = {"label": tool, "tool": tool, "check": check,
+               "rc": rc, "passed": rc == 0, "out": out}
+        if authored:
+            # The synthesized probe needs neither guard — nothing authored it and its
+            # shape is ours. This one was typed by the agent, so it earns its standing
+            # the same way freeze_from_image's does.
+            row["shape_violation"] = evidence_shape_violation(authored, tool) or ""
+            row["control"], row["control_note"] = (
+                _evidence_discriminates(platform, authored) if rc == 0
+                else ("not_applicable", "evidence did not pass"))
+        rows.append(row)
     return rows
 
 
@@ -118,6 +147,7 @@ def freeze(
     gpu_required: bool = False,
     cuda_version: str = "",
     pipeline_id: str = "",
+    evidence: Optional[dict] = None,
 ) -> dict:
     """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
 
@@ -151,6 +181,16 @@ def freeze(
     'bwa=0.7.17']) — what biocontainer/mulled adoption matches on, NOT the full
     dependency closure. Returns {mode, image, image_digest, content_digest,
     request_key, hpc_delivery, cache_hit, …}.
+
+    `evidence` — OPTIONAL `{tool_name: command}`. On the ADOPT path the default
+    evidence is a conda-metadata presence probe: it proves the package is in the
+    image, never that it RUNS. Pass a command that exercises the tool on a real
+    input and the record earns a functional claim instead of a presence one —
+    `{"samtools": "samtools sort /t.bam -o /o.bam && test -s /o.bam"}`.
+    Authored evidence is held to the same two guards as `freeze_from_image`'s: the
+    shape rule, and the control-image experiment (it must FAIL in a digest-pinned
+    image that lacks the tool). A command that passes in both images is REFUSED —
+    it would pass anywhere and proves nothing about what is being shipped.
 
     Reach for `background=True` on a large build (CUDA tools, ML/AI models, big
     release binaries) — the in-call time there routinely exceeds the watchdog
@@ -508,13 +548,20 @@ def freeze(
     # platform. `resolved: False` (image somehow not inspectable) records nothing
     # rather than guessing, and the clause reads that absence as UNOBSERVED.
     _arch = _ms._locus.image_arch(image)
-    # And the same for the GPU claim, but ONLY when one is made. The probe costs a
-    # `docker run` and every accelerator=None env would pay it to be told what its
-    # absent claim already says; POLICY_CLEAN.accelerator_observed reads a claim of
-    # `none` as NOT_APPLICABLE, so there is nothing for the observation to serve.
-    _accel = (_ms._locus.image_accelerator(image)
-              if (effective_accel or {}).get("type", "none") not in ("none", "", None)
-              else None)
+    # And the same for the GPU claim — UNCONDITIONALLY, since F17.
+    #
+    # This used to probe only when a claim was made, reasoning that
+    # POLICY_CLEAN.accelerator_observed reads a `none` claim as NOT_APPLICABLE so the
+    # observation had nothing to serve. The reasoning assumed the comparison clause is
+    # the observation's only consumer. It is not: the ENV report is, and a reader
+    # opens it to decide whether to request a GPU node. Measured on a real
+    # `ontresearch/dorado` adopt — no claim, so no probe, so the page said "the
+    # artifact claims no GPU capability" while its own package list carried the whole
+    # CUDA 12.8 runtime.
+    #
+    # One `docker run` per freeze against a build that already takes minutes. Cheap
+    # for a fact the artifact currently cannot state at all.
+    _accel = _ms._locus.image_accelerator(image)
     record = _ms._freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
         image=image, image_digest=image_digest, platform=platform, gated=gated,
@@ -605,7 +652,29 @@ def freeze(
         # Affordable: the pull is already paid for by the SBOM reads above, and the
         # marginal cost is ~0.25s per tool (measured). The fast path stays fast.
         record["verifications"] = _validate_tools_in_image(
-            image, _adopt_platform, [n for n, _ in parsed])
+            image, _adopt_platform, [n for n, _ in parsed], evidence=evidence)
+        # REFUSE, never degrade, on caller-authored evidence that proves nothing —
+        # the same ruling `env_build` makes on the build path. We RAN the control
+        # experiment and it came back negative; that is not missing information, it
+        # is information. Only authored rows carry `control`, so a synthesized probe
+        # can never trip this.
+        _vacuous = [f"{v['tool']}: {v['check']!r} — {v.get('control_note','')}"
+                    for v in record["verifications"] if v.get("control") == "vacuous"]
+        _malformed = [f"{v['tool']}: {v['shape_violation']}"
+                      for v in record["verifications"] if v.get("shape_violation")]
+        if _vacuous or _malformed:
+            return broke(
+                "freeze.authored_evidence_rejected", success=False,
+                verifications=record["verifications"],
+                error="the evidence passed to `evidence=` cannot prove this image "
+                      "carries the tool" + (
+                          "; it passes in a control image WITHOUT the tool too: "
+                          + "; ".join(_vacuous) if _vacuous else "")
+                      + ("; malformed: " + "; ".join(_malformed) if _malformed else "")
+                      + ". Give a command that RUNS the tool on an input and fails "
+                        "when the tool is absent, or omit `evidence=` to fall back to "
+                        "the synthesized presence probe (which is weaker, and the "
+                        "record will say so).")
         # A real locus now — the evidence genuinely ran somewhere. `validation_locus:
         # "adopted"` was the honest name for "we validated nowhere"; with evidence it
         # would be a lie by omission (native vs emulated decides whether I7 timings are

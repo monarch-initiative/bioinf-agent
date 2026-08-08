@@ -356,3 +356,120 @@ def test_the_new_panels_do_not_break_purity(tmp_path):
     assert a == render_run_dashboard_html(spec)
     assert "<script>alert(1)</script>" not in a
     assert "&lt;script&gt;" in a
+
+
+# ---------------------------------------------------------------------------
+# F5 / F6 — the same rule in its second form.
+#
+# The rows above catch a gated BLOCK the page never mentions. These two were
+# invisible to that check because the block DID reach the page: the resource
+# numbers were printed, and the Type column was drawn. What went missing was the
+# qualifier — the sibling field that says the numbers cannot be trusted, and the
+# observation that says what the files actually are. A page that prints a fact
+# without the record's own caveat on it is worse than one that omits it.
+# ---------------------------------------------------------------------------
+
+def _step_with_resources(authoritative):
+    ru = {"wall_seconds": 812.4, "peak_rss_mb": 4096, "max_cpu_percent": 98,
+          "locus": "local container"}
+    if authoritative is not None:
+        ru["i7_authoritative"] = authoritative
+    return {
+        "workflow_name": "r", "description": "d",
+        "created_at": "2026-08-07T00:00:00+00:00",
+        "env_request_key": "d|linux-64|none",
+        "env_content_digest": "sha256:" + "ab" * 32,
+        "env_image": "example/d@sha256:" + "cd" * 32,
+        "pipeline_steps": [{"step": 1, "tool": "t", "command": "t in", "returncode": 0,
+                            "inputs": ["/a/in"], "detected_outputs": ["/a/out"],
+                            "resource_usage": ru,
+                            "validation": {"/a/out": {"passed": True,
+                                                      "validation_method": "exists"}}}],
+    }
+
+
+@pytest.mark.integration
+def test_emulated_resource_numbers_are_not_presented_as_budgetable():
+    """F5. This page is opened to review parameters before committing real data,
+    and the number a reader carries away is `#SBATCH --mem`. Under emulation the
+    figures are wrong by ~two orders of magnitude; `i7_authoritative` says so and
+    was read by nothing (`grep -c i7_authoritative run_dashboard_html.py` -> 0)."""
+    html = render_run_dashboard_html(_step_with_resources(False))
+    assert "NOT authoritative" in html
+    assert "#SBATCH --mem" in html, "the page must name the decision it is warning about"
+
+
+@pytest.mark.integration
+def test_natively_measured_resources_are_marked_trustworthy():
+    html = render_run_dashboard_html(_step_with_resources(True))
+    assert "authoritative" in html
+    assert "NOT authoritative" not in html
+
+
+@pytest.mark.integration
+def test_a_step_that_never_recorded_its_authority_says_unrecorded_not_untrustworthy():
+    """The third state. `False` is the default a bool hands back for a spec sealed
+    before the flag existed, and stamping "not authoritative" onto every historical
+    record asserts a measurement nobody took."""
+    html = render_run_dashboard_html(_step_with_resources(None))
+    assert "authority unrecorded" in html
+    assert "NOT authoritative" not in html
+
+
+@pytest.mark.integration
+def test_the_resource_authority_badges_cover_every_state():
+    from agent.skills.run_dashboard_html import (_RESOURCE_AUTHORITY_BADGE,
+                                                 _RESOURCE_AUTHORITY_NOTE)
+    states = {core_data.RESOURCES_AUTHORITATIVE, core_data.RESOURCES_EMULATED,
+              core_data.RESOURCES_UNRECORDED}
+    assert set(_RESOURCE_AUTHORITY_BADGE) == states
+    assert set(_RESOURCE_AUTHORITY_NOTE) == states
+
+
+def _outputs_table(html: str) -> str:
+    """Just the how-to Outputs table. Asserted against in isolation because the
+    values in play ("txt", "unrecorded") occur elsewhere on the page, and a test
+    that greps the whole document would pass with the column still blank —
+    which is exactly how this defect survived a suite that already rendered it."""
+    head = '<tr><th>Name</th><th>Files</th><th>Type</th></tr>'
+    assert head in html, "the Outputs table is gone — update this helper deliberately"
+    return html[html.index(head):].split("</table>", 1)[0]
+
+
+@pytest.mark.integration
+def test_the_output_type_column_shows_what_the_self_test_validated(tmp_path):
+    """F6. The self-test resolves an expected type for every matched output —
+    the author's if declared, else inferred from the basename — validates against
+    it, and until 2026-08-07 the seal dropped the result. The column read the
+    AUTHORED `usage.outputs[*].type`, empty on every spec in the corpus."""
+    spec, _ = _spec_with_real_selftest(tmp_path)
+    vals = core_data.usage_output_validations(spec)
+    assert vals, "the seal dropped validation_results again"
+    observed = {v["expected_type"] for v in vals if v.get("expected_type")}
+    assert observed == {"txt"}, observed
+
+    # The author's declaration is what the self-test recorded; now remove it, so the
+    # only surviving source for the column is the runtime's own observation.
+    for o in spec["usage"]["outputs"]:
+        o.pop("type", None)
+
+    table = _outputs_table(render_run_dashboard_html(spec))
+    cells = table.split("<td>")
+    assert len(cells) >= 4, table
+    assert "txt" in cells[3], (
+        f"the Type cell is {cells[3]!r}; the self-test validated these files as "
+        f"{observed} and the column must show it")
+
+
+@pytest.mark.integration
+def test_an_unfillable_type_cell_says_so_rather_than_rendering_blank(tmp_path):
+    """A declared column that is silently empty reads as 'this output has no
+    type', which is a claim. Absence gets a word."""
+    spec, _ = _spec_with_real_selftest(tmp_path)
+    for o in spec["usage"]["outputs"]:
+        o.pop("type", None)
+    spec["usage_verification"]["trials"] = []
+
+    table = _outputs_table(render_run_dashboard_html(spec))
+    cells = table.split("<td>")
+    assert "unrecorded" in cells[3], f"the Type cell is {cells[3]!r}, not a stated absence"

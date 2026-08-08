@@ -320,8 +320,15 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
         # `versions` = the WINNING channel's full list, so a version-existence check compares
         # against the channel actually being emitted (bioconda's abandoned hmmlearn ≠
         # conda-forge's maintained one — the pick already resolved that, and the list follows it).
+        #
+        # `license_source` NAMES WHERE THE STRING CAME FROM, and every tier that captures a
+        # licence now sets it. A licence with no stated origin cannot be told apart from a
+        # licence nobody published: both arrive as `""` and both used to read `unrecognized`,
+        # which is a claim ("we read one and could not place it") about a field we never
+        # looked at. Same discipline as `repo_field` two lines up.
         out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3],
-               "versions": best[6], "license": best[7]}
+               "versions": best[6], "license": best[7],
+               "license_source": (f"the {best[1]} recipe's `license`" if best[7] else "")}
         if best[4]:
             out["repo"] = best[4]
             out["repo_field"] = best[5]     # provenance: WHICH field vouched for it
@@ -353,6 +360,49 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
     return {"available": False}
 
 
+#: The longest string we will treat as a licence IDENTIFIER rather than as licence PROSE.
+#: PyPI's `info.license` is free text: most packages put "MIT" in it and some paste the
+#: entire licence body. Keyword-matching a licence BODY is the `bcftools --version` mistake
+#: on a new axis — GPLv3's own text discusses commercial redistribution, so a regex over it
+#: returns `restricted` for the most permissive licence in the field. Prose is reported AS
+#: prose (`license_source` says so, `license` stays empty) rather than classified.
+_LICENSE_IDENTIFIER_MAX = 120
+
+
+def _pypi_license(info: dict) -> tuple[str, str]:
+    """PyPI's licence for one package, as (string, where-it-came-from). Pure.
+
+    Best-vouched first, and every branch NAMES its source, because "no licence" and
+    "a licence we declined to read" are different facts about the package:
+
+      * `license_expression` — PEP 639, an SPDX expression. Structured and authoritative.
+      * the `License ::` trove classifiers — a controlled vocabulary, which is what most
+        of PyPI actually publishes ("License :: OSI Approved :: MIT License").
+      * `license` — free text, taken ONLY when it is short enough to be an identifier.
+        The bare "OSI Approved" classifier is dropped: it names no licence.
+
+    This exists because `identity.license` was fed by the conda probe alone, so
+    `license_disposition` could only ever be `unrecognized` for anything off bioconda —
+    and a tool is licence-gated PRECISELY because its bytes are not redistributable, which
+    is why it is not on bioconda. The one fact that could flag a gated artifact was
+    collected only on the tier gated artifacts cannot be on."""
+    expr = str(info.get("license_expression") or "").strip()
+    if expr:
+        return expr, "PyPI's `license_expression` (SPDX)"
+    trove = [c.split("::")[-1].strip() for c in (info.get("classifiers") or [])
+             if isinstance(c, str) and c.startswith("License ::")]
+    trove = [c for c in trove if c and c.lower() != "osi approved"]
+    if trove:
+        return "; ".join(trove), "PyPI's `License ::` classifiers"
+    lic = str(info.get("license") or "").strip()
+    if not lic:
+        return "", ""
+    if len(lic) <= _LICENSE_IDENTIFIER_MAX and "\n" not in lic:
+        return lic, "PyPI's `license` field"
+    # Present, and not something we will keyword-match. Reported, never inferred.
+    return "", "PyPI's `license` field, which holds the licence TEXT rather than an identifier"
+
+
 def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
     """PyPI metadata. Captures homepage + project_urls so a github_repo-supplied
     resolve() can confirm a same-name PyPI hit actually references the same
@@ -374,6 +424,7 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
         rel = data.get("releases") or {}
         versions = [v for v, files in rel.items()
                     if files and any(not f.get("yanked") for f in files)]
+        lic, lic_src = _pypi_license(info)
         return {
             "available": True,
             "latest": info.get("version"),
@@ -382,6 +433,8 @@ def probe_pypi(name: str, timeout: int = 12) -> dict[str, Any]:
             "home_page": info.get("home_page") or "",
             "project_urls": info.get("project_urls") or {},
             "package_url": info.get("package_url") or "",
+            "license": lic,
+            "license_source": lic_src,
         }
     return {"available": False, **({"probe_error": err} if err else {})}
 
@@ -394,12 +447,18 @@ def _probe_cran_exact(name: str, timeout: int) -> dict[str, Any]:
     if isinstance(data, dict) and data.get("Package"):
         summary = " — ".join(x for x in ((data.get("Title") or "").strip(),
                                          (data.get("Description") or "").strip()) if x)
+        # CRAN REQUIRES a License field of every package, so this is the one registry where
+        # an empty licence is itself remarkable. Captured for the same reason conda's is:
+        # the resolver's only gatedness signal must not depend on which tier we picked.
+        _lic = str(data.get("License") or "").strip()
         return {
             "available": True,
             "latest": data.get("Version"),
             "summary": re.sub(r"\s+", " ", summary)[:400],
             "url": data.get("URL") or "",
             "bug_reports": data.get("BugReports") or "",
+            "license": _lic,
+            "license_source": "CRAN's `License` field" if _lic else "",
             # CRAN's own spelling, not ours. `install.packages()` is case-SENSITIVE,
             # so this is what has to reach the install_call — never the query.
             "resolved_name": data.get("Package"),
@@ -1280,6 +1339,42 @@ _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # moves to the ride, the resolver returns facts.)
 # ---------------------------------------------------------------------------
 
+#: Tiers whose probe READS a licence field off the entry. Membership is a fact about our
+#: PROBES, not about the packages — which is the whole reason `bioconductor` is absent:
+#: `probe_bioconductor` is an existence check (`_fetch_ok` on the release HTML page) and
+#: collects nothing, so reporting "the bioconductor entry publishes no licence" would state
+#: a fact about our probe as a fact about the package. Exactly the exclusion, and exactly
+#: the reason, that `_REGISTRY_TIERS` records for the description sniff.
+_LICENSE_READING_TIERS = ("conda", "pip", "cran")
+
+#: Tiers that are a REGISTRY ENTRY at all. Everything else — binary, source, synthesis,
+#: author_image, authors_recipe, r_github — is a repo or a release asset, and nothing on
+#: that route publishes a licence for the bytes. That is not an oversight to fix by probing
+#: harder; it is the shape of the thing, and it must be SAID rather than left as an empty
+#: string that reads like a registry answered "none".
+_REGISTRY_ENTRY_TIERS = _LICENSE_READING_TIERS + ("bioconductor",)
+
+
+def license_evidence(chosen: str, license_text: str, license_source: str) -> str:
+    """WHY the chosen entry's licence reads the way it does — five states. Pure.
+
+    `""` answered five different questions with one value, and `license_disposition("")`
+    rounded all five to `unrecognized`, which is a claim about a field nobody read. See
+    `identity_facts` for the states and the measurement that forced them apart."""
+    if license_text.strip():
+        return "published"
+    if license_source:
+        # A source with no string: the entry published something we deliberately declined
+        # to classify (a licence BODY rather than an identifier). Evidence exists; we are
+        # saying we will not keyword-match it, which is a different fact from its absence.
+        return "unclassified_text"
+    if chosen in _LICENSE_READING_TIERS:
+        return "not_published"
+    if chosen in _REGISTRY_ENTRY_TIERS:
+        return "not_probed"
+    return "no_channel"
+
+
 def identity_facts(tool: str, chosen: str, availability: dict,
                    github_repo: str = "", repo_ev: Optional[dict] = None,
                    discovery: Optional[dict] = None) -> dict:
@@ -1315,6 +1410,27 @@ def identity_facts(tool: str, chosen: str, availability: dict,
                          signal says proceed, and they are commercial. Gatedness is a
                          property of the ARTIFACT, invisible to a question about which
                          package this is, so it needs its own fact or it has none.
+      license_evidence — WHY the licence reads the way it does, in five states, because
+                         `unrecognized` was carrying two opposite meanings and only one of
+                         them is a finding. Measured 2026-08-06 across six probes: only
+                         conda ever populated `license`, so every pip / cran / binary /
+                         synthesis pick came back `unrecognized` — a claim ("we read a
+                         licence and could not place it") about a field nothing had read.
+                         And it is structural, not incidental: a tool is licence-gated
+                         BECAUSE its bytes may not be redistributed, which is exactly why
+                         it is not on bioconda, so the tier that carried the fact and the
+                         tier gated tools live on were disjoint by construction. The
+                         states — `published` · `unclassified_text` (prose, not an
+                         identifier; we refuse to keyword-match a licence BODY) ·
+                         `not_published` (the tier publishes the field and this entry left
+                         it blank) · `not_probed` (OUR probe for this tier reads no licence
+                         — bioconductor's is an existence check) · `no_channel` (the pick
+                         is a repo/release, and nothing on that route publishes a licence
+                         at all). Only `published` yields a disposition; the rest yield
+                         `license_disposition: "unobserved"`, which is not one of the
+                         leaf's three values and is not meant to be — the leaf answers
+                         "what does this STRING permit", and with no string the honest
+                         answer is that nobody said.
 
     No `confirmed` boolean, no note, no poisoning of `install_call`. The resolver
     states what is true and gets out of the way (Phase 2, 2026-07-17)."""
@@ -1334,6 +1450,7 @@ def identity_facts(tool: str, chosen: str, availability: dict,
     repo_anchored = (bool(github_repo) or bool(detail.get("repo_anchored"))
                      or bool(ev.get("anchored")))
     lic = str(detail.get("license") or "")
+    evidence = license_evidence(chosen, lic, str(detail.get("license_source") or ""))
     return {
         "chosen_tier": chosen,
         "self_description": desc,
@@ -1343,12 +1460,96 @@ def identity_facts(tool: str, chosen: str, availability: dict,
         "repo_anchored": repo_anchored,
         "channel": detail.get("channel") or "",
         "license": lic,
+        "license_evidence": evidence,
+        "license_source": str(detail.get("license_source") or ""),
         # read through the core_data leaf, never re-spelled here: the CONTRACT reads the
         # same function over the licence observed in the shipped image, and a tool that
         # is commercial at freeze and free at resolve is the drift this codebase keeps
-        # paying for.
-        "license_disposition": _core_data.license_disposition(lic),
+        # paying for. UNOBSERVED short-circuits BEFORE the leaf rather than reinterpreting
+        # its answer: with no string there is nothing for it to read, and calling it on ""
+        # to then relabel its `unrecognized` would be a second reading of the field.
+        "license_disposition": (_core_data.license_disposition(lic)
+                                if evidence == "published" else "unobserved"),
     }
+
+
+#: `name_corroboration` statuses. Two are findings, three are states of the investigation,
+#: and keeping them apart is the point — `unobserved` is not a quieter `no_same_name_repo`.
+NAME_CORROBORATION_STATUSES = ("corroborated", "diverges", "no_same_name_repo",
+                               "unobserved", "not_applicable")
+
+
+def name_corroboration(tool: str, entry_repo: str, search: dict) -> dict[str, Any]:
+    """Does anything ELSE on github own this name, and does the chosen entry point at it?
+    Pure — `search` is a `probe_github_search` result, already fetched.
+
+    THE DEFECT THIS EXISTS FOR (measured 2026-08-06, five tools back to back): github
+    discovery ran ONLY at a registry dead-end, so the investigative effort was inversely
+    proportional to how wrong the answer was about to be.
+
+        annovar   no registry hit -> 5 repos investigated -> earned refusal, names the ask
+        signalp   no registry hit -> 5 repos investigated -> earned refusal
+        exomiser  no registry hit -> 5 repos investigated -> the RIGHT tool, adopted
+        cellranger  CRAN hit      -> 0 repos, none run    -> clean install_call for a
+                                                             SPREADSHEET-RANGE PARSER
+        dorado      PyPI hit      -> 0 repos, none run    -> clean install_call for an
+                                                             ASTRONOMY package
+
+    A same-name registry entry SUPPRESSED the investigation that would have surfaced the
+    real tool — and a squatter existing is the single strongest signal that a name is
+    contested. So the search runs on a hit too. Same doctrine as `probe_package_family`
+    one screen down ("a registry hit is not an answer"), on the github axis instead of the
+    channel axis.
+
+    NO JUDGEMENT HERE, and none is needed. The comparison is mechanical: which repos own
+    the name EXACTLY, and is the chosen entry's own repo one of them?
+
+      corroborated       every exact-name repo on github IS the repo this entry points at.
+      diverges           at least one exact-name repo is NOT this entry's — the contested
+                         name. Their own descriptions ride along; reading them against the
+                         request is the ride's call (the 2026-08-06 ruling), and that
+                         ruling was about what the resolver may CONCLUDE, never about how
+                         hard it should LOOK.
+      no_same_name_repo  the search ran and nothing on github owns the name exactly.
+      unobserved         the search itself did not answer (github search is 10 req/min
+                         unauthenticated). NOT a finding, and never rendered as one.
+      not_applicable     nothing to corroborate — no pick, or the caller named the repo.
+
+    `matched` is stated separately from the status because "the entry is one of THREE
+    projects with this name" and "the entry names a repo none of them is" are different
+    situations with the same verdict, and the message has to say which. PyPI's `dorado`
+    points at Mucephie/DORADO — an exact-name repo — so a rule that stopped at "is the
+    entry's repo among the hits" would have called the astronomy package CORROBORATED."""
+    entry = (entry_repo or "").strip().strip("/").lower()
+    # `matched: None` is STATED, not omitted: with no exact-name repo there is nothing to
+    # have matched, and a reader must be able to tell that from `False` (there were, and
+    # this entry is none of them) without knowing which statuses carry the key.
+    base = {"entry_repo": entry_repo or "", "same_name_repos": [], "divergent_repos": [],
+            "matched": None}
+    if search.get("probe_error"):
+        return {**base, "status": "unobserved", "probe_error": search["probe_error"],
+                "detail": (f"the github name search for '{tool}' did not answer "
+                           f"({search['probe_error']}) — nothing here says the name is "
+                           f"uncontested; we did not get to look")}
+    exact = [c for c in (search.get("candidates") or []) if c.get("exact_name_match")]
+    divergent = [c for c in exact
+                 if (c.get("repo") or "").strip().strip("/").lower() != entry]
+    base["same_name_repos"] = exact
+    base["divergent_repos"] = divergent
+    if not exact:
+        return {**base, "status": "no_same_name_repo",
+                "detail": f"a github name search found no repo named exactly '{tool}'"}
+    if not divergent:
+        return {**base, "status": "corroborated", "matched": True,
+                "detail": (f"the only repo on github named exactly '{tool}' is "
+                           f"{exact[0]['repo']}, which is the repo this entry points at")}
+    matched = len(divergent) < len(exact)
+    return {**base, "status": "diverges", "matched": matched,
+            "detail": (f"{len(exact)} repo(s) on github own the name '{tool}' exactly; "
+                       + ("this entry points at one of them, and the other(s) are "
+                          "different projects" if matched else
+                          f"this entry points at {entry_repo}" if entry_repo else
+                          "this entry names no repo at all"))}
 
 
 #: The registry tiers a repo can be scraped FROM, best-vouched first. conda leads because
@@ -1794,6 +1995,43 @@ def pullable_image(availability: dict[str, dict], tool: str,
     return {"found": False}
 
 
+def _normalize_github_repo(github_repo: str) -> str:
+    """Any way a human holds a GitHub repo → the `owner/repo` this module expects.
+
+    Accepts `owner/repo`, `https://github.com/owner/repo`, the `.git` clone URL,
+    `git@github.com:owner/repo.git`, a trailing path (`/tree/main`, `/releases`),
+    and a trailing slash. Anything that is not recognisably a GitHub reference is
+    returned UNCHANGED — this normalizes a spelling, it does not invent a repo, and
+    a caller who passed something else entirely must still see their own input in
+    the refusal that follows.
+    """
+    raw = (github_repo or "").strip()
+    if not raw:
+        return ""
+    s = raw
+    for prefix in ("git+https://", "git+ssh://", "https://", "http://", "ssh://", "git@"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix):]
+            break
+    # A github HOST must be present before anything is stripped off the front. Without
+    # this gate a gitlab/bitbucket URL loses its scheme and is then sliced to its first
+    # two segments — `https://gitlab.com/a/b` -> `gitlab.com/a`, a repo that does not
+    # exist, invented by a normalizer. Anything not recognisably GitHub comes back
+    # verbatim so the caller sees their own input in whatever refusal follows.
+    host = next((h for h in ("www.github.com/", "github.com/",
+                             "www.github.com:", "github.com:")
+                 if s.lower().startswith(h)), "")
+    if not host:
+        return raw
+    s = s[len(host):].strip("/")
+    if s.lower().endswith(".git"):
+        s = s[:-4]
+    parts = [p for p in s.split("/") if p]
+    # `owner/repo` and nothing more — a trailing /tree/main or /releases/tag/v1 is a
+    # location inside the repo, not part of its name.
+    return "/".join(parts[:2]) if len(parts) >= 2 else raw
+
+
 def resolve(
     tool: str,
     version: str = "",
@@ -1827,6 +2065,24 @@ def resolve(
     TRUSTED — the same posture every other agent-authored field in this codebase gets. Omit
     it when `tool` is already the user's word."""
     language = (language or "").lower().strip()
+    # F8. NORMALIZED HERE, ONCE, at the input boundary — before any reader sees it.
+    #
+    # `github_repo` is documented as 'owner/repo', and a pasted URL is how a human
+    # actually holds a repo. A URL contains "/", so it flowed through the
+    # owner/repo branch verbatim and downstream probes built
+    # `api.github.com/repos/https://github.com/owner/repo` -> 404 -> `repo_exists:
+    # false` for a repo that exists, refused as `investigation_empty` ("we looked and
+    # found nothing") when the truth was "we mangled the identifier". Measured on the
+    # same repo in one session: bare `owner/repo` resolved a tag and emitted an
+    # install_call; the URL form refused.
+    #
+    # Worse, the two forms disagreed WITHIN a single call: `author_image` and
+    # `authors_recipe` accepted the URL happily while binary/synthesis/source reported
+    # the repo absent — two readings of one input, the disease
+    # `test_one_reading_per_field.py` exists to prevent, here on an argument rather
+    # than a record field. Normalizing at the boundary is what makes that structurally
+    # impossible rather than merely fixed in the three places that were wrong.
+    github_repo = _normalize_github_repo(github_repo)
     availability: dict[str, dict] = {}
     if language == "r":
         rconda = probe_conda(f"r-{tool}", timeout)
@@ -2555,6 +2811,55 @@ def resolve(
     # normalizing, it is substituting a different tool, and no amount of good intent makes
     # that safe to do silently.
     _user_word = (user_said or "").strip().lower()
+    # F1/F13. `user_said` is contracted as THE USER'S OWN WORD; a caller holding free
+    # text passes the whole sentence, because that is what they have. Before this, a
+    # sentence went straight into the family comparison, failed it (a sentence is not a
+    # package family), and produced `investigation_contradicted` — a claim that the
+    # investigation found a conflict — plus the remedy *"Resolve '<the whole sentence>'
+    # as typed and read the family"*, which cannot be done: a sentence is not a package
+    # name.
+    #
+    # F13 is what makes this more than a bad string: the guard INVERTED. Passing more
+    # truth about the user's intent produced a refusal, and passing less — omitting
+    # `user_said` entirely — produced a clean confident answer. A guard that punishes
+    # disclosure teaches callers to withhold it, which is the opposite of what it is for.
+    #
+    # So: free text is classified as free text. If it CONTAINS the tool as a token, it
+    # corroborates rather than contradicts — nobody substituted anything, the caller
+    # just handed over the sentence — and the resolution proceeds with the mis-shaped
+    # argument DISCLOSED rather than silently dropped. If it does not contain the tool,
+    # the substitution question is live again and it refuses, with a remedy that names
+    # the real front door instead of an impossible action.
+    if _user_word and (len(_user_word.split()) > 1):
+        _tok = tool.strip().lower()
+        _mentions = bool(_tok) and re.search(rf"(?<![a-z0-9]){re.escape(_tok)}(?![a-z0-9])",
+                                             _user_word) is not None
+        decision["user_said_shape"] = "free_text"
+        if _mentions:
+            decision["rationale"] = (
+                f"NOTE: `user_said` was free text ({user_said!r}), not the user's WORD for "
+                f"the tool, which is what this argument is contracted to carry. It names "
+                f"'{tool}', so it corroborates the call rather than contradicting it and the "
+                f"resolution below stands. For the checked-substitution guard to actually "
+                f"run, pass the bare name — `user_said='{tool}'` — or route free text "
+                f"through `interpret_request`, which extracts the name and makes this call "
+                f"for you. || " + decision.get("rationale", ""))
+        else:
+            decision["chosen"] = None
+            chosen = None
+            decision["install_call"] = None
+            decision["refusal_reason"] = "needs_user_input"
+            decision["normalization_rejected"] = {"user_said": user_said, "resolved_to": tool}
+            decision["rationale"] = (
+                f"CANNOT CHECK THE NORMALIZATION: `user_said` was free text ({user_said!r}) "
+                f"rather than the user's WORD for the tool, and it does not mention '{tool}' "
+                f"anywhere — so this call may be installing something the user never named, "
+                f"and nothing here can tell. Two ways forward, both of them things you can "
+                f"actually do: route the free text through `interpret_request`, which "
+                f"extracts the tool name and makes this call correctly; or, if you already "
+                f"know the user's word for it, re-call with `user_said='<that one word>'`. || "
+                + decision.get("rationale", ""))
+        _user_word = ""     # handled; do not also run the word-vs-word comparison below
     if _user_word and _user_word != tool.strip().lower():
         decision["normalized_from"] = user_said
         _base = re.match(r"^(.*?)\d*$", _user_word).group(1)
@@ -2627,6 +2932,65 @@ def resolve(
                       f"(they are separate packages, not versions of one). The line below is "
                       f"the literal name you typed, nothing more.",
                       "the pick below is one member of a family — confirm it is the right one")
+
+    # THE INVESTIGATION MUST NOT STOP THE MOMENT SOMETHING ANSWERS — the github half.
+    #
+    # The block above researches the CHANNEL on a hit. This researches GITHUB on a hit, and
+    # it closes the inversion measured on 2026-08-06: the three tools with no registry entry
+    # each got a five-repo investigation and an honest answer, while the two with a same-name
+    # squatter got NO investigation and a clean, confident, wrong `install_call`. Discovery
+    # fired only at a dead end, so a registry hit ended the search by succeeding — and the
+    # two names it silenced (`cellranger`, `dorado`) are the two most contested in the set.
+    # A squatter EXISTING is the strongest available signal that a name is contested, and it
+    # was the one condition under which we stopped looking.
+    #
+    # Skipped when the caller named a repo: they anchored the identity themselves, the
+    # cross-namespace guard above already reconciles the registry hit against it, and the
+    # auto-adopt path re-enters here WITH `github_repo=` — so this costs one search per
+    # resolve, never two.
+    #
+    # THE COST, stated because the old comment on `probe_github_search` promised the
+    # opposite: unauthenticated github search is 10 req/min, so this DOES put the common
+    # registry path within reach of that quota. What it may never do is let the quota become
+    # a finding — a search that did not answer is `unobserved`, the pick is untouched, and
+    # nothing claims the name is uncontested. (`_headers` sends GITHUB_TOKEN when there is
+    # one, which raises the ceiling without changing any of that.)
+    #
+    # The key is STATED on every decision, `not_applicable` included — a reader cannot tell
+    # "there was nothing to corroborate" from "this producer forgot the field", and the
+    # difference is the whole content of the answer here.
+    decision["identity_corroboration"] = {
+        "status": "not_applicable", "entry_repo": github_repo or "",
+        "same_name_repos": [], "divergent_repos": [], "matched": None,
+        "detail": ("the caller named the repo, so identity is anchored and the "
+                   "cross-namespace guard reconciled the registry hit against it"
+                   if github_repo else
+                   "no tier was chosen, so there is no entry to corroborate — the "
+                   "dead-end path runs the same search as DISCOVERY")}
+    if chosen and not github_repo:
+        _corr = name_corroboration(
+            tool, (decision.get("identity") or {}).get("repo") or "",
+            probe_github_search(tool, timeout))
+        decision["identity_corroboration"] = _corr
+        if _corr["status"] == "diverges":
+            _rows = "\n".join(
+                f"#   {c['repo']} ({c['stars']}★)"
+                + (f" — \"{c['description']}\"" if c.get("description") else
+                   " — publishes NO description, so there is nothing to read it against")
+                for c in _corr["divergent_repos"][:3])
+            _disclose(decision,
+                      f"SAME NAME, DIFFERENT PROJECTS — we searched github for repos named "
+                      f"exactly '{tool}' (the check a registry hit used to suppress). "
+                      f"{_corr['detail']}:\n{_rows}\n"
+                      f"# A registry carrying the name proves the NAME is taken, not that "
+                      f"this entry is the tool you meant — and this is the one question no "
+                      f"gate downstream asks: a wrong-but-working tool builds, validates, "
+                      f"and ships green with a digest and an attestation. Read each "
+                      f"description above against what you asked for, then either proceed "
+                      f"(the line below is unchanged) or re-run with "
+                      f"github_repo='{_corr['divergent_repos'][0]['repo']}' to route "
+                      f"against that project instead.",
+                      "another project owns this name — confirm which one you meant")
 
     # A WORKFLOW IS NOT A TOOL, AND SAYING SO IS THE WHOLE ANSWER.
     #
@@ -2799,6 +3163,51 @@ def resolve(
                   "freeze REFUSES this unless you declare it: "
                   "freeze(…, gated=True, licenses=[…]) — which also keeps the image "
                   "out of any registry push (I13)")
+
+    # THE TWO NOTES THAT STATE AN ABSENCE — appended, never a banner.
+    #
+    # Both say "nobody answered", and neither is a finding. `_disclose` prefixes the
+    # rationale AND stamps the install_call, which is right for something we FOUND and
+    # wrong for something we could not look at: github search is 10 req/min, and every
+    # non-registry pick lacks a licence by construction, so routing these two through the
+    # loud channel would put a banner on healthy picks all session — the false-accuse
+    # failure the `ambiguous` calibration above is written against ("a warning that fires
+    # on the healthy case is not a cautious warning, it is a broken one"). They are STATED,
+    # in the rationale and machine-readably in `identity_corroboration` / `identity.
+    # license_evidence`, which is what absence-is-not-a-verdict requires; what it does not
+    # require is that every absence shout.
+    _notes: list[str] = []
+    if (decision.get("identity_corroboration") or {}).get("status") == "unobserved":
+        _notes.append(
+            f"NAME NOT CORROBORATED (unobserved, not clean): "
+            f"{decision['identity_corroboration']['detail']}. A same-name project on "
+            f"github would not have been seen — re-run, or set GITHUB_TOKEN, if this name "
+            f"is one another project could plausibly own.")
+    _lic_ev = (decision.get("identity") or {}).get("license_evidence")
+    if _lic_ev and _lic_ev != "published":
+        _why = {
+            "unclassified_text": (f"{decision['identity'].get('license_source')} holds the "
+                                  f"licence TEXT rather than an identifier, and we do not "
+                                  f"keyword-match prose"),
+            "not_published": f"the {chosen} entry publishes no licence",
+            "not_probed": f"our {chosen} probe reads no licence field",
+            "no_channel": (f"the {chosen} route is a repo or a release asset, and nothing "
+                           f"on it publishes a licence for these bytes"),
+        }[_lic_ev]
+        _notes.append(
+            f"LICENCE UNOBSERVED — {_why}, so this decision says NOTHING about whether "
+            f"these bytes may be redistributed. Nor will anything downstream: I13 arms on "
+            f"a licence it can OBSERVE in the shipped image's conda-meta, which a tool "
+            f"built from a repo or fetched as a binary does not carry. This absence is "
+            f"also what a vendor-gated tool looks like from here — bytes behind an account "
+            f"or a click-through are unredistributable, which is exactly why no public "
+            f"registry carries them — so if a download form stands between you and this "
+            f"tool, that is yours to recognise: declare it at freeze "
+            f"(gated=True, licenses=[…]) and install the bytes the user supplies.")
+    if _notes:
+        decision["rationale"] = (decision.get("rationale", "") + "  NOTE: "
+                                 + "  NOTE: ".join(_notes)).strip()
+
     # NO identity poisoning of install_call. Identity is the ride's judgment now
     # (Phase 2); the facts it judges on ride in `decision["identity"]` (self-description
     # + repo provenance), and install_call stays a clean, runnable one-liner. The

@@ -215,7 +215,7 @@ def test_envbuild_threads_the_captured_version_onto_the_step(monkeypatch):
                      "tool": "BiocGenerics", "version_probe": "ask-r",
                      "runtime_packages": []}]
 
-        def validate_in_image(self, image, checks, probe_tools=None):
+        def validate_in_image(self, image, checks, probe_tools=None, **_kw):
             return {"success": True, "checks": {checks[0]: {"rc": 0, "out": "ok"}},
                     "banners": {}}
 

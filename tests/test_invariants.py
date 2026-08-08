@@ -1427,7 +1427,7 @@ def test_env_build_verification_in_image_failure_is_broke_firewall(monkeypatch):
     eb.verifications = [{"label": "samtools", "tool": "samtools",
                          "check": "samtools --version", "engine_coupled": True}]
     monkeypatch.setattr(eb.cb, "validate_in_image",
-                        lambda image, checks, probe_tools=None: {
+                        lambda image, checks, probe_tools=None, **_kw: {
                             "success": False,
                             "checks": {c: {"rc": 1, "out": "not found"} for c in checks},
                             "banners": {}})
@@ -1494,7 +1494,7 @@ def test_env_build_verified_in_image_success_is_proven(monkeypatch):
     eb.verifications = [{"label": "samtools", "tool": "samtools",
                          "check": "samtools --version", "engine_coupled": True}]
     monkeypatch.setattr(eb.cb, "validate_in_image",
-                        lambda image, checks, probe_tools=None: {
+                        lambda image, checks, probe_tools=None, **_kw: {
                             "success": True,
                             "checks": {c: {"rc": 0, "out": "samtools 1.21"} for c in checks},
                             "banners": {"samtools": "samtools 1.21"}})
@@ -3442,23 +3442,33 @@ def test_env_report_html_adopt_claims_validation_only_when_evidence_exists():
     with) must still say plainly that nothing was run in it. ADOPTED_BY_DIGEST survives in
     both cases: it is a provenance statement ("we did not build these bytes"), and that was
     never the part that was wrong.
+
+    Rewritten 2026-08-07 (F2). This used to assert two hand-written phrases that the
+    renderer emitted from an `if is_adopt:` branch. Those phrases are gone, because
+    authoring them was the defect: the sibling branch asserted "every requested tool
+    re-ran green" and "I12 and I13 passed" unconditionally, over records whose coverage
+    table on the same page said `unobserved`. The verdict is now DERIVED
+    (`env_honesty.guarantee_verdicts`), so this asserts the property the phrases were
+    standing in for — and asserts it harder, because a derived verdict can also be
+    checked in the negative.
     """
     from agent.skills.env_report_html import render_env_report_html
     base = {"name": "bt", "image": "x@sha256:d", "image_digest": "sha256:d",
             "mode": "adopt", "requested_tools": ["x"]}
 
-    # legacy record: no evidence → must NOT claim validation, and must say so
+    # legacy record: no evidence → must NOT claim validation, and must say why not
     h = render_env_report_html({**base, "validation_locus": "adopted"})
     assert "ADOPTED_BY_DIGEST" in h
-    assert "NOT VALIDATED IN-IMAGE" in h
-    assert "nothing here proves it carries the requested tool" in h
+    assert "no evidence was run in the shipped image" in h
+    # …and must not print the sentence that would make a reader think it did.
+    assert "every requested tool re-ran green" not in h
 
     # validated adopt: evidence ran in the adopted image → the claim is earned
     h = render_env_report_html({**base, "validation_locus": "native",
                                 "verifications": [{"label": "x", "tool": "x",
                                                    "check": "command -v x", "passed": True}]})
     assert "ADOPTED_BY_DIGEST" in h and "VALIDATED_IN_IMAGE" in h
-    assert "the image we bound actually carries the tool" in h
+    assert "1 evidence command(s) re-run in the shipped image" in h
 
 
 def test_env_report_html_separates_declared_policy_from_verified():
@@ -5071,7 +5081,7 @@ def test_envbuild_verify_in_image_threads_banner_into_each_record(monkeypatch):
     class FakeCB:
         platform = "linux/amd64"
         longtail = []
-        def validate_in_image(self, image, checks, probe_tools=None):
+        def validate_in_image(self, image, checks, probe_tools=None, **_kw):
             assert probe_tools == ["seqtk"], "tool tokens must be forwarded"
             return {"success": True,
                     "checks": {checks[0]: {"rc": 0, "out": ""}},
@@ -5108,7 +5118,7 @@ def test_envbuild_refuses_evidence_that_passes_without_the_tool(monkeypatch):
     class FakeCB:
         platform = "linux/amd64"
         longtail = []
-        def validate_in_image(self, image, checks, probe_tools=None):
+        def validate_in_image(self, image, checks, probe_tools=None, **_kw):
             return {"success": True, "checks": {checks[0]: {"rc": 0, "out": ""}},
                     "banners": {}}
         def probe_versions(self, image, probes):

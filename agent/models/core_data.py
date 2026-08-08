@@ -213,6 +213,16 @@ class ReferenceDatabase(BaseModel):
       - Are versioned independently of the tool
       - Must often match the tool version exactly (coupled_to_version)
       - Are mounted at runtime rather than baked into the Docker image
+
+    THE GENOME FASTA GOES IN `test_data`, and `select_test_data` puts it there —
+    `reference_fasta` + `fai`, anchored, so I8 traces an aligner's reference input.
+    This disclaimer used to be a dead end: the slot existed in TEST_DATA_PATH_KEYS,
+    `test_data` is not patchable, no producer wrote it, and this model said "not here"
+    — so an alignment workflow had no correct field for its reference and every one of
+    them cost a refused seal plus a hand-authored entry into this class. Use this for
+    what the sentence above says: data BEYOND the genome FASTA. A reference this system
+    did not bootstrap (another build, another species) still belongs here or in
+    `authored_artifacts`, because `select_test_data` only knows the core manifests.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1786,6 +1796,98 @@ def usage_proven_trials(spec: Any) -> list[dict]:
     if not isinstance(trials, list):
         return []
     return [t for t in trials if isinstance(t, dict)]
+
+
+#: What `resource_usage.i7_authoritative` means, as three states rather than a bool.
+RESOURCES_AUTHORITATIVE = "authoritative"      # measured natively; size a job from these
+RESOURCES_EMULATED = "not_authoritative"       # measured under emulation; wrong by ~100x
+RESOURCES_UNRECORDED = "unrecorded"            # sealed before the flag existed
+
+
+def resource_usage_authority(step: Any) -> str:
+    """THE one reading of *whether a step's resource numbers can be trusted*.
+
+    `locus.detect_locus` sets `i7_authoritative` False whenever the run was
+    emulated (an amd64 image on an arm64 host under QEMU), and both producers —
+    `run_tools.py` for a host step and `env_build.py` for an in-container one —
+    write it into `resource_usage`. **No renderer had ever read it.** The RUN
+    dashboard printed `wall … · peak RSS … · CPU …` and dropped the one sibling
+    field whose entire job is to say those three numbers are not authoritative.
+
+    That page is the one a human opens *specifically to review parameters before
+    committing real data*, and the number it teaches is `#SBATCH --mem`. Under
+    emulation the timings are wrong by roughly two orders of magnitude. The
+    direction is over-request, so it wastes allocation rather than crashing jobs
+    — but it is wrong, actionable, and the correction was sitting unread in the
+    same file. (The ENV report does hedge, for TIME only, on the other page.)
+
+    THREE states, never two. A spec sealed before the flag existed carries no
+    opinion, and `False` is the default a bool would hand back for it — which
+    would stamp "not authoritative" onto every historical record as if someone
+    had measured that. Absence is UNRECORDED and says so.
+    """
+    if step is None:
+        return RESOURCES_UNRECORDED
+    get = (step.get if isinstance(step, dict)
+           else lambda k, d=None: getattr(step, k, d))
+    ru = get("resource_usage")
+    if not isinstance(ru, Mapping):
+        ru = getattr(ru, "__dict__", None) if ru is not None else None
+        if not isinstance(ru, Mapping):
+            return RESOURCES_UNRECORDED
+    flag = ru.get("i7_authoritative")
+    if flag is True:
+        return RESOURCES_AUTHORITATIVE
+    if flag is False:
+        return RESOURCES_EMULATED
+    return RESOURCES_UNRECORDED
+
+
+def usage_output_validations(spec: Any) -> list[dict]:
+    """THE one reading of *what the I4 self-test validated each produced file AS*.
+
+    `_run_one_trial` resolves an expected type for every matched output —
+    `declared_type or _infer_type_from_basename(...)` — runs the type-aware
+    validator against it, and records `{pattern, file, expected_type, passed,
+    method}`. So the record knows the type of every file the how-to produced,
+    including the ones the author never declared a type for.
+
+    The how-to panel's `Type` column read `usage.outputs[*].type`, the AUTHORED
+    field, which is empty on every spec in the corpus — so a declared column
+    rendered blank while the observed answer sat one level down. It looked
+    cosmetic. It is the same defect as the ENV report's prose: the artifact
+    printing what someone typed instead of what the runtime saw.
+
+    Returns `[]` when nothing was recorded — which covers both "sealed before
+    the field was carried through" and "no trial ran". A caller that must tell
+    those apart reads `usage_status` too, exactly as `usage_proven_trials` says.
+    """
+    out: list[dict] = []
+    for t in usage_proven_trials(spec):
+        vrs = t.get("validation_results")
+        if not isinstance(vrs, list):
+            continue
+        for v in vrs:
+            if isinstance(v, Mapping):
+                out.append(dict(v))
+    return out
+
+
+def usage_output_type(spec: Any, output: Any) -> str:
+    """The type to SHOW for one `usage.outputs[*]` entry: what the author
+    declared if they declared one, else what the self-test actually validated
+    those files as, else `""` — which a renderer must show as unrecorded rather
+    than as an empty cell."""
+    get = (output.get if isinstance(output, Mapping)
+           else lambda k, d=None: getattr(output, k, d))
+    declared = (get("type") or "").strip()
+    if declared:
+        return declared
+    patterns = [p for p in (get("files") or []) if isinstance(p, str)]
+    observed = {v.get("expected_type") for v in usage_output_validations(spec)
+                if v.get("pattern") in patterns and v.get("expected_type")}
+    observed.discard("any")
+    return ", ".join(sorted(str(o) for o in observed))
 
 
 class WorkflowSpec(BaseModel):

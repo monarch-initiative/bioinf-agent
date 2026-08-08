@@ -109,7 +109,8 @@ def _no_network_unless_marked(request):
 
 @pytest.fixture(autouse=True)
 def _quiet_package_family_search(request, monkeypatch):
-    """Answer the anaconda SEARCH endpoint with an empty family, for every hermetic test.
+    """Answer the two RESEARCH-ON-A-HIT endpoints with an empty result, for every hermetic
+    test — the anaconda package search, and the github repository name search.
 
     `probe_package_family` runs on every conda win — it is the research step that stops the
     resolver from treating the first registry hit as the answer. That made four unrelated
@@ -118,19 +119,38 @@ def _quiet_package_family_search(request, monkeypatch):
     line in four files — that is the hand-copy disease this repo keeps paying for — it is
     one default, here, where the socket guard already lives.
 
-    CHAINED, not replaced: only the search URL is intercepted, so a test stubbing some other
-    fetch is unaffected, and a test that monkeypatches `_fetch_json` in its own body (the
-    family tests do) overrides this wholesale. Skipped under `live`, which is allowed out.
+    `name_corroboration` (2026-08-07) is the same shape on the github axis and arrived by
+    the same route, so it gets the same default rather than a second round of edits across
+    every stub helper in the suite. Its default is "we searched, nothing owns this name
+    exactly", which is the quiet answer for the ~all of the suite that is not about
+    contested names; a test that IS about one stubs `probe_github_search` directly.
+
+    CHAINED, not replaced: only the search URLs are intercepted, so a test stubbing some
+    other fetch is unaffected, and a test that monkeypatches `_fetch_json` in its own body
+    (the family tests do) overrides this wholesale. Skipped under `live`, which is allowed
+    out.
     """
     if "live" in request.keywords:
         yield
         return
+    import urllib.request
+
     from agent.skills import resolver
     _real_fetch = resolver._fetch_json
+    _untouched_urlopen = urllib.request.urlopen
 
     def guarded(url, timeout=12):
         if "/search?" in url:
             return [], ""          # a family of one is silence — the default for most tools
+        if ("api.github.com/search/repositories" in url
+                # ...unless the test stubbed the I/O SEAM itself, in which case it has taken
+                # responsibility for the network and is very likely testing this exact probe.
+                # tests/test_probe_honesty.py drives `probe_github_search` through a sealed
+                # `urlopen` to prove a rate limit does not read as "no candidates"; a canned
+                # answer in front of it would hide the seam under test. A default that cannot
+                # be seen past is a default that rewrites the thing it was meant to quiet.
+                and urllib.request.urlopen is _untouched_urlopen):
+            return {"items": []}, ""     # nothing else claims this name
         return _real_fetch(url, timeout)
 
     monkeypatch.setattr(resolver, "_fetch_json", guarded)

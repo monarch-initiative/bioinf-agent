@@ -91,10 +91,34 @@ def image_arch(ref: str) -> dict[str, Any]:
                         per-arch images rather than one image's bytes. Docker reports
                         `.Architecture` as "" for these, correctly. This is a finding,
                         not a gap — see BUILT.platform_pinned in env_honesty.
+
+    F3 — PULLS ONCE IF THE IMAGE IS NOT LOCAL. `docker image inspect` reads only the
+    local daemon, so before this the verdict was a function of what the machine
+    happened to have cached rather than of the artifact. On the ADOPT path the call
+    site sits ahead of the SBOM read that does the pulling, so a freshly-adopted
+    biocontainer recorded `resolved: False` on a cold daemon and `checked` on a warm
+    one — the SAME env, two answers. Measured: `image_arch` on the fastp digest
+    returned `resolved: false` before the freeze and `{"resolved": true, "arch":
+    "amd64"}` minutes later, with nothing about the image having changed.
+
+    That is worse than it sounds, because the clause exists specifically to stop
+    `platform` being the caller's request echoed back, and the adopt path is the one
+    that can bind an image of an architecture nobody asked for (`resolve_biocontainer`
+    cannot express a platform). The observation was missing from the path that needed
+    it, for a reason that was ordering rather than impossibility.
+
+    `resolved: False` still means we failed to look — now it means the image could not
+    be inspected AND could not be fetched, which is a real absence rather than a cold
+    cache. Both callers are freeze-time and both want the bytes anyway; nothing on a
+    query path (`list_installed_pipelines`) calls this.
     """
     if not (ref or "").strip():
         return {"resolved": False, "arch": ""}
-    r = _sh(["docker", "image", "inspect", "--format", "{{.Architecture}}", ref])
+    fmt = ["docker", "image", "inspect", "--format", "{{.Architecture}}", ref]
+    r = _sh(fmt)
+    if r["rc"] != 0:
+        _sh(["docker", "pull", "--quiet", ref], timeout=900)
+        r = _sh(fmt)
     if r["rc"] != 0:
         return {"resolved": False, "arch": ""}
     return {"resolved": True, "arch": r["out"].strip().lower()}

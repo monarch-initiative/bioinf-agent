@@ -573,7 +573,7 @@ def workflow_gate(repo_url: str, *, ref: str = "", tool: str = "",
     `workflow_only: True` with a manifest naming the engine, both paths, and the
     pipeline's own name and version. The verdict existed and nothing read it.
 
-    The corpus makes it quiet rather than loud. `synthesis._BUILD_SOURCES` has no pattern
+    The corpus makes it quiet rather than loud. `synthesis.BUILD_SOURCES` has no pattern
     for `main.nf` / `nextflow.config` / `Snakefile`, so `is_build_relevant` filters the
     pipeline out of its own build corpus: the agent is handed 66 KB about the repository —
     CI lint jobs, the release-announcement tweet workflow, two READMEs — and not one byte
