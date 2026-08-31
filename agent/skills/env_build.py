@@ -97,6 +97,12 @@ class EnvBuild:
         self.verifications.append({"label": spec.get("purpose", "tool"),
                                    "tool": spec.get("tool", ""),
                                    "check": spec["evidence"],
+                                   # F10: where this evidence must RUN, when its
+                                   # generator says the cwd is part of the invocation.
+                                   # Never folded into `check` — see the note in
+                                   # install_commands.script_repo for why that would
+                                   # launder the anti-echo-cheat rule.
+                                   "workdir": spec.get("evidence_workdir", ""),
                                    "engine_coupled": spec.get("engine_coupled", False)})
         return self
 
@@ -161,7 +167,10 @@ class EnvBuild:
         # before synthesizing a probe command — non-fakeable by the agent.
         tools = list(dict.fromkeys(v.get("tool", "") for v in self.verifications
                                    if v.get("tool")))
-        res = self.cb.validate_in_image(image, [c for _, c in finals], probe_tools=tools)
+        res = self.cb.validate_in_image(
+            image, [c for _, c in finals], probe_tools=tools,
+            workdirs={v["check"]: v["workdir"] for v in self.verifications
+                      if v.get("workdir")})
         banners = res.get("banners", {}) or {}
         # Per-tier VERSION PROBES — the tiers whose artifact is not a PATH command
         # (an R package, a perl module) have a version but no banner, so the generic

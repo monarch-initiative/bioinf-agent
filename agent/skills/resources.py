@@ -46,14 +46,22 @@ def list_resources(inputs: dict, config: dict) -> dict:
         chrom = m.get("chromosome_subset", "")
 
         if resource_type in ("genomes", "both"):
-            ginfo = m.get("genome", {})
-            if ginfo:
-                fasta = core_dir / ginfo.get("fasta", "")
+            ginfo = m.get("genome") or {}
+            # A `genome:` block with no `fasta:` declares nothing — and `core_dir / ""`
+            # is the core dir itself, which exists, so an entry built from it would
+            # report `available: True` for a genome that is not there.
+            if ginfo.get("fasta"):
+                fasta = core_dir / ginfo["fasta"]
+                fai = core_dir / ginfo["fai"] if ginfo.get("fai") else None
                 genomes.append({
                     "id": f"{build}_{chrom}" if chrom else build,
                     "build": build,
                     "chromosome_subset": chrom,
                     "fasta": str(fasta),
+                    # The FASTA's own index, carried because `select_test_data` declares
+                    # BOTH into `test_data` so I8 can trace and re-anchor them. Absent
+                    # from the manifest ⇒ None, never a path we made up.
+                    "fai": str(fai) if fai else None,
                     "available": fasta.exists(),
                     "indexes": list(ginfo.get("indexes", {}).keys()),
                     "core_dir": str(core_dir),
@@ -161,6 +169,84 @@ def list_resources(inputs: dict, config: dict) -> dict:
         result["test_data"] = test_data
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# The core genome reference
+# ---------------------------------------------------------------------------
+# `test_data` has carried `reference_fasta` (and `fai`) in TEST_DATA_PATH_KEYS since
+# I8 learned to trace external sources, and NOTHING wrote them: `select_test_data` is
+# the sole producer of that block (it is not patchable, so anchors cannot be authored)
+# and it emitted only r1/r2/core_data_dir. Meanwhile the one patchable alternative
+# disclaims the job — `ReferenceDatabase` is for data "beyond the genome FASTA".
+#
+# So the most common shape in the field — align reads to a reference — had no correct
+# way to declare its reference at all, and every such workflow bought a refused seal
+# (`I8.composition_coherence`, "input '…/genome/chr22.fa' has no producing source")
+# followed by a hand-authored declaration into a field whose own model says it is the
+# wrong field. The reference in question is the one this system bootstraps onto the
+# disk itself (`scripts/setup_core_test_data.sh`). Closed by giving the slot its
+# producer, not by adding a fifth external kind.
+
+#: What `genome_reference_for` found. THREE states, never two: "the manifest declares a
+#: genome and the bytes are not there" and "this core dir ships no genome at all" are
+#: different facts with different remedies (run the bootstrap script vs. bring your own
+#: reference), and neither is a recording. A caller that only ever sees paths-or-nothing
+#: cannot tell them apart, and would read an empty result as "there is no genome here".
+GENOME_RECORDED = "recorded"
+GENOME_DECLARED_ABSENT = "declared_but_not_on_disk"
+GENOME_NONE_DECLARED = "none_declared"
+
+
+def genome_reference_for(core_dir: str, genomes: list) -> dict:
+    """THE reader for "which paths declare the core genome of `core_dir`, and are they
+    on disk?" — the producer half of `test_data.reference_fasta` / `.fai`.
+
+    Returns `{state, paths: {test_data_key: path}, declared: {test_data_key: path},
+    detail}`. `declared` is what the manifest says exists; `paths` is the subset that
+    really is on disk, and is what the caller writes into `test_data` so
+    `select_test_data`'s anchor loop pins it. A declared-but-missing file gets NO entry
+    in `paths`: recording it would refuse the seal of every workflow that never touched
+    the genome, and fabricating an anchor for it is the failure this codebase names
+    laundering. The absence is STATED in `state`/`detail` instead.
+
+    SCOPE, stated because a producer silent about what it leaves out reads as complete:
+    the FASTA and its `.fai` only, never the aligner index families the manifest also
+    lists under `indexes:`. Those are DERIVED artifacts whose prefix IS the FASTA path
+    already recorded, and anchoring them would turn a workflow that legitimately
+    re-runs `bwa index` on the core genome into an `I8.test_data_mutated` refusal —
+    a false accusation against a step that did exactly the right thing."""
+    entry = None
+    for g in genomes or []:
+        if isinstance(g, dict) and g.get("core_dir") and str(g["core_dir"]) == str(core_dir):
+            entry = g
+            break
+    if entry is None:
+        return {"state": GENOME_NONE_DECLARED, "paths": {}, "declared": {},
+                "detail": (f"no `genome:` block with a fasta in {core_dir}/manifest.yaml — "
+                           f"this dataset ships reads and no reference. Declare the "
+                           f"reference you align against with download_reference_database "
+                           f"(or stage_authored_artifact if you built it here), or nothing "
+                           f"will trace it at seal.")}
+
+    declared = {k: v for k, v in (("reference_fasta", entry.get("fasta")),
+                                  ("fai", entry.get("fai"))) if v}
+    # Resolved through the SAME leaf every other reader of a `test_data` path uses —
+    # the manifest's paths are relative to the project root in the shipped config, and
+    # a CWD-relative existence check is how a reader ends up seeing none of them.
+    paths = {k: v for k, v in declared.items()
+             if core_data.resolve_data_path(v).exists()}
+    if "reference_fasta" not in paths:
+        return {"state": GENOME_DECLARED_ABSENT, "paths": {}, "declared": declared,
+                "detail": (f"{core_dir}/manifest.yaml declares a genome FASTA at "
+                           f"{declared.get('reference_fasta')} and it is not on disk, so "
+                           f"nothing was recorded — an input pinned to bytes that are gone "
+                           f"proves nothing. Fetch it with "
+                           f"`scripts/setup_core_test_data.sh` and re-run select_test_data.")}
+    missing = sorted(set(declared) - set(paths))
+    return {"state": GENOME_RECORDED, "paths": paths, "declared": declared,
+            "detail": ("recorded " + ", ".join(sorted(paths))
+                       + (f"; declared but not on disk: {', '.join(missing)}" if missing else ""))}
 
 
 def _semantic_versions(record: dict) -> list[dict]:

@@ -192,5 +192,80 @@ def test_the_observation_against_real_images():
     biocontainer and the multi-arch index were actually found."""
     assert locus.image_arch("no-such-image-here:nope")["resolved"] is False
     bc = locus.image_arch("quay.io/biocontainers/samtools:1.21--h50ea8bc_0")
-    if bc["resolved"]:      # only if it is still in the local daemon
+    # Since F3 this pulls when the image is not local, so `resolved` no longer
+    # depends on what this machine had cached — which is the whole point of the
+    # change. The guard stays because a pull can still fail (offline, registry
+    # down), and that is a real "we failed to look" rather than a cold cache.
+    if bc["resolved"]:
         assert bc["arch"] == "amd64", "bioconda publishes linux-64 biocontainers only"
+
+
+# ---------------------------------------------------------------------------
+# F3 — the verdict that depended on the docker cache, not on the artifact.
+#
+# `image_arch` is `docker image inspect`, which reads only the LOCAL daemon. On
+# the adopt path the call site sits ahead of the SBOM read that pulls, so a
+# freshly-adopted biocontainer recorded `resolved: False` on a cold daemon and
+# `checked` on a warm one — the same env, two answers, decided by what the laptop
+# happened to have. Measured on the S1 fastp digest: `resolved: false` before the
+# freeze, `{"resolved": true, "arch": "amd64"}` minutes later, image unchanged.
+#
+# It matters more than a flaky disclosure because the clause exists to stop
+# `platform` being the caller's request echoed back, and the adopt path is
+# precisely the one that can bind an architecture nobody asked for
+# (`resolve_biocontainer` cannot express a platform). The observation was absent
+# from the path that needed it, for a reason that was ordering, not impossibility.
+# ---------------------------------------------------------------------------
+
+def test_a_missing_image_is_pulled_before_the_arch_is_called_unobserved(monkeypatch):
+    from agent.skills import locus
+
+    calls = []
+
+    def fake_sh(args, timeout=30):
+        calls.append(args)
+        if args[:3] == ["docker", "image", "inspect"]:
+            # cold on the first look, warm after the pull
+            pulled = any(a[:2] == ["docker", "pull"] for a in calls)
+            return ({"rc": 0, "out": "amd64", "err": ""} if pulled
+                    else {"rc": 1, "out": "", "err": "No such image"})
+        return {"rc": 0, "out": "", "err": ""}
+
+    monkeypatch.setattr(locus, "_sh", fake_sh)
+
+    assert locus.image_arch("quay.io/biocontainers/fastp@sha256:abc") == {
+        "resolved": True, "arch": "amd64"}
+    assert any(a[:2] == ["docker", "pull"] for a in calls), calls
+
+
+def test_a_warm_image_is_not_pulled_again(monkeypatch):
+    from agent.skills import locus
+    calls = []
+
+    def fake_sh(args, timeout=30):
+        calls.append(args)
+        return {"rc": 0, "out": "arm64", "err": ""}
+
+    monkeypatch.setattr(locus, "_sh", fake_sh)
+    assert locus.image_arch("x:1")["arch"] == "arm64"
+    assert not any(a[:2] == ["docker", "pull"] for a in calls), (
+        "a locally-present image must not pay for a pull")
+
+
+def test_an_image_that_cannot_be_fetched_is_still_unobserved(monkeypatch):
+    """`resolved: False` keeps its meaning — we failed to look. It now means the
+    image could neither be inspected nor fetched, which is a real absence rather
+    than a cold cache."""
+    from agent.skills import locus
+    monkeypatch.setattr(locus, "_sh",
+                        lambda args, timeout=30: {"rc": 1, "out": "", "err": "nope"})
+    assert locus.image_arch("ghost:1") == {"resolved": False, "arch": ""}
+
+
+def test_an_empty_ref_never_reaches_docker(monkeypatch):
+    from agent.skills import locus
+    called = []
+    monkeypatch.setattr(locus, "_sh",
+                        lambda args, timeout=30: (called.append(args), {"rc": 0, "out": "", "err": ""})[1])
+    assert locus.image_arch("") == {"resolved": False, "arch": ""}
+    assert called == []

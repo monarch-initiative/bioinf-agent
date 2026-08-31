@@ -46,9 +46,14 @@ _PYPI_CYVCF2 = "fast vcf parsing with cython + htslib"
 #: `core_data.license_disposition` over it — three-state, with `unrecognized` for what it
 #: does not know, and the SAME function the contract runs against the licence observed in
 #: the shipped image, so the two cannot disagree.
+#:
+#: `license_evidence` / `license_source` joined them 2026-08-07 and are facts of the same
+#: kind: WHERE the string came from, and — when there is none — which of five different
+#: silences we are in. They answer "what did anyone publish about these bytes", never "is
+#: this the tool you meant". See tests/test_resolver_investigates_on_a_hit.py.
 _FACT_KEYS = {"chosen_tier", "self_description", "has_description", "repo",
               "repo_source", "repo_anchored", "channel",
-              "license", "license_disposition"}
+              "license", "license_source", "license_evidence", "license_disposition"}
 _VERDICT_KEYS = {"confirmed", "anchor", "evidence", "note", "reason"}
 
 
@@ -475,6 +480,11 @@ def test_a_pinned_version_costs_no_family_search(monkeypatch):
     """A caller who typed a version chose a lineage; the search is one HTTP round trip we
     then owe nothing for.
 
+    The github NAME search is a different question and still runs: a version pin says which
+    lineage of a project you want, never which project — `cellranger==1.1.0` is a
+    spreadsheet-range parser at every version it has. So this asserts on the anaconda
+    family endpoint specifically, not on 'no HTTP happened'.
+
     Break it: run the family search unconditionally."""
     seen = []
     _stub(monkeypatch, conda={"available": True, "channel": "bioconda", "latest": "3.8",
@@ -483,7 +493,8 @@ def test_a_pinned_version_costs_no_family_search(monkeypatch):
                         lambda url, timeout=12: (seen.append(url), (None, "unexpected"))[1])
     d = R.resolve("gatk", version="3.8")
     assert "package_family" not in d
-    assert not seen, f"a pinned version must not trigger the search: {seen}"
+    family = [u for u in seen if "/search?" in u]
+    assert not family, f"a pinned version must not trigger the family search: {family}"
 
 
 def test_a_failed_family_search_is_unchecked_not_absent(monkeypatch):

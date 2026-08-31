@@ -103,13 +103,16 @@ ALLOWED = {
         "Reads back a recipe dict this same module wrote ~20 lines earlier with the "
         "canonical key. A closed loop, so there is no second spelling to absorb.",
     "skills/resolver.py:license":
-        "Three reads, none of them an interpretation. probe_conda CAPTURES the string "
-        "off the anaconda.org response into our record (a producer — the AST cannot see "
-        "the difference); identity_facts quotes it verbatim as a fact and hands that "
-        "same string to the leaf on the next line; the disclosure quotes it again in the "
-        "message so the agent sees the registry's own words. What must never be "
-        "re-spelled here is the CLASSIFICATION, and a sibling test asserts this module "
-        "holds no copy of the keyword lists.",
+        "Several reads, none of them an interpretation. probe_conda / probe_pypi / "
+        "probe_cran CAPTURE the string off the registry response into our record (a "
+        "producer — the AST cannot see the difference); identity_facts quotes it verbatim "
+        "as a fact and hands that same string to the leaf on the next line; the disclosure "
+        "quotes it again in the message so the agent sees the registry's own words. All "
+        "three probes capture it because reading it from conda alone made the resolver's "
+        "only gatedness signal an artifact of which tier happened to win — and a gated "
+        "tool is off bioconda BECAUSE it is gated. What must never be re-spelled here is "
+        "the CLASSIFICATION, and a sibling test asserts this module holds no copy of the "
+        "keyword lists.",
     "skills/attestation.py:license":
         "Passes the observed string through VERBATIM as a purl annotation. An attestation "
         "quotes the publisher's own words so a downstream consumer can apply their own "

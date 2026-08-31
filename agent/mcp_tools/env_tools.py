@@ -188,6 +188,25 @@ def resolve_tool(
     point at the tool, proceed (the honesty contract downstream catches a mechanical error);
     if you genuinely cannot tell even after investigating, ASK.
 
+    `identity_corroboration` is the SECOND opinion on that same question, and it runs on a
+    HIT — a github name search asking who ELSE owns this name exactly. It used to run only
+    at a dead end, which meant the investigation was switched off precisely when a squatter
+    existed, i.e. on the two most contested names in the measured set (`cellranger` → a
+    CRAN spreadsheet-range parser, `dorado` → a PyPI astronomy package, both a clean
+    confident install_call for the wrong software). `diverges` names each competing repo
+    and quotes its OWN description; the pick is unchanged and the judgment is still yours.
+    `unobserved` means the search did not answer (github search is 10 req/min) — nothing
+    there says the name is uncontested.
+
+    LICENCE — `license_evidence` says which of five silences you are in, because "we read a
+    licence and could not place it" and "nobody published one" are different facts and used
+    to share a value. `published` is the only one that yields a `license_disposition`; the
+    rest yield `unobserved`. `no_channel` is the one to read carefully: the pick is a repo
+    or a release asset, so nothing published a licence for these bytes AND nothing
+    downstream will ask again (I13 arms on a licence observed in the shipped image's
+    conda-meta, which a source build does not carry). That silence is also the shape of a
+    vendor-gated tool — see the paragraph below, which is yours to apply.
+
     DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
     CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one
     ecosystem; with no hint, a name found in both PyPI and CRAN comes back
@@ -523,6 +542,8 @@ def _refuse_workflow_repo(gate: dict, *, stage: str) -> dict:
 
 
 @mcp.tool()
+@_ms._synth.describes_build_sources     # fills {BUILD_SOURCES} before FastMCP reads the
+                                        # docstring — decorators apply bottom-up
 def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     """Synthesis tier, call 1 of 2 — PROGRAMMATIC ground-truth fetch for a long-tail
     tool that has no conda/pip/cran/cargo/go/perl/binary/jar home. Acquires the
@@ -536,11 +557,18 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     it installs — the universal residual path: no per-tool generator, you read the
     repo's real build instructions; provenance + the honesty contract make it safe.
 
-    Returns {success, source_kind, files:[{path,sha256,text}], ranked_sources, ...}
-    where the immutable anchor is `commit` (git) or `archive_sha256` (archive).
-    `ranked_sources` orders the build files by how authoritative a recipe each is
-    (Dockerfile › install.sh › CI workflow › Makefile/CMakeLists › setup.py/
-    pyproject › README). READ them, then call synth_build with:
+    Returns {success, source_kind, files:[{path,sha256,text}], ranked_sources,
+    corpus_categories, ...} where the immutable anchor is `commit` (git) or
+    `archive_sha256` (archive). `ranked_sources` orders the build files by how
+    authoritative a recipe each is, best first:
+    {BUILD_SOURCES}.
+    That list is GENERATED from the same table the fetch filters on, and comes back on
+    every call as `corpus_categories` — so what this description promises and what the
+    corpus actually contains cannot drift apart (they did: it advertised the files where
+    install instructions live, and had no pattern that matched one). Anything outside
+    those categories is NOT in the corpus, so if the repo keeps its instructions
+    somewhere unusual, read `files[]` and say so rather than assuming completeness.
+    READ them, then call synth_build with:
       - commands tagged source='extracted' (lifted VERBATIM from a file — pass its
         path as origin_file; PREFER this), or source='agent_authored' (composed
         from the repo's prose — every URL/remote you use MUST appear in the repo).
@@ -557,6 +585,11 @@ def synth_fetch(repo_url: str, ref: str = "", mode: str = "auto") -> dict:
     paths = [f["path"] for f in fetch["files"]]
     fetch["ranked_sources"] = _ms._synth.rank_build_sources(paths)
     fetch["corpus_chars"] = sum(len(f.get("text", "")) for f in fetch["files"])
+    # WHAT WAS LOOKED FOR, shipped beside what was found. A corpus of one README is
+    # ambiguous on its own — it could mean the repo has only a README, or that the file
+    # holding the install commands matched no pattern (which is what happened, for the
+    # whole class of repos that keep them in a plain .txt).
+    fetch["corpus_categories"] = _ms._synth.catalog()
     # STATED, not implied. `installable` means we walked the manifests and found none;
     # `unchecked` means the walk does not reach this host. A corpus that arrives with no
     # word either way reads as "we checked and it's fine", which for a GitLab URL is a

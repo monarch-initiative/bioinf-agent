@@ -499,10 +499,17 @@ def _bioc_stubs(monkeypatch, *, on_bioconda=frozenset(), bare_conda=None,
     monkeypatch.setattr(R, "probe_cran", lambda n, t=12: dict(cran) if cran else {"available": False})
     monkeypatch.setattr(R, "probe_bioconductor", lambda n, t=12: {"available": False})
     monkeypatch.setattr(R, "probe_authors_sources", lambda *a, **k: {})
-    # a conda hit is a SETTLED decision — discovery must never fire. Overridden per-test where
-    # a genuine dead-end SHOULD reach discovery.
+    # A conda hit is a settled ROUTING decision — the DISCOVERY branch (which re-enters
+    # resolve with the found repo and can change the pick) must never fire on it, and the
+    # assertion for that is now `discovered_repos`/`auto_discovered` being absent, checked
+    # per test. This stub used to `pytest.fail` on the search itself, which conflated the
+    # two things `name_corroboration` (2026-08-07) separated: WHETHER we look, and whether
+    # what we find may move the pick. The corroboration search runs on a hit deliberately —
+    # a registry entry proves the NAME is taken, not that it is the tool — and it can only
+    # add a disclosure. It answers "nothing else owns this name" here so these tests stay
+    # about the bioconductor fold.
     monkeypatch.setattr(R, "probe_github_search",
-                        lambda *a, **k: pytest.fail("discovery fired despite a conda answer"))
+                        lambda *a, **k: {"found": False, "candidates": []})
 
 
 def test_deseq2_routes_to_the_bioconda_bioconductor_package(monkeypatch):
@@ -515,6 +522,10 @@ def test_deseq2_routes_to_the_bioconda_bioconductor_package(monkeypatch):
     assert '"spec": "bioconductor-deseq2=1.42.0"' in d["install_call"]
     assert '"channel": "bioconda"' in d["install_call"]
     assert d["refusal_reason"] is None
+    # A CONDA HIT SETTLES THE ROUTING. The github name search still runs (it can only
+    # disclose), but the DISCOVERY branch — the one that re-enters resolve with a found
+    # repo and can move the pick — must not fire on a tier that answered.
+    assert "discovered_repos" not in d and not d.get("auto_discovered")
     # NAME-MAPPING HONESTY: the caller typed `deseq2`, the call installs `bioconductor-deseq2`
     # — the rationale must say so up front, never a silent substitution.
     assert d["rationale"].startswith("BIOCONDUCTOR:")

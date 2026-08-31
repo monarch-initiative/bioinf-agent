@@ -45,12 +45,43 @@ from __future__ import annotations
 from typing import Optional
 
 from agent.models import core_data as _core_data
-from agent.models.core_data import (USAGE_LABELS, step_is_validated, step_validation_failed,
-                                    usage_commands,
+from agent.models.core_data import (RESOURCES_AUTHORITATIVE as _RES_AUTHORITATIVE,
+                                    RESOURCES_EMULATED as _RES_EMULATED,
+                                    RESOURCES_UNRECORDED as _RES_UNRECORDED,
+                                    USAGE_LABELS,
+                                    resource_usage_authority as _resource_usage_authority,
+                                    step_is_validated, step_validation_failed,
+                                    usage_commands, usage_output_type,
                                     usage_status)
 from agent.skills.env_report_html import (
     _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
 )
+
+#: How the three resource states are shown. EXHAUSTIVE over the three
+#: `RESOURCES_*` constants — asserted by a test, because the whole point of F5's
+#: fix is that "measured under emulation" and "nobody recorded" must not render
+#: alike, and a map missing a key would silently collapse them into a KeyError or
+#: a default.
+_RESOURCE_AUTHORITY_BADGE = {
+    _RES_AUTHORITATIVE: '<span class="ok">authoritative</span>',
+    _RES_EMULATED: '<span class="warn">NOT authoritative</span>',
+    _RES_UNRECORDED: '<span class="muted">authority unrecorded</span>',
+}
+_RESOURCE_AUTHORITY_NOTE = {
+    _RES_AUTHORITATIVE: "",
+    _RES_EMULATED: (
+        "This step ran under CPU emulation (the image's architecture differs from the "
+        "host's), so the wall time and CPU figures above are wrong by roughly two orders "
+        "of magnitude and the peak RSS is not representative. <b>Do not size "
+        "<code>#SBATCH --mem</code> or <code>--time</code> from them.</b> Re-run the step "
+        "on hardware matching the image's architecture to get numbers you can budget from."
+    ),
+    _RES_UNRECORDED: (
+        "This step was recorded before the runtime captured whether its resource "
+        "measurements were taken natively or under emulation. The numbers above are "
+        "therefore of unknown authority — not known-good, and not known-bad."
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +213,19 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
                  + "".join(rows) + "</table></div>")
     ru = step.get("resource_usage") or {}
     if isinstance(ru, dict) and ru:
+        # F5. These three numbers are what a reader sizes `#SBATCH --mem` and
+        # `--time` from, and `resource_usage` carries a sibling field whose entire
+        # job is to say when they cannot be trusted. Nothing read it: under QEMU
+        # emulation the timings are wrong by ~two orders of magnitude and the page
+        # presented them flat. The correction was in the same file as the numbers.
+        authority = _resource_usage_authority(step)
         P.append('<p class="note">resources: '
                  f'wall {_e(ru.get("wall_seconds"))}s · '
                  f'peak RSS {_e(ru.get("peak_rss_mb"))} MB · '
                  f'CPU {_e(ru.get("max_cpu_percent"))}% · '
-                 f'locus {_e(ru.get("locus", "?"))}</p>')
+                 f'locus {_e(ru.get("locus", "?"))} · {_RESOURCE_AUTHORITY_BADGE[authority]}</p>')
+        if authority != _RES_AUTHORITATIVE:
+            P.append(f'<p class="warn-note">{_RESOURCE_AUTHORITY_NOTE[authority]}</p>')
     if _run_locus(step) == "cluster":
         P.append(_render_cluster_context(step))
     return "".join(P)
@@ -388,10 +427,20 @@ def _render_howto(spec: dict) -> str:
     outs = [o for o in (usage.get("outputs") or []) if isinstance(o, dict)]
     if outs:
         P.append('<p class="note"><b>Outputs</b></p>')
+        # F6. This column read `usage.outputs[*].type` — the AUTHORED field, empty on
+        # every spec in the corpus — while the I4 self-test had already resolved and
+        # type-validated each of these files. `usage_output_type` prefers the author's
+        # word when they gave one and falls back to what the validator actually used;
+        # an unfillable cell says so rather than rendering blank, because a declared
+        # column that is silently empty reads as "this output has no type".
+        def _type_cell(o: dict) -> str:
+            t = usage_output_type(spec, o)
+            return _e(t) if t else '<span class="muted">unrecorded</span>'
+
         rows = "".join(
             f'<tr><td>{_e(o.get("name"))}</td>'
             f'<td>{_e(", ".join(o.get("files", []) or []))}</td>'
-            f'<td>{_e(o.get("type",""))}</td></tr>' for o in outs)
+            f'<td>{_type_cell(o)}</td></tr>' for o in outs)
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Name</th><th>Files</th><th>Type</th></tr>'
                  + rows + '</table></div>')

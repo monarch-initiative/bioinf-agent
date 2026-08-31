@@ -29,7 +29,7 @@ Pure core (file ranking, extracted-verification, submission validation); the clo
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from agent.skills import provenance as _prov
 
@@ -38,39 +38,148 @@ from agent.skills import provenance as _prov
 # reflow of the same step.
 _CONT = re.compile(r"\\\s*\n")
 
+
+def _base(n: str) -> str:
+    return n.rsplit("/", 1)[-1]
+
+
+def _ext(n: str) -> str:
+    """The final extension of the basename, "" for an extensionless file (INSTALL)."""
+    b = _base(n)
+    i = b.rfind(".")
+    return b[i:] if i > 0 else ""
+
+
+#: Extensions a human-readable instruction file plausibly has. The gate that keeps
+#: `install_notes` from swallowing SOURCE code that merely has "install" in its name
+#: (`src/installer.cpp`) while still catching the extensionless `INSTALL`.
+_INSTRUCTION_EXTS = ("", ".txt", ".md", ".rst", ".adoc", ".org", ".text", ".in",
+                     ".sh", ".bash", ".commands", ".cmd")
+
+#: Declarative dependency lists — not a recipe, but the authoritative statement of WHAT
+#: has to be installed, which is most of the job for a repo whose "build" is a conda env.
+_DEP_MANIFESTS = ("environment.yml", "environment.yaml", "env.yml", "env.yaml",
+                  "conda.yml", "conda.yaml", "conda_env.yml", "conda_env.yaml",
+                  "dependencies.txt", "deps.txt", "description")
+
+
+class BuildSource(NamedTuple):
+    """One category of file `synth_fetch` pulls into the grounding corpus.
+
+    `is_what` is the served, human-facing account of the category — carried HERE, beside
+    the predicate, so the tool description that lists the corpus is GENERATED from the
+    same object that decides what gets fetched. See `catalog` / `catalog_sentence`."""
+    category: str
+    matches:  Callable[[str], bool]
+    is_what:  str
+
+
 # Authoritative build sources, best first. The earlier the category, the more the
 # file IS the repo's own canonical recipe: a Dockerfile is the literal build; an
-# install/build script is the maintainer's own command sequence; CI shows exactly
-# how upstream builds it; a Makefile/CMakeLists implies the conventional invocation;
-# prose (README) is the last resort and the only one that forces authoring.
-_BUILD_SOURCES: list[tuple[str, Callable[[str], bool]]] = [
-    ("dockerfile",     lambda n: n == "dockerfile" or n.endswith(".dockerfile") or n.endswith("/dockerfile")),
-    ("install_script", lambda n: n.rsplit("/", 1)[-1] in
-                                 ("install.sh", "build.sh", "setup.sh", "compile.sh", "make.sh", "bootstrap.sh")),
-    ("ci_workflow",    lambda n: ".github/workflows/" in n and n.endswith((".yml", ".yaml"))),
-    ("make",           lambda n: n.rsplit("/", 1)[-1] in ("makefile", "gnumakefile", "cmakelists.txt")),
-    ("python_build",   lambda n: n.rsplit("/", 1)[-1] in ("setup.py", "pyproject.toml")),
-    ("readme",         lambda n: n.rsplit("/", 1)[-1].startswith("readme")),
+# install/build script is the maintainer's own command sequence; an INSTALL-style notes
+# file is that same sequence written down rather than made executable; CI shows exactly
+# how upstream builds it; a Makefile/CMakeLists implies the conventional invocation; a
+# dependency manifest states what must be present without saying how; prose (README) is
+# the last resort and the only one that forces authoring.
+#
+# `install_notes` and `dep_manifest` were MISSING until 2026-08-07, and their absence was
+# a reachability hole with a docstring over it: this function's own contract promised
+# "the build sources PLUS the files where install URLs/instructions live", and there was
+# no PLUS. Measured on a real academic repo (S4a): the README says *"install the relevant
+# packages provided in the packageInstallCommands.txt file"*, that file holds every conda
+# line the tool needs, and the corpus synth_fetch returned was ONE file — the README.
+# `synth_build` then refuses the real install commands, correctly and unfixably: an
+# `extracted` command must be anchored to a file in `files[]`, and the only file that
+# holds them was never fetched. Fails safe, but the whole long tail this tier exists for
+# — academic repos whose install steps live in a plain text file — was unreachable.
+BUILD_SOURCES: list[BuildSource] = [
+    BuildSource("dockerfile",
+                lambda n: n == "dockerfile" or n.endswith((".dockerfile", "/dockerfile")),
+                "the literal build, best of all"),
+    BuildSource("install_script",
+                lambda n: _base(n) in ("install.sh", "build.sh", "setup.sh",
+                                       "compile.sh", "make.sh", "bootstrap.sh"),
+                "the maintainer's own executable command sequence"),
+    BuildSource("install_notes",
+                lambda n: ("install" in _base(n) and "uninstall" not in _base(n)
+                           and _ext(n) in _INSTRUCTION_EXTS),
+                "an INSTALL / packageInstallCommands-style file: the same commands "
+                "written down rather than made executable"),
+    BuildSource("ci_workflow",
+                lambda n: ".github/workflows/" in n and n.endswith((".yml", ".yaml")),
+                "how upstream really builds it"),
+    BuildSource("make",
+                lambda n: _base(n) in ("makefile", "gnumakefile", "cmakelists.txt"),
+                "the conventional invocation"),
+    BuildSource("python_build",
+                lambda n: _base(n) in ("setup.py", "pyproject.toml"),
+                "setup.py / pyproject"),
+    BuildSource("dep_manifest",
+                lambda n: (_base(n) in _DEP_MANIFESTS
+                           or (_base(n).startswith("requirements") and _base(n).endswith(".txt"))),
+                "requirements.txt / environment.yml / DESCRIPTION — WHAT to install, "
+                "not how"),
+    BuildSource("readme",
+                lambda n: _base(n).startswith("readme"),
+                "prose, the last resort and the only one that forces authoring"),
 ]
 
 
+def catalog() -> list[dict[str, str]]:
+    """`[{category, is_what}]` in ranking order — THE account of what the grounding
+    corpus reaches for.
+
+    Exists so no second one has to. Every doc that wants to name the categories reads
+    this instead of re-typing them, because the hand-typed account is exactly what
+    drifted: `is_build_relevant`'s docstring described a category (install instructions)
+    that the predicate list did not contain, on the function whose entire job is corpus
+    completeness."""
+    return [{"category": s.category, "is_what": s.is_what} for s in BUILD_SOURCES]
+
+
+def catalog_sentence() -> str:
+    """The catalog as one served line, best first — substituted into `synth_fetch`'s
+    tool description at registration so the CONTRACT the model reads cannot claim a
+    category the code lacks (nor omit one it gained)."""
+    return " › ".join(f"{s.category} ({s.is_what})" for s in BUILD_SOURCES)
+
+
+def describes_build_sources(fn):
+    """Fill `{BUILD_SOURCES}` in `fn`'s docstring from `catalog_sentence()`.
+
+    Decorate BELOW `@mcp.tool()` so the substitution happens before FastMCP snapshots
+    the docstring into the served description. The same move `tool_surface.apply_to`
+    makes for routing guardrails, and for the same reason: a generated sentence has no
+    second copy on disk to go stale."""
+    if fn.__doc__ and "{BUILD_SOURCES}" in fn.__doc__:
+        fn.__doc__ = fn.__doc__.replace("{BUILD_SOURCES}", catalog_sentence())
+    return fn
+
+
 def is_build_relevant(path: str) -> bool:
-    """Should synth_fetch pull this file? The build sources above PLUS the files
-    where install URLs/instructions live (so the grounding corpus is complete).
-    Keeps the fetch to the build surface — not the whole tree."""
+    """Should synth_fetch pull this file? True for every category in `BUILD_SOURCES` —
+    call `catalog()` for that list rather than restating it here.
+
+    Keeps the fetch to the build surface, not the whole tree."""
     n = path.lower()
-    return any(pred(n) for _, pred in _BUILD_SOURCES)
+    return any(s.matches(n) for s in BUILD_SOURCES)
 
 
 def rank_build_sources(paths: list[str]) -> list[dict[str, str]]:
     """Rank the fetched files by how authoritative a build recipe each is, best
     first. The agent uses this to choose what to EXTRACT from (Dockerfile beats
-    README). Returns [{category, path}] in priority order, stable within a tier."""
+    README). Returns [{category, path}] in priority order, stable within a tier.
+
+    A path is listed ONCE, at its best category — `install.sh` is an install_script and
+    would also match install_notes by name, and a file appearing twice in a ranking
+    reads as two different files to anyone scanning it."""
     out: list[dict[str, str]] = []
-    for category, pred in _BUILD_SOURCES:
+    seen: set[str] = set()
+    for s in BUILD_SOURCES:
         for p in paths:
-            if pred(p.lower()):
-                out.append({"category": category, "path": p})
+            if p not in seen and s.matches(p.lower()):
+                seen.add(p)
+                out.append({"category": s.category, "path": p})
     return out
 
 

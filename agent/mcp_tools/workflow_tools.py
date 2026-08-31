@@ -201,8 +201,19 @@ def _proven_trial_records(usage_detail: dict) -> list[dict]:
 
     Carried: the trial's name/description, whether it passed, the LITERAL commands
     executed (`commands_run`, already substituted), the substitution map, which of
-    those slots were the ephemeral scratch-dir override, and a sample of the files
-    that landed. Read back through `core_data.usage_proven_trials`.
+    those slots were the ephemeral scratch-dir override, a sample of the files that
+    landed, and **what each of those files was validated AS** (`validation_results`).
+    Read back through `core_data.usage_proven_trials` /
+    `core_data.usage_output_validations`.
+
+    `validation_results` was dropped here until 2026-08-07 (F6). `_run_one_trial`
+    resolves an expected type for every matched output — the author's declared type
+    if there is one, otherwise inferred from the basename — and runs the type-aware
+    validator against it. All of that was computed, gated on, and then discarded at
+    the seal, so the how-to panel's `Type` column had nothing to read but the
+    AUTHORED `usage.outputs[*].type`, which is empty on every spec in the corpus.
+    A declared column rendering blank looks cosmetic; it was the artifact throwing
+    away the observation and printing the field someone forgot to fill in.
 
     Deliberately NOT carried: `scratch_dir` (a temp path deleted before the report is
     read — printing it would hand a reader a command pointing at nothing) and
@@ -241,6 +252,16 @@ def _proven_trial_records(usage_detail: dict) -> list[dict]:
             "output_slots": slots,
             "produced_files": produced[:_TRIAL_MAX_PRODUCED],
         }
+        vrs = t.get("validation_results")
+        if isinstance(vrs, list):
+            rec["validation_results"] = [
+                {"pattern": str(v.get("pattern") or ""),
+                 "file": str(v.get("file") or ""),
+                 "expected_type": str(v.get("expected_type") or ""),
+                 "passed": bool(v.get("passed")),
+                 "method": str(v.get("method") or "")}
+                for v in vrs[:_TRIAL_MAX_PRODUCED] if isinstance(v, dict)
+            ]
         if t.get("description"):
             rec["description"] = str(t["description"])
         out.append(rec)

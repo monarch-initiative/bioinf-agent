@@ -36,11 +36,33 @@ from agent.models.core_data import record_is_gated as _record_is_gated
 
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
+from agent.skills.env_honesty import (
+    ESTABLISHED as _ESTABLISHED,
+    FAILED as _FAILED,
+    GUARANTEE_NOT_APPLICABLE as _G_NA,
+    NOT_ESTABLISHED as _NOT_ESTABLISHED,
+    PARTLY_ESTABLISHED as _PARTLY,
+)
 from agent.skills.env_report_helpers import (
     _install_anchor, _install_method, _is_sha, _locus_line, _pkg_index,
     _resolved_version, _verif_index, requested_versions as _shared_req_versions,
     version_divergences as _version_divergences,
 )
+
+#: How each Layer-1 guarantee verdict is shown. Module-level and EXHAUSTIVE over
+#: env_honesty.GUARANTEE_VERDICTS — a test asserts the two sets are equal, so a
+#: sixth verdict state cannot be added upstream and silently render as raw text
+#: (or, worse, fall back to a badge meaning something else) on the page a human
+#: reads. The five states exist because "not established" and "not applicable"
+#: mean opposite things to that reader; a map that quietly merged them would undo
+#: the distinction this whole section was rebuilt to preserve.
+_VERDICT_BADGE = {
+    _ESTABLISHED: '<span class="ok">established</span>',
+    _PARTLY: '<span class="warn">partly established</span>',
+    _NOT_ESTABLISHED: '<span class="warn">not established</span>',
+    _G_NA: '<span class="muted">not applicable</span>',
+    _FAILED: '<span class="pill bad">FAILED</span>',
+}
 
 _CSS = """
 /* PALETTE — two themes, one structure. EVERY colour flows through these variables;
@@ -161,7 +183,20 @@ margin-right:4px}
 .badge.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok)}
 .badge.bad{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad)}
 .badge.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
+/* The third badge state, for a fact that is neither a pass nor a failure — F17's
+   "declared none, but the image carries cuda 12.8". Without its own compound rule it
+   would inherit `.badge` box styling with `.warn`'s text colour and no border, which
+   reads as a styling slip rather than a deliberate third state. Same lesson as the
+   coverage-state note below: a state that renders like another state IS that state,
+   to the only reader who matters. */
+.badge.warn{background:var(--surface-2);color:var(--yellow);border:1px solid var(--yellow)}
 .note{color:var(--muted);font-size:12.5px;margin:6px 0}
+/* A caveat that must not read as small print. The RUN dashboard uses it for F5's
+   "these resource numbers were measured under emulation; do not size #SBATCH --mem
+   from them" — a correction that has to be at least as visible as the numbers it
+   corrects, or it is the same defect in a lighter shade of grey. */
+.warn-note{color:var(--yellow);font-size:12.5px;margin:6px 0;padding:8px 12px;
+background:var(--surface-2);border-left:3px solid var(--yellow)}
 .muted{color:var(--muted)}
 /* THE CONTRACT-COVERAGE STATES. `.ok` and `.warn` are emitted as BARE spans by the
    coverage table (`<span class="ok">checked</span>` / `<span class="warn">unobserved</span>`)
@@ -239,6 +274,32 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
     return f'<span class="badge {cls}">{mark}</span>{c}{depth}'
 
 
+def _shallow_evidence_tools(r: dict) -> list[str]:
+    """Which of this record's PASSING evidence commands only read as presence.
+
+    ONE reading, shared by the per-tool badge above and the header summary. They
+    were separate until F11: the table said `⚠ version` per tool and the header
+    said `1/1 validated in image` flat, so the page qualified its small print and
+    not its headline. Two spellings of one question is how that happens.
+
+    Only PASSING evidence is counted — a failed check is already refusing, and
+    calling it shallow on top would answer a question nobody is asking. `unknown`
+    counts as shallow here for the same reason the badge does: a classifier
+    declining to guess is not a functional run.
+    """
+    from agent.skills.env_honesty import evidence_depth, is_shallow_evidence
+    out = []
+    for v in (r.get("verifications") or []):
+        if not isinstance(v, dict) or not v.get("passed"):
+            continue
+        check, tool = v.get("check", ""), v.get("tool", "")
+        if not check:
+            continue
+        if is_shallow_evidence(check, tool) or evidence_depth(check, tool) == "unknown":
+            out.append(tool or v.get("label", "?"))
+    return out
+
+
 def _kv_table(rows: list[tuple[str, str]]) -> str:
     body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>'
                    for k, v in rows if v != "" and v is not None)
@@ -260,11 +321,31 @@ def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) ->
 
     Three states, as everywhere: observed-and-agreeing, observed-and-absent (the
     contract refuses this, so it can only appear on a record from before the check), and
-    nothing-looked. `none` declared shows the bare word — there is no claim to check.
+    nothing-looked.
+
+    A declared `none` used to return the bare word and never look at the observation.
+    That is F17, measured on the real `ontresearch/dorado` freeze: this row read
+    `Accelerator — none` and the apt SBOM two screens down listed
+    `cuda-libraries-12-8 12.8.1-1`. Under-claiming is not a contract violation — the
+    harmful direction is claiming a GPU you do not have — but it is absolutely a fact a
+    reader needs, because the question this row exists to answer is "do I request a GPU
+    node for this?", and "none" answered it wrongly for a GPU basecaller.
     """
     declared = _e(accel_type)
     if accel_type in ("", "none"):
-        return declared
+        obs = r.get("image_accelerator")
+        if not isinstance(obs, dict) or not obs.get("resolved"):
+            return declared or "none"
+        otype = (obs.get("type") or "").strip().lower()
+        if otype in ("", "none"):
+            return (f'{declared or "none"} <span class="muted">— and the shipped image '
+                    f'carries no accelerator toolkit either</span>')
+        over = obs.get("version") or ""
+        shown = f"{_e(otype)}{(' ' + _e(over)) if over else ''}"
+        return (f'{declared or "none"} <span class="badge warn">but the shipped image '
+                f'carries {shown}</span> <span class="muted">({_e(obs.get("source") or "the image")})'
+                f' — no GPU capability is CLAIMED for this env, so nothing here has been '
+                f'checked against a driver; the toolkit is simply present</span>')
     tv = (accel or {}).get("toolkit_version") or ""
     if tv:
         declared = f"{declared} {_e(tv)}"
@@ -492,7 +573,7 @@ def render_env_report_html(record: dict) -> str:
     # exists to prevent, in the one artifact the user actually opens. `check_build` is the
     # SAME function `freeze` refuses on, so the page and the gate now answer alike.
     from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
-                                          check_build, evaluate_build)
+                                          check_build, evaluate_build, guarantee_verdicts)
     try:
         _contract = evaluate_build(r)
         _violations = list(check_build(r))
@@ -533,6 +614,21 @@ def render_env_report_html(record: dict) -> str:
     summary_parts.append("adopted by digest" if is_adopt else f"{passed}/{total} validated in image")
     summary_parts.append(f"{len(ride)} along for the ride")
     summary_parts.append(f"{len(system)} system (apt)")
+    # F11. `N/N validated in image` is the line a reader takes away, and for the S4a
+    # specimen it was printed over an env whose tool could not import its own plotting
+    # module: the evidence was `--help`, which argparse answers before any dependency
+    # is touched. The per-tool table already badges depth (`⚠ version`); the SUMMARY
+    # did not, so the strongest sentence on the page was the least qualified one.
+    #
+    # It says "reads as", not "is". `evidence_depth` is a structural reading of command
+    # TEXT and this module's own comment records it under-reporting a command that runs
+    # `DESeq()` and asserts on the result. Under-claiming a disclosure costs a reader
+    # nothing; the thing that cost them something was a bare count implying more.
+    _shallow_tools = _shallow_evidence_tools(r)
+    if _shallow_tools and total:
+        summary_parts.append(
+            f"{len(_shallow_tools)} of those command(s) read as a presence/version "
+            f"probe rather than a functional run")
     head_rows = [
         ("Image", f'<code>{_e(r.get("image",""))}</code>' if r.get("image") else "—"),
         ("Created", _e(r.get("created_at", "—"))),
@@ -847,51 +943,25 @@ def render_env_report_html(record: dict) -> str:
     P.append(_kv_table(pol_rows))
     P.append('</div></section>')
 
-    # -- HOW VERIFIED (per-mode footer — never over-claim for adopt) --------
+    # -- HOW VERIFIED (rendered FROM the contract — never a second account) --
+    #
+    # F2, and the most expensive defect the 2026-08 sea trial found. This block was
+    # a hand-written paragraph per build_method, emitted unconditionally, asserting
+    # "every requested tool re-ran green via plain exec" and "POLICY_CLEAN — I12 and
+    # I13 passed". The generated coverage table DIRECTLY BELOW IT marked those same
+    # clauses `unobserved` / `n/a` on three records shipped to disk. The prose is the
+    # half a human reads first, so the page's most prominent claim was its least
+    # true one — an absent observation rounded up into "passed", under the heading
+    # "How this was verified", in the one artifact the acceptance criterion names.
+    #
+    # Now: one bullet per Layer-1 guarantee. The STATEMENT comes from
+    # env_honesty.LAYER1_GUARANTEES (the roster the registry lint keeps complete);
+    # the VERDICT comes from env_honesty.guarantee_verdicts over THIS record. No
+    # sentence here can contradict the record, because no sentence here was written
+    # by a human who had not read it.
     P.append('<section class="bx">')
     P.append('<h2 id="verify">How this was verified</h2>')
     P.append('<div class="bx-body">')
-    P.append('<ul class="foot">')
-    if is_adopt:
-        P.append("<li><b>ADOPTED_BY_DIGEST</b> — a public BioContainer pulled by its immutable "
-                 "manifest digest (above). We did not build these bytes: their provenance is that "
-                 "digest, and you trust it as you trust the BioContainers project.</li>")
-        if r.get("verifications"):
-            P.append("<li><b>VALIDATED_IN_IMAGE</b> — each requested tool's evidence was RUN "
-                     "inside this adopted image and passed. This checks what the digest cannot: "
-                     "that the image we bound actually carries the tool you asked for.</li>")
-        else:
-            P.append("<li><b>NOT VALIDATED IN-IMAGE</b> — no evidence was run inside this image, "
-                     "so nothing here proves it carries the requested tool. This record predates "
-                     "in-image validation of adopted images; re-freeze to prove it.</li>")
-        P.append("<li><b>POLICY_CLEAN</b> — accelerator honesty (I12) and the license firewall "
-                 "(I13) passed.</li>")
-    else:
-        P.append("<li><b>BUILT</b> — the image and its digest resolve in the Docker daemon; every "
-                 "install step's inline anchor (sha256 / git commit / baked bytes) passed, else "
-                 "there would be no image.</li>")
-        P.append("<li><b>VALIDATED_IN_IMAGE</b> — every requested tool re-ran green via <i>plain "
-                 "exec</i> inside the shipped image (the way <code>apptainer exec</code> runs it on "
-                 "HPC). <b>Validated == shipped.</b></li>")
-        P.append("<li><b>POLICY_CLEAN</b> — accelerator honesty (I12) and the license firewall "
-                 "(I13) passed; synthesized installs carry full per-command provenance "
-                 "(PROVENANCE_CLEAN).</li>")
-    P.append("<li><b>Reproducibility</b> — the content digest binds the conda/PyPI lock, the "
-             "long-tail commands, the platform, and the digest-pinned base image. Release binaries "
-             "are sha256-anchored. The apt runtime layer is captured but not version-pinned "
-             "(<code>apt-get</code> is not reproducible across time).</li>")
-    P.append("</ul>")
-
-    # -- WHAT THE CONTRACT ACTUALLY LOOKED AT -------------------------------
-    # The bullets above are what each clause means WHEN IT RUNS. This table is whether
-    # it ran. Without it the page reads a clean contract as "all of the above were
-    # proven", when a clause whose subject was absent contributed nothing — the exact
-    # substitution [[feedback-reports-never-lie]] forbids, one level up: not a request
-    # standing in for an observation, but a NON-observation standing in for one.
-    # Rendered from env_honesty.evaluate_build, the same function the gate calls.
-    # `_contract` was computed at the top of this function — the pill is a claim about it,
-    # so it has to exist before the pill. Recomputing here would be a second evaluation of
-    # one record, and two evaluations is how two answers to one question start.
     if _contract is None:
         P.append(_empty("the contract could not be evaluated over this record — "
                         "see the notice at the top of the page"))
@@ -899,6 +969,69 @@ def render_env_report_html(record: dict) -> str:
         P.append(_close_page('<p class="gen">Generated deterministically from the freeze '
                              'record — no field on this page was authored by the agent.</p>'))
         return "\n".join(P)
+
+    _rows = guarantee_verdicts(_contract)
+    P.append('<p class="note">One line per Layer-1 guarantee — what it promises, and what '
+             'the contract actually established <b>over this record</b>. A guarantee that had '
+             'nothing to examine says so; it is never reported as passed.</p>')
+    P.append('<ul class="foot">')
+    for g in _rows:
+        badge = _VERDICT_BADGE.get(g["verdict"], _e(g["verdict"]))
+        bits: list[str] = []
+        if g["observations"]:
+            bits.append(f"{g['observations']} observation(s) examined")
+        if g["failed_clauses"]:
+            bits.append("objected: " + ", ".join(f"<code>{_e(c)}</code>" for c in g["failed_clauses"]))
+        if g["unobserved"]:
+            bits.append("nothing to examine: "
+                        + ", ".join(f"<code>{_e(c)}</code>" for c in g["unobserved"]))
+        tail = f'<span class="note"> — {" · ".join(bits)}</span>' if bits else ""
+        # The clause's own sentence for anything that did NOT check out. A verdict with
+        # no reason sends the reader to the coverage table to discover things like "no
+        # evidence was run in the shipped image" — the single most consequential fact
+        # this page can carry, and it should not be a scavenger hunt.
+        why = "".join(f'<div class="note" style="margin-left:1rem">{_e(n)}</div>'
+                      for n in g["notes"])
+        P.append(f'<li><b>{_e(g["guarantee"])}</b> {badge}<br>'
+                 f'<span class="muted">{_e(g["statement"])}</span>{tail}{why}</li>')
+    P.append("</ul>")
+
+    # PROVENANCE is not a contract clause — it is where the bytes came from, which the
+    # contract takes as its input rather than establishing. Kept separate from the list
+    # above precisely so it cannot be misread as something that was verified.
+    P.append('<h3 style="margin-top:1.2rem">Provenance of the bytes</h3>')
+    P.append('<ul class="foot">')
+    if is_adopt:
+        P.append("<li><b>ADOPTED_BY_DIGEST</b> — these bytes were pulled by their immutable "
+                 "manifest digest (above), not built here. Their provenance IS that digest: you "
+                 "trust it exactly as far as you trust its publisher. What the digest cannot tell "
+                 "you — whether the image carries the tool you asked for — is the "
+                 "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
+    else:
+        # PROVENANCE ONLY — no outcome verb. This bullet said "installed and VALIDATED
+        # inside the image that ships … the bytes VALIDATED are the bytes that run on
+        # HPC", branched on build method, emitted unconditionally. That is F2's exact
+        # shape at one-tenth the size, and it was written INTO THE COMMIT THAT FIXED F2,
+        # over a record that may carry zero verifications, with the whole suite green.
+        # Where the bytes came from is a fact about the build; whether anything was
+        # exercised in them is the VALIDATED_IN_IMAGE bullet above, and this section
+        # must not answer that question a second time.
+        P.append("<li><b>BUILT IN-CONTAINER</b> — these bytes were assembled inside the image "
+                 "that ships, rather than built on the host and copied in, so install and ship "
+                 "are one event. What was exercised in them is the "
+                 "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
+        P.append("<li><b>Reproducibility</b> — the content digest binds the conda/PyPI lock, the "
+                 "long-tail commands, the platform, and the digest-pinned base image. Release "
+                 "binaries are sha256-anchored. The apt runtime layer is captured but not "
+                 "version-pinned (<code>apt-get</code> is not reproducible across time).</li>")
+    P.append("</ul>")
+
+    # -- WHAT THE CONTRACT ACTUALLY LOOKED AT -------------------------------
+    # The guarantee bullets above roll up to five rows. This table is the clause-level
+    # mechanics underneath them — which sub-check ran, on what, and whether it objected.
+    # Both are read off the same `_contract`, computed at the top of this function;
+    # recomputing here would be a second evaluation of one record, and two evaluations
+    # is how two answers to one question start.
     _mark = {CHECKED: ('<span class="ok">checked</span>', ""),
              NOT_APPLICABLE: ('<span class="muted">n/a</span>', ""),
              UNOBSERVED: ('<span class="warn">unobserved</span>', "")}

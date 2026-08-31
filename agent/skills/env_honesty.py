@@ -639,9 +639,37 @@ def _clause_accelerator_observed(acc: Any, observed: Any) -> tuple[ClauseCoverag
     claimed_type = (claimed_type or "none").strip().lower()
 
     if claimed_type in ("", "none"):
+        # F17. "No claim to compare" is true of the COMPARISON and was allowed to
+        # stand in for "nothing to say about this image", which is a different
+        # sentence. Measured on the real `ontresearch/dorado` adopt: the clause read
+        # NOT_APPLICABLE, `image_accelerator` was never captured, the ENV report said
+        # "the artifact claims no GPU capability" — and the apt SBOM on the same page
+        # listed `cuda-libraries-12-8`. NOT_APPLICABLE means "the precondition is
+        # genuinely absent AND that absence is itself a fact"; here the absence was a
+        # fact about our INPUTS, and the page rendered it as one about the artifact.
+        #
+        # Under-claiming is NOT a violation and must never become one — the harmful
+        # direction is claiming a GPU you do not have, which is what the allocation is
+        # spent on. So this reports and does not refuse.
+        if isinstance(observed, dict) and observed.get("resolved"):
+            obs_t = (observed.get("type") or "").strip().lower()
+            if obs_t and obs_t != "none":
+                obs_v = (observed.get("version") or "").strip()
+                return (ClauseCoverage(
+                    "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+                    f"no accelerator claimed, but the shipped image carries "
+                    f"{obs_t}{(' ' + obs_v) if obs_v else ''} "
+                    f"({observed.get('source') or 'the image'}). Not a violation — "
+                    f"under-claiming costs nobody an allocation — but the toolkit is "
+                    f"there and the record now says so"), v)
+            return (ClauseCoverage(
+                "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
+                "no accelerator claimed, and the shipped image was opened and carries "
+                "no accelerator toolkit — claim and image agree"), v)
         return (ClauseCoverage(
             "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, NOT_APPLICABLE, 0,
-            "no accelerator claimed — there is no claim to compare against the image"), v)
+            "no accelerator claimed and nothing opened the image — there is neither a "
+            "claim to check nor an observation to report"), v)
 
     if claimed_type == "mps":
         # Metal never survives containerization; _clause_accelerator forces dev_only
@@ -672,9 +700,17 @@ def _clause_accelerator_observed(acc: Any, observed: Any) -> tuple[ClauseCoverag
                        f"{f' (toolkit {claimed_ver})' if claimed_ver else ''}, but the shipped "
                        f"image contains no accelerator toolkit at all — {src}. A GPU claim is "
                        f"the one thing a user cannot check before committing the allocation, so "
-                       f"it may not rest on the caller's say-so. Either ship an image that "
-                       f"actually carries the toolkit (build FROM a cuda/rocm base, or install "
-                       f"the toolkit into the env), or set accelerator.type=none."})
+                       f"it may not rest on the caller's say-so. Three ways out, and which one "
+                       f"is right depends on a fact only you can check: (1) if the image has no "
+                       f"GPU support, declare accelerator.type=none — that is then TRUE; (2) if "
+                       f"it should have and doesn't, ship one that does (build FROM a cuda/rocm "
+                       f"base, or install the toolkit into the env); (3) if the toolkit IS in "
+                       f"the image but somewhere the probe does not search — vendor tarballs "
+                       f"routinely bundle libcuda*/libcublas* in a TOOL-LOCAL lib/ dir rather "
+                       f"than a standard prefix — then this refusal is a gap in the probe, not "
+                       f"a defect in your record. Say so; do NOT resolve it by declaring "
+                       f"type=none, which would put a false statement in the artifact to get "
+                       f"past a check."})
         return (ClauseCoverage(
             "POLICY_CLEAN.accelerator_observed", _ACCEL_OBSERVED_COVERS, CHECKED, 1,
             f"the image was opened and carries no accelerator toolkit, against a "
@@ -914,6 +950,106 @@ LAYER1_GUARANTEES: tuple[tuple[str, str], ...] = (
 #: never written down, and every hand-written summary of "the Layer-1 contract" therefore
 #: described four guarantees where the code enforces five. That is the I5/I10 rot exactly,
 #: and the lint above it now makes the same omission impossible to repeat.
+
+
+# --- What a guarantee is worth over ONE record ------------------------------
+# The roster above says what each guarantee MEANS. That is a property of the
+# contract, identical for every env. This says what it came to over a PARTICULAR
+# record, which is the only thing a reader actually wants to know, and the two
+# were never joined until 2026-08-07.
+#
+# Before that join the ENV report carried a hand-written paragraph per build
+# method, emitted unconditionally, asserting "every requested tool re-ran green"
+# and "POLICY_CLEAN — I12 and I13 passed". Directly beneath it the generated
+# coverage table marked those same clauses `unobserved` or `n/a`. Three records
+# on disk shipped that contradiction, and the prose is the half a human reads
+# first. Rounding an absent observation up into "passed" is the one thing this
+# module exists to prevent, so a page doing it under the heading "How this was
+# verified" was the defect at its most expensive.
+#
+# The fix is not better prose. It is that there IS no prose: a renderer asks
+# here, and the answer comes off the same walk the gate ran.
+ESTABLISHED = "established"                  # every contributing clause checked, none failed
+PARTLY_ESTABLISHED = "partly_established"    # some checked, some had nothing to look at
+NOT_ESTABLISHED = "not_established"          # nothing was observed — silence, not evidence
+GUARANTEE_NOT_APPLICABLE = "not_applicable"  # precondition genuinely absent; itself a fact
+FAILED = "failed"                            # a contributing clause objected
+
+GUARANTEE_VERDICTS = (ESTABLISHED, PARTLY_ESTABLISHED, NOT_ESTABLISHED,
+                      GUARANTEE_NOT_APPLICABLE, FAILED)
+
+
+def _violation_hits(clause: ClauseCoverage, failed_ids: set) -> bool:
+    """True when one of `failed_ids` is a violation this clause accounts for.
+
+    Matched through `covers`, never by name similarity: the accelerator clause
+    emits `I12.*` and the license clause `I13.*`, so a name-prefix convention
+    would be a rule with silent exceptions. Both prefix directions are tried
+    because a violation may be recorded at the family (`I12`) or at the specific
+    failure (`I12.accel_absent_from_image`)."""
+    for fid in failed_ids:
+        for c in (*(clause.covers or ()), clause.clause):
+            if fid == c or fid.startswith(c + ".") or c.startswith(fid + "."):
+                return True
+    return False
+
+
+def guarantee_verdicts(contract: BuildContract) -> list[dict]:
+    """One row per Layer-1 guarantee: what it means, and what this record earned.
+
+    THE ONLY reading of "did guarantee X hold for this env". Renderers call it;
+    none of them re-derives it, because two derivations of one question is how
+    the ENV report's prose and the coverage table beneath it came to disagree.
+
+    Each row: `{guarantee, statement, verdict, clauses[], failed_clauses[],
+    observations, checked[], unobserved[], not_applicable[]}`. `verdict` is one
+    of GUARANTEE_VERDICTS — five states, because the four that are not
+    `established` are four genuinely different things and a boolean flattens all
+    of them into the wrong one.
+    """
+    failed_ids = {v.get("invariant", "") for v in contract.violations
+                  if isinstance(v, dict) and v.get("invariant")}
+    rows: list[dict] = []
+    for name, statement in LAYER1_GUARANTEES:
+        mine = [c for c in contract.coverage
+                if c.clause == name or c.clause.startswith(name + ".")]
+        failed = [c.clause for c in mine if _violation_hits(c, failed_ids)]
+        checked = [c for c in mine if c.status == CHECKED]
+        unobs = [c for c in mine if c.status == UNOBSERVED]
+        na = [c for c in mine if c.status == NOT_APPLICABLE]
+        if failed:
+            verdict = FAILED
+        elif not mine:
+            # The registry lint makes this near-impossible, but a guarantee with
+            # no clause must READ as unestablished rather than quietly vanish
+            # from the list of things the reader was promised.
+            verdict = NOT_ESTABLISHED
+        elif checked and not unobs:
+            verdict = ESTABLISHED
+        elif checked:
+            verdict = PARTLY_ESTABLISHED
+        elif unobs:
+            verdict = NOT_ESTABLISHED
+        else:
+            verdict = GUARANTEE_NOT_APPLICABLE
+        rows.append({
+            "guarantee": name,
+            "statement": statement,
+            "verdict": verdict,
+            "clauses": [c.clause for c in mine],
+            "failed_clauses": failed,
+            "observations": sum(c.observations for c in mine),
+            "checked": [c.clause for c in checked],
+            "unobserved": [c.clause for c in unobs],
+            "not_applicable": [c.clause for c in na],
+            # WHY it is not established, in the clause's own words. Without this a
+            # reader gets a verdict and no reason, and has to go find the coverage
+            # table to learn that (say) no evidence was run in the image at all —
+            # which is the single most important thing that page can tell them.
+            "notes": [c.detail for c in mine
+                      if c.status != CHECKED or c.clause in failed],
+        })
+    return rows
 
 
 def check_build(result: dict) -> list[dict]:
@@ -1224,7 +1360,10 @@ def evaluate_build(result: dict) -> BuildContract:
             f"{len(unasked)} of {len(passing)} passing evidence command(s) were never re-run in "
             f"a control image lacking the tool "
             f"({', '.join(sorted((v.get('label') or '?') for v in unasked))}) — so nothing here "
-            f"distinguishes this image from an image without the tool. Re-freeze to earn it"))
+            f"distinguishes this image from an image without the tool. A re-freeze runs the "
+            f"control experiment; pass `evidence={{tool: command}}` with it if the default "
+            f"probe is presence-only, since a presence probe is what tends to leave this "
+            f"unasked in the first place"))
 
     # -- POLICY_CLEAN + PROVENANCE_CLEAN ---------------------------------
     # PROVENANCE_CLEAN is the firewall around the synthesis tier: a synthesized
