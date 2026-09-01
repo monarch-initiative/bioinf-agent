@@ -160,6 +160,11 @@ border-radius:2px;font:12.5px/1.4 var(--mono);word-break:break-all}
 pre{background:var(--pre-bg);color:var(--ink);padding:10px 12px;margin:4px 0;border:1px solid var(--border);
 border-left:3px solid var(--cyan);border-radius:0;overflow-x:auto;
 font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+details{margin:6px 0;border:1px solid var(--border);border-left:3px solid var(--cyan);
+background:var(--surface)}
+details>summary{cursor:pointer;padding:8px 12px;font:12.5px/1.4 var(--mono);
+color:var(--cyan);list-style:revert}
+details>pre{margin:0;border:none;border-top:1px solid var(--border)}
 .tbl-wrap{overflow-x:auto;margin:4px 0}
 table{width:100%;border-collapse:collapse;background:var(--surface);
 border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}

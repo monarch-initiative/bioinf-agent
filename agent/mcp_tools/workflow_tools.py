@@ -176,10 +176,26 @@ def _image_usage_runner(fr: dict, draft: dict):
             if (d, d) not in mounts:
                 mounts.append((d, d))
     try:
-        if not _ms._docker.image_digest(image):
-            return None                        # not resolvable locally (adopted, or no daemon)
+        resolved = _ms._docker.image_digest(image)
     except Exception:
-        return None
+        resolved = None
+    if not resolved:
+        # A daemon TAG can rot while the pinned bytes remain: in the S7 sea
+        # trial (F19), containerd GC dropped `s2_align:latest`'s tag mapping —
+        # `docker images` listed it, inspect-by-tag said "No such image" — and
+        # this probe concluded no runner existed while the digest resolved the
+        # whole time. The record carries that digest in the field beside the
+        # tag: one identity, two spellings, and only one was consulted. Running
+        # by sha256: ref is exactly as pinned as running by tag.
+        digest = (fr.get("image_digest") or "").strip()
+        if digest and digest != image:
+            try:
+                if _ms._docker.image_digest(digest):
+                    image, resolved = digest, digest
+            except Exception:
+                pass
+    if not resolved:
+        return None                        # not resolvable locally (adopted, or no daemon)
     platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(fr.get("platform", ""), "linux/amd64")
     return _ImageUsageRunner(image, platform, mounts)
 

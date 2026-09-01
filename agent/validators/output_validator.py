@@ -23,6 +23,41 @@ from typing import Any
 
 from agent.skills.outcomes import proven, refused, broke
 
+
+def infer_validator_type(filename: str) -> str:
+    """Filename → validator type: the ONE reading, shared by every step runner.
+
+    Last-extension based, because dotted infixes are the normal bioinformatics
+    naming convention (`x.sorted.bam`, `x.filtered.vcf`, `x.markdup.bam`). This
+    used to exist twice — `run_tools._infer_validator_type` (last suffix, right)
+    and `run_cluster_step._infer_etype` (ALL suffixes joined, exact-map lookup) —
+    and the copies disagreed on exactly that convention: the cluster runner sent
+    `HG00096_chr22_10K.sorted.bam` to the txt probe, which failed on binary
+    bytes and recorded `passed: False` over a valid BAM the local runner
+    validated green (sea-trial F18).
+
+    Unknown extensions return "any" — the validator's existence/non-empty check
+    — never a guessed concrete type: a fabricated expectation manufactures a
+    failure nobody declared, and I3 refuses `expected_type="any"` at seal with
+    its own remedy (declare the type via output_types), which is the gate
+    teaching rather than this function guessing.
+    """
+    ext = "".join(Path(filename).suffixes).lstrip(".").lower()
+    # Strip .gz: validators handle compressed forms natively.
+    if ext.endswith(".gz"):
+        ext = ext[: -len(".gz")]
+    last = ext.split(".")[-1] if ext else ""
+    aliases = {"fq": "fastq", "fa": "fasta", "fna": "fasta", "faa": "fasta",
+               "ndjson": "jsonl"}
+    if last in aliases:
+        return aliases[last]
+    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
+                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
+                  "html", "json", "jsonl"):
+        if last == known:
+            return known
+    return "any"
+
 # `samtools quickcheck` exits with a BITMASK of complaints. This is the only
 # bit that is not a defect — see `OutputValidator._check_sam`.
 _QC_NO_TARGETS = 8

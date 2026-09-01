@@ -82,6 +82,7 @@ from agent.skills import (
 )
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.pipeline_state import validation_key as _validation_key
+from agent.validators.output_validator import infer_validator_type
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -584,6 +585,12 @@ def run_step_on_cluster(
             "locus":           "cluster",
             "sacct_job_id":    job_id,
             "sacct_rows":      resources.get("sacct_rows", []),
+            # sacct measured THIS job on the node that ran it — native by
+            # construction. This was the one producer not stamping authority
+            # (sea-trial F20), so the corpus's only genuinely budgetable
+            # numbers rendered under "unknown authority" with a
+            # recorded-before-capture explanation that was false for them.
+            "i7_authoritative": True,
         }
         # A successful sacct QUERY can still carry no MaxRSS (cluster without cgroup
         # memory accounting). cluster_job_resources marks that with a sacct_error;
@@ -679,29 +686,51 @@ def run_step_on_cluster(
         "cluster_apptainer_module": apptainer_module or None,
         "cluster_nextflow_module":  nextflow_module or None,
         "cluster_slurm":            _seal_slurm_context(slurm),
+        # The submission AS RENDERED — the literal launcher.sh / main.nf /
+        # nextflow.config this step uploaded and sbatch'd. Captured at submit
+        # time because a render-time reconstruction is a claim, not a record
+        # (the I4-transcript rule): it would differ from the truth exactly
+        # where that is easy to get wrong. The RUN dashboard shows these so
+        # "review all the parameters before running on real data" includes the
+        # #SBATCH header and the params block that actually ran — and so a
+        # reader can edit them and resubmit variants by hand.
+        "cluster_rendered_files":   {fn: rendered[fn] for fn in _RENDERED_FILES
+                                     if isinstance(rendered.get(fn), str)},
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     step_index = _pipeline_state.add_step(pipeline_id, step_data)
 
     # ─── 8. Validate outputs (type-aware, same as local steps) ────────
     validations: dict = {}
+    output_types_used: set = set()
     if rc == 0 and step_index is not None:
         for path in downloaded:
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
-            etype = (output_types.get(basename)
-                     or output_types.get(ext)
-                     or output_types.get(ext.lstrip("."))
-                     or _infer_etype(basename, ext))
+            etype = None
+            for key in (basename, ext, ext.lstrip(".")):
+                if key in output_types:
+                    etype = output_types[key]
+                    output_types_used.add(key)
+                    break
+            if etype is None:
+                etype = infer_validator_type(basename)
             v = _validator.validate(path, etype)
             # keyed by resolved PATH (see pipeline_state.validation_key) — a per-sample
             # cluster fan-out is precisely where two outputs share a basename.
             validations[_validation_key(path)] = v
             _pipeline_state.add_validation(pipeline_id, step_index, path, v)
+    # Same disclosure as run_pipeline_step's: a key that bound to nothing is a
+    # typo, a wrong extension, or a file the job never produced — and silently
+    # dropping the caller's stated intent is how a wrong fallback takes over
+    # unannounced (sea-trial F18: a placeholder-keyed dict was ignored without
+    # a word while the joined-suffix fallback failed a valid BAM as text).
+    unmatched = sorted(set(output_types) - output_types_used)
 
     return proven(
         "run_cluster.step_recorded",
         success=(rc == 0 and not download_errors),
+        output_types_unmatched=unmatched or None,
         returncode=rc,
         job_id=job_id,
         sif_path=sif_path_remote,
@@ -724,18 +753,7 @@ def run_step_on_cluster(
     )
 
 
-def _infer_etype(basename: str, ext: str) -> str:
-    """Coarse fallback when output_types didn't specify. Kept here
-    rather than imported from run_tools to avoid the mcp_tools↔skills
-    crossing — run_tools._infer_validator_type is the same idea."""
-    by_ext = {
-        ".bam": "bam", ".sam": "sam", ".cram": "cram",
-        ".vcf": "vcf", ".vcf.gz": "vcf",
-        ".bed": "bed", ".gff": "gff", ".gtf": "gtf",
-        ".fasta": "fasta", ".fa": "fasta", ".fna": "fasta",
-        ".fastq": "fastq", ".fq": "fastq", ".fastq.gz": "fastq",
-        ".json": "json", ".jsonl": "jsonl",
-        ".tsv": "tsv", ".csv": "csv", ".txt": "txt",
-        ".html": "html",
-    }
-    return by_ext.get(ext) or by_ext.get("." + ext.lstrip(".")) or "txt"
+# Filename → type inference is agent.validators.output_validator.infer_validator_type,
+# imported at the top. A second copy lived here ("the same idea" as run_tools's, per its
+# own docstring) and drifted from it on the joined-vs-last suffix reading — sea-trial
+# F18, a valid `x.sorted.bam` failed as text on the cluster path only. One reading now.
