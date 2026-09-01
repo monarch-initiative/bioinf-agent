@@ -362,8 +362,16 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     # what silently disabled I4 for every container-native env.
     env_name = spec.get("conda_env")
     if env_manager is None:
-        return _not_attempted("no runner available — neither a frozen env image nor a host "
-                              "conda env could execute the how-to")
+        # Say only what is KNOWN here: the seal was handed no runner. The old
+        # sentence asserted two probes ("neither a frozen env image nor a host
+        # conda env could execute") that this function cannot see and that were
+        # not both taken — sea-trial F19 hit it with the image present by digest
+        # and a working host env on disk. Causes are named as candidates.
+        return _not_attempted("no runner available — the seal could not build an in-image "
+                              "runner (the pinned image did not resolve in the local "
+                              "daemon, or a trial input exists only at another locus) and "
+                              "the spec names no conda_env for a host-env fallback, so "
+                              "nothing here executed the how-to")
     if getattr(env_manager, "is_image_runner", False):
         env_name = env_name or "<frozen image>"
     elif not env_name:

@@ -167,7 +167,35 @@ def _render_cluster_context(step: dict) -> str:
     if isinstance(sc, dict) and sc:
         rows.append(("SLURM placement",
                      ", ".join(f"{_e(k)}={_e(v)}" for k, v in sc.items())))
-    return _kv_table(rows) if rows else ""
+    P = [_kv_table(rows)] if rows else []
+    # The submission AS RENDERED — captured by the runtime at submit, never
+    # reconstructed here (the I4-transcript rule: a render-time re-render is a
+    # claim, and it differs from truth exactly where that is easy to get
+    # wrong). This is the panel a reader edits to run variants: the #SBATCH
+    # header lives in launcher.sh, the params block in main.nf.
+    rendered = (step.get("cluster_rendered_files")
+                if isinstance(step.get("cluster_rendered_files"), dict) else {})
+    shown = [(fn, body) for fn, body in
+             (("launcher.sh", rendered.get("launcher.sh")),
+              ("main.nf", rendered.get("main.nf")),
+              ("nextflow.config", rendered.get("nextflow.config")))
+             if isinstance(body, str) and body.strip()]
+    if shown:
+        P.append('<p class="note"><b>Submitted files</b> — the literal rendered text '
+                 'this step uploaded and ran (captured at submission). The '
+                 '<code>#SBATCH</code> header is in launcher.sh; the '
+                 '<code>params</code> block in main.nf — edit and resubmit to run '
+                 'variants.</p>')
+        for fn, body in shown:
+            P.append(f'<details><summary><code>{_e(fn)}</code></summary>'
+                     f'<pre>{_e(body)}</pre></details>')
+    elif step.get("cluster_job_id"):
+        # Absence stated, never rounded up — and stated truthfully: capture
+        # landed 2026-08-31, so a cluster step without it predates that.
+        P.append('<p class="note">Submitted files: <b>unrecorded</b> — this step was '
+                 'recorded before the runtime captured the rendered submission files. '
+                 'Re-run the step to record them.</p>')
+    return "".join(P)
 
 
 def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
@@ -616,8 +644,22 @@ def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
         rows.append(("Env report",
                      f'<a href="{_e(env_name)}.ENV.html"><code>{_e(env_name)}.ENV.html</code></a>'
                      '<span class="note"> — the immutable Layer-1 build honesty report</span>'))
+    # A staged .sif recorded by a cluster step outranks generic delivery advice:
+    # the delivery already HAPPENED, and the stored get_image text on older
+    # records advised building on the head node (sea-trial F21) — instructions
+    # that are both forbidden and moot once the artifact is on the cluster.
+    staged = [st for st in (spec.get("pipeline_steps") or [])
+              if isinstance(st, dict) and st.get("cluster_sif_sha256")]
+    if staged:
+        st = staged[-1]
+        cell = (f'<code>{_e(st.get("container_image", ""))}</code>'
+                if st.get("container_image") else "")
+        cell += (f'<br><span class="note">sha256 {_e(st["cluster_sif_sha256"])} — '
+                 'observed on the cluster; built locally and shipped by '
+                 'stage_apptainer_image (never built on the head node)</span>')
+        rows.append(("Staged .sif (cluster)", cell))
     hpc = spec.get("env_hpc_delivery") or {}
-    if hpc.get("get_image"):
+    if hpc.get("get_image") and not staged:
         rows.append(("Get the image (HPC)", f"<pre>{_e(hpc['get_image'])}</pre>"))
     P.append(_kv_table(rows))
     # Multi-env chaining: a workflow may chain steps across several frozen envs.
@@ -884,17 +926,21 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     P: list[str] = []
     P.append(_open_page(f"Workflow run report — {name}"))
     P.append(_header_banner(f"Workflow run report — {_e(name)}", pill, head_rows))
-    P.append(_render_validated_evidence(s, primary_digest))
-    P.append(_render_howto(s))
+    # THE READER'S ORDER (user ruling, 2026-08-31): the environment this run is
+    # pinned to and what it consumed come FIRST, straight after the header — a
+    # reviewer decides "is this the env and data I mean" before reading how it
+    # ran. Evidence and the how-to follow. Services stay ahead of inputs within
+    # that block: a prerequisite outranks a consumable (if the service isn't
+    # up, the inputs are moot).
     P.append(_render_env_panel(s, env_record))
-    # BEFORE the inputs, because it is a precondition rather than a consumable: if the
-    # service isn't up, the inputs are moot.
     services = _render_services(s)
     if services:
         P.append(services)
     inputs = _render_inputs(s)
     if inputs:
         P.append(inputs)
+    P.append(_render_validated_evidence(s, primary_digest))
+    P.append(_render_howto(s))
     # HONEST PROVENANCE. This used to claim "no field on this page was authored by the
     # agent", which is false and was false when written: the description, the usage
     # description, and the command_template are all rendered here and all sit in
