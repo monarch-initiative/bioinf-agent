@@ -81,18 +81,9 @@ docker:
 agent:
   install_timeout_seconds: 3600
 
-testing:
-  # For human/mouse genomes, restrict the reference to this chromosome to keep
-  # index builds and alignments fast.
-  #
-  # THREE READINGS, and they can disagree — do not change this without reading
-  # all three. scripts/bootstrap_core.py's GENOME_BUILDS table keys the chromosome
-  # per build (hg38→chr22, mm10→chr19), and test_runner.py hardcodes chr22 in the
-  # GTF filter. Setting this to chr1 today would download a chr1 FASTA and build a
-  # chr22-only GTF beside it: a silently mismatched reference pair.
-  #
-  # There is no fallback. This file used to claim "Falls back to chr1 if not
-  # found" next to a `fallback_chromosome: chr1` key; no such retry exists in
-  # test_runner.py, which returns broke/refused instead. Both are deleted.
-  preferred_chromosome: "chr22"
+# The `testing:` block is GONE (2026-09-14). Its one key, preferred_chromosome,
+# had NO reader left: test_runner.py — two of its "THREE READINGS" — was deleted
+# in a470df7, and the sole survivor (scripts/bootstrap_core.py's GENOME_BUILDS
+# table) keys the chromosome per build itself. An unread knob is a lever someone
+# pulls expecting an effect — the exact trap this file's header names.
   # For non-standard organisms (no "chr" prefix), use the first sequence in the FASTA

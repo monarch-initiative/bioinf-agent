@@ -127,9 +127,10 @@ def _now_iso() -> str:
 # ScpHeadNodeProvider
 #
 # Existing logic factored into a class. The wire is scp+ssh+sha256sum
-# round-trip. Helpers (_scp_argv, _ssh_argv, _compute_local_sha256,
-# _remote_sha256_cmd, _parse_sha256sum_output, _ssh_failure_hint) still
-# live in scratch.py / snapshot.py and are imported here rather than copied.
+# round-trip. Helpers (_scp_argv, _compute_local_sha256, _remote_sha256_cmd,
+# _parse_sha256sum_output live in transfer.py; _ssh_argv, _ssh_failure_hint
+# in snapshot.py) are imported here rather than copied. (This line used to
+# say scratch.py — deleted with the six zone-specific primitives.)
 # NB: the remote-target and remote-sha256 steps are written INLINE below
 # instead — the extraction duplicated them and orphaned the originals, which
 # were deleted in tier 7. Inline is the only copy; keep it that way.

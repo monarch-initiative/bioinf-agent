@@ -16,10 +16,10 @@ the caller's job (via transfer.upload -> container_upload_target).
 from __future__ import annotations
 
 import shlex
-import subprocess
 import tempfile
 from pathlib import Path
 
+from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke
 
 # The apptainer-in-docker builder image. Pinned to a tag (not :latest) so the
@@ -28,14 +28,10 @@ from agent.skills.outcomes import proven, refused, broke
 APPTAINER_BUILDER_IMAGE = "kaczmarj/apptainer:1.4.4"
 
 
-def _run(argv: list, timeout: int) -> dict:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return {"rc": r.returncode, "out": r.stdout or "", "err": r.stderr or ""}
-    except subprocess.TimeoutExpired as e:
-        return {"rc": 124, "out": "", "err": f"timed out after {e.timeout}s"}
-    except FileNotFoundError as e:
-        return {"rc": 127, "out": "", "err": str(e)}
+# The {rc, out, err} runner this module reads. Was a private copy, byte-identical
+# to freeze_from_image._sh (measured 2026-09-14); both now alias the shared
+# implementation, which is the one property a copy can't have: it cannot drift.
+_run = _proc.run_argv_rc
 
 
 def build_sif_locally(*, out_sif: str, tarball: str = "", image_tag: str = "",

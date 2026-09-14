@@ -39,6 +39,7 @@ import shlex
 import subprocess
 from typing import Any, Optional
 
+from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke, degraded
 # Where a human-supplied artifact lands inside the BUILD stage — ONE definition,
 # imported from the generator module that writes the commands that read it.
@@ -706,25 +707,13 @@ class ContainerBuild:
 
     @staticmethod
     def _sh(args: list[str], timeout: int = 1800) -> dict[str, Any]:
-        # errors="replace": a tool's `--version` / banner probe can emit non-UTF-8
-        # bytes (e.g. `pigz` with a compress flag writes gzip magic 0x1f 0x8b to
-        # stdout). Strict text-mode decoding would raise UnicodeDecodeError and
-        # crash the whole build/validation; we tolerate garbled bytes instead —
-        # the returncode is what the honesty check reads, the text is diagnostic.
-        try:
-            p = subprocess.run(args, capture_output=True, text=True,
-                               errors="replace", timeout=timeout)
-        except subprocess.TimeoutExpired as e:
-            # A hung/slow step (e.g. an import-heavy tool's evidence smoke under
-            # QEMU cross-arch emulation) must NOT crash the whole freeze with an
-            # unhandled TimeoutExpired — return a structured failure (rc=124, the
-            # conventional timeout code) so the honesty check reports a clean
-            # evidence/install failure and the freeze returns a broke() record.
-            out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-            err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
-            return {"returncode": 124, "stdout": out or "",
-                    "stderr": ((err or "") + f"\n[_sh] command timed out after {timeout}s").strip()}
-        return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
+        # The shared runner carries this class's hard-won semantics (they were
+        # promoted, not lost): errors="replace" so a non-UTF-8 banner can't
+        # crash a build, rc 124 with partial-output salvage so a hung evidence
+        # smoke under QEMU reports a clean failure instead of an unhandled
+        # TimeoutExpired killing the whole freeze. See _proc's module docstring
+        # for the seven-runner consolidation this came from.
+        return _proc.run_argv(args, timeout)
 
     def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:
         """Run a shell command in the build container (engine on PATH)."""

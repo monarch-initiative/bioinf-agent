@@ -47,11 +47,11 @@ alternative is to say `unverified` out loud.
 """
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.models import core_data as _core_data
+from agent.models.core_data import sha256_file_or_none as _sha256_file_or_none
 
 #: Above this we do not read a whole file to hash it. Same value as
 #: `spec_writer._check_reference_database_availability`'s cap and
@@ -69,15 +69,10 @@ VERIFIED = "verified"
 NOT_ATTEMPTED = "not_attempted"
 
 
-def _sha256_file(path: Path) -> Optional[str]:
-    h = hashlib.sha256()
-    try:
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                h.update(chunk)
-    except OSError:
-        return None
-    return h.hexdigest()
+# The one hashing implementation lives beside the anchor model it serves
+# (core_data.sha256_file); this module keeps only the tolerant-spelling alias
+# it has always exposed. Was one of five copies of the same loop (2026-09-14).
+_sha256_file = _sha256_file_or_none
 
 
 def sealed_anchors(spec: Mapping) -> dict[str, dict]:

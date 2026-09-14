@@ -13,8 +13,9 @@ One-level visibility (the `file_name_only` contract)
 A snapshot returns the root + its IMMEDIATE children — never deeper.
 Subdirectories are listed BY NAME (so the agent can see "there's a
 samples/ dir") but their CONTENTS are NOT walked. To inspect a subdir,
-the user must declare it as its own directory entry in the project's
-compute_env_access[].directories[].
+the user must declare it as its own entry in the project's flat
+directories[] list (the compute_env_access wrapper is gone; the loader
+rejects it and says so).
 
 This is intentional: every directory the agent peers into is an explicit
 user-declared concession. A single declaration cannot snowball into a
@@ -23,24 +24,26 @@ because the parent was authorized.
 
 Permission gate
 ---------------
-Before any subprocess runs, every directory we plan to walk is verified
-against the project's authorized directories via
-`compute_access.check_permission(project, env, path, 'snapshot')` which
-requires the directory's `permissions:` list to include `file_name_only`.
-A path not in the manifest, or with the wrong permissions, raises
-`PermissionDenied` — fail-closed, no shell, no leak.
+Before any subprocess runs, every directory we plan to walk is verified:
+project-declared paths via `compute_access.check_permission(project, env,
+path, 'snapshot')` (requires `file_name_only` in the entry's permissions),
+and env-level scratch/common_data targets via
+`check_env_target_capability` (see `_snapshot_paths_for_env`). A path in
+neither, or with the wrong permissions, raises `PermissionDenied` —
+fail-closed, no shell, no leak.
 
 Multi-env projects
 ------------------
-A project may declare `compute_env_access` blocks for multiple envs. The
-snapshot iterates each, walks each env's authorized directories, and
-aggregates the result with `compute_env` tagged on every entry so the
-downstream consumer can partition by env.
+A project may list multiple envs in `compute_envs:`. The snapshot
+iterates each, walks each env's authorized directories, and aggregates
+the result with `compute_env` tagged on every entry so the downstream
+consumer can partition by env.
 
 This module exposes a single function: `snapshot_project(project_name)`.
-Adding a new operation (upload, download, hpc_run, …) requires a new
-entry in `compute_access.OPERATION_REQUIRES`, a new gate call, and a new
-cheat-guard test under tests/integration/honesty/L14_compute_env_safety/.
+Adding a new operation (one not already in
+`compute_access.OPERATION_REQUIRES`) requires a new entry there, a new
+gate call, and a new cheat-guard test under
+tests/integration/honesty/L14_compute_env_safety/.
 """
 from __future__ import annotations
 

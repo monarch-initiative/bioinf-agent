@@ -196,8 +196,8 @@ remote `find -maxdepth 1` flag.
 
 | ID | Cheat | Note |
 |---|---|---|
-| L14.i — `upload` primitive overwrites an existing file | DEFERRED: contract decided ("never overwrite"), primitive not yet wired. When implementing: pre-flight `test -e <target>` over ssh; refuse if exists; require explicit `--force` for overwrite |
-| L14.j — agent executes a new operation (download / hpc_run / etc.) | DEFERRED: each new operation MUST add an entry to `compute_access.OPERATION_REQUIRES`, a `check_permission` gate before its subprocess, and a cheat-guard test under L14_compute_env_safety/ |
+| L14.i — `upload` primitive overwrites an existing file | CLOSED: shipped exactly as prescribed — `transfer.py` pre-flights `provider.remote_exists` (ssh `test -e` on the scp wire) and refuses `transfer.remote_exists`. Guard: `test_transfer_surface.py` |
+| L14.j — agent executes a new operation | CLOSED for upload/download (`compute_access.OPERATION_REQUIRES` + gates + `test_transfer_surface.py`); the RULE stands for any future operation — entry in OPERATION_REQUIRES, a gate before its subprocess, and a cheat-guard test under L14_compute_env_safety/ |
 
 ---
 

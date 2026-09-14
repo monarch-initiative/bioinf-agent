@@ -1,28 +1,36 @@
 """
 Compute-env access control. The agent's ONLY interaction with a compute env
 is mediated by this module — every primitive that touches a compute env's
-filesystem MUST go through `check_permission()` before any subprocess runs.
+filesystem MUST go through one of its TWO gates before any subprocess runs:
+`check_permission()` for project-declared `directories[]` paths, and
+`check_env_target_capability()` for the env-level agent zones (scratch /
+common_data / container_upload). This docstring used to name only the first
+gate and claim it was the single chokepoint; five of the eight compute-env
+primitives correctly use the second, and a sentence asserting a chokepoint
+that does not exist is how the next agent picks the wrong gate.
 
 The trust model
 ---------------
-The agent has a fixed, small set of operations (today: `snapshot`; later:
-`upload`, `download`, `hpc_run`, `read_content`). Each operation requires a
-specific permission on the target directory. Permissions are declared by the
-user in `projects_access.yaml`, at the PROJECT level — the compute_env layer
-is just connection + container-upload slot. Any directory not explicitly
-listed in a project has permission `none` — fail-closed.
+The agent has a fixed, small set of operations — read them off
+`OPERATION_REQUIRES` below, never off this sentence (an earlier version said
+"today: snapshot; later: upload, download" long after six operations had
+shipped). Each operation requires a specific permission on the target
+directory. Permissions are declared by the user in `projects_access.yaml` —
+project-level `directories[]` grants, plus the env-level zone targets. Any
+directory not explicitly granted has permission `none` — fail-closed.
 
 The agent cannot:
   - execute arbitrary commands on the compute env
-  - access directories not declared in a project's directories[]
+  - access directories not declared in a project's directories[] or an
+    env's zone targets
   - elevate its own permissions
-  - overwrite existing files via the `upload` permission (when wired)
+  - overwrite existing files via the `upload` permission (enforced:
+    transfer refuses on `remote_exists`)
 
-This is enforced at the call-graph level: every subprocess call in
-agent/skills/snapshot.py (and future agent/skills/{upload,download,…}.py) is
-preceded by `check_permission`. A test under
-tests/integration/honesty/L14_compute_env_safety/ pins this invariant —
-adding a subprocess call that bypasses check_permission must fail CI.
+Enforcement is per-primitive: the L14 tests under
+tests/integration/honesty/L14_compute_env_safety/ pin each primitive's
+command surface individually. There is NO repo-wide guard that walks every
+subprocess call — a new primitive must bring its own L14 test.
 
 The schema (the fixed vocabulary)
 ---------------------------------
@@ -523,8 +531,8 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
 
 # --- data_transfer block --------------------------------------------------
 #
-# Picks the wire protocol every upload_to_X / download_from_X primitive
-# uses on this env (also stage_apptainer_image's .tar transfer). Closed-key
+# Picks the wire protocol `transfer.upload` / `transfer.download` use on
+# this env (also stage_apptainer_image's .tar transfer). Closed-key
 # at every level so a typo can't silently revert us to scp without notice.
 #
 # The two providers:
@@ -711,9 +719,10 @@ def get_project_compute_envs(project: dict) -> list[str]:
 # Phase 2 — env-level lookups
 #
 # These return the RAW yaml dicts after validation has passed. They do NOT
-# check per-project authorization; the consuming primitives (upload_to_*,
-# fetch_from_*, submit_cluster_job) layer project-level grants on top in
-# their own modules, in the same shape as Phase 1's check_permission.
+# check per-project authorization; the consuming primitives (transfer.upload /
+# transfer.download, submit_workflow, run_cluster_step) layer the grants on
+# top in their own modules via check_env_target_capability, in the same shape
+# as Phase 1's check_permission.
 # ---------------------------------------------------------------------------
 
 def get_agent_scratch_target(env: dict) -> Optional[dict]:

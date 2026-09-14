@@ -1222,6 +1222,48 @@ class ContentAnchor(BaseModel):
 ANCHOR_HASH_CAP_BYTES = 2 * 1024 ** 3
 
 
+def staged_sif_steps(spec: Any) -> list:
+    """THE one reading of "is this workflow's container already delivered to the
+    cluster": every pipeline_step that records a cluster-staged .sif fingerprint.
+
+    Exists because two renderers answer it (sea-trial F21): a step-recorded
+    staged .sif must OUTRANK a freeze record's stored `get_image` advice — the
+    stored text on pre-fix records tells the reader to build on the head node,
+    which is both forbidden and moot once the artifact is on the cluster. The
+    RUN dashboard got the rule first and the user guide kept printing the advice
+    (measured 2026-09-14: the two pages contradicted each other on the exact
+    fact F21 was about), which is what a second hand-spelling always does."""
+    steps = (spec or {}).get("pipeline_steps") or []
+    return [st for st in steps if isinstance(st, dict) and st.get("cluster_sif_sha256")]
+
+
+def sha256_file(path: Any) -> str:
+    """THE streaming file hash — 1 MiB chunks, raises on an unreadable path.
+
+    Measured 2026-09-14: five named copies of this loop existed (data_pins,
+    env_manager, core_test_data, transfer, and anchor_for_path's inline body)
+    plus inline sites in evidence and spec_writer — differing only in whether
+    an OSError raised or became None, which is caller POLICY, not hashing.
+    This is the one implementation; `sha256_file_or_none` is the tolerant
+    spelling. Cap policy stays with the CALLER (see ANCHOR_HASH_CAP_BYTES
+    above — a cap inside the hasher would let two checks disagree merely
+    because one gave up sooner)."""
+    import hashlib
+    h = hashlib.sha256()
+    with Path(str(path)).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_file_or_none(path: Any) -> Optional[str]:
+    """sha256_file, with unreadable/missing → None (for observe-don't-crash sites)."""
+    try:
+        return sha256_file(path)
+    except OSError:
+        return None
+
+
 #: Repo root — `agent/models/core_data.py` → parents[2]. Relative test_data paths are
 #: relative to THIS, never to the CWD: the manifest builds them from `core_dir`, which is
 #: relative in the shipped config, and the MCP server's CWD is not guaranteed.
@@ -1247,8 +1289,6 @@ def anchor_for_path(path: Any) -> Optional[ContentAnchor]:
     diffs the result against what was recorded — so both sides see the same artifact
     through the same eyes, including the hash cap. Two implementations of "what are these
     bytes" is how a check ends up comparing a capped observation with an uncapped pin."""
-    import hashlib
-
     p = Path(str(path)).expanduser()
     try:
         if p.is_dir():
@@ -1258,11 +1298,7 @@ def anchor_for_path(path: Any) -> Optional[ContentAnchor]:
         size = p.stat().st_size
         if size > ANCHOR_HASH_CAP_BYTES:
             return ContentAnchor(kind="file", sha256=None, size_bytes=size)
-        h = hashlib.sha256()
-        with p.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                h.update(chunk)
-        return ContentAnchor(kind="file", sha256=h.hexdigest(), size_bytes=size)
+        return ContentAnchor(kind="file", sha256=sha256_file(p), size_bytes=size)
     except OSError:
         return None
 

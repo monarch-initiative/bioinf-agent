@@ -1,8 +1,9 @@
 """
 L14 cheat guard — the snapshot primitive's command surface.
 
-The agent's ONLY interaction with a compute env (in v0) is the snapshot
-primitive, which runs a single `find` invocation with a fixed `-printf`
+Snapshot is the read-only INSPECTION primitive against a compute env (the
+actuators — upload/download/submit/run — each carry their own L14 guard).
+It runs a single `find` invocation with a fixed `-printf`
 template and `-maxdepth 1` (one-level visibility). These tests pin:
 
   - the LITERAL argv (local) and LITERAL remote-shell string (ssh) — any
@@ -17,14 +18,15 @@ template and `-maxdepth 1` (one-level visibility). These tests pin:
   - schema typos / unknown permission tokens refused at load
   - happy path local snapshot returns the expected shape
 
-The schema (post-2026-05-31 redesign): list-of-named-blocks at both
-compute_env and project levels; per-dir access lives at
-projects[].compute_env_access[].directories[] with a permissions[] LIST.
+The schema: list-of-named-blocks at both compute_env and project levels;
+per-dir access lives in the project's flat directories[] (entries tagged
+with `env:` — the compute_env_access wrapper is an internal shape the
+loader synthesizes, and the yaml form of it is rejected at load).
 See agent/skills/projects_access.yaml.example for the full annotated shape.
 
-If you're adding a new primitive (upload, download, hpc_run), follow the
-same pattern: write the pinning test FIRST, then the implementation, then
-the cheat-guard tests under this directory.
+If you're adding a new primitive, follow the same pattern: write the
+pinning test FIRST, then the implementation, then the cheat-guard tests
+under this directory.
 """
 from __future__ import annotations
 

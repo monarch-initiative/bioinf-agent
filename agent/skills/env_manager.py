@@ -19,6 +19,7 @@ from typing import Any
 
 from agent.skills import evidence
 from agent.skills import store_lock
+from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke
 
 #: How much of a step's stdout/stderr travels back into the agent's context.
@@ -1135,13 +1136,11 @@ class EnvManager:
 
     @staticmethod
     def _sha256_file(path) -> str:
-        """sha256 of a file, streamed (handles multi-GB binaries)."""
-        import hashlib
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        """sha256 of a file, streamed (handles multi-GB binaries). Delegates to
+        the one implementation (core_data.sha256_file); raises on unreadable,
+        as this class's callers always relied on."""
+        from agent.models.core_data import sha256_file
+        return sha256_file(path)
 
     @staticmethod
     def _locate_binary(root: Path, tool_name: str, binary_in_archive: str) -> Path | None:
@@ -2039,27 +2038,15 @@ class EnvManager:
         timeout: int = 300,
         env: dict | None = None,
     ) -> dict:
+        # Delegates to the shared runner (see _proc); keeps this class's
+        # never-fatal posture — an unexpected exception becomes rc -1 rather
+        # than crashing an install flow. Timeout/missing-binary now report the
+        # conventional 124/127 (was -1 for everything; nothing branched on -1,
+        # measured 2026-09-14 before the change).
         run_env = env if env is not None else os.environ.copy()
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd or str(self.project_root),
-                env=run_env,
-            )
-            return {
-                "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "returncode": -1,
-                "stdout": "",
-                "stderr": f"Command timed out after {timeout}s: {' '.join(cmd)}",
-            }
+            return _proc.run_argv(cmd, timeout,
+                                  cwd=cwd or str(self.project_root), env=run_env)
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
 
