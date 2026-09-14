@@ -415,16 +415,26 @@ def apptainer_delivery(
     This block is recorded on the artifact and doubles as Layer-2 user-guide
     content (every command here is the real, runnable delivery path).
     """
+    # Every command below runs LOCALLY or on a COMPUTE node — never the head
+    # node. The old archive branch said "transfer the .tar, then on the HPC:
+    # apptainer build …", which is verbatim the head-node unpack+mksquashfs the
+    # no-head-node-builds rule exists to prevent, and it contradicted what the
+    # system itself does (stage_apptainer_image builds the .sif locally and
+    # ships the finished file). Sea-trial F21: a reader followed this advice far
+    # enough to ask whether WE had done it.
     if mode == "adopt" and image_by_digest:
-        get_cmd = f"apptainer pull {sif_name} docker://{image_by_digest}"
+        get_cmd = (f"# pull on a compute node or locally, then transfer — never on the head node:\n"
+                   f"apptainer pull {sif_name} docker://{image_by_digest}")
         source_note = "adopted public BioContainer — pulled by immutable digest, no push/transfer"
     elif mode == "build" and push_target and not gated:
-        get_cmd = f"apptainer pull {sif_name} docker://{push_target}"
+        get_cmd = (f"# pull on a compute node or locally, then transfer — never on the head node:\n"
+                   f"apptainer pull {sif_name} docker://{push_target}")
         source_note = f"built image pushed to {push_target}"
     else:
         tar = Path(tarball).name if tarball else f"{sif_name.removesuffix('.sif')}.tar"
         get_cmd = (
-            f"# transfer {tar} to the cluster (scp/rsync), then on the HPC:\n"
+            f"# build the .sif LOCALLY, then transfer the FINISHED .sif to the cluster\n"
+            f"# (stage_apptainer_image does both; never build/unpack on the head node):\n"
             f"apptainer build {sif_name} docker-archive://{tar}"
         )
         source_note = ("registry-free transfer (docker save → docker-archive)"

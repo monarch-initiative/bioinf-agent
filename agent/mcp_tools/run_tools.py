@@ -22,26 +22,10 @@ from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
 
 
-def _infer_validator_type(basename: str, ext: str) -> str:
-    """Pure-function extension → validator type. No memorization beyond
-    obvious filetype names that the OutputValidator already handles."""
-    ext = ext.lstrip(".").lower()
-    # Strip .gz: validators handle compressed forms natively.
-    if ext.endswith(".gz"):
-        ext = ext[:-3]
-    # Final extension is usually authoritative.
-    last = ext.split(".")[-1] if ext else ""
-    # Aliases — map common shorthands to canonical validator types.
-    aliases = {"fq": "fastq", "fa": "fasta", "fna": "fasta", "faa": "fasta", "ndjson": "jsonl"}
-    if last in aliases:
-        return aliases[last]
-    # Validator's internal dispatch already keys off these names; mirror it.
-    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
-                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
-                  "html", "json", "jsonl"):
-        if last == known:
-            return known
-    return "any"
+# Filename → validator type moved to the validator itself, next to the dispatch
+# it mirrors, because it existed twice (here and run_cluster_step._infer_etype)
+# and the copies disagreed on `x.sorted.bam` — see infer_validator_type's docstring.
+from agent.validators.output_validator import infer_validator_type as _infer_validator_type
 
 
 def _stamp_i7_authority(resource_usage, platform: str):
@@ -151,7 +135,7 @@ def run_pipeline_step(
                     output_types_used.add(key)
                     break
             if etype is None:
-                etype = _infer_validator_type(basename, ext)
+                etype = _infer_validator_type(basename)
             v = _ms._validator.validate(path, etype, env_name=env_name)
             # keyed by resolved PATH, not basename: two outputs of one step routinely
             # share a name, and the collision destroyed the earlier record (see
@@ -351,7 +335,7 @@ def run_step_in_container(
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
             etype = (output_types.get(basename) or output_types.get(ext)
-                     or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename, ext))
+                     or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename))
             v = _ms._validator.validate(path, etype)
             validations[_validation_key(path)] = v
             _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
