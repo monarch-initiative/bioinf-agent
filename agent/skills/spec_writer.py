@@ -1140,8 +1140,9 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
     Entries without a local_path are skipped (a declared-but-not-downloaded DB
     that no step consumes; if a step DID consume it, I8.composition_coherence
     already fails because a None local_path is never added to the source universe)."""
-    import hashlib
-    HASH_CAP_BYTES = 2 * 1024 * 1024 * 1024   # 2 GiB — hash below, trust size+existence above
+    # The SAME cap as every other anchor check, by import rather than by a
+    # re-typed literal a test could only pin by grepping source text.
+    from agent.models.core_data import ANCHOR_HASH_CAP_BYTES as HASH_CAP_BYTES
     violations: list[dict] = []
     for i, rdb in enumerate(spec.get("reference_databases", []) or []):
         if not isinstance(rdb, dict):
@@ -1217,11 +1218,8 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
         recorded_sha = rdb.get("sha256")
         if recorded_sha and (actual_size is None or actual_size <= HASH_CAP_BYTES):
             try:
-                h = hashlib.sha256()
-                with p.open("rb") as fh:
-                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                        h.update(chunk)
-                disk_sha = h.hexdigest()
+                from agent.models.core_data import sha256_file
+                disk_sha = sha256_file(p)
             except Exception as e:
                 violations.append({
                     "invariant": "I5.reference_database_unreadable",

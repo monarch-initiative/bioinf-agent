@@ -998,7 +998,11 @@ def generate_user_guide(
         env_pinned=bool(fr),
     )
     if write:
-        out = _ms._env_mgr.project_root / "env_reports" / f"{s.get('pipeline_name','pipeline')}.GUIDE.md"
+        # A SEALED spec carries workflow_name, not pipeline_name — reading only
+        # the latter wrote every sealed guide to the literal "pipeline.GUIDE.md"
+        # (measured 2026-09-14).
+        stem = s.get("workflow_name") or s.get("pipeline_name") or "pipeline"
+        out = _ms._env_mgr.project_root / "env_reports" / f"{stem}.GUIDE.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(md)
         result["path"] = str(out)

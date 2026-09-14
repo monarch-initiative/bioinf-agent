@@ -648,8 +648,8 @@ def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
     # the delivery already HAPPENED, and the stored get_image text on older
     # records advised building on the head node (sea-trial F21) — instructions
     # that are both forbidden and moot once the artifact is on the cluster.
-    staged = [st for st in (spec.get("pipeline_steps") or [])
-              if isinstance(st, dict) and st.get("cluster_sif_sha256")]
+    # Read via the core_data leaf — the user guide answers the same question.
+    staged = _core_data.staged_sif_steps(spec)
     if staged:
         st = staged[-1]
         cell = (f'<code>{_e(st.get("container_image", ""))}</code>'

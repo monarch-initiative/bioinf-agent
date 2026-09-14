@@ -107,19 +107,16 @@ def file_present(em, env_name: str, path: str, sha256: str | None = None) -> dic
     `em` is unused (kept for a uniform call signature); the check is pure
     filesystem so it needs no env.
     """
-    import hashlib
     from pathlib import Path as _Path
+
+    from agent.models.core_data import sha256_file
 
     p = _Path(path)
     if not p.is_file():
         return {"strategy": "file_present", "anchored": False,
                 "detail": f"missing: {path}"}
     if sha256:
-        h = hashlib.sha256()
-        with p.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        digest = h.hexdigest()
+        digest = sha256_file(p)
         if digest.lower() != sha256.lower():
             return {"strategy": "file_present", "anchored": False,
                     "detail": f"sha256 mismatch: recorded {sha256[:12]}…, on-disk {digest[:12]}…"}

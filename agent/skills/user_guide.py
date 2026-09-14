@@ -20,7 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.models.core_data import (USAGE_VERIFIED, shipped_binaries as _shipped_binaries,
+from agent.models.core_data import (USAGE_VERIFIED, staged_sif_steps as _staged_sif_steps,
+                                    shipped_binaries as _shipped_binaries,
                                     step_is_validated, usage_commands, usage_label,
                                     usage_status)
 
@@ -352,7 +353,27 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
             L += [f"**{n}. Load the runtime module(s):**", "",
                   _fence("\n".join(f"module load {m}" for m in mods)), ""]
             n += 1
-    if hpc.get("get_image"):
+    staged = _staged_sif_steps(spec)
+    if staged:
+        # A step-recorded staged .sif OUTRANKS the freeze record's stored
+        # get_image advice (F21, via the same core_data leaf the RUN dashboard
+        # reads): the delivery already happened, and older records' stored text
+        # advises the forbidden head-node build. This guide said exactly that
+        # while the dashboard for the same workflow said the opposite.
+        st_ = staged[-1]
+        sif_path = st_.get("container_image") or "(path unrecorded)"
+        sha = st_.get("cluster_sif_sha256") or ""
+        L += [f"**{n}. The container is already staged on the cluster** — built locally "
+              "and shipped by stage_apptainer_image (never built on the head node):",
+              "", _fence(str(sif_path)),
+              (f"_sha256 `{sha}` — observed on the cluster._" if sha else ""), ""]
+        n += 1
+        if hpc.get("run_example"):
+            L += ["Run a command inside it with:", "", _fence(hpc["run_example"]), ""]
+        if hpc.get("sbatch_template"):
+            L += ["<details><summary>SLURM batch template (for a non-interactive run)</summary>",
+                  "", _fence(hpc["sbatch_template"]), "", "</details>", ""]
+    elif hpc.get("get_image"):
         note = f" — _{hpc['source_note']}_" if hpc.get("source_note") else ""
         L += [f"**{n}. Get the container**{note}:", "", _fence(hpc["get_image"]), ""]
         n += 1

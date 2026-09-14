@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,17 +39,14 @@ _shq = shlex.quote
 from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills import env_recipe, env_recipe_render
 from agent.skills.container_build import BASE_IMAGE as _CB_BASE_IMAGE
+from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke, degraded
 
 
-def _sh(argv: list[str], timeout: int = 300) -> dict:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return {"rc": r.returncode, "out": r.stdout or "", "err": r.stderr or ""}
-    except subprocess.TimeoutExpired as e:
-        return {"rc": 124, "out": "", "err": f"timed out after {e.timeout}s"}
-    except FileNotFoundError as e:
-        return {"rc": 127, "out": "", "err": str(e)}
+# The {rc, out, err} runner this module reads. Was a private copy, byte-identical
+# to local_sif._run (measured 2026-09-14); both now alias the shared
+# implementation, which is the one property a copy can't have: it cannot drift.
+_sh = _proc.run_argv_rc
 
 
 def _image_present(image: str) -> bool:

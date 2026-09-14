@@ -387,13 +387,11 @@ def add_core_test_data(
 def _sha256_file(path: Path) -> str:
     """Streaming sha256 — single-pass, no whole-file slurp. Used to anchor
     downloaded pod5 assets (whole-file integrity, since pod5 is binary
-    Arrow data and can't be partially-validated like a gzip stream)."""
-    import hashlib
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    Arrow data and can't be partially-validated like a gzip stream).
+    Delegates to the one implementation (core_data.sha256_file); raises on
+    unreadable, as the anchoring callers rely on."""
+    from agent.models.core_data import sha256_file
+    return sha256_file(path)
 
 
 def add_core_pod5_data(

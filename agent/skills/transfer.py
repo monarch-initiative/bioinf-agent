@@ -268,15 +268,11 @@ def _validate_local_path_for_download(local_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def _compute_local_sha256(path: Path) -> str:
-    """sha256 of a local file, chunked so multi-GB files don't spike RSS."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(_HASH_CHUNK)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+    """sha256 of a local file, chunked so multi-GB files don't spike RSS.
+    Delegates to the one implementation (core_data.sha256_file); raises on
+    unreadable, as every transfer round-trip caller relies on."""
+    from agent.models.core_data import sha256_file
+    return sha256_file(path)
 
 
 def _remote_sha256_cmd(remote_path: str) -> str:
@@ -382,7 +378,9 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
          (multi-project isolation), then check env-target capability.
       2. common_data zone: if under env.agent_common_data_target, check
          env-target capability. No project-prefix isolation.
-      3. project_path zone: otherwise, defer to check_permission which
+      3. container_upload zone: if under env.container_upload_target, check
+         env-target capability. No project prefix (staged images are shared).
+      4. project_path zone: otherwise, defer to check_permission which
          walks project.directories[] for the longest-prefix match.
 
     Raises compute_access.PermissionDenied on any failure."""

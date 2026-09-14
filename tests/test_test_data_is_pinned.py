@@ -308,9 +308,14 @@ def test_the_hash_cap_is_the_same_number_everywhere(tmp_path):
     """A file size-anchored by one check must be size-anchored by all of them, or two
     checks disagree merely because one gave up sooner."""
     assert cd.ANCHOR_HASH_CAP_BYTES == data_pins.HASH_CAP_BYTES
+    # spec_writer now IMPORTS the cap instead of re-typing the literal, so the
+    # old source-text grep is replaced by an identity check on the import: the
+    # third copy is pinned by the same mechanism as the other two.
     src = Path(sw.__file__).read_text()
-    assert "HASH_CAP_BYTES = 2 * 1024 * 1024 * 1024" in src, \
-        "spec_writer's reference-DB cap moved away from core_data.ANCHOR_HASH_CAP_BYTES"
+    assert "ANCHOR_HASH_CAP_BYTES as HASH_CAP_BYTES" in src, \
+        "spec_writer's reference-DB cap must be imported from core_data, not re-typed"
+    assert "HASH_CAP_BYTES = 2 * 1024" not in src, \
+        "a re-typed cap literal is back in spec_writer — import it instead"
 
 
 def test_an_oversized_file_is_size_anchored_rather_than_hashed(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agent.skills import _proc
 from agent.skills.container_build import _BUILD_LABEL, _BUILD_OWNER_LABEL
 from agent.skills.outcomes import proven, broke
 
@@ -272,20 +273,12 @@ class DockerBuilder:
         )
 
     def _run(self, cmd: list[str], timeout: int = 300) -> dict:
+        # Delegates to the shared runner (see _proc); keeps this class's
+        # never-fatal posture — an unexpected exception becomes rc -1 rather
+        # than crashing a build teardown. Timeout/missing-binary now report the
+        # conventional 124/127 (was -1 for everything; nothing branched on -1,
+        # measured 2026-09-14 before the change).
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(self.project_root),
-            )
-            return {
-                "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-            }
-        except subprocess.TimeoutExpired:
-            return {"returncode": -1, "stdout": "", "stderr": f"Timed out after {timeout}s"}
+            return _proc.run_argv(cmd, timeout, cwd=str(self.project_root))
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
