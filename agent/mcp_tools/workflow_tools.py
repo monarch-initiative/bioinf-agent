@@ -115,6 +115,58 @@ class _ImageUsageRunner:
             platform=self.platform, timeout=timeout)
 
 
+def _local_trial_mounts(draft: dict):
+    """THE one precondition for "can the I4 self-test run at THIS locus at all?".
+
+    Walks the exact substitutions `self_test_usage` will use (declared trials, else
+    inferred from pipeline_steps[*].inputs) and returns the bind-mount list an image
+    runner needs — or None when any path-valued substitution does not exist on this
+    host, i.e. the trial inputs live at another locus and NO local runner (image OR
+    host env) could execute the how-to.
+
+    Extracted from `_image_usage_runner` because the host-env fallback made the same
+    decision without asking the same question (falsifier drive-2 open question): the
+    image runner declined a cluster-only trial gracefully → not_attempted, but when the
+    draft also named a conda_env the fallback fired unconditionally, ran the trial
+    against paths that exist only on the cluster, failed it, and turned the honest
+    not_attempted into a hard seal refusal. One precondition, consulted by both.
+
+    Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths.
+    Output slots are skipped — they are overwritten with the trial's fresh scratch dir
+    and are not expected to pre-exist. An empty template returns [] (nothing to run —
+    locus is not the blocker; the caller's own template checks decide)."""
+    from pathlib import Path
+    from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
+    from agent.models.core_data import usage_commands
+    usage = draft.get("usage") or {}
+    template = "\n".join(usage_commands(usage))
+    if not template:
+        return []
+    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
+    if trials:
+        subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
+    else:
+        subs_sets = [_infer_substitutions(draft, placeholders, usage.get("inputs") or [])]
+    mounts: list[tuple[str, str]] = []
+    for subs in subs_sets:
+        for slot, val in subs.items():
+            if _is_output_slot(slot):
+                continue                       # replaced by the per-trial scratch dir
+            s = str(val)
+            if not s.startswith("/"):
+                continue                       # not a path — a scalar param
+            p = Path(s)
+            if not p.exists():
+                return None                    # cluster-locus / missing input
+            d = str(p.parent if p.is_file() else p)
+            if d == "/":
+                continue                       # never bind-mount the host root
+            if (d, d) not in mounts:
+                mounts.append((d, d))
+    return mounts
+
+
 def _image_usage_runner(fr: dict, draft: dict):
     """Build an _ImageUsageRunner for this frozen env, or None when the how-to can't be
     self-tested in-image here.
@@ -138,8 +190,6 @@ def _image_usage_runner(fr: dict, draft: dict):
     cluster, and turned a legitimately-unrunnable-here workflow into a hard seal refusal.
     A precondition must inspect the same values the runner will use, or it guards nothing.
     """
-    from pathlib import Path
-    from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
     image = (fr.get("image") or "").strip()
     if not image:
         return None
@@ -152,29 +202,11 @@ def _image_usage_runner(fr: dict, draft: dict):
     template = "\n".join(usage_commands(usage))
     if not template:
         return None
-    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
-    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
-    if trials:
-        subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
-    else:
-        subs_sets = [_infer_substitutions(draft, placeholders, usage.get("inputs") or [])]
-
-    mounts: list[tuple[str, str]] = []
-    for subs in subs_sets:
-        for slot, val in subs.items():
-            if _is_output_slot(slot):
-                continue                       # replaced by the per-trial scratch dir
-            s = str(val)
-            if not s.startswith("/"):
-                continue                       # not a path — a scalar param
-            p = Path(s)
-            if not p.exists():
-                return None                    # cluster-locus / missing input → not_attempted
-            d = str(p.parent if p.is_file() else p)
-            if d == "/":
-                continue                       # never bind-mount the host root
-            if (d, d) not in mounts:
-                mounts.append((d, d))
+    # The locus precondition + mounts, from THE shared implementation — see
+    # _local_trial_mounts for why the host fallback must ask the same question.
+    mounts = _local_trial_mounts(draft)
+    if mounts is None:
+        return None                        # cluster-locus / missing input → not_attempted
     try:
         resolved = _ms._docker.image_digest(image)
     except Exception:
@@ -651,7 +683,14 @@ def seal_workflow(
             "spans_images": len(seen_dig),
         }
     else:
-        runner = _image_usage_runner(fr, draft) or (_ms._env_mgr if draft.get("conda_env") else None)
+        # The host env substitutes for a missing IMAGE, never for inputs that live at
+        # another locus — a fallback that skipped the locus precondition ran cluster-only
+        # trials on this host, failed them, and turned the honest not_attempted into a
+        # hard seal refusal (falsifier drive-2 open question, now closed). Same
+        # precondition as the image runner, one implementation: _local_trial_mounts.
+        runner = _image_usage_runner(fr, draft)
+        if runner is None and draft.get("conda_env") and _local_trial_mounts(draft) is not None:
+            runner = _ms._env_mgr
         try:
             usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
             usage_ok = bool(usage_detail.get("ok"))
@@ -1166,6 +1205,41 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     return _ms._pipeline_state.patch(pipeline_id, patches)
 
 
+def record_generated_artifact(pipeline_id: str, path: str, role: str,
+                              description: str, generated_by: str,
+                              language: str = "") -> tuple[Optional[int], dict]:
+    """THE one construction of a generated_by-mode authored-artifact record.
+
+    Reads the existing file at `path`, builds the artifact dict (sha256 anchor, size,
+    binary preview excerpt, genesis command) and merges it into the draft. Returns
+    (artifact_index | None-for-unknown-pipeline, artifact). Raises OSError if the file
+    cannot be read — callers stage files they just observed on disk.
+
+    Extracted so a PRODUCER PRIMITIVE can register its own output (falsifier FD5:
+    `phenopacket_to_vcf` wrote a VCF that no record anywhere anchored, so the step that
+    consumed it was an I8 orphan unless the agent hand-staged it — `select_test_data`
+    already registers what it selects, and a producer that hands back an unanchored path
+    is handing back a seal refusal on delay). `stage_authored_artifact`'s generated_by
+    mode delegates here — one implementation, two doors.
+    """
+    p = Path(path)
+    raw = p.read_bytes()
+    artifact = {
+        "path":        str(p),
+        "role":        role,
+        "description": description,
+        "sha256":      hashlib.sha256(raw).hexdigest(),
+        "size_bytes":  len(raw),
+        "created_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "content_excerpt": f"<binary; first 64 bytes hex: {raw[:64].hex()}>",
+        "content_full_in_spec": False,
+        "generated_by": generated_by,
+    }
+    if language:
+        artifact["language"] = language
+    return _ms._pipeline_state.add_authored_artifact(pipeline_id, artifact), artifact
+
+
 @mcp.tool()
 def stage_authored_artifact(
     pipeline_id: str,
@@ -1222,24 +1296,45 @@ def stage_authored_artifact(
         return refused("stage_artifact.path_not_absolute", error=f"path must be absolute, got: {path!r}")
 
     p = Path(path)
-    mode: str
 
-    if content:
-        if p.exists() and not overwrite:
-            return refused("stage_artifact.exists_no_overwrite", error=f"path already exists and overwrite=False: {path}")
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
-        except Exception as e:
-            return broke("stage_artifact.write_failed", error=f"could not write artifact: {e!r}", path=path)
-        mode = "content"
-    else:
+    if not content:
+        # generated_by mode: the record construction lives in record_generated_artifact
+        # (one implementation — producer primitives like phenopacket_to_vcf ride the
+        # same helper to register their own outputs, falsifier FD5).
         if not p.exists():
             return refused(
                 "stage_artifact.source_missing",
                 error=f"generated_by mode requires the file to already exist on disk: {path}",
             )
-        mode = "generated_by"
+        try:
+            idx, artifact = record_generated_artifact(
+                pipeline_id, path, role, description, generated_by, language)
+        except OSError as e:
+            return broke("stage_artifact.readback_failed", error=f"could not read back artifact for sha256: {e!r}", path=path)
+        if idx is None:
+            return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
+        return proven(
+            "stage_artifact.staged",
+            success=True,
+            path=str(p),
+            sha256=artifact["sha256"],
+            size_bytes=artifact["size_bytes"],
+            role=role,
+            mode="generated_by",
+            pipeline_merge={
+                "status":        "merged",
+                "pipeline_id":   pipeline_id,
+                "artifact_index": idx,
+            },
+        )
+
+    if p.exists() and not overwrite:
+        return refused("stage_artifact.exists_no_overwrite", error=f"path already exists and overwrite=False: {path}")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    except Exception as e:
+        return broke("stage_artifact.write_failed", error=f"could not write artifact: {e!r}", path=path)
 
     try:
         raw = p.read_bytes()
@@ -1249,20 +1344,14 @@ def stage_authored_artifact(
     sha256 = hashlib.sha256(raw).hexdigest()
     size_bytes = len(raw)
 
-    # For content mode, embed the full text up to ~64 KiB; otherwise an excerpt.
-    # Binary-mode artifacts get a short hex preview so a reviewer can sanity-check.
+    # Embed the full text up to ~64 KiB; otherwise an excerpt.
     SPEC_FULL_LIMIT = 65536
-    excerpt: Optional[str] = None
-    content_full_in_spec = False
-    if mode == "content":
-        if size_bytes <= SPEC_FULL_LIMIT:
-            excerpt = content
-            content_full_in_spec = True
-        else:
-            excerpt = content[:4096] + f"\n... [truncated, total {size_bytes} bytes]"
+    if size_bytes <= SPEC_FULL_LIMIT:
+        excerpt = content
+        content_full_in_spec = True
     else:
-        # Show a short hex preview for binary artifacts so the spec isn't blind.
-        excerpt = f"<binary; first 64 bytes hex: {raw[:64].hex()}>"
+        excerpt = content[:4096] + f"\n... [truncated, total {size_bytes} bytes]"
+        content_full_in_spec = False
 
     artifact = {
         "path":        str(p),
@@ -1274,8 +1363,7 @@ def stage_authored_artifact(
     }
     if language:
         artifact["language"] = language
-    if excerpt is not None:
-        artifact["content_excerpt"] = excerpt
+    artifact["content_excerpt"] = excerpt
     artifact["content_full_in_spec"] = content_full_in_spec
     if generated_by:
         artifact["generated_by"] = generated_by
@@ -1291,7 +1379,7 @@ def stage_authored_artifact(
         sha256=sha256,
         size_bytes=size_bytes,
         role=role,
-        mode=mode,
+        mode="content",
         pipeline_merge={
             "status":        "merged",
             "pipeline_id":   pipeline_id,
