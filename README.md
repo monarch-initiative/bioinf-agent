@@ -4,72 +4,55 @@ Install a bioinformatics tool once, get back an artifact you never have to secon
 
 `bioinf-agent` installs bioinformatics tools into isolated conda environments,
 **validates them inside the very image it ships**, packages them as HPC-shippable
-containers, and emits a machine-verified spec. It's designed to be **a solved
-component**: call it once per tool/version, get a trustworthy, content-addressed
-artifact, and never look at the install again.
+containers, and emits a machine-verified spec. Call it once per tool/version, get a
+content-addressed artifact, and never look at the install again.
 
-The distinguishing property is an **honesty contract** — nothing the agent claims is
-taken on faith. An environment is built and validated *inside the image it ships*, so
-"install" and "ship" are one event; reports, recipes, and provenance are rendered
-**purely from the verified record** — they cannot present a requested version as an
-installed one. (See [CLAUDE.md](CLAUDE.md) for the full contract.)
+The distinguishing property is an **honesty contract**: nothing is taken on faith. The
+environment is built and validated *inside the image it ships*, so "install" and "ship"
+are one event, and every report is rendered **purely from the verified record** — it
+cannot present a requested version as an installed one. Full contract: [CLAUDE.md](CLAUDE.md).
 
 ---
 
-## Requirements
+## Setup
 
-| Need | Why |
-|------|-----|
-| **Docker** (daemon running) | `freeze` builds/adopts the shippable image and validates *inside* it |
-| **An MCP client** (e.g. [Claude Code](https://claude.com/claude-code)) | the agent is an MCP server; the client drives it |
-
-Neither Python nor conda is something you manage: setup creates a repo-local runtime
-env (`./.conda_runtime/`, Python 3.11) that every launcher resolves by path — and if
-the machine has no conda at all, setup offers to install a **private miniforge** at
-`./.miniforge/` (with consent; no shell integration, nothing outside the repo dir,
-delete the folder to remove it). An existing conda on `PATH` is used as-is.
-An HPC cluster (SLURM + Apptainer) is **optional** — see [HPC bridge](#hpc-bridge-optional).
-
----
-
-## Setup — two commands
+You need **Docker** (daemon running) and an **MCP client** — [Claude Code](https://claude.com/claude-code)
+is the one this is developed against. Python and conda are not yours to manage: setup
+creates a repo-local runtime env, and if the machine has no conda at all it offers to
+install a private miniforge under the repo.
 
 ```bash
 git clone https://github.com/monarch-initiative/bioinf-agent && cd bioinf-agent
-./scripts/setup.sh          # ~4 min: runtime env + deps + core toolkit + chr22 test data
+./scripts/setup.sh          # ~4 min — runtime env, deps, core toolkit, chr22 test data
+./scripts/config.sh         # optional — only if you want to drive an HPC cluster
 ```
 
-What it does, in order: creates `./.conda_runtime/` (the agent's runtime env) →
-editable-installs the agent into it → bootstraps `envs/bioinf_core_tools`
-(samtools/bcftools/seqkit/bwa) and the chr22 reference under `data/core_test_data_hg38/`
-→ runs the systems check. It is idempotent — re-run it anytime.
+`setup.sh` is idempotent; re-run it any time.
 
-```bash
-./scripts/setup.sh --check  # systems check only: PASS/FAIL per requirement, every FAIL names its fix
-./scripts/setup.sh --full   # setup + the full read-dataset corpus (multi-GB; only if you need it)
-./scripts/setup.sh --yes    # non-interactive consent (CI / scripted installs — e.g. the private conda)
-```
+| | |
+|---|---|
+| `./scripts/setup.sh --check` | systems check — PASS/FAIL per requirement, every FAIL names its fix |
+| `./scripts/setup.sh --full` | also fetches the full read-dataset corpus (multi-GB) |
+| `./scripts/setup.sh --yes` | non-interactive consent, for CI and scripted installs |
 
 > **Editable install, on purpose.** This is a workspace-rooted service, not a
 > site-packages library — it reads and writes `config/`, `data/`, `env_reports/`,
-> `envs/`, and `docker_images/` relative to the repo root. `setup.sh` installs it
-> editable into the runtime env; a plain `pip install .` into site-packages would
+> `envs/` and `docker_images/` relative to the repo root. A plain `pip install .` would
 > relocate the code away from those directories and config loading would fail.
 
 ---
 
 ## First drive
 
-The MCP server is registered by [.mcp.json](.mcp.json) (server name `bioinf`) — Claude
-Code discovers it automatically when launched from the repo root. Approve the server if
-prompted, then ask for what you want:
+The server is registered in [.mcp.json](.mcp.json) as `bioinf`, so Claude Code finds it
+when launched from the repo root. Approve it if prompted, then ask for what you want:
 
 ```bash
 claude
 > Install samtools 1.21 and freeze it into an HPC-shippable image.
 ```
 
-Headless / scripted (note the MCP tool grant — without it every call is denied):
+Headless — note the tool grant, without which every call is denied:
 
 ```bash
 claude -p "Install samtools 1.21 and freeze it into an HPC-shippable image. \
@@ -77,85 +60,120 @@ Report the freeze_request_key and the ENV report path." \
   --allowedTools "mcp__bioinf__*"
 ```
 
-Either way, the deliverables land in `env_reports/`:
+The deliverables land in `env_reports/`:
 
 | Artifact | What it is |
 |----------|-----------|
-| `samtools_env.ENV.html` | the env report — requested vs installed, evidence commands, validation locus |
-| `samtools_env.recipe.md` / `.recipe.yaml` | the build recipe — rebuild the image with no agent involved |
-| `samtools_env.attestation.json` | in-toto/SLSA provenance |
+| `{name}.ENV.html` | the env report — requested vs installed, evidence commands, validation locus |
+| `{name}.recipe.md` / `.recipe.yaml` | the build recipe — rebuild the image with no agent involved |
+| `{name}.attestation.json` | in-toto/SLSA provenance |
 
-A first freeze often self-reports **`degraded`** with named disclosure reasons (e.g.
-"evidence is a presence probe, not a functional run"). That is the honesty contract
-talking, not a failure: the artifact states exactly what was and wasn't observed, and
-what stronger evidence would take.
+A first freeze often reports **`degraded`** with named reasons. That is the contract
+talking, not a failure: the environment is registered and shippable, and the tag says how
+much was *observed*. The commonest reason is inherent to the route the docs prefer — a
+pre-built BioContainer carries no record of the binaries it shipped. The outcome
+distinguishes that from a gap you can close, and names what would close it.
 
-Sanity checks that don't need an MCP client:
+Without an MCP client:
 
 ```bash
-python -m agent          # direct server launch (from the repo root, runtime env active) — prints the startup banner
-bioinf-mcp               # same entry point, installed as a console script in the runtime env
+python -m agent      # direct launch from the repo root — prints the startup banner
+./scripts/config.sh --show     # what the HPC bridge is configured to reach
 ```
 
 ---
 
-## How it works — three environment layers, two lifecycles
+## Configuration
+
+Two files, and only one of them is yours to edit by hand.
+
+**`projects_access.yaml`** (repo root, gitignored — it's personal) is the agent's
+command-and-control file: which clusters exist, which projects may use them, and exactly
+which directories the agent may list, upload to, download from, or run jobs in. Every
+bridge primitive is gated by it, and nothing in it is inferred. Author it with the menu:
+
+```bash
+./scripts/config.sh              # the menu: compute envs, projects, directories, save
+./scripts/config.sh --show       # print the current configuration
+./scripts/config.sh --validate   # rc 0 when the agent's loader accepts it
+```
+
+The menu validates every save against `compute_access.load_access` — the same loader the
+agent enforces at drive time — so it cannot write a file that fails later. It keeps the
+previous version as `projects_access.yaml.bak`; hand-editing is fine, but a menu save
+rewrites the file and drops hand-written comments. The annotated schema reference is
+[projects_access.yaml.example](agent/skills/projects_access.yaml.example).
+
+Permissions are **discrete, not a ladder**: `file_name_only`, `upload`, `download` and
+`exec` are granted one by one, and `upload` does not imply `download`. Anything not
+listed is denied.
+
+**`config/agent_config.yaml`** holds conda channels, the default Python, and the install
+timeout. Edit it by hand; it rarely changes.
+
+---
+
+## How it works
+
+Three environment layers:
 
 | Layer | Where | Role |
 |-------|-------|------|
 | **runtime env** | `./.conda_runtime/` | runs the MCP server itself; created by `setup.sh`, per-clone |
-| **iteration envs** | `envs/` | per-tool conda envs the agent spins up while solving an install (plus `bioinf_core_tools`, the bootstrap toolkit) |
-| **frozen images** | Docker daemon / `docker_images/` | **the product**: content-addressed images validated inside the bytes that ship (Apptainer `.sif` on HPC) |
+| **iteration envs** | `envs/` | per-tool conda envs used while solving an install |
+| **frozen images** | Docker / `docker_images/` | **the product**: content-addressed images validated inside the bytes that ship |
 
-On top of the frozen image sit the two lifecycles:
+Two lifecycles on top of them:
 
 - **Layer 1 — the environment** (`freeze`). Solved *once*: build with the install
-  primitives (conda / pip / R / JAR / binary / source / cargo / go / perl), then
-  `freeze()` produces the digest-addressed, HPC-shippable image and registers it in an
-  on-disk cache — a later identical request returns it by hash. *Validated == shipped.*
+  primitives (conda / pip / R / JAR / binary / source / cargo / go / perl), then produce
+  the digest-addressed, HPC-shippable image and register it. An identical later request
+  returns it by hash. *Validated == shipped.*
 - **Layer 2 — the workflow** (`seal_workflow`). *Consumes* a frozen env by digest,
-  validates the run-side invariants, and writes a machine-verified `WorkflowSpec` plus
-  an HTML run dashboard (`{name}.RUN.html`) rendered from the passing run.
+  validates the run-side invariants, and writes a machine-verified `WorkflowSpec` plus an
+  HTML run dashboard rendered from the passing run.
 
-The flow the agent walks, tool by tool:
+The flow the agent walks:
 
 1. `start_pipeline(name, description)` → a `pipeline_id` threaded through every call.
 2. Install primitives build the env (conda first; `resolve_tool` ranks the tiers when unsure).
 3. `run_pipeline_step(...)` — run the tool on test inputs; outputs are auto-validated.
 4. `freeze(env, tools, ...)` — **Layer 1**; returns a `freeze_request_key`.
 5. `run_step_in_container(freeze_request_key, ...)` — re-run *inside* the frozen image.
-6. `seal_workflow(pipeline_id, freeze_request_key)` — **Layer 2**; writes the sealed spec + dashboard.
+6. `seal_workflow(pipeline_id, freeze_request_key)` — **Layer 2**; writes the sealed spec.
 
-`list_installed_pipelines()` shows what's already solved here — ask before solving a tool twice.
+`list_installed_pipelines()` shows what is already solved here — ask before solving a
+tool twice.
 
 ---
 
-## HPC bridge (optional)
+## HPC
 
-To drive a real SLURM cluster, author a `projects_access.yaml` at the repo root
-(gitignored — it's personal). Start from the annotated template:
+Once `projects_access.yaml` declares a cluster, the same frozen environment runs there.
+Two chains, deliberately separate:
 
-```bash
-cp agent/skills/projects_access.yaml.example projects_access.yaml
-# fill in: your cluster's ssh host, scratch/common-data paths, per-project directories
-./scripts/setup.sh --check   # confirms the file parses and shows what it declares
-```
+- **Validate** — `run_step_on_cluster` stages the `.sif`, submits, polls, fetches outputs
+  back and records a cluster-locus step you can seal. Runs in the agent's own scratch
+  sandbox.
+- **Produce** — `stage_apptainer_image` → `submit_workflow_job` → `cluster_job_status` →
+  `download`, against the directories you declared. Submit-and-document: production jobs
+  run for hours, so the agent does not sit and watch.
 
-It declares your compute environments (ssh host, transfer protocol, SLURM defaults) and
-per-project authorized directories with discrete permissions. Every bridge primitive
-(`snapshot_project`, `run_step_on_cluster`, `submit_workflow_job`, …) is gated by that
-file, and every transfer is checksum-verified. Playbooks:
-[Phase A](docs/hpc_bridge_phase_a_playbook.md) (read + small transfers),
+Transfers are sha256 round-tripped (or end-to-end checksummed, if you configure Globus).
+Playbooks: [Phase A](docs/hpc_bridge_phase_a_playbook.md) (read + small transfers),
 [Phase B](docs/hpc_bridge_phase_b_playbook.md) (submit → poll → fetch).
+
+ssh uses `BatchMode`, so nothing ever prompts for a password: open `ssh <your-host>` in a
+separate terminal and leave it open — every bridge call rides that ControlMaster socket.
 
 ---
 
 ## Tests
 
 ```bash
-pytest                                          # the project suite (scoped to tests/)
-pytest -m "not live and not integration_docker" # the fast hermetic honesty tier (what CI runs)
-pytest -m live                                  # opt-in: hits real package registries over the network
+pytest                                          # the project suite
+pytest -m "not live and not integration_docker" # the fast hermetic tier (what CI runs)
+pytest -m live                                  # opt-in: hits real package registries
 ```
 
 ## Docs
