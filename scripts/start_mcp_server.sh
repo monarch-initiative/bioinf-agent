@@ -27,6 +27,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export BIOINF_MCP_AUTO_RELOAD="${BIOINF_MCP_AUTO_RELOAD:-1}"
 
+# A private miniforge (installed by scripts/setup.sh on machines with no conda)
+# is reached via PATH — EnvManager and every conda-run shell resolve it there,
+# and children of the server inherit it.
+if [ -d "$PWD/.miniforge/condabin" ]; then
+    export PATH="$PWD/.miniforge/condabin:$PATH"
+fi
+
 RUNTIME_PY="$PWD/.conda_runtime/bin/python"
 if [ -x "$RUNTIME_PY" ]; then
     if "$RUNTIME_PY" -c "import fastmcp" >/dev/null 2>&1; then

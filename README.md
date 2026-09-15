@@ -20,12 +20,14 @@ installed one. (See [CLAUDE.md](CLAUDE.md) for the full contract.)
 
 | Need | Why |
 |------|-----|
-| **conda / miniforge** on `PATH` | creates every environment — including the agent's own runtime env |
 | **Docker** (daemon running) | `freeze` builds/adopts the shippable image and validates *inside* it |
 | **An MCP client** (e.g. [Claude Code](https://claude.com/claude-code)) | the agent is an MCP server; the client drives it |
 
-Python is **not** something you manage: setup creates a repo-local runtime env
-(`./.conda_runtime/`, Python 3.11) and every launcher resolves it by path.
+Neither Python nor conda is something you manage: setup creates a repo-local runtime
+env (`./.conda_runtime/`, Python 3.11) that every launcher resolves by path — and if
+the machine has no conda at all, setup offers to install a **private miniforge** at
+`./.miniforge/` (with consent; no shell integration, nothing outside the repo dir,
+delete the folder to remove it). An existing conda on `PATH` is used as-is.
 An HPC cluster (SLURM + Apptainer) is **optional** — see [HPC bridge](#hpc-bridge-optional).
 
 ---
@@ -45,6 +47,7 @@ editable-installs the agent into it → bootstraps `envs/bioinf_core_tools`
 ```bash
 ./scripts/setup.sh --check  # systems check only: PASS/FAIL per requirement, every FAIL names its fix
 ./scripts/setup.sh --full   # setup + the full read-dataset corpus (multi-GB; only if you need it)
+./scripts/setup.sh --yes    # non-interactive consent (CI / scripted installs — e.g. the private conda)
 ```
 
 > **Editable install, on purpose.** This is a workspace-rooted service, not a

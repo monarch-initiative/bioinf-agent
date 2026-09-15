@@ -4,8 +4,12 @@
 #   ./scripts/setup.sh            # runtime env + editable install + minimal data + systems check
 #   ./scripts/setup.sh --full     # same, but pull the full read-dataset corpus (multi-GB)
 #   ./scripts/setup.sh --check    # systems check only (scripts/doctor.py) — changes nothing
+#   ./scripts/setup.sh --yes      # non-interactive consent (e.g. allow the private conda install)
 #
 # What "setup" means here, concretely:
+#   0. Find conda — or, if the machine has none, install a PRIVATE miniforge at
+#      ./.miniforge (with consent: interactive prompt, or --yes). No shell
+#      integration, nothing outside the repo dir; delete .miniforge/ to remove.
 #   1. Create the repo-local RUNTIME env at ./.conda_runtime (conda, Python 3.11).
 #      This is the Python that runs the MCP server. It is per-clone and gitignored;
 #      start_mcp_server.sh and setup_core_test_data.sh resolve it by path, so there
@@ -23,11 +27,24 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="$PROJECT_ROOT/.conda_runtime"
 RUNTIME_PY="$RUNTIME/bin/python"
+PRIVATE_CONDA="$PROJECT_ROOT/.miniforge/condabin/conda"
 PYTHON_VERSION="3.11"
 
 say() { echo "[setup] $*"; }
 
-# --- locate conda (the one hard prerequisite besides Docker) -----------------
+MODE="setup"
+DATA_FLAG="--minimal"
+ASSUME_YES="${BIOINF_AUTO_CONDA:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --check) MODE="check" ;;
+        --full)  DATA_FLAG="" ;;
+        --yes|-y) ASSUME_YES=1 ;;
+        *) echo "usage: ./scripts/setup.sh [--full|--check|--yes]" >&2; exit 2 ;;
+    esac
+done
+
+# --- locate conda ------------------------------------------------------------
 find_conda() {
     if [ -n "${CONDA_EXE:-}" ] && [ -x "$CONDA_EXE" ]; then
         echo "$CONDA_EXE"; return 0
@@ -37,14 +54,55 @@ find_conda() {
     fi
     for c in "$HOME/miniforge3/condabin/conda" "$HOME/miniconda3/condabin/conda" \
              "$HOME/anaconda3/condabin/conda" "/opt/conda/condabin/conda" \
-             "/opt/homebrew/opt/miniforge3/condabin/conda"; do
+             "/opt/homebrew/opt/miniforge3/condabin/conda" "$PRIVATE_CONDA"; do
         if [ -x "$c" ]; then echo "$c"; return 0; fi
     done
     return 1
 }
 
+sha256_of() {
+    shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1
+}
+
+# The machine has no conda at all. conda is how EVERY environment here gets
+# built (including the runtime env this script is about to create), so setup
+# can absorb it — as a private copy inside the repo, never as a system change:
+# no `conda init`, no rc-file edits, nothing outside $PROJECT_ROOT. It is an
+# install on the user's machine, though, so it never happens without consent.
+install_private_conda() {
+    say "conda not found on this machine."
+    say "bioinf-agent can install a PRIVATE miniforge at ./.miniforge — no shell"
+    say "integration, nothing outside this directory; delete .miniforge/ to remove it."
+    if [ "$ASSUME_YES" != "1" ]; then
+        if [ -t 0 ]; then
+            read -r -p "[setup] install the private miniforge now? [Y/n] " reply
+            case "${reply:-Y}" in
+                [Yy]*|"") ;;
+                *) say "declined — install miniforge yourself (https://github.com/conda-forge/miniforge) and re-run"; exit 1 ;;
+            esac
+        else
+            echo "ERROR: conda not found and this is not a terminal, so setup cannot ask consent" >&2
+            echo "  fix: re-run with --yes (allows the private ./.miniforge install), or install" >&2
+            echo "       miniforge yourself: https://github.com/conda-forge/miniforge" >&2
+            exit 1
+        fi
+    fi
+    local url installer
+    url="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+    # The installer's own header refuses unless $0 ends in ".sh" (its sourced-
+    # invocation guard), and mktemp templates can't carry a suffix portably —
+    # so make a temp DIR and give the file its required name inside it.
+    installer="$(mktemp -d "${TMPDIR:-/tmp}/miniforge_installer.XXXXXX")/miniforge.sh"
+    say "downloading $url"
+    curl -fsSL "$url" -o "$installer"
+    say "installer sha256 (observed): $(sha256_of "$installer")"
+    bash "$installer" -b -p "$PROJECT_ROOT/.miniforge" >/dev/null
+    rm -f "$installer"
+    say "private miniforge installed: $("$PRIVATE_CONDA" --version 2>&1)"
+}
+
 # --- mode: --check -----------------------------------------------------------
-if [ "${1:-}" = "--check" ]; then
+if [ "$MODE" = "check" ]; then
     if [ -x "$RUNTIME_PY" ]; then
         exec "$RUNTIME_PY" "$PROJECT_ROOT/scripts/doctor.py"
     fi
@@ -53,20 +111,13 @@ if [ "${1:-}" = "--check" ]; then
     exec python3 "$PROJECT_ROOT/scripts/doctor.py"
 fi
 
-DATA_FLAG="--minimal"
-if [ "${1:-}" = "--full" ]; then
-    DATA_FLAG=""
-elif [ -n "${1:-}" ]; then
-    echo "usage: ./scripts/setup.sh [--full|--check]" >&2
-    exit 2
-fi
-
-CONDA="$(find_conda)" || {
-    echo "ERROR: conda not found (checked \$CONDA_EXE, PATH, and the usual install locations)." >&2
-    echo "  fix: install miniforge — https://github.com/conda-forge/miniforge — then re-run ./scripts/setup.sh" >&2
-    exit 1
-}
+CONDA="$(find_conda)" || { install_private_conda; CONDA="$PRIVATE_CONDA"; }
 say "conda: $CONDA"
+# Child scripts and the agent's own EnvManager find conda via PATH — make the
+# one we resolved reachable there when it isn't already (private-copy case).
+if ! command -v conda >/dev/null 2>&1; then
+    export PATH="$(dirname "$CONDA"):$PATH"
+fi
 
 # --- 1. runtime env ----------------------------------------------------------
 if [ -x "$RUNTIME_PY" ]; then

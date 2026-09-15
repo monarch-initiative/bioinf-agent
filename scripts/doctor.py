@@ -47,7 +47,8 @@ def run(argv: list[str], timeout: int = 15, cwd: str | None = None) -> tuple[int
 def check_conda() -> None:
     conda = os.environ.get("CONDA_EXE") or shutil.which("conda")
     if not conda:
-        for c in (Path.home() / "miniforge3/condabin/conda",
+        for c in (ROOT / ".miniforge/condabin/conda",
+                  Path.home() / "miniforge3/condabin/conda",
                   Path.home() / "miniconda3/condabin/conda",
                   Path.home() / "anaconda3/condabin/conda",
                   Path("/opt/conda/condabin/conda"),
@@ -56,8 +57,9 @@ def check_conda() -> None:
                 conda = str(c)
                 break
     if not conda:
-        row("FAIL", "conda", "not found ($CONDA_EXE, PATH, usual locations)",
-            "install miniforge (https://github.com/conda-forge/miniforge), then re-run ./scripts/setup.sh")
+        row("FAIL", "conda", "not found ($CONDA_EXE, PATH, ./.miniforge, usual locations)",
+            "run ./scripts/setup.sh — it offers to install a private miniforge at ./.miniforge "
+            "(or install miniforge yourself: https://github.com/conda-forge/miniforge)")
         return
     rc, out = run([conda, "--version"])
     row("PASS" if rc == 0 else "FAIL", "conda",
@@ -141,15 +143,19 @@ def check_mcp_registration() -> None:
 
 # --- core data ---------------------------------------------------------------
 def check_core_data() -> None:
-    manifest = ROOT / "data" / "core_test_data_hg38" / "manifest.yaml"
     chr22 = ROOT / "data" / "core_test_data_hg38" / "genome" / "chr22.fa"
     core_env = ROOT / "envs" / "bioinf_core_tools"
-    missing = [str(p.relative_to(ROOT)) for p in (manifest, chr22, core_env) if not p.exists()]
+    missing = [str(p.relative_to(ROOT)) for p in (chr22, core_env) if not p.exists()]
     if missing:
         row("FAIL", "core data", f"missing: {', '.join(missing)}",
             "run ./scripts/setup.sh (bootstraps the core_tools env + chr22 test data)")
-    else:
-        row("PASS", "core data", "chr22 reference + manifest + core_tools env present")
+        return
+    # manifest.yaml is written by the FULL bootstrap (it enumerates the read-
+    # dataset corpus) — its absence after --minimal is a state, not a failure.
+    manifest = ROOT / "data" / "core_test_data_hg38" / "manifest.yaml"
+    corpus = ("read-dataset corpus present" if manifest.exists()
+              else "minimal bootstrap (no read-dataset corpus — ./scripts/setup.sh --full adds it)")
+    row("PASS", "core data", f"chr22 reference + core_tools env present; {corpus}")
 
 
 # --- HPC bridge (optional) ---------------------------------------------------
