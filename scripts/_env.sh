@@ -10,30 +10,22 @@
 #     -> bioinf_find_conda · bioinf_conda_on_path · bioinf_bootstrap_python
 #
 #   ./scripts/_env.sh conda            # print the conda binary, or exit 1
-#   ./scripts/_env.sh runtime-python   # print the runtime interpreter's PATH always;
+#   ./scripts/_env.sh runtime-python   # always print the runtime interpreter's path;
 #                                      # exit status says whether it is usable, so a
-#                                      # caller can name the missing thing it wanted
+#                                      # caller can name a missing env by path
 #
-# WHY IT EXISTS. These two questions were answered in four places with four
-# hand-maintained path lists, and two of them had already DIVERGED on order:
-# setup.sh searched the repo-local private conda LAST, doctor.py searched it FIRST.
-# On a machine carrying both a private ./.miniforge and an off-PATH system conda they
-# resolve differently — so the systems check could PASS on a conda that setup never
-# used, which is a report describing something other than what happened. That is the
-# one defect class this repo does not tolerate, so the fix is structural: one
-# implementation, four callers. It is tests/test_one_reading_per_field.py's rule
-# applied to the shell layer, and tests/test_setup_surface_resolution.py keeps it.
+# Single implementation on purpose: four callers resolving conda independently can
+# resolve it differently, and then the systems check reports on a conda setup did not
+# use. Pinned by tests/test_setup_surface_resolution.py.
 
 BIOINF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIOINF_RUNTIME="$BIOINF_ROOT/.conda_runtime"
 BIOINF_RUNTIME_PY="$BIOINF_RUNTIME/bin/python"
 BIOINF_PRIVATE_CONDA="$BIOINF_ROOT/.miniforge/condabin/conda"
 
-# The repo-local private copy is searched FIRST, ahead of $CONDA_EXE and PATH.
-# A clone that installed its own miniforge is committed to it: its runtime env and
-# every envs/bioinf_* were built with that conda, and start_mcp_server.sh already
-# prepends .miniforge/condabin to PATH so it wins for the server and every child
-# process. Resolving it first makes the search agree with what actually runs.
+# The repo-local private copy wins over $CONDA_EXE and PATH: a clone that installed
+# its own miniforge built its runtime env and every envs/bioinf_* with it, and the
+# launcher puts it on PATH for the server and its children anyway.
 bioinf_find_conda() {
     if [ -x "$BIOINF_PRIVATE_CONDA" ]; then
         echo "$BIOINF_PRIVATE_CONDA"; return 0
@@ -52,8 +44,8 @@ bioinf_find_conda() {
     return 1
 }
 
-# EnvManager and every conda-run shell find conda through PATH (shutil.which), so
-# children of whatever we launch must inherit the one we resolved.
+# Resolve conda and put it on PATH: EnvManager and every conda-run shell find it
+# through PATH (shutil.which), so children must inherit the one we resolved.
 bioinf_conda_on_path() {
     local conda
     conda="$(bioinf_find_conda)" || return 1
@@ -64,8 +56,8 @@ bioinf_conda_on_path() {
     echo "$conda"
 }
 
-# The interpreter for scripts that must run BEFORE (or without) the runtime env —
-# bootstrap_core.py, which needs 3.10+ and must not land on the macOS system 3.9.
+# The interpreter for scripts that may run before the runtime env exists —
+# bootstrap_core.py, which needs 3.10+ (the macOS system python3 is often 3.9).
 bioinf_bootstrap_python() {
     if [ -x "$BIOINF_RUNTIME_PY" ]; then
         echo "$BIOINF_RUNTIME_PY"; return 0
@@ -77,9 +69,9 @@ bioinf_bootstrap_python() {
     echo "python3"
 }
 
-# The legacy launcher fallback: a base-conda interpreter that can actually import the
-# server's deps. Kept for machines provisioned before the runtime env existed; it
-# probes importability rather than taking the first python it finds (cold-start CS2).
+# Launcher fallback for machines provisioned before the runtime env existed: a
+# base-conda interpreter that can actually import the server's deps — importability
+# is probed, not assumed from the path existing.
 bioinf_legacy_server_python() {
     for base in "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" \
                 "/opt/conda" "/opt/homebrew/opt/miniforge3"; do

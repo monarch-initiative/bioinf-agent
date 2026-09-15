@@ -24,8 +24,8 @@
 # the rest. It never deletes anything.
 set -euo pipefail
 
-# Conda + interpreter resolution lives in ONE place (scripts/_env.sh) so setup, the
-# doctor, the launcher and the bootstrap cannot answer the same question differently.
+# Conda + interpreter resolution: scripts/_env.sh, shared with the launcher, the
+# bootstrap wrapper and the doctor.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 
 PROJECT_ROOT="$BIOINF_ROOT"
@@ -52,11 +52,9 @@ sha256_of() {
     shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1
 }
 
-# The machine has no conda at all. conda is how EVERY environment here gets
-# built (including the runtime env this script is about to create), so setup
-# can absorb it — as a private copy inside the repo, never as a system change:
-# no `conda init`, no rc-file edits, nothing outside $PROJECT_ROOT. It is an
-# install on the user's machine, though, so it never happens without consent.
+# Install conda as a private copy inside the repo, never as a system change: no
+# `conda init`, no rc-file edits, nothing outside $PROJECT_ROOT. Still an install on
+# the user's machine, so it requires consent (prompt, or --yes).
 install_private_conda() {
     say "conda not found on this machine."
     say "bioinf-agent can install a PRIVATE miniforge at ./.miniforge — no shell"
@@ -77,9 +75,8 @@ install_private_conda() {
     fi
     local url installer
     url="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
-    # The installer's own header refuses unless $0 ends in ".sh" (its sourced-
-    # invocation guard), and mktemp templates can't carry a suffix portably —
-    # so make a temp DIR and give the file its required name inside it.
+    # The installer refuses to run unless $0 ends in ".sh", and mktemp templates
+    # can't carry a suffix portably — hence a temp dir holding a correctly named file.
     installer="$(mktemp -d "${TMPDIR:-/tmp}/miniforge_installer.XXXXXX")/miniforge.sh"
     say "downloading $url"
     curl -fsSL "$url" -o "$installer"
@@ -100,8 +97,7 @@ if [ "$MODE" = "check" ]; then
 fi
 
 bioinf_find_conda >/dev/null || install_private_conda
-# bioinf_conda_on_path resolves it and makes it reachable to every child — child
-# scripts and the agent's own EnvManager find conda via PATH.
+# Also puts it on PATH, which is how child scripts and EnvManager find it.
 CONDA="$(bioinf_conda_on_path)"
 say "conda: $CONDA"
 

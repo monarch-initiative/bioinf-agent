@@ -46,11 +46,10 @@ _RUNTIME_PY_FALLBACK = ROOT / ".conda_runtime" / "bin" / "python"
 
 
 def _runtime_py() -> Path:
-    """The runtime interpreter, per scripts/_env.sh — asked, not re-spelled, for the
-    same reason check_conda delegates. The CLI prints the path whether or not it is
-    usable, so a missing runtime env can still be reported BY NAME. If _env.sh is
-    absent or answers something that is not an interpreter path we keep the literal:
-    check_runtime_env then reports the missing env, which is the true finding."""
+    """The runtime interpreter, per scripts/_env.sh — its CLI prints the path whether
+    or not the env exists, so a missing runtime can still be reported by path. Falls
+    back to the literal if _env.sh is absent or answers something unexpected;
+    check_runtime_env then reports the missing env, which is the real finding."""
     if not ENV_SH.is_file():
         return _RUNTIME_PY_FALLBACK
     _, out = run(["bash", str(ENV_SH), "runtime-python"])
@@ -63,14 +62,8 @@ RUNTIME_PY = _runtime_py()
 
 # --- conda -------------------------------------------------------------------
 def check_conda() -> None:
-    """Ask scripts/_env.sh, never a second path list.
-
-    The doctor used to carry its own copy of the search, and it had already
-    diverged from setup.sh's on ORDER (repo-local .miniforge first here, last
-    there) — so on a machine with both a private and a system conda the check
-    could PASS on a conda setup never used. A systems check that reports on a
-    different thing than the one that ran is the defect this repo exists to
-    refuse; delegating is the only structural fix."""
+    """Ask scripts/_env.sh rather than carrying a second path list, so this row
+    reports on the same conda setup.sh and the launcher use."""
     if not ENV_SH.is_file():
         row("FAIL", "conda", "scripts/_env.sh missing — cannot resolve conda",
             "restore it from git; it is the single conda/interpreter resolver")

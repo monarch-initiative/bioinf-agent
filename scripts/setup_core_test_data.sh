@@ -10,8 +10,6 @@
 
 set -euo pipefail
 
-# Conda + interpreter resolution live in scripts/_env.sh — one implementation for
-# this wrapper, setup.sh, the launcher and doctor.py.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 
 # bootstrap_core.py drives conda directly and EnvManager resolves it via PATH.

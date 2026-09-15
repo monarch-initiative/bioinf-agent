@@ -6,16 +6,12 @@
 # restart on the next MCP call. Production deployments that want stable code
 # should call `python -m agent` directly without this var set.
 #
-# Interpreter resolution, in order (the path lists themselves live in _env.sh):
-#   1. $BIOINF_RUNTIME_PY — the repo-local runtime env that scripts/setup.sh
-#      creates and installs the agent into. This is the designed path: the env
-#      the deps were installed into IS the env the server runs on, per clone,
-#      no discovery.
-#   2. bioinf_legacy_server_python — the usual base-conda pythons, but only one
-#      that can actually import the server's deps. (The old behavior exec'd the
-#      first base python found, installed-into or not; a fresh machine then died
-#      with ModuleNotFoundError inside the MCP client. Cold-start finding CS2.)
-#   3. Otherwise: fail LOUDLY, naming the fix.
+# Interpreter resolution, in order (the path lists live in _env.sh):
+#   1. $BIOINF_RUNTIME_PY — the repo-local runtime env scripts/setup.sh creates and
+#      installs the agent into. The env the deps went into IS the env the server
+#      runs on, per clone, with no discovery.
+#   2. bioinf_legacy_server_python — a base-conda python that can import the deps.
+#   3. Otherwise: fail loudly, naming the fix.
 #
 # NOTE: it's `python -m agent`, NOT `python -m agent.mcp_server` — running
 # mcp_server.py as __main__ creates two FastMCP instances and the wrong one
@@ -23,15 +19,13 @@
 #
 # Override by exporting BIOINF_MCP_AUTO_RELOAD=0 before launch to opt out.
 set -e
-# Interpreter and conda resolution live in scripts/_env.sh — one implementation for
-# this launcher, setup.sh, the bootstrap wrapper and doctor.py.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 cd "$BIOINF_ROOT"
 
 export BIOINF_MCP_AUTO_RELOAD="${BIOINF_MCP_AUTO_RELOAD:-1}"
 
 # EnvManager and every conda-run shell resolve conda through PATH, and children of
-# the server inherit it — so put the conda this clone actually uses there.
+# the server inherit it.
 bioinf_conda_on_path >/dev/null || true
 
 if [ -x "$BIOINF_RUNTIME_PY" ]; then
