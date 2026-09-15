@@ -51,7 +51,12 @@ CORE_TOOLS_PACKAGES = [
     ("samtools",   "bioconda",    "samtools --version | head -1"),
     ("bcftools",   "bioconda",    "bcftools --version | head -1"),
     ("seqkit",     "bioconda",    "seqkit version"),
-    ("bwa",        "bioconda",    "bwa 2>&1 | head -3"),
+    # bwa prints usage+version to stderr and exits NON-ZERO when run bare, so a
+    # bare `bwa` probe reads as ✗ for a healthy install; grep for the version
+    # line instead — rc 0 exactly when it's there. The `|| true` subshell is
+    # needed because verify() runs probes under pipefail; grep alone still
+    # discriminates (no bwa → no Version: line → rc 1). Cold-start finding CS3.
+    ("bwa",        "bioconda",    "(bwa 2>&1 || true) | grep -m1 Version:"),
     ("conda-pack", "conda-forge", "conda-pack --version"),
 ]
 
@@ -181,10 +186,13 @@ def install_core_tools(config: dict) -> dict[str, Any]:
 
     # Verify each tool (except conda-pack which is infrastructure)
     log("Verifying each tool...")
+    n_probed = n_ok = 0
     for pkg_name, _channel, check_cmd in CORE_TOOLS_PACKAGES:
         if pkg_name == "conda-pack":
             continue
+        n_probed += 1
         v = env_mgr.verify(env_name, pkg_name, check_cmd)
+        n_ok += 1 if v.get("success") else 0
         out = (v.get("output") or "")[:120].replace("\n", " ")
         ok = "✓" if v.get("success") else "✗"
         log(f"  {ok} {pkg_name}: {out}")
@@ -202,9 +210,14 @@ def install_core_tools(config: dict) -> dict[str, Any]:
     n_pkgs = len(draft.get("packages", []) or [])
     state.pop_for_finalize(pid)
     state.delete_draft_file(pid)
-    log(f"core_tools env ready at {env_path} ({n_pkgs} packages verified)")
+    # The tally states what was OBSERVED — a ✗ above and "N verified" here used
+    # to coexist because this line counted packages, not probe outcomes (CS3).
+    probes = (f"{n_ok}/{n_probed} tool probes passed" if n_ok == n_probed
+              else f"only {n_ok}/{n_probed} tool probes passed — see ✗ above")
+    log(f"core_tools env ready at {env_path} ({n_pkgs} packages installed; {probes})")
 
-    return {"installed": True, "env_path": str(env_path), "packages_verified": n_pkgs}
+    return {"installed": True, "env_path": str(env_path),
+            "packages_installed": n_pkgs, "probes_passed": n_ok, "probes_run": n_probed}
 
 
 # ---------------------------------------------------------------------------
@@ -505,8 +518,8 @@ def main() -> None:
     log(f"  Phenopackets:   {pk_ok}/{pk_tot} OK")
     log(f"  Smoke test:     {'PASSED' if smoke.get('passed') else 'SKIPPED' if smoke.get('skipped') else 'FAILED'}")
     log("")
-    log("Next — install pipelines via Claude Code:")
-    log("  install latest GAPIT as my gwas_pipeline")
+    log("Next — drive it from Claude Code (run `claude` in the repo root), e.g.:")
+    log("  > Install samtools 1.21 and freeze it into an HPC-shippable image.")
 
 
 if __name__ == "__main__":

@@ -103,3 +103,11 @@ data/
 
 # Store locks — advisory flock sentinels (agent/skills/store_lock.py), runtime only.
 *.lock
+
+# The agent's own runtime env — created per-clone by scripts/setup.sh; the
+# launcher (start_mcp_server.sh) and bootstrap wrapper resolve it by this path.
+.conda_runtime/
+
+# Private miniforge — installed by scripts/setup.sh only on machines with no
+# conda anywhere (with consent). Repo-local, no shell integration.
+.miniforge/

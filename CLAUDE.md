@@ -3,8 +3,8 @@
 Installs bioinformatics tools into isolated conda envs, validates them against test data, packages as HPC Docker images, and emits a machine-verified spec. Designed to be **a solved component** — call once per tool/version, get a trustworthy artifact, never look at it again.
 
 ```bash
-pip install -r requirements.txt
-./scripts/setup_core_test_data.sh   # one-time: core_tools env + chr22 + 8 read datasets + ACTB phenopacket
+./scripts/setup.sh          # one-time: runtime env (./.conda_runtime) + editable install + core_tools env + chr22; --full adds the 8 read datasets + ACTB phenopacket
+./scripts/setup.sh --check  # systems check (scripts/doctor.py) — every FAIL names its fix
 ```
 
 Then drive via Claude Code MCP, or any agent that speaks our tool surface.
@@ -202,7 +202,7 @@ list only once its gate teaches.
 
 `config/agent_config.yaml` — conda channels, default Python, paths, the install timeout. **NOT the Docker base image** — that is `BASE_IMAGE` in `agent/skills/container_build.py`, pinned by digest and deliberately not configurable (it is an input to the content digest). This line used to say "Docker base image", and a `base_image: ubuntu:22.04` key nothing read sat under it; an agent trusted both, concluded Java 21 was apt-installable, and lost a session to it. Every key in that file now has a reader.
 `config/core_datasets.yaml` — what gets bootstrapped by `setup_core_test_data.sh` (read datasets + phenopackets).
-`.claude/settings.json` — MCP server registration. Set `BIOINF_MCP_AUTO_RELOAD=1` (default in this repo) so the server hot-reloads on code changes; no manual `/mcp` reconnect needed.
+`.mcp.json` — MCP server registration (this line used to say `.claude/settings.json`, which ships as `{}`; cold-start finding CS5). The launcher runs the server on `./.conda_runtime/bin/python`, the runtime env `scripts/setup.sh` creates. Set `BIOINF_MCP_AUTO_RELOAD=1` (default in this repo) so the server hot-reloads on code changes; no manual `/mcp` reconnect needed.
 
 ---
 

@@ -33,7 +33,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
-REQS = (ROOT / "requirements.txt", ROOT / "requirements-dev.txt")
+PYPROJECT = ROOT / "pyproject.toml"
 
 #: Import name -> distribution name, where they differ.
 _ALIASES = {"yaml": "pyyaml", "dotenv": "python-dotenv", "PIL": "pillow"}
@@ -45,17 +45,29 @@ _LOCAL = {"env_records", "_artifacts", "conftest", "real_inputs"}
 
 
 def _declared() -> set[str]:
+    """Distribution names declared in pyproject.toml — `dependencies` plus every
+    optional-dependency extra.
+
+    Reads pyproject because it is now the SINGLE dependency truth: requirements.txt
+    was its self-declared mirror and is gone (setup.sh and CI both install
+    `-e ".[dev]"`). The extraction is deliberately SCOPED to those two places rather
+    than sweeping every array in the file — `classifiers`, `keywords` and
+    `build-system.requires` are also arrays of strings, and folding them in would
+    silently widen the declared set and make this lint stop firing."""
+    text = PYPROJECT.read_text()
+    arrays: list[str] = []
+    m = re.search(r"^dependencies\s*=\s*\[(.*?)^\]", text, re.S | re.M)
+    if m:
+        arrays.append(m.group(1))
+    m = re.search(r"^\[project\.optional-dependencies\](.*?)(?=^\[|\Z)", text, re.S | re.M)
+    if m:
+        arrays += re.findall(r"=\s*\[(.*?)\]", m.group(1), re.S)
     names: set[str] = set()
-    for f in REQS:
-        if not f.is_file():
-            continue
-        for line in f.read_text().splitlines():
-            line = line.split("#")[0].strip()
-            if not line or line.startswith("-"):
-                continue
-            m = re.match(r"^([A-Za-z0-9._-]+)", line)
-            if m:
-                names.add(m.group(1).lower().replace("_", "-"))
+    for block in arrays:
+        for item in re.findall(r'"([^"]+)"', block):
+            spec = re.match(r"^([A-Za-z0-9._-]+)", item.strip())
+            if spec:
+                names.add(spec.group(1).lower().replace("_", "-"))
     return names
 
 
@@ -91,18 +103,28 @@ def test_every_third_party_import_in_a_test_is_declared(path):
         f"This passes on any machine where the module happens to be installed and "
         f"fails on a clean checkout — the whole test module errors at COLLECTION, so "
         f"it takes every test in the file with it.\n"
-        f"Either add it to requirements-dev.txt, or — better, if it is a dev/analysis "
-        f"tool — do not depend on it: `pytest.importorskip` for an optional check, or "
-        f"drop it entirely if something in the stdlib answers the same question.")
+        f"Either add it to pyproject.toml's [project.optional-dependencies] dev list, "
+        f"or — better, if it is a dev/analysis tool — do not depend on it: "
+        f"`pytest.importorskip` for an optional check, or drop it entirely if "
+        f"something in the stdlib answers the same question.")
 
 
-def test_the_lint_reads_a_requirements_file_that_exists():
-    """If both paths were renamed, `_declared()` would return an empty set and every
-    import would look undeclared — noisy, not silent, so this is a convenience. The real
-    risk is the reverse: a future refactor pointing REQS somewhere empty and this lint
-    reporting nothing because it compares against nothing."""
-    assert any(f.is_file() for f in REQS), f"none of {[str(f) for f in REQS]} exist"
-    assert _declared(), "the requirements files parsed to zero package names"
+def test_the_lint_reads_a_dependency_list_that_exists():
+    """If the parse stopped matching, `_declared()` would return an empty set and every
+    import would look undeclared — noisy, not silent, so that half is a convenience. The
+    real risk is the reverse: a parse that silently widens (sweeping `classifiers` in,
+    say) and reports nothing because everything looks declared. So assert the shape —
+    the runtime deps and the dev extra both reached the set, and nothing that is only a
+    classifier or a keyword did."""
+    declared = _declared()
+    assert PYPROJECT.is_file(), f"{PYPROJECT} does not exist"
+    assert {"fastmcp", "pyyaml", "pydantic"} <= declared, (
+        f"runtime dependencies missing from the parse: {declared}")
+    assert {"pytest", "pytest-xdist"} <= declared, (
+        f"the [dev] extra did not reach the parse: {declared}")
+    assert not declared & {"bioinformatics", "setuptools", "posix"}, (
+        f"the parse swept in keywords/classifiers/build-requires, which would widen the "
+        f"declared set and stop this lint firing: {declared}")
 
 
 def test_the_lint_catches_a_planted_undeclared_import(tmp_path):

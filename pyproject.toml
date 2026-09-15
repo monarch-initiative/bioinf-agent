@@ -7,11 +7,11 @@ name = "bioinf-agent"
 version = "0.1.0"
 description = "Installs bioinformatics tools into isolated conda envs, validates them INSIDE the image they ship, packages them as HPC-shippable containers, and emits a machine-verified spec."
 readme = "README.md"
-# The agent RUNTIME floor. The launcher (scripts/start_mcp_server.sh) and the
-# bootstrap wrapper both require 3.10+ (they avoid the macOS system 3.9), and the
-# agent is run on the miniforge base (3.10 today). This is distinct from the 3.11 that
-# CI tests on and that config/agent_config.yaml uses for the tool-environments the
-# agent BUILDS — that is the built envs' python, not this process's.
+# The agent RUNTIME floor — the oldest interpreter the server may start on. It normally
+# runs on ./.conda_runtime, which scripts/setup.sh creates at 3.11 (matching CI); the
+# floor stays at 3.10 for start_mcp_server.sh's legacy fallback to a base-conda python.
+# Distinct from config/agent_config.yaml's python_version, which is the python of the
+# tool-environments the agent BUILDS.
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
 authors = [{ name = "Aaron", email = "aaron@tislab.org" }]
@@ -27,10 +27,15 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-# Mirror of requirements.txt — kept in sync deliberately (that file remains the
-# canonical `pip install -r` surface; this list is what `pip install -e .` pulls).
+# The single dependency truth — setup.sh and CI both install `-e ".[dev]"`. Do not add
+# a requirements.txt mirror; the one that used to sit here stayed in sync by discipline
+# only, and drifted.
 dependencies = [
-    "fastmcp>=2.0",
+    # <4: the server + background detachment are proven against fastmcp 3.x
+    # (3.2.4); 4.x is a major nobody here has validated. A fresh `pip install`
+    # was resolving 4.0.3 and shipping new users an untested runtime. Raise the
+    # cap only WITH a validation pass (cold-start finding, 2026-09-15).
+    "fastmcp>=2.0,<4",
     "pyyaml>=6.0",
     "requests>=2.31.0",
     "pydantic>=2.0",
@@ -39,7 +44,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# pytest.ini hardcodes `-n auto --dist loadgroup`, so xdist is not optional for
+# running the suite — a [dev] without it made the README's own `pytest` line
+# fail on a fresh install (cold-start follow-on to CS1).
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 
 [project.urls]
 Homepage = "https://github.com/monarch-initiative/bioinf-agent"
