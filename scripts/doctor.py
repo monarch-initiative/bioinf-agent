@@ -177,22 +177,27 @@ def check_hpc_config() -> None:
     cfg = ROOT / "projects_access.yaml"
     if not cfg.exists():
         row("SKIP", "hpc bridge", "no projects_access.yaml — local-only mode "
-            "(fine; see README 'HPC bridge' to add a cluster)")
+            "(fine; run ./scripts/config.sh to add a cluster)")
         return
     if not RUNTIME_PY.exists():
         row("SKIP", "hpc bridge", "projects_access.yaml present, but no runtime env to parse it with")
+        return
+    # Delegate to the menu's own --validate: it runs compute_access.load_access,
+    # which is the loader the agent enforces at drive time. A shallow parse here
+    # would report PASS on a file the first bridge call rejects.
+    rc, out = run([str(RUNTIME_PY), str(ROOT / "scripts" / "configure.py"), "--validate"])
+    if rc != 0:
+        detail = out.splitlines()[-1].strip() if out else "?"
+        row("FAIL", "hpc bridge", f"projects_access.yaml is not loadable: {detail}",
+            "run ./scripts/config.sh — it validates every save against the same loader")
         return
     rc, out = run([str(RUNTIME_PY), "-c", (
         "import yaml, pathlib; "
         f"d = yaml.safe_load(pathlib.Path({str(cfg)!r}).read_text()) or {{}}; "
         "print(len(d.get('compute_envs') or []), len(d.get('projects') or []))")])
-    if rc != 0:
-        row("FAIL", "hpc bridge", f"projects_access.yaml does not parse: {out.splitlines()[-1] if out else '?'}",
-            "fix the YAML — compare against agent/skills/projects_access.yaml.example")
-        return
     n_envs, n_projects = (out.split() + ["0", "0"])[:2]
     row("PASS", "hpc bridge", f"projects_access.yaml — {n_envs} compute env(s), "
-        f"{n_projects} project(s) declared (reachability is probed at drive time)")
+        f"{n_projects} project(s), loads clean (reachability is probed at drive time)")
 
 
 def main() -> int:
