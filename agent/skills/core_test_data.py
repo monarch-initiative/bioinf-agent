@@ -77,8 +77,16 @@ def phenopacket_to_vcf(
         )
 
     sample = meta.subject_id or "sample"
-    # Sanitize sample for VCF (no whitespace).
-    sample_id = re.sub(r"\s+", "_", sample) if sample else "sample"
+    # THE SAMPLE NAME IS THE SUBJECT ID, VERBATIM WHEREVER THE FORMAT ALLOWS. The VCF
+    # sample column is tab-delimited; a SPACE inside a sample name is legal. This used to
+    # flatten all whitespace ("Patient N" -> "Patient_N") while the phenopacket kept the
+    # original — and the primary consumer of the pair cross-checks them: Exomiser refused
+    # the analysis with "Proband sample name 'Patient N' is not found in the VCF sample.
+    # Expected one of [Patient_N]" (falsifier FD4, SLURM job 1128831). Only characters the
+    # format genuinely cannot carry (tab/newline) are rewritten, and a rewrite is DISCLOSED
+    # in the return rather than performed silently.
+    sample_id = re.sub(r"[\t\r\n]+", "_", sample) if sample else "sample"
+    sample_rewritten = sample_id != sample
 
     # GT from allelic_state — phenopacket uses Ensembl-style labels.
     _GT = {
@@ -122,7 +130,7 @@ def phenopacket_to_vcf(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(header_lines + body_lines) + "\n")
 
-    return proven(
+    result = proven(
         "core_test_data.vcf_written",
         success=True,
         phenopacket_id=meta.phenopacket_id,
@@ -132,6 +140,13 @@ def phenopacket_to_vcf(
         contigs=contigs,
         genome_assembly=meta.genome_assembly or genome_build,
     )
+    if sample_rewritten:
+        result["sample_id_note"] = (
+            f"subject id {sample!r} contains characters the VCF sample column cannot "
+            f"carry (tab/newline); written as {sample_id!r}. Tools that cross-check the "
+            f"phenopacket subject id against the VCF sample name (Exomiser does) will "
+            f"refuse this pair — rename the subject in a copy of the phenopacket to match.")
+    return result
 
 
 def _normalize_github_url(url: str) -> str:

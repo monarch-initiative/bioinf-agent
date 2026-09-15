@@ -244,7 +244,28 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
     # was never affected at all: the trailing `[a-z]` cannot match a digit.
     if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m"
                  r"|\bpython[\d.]*\s+-m\s", low):
+        # A LOAD FOLLOWED BY SELF-CHECKING WORK IS NOT LOAD-ONLY. This branch used to
+        # stop at the first load shape, so `Rscript -e 'library(DESeq2); dds <-
+        # DESeq(...); stopifnot(...)'` — authored evidence that RUNS the tool's main
+        # entrypoint on an inline dataset and asserts on the result — was disclosed as
+        # [import] on a real freeze (falsifier FD2, pre-registered as K1). Strip the
+        # load-family calls; when what remains BOTH calls functions AND asserts on their
+        # results, the command fails unless the tool's output is right — a stronger
+        # claim than any path operand, so it earns 'functional'. Anything less keeps
+        # the old 'import': a load followed by unasserted calls may run nothing of the
+        # tool (`library(x); print(1)`), and a misfire there can only WEAKEN disclosure
+        # — so the promotion needs the assertion, and only this branch can promote (a
+        # bare `tool --assert-mode` never reaches it). Measured on the corpus: exactly
+        # one classification changes, the FD2 command itself.
+        residue = re.sub(
+            r"\b(?:suppress(?:package(?:startup)?)?messages|library|require(?:namespace)?)"
+            r"\s*\([^)]*\)", " ", low)
+        residue = re.sub(r"\bimport\s+[\w.,\s]+", " ", residue)
+        if re.search(r"\bstopifnot\s*\(|\bassert\b", residue) and \
+                re.search(r"\b\w+\s*\(", residue):
+            return "functional"
         return "import"
+
     # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
     #    a file path operand, or an explicit -i/-o.
     if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:

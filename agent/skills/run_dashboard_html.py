@@ -727,9 +727,26 @@ def _render_inputs(spec: dict) -> str:
                      + "".join(rows) + "</table></div>")
     if rdbs:
         P.append('<h3 class="sub">Reference databases</h3>')
+
+        def _rdb_anchor_cell(d: dict) -> str:
+            # `sha256: null` IS the record's disclosure (acquire_data's ruling — no
+            # second channel), but a bare "—" told the reader nothing about what the
+            # seal DID establish (falsifier FD7: two 37 GB cluster DBs rendered as a
+            # dash beside fully-pinned artifacts). Say what the null means: a sealed
+            # spec's cluster entry passed the I5 locus check by construction, and a
+            # directory has no single-file hash to pin.
+            sha = d.get("sha256")
+            if sha:
+                return f'<code>{_e(sha[:19])}…</code>'
+            if d.get("locus") == "cluster":
+                return ('<em>no content anchor</em> <span class="note">— verified at '
+                        'the cluster locus by the seal (I5 over ssh: exists, non-empty, '
+                        'sidecar hash when one is recorded)</span>')
+            return '<em>no content anchor recorded</em>'
+
         rows = "".join(
             f'<tr><td>{_e(d.get("name",""))}</td>'
-            f'<td><code>{_e((d.get("sha256") or "")[:19])}{"…" if d.get("sha256") else "—"}</code></td>'
+            f'<td>{_rdb_anchor_cell(d)}</td>'
             f'<td>{_e(d.get("size_bytes",""))}</td></tr>' for d in rdbs)
         P.append('<div class="tbl-wrap"><table>'
                  '<tr><th>Name</th><th>sha256</th><th>Bytes</th></tr>' + rows + '</table></div>')
@@ -889,12 +906,26 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     primary_digest = (env_record or {}).get("image_digest") or None
 
     shipped = bool(s.get("validated_in_shipped_image"))
-    if failed:
-        # A FAILED STEP OUTRANKS EVERY OTHER HEADLINE. `validated_in_shipped_image` was
-        # earned legitimately — the digests really do match — but it answers "did this run
-        # in the image we ship", not "did it work", and the page presented it as the
-        # verdict. A reader deciding whether to run this on real data must not have to
-        # find one ✗ glyph in a per-output table below the fold.
+    if failed and _usage_status(s) == "verified":
+        # BOTH TRUTHS, NEITHER ERASED (falsifier FD3). A record can hold failed
+        # iteration attempts AND an I4-verified how-to: the seal executed the declared
+        # command against every trial and every output validated, which IS the verdict
+        # on what a reader would actually run. The old headline let the debris outvote
+        # it — "✗ 2 step(s) FAILED — do not run this as-is" over a workflow whose
+        # self-test panel said proven three screens down, so the page contradicted
+        # itself and a reader walked away from a proven artifact. The failed steps
+        # stay on the page (and in this headline) as history; they no longer masquerade
+        # as a judgement of the how-to.
+        pill = ('<span class="pill ok">✓ declared how-to self-tested (I4)</span> '
+                f'<span class="pill bad">{len(failed)} failed iteration step(s) '
+                f'in the record</span>')
+    elif failed:
+        # A FAILED STEP OUTRANKS EVERY OTHER HEADLINE — when no proven how-to exists.
+        # `validated_in_shipped_image` was earned legitimately — the digests really do
+        # match — but it answers "did this run in the image we ship", not "did it work",
+        # and the page presented it as the verdict. A reader deciding whether to run
+        # this on real data must not have to find one ✗ glyph in a per-output table
+        # below the fold.
         pill = (f'<span class="pill bad">✗ {len(failed)} step(s) FAILED — '
                 f'do not run this as-is</span>')
     elif shipped:

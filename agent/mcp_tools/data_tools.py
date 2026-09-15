@@ -319,6 +319,7 @@ def phenopacket_to_vcf(
     phenopacket_id: str,
     output_vcf: str,
     genome_build: str = "hg38",
+    pipeline_id: str = "",
 ) -> dict:
     """Materialise a single-sample VCF from a registered phenopacket's variant block.
 
@@ -331,16 +332,46 @@ def phenopacket_to_vcf(
       phenopacket_id: as registered by add_phenopacket (PMID_30315159_Patient_N, …)
       output_vcf:     absolute path to write the VCF
       genome_build:   defaults to hg38
+      pipeline_id:    PASS THIS when the VCF feeds a pipeline step. The VCF is then
+                      recorded in the draft as a sha256-anchored authored artifact
+                      (generated_by = this call), so I8 can trace the step's input.
+                      Without it the written path is anchored NOWHERE — the consuming
+                      step is an I8 orphan and seal refuses (falsifier FD5).
 
     Output keys: success, phenopacket_id, sample_id, output_vcf, num_variants,
-                 contigs, genome_assembly. On failure: {success: false, error}.
-    Phenotype-only phenopackets (no variant block) cannot be materialised — this
-    is surfaced as a clear error rather than silently producing an empty VCF.
+                 contigs, genome_assembly (+ pipeline_merge when pipeline_id given).
+    On failure: {success: false, error}. Phenotype-only phenopackets (no variant
+    block) cannot be materialised — this is surfaced as a clear error rather than
+    silently producing an empty VCF. The VCF sample name is the phenopacket's
+    subject id VERBATIM (tools like Exomiser cross-check the two); a
+    `sample_id_note` in the result means the id carried characters the VCF sample
+    column cannot hold and was rewritten.
     """
-    return _ms._phenopacket_to_vcf(
+    res = _ms._phenopacket_to_vcf(
         _ms.config, phenopacket_id=phenopacket_id,
         output_vcf=output_vcf, genome_build=genome_build,
     )
+    if pipeline_id and res.get("success"):
+        from agent.mcp_tools.workflow_tools import record_generated_artifact
+        desc = (f"Single-sample VCF (sample {res.get('sample_id')}, "
+                f"{res.get('num_variants')} variant(s), {res.get('genome_assembly')}) "
+                f"materialized from registered phenopacket {phenopacket_id}")
+        genesis = (f"phenopacket_to_vcf(phenopacket_id={phenopacket_id!r}, "
+                   f"genome_build={genome_build!r})")
+        try:
+            idx, _art = record_generated_artifact(
+                pipeline_id, res["output_vcf"], "test_input", desc, genesis)
+        except OSError as e:
+            res["pipeline_merge"] = {"status": "record_failed",
+                                     "error": f"could not read back the VCF for its anchor: {e!r}"}
+            return res
+        res["pipeline_merge"] = (
+            {"status": "merged", "pipeline_id": pipeline_id, "artifact_index": idx}
+            if idx is not None else
+            {"status": "unknown_pipeline", "pipeline_id": pipeline_id,
+             "note": "the VCF was written but no draft with this pipeline_id exists — "
+                     "start_pipeline first, then re-run (idempotent) to anchor it"})
+    return res
 
 
 @mcp.tool()

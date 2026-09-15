@@ -1712,6 +1712,22 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                              f"{', '.join(sorted(EXTERNAL_SOURCE_KINDS))}",
                 "where":     f"pipeline_steps[step={step_n}].inputs",
                 "orphan_path": p,
+                # THE GATE IS THE GUIDE, and this gate's remedy has TWO shapes. If the
+                # input is a real file the spec merely never anchored, stage it
+                # (stage_authored_artifact) or declare it (select_test_data /
+                # download_reference_database) and re-seal. But if the step itself is
+                # debris — a diagnostic or a dead iteration attempt — no declaration can
+                # make its input honest, and pipeline_steps are runtime-recorded and
+                # unpatchable BY DESIGN: the only exit is discard_pipeline_draft, then
+                # redrive the good steps into a fresh draft (re-stage artifacts, re-patch
+                # usage, re-run). A falsifier drive hit exactly this and had to derive
+                # the redrive from first principles at the refusal (FD6).
+                "remedy":    "if this input is a legitimate external file, anchor it "
+                             "(stage_authored_artifact / select_test_data / "
+                             "download_reference_database) and re-seal; if the STEP is "
+                             "iteration debris (a diagnostic, a superseded attempt), "
+                             "pipeline_steps cannot be edited — discard_pipeline_draft "
+                             "and redrive the proven steps into a fresh draft",
             })
 
         for o in s.get("outputs", []) or []:

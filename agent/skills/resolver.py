@@ -1982,17 +1982,38 @@ def pullable_image(availability: dict[str, dict], tool: str,
     conda = availability.get("conda") or {}
     if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
         spec = registry_name(conda, tool)
+        # AN ERROR IS NOT A NEGATIVE OBSERVATION. This except-arm used to return the same
+        # bare {"found": False} as a genuine registry miss, so a quay flake read as "no
+        # image exists" — a FACT the caller then acted on (falsifier drive FD1: the probe
+        # said false for bioconductor-deseq2=1.50.2 while freeze's identical probe, minutes
+        # later, adopted the image). `checked` says whether the registry actually answered:
+        #   found:True                        — image exists, adopt it
+        #   found:False, checked:True         — the registry answered: nothing to adopt
+        #   found:False, checked:False        — NOBODY answered; this says NOTHING about
+        #                                       whether an image exists (probe_error / not
+        #                                       applicable names which)
         try:
             bc = _resolve_biocontainer(
                 [(spec, version or conda.get("latest") or None)], timeout=timeout)
-        except Exception:
-            bc = {"found": False}
+        except Exception as e:
+            return {"found": False, "checked": False,
+                    "probe_error": f"{type(e).__name__}: {e}",
+                    "reason": "the biocontainer probe FAILED (network/registry error) — "
+                              "this is NOT evidence that no image exists; re-run "
+                              "resolve_tool to re-probe"}
         if bc.get("found") and bc.get("image_by_digest"):
             return {"found": True, "source": "biocontainer",
                     "image": bc.get("image"), "image_by_digest": bc.get("image_by_digest"),
                     "digest": bc.get("digest"), "adopt_call": _adopt_call(bc["image_by_digest"]),
                     "provenance": "quay.io/biocontainers (the bioconda auto-build)"}
-    return {"found": False}
+        return {"found": False, "checked": True,
+                "reason": bc.get("reason") or
+                          ("the registry lists the repo but no manifest digest was "
+                           "returned for this version" if bc.get("found") else
+                           "no pre-built biocontainer for this exact version set")}
+    return {"found": False, "checked": False,
+            "reason": "not probed — the biocontainer probe runs only when the pick is a "
+                      "clean conda package (it is that pick's delivery vehicle)"}
 
 
 def _normalize_github_repo(github_repo: str) -> str:
@@ -2659,6 +2680,13 @@ def resolve(
         decision["rationale"] = (
             f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
             f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
+    # A probe that ERRORED is disclosed as such — `pullable_image.found: false` with a
+    # swallowed exception behind it steered a real drive away from the adopt path (FD1).
+    if pull.get("probe_error"):
+        decision["rationale"] = (
+            f"{decision.get('rationale', '')}  NOTE: the pullable-image probe FAILED "
+            f"({pull['probe_error']}) — 'found: false' here means UNCHECKED, not absent; "
+            f"freeze will re-probe and may still adopt a biocontainer.").strip()
     # NAME-MAPPING HONESTY. When the pick came via the bioconductor→conda fold, the emitted
     # call names `bioconductor-{tool}`, not the `{tool}` the caller typed — say so up front so
     # a reader sees requested-vs-installed at a glance, never a silent substitution.
