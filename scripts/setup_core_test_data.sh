@@ -17,9 +17,12 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-# Prefer the conda env's Python (3.10+) over system python3, which on macOS
-# is often 3.9 and predates PEP 604 (str | None syntax).
-if [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+# Prefer the repo-local runtime env (created by scripts/setup.sh), then the
+# active conda env's Python (3.10+), over system python3 — which on macOS is
+# often 3.9 and predates PEP 604 (str | None syntax).
+if [[ -x "$PROJECT_ROOT/.conda_runtime/bin/python" ]]; then
+  PY="$PROJECT_ROOT/.conda_runtime/bin/python"
+elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
   PY="$CONDA_PREFIX/bin/python"
 elif command -v python >/dev/null 2>&1; then
   PY="python"

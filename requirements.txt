@@ -1,5 +1,5 @@
 # MCP server + skill substrate
-fastmcp>=2.0  # tested with 3.2.4
+fastmcp>=2.0,<4  # tested with 3.2.4; 4.x unvalidated — raise the cap only with a validation pass
 pyyaml>=6.0
 requests>=2.31.0
 pydantic>=2.0
