@@ -100,20 +100,25 @@ class JobManager:
 
         status_path = self._status_path(jid)
         log_path    = self._log_path(jid)
-        # Wipe prior log on re-use of a non-running job_id.
+        done_path   = self.done_path(jid)
+        # Wipe prior log on re-use of a non-running job_id, and clear the prior
+        # run's completion sentinel — a leftover `.done` would tell a waiter this
+        # run finished before it started.
         log_path.write_text("")
+        done_path.unlink(missing_ok=True)
 
         # Build the actual subprocess argv. We always exec through bash -c so
         # callers can use pipes/redirects/etc. Conda activation adds the
         # `conda run --prefix` prefix and inherits env vars.
+        script = f"{self._done_trap(done_path)}\n{command}"
         if env_name:
             env_path = self._env_mgr.envs_dir / env_name
             argv = [
                 self._env_mgr._conda_exe, "run", "--prefix", str(env_path),
-                "--no-capture-output", "/bin/bash", "-c", command,
+                "--no-capture-output", "/bin/bash", "-c", script,
             ]
         else:
-            argv = ["/bin/bash", "-c", command]
+            argv = ["/bin/bash", "-c", script]
 
         cwd = working_dir or str(self.project_root)
 
@@ -164,12 +169,14 @@ class JobManager:
             "elapsed_seconds": 0.0,
             "log_path":        str(log_path),
             "status_path":     str(status_path),
+            "done_marker":     str(done_path),
         }
         self._write_status(jid, status)
         return {
             "job_id":      jid,
             "status_path": str(status_path),
             "log_path":    str(log_path),
+            "done_marker": str(done_path),
             "pid":         proc.pid,
             "state":       "running",
         }
@@ -200,12 +207,15 @@ class JobManager:
                     self._procs.pop(job_id, None)
                 self._write_status(job_id, status)
             else:
-                # No Popen in memory (server restarted after spawn). Best-effort:
-                # check the PID. If the process is gone we can't recover its exit
-                # code — record state="exited", returncode=None, and let the log
-                # tail carry the actual outcome.
+                # No Popen in memory (server restarted after spawn, or the handle
+                # was dropped). Try to reap first: if the process is still OUR
+                # child it may be sitting as a zombie, which os.kill(pid, 0)
+                # reports as alive, and waitpid recovers the exit code Popen would
+                # have given us. Only when there is nothing to reap do we fall
+                # back to a liveness probe.
                 pid = status.get("pid")
-                if pid and self._is_pid_alive(pid):
+                rc = self._reap(pid)
+                if rc is None and pid and self._is_pid_alive(pid, status.get("start_time_iso")):
                     status["elapsed_seconds"] = round(time.time() - status["start_time"], 2)
                     status["bytes_logged"]    = self._log_size(job_id)
                 else:
@@ -214,7 +224,11 @@ class JobManager:
                     status["end_time_iso"]    = _iso(time.time())
                     status["elapsed_seconds"] = round(status["end_time"] - status["start_time"], 2)
                     status["bytes_logged"]    = self._log_size(job_id)
-                    status["note"]            = "exit code unrecoverable: server restart between spawn and check"
+                    if rc is not None:
+                        status["returncode"] = rc
+                    else:
+                        status["note"] = ("exit code unrecoverable: the process is gone and was "
+                                          "not reapable by this server — see log_tail for the outcome")
                 self._write_status(job_id, status)
 
         # Always include a log tail so the caller has *something* recent to look at.
@@ -378,20 +392,37 @@ class JobManager:
         return self.jobs_dir / f"{job_id}.result.json"
 
     def done_path(self, job_id: str) -> Path:
-        """The completion sentinel file. Created ONLY when the job has exited
-        (atomic by touch). The CORRECT polling pattern is `while check_job(id)
-        != "exited"` OR a file-existence loop run BY THE OWNING AGENT (which
-        is also calling check_job periodically) — the SUBPROCESS does not
-        write .done; the parent writes it inside _write_status the first time
-        check() observes the terminal transition. A bare `until [ -f X.done ]`
-        loop in an EXTERNAL shell never advances state and will spin forever.
+        """The completion sentinel — an empty file that exists exactly when the
+        job's process has finished.
 
-        Pre-N6, the only on-disk signal was status.json, which exists from
-        t=0 (created with state='running' before any work happens), so naive
-        file-existence polls misfired immediately. status.json content
-        remains authoritative for the actual state; .done is the atomic 'is
-        it over' signal — but it needs the check() side-effect to land."""
+        THE CHILD WRITES IT ITSELF, from a bash EXIT trap installed by start()
+        (see _done_trap). So `until [ -f X.done ]; do sleep 5; done` in any shell
+        is a correct wait, whether or not anyone is calling check(). start()
+        clears a stale sentinel from a re-used job_id, and _write_status touches
+        it as a backstop for a process killed before its trap could run.
+
+        The sentinel says FINISHED, never SUCCEEDED. status.json's `state` +
+        `returncode` remain the authoritative outcome, and for a detached tool the
+        result is `check_job`'s inlined `result`. The right sequence is: wait on
+        .done (cheap, no polling cost), then call check_job once."""
         return self.jobs_dir / f"{job_id}.done"
+
+    @staticmethod
+    def _done_trap(done: Path) -> str:
+        """A bash EXIT trap that touches the completion sentinel.
+
+        Prepended to every job's script so the sentinel is written BY THE JOB,
+        which is what lets an external file-wait work. An EXIT trap fires on
+        normal exit, an explicit `exit N` and on the usual fatal signals, and
+        bash preserves the exit status across it, so the job's returncode is
+        unaffected. Prepended rather than appended: appending would land inside
+        an unterminated heredoc in the caller's command.
+
+        Two cases it cannot cover, both of which degrade to the old behaviour
+        (check() touches the sentinel when it observes the exit): a command that
+        `exec`s over the shell, and SIGKILL."""
+        touch = f"touch {shlex.quote(str(done))} 2>/dev/null || true"
+        return f"trap {shlex.quote(touch)} EXIT"
 
     def _log_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.log"
@@ -410,13 +441,24 @@ class JobManager:
         'alive' (a false positive that keeps a dead job marked running). When `started_iso`
         is known and psutil is available, we also require the live process to have started
         no LATER than the job did — a recycled PID's process is necessarily younger, so
-        this rejects it."""
+        this rejects it.
+
+        Also unsound alone against a ZOMBIE: a finished child whose parent has not
+        reaped it still answers `os.kill(pid, 0)`, which is how a 40-second install
+        read as 'running' for 20 minutes (cold-start finding CS8). A zombie has
+        exited by definition, so it is reported dead here; check() reaps it."""
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
         except PermissionError:
             pass          # exists, just not ours — fall through to the start-time check
+        try:
+            import psutil
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return False
+        except Exception:
+            pass          # psutil absent / process vanished mid-check — trust os.kill
         if started_iso:
             try:
                 import datetime as _dt
@@ -433,6 +475,25 @@ class JobManager:
                 pass      # psutil absent / process vanished mid-check — trust os.kill
         return True
 
+    @staticmethod
+    def _reap(pid: Optional[int]) -> Optional[int]:
+        """Reap a finished DIRECT child and recover its real exit code, or None.
+
+        None covers three different situations that all mean "nothing to record
+        here": no pid, the process is still running, and the process is not our
+        child (so the kernel has already reaped it and its code is gone). The
+        caller distinguishes the last two with a liveness probe.
+        """
+        if not pid:
+            return None
+        try:
+            got, wstatus = os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return None
+        if got != pid:
+            return None
+        return os.waitstatus_to_exitcode(wstatus)
+
     def _read_status(self, job_id: str) -> Optional[dict]:
         p = self._status_path(job_id)
         if not p.exists():
@@ -447,11 +508,10 @@ class JobManager:
         tmp = self._status_path(job_id).with_suffix(".tmp")
         tmp.write_text(json.dumps(status, indent=2))
         os.replace(tmp, self._status_path(job_id))
-        # N6 fix (batch-3): drop the completion sentinel `.done` file once
-        # we've observed a terminal state. Pre-fix the only on-disk signal
-        # was status.json which exists from t=0; shell loops checking file-
-        # existence fired immediately. Status.json content stays the truth;
-        # .done is the atomic 'is it over' signal a polling loop can rely on.
+        # Backstop for the completion sentinel the job itself writes from its EXIT
+        # trap (see _done_trap): a job killed by SIGKILL, or one that exec'd over
+        # its shell, never runs that trap. Whoever observes the terminal state
+        # first writes the sentinel; both spellings are a touch, so they agree.
         if status.get("state") != "running":
             done = self.done_path(job_id)
             if not done.exists():
