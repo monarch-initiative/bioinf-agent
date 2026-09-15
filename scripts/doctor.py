@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_PY = ROOT / ".conda_runtime" / "bin" / "python"
+ENV_SH = ROOT / "scripts" / "_env.sh"
 
 ROWS: list[tuple[str, str, str, str]] = []   # (verdict, name, detail, fix)
 
@@ -43,24 +42,46 @@ def run(argv: list[str], timeout: int = 15, cwd: str | None = None) -> tuple[int
         return 124, f"timed out after {timeout}s"
 
 
+_RUNTIME_PY_FALLBACK = ROOT / ".conda_runtime" / "bin" / "python"
+
+
+def _runtime_py() -> Path:
+    """The runtime interpreter, per scripts/_env.sh — asked, not re-spelled, for the
+    same reason check_conda delegates. The CLI prints the path whether or not it is
+    usable, so a missing runtime env can still be reported BY NAME. If _env.sh is
+    absent or answers something that is not an interpreter path we keep the literal:
+    check_runtime_env then reports the missing env, which is the true finding."""
+    if not ENV_SH.is_file():
+        return _RUNTIME_PY_FALLBACK
+    _, out = run(["bash", str(ENV_SH), "runtime-python"])
+    line = out.splitlines()[-1].strip() if out else ""
+    return Path(line) if line.endswith("bin/python") else _RUNTIME_PY_FALLBACK
+
+
+RUNTIME_PY = _runtime_py()
+
+
 # --- conda -------------------------------------------------------------------
 def check_conda() -> None:
-    conda = os.environ.get("CONDA_EXE") or shutil.which("conda")
-    if not conda:
-        for c in (ROOT / ".miniforge/condabin/conda",
-                  Path.home() / "miniforge3/condabin/conda",
-                  Path.home() / "miniconda3/condabin/conda",
-                  Path.home() / "anaconda3/condabin/conda",
-                  Path("/opt/conda/condabin/conda"),
-                  Path("/opt/homebrew/opt/miniforge3/condabin/conda")):
-            if c.is_file() and os.access(c, os.X_OK):
-                conda = str(c)
-                break
-    if not conda:
+    """Ask scripts/_env.sh, never a second path list.
+
+    The doctor used to carry its own copy of the search, and it had already
+    diverged from setup.sh's on ORDER (repo-local .miniforge first here, last
+    there) — so on a machine with both a private and a system conda the check
+    could PASS on a conda setup never used. A systems check that reports on a
+    different thing than the one that ran is the defect this repo exists to
+    refuse; delegating is the only structural fix."""
+    if not ENV_SH.is_file():
+        row("FAIL", "conda", "scripts/_env.sh missing — cannot resolve conda",
+            "restore it from git; it is the single conda/interpreter resolver")
+        return
+    rc, conda = run(["bash", str(ENV_SH), "conda"])
+    if rc != 0 or not conda:
         row("FAIL", "conda", "not found ($CONDA_EXE, PATH, ./.miniforge, usual locations)",
             "run ./scripts/setup.sh — it offers to install a private miniforge at ./.miniforge "
             "(or install miniforge yourself: https://github.com/conda-forge/miniforge)")
         return
+    conda = conda.splitlines()[-1].strip()
     rc, out = run([conda, "--version"])
     row("PASS" if rc == 0 else "FAIL", "conda",
         f"{out.splitlines()[0] if out else conda} ({conda})",

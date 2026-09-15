@@ -6,14 +6,14 @@
 # restart on the next MCP call. Production deployments that want stable code
 # should call `python -m agent` directly without this var set.
 #
-# Interpreter resolution, in order:
-#   1. ./.conda_runtime/bin/python — the repo-local runtime env that
-#      scripts/setup.sh creates and installs the agent into. This is the
-#      designed path: the env the deps were installed into IS the env the
-#      server runs on, per clone, no discovery.
-#   2. Legacy fallback: the usual base-conda pythons — but only one that can
-#      actually import the server's deps. (The old behavior exec'd the first
-#      base python found, installed-into or not; a fresh machine then died
+# Interpreter resolution, in order (the path lists themselves live in _env.sh):
+#   1. $BIOINF_RUNTIME_PY — the repo-local runtime env that scripts/setup.sh
+#      creates and installs the agent into. This is the designed path: the env
+#      the deps were installed into IS the env the server runs on, per clone,
+#      no discovery.
+#   2. bioinf_legacy_server_python — the usual base-conda pythons, but only one
+#      that can actually import the server's deps. (The old behavior exec'd the
+#      first base python found, installed-into or not; a fresh machine then died
 #      with ModuleNotFoundError inside the MCP client. Cold-start finding CS2.)
 #   3. Otherwise: fail LOUDLY, naming the fix.
 #
@@ -23,38 +23,28 @@
 #
 # Override by exporting BIOINF_MCP_AUTO_RELOAD=0 before launch to opt out.
 set -e
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Interpreter and conda resolution live in scripts/_env.sh — one implementation for
+# this launcher, setup.sh, the bootstrap wrapper and doctor.py.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+cd "$BIOINF_ROOT"
 
 export BIOINF_MCP_AUTO_RELOAD="${BIOINF_MCP_AUTO_RELOAD:-1}"
 
-# A private miniforge (installed by scripts/setup.sh on machines with no conda)
-# is reached via PATH — EnvManager and every conda-run shell resolve it there,
-# and children of the server inherit it.
-if [ -d "$PWD/.miniforge/condabin" ]; then
-    export PATH="$PWD/.miniforge/condabin:$PATH"
-fi
+# EnvManager and every conda-run shell resolve conda through PATH, and children of
+# the server inherit it — so put the conda this clone actually uses there.
+bioinf_conda_on_path >/dev/null || true
 
-RUNTIME_PY="$PWD/.conda_runtime/bin/python"
-if [ -x "$RUNTIME_PY" ]; then
-    if "$RUNTIME_PY" -c "import fastmcp" >/dev/null 2>&1; then
-        exec "$RUNTIME_PY" -m agent
+if [ -x "$BIOINF_RUNTIME_PY" ]; then
+    if "$BIOINF_RUNTIME_PY" -c "import fastmcp" >/dev/null 2>&1; then
+        exec "$BIOINF_RUNTIME_PY" -m agent
     fi
     echo "[start_mcp_server] .conda_runtime exists but cannot import the server's deps." >&2
     echo "[start_mcp_server] fix: re-run ./scripts/setup.sh" >&2
     exit 1
 fi
 
-for base in "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" \
-            "/opt/conda" "/opt/homebrew/opt/miniforge3"; do
-    if [ -x "$base/bin/python" ] && \
-       "$base/bin/python" -c "import fastmcp" >/dev/null 2>&1; then
-        exec "$base/bin/python" -m agent
-    fi
-done
-
-if command -v python3 >/dev/null 2>&1 && \
-   python3 -c "import fastmcp" >/dev/null 2>&1; then
-    exec python3 -m agent
+if LEGACY_PY="$(bioinf_legacy_server_python)"; then
+    exec "$LEGACY_PY" -m agent
 fi
 
 echo "[start_mcp_server] no interpreter with the server's deps was found." >&2

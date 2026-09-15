@@ -10,30 +10,14 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Conda + interpreter resolution live in scripts/_env.sh — one implementation for
+# this wrapper, setup.sh, the launcher and doctor.py.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 
-# A private miniforge (installed by scripts/setup.sh on machines with no conda)
-# is reached via PATH, same as in start_mcp_server.sh.
-if [ -d "$PROJECT_ROOT/.miniforge/condabin" ]; then
-  export PATH="$PROJECT_ROOT/.miniforge/condabin:$PATH"
-fi
-
-if ! command -v conda >/dev/null 2>&1; then
-  echo "ERROR: conda not found in PATH. Run ./scripts/setup.sh (it can install a private copy), or activate your conda base environment first." >&2
+# bootstrap_core.py drives conda directly and EnvManager resolves it via PATH.
+if ! bioinf_conda_on_path >/dev/null; then
+  echo "ERROR: conda not found. Run ./scripts/setup.sh (it can install a private copy), or activate your conda base environment first." >&2
   exit 1
 fi
 
-# Prefer the repo-local runtime env (created by scripts/setup.sh), then the
-# active conda env's Python (3.10+), over system python3 — which on macOS is
-# often 3.9 and predates PEP 604 (str | None syntax).
-if [[ -x "$PROJECT_ROOT/.conda_runtime/bin/python" ]]; then
-  PY="$PROJECT_ROOT/.conda_runtime/bin/python"
-elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
-  PY="$CONDA_PREFIX/bin/python"
-elif command -v python >/dev/null 2>&1; then
-  PY="python"
-else
-  PY="python3"
-fi
-
-exec "$PY" "$PROJECT_ROOT/scripts/bootstrap_core.py" "$@"
+exec "$(bioinf_bootstrap_python)" "$BIOINF_ROOT/scripts/bootstrap_core.py" "$@"

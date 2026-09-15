@@ -12,7 +12,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 INI = REPO / "pytest.ini"
-DEV_REQS = REPO / "requirements-dev.txt"
+#: pyproject is the single dependency truth; the requirements-dev.txt this used to read
+#: was its mirror and is gone (setup.sh and CI both install `-e ".[dev]"`).
+PYPROJECT = REPO / "pyproject.toml"
 
 
 def _addopts() -> str:
@@ -31,9 +33,10 @@ def test_parallel_addopts_have_their_plugin_declared():
     """
     if "-n" not in _addopts():
         return                          # no parallel default; nothing to require
-    assert re.search(r"^\s*pytest-xdist\b", DEV_REQS.read_text(), re.M), (
-        "pytest.ini passes -n but requirements-dev.txt does not list pytest-xdist. "
-        "A fresh clone and CI both die before collecting a single test.")
+    assert re.search(r'"pytest-xdist[^"]*"', PYPROJECT.read_text()), (
+        "pytest.ini passes -n but pyproject.toml does not declare pytest-xdist in its "
+        "[project.optional-dependencies] dev list. A fresh clone and CI both die before "
+        "collecting a single test.")
 
 
 def test_xdist_group_markers_are_actually_binding():

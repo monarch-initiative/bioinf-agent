@@ -62,7 +62,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt   # runtime deps (-r requirements.txt) + pytest
+          # pyproject is the single dependency truth (the requirements.txt mirror is
+          # gone). Editable, because this is a workspace-rooted service — see the note
+          # at the bottom of pyproject.toml. [dev] carries pytest + xdist, which
+          # pytest.ini's `-n auto` makes mandatory rather than optional.
+          pip install -e ".[dev]"
 
       - name: Run the honesty checker (hermetic tier)
         # `python -m pytest` (not bare `pytest`) puts the repo root on sys.path so `agent`

@@ -7,11 +7,19 @@ name = "bioinf-agent"
 version = "0.1.0"
 description = "Installs bioinformatics tools into isolated conda envs, validates them INSIDE the image they ship, packages them as HPC-shippable containers, and emits a machine-verified spec."
 readme = "README.md"
-# The agent RUNTIME floor. The launcher (scripts/start_mcp_server.sh) and the
-# bootstrap wrapper both require 3.10+ (they avoid the macOS system 3.9), and the
-# agent is run on the miniforge base (3.10 today). This is distinct from the 3.11 that
-# CI tests on and that config/agent_config.yaml uses for the tool-environments the
-# agent BUILDS — that is the built envs' python, not this process's.
+# The agent RUNTIME floor — the oldest interpreter the server is allowed to start on.
+# What it actually runs on is ./.conda_runtime, which scripts/setup.sh creates at 3.11
+# (and which CI matches); the floor stays at 3.10 for the ONE other reachable path,
+# start_mcp_server.sh's legacy fallback to a base-conda python on machines provisioned
+# before the runtime env existed. Both avoid the macOS system 3.9.
+#
+# This was the sentence documenting the pre-setup-contract world — "the agent is run on
+# the miniforge base (3.10 today)" — and it was the ONLY place that assumption was
+# written down, which is why cold-start finding CS2 cites it. The assumption is gone;
+# setup.sh now owns the runtime env explicitly.
+#
+# Distinct from config/agent_config.yaml's python_version, which is the python of the
+# tool-environments the agent BUILDS, not this process's.
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
 authors = [{ name = "Aaron", email = "aaron@tislab.org" }]
@@ -27,8 +35,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-# Mirror of requirements.txt — kept in sync deliberately (that file remains the
-# canonical `pip install -r` surface; this list is what `pip install -e .` pulls).
+# THE single dependency truth. There used to be a requirements.txt mirror "kept in sync
+# deliberately", from when the README's install line was `pip install -r`; nothing reads
+# that file any more (setup.sh and CI both install `-e ".[dev]"`), and one truth in two
+# places staying in sync by discipline is this repo's own diagnosed defect class — the
+# fastmcp<4 pin below had to be applied twice. Deleted with the setup-contract pass.
 dependencies = [
     # <4: the server + background detachment are proven against fastmcp 3.x
     # (3.2.4); 4.x is a major nobody here has validated. A fresh `pip install`

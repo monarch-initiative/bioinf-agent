@@ -24,10 +24,14 @@
 # the rest. It never deletes anything.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME="$PROJECT_ROOT/.conda_runtime"
-RUNTIME_PY="$RUNTIME/bin/python"
-PRIVATE_CONDA="$PROJECT_ROOT/.miniforge/condabin/conda"
+# Conda + interpreter resolution lives in ONE place (scripts/_env.sh) so setup, the
+# doctor, the launcher and the bootstrap cannot answer the same question differently.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+
+PROJECT_ROOT="$BIOINF_ROOT"
+RUNTIME="$BIOINF_RUNTIME"
+RUNTIME_PY="$BIOINF_RUNTIME_PY"
+PRIVATE_CONDA="$BIOINF_PRIVATE_CONDA"
 PYTHON_VERSION="3.11"
 
 say() { echo "[setup] $*"; }
@@ -43,22 +47,6 @@ for arg in "$@"; do
         *) echo "usage: ./scripts/setup.sh [--full|--check|--yes]" >&2; exit 2 ;;
     esac
 done
-
-# --- locate conda ------------------------------------------------------------
-find_conda() {
-    if [ -n "${CONDA_EXE:-}" ] && [ -x "$CONDA_EXE" ]; then
-        echo "$CONDA_EXE"; return 0
-    fi
-    if command -v conda >/dev/null 2>&1; then
-        command -v conda; return 0
-    fi
-    for c in "$HOME/miniforge3/condabin/conda" "$HOME/miniconda3/condabin/conda" \
-             "$HOME/anaconda3/condabin/conda" "/opt/conda/condabin/conda" \
-             "/opt/homebrew/opt/miniforge3/condabin/conda" "$PRIVATE_CONDA"; do
-        if [ -x "$c" ]; then echo "$c"; return 0; fi
-    done
-    return 1
-}
 
 sha256_of() {
     shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1
@@ -111,13 +99,11 @@ if [ "$MODE" = "check" ]; then
     exec python3 "$PROJECT_ROOT/scripts/doctor.py"
 fi
 
-CONDA="$(find_conda)" || { install_private_conda; CONDA="$PRIVATE_CONDA"; }
+bioinf_find_conda >/dev/null || install_private_conda
+# bioinf_conda_on_path resolves it and makes it reachable to every child — child
+# scripts and the agent's own EnvManager find conda via PATH.
+CONDA="$(bioinf_conda_on_path)"
 say "conda: $CONDA"
-# Child scripts and the agent's own EnvManager find conda via PATH — make the
-# one we resolved reachable there when it isn't already (private-copy case).
-if ! command -v conda >/dev/null 2>&1; then
-    export PATH="$(dirname "$CONDA"):$PATH"
-fi
 
 # --- 1. runtime env ----------------------------------------------------------
 if [ -x "$RUNTIME_PY" ]; then
