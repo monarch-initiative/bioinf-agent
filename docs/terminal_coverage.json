@@ -50,6 +50,8 @@
     "agent/mcp_tools/run_tools.py:228": false,
     "agent/mcp_tools/run_tools.py:210": false,
     "agent/mcp_tools/run_tools.py:243": false,
+    "agent/mcp_tools/run_tools.py:359": false,
+    "agent/mcp_tools/run_tools.py:358": false,
     "agent/mcp_tools/run_tools.py:499": true,
     "agent/mcp_tools/sealed_tools.py:102": true,
     "agent/mcp_tools/sealed_tools.py:111": true,
@@ -335,14 +337,14 @@
     "agent/skills/freeze_from_image.py:230": true,
     "agent/skills/freeze_from_image.py:242": false,
     "agent/skills/freeze_from_image.py:279": true,
-    "agent/skills/job_manager.py:294": false,
-    "agent/skills/job_manager.py:303": false,
-    "agent/skills/job_manager.py:288": true,
-    "agent/skills/job_manager.py:189": true,
-    "agent/skills/job_manager.py:90": false,
-    "agent/skills/job_manager.py:93": true,
+    "agent/skills/job_manager.py:317": false,
+    "agent/skills/job_manager.py:326": false,
+    "agent/skills/job_manager.py:311": true,
+    "agent/skills/job_manager.py:203": true,
     "agent/skills/job_manager.py:98": false,
-    "agent/skills/job_manager.py:142": false,
+    "agent/skills/job_manager.py:101": true,
+    "agent/skills/job_manager.py:106": false,
+    "agent/skills/job_manager.py:150": false,
     "agent/skills/local_sif.py:49": true,
     "agent/skills/local_sif.py:95": true,
     "agent/skills/local_sif.py:102": true,
@@ -584,40 +586,19 @@
     "agent/validators/output_validator.py:232": true,
     "agent/validators/output_validator.py:103": true,
     "agent/validators/output_validator.py:112": true,
-    "agent/validators/output_validator.py:99": true,
-    "agent/mcp_tools/run_tools.py:359": false,
-    "agent/mcp_tools/run_tools.py:358": false
+    "agent/validators/output_validator.py:99": true
   },
   "carried_forward": {
     "measured_sha": "fd06836",
-    "rekeyed_from": "fd06836",
-    "rekeyed_at": "fd06836",
-    "carried": 576,
-    "moved_lines": 9,
-    "unmeasured": [
-      "agent/mcp_tools/run_tools.py:210",
-      "agent/mcp_tools/run_tools.py:218",
-      "agent/mcp_tools/run_tools.py:224",
-      "agent/mcp_tools/run_tools.py:228",
-      "agent/mcp_tools/run_tools.py:243",
-      "agent/mcp_tools/run_tools.py:253",
-      "agent/mcp_tools/run_tools.py:358",
-      "agent/mcp_tools/run_tools.py:359"
-    ],
-    "needs_measurement": [
-      "agent/mcp_tools/run_tools.py:210",
-      "agent/mcp_tools/run_tools.py:218",
-      "agent/mcp_tools/run_tools.py:224",
-      "agent/mcp_tools/run_tools.py:228",
-      "agent/mcp_tools/run_tools.py:243",
-      "agent/mcp_tools/run_tools.py:253"
-    ],
-    "assumed_dark": [
-      "agent/mcp_tools/run_tools.py:359",
-      "agent/mcp_tools/run_tools.py:358"
-    ],
+    "rekeyed_from": "f521080",
+    "rekeyed_at": "f521080",
+    "carried": 584,
+    "moved_lines": 8,
+    "unmeasured": [],
+    "needs_measurement": [],
+    "assumed_dark": [],
     "dropped": [],
     "note": "verdicts carried across a line-motion diff, not re-measured. `needs_measurement` sit in functions edited since the measurement; `assumed_dark` are new terminals. Both are counted DARK, which under-reports \u2014 never over-reports. Run measure_terminal_coverage.py for an observed number.",
-    "rekeys": 1
+    "rekeys": 2
   }
 }

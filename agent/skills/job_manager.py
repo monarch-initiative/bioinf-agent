@@ -44,6 +44,14 @@ from typing import Any, Optional
 from agent.skills import outcomes
 from agent.skills.outcomes import broke, refused
 
+#: How long `check` will wait for a process whose completion sentinel has ALREADY
+#: been written. Bounds the gap between a bash EXIT trap firing and the shell
+#: actually exiting — see JobManager._wait_out_teardown. Generous by two orders of
+#: magnitude against the observed window, because overshooting costs one slow
+#: `check` on a job that is over, and undershooting reports a finished job as
+#: running.
+_DONE_REAP_GRACE_S = 2.0
+
 
 class JobManager:
     def __init__(self, config: dict):
@@ -183,7 +191,13 @@ class JobManager:
         }
 
     def check(self, job_id: str, log_tail_lines: int = 30) -> dict[str, Any]:
-        """Return current status. Reads disk + polls the process; does NOT block."""
+        """Return current status. Reads disk + polls the process.
+
+        Does not block on a RUNNING job. The one bounded exception is the
+        sentinel-reconcile below: a job whose `.done` has appeared has finished
+        by its own testimony, and waiting out its teardown is what makes the
+        documented "wait on .done, then call check_job once" sequence true.
+        """
         status = self._read_status(job_id)
         if not status:
             return refused("job_manager.unknown_job_check", error=f"unknown job_id: {job_id}", job_id=job_id)
@@ -195,6 +209,8 @@ class JobManager:
                 # alive, exit code if exited; the OS won't leak a zombie since
                 # poll() reaps).
                 rc = proc.poll()
+                if rc is None and self.done_path(job_id).exists():
+                    rc = self._wait_out_teardown(proc)
                 if rc is None:
                     status["elapsed_seconds"] = round(time.time() - status["start_time"], 2)
                     status["bytes_logged"]    = self._log_size(job_id)
@@ -216,6 +232,13 @@ class JobManager:
                 # back to a liveness probe.
                 pid = status.get("pid")
                 rc = self._reap(pid)
+                if rc is None and self.done_path(job_id).exists():
+                    # Same teardown window, reached from a process that did not
+                    # spawn this job (server restart) — so re-reap rather than wait.
+                    deadline = time.time() + _DONE_REAP_GRACE_S
+                    while rc is None and time.time() < deadline:
+                        time.sleep(0.02)
+                        rc = self._reap(pid)
                 if rc is None and pid and self._is_pid_alive(pid, status.get("start_time_iso")):
                     status["elapsed_seconds"] = round(time.time() - status["start_time"], 2)
                     status["bytes_logged"]    = self._log_size(job_id)
@@ -410,6 +433,29 @@ class JobManager:
         result is `check_job`'s inlined `result`. The right sequence is: wait on
         .done (cheap, no polling cost), then call check_job once."""
         return self.jobs_dir / f"{job_id}.done"
+
+    @staticmethod
+    def _wait_out_teardown(proc: subprocess.Popen) -> int | None:
+        """The exit code of a process whose completion sentinel has already been
+        written, or None if it somehow outlives the grace window.
+
+        The sentinel is written from a bash EXIT trap, and a trap runs while the
+        shell is still alive — so there is a window between "the job says it is
+        finished" and "the process is reapable". Inside it `poll()` returns None,
+        and `check` reported `running` for a job that had demonstrably finished.
+        That window is normally sub-millisecond and widens under load, which is
+        what made it look like flakiness rather than a race.
+
+        It matters because `done_marker` is handed to callers on the spawn
+        receipt precisely so they can wait without polling; a wait that lands on
+        `running` sends them back to polling, which is the affordance's whole
+        point. Bounded, and a timeout still reports `running` — a process that
+        outlives its own trap by seconds is genuinely stuck and must be said so.
+        """
+        try:
+            return proc.wait(timeout=_DONE_REAP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            return None
 
     @staticmethod
     def _done_trap(done: Path) -> str:
