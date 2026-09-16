@@ -293,7 +293,7 @@ def _render_sbatch_header(workflow_name: str, slurm_v: dict, email: str) -> str:
     directives (%x=job-name, %j=job-id) so logs self-name with the real job ID and
     never collide. Optional lines (partition/qos/gres/account/mail) are emitted
     ONLY when their value is present, so a typical CPU job renders no --partition
-    and no --account (matches slurm_header_template.txt)."""
+    and no --account."""
     def line(cond: object, text: str) -> str:
         return f"{text}\n" if cond else ""
     sv = slurm_v
