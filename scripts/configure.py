@@ -298,6 +298,22 @@ class Config:
         finally:
             tmp.unlink(missing_ok=True)
 
+    def state(self) -> tuple[str, str]:
+        """The configuration's state, in THREE values — `absent`, `valid`,
+        `invalid` — and the message that goes with it.
+
+        Every surface that REPORTS on the configuration reads this, not
+        `validate`. `validate` asks whether the in-memory document would be
+        accepted, and an empty document is accepted; a path holding no file must
+        not answer that question with `valid`. Staged-but-unsaved work is graded
+        on the document, because the useful question there is whether `save`
+        will take it.
+        """
+        if not self.path.exists() and not self.dirty:
+            return "absent", f"no configuration file at {self.path}"
+        err = self.validate()
+        return ("valid", "") if not err else ("invalid", err)
+
     def save(self) -> bool:
         err = self.validate()
         if err:
@@ -306,10 +322,22 @@ class Config:
             print(DIM("  fix it in the menu, or quit without saving to keep the file on disk."))
             return False
         backup = ""
-        if self.path.exists():
-            backup = str(self.path) + ".bak"
-            shutil.copy2(self.path, backup)
-        self.path.write_text(HEADER + "\n" + dump(self.data))
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists():
+                backup = str(self.path) + ".bak"
+                shutil.copy2(self.path, backup)
+            self.path.write_text(HEADER + "\n" + dump(self.data))
+        except OSError as e:
+            # Returning False keeps the menu open with the document intact. An
+            # unwritable destination must cost the user the save, not the work:
+            # raising here unwinds out of the menu loop and everything staged in
+            # this session is gone.
+            print(RED(f"  NOT saved — could not write {self.path}:"))
+            print(f"    {e}")
+            print(DIM("  the configuration is still loaded here; fix the path or "
+                      "permissions and save again."))
+            return False
         self.dirty = False
         print(GREEN(f"  saved {self.path}"))
         if backup:
@@ -744,17 +772,24 @@ def show(cfg: Config) -> None:
         print(f"\n  {BOLD(p.get('name', '?'))}  envs: {', '.join(p.get('compute_envs') or [])}")
         for d in p.get("directories") or []:
             print(f"      [{d.get('env')}] {d.get('path')}  {d.get('permissions')}")
-    err = cfg.validate()
+    state, msg = cfg.state()
     print()
-    print(GREEN("  valid — the agent's loader accepts this configuration") if not err
-          else RED(f"  invalid: {err}"))
+    if state == "absent":
+        print(YELLOW(f"  {msg}"))
+        print(DIM("  nothing is configured — the HPC bridge is unavailable. Local "
+                  "install, freeze and seal do not need this file."))
+    elif state == "valid":
+        print(GREEN("  valid — the agent's loader accepts this configuration"))
+    else:
+        print(RED(f"  invalid: {msg}"))
 
 
 def status_line(cfg: Config) -> str:
-    err = cfg.validate()
-    state = GREEN("valid") if not err else RED("invalid")
+    state, _ = cfg.state()
+    shown = {"valid": GREEN("valid"), "invalid": RED("invalid"),
+             "absent": YELLOW("not created yet")}[state]
     mark = YELLOW("  * unsaved changes") if cfg.dirty else ""
-    return (f"  {cfg.path.name}: {state}   "
+    return (f"  {cfg.path.name}: {shown}   "
             f"{len(cfg.envs)} compute env(s), {len(cfg.projects)} project(s){mark}")
 
 
@@ -775,7 +810,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--show", action="store_true", help="print the configuration and exit")
     ap.add_argument("--validate", action="store_true",
-                    help="validate and exit; rc 0 when the agent's loader accepts it")
+                    help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
     ap.add_argument("--file", default=None, help="configuration file (default: ./projects_access.yaml)")
     args = ap.parse_args()
 
@@ -783,9 +818,12 @@ def main() -> int:
     cfg = Config(path)
 
     if args.validate:
-        err = cfg.validate()
-        print(f"{path}: " + ("valid" if not err else f"invalid\n  {err}"))
-        return 0 if not err else 1
+        state, msg = cfg.state()
+        if state == "absent":
+            print(f"{path}: no configuration file — nothing to validate")
+            return 2
+        print(f"{path}: " + ("valid" if state == "valid" else f"invalid\n  {msg}"))
+        return 0 if state == "valid" else 1
     if args.show:
         show(cfg)
         return 0

@@ -41,6 +41,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.skills import outcomes
 from agent.skills.outcomes import broke, refused
 
 
@@ -257,6 +258,9 @@ class JobManager:
         if p.exists():
             try:
                 status["result"] = json.loads(p.read_text())
+                status["tool_outcome"] = {True: "succeeded", False: "failed",
+                                          None: "unstated"}[
+                    outcomes.call_verdict(status["result"])]
                 return
             except Exception as e:
                 status["result"] = None

@@ -81,7 +81,12 @@ data/_drivers/
 # The agent's command-and-control file — contains real cluster hostnames,
 # usernames, and paths. NEVER COMMIT. See agent/skills/projects_access.yaml.example
 # for the tracked template (generic placeholders only).
-/projects_access.yaml
+#
+# The glob covers the sidecars too: scripts/configure.py writes a .bak on every
+# save, and a backup of a secret is a secret. The tracked template lives under
+# agent/skills/, so nothing at the repo root is meant to be committed under this
+# name.
+/projects_access.yaml*
 
 # Local submission manifests written by submit_workflow_job — per-user,
 # per-run cluster job records. The user follows these to find a submitted

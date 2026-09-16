@@ -185,7 +185,11 @@ def check_hpc_config() -> None:
     # Delegate to the menu's own --validate: it runs compute_access.load_access,
     # which is the loader the agent enforces at drive time. A shallow parse here
     # would report PASS on a file the first bridge call rejects.
-    rc, out = run([str(RUNTIME_PY), str(ROOT / "scripts" / "configure.py"), "--validate"])
+    # --file pins it to the file checked above. Without it the menu resolves its
+    # own default, so this check could report on a different path than the one it
+    # just found.
+    rc, out = run([str(RUNTIME_PY), str(ROOT / "scripts" / "configure.py"),
+                   "--validate", "--file", str(cfg)])
     if rc != 0:
         detail = out.splitlines()[-1].strip() if out else "?"
         row("FAIL", "hpc bridge", f"projects_access.yaml is not loadable: {detail}",

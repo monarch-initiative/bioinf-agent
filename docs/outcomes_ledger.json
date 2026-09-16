@@ -60,6 +60,16 @@
     "named_in_test": false
   },
   {
+    "code": "run_container.step_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:359",
+    "end_line": 359,
+    "named_in_test": false
+  },
+  {
     "code": "fetch_r_deps.fetch_failed",
     "outcome": "broke",
     "source": "helper",
@@ -1135,8 +1145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:141",
-    "end_line": 141,
+    "where": "agent/skills/job_manager.py:142",
+    "end_line": 142,
     "named_in_test": false
   },
   {
@@ -1145,8 +1155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:299",
-    "end_line": 299,
+    "where": "agent/skills/job_manager.py:303",
+    "end_line": 303,
     "named_in_test": false
   },
   {
@@ -2057,6 +2067,16 @@
     "func": "generate_user_guide",
     "where": "agent/mcp_tools/freeze_tools.py:993",
     "end_line": 999,
+    "named_in_test": false
+  },
+  {
+    "code": "run_container.step_ran",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "run_step_in_container",
+    "where": "agent/mcp_tools/run_tools.py:358",
+    "end_line": 358,
     "named_in_test": false
   },
   {
@@ -3215,8 +3235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:490",
-    "end_line": 493,
+    "where": "agent/mcp_tools/run_tools.py:499",
+    "end_line": 502,
     "named_in_test": false
   },
   {
@@ -4375,8 +4395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "check",
-    "where": "agent/skills/job_manager.py:188",
-    "end_line": 188,
+    "where": "agent/skills/job_manager.py:189",
+    "end_line": 189,
     "named_in_test": false
   },
   {
@@ -4385,8 +4405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:284",
-    "end_line": 284,
+    "where": "agent/skills/job_manager.py:288",
+    "end_line": 288,
     "named_in_test": false
   },
   {
@@ -4395,8 +4415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:290",
-    "end_line": 290,
+    "where": "agent/skills/job_manager.py:294",
+    "end_line": 294,
     "named_in_test": false
   },
   {
@@ -4405,8 +4425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:89",
-    "end_line": 89,
+    "where": "agent/skills/job_manager.py:90",
+    "end_line": 90,
     "named_in_test": false
   },
   {
@@ -4415,8 +4435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:92",
-    "end_line": 93,
+    "where": "agent/skills/job_manager.py:93",
+    "end_line": 94,
     "named_in_test": false
   },
   {
@@ -4425,8 +4445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:97",
-    "end_line": 99,
+    "where": "agent/skills/job_manager.py:98",
+    "end_line": 100,
     "named_in_test": false
   },
   {

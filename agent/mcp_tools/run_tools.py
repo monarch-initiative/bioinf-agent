@@ -340,14 +340,23 @@ def run_step_in_container(
             validations[_validation_key(path)] = v
             _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
 
-    return {
+    # The verdict is whether the COMMAND ran and exited 0 — not whether its outputs
+    # passed validation, which is reported separately in `validations` and gated at
+    # seal by I3. `run_in_container` states no outcome of its own, so this return
+    # carried none either, and the backgrounded form of the one primitive
+    # `validated == shipped` depends on finished every clean step as a failed job.
+    payload = {
         **res,
+        "success":           res.get("returncode") == 0,
         "detected_outputs":  detected,
         "validated_in_image": image,
         "pipeline_merge":    {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx},
         "validations":       validations,
         "validation_count":  len(validations),
     }
+    if res.get("returncode") == 0:
+        return proven("run_container.step_ran", **payload)
+    return broke("run_container.step_failed", **payload)
 
 
 @mcp.tool()
