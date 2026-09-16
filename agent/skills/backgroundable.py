@@ -187,7 +187,10 @@ def spawn_detached(tool: str, kwargs: dict, name_from: tuple[str, ...] = ()) -> 
         "note": (f"{tool} is running detached — NOTHING has been produced yet and "
                  f"this receipt is not a result. Poll check_job('{job_id}'); when "
                  f"state=='exited' that response carries {tool}'s real return value "
-                 f"inline under `result`. `log_tail` shows progress meanwhile."),
+                 f"inline under `result`. `log_tail` shows progress meanwhile. "
+                 f"`done_marker` is a file the job itself creates when it finishes, "
+                 f"so waiting on it in a shell is safe — but it only says FINISHED: "
+                 f"you still need one check_job call to get the result."),
     }
 
 

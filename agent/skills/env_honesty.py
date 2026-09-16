@@ -494,11 +494,30 @@ def coverage_disclosure(contract: BuildContract) -> dict:
             "refuse first; a green tag must never be derived from a failing contract")
     payload = {"contract_coverage": contract.as_dict()}
     if contract.unobserved:
-        gaps = ", ".join(f"{c.clause} ({c.establishes})" for c in contract.unobserved)
-        payload["coverage_advisory"] = (
-            f"the honesty contract passed, but {len(contract.unobserved)} clause(s) had nothing "
-            f"to examine: {gaps}. Nothing here is wrong — but this record proves/discloses less "
-            f"than a fully-observed one, and the difference is not visible in a pass/fail badge.")
+        # SPLIT BY WHAT THE GAP COSTS. `establishes` already distinguishes the two, and
+        # collapsing them read every degrade as a possible problem: the commonest one by
+        # far is the adopt path's DISCLOSURE-only gap (a biocontainer's record says
+        # nothing about shipped_binaries), and a first-time user met `degraded` on the
+        # route the docs tell them to PREFER with nothing saying it was expected
+        # (cold-start finding CS9).
+        assurance = [c for c in contract.unobserved if c.establishes == ASSURANCE]
+        disclosure = [c for c in contract.unobserved if c.establishes != ASSURANCE]
+        lines = [f"the honesty contract PASSED and the env is registered and shippable. "
+                 f"`degraded` is a coverage tag, not a failure: {len(contract.unobserved)} "
+                 f"clause(s) had nothing to examine."]
+        if assurance:
+            lines.append(
+                "PROVES LESS than a fully-observed record (assurance): "
+                + ", ".join(c.clause for c in assurance)
+                + ". Re-freeze with `evidence={tool: <command that RUNS the tool>}` to "
+                  "close the evidence gap.")
+        if disclosure:
+            lines.append(
+                "SAYS less, but proves the same (disclosure): "
+                + ", ".join(c.clause for c in disclosure)
+                + ". Expected on the adopt path — a pre-built biocontainer carries no "
+                  "record of the binaries it shipped, and nothing can recover one.")
+        payload["coverage_advisory"] = " ".join(lines)
     return payload
 
 
