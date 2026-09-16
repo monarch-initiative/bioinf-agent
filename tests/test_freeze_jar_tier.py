@@ -127,9 +127,8 @@ def test_install_jar_tool_records_the_smoke_as_freeze_evidence(tmp_path, monkeyp
     from agent.skills.pipeline_state import PipelineState
 
     (tmp_path / "drafts").mkdir(); (tmp_path / "reports").mkdir()
-    cfg = {**_ms.config, "paths": {**_ms.config.get("paths", {}),
-                                   "drafts_dir": str(tmp_path / "drafts"),
-                                   "pipelines_dir": str(tmp_path / "reports")}}
+    cfg = {**_ms.config,
+}
     ps = PipelineState(cfg)
     monkeypatch.setattr(_ms, "_pipeline_state", ps)
 
@@ -161,9 +160,8 @@ def test_install_jar_tool_without_a_smoke_records_no_verify_command(tmp_path, mo
     from agent.skills.pipeline_state import PipelineState
 
     (tmp_path / "drafts").mkdir(); (tmp_path / "reports").mkdir()
-    cfg = {**_ms.config, "paths": {**_ms.config.get("paths", {}),
-                                   "drafts_dir": str(tmp_path / "drafts"),
-                                   "pipelines_dir": str(tmp_path / "reports")}}
+    cfg = {**_ms.config,
+}
     ps = PipelineState(cfg)
     monkeypatch.setattr(_ms, "_pipeline_state", ps)
 
@@ -211,9 +209,8 @@ def test_install_jar_tool_java_version_survives_the_hop_to_a_conda_spec(tmp_path
     from agent.skills.pipeline_state import PipelineState
 
     (tmp_path / "drafts").mkdir(); (tmp_path / "reports").mkdir()
-    cfg = {**_ms.config, "paths": {**_ms.config.get("paths", {}),
-                                   "drafts_dir": str(tmp_path / "drafts"),
-                                   "pipelines_dir": str(tmp_path / "reports")}}
+    cfg = {**_ms.config,
+}
     ps = PipelineState(cfg)
     monkeypatch.setattr(_ms, "_pipeline_state", ps)
 

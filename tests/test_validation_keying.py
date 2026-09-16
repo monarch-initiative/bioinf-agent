@@ -34,9 +34,7 @@ def store(tmp_path):
     (tmp_path / "drafts").mkdir(exist_ok=True)
     (tmp_path / "reports").mkdir(exist_ok=True)
     return PipelineState({**_ms.config,
-                          "paths": {**_ms.config.get("paths", {}),
-                                    "drafts_dir": str(tmp_path / "drafts"),
-                                    "pipelines_dir": str(tmp_path / "reports")}})
+})
 
 
 def _step(outputs, validation=None, **over):

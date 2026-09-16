@@ -44,6 +44,7 @@ from agent.skills.env_manager import EnvManager
 from agent.skills.package_search import PackageSearch
 from agent.skills.pipeline_state import PipelineState
 from agent.validators.output_validator import OutputValidator
+from agent.skills import workspace
 
 
 # Packages installed in the core_tools env. Each entry: (spec, channel, check_cmd).
@@ -113,8 +114,8 @@ def load_datasets() -> dict:
 
 def install_core_tools(config: dict) -> dict[str, Any]:
     env_name      = config["core_tools"]["env_name"]
-    env_path      = PROJECT_ROOT / config["paths"]["conda_envs_prefix"] / env_name
-    pipelines_dir = PROJECT_ROOT / config["paths"]["pipelines_dir"]
+    env_path      = workspace.conda_envs_dir() / env_name
+    pipelines_dir = workspace.reports_dir()
 
     # Idempotency: if env exists AND a finalized spec exists, skip
     existing = [p for p in pipelines_dir.glob(f"{env_name}_*.yaml")
@@ -229,7 +230,7 @@ def download_and_index_genome(config: dict, genome_build: str) -> dict[str, Any]
     if not info:
         return {"error": f"unsupported genome_build: {genome_build}"}
 
-    data_dir   = PROJECT_ROOT / config["paths"]["data_dir"]
+    data_dir   = workspace.resources_root()
     core_dir   = data_dir / f"core_test_data_{genome_build}"
     genome_dir = core_dir / "genome"
     genome_dir.mkdir(parents=True, exist_ok=True)

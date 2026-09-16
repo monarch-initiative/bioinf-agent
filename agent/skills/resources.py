@@ -18,6 +18,7 @@ from agent.skills.spec_writer import (TEST_DATA_NOT_ATTEMPTED, TEST_DATA_UNANCHO
                                       TEST_DATA_VERIFIED)
 
 import yaml
+from agent.skills import workspace
 
 
 
@@ -26,11 +27,12 @@ def list_resources(inputs: dict, config: dict) -> dict:
     Read core_test_data manifests and return structured resource info.
 
     inputs["resource_type"]: "genomes" | "test_data" | "both"
-    config["paths"]["data_dir"]: root data directory (relative or absolute)
+    Reads the resources zone (`workspace.resources_root()`); `config` carries
+    no artifact locations.
     """
     resource_type = inputs["resource_type"]
     result: dict = {}
-    data_dir = Path(config["paths"]["data_dir"])
+    data_dir = workspace.resources_root()
 
     genomes = []
     test_data = []
@@ -381,7 +383,7 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
     the tool returned `count: 7` having understood exactly none of them. Broken
     for real users, and green in the suite: the disease in a user-facing tool.
     """
-    pipelines_dir = Path(config["paths"]["pipelines_dir"])
+    pipelines_dir = workspace.reports_dir()
 
     # --- Layer 1: frozen envs ------------------------------------------------
     envs: list[dict] = []

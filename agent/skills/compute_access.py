@@ -70,6 +70,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from agent.skills import workspace
 
 
 # The permission tokens. Adding a new one requires:
@@ -143,19 +144,16 @@ class ConfigError(Exception):
 def default_access_path() -> Path:
     """Canonical location for projects_access.yaml.
 
-    Preference order:
-      1. ``<repo_root>/projects_access.yaml`` — the live-file convention this
-         repo uses (the user keeps it alongside the source tree).
-      2. ``~/.bioinf/projects_access.yaml`` — historical homedir location;
-         returned as a fallback even if it doesn't exist, so callers get a
-         deterministic path string to put in their FileNotFoundError.
+    ONE answer: ``<workspace>/projects_access.yaml``. Returned whether or not
+    the file exists, so a caller always has a deterministic path to name in its
+    FileNotFoundError — and so the path the menu WRITES is the path every reader
+    LOOKS AT. There used to be two candidates, checkout-then-homedir, and the
+    config menu wrote to the second while the doctor read the first: three
+    surfaces reported a valid configuration the agent could not see.
 
     Callers may override with an explicit ``access_path=`` kwarg.
     """
-    repo_candidate = Path(__file__).resolve().parents[2] / "projects_access.yaml"
-    if repo_candidate.exists():
-        return repo_candidate
-    return Path.home() / ".bioinf" / "projects_access.yaml"
+    return workspace.projects_access_path()
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +241,12 @@ _ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
     "name", "type", "host", "user", "email",
     "job_manager", "slurm", "data_transfer",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
+    # The fourth zone: where ENV/RUN reports and sealed specs are MIRRORED so
+    # the record sits beside the .sif it describes. Local AUTHORS, remote
+    # mirrors. ADDED alongside the three above rather than renaming any of
+    # them — unknown keys are a hard error, so a rename breaks every file that
+    # already exists on a user's machine.
+    "agent_reports_target",
     # Container-runtime module names for the CLUSTER production path
     # (run_production_pipeline / submit_workflow_job): the Lmod modules the
     # launcher `module load`s to get apptainer + nextflow on the compute node.
@@ -251,6 +255,17 @@ _ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
     # cluster production run refuses clearly if they're absent.
     "apptainer_module", "nextflow_module",
 })
+
+
+#: The env-level zones, in the order the agent uses them. Every zone is a
+#: dir-access block of the same shape; readers that must cover ALL of them
+#: (the disjointness check) iterate this rather than re-listing the names.
+ENV_ZONE_KEYS: tuple[str, ...] = (
+    "agent_scratch_target",
+    "agent_common_data_target",
+    "container_upload_target",
+    "agent_reports_target",
+)
 
 
 def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path) -> None:
@@ -322,6 +337,16 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
         # need to push to and that jobs may read/write from). One per env.
         _validate_dir_block(common, f"{where_env}.agent_common_data_target",
                             path, must_include=["upload", "download", "exec"])
+
+    reports = env.get("agent_reports_target")
+    if reports is not None:
+        # The record. Requires `upload` (the agent mirrors reports up) and
+        # `download` (so a later session can read back what a previous one
+        # left), but NOT `exec`: nothing is ever run out of this zone, and a
+        # zone that cannot execute is one fewer place a compromised artifact
+        # could be launched from.
+        _validate_dir_block(reports, f"{where_env}.agent_reports_target",
+                            path, must_include=["upload", "download"])
 
     # job_manager: which batch scheduler this env runs jobs through. A CONTROLLED
     # enum (VALID_JOB_MANAGERS) — only 'slurm' is wired today. Optional: an env
@@ -634,25 +659,21 @@ def _is_safe_token(s: str) -> bool:
 def _check_env_paths_disjoint(env: dict, where: str, path: Path) -> None:
     """No declared path on this env may be a prefix of (or equal to) another.
     A breach of one target dir must never grant access to another. The check
-    is across container_upload_target, agent_scratch_target, and
-    agent_common_data_target — all of these are absolute paths on the same
-    filesystem and they're trust-isolated by being disjoint subtrees."""
+    is across all four env-level zones — container_upload_target,
+    agent_scratch_target, agent_common_data_target and agent_reports_target.
+    All are absolute paths on the same filesystem and they are trust-isolated
+    by being disjoint subtrees.
+
+    Driven off ENV_ZONE_KEYS so a fifth zone is covered by declaring it, not by
+    remembering to extend this function: an uncovered zone silently opts out of
+    the disjointness guarantee, which is the one property the check exists for."""
     paths: list[tuple[str, str]] = []  # (path_normalized, label)
-    cut = env.get("container_upload_target")
-    if cut is not None:
-        p = (cut.get("path") or "").rstrip("/")
-        if p:
-            paths.append((p, "container_upload_target"))
-    scratch = env.get("agent_scratch_target")
-    if scratch is not None:
-        p = (scratch.get("path") or "").rstrip("/")
-        if p:
-            paths.append((p, "agent_scratch_target"))
-    common = env.get("agent_common_data_target")
-    if common is not None:
-        p = (common.get("path") or "").rstrip("/")
-        if p:
-            paths.append((p, "agent_common_data_target"))
+    for key in ENV_ZONE_KEYS:
+        blk = env.get(key)
+        if isinstance(blk, dict):
+            p = (blk.get("path") or "").rstrip("/")
+            if p:
+                paths.append((p, key))
     for i, (pa, la) in enumerate(paths):
         for pb, lb in paths[i + 1:]:
             if pa == pb:
@@ -740,6 +761,16 @@ def get_agent_common_data_target(env: dict) -> Optional[dict]:
     carries `path`, `permissions` (always ⊇ {upload, download, exec}),
     and `description`."""
     blk = env.get("agent_common_data_target")
+    return blk if isinstance(blk, dict) else None
+
+
+def get_agent_reports_target(env: dict) -> Optional[dict]:
+    """Return the agent_reports_target dir-access block for this env, or None if
+    undeclared. Fourth env-level zone — where ENV/RUN reports and sealed specs
+    are mirrored so the record sits next to the .sif it describes. Block carries
+    `path`, `permissions` (validator enforces `upload` + `download`, never
+    `exec`), and `description`."""
+    blk = env.get("agent_reports_target")
     return blk if isinstance(blk, dict) else None
 
 

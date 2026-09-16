@@ -88,6 +88,7 @@ remote_abs_path) the operation ran with. The agent doesn't need to
 from __future__ import annotations
 
 import hashlib
+from agent.skills import workspace
 import json
 import os
 import re
@@ -395,13 +396,13 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
         # Multi-project isolation: path MUST be under the project's
         # auto-prefix dir under scratch. This stops project A from
         # writing into project B's scratch namespace.
-        project_root = f"{scratch_root}/{project['name']}"
-        if not _under(project_root, remote_abs_path):
+        project_prefix = f"{scratch_root}/{project['name']}"
+        if not _under(project_prefix, remote_abs_path):
             raise compute_access.PermissionDenied(
                 f"scratch-zone path {remote_abs_path!r} must be under "
-                f"the project's prefix {project_root!r} (multi-project "
+                f"the project's prefix {project_prefix!r} (multi-project "
                 f"isolation). Pick a path that starts with "
-                f"{project_root}/.")
+                f"{project_prefix}/.")
         compute_access.check_env_target_capability(
             project, env_name, scratch, primitive_name,
             "agent_scratch_target")
@@ -445,9 +446,15 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
 # Manifest writer
 # ---------------------------------------------------------------------------
 
-def _repo_root() -> Path:
-    """The agent repo root — two levels up from this file."""
-    return Path(__file__).resolve().parent.parent.parent
+def _record_root() -> Path:
+    """Where transfer receipts and submission manifests are written.
+
+    The reports zone: these are the durable record of what moved where and which
+    job it fed, which is the thing you go looking for months later. NOT the
+    checkout — it used to be, under the name `_repo_root`, and that name is gone
+    rather than repointed so nothing can keep reading it as "where the code is".
+    """
+    return workspace.reports_dir()
 
 
 def _short_hash(*parts: str) -> str:
@@ -606,7 +613,7 @@ def _write_transfer_manifest(*,
     record["project"] = project_name
     record["manifest_version"] = 2
 
-    base = _repo_root() / "transfer_history" / project_name / day
+    base = _record_root() / "transfer_history" / project_name / day
     base.mkdir(parents=True, exist_ok=True)
     sh = _short_hash(direction, str(local_path), remote_abs_path,
                      now.isoformat())

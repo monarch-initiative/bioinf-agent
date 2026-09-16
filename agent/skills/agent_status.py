@@ -31,6 +31,7 @@ from typing import Any, Optional
 import yaml
 
 from agent.skills.outcomes import broke
+from agent.skills import workspace
 
 
 # ---------------------------------------------------------------------------
@@ -279,16 +280,16 @@ def _background_jobs_summary(job_manager) -> list[dict]:
         return [{"error": f"jobs query failed: {e}"}]
 
 
-def _repo_summary(project_root: Path) -> dict:
+def _repo_summary(code_root: Path) -> dict:
     """Lightweight git state: current branch, uncommitted-files count,
     ahead/behind origin. All cheap, all `git` shell-outs. Best-effort —
     a non-git working tree returns `{}`."""
-    if not (project_root / ".git").exists():
+    if not (code_root / ".git").exists():
         return {}
     try:
         def _git(*args: str) -> str:
             return subprocess.run(
-                ["git", *args], cwd=project_root,
+                ["git", *args], cwd=code_root,
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
 
@@ -338,7 +339,8 @@ def agent_status(
       pipeline_state:  PipelineState singleton (in-process drafts)
       env_cache:       EnvCache instance (frozen-env registry on disk)
       job_manager:     JobManager instance (background jobs on disk)
-      config:          agent config dict — needs config['paths']['data_dir']
+      config:          agent config dict (channels, timeouts). Artifact
+                       locations come from `workspace`, never from config.
       access_path:     Optional path to projects_access.yaml (compute-env
                        bridge config). None disables that subsystem query.
       include_repo:    If True, runs cheap git probes for branch/ahead/behind.
@@ -347,12 +349,17 @@ def agent_status(
       drafts, envs_on_disk, frozen_envs, sealed_workflows,
       core_test_data, compute_env_bridge, background_jobs, repo (optional)
     """
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    data_dir = project_root / config["paths"]["data_dir"]
-    envs_root = project_root / "envs"
-    env_reports_dir = project_root / "env_reports"
+    data_dir = workspace.resources_root()
+    envs_root = workspace.conda_envs_dir()
+    env_reports_dir = workspace.reports_dir()
 
     out: dict[str, Any] = {
+        # WHERE, first. The workspace split moved every artifact out of the
+        # checkout, so an agent resuming a session with a "look in env_reports/"
+        # habit is looking at a directory that no longer exists. The resolved
+        # zones are the first thing this report states, and it names which of
+        # the three answers resolution used so a surprising path is traceable.
+        "workspace":         workspace.zones(),
         "drafts":            _drafts_summary(pipeline_state, env_cache, env_reports_dir),
         "envs_on_disk":      _envs_on_disk_summary(envs_root),
         "frozen_envs":       _frozen_envs_summary(env_cache, env_reports_dir),
@@ -362,5 +369,5 @@ def agent_status(
         "background_jobs":   _background_jobs_summary(job_manager),
     }
     if include_repo:
-        out["repo"] = _repo_summary(project_root)
+        out["repo"] = _repo_summary(workspace.code_root())
     return out

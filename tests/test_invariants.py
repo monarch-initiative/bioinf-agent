@@ -226,7 +226,7 @@ def test_patch_pipeline_blocks_runtime_captured_keys():
     """
     from agent.skills.pipeline_state import PipelineState
 
-    config = {"paths": {"pipelines_dir": "/tmp/bioinf_test_drafts"}}
+    config = {}
     ps = PipelineState(config)
     ps.start("blocked_test", "test")
 
@@ -245,7 +245,7 @@ def test_patch_pipeline_allows_agent_authored_keys():
     """patch_pipeline must accept patches to agent-authored fields."""
     from agent.skills.pipeline_state import PipelineState
 
-    config = {"paths": {"pipelines_dir": "/tmp/bioinf_test_drafts"}}
+    config = {}
     ps = PipelineState(config)
     ps.start("allowed_test", "test")
     r = ps.patch("allowed_test", {
@@ -294,7 +294,7 @@ def test_patch_pipeline_blocks_authored_artifacts():
     """authored_artifacts is sha256-anchored by stage_authored_artifact; the
     patch surface must reject direct writes so the anchor can't be bypassed."""
     from agent.skills.pipeline_state import PipelineState
-    config = {"paths": {"pipelines_dir": "/tmp/bioinf_test_drafts"}}
+    config = {}
     ps = PipelineState(config)
     ps.start("artifact_block_test", "test")
     r = ps.patch("artifact_block_test", {"authored_artifacts": [{
@@ -469,7 +469,7 @@ def test_stage_authored_artifact_content_mode(tmp_path, monkeypatch):
     import agent.mcp_server as srv
 
     pipelines_dir = tmp_path / "drafts"
-    ps = PipelineState({"paths": {"pipelines_dir": str(pipelines_dir)}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("staging_test", "test")
 
@@ -495,7 +495,7 @@ def test_stage_authored_artifact_generated_by_mode(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("genby_test", "test")
 
@@ -518,7 +518,7 @@ def test_stage_authored_artifact_rejects_both_modes(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("both_test", "test")
     result = srv.stage_authored_artifact(
@@ -532,7 +532,7 @@ def test_stage_authored_artifact_rejects_neither_mode(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("neither_test", "test")
     result = srv.stage_authored_artifact(
@@ -546,7 +546,7 @@ def test_stage_authored_artifact_rejects_relative_path(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("relpath_test", "test")
     result = srv.stage_authored_artifact(
@@ -560,7 +560,7 @@ def test_stage_authored_artifact_overwrite_false_blocks_existing(tmp_path, monke
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("ovw_test", "test")
     target = tmp_path / "exists.R"
@@ -576,7 +576,7 @@ def test_stage_authored_artifact_generated_by_requires_existing_file(tmp_path, m
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("genby_missing", "test")
     result = srv.stage_authored_artifact(
@@ -591,7 +591,7 @@ def test_stage_authored_artifact_unknown_pipeline_id(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     target = tmp_path / "x.R"
     result = srv.stage_authored_artifact(
@@ -606,7 +606,7 @@ def test_stage_authored_artifact_re_stages_by_path(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    ps = PipelineState({})
     monkeypatch.setattr(srv, "_pipeline_state", ps)
     ps.start("restage_test", "test")
     target = tmp_path / "iter.R"
@@ -634,7 +634,7 @@ def test_patch_pipeline_supports_delete_sentinel():
     Operates only on PATCHABLE_KEYS subtrees — blocked top-level keys can't
     be deleted this way (the whitelist gate intercepts first)."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_delete"}})
+    ps = PipelineState({})
     ps.start("del_test", "test")
     # Seed runtime_environment (a PATCHABLE_KEY) with two sub-keys.
     ps.patch("del_test", {"runtime_environment": {"type": "conda", "min_ram_gb": 8.0}})
@@ -652,7 +652,7 @@ def test_patch_pipeline_unknown_key_rejected():
     """Patches to keys outside PATCHABLE_KEYS ∪ BLOCKED_PATCH_KEYS error out
     with a helpful 'did you mean' hint."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_unknown"}})
+    ps = PipelineState({})
     ps.start("unk_test", "test")
     r = ps.patch("unk_test", {"runtime_envronment": {"type": "conda"}})  # typo
     assert "error" in r, "unknown key should error"
@@ -671,7 +671,7 @@ def test_patch_pipeline_blocks_service_dependencies():
     pid, status); patch_pipeline must reject direct writes so the I10 anchor
     can't be bypassed."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_svc_block"}})
+    ps = PipelineState({})
     ps.start("svc_block_test", "test")
     r = ps.patch("svc_block_test", {"service_dependencies": [{"name": "redis"}]})
     assert "error" in r and "service_dependencies" in (r.get("rejected_keys") or []), \
@@ -684,7 +684,7 @@ def test_upsert_service_dependency_appends_probe_to_existing_log():
     upsert against the same service name, not replace — so the audit trail
     accumulates across start + multiple verify calls."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": "/tmp/bioinf_test_svc_upsert"}})
+    ps = PipelineState({})
     ps.start("svc_upsert_test", "test")
 
     ps.upsert_service_dependency("svc_upsert_test", "redis", {
@@ -4060,7 +4060,7 @@ def test_pipeline_state_smart_replace_step_appends_when_replacing_a_failed_slot(
     when recovering from a missing-dep failure."""
     from agent.skills.pipeline_state import PipelineState
 
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
+    ps = PipelineState({})
     ps.start("smart_replace_test", "test")
 
     # Failed install of GAPIT lands at step 1.
@@ -4127,7 +4127,7 @@ def test_add_install_step_replace_removes_failed_prior(tmp_path):
     failed entry was kept alongside the new successful one, polluting the
     draft with duplicate-name install_steps."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
+    ps = PipelineState({})
     ps.start("n4_test", "test")
     # failed step at slot 1
     ps.add_install_step("n4_test",
@@ -4159,7 +4159,7 @@ def test_add_install_step_replace_works_when_prior_step_was_successful(tmp_path)
     replacing a previously-successful step (version bump, parameter change)
     still works."""
     from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({"paths": {"pipelines_dir": str(tmp_path)}})
+    ps = PipelineState({})
     ps.start("n4_edit_test", "test")
     ps.add_install_step("n4_edit_test",
         {"tool": "conda", "purpose": "EMMREML 3.1", "returncode": 0,
@@ -4201,15 +4201,25 @@ def test_orphan_service_pid_reaper_does_not_fire_on_module_import(monkeypatch):
         "(a detached job_runner would clobber the parent's services)")
 
 
-def test_orphan_service_pid_reaper_runs_when_called_directly():
+def test_orphan_service_pid_reaper_runs_when_called_directly(tmp_path, monkeypatch):
     """N5 (companion to the above) — the reaper still works when invoked
     explicitly; we only moved WHERE it fires (server entrypoint), not what
-    it does."""
+    it does.
+
+    Pointed at a PRIVATE registry. It used to run against the machine's real
+    /tmp/bioinf_services, which is shared with every other agent process on the
+    box — including test_n5_reaper_not_on_import.py, whose whole method is to
+    plant an orphan PID file there and check it survives. Whichever ran first
+    lost, and that surfaced as an intermittent red that reproduced only under
+    the ordering that put this test first."""
     import agent.mcp_server as ms
-    # Calling the helper directly invokes EnvManager.cleanup_orphan_service_pids;
-    # we don't assert side-effects (the /tmp dir may or may not have stale files)
-    # — just that the function is callable without error.
+    from agent.skills import env_manager
+    registry = tmp_path / "bioinf_services"
+    registry.mkdir()
+    monkeypatch.setattr(env_manager, "SERVICE_PID_DIR", registry)
+    (registry / "dead.pid").write_text("99999999\n")
     ms._reap_orphan_service_pids()
+    assert not (registry / "dead.pid").exists(), "the reaper no longer reaps"
 
 
 def test_job_manager_writes_done_sentinel_on_exit(tmp_path):
@@ -4219,7 +4229,7 @@ def test_job_manager_writes_done_sentinel_on_exit(tmp_path):
     disk signal was status.json which exists from t=0 (state='running'),
     so file-existence polls fired immediately and misfired."""
     from agent.skills.job_manager import JobManager
-    jm = JobManager({"paths": {"conda_envs_prefix": str(tmp_path)}})
+    jm = JobManager({})
     # Redirect jobs_dir into the test tmp_path so we don't pollute the real one
     jm.jobs_dir = tmp_path
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -4244,7 +4254,7 @@ def test_job_manager_does_not_write_done_while_running(tmp_path):
     """N6 (regression) — the .done sentinel is ONLY written on transition
     to a terminal state; while the job is running, only status.json exists."""
     from agent.skills.job_manager import JobManager
-    jm = JobManager({"paths": {"conda_envs_prefix": str(tmp_path)}})
+    jm = JobManager({})
     # Redirect jobs_dir into the test tmp_path so we don't pollute the real one
     jm.jobs_dir = tmp_path
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -4267,7 +4277,6 @@ def test_freeze_background_response_advertises_done_marker(monkeypatch, tmp_path
     def _stub_start(command, *, env_name="", job_id="", working_dir=""):
         return {"job_id": job_id, "log_path": "/dev/null", "state": "running"}
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
-    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
     out = ms.freeze(env_name="n6_smoke", tools=["t=1"], background=True)
     assert "done_marker" in out, (
         "freeze background response must advertise the .done sentinel path")
@@ -4449,7 +4458,6 @@ def test_shrink_stdio_for_response_truncates_to_head_tail_spills_full_to_disk(mo
     touched by this helper — it's pure response-shape sugar. Below the
     shrink threshold the result passes through untouched."""
     import agent.mcp_server as m
-    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
 
     # Small output passes through with NO log file and NO truncation flags.
     small = {"stdout": "ok\n", "stderr": "", "returncode": 0, "command": "noop"}
@@ -4477,7 +4485,8 @@ def test_shrink_stdio_for_response_truncates_to_head_tail_spills_full_to_disk(mo
     assert r["log_truncated"] is True
     assert r["original_log_chars"] == len(big_stdout) + len(big_stderr)
     # log_path exists on disk and contains the FULL output verbatim.
-    log_path = tmp_path / "env_reports" / "install_logs"
+    from agent.skills import workspace
+    log_path = workspace.reports_dir() / "install_logs"
     files = list(log_path.glob("t.big.compile.*.log"))
     assert len(files) == 1, f"expected 1 log file; got {files}"
     log_content = files[0].read_text()
@@ -4491,11 +4500,11 @@ def test_shrink_stdio_for_response_handles_unsafe_label_chars(monkeypatch, tmp_p
     """Label sanitization: arbitrary names (package names with / or .)
     must not create paths that traverse out of the log dir."""
     import agent.mcp_server as m
-    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
     big = {"stdout": "x" * 10000, "stderr": "", "returncode": 0, "command": ""}
     # Path-traversal attempts in label must be sanitized.
     m._shrink_stdio_for_response(dict(big), label="../../../etc/passwd")
-    log_path = tmp_path / "env_reports" / "install_logs"
+    from agent.skills import workspace
+    log_path = workspace.reports_dir() / "install_logs"
     # No file created outside the log dir.
     assert not (tmp_path / "etc" / "passwd").exists()
     # Every file created lives strictly inside log_path.
@@ -4692,7 +4701,6 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
                 "longtail_steps": [{"tool": "seqkit", "purpose": "seqkit (release binary)",
                                     "command": "set -eux; curl ..."}]}
     monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
-    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
 
     res = m.freeze("bioinf_x", ["samtools=1.21", "seqkit"], platform="linux-64", pipeline_id="p1")
 
@@ -4791,7 +4799,6 @@ def test_mcp_freeze_pure_conda_builds_container_native_no_condapack(monkeypatch,
                                 {"label": "samtools", "tool": "samtools",
                                  "check": "command -v samtools", "rc": 0, "passed": True,
                                  "out": "/opt/conda/bin/samtools"}]})
-    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)   # deliverables -> tmp, not the real env_reports/
     res = m.freeze("bioinf_x", ["samtools=1.21", "bcftools=1.21"], platform="linux/amd64", pipeline_id="")
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
     assert captured["conda_deps"] == ["samtools=1.21", "bcftools=1.21"]   # from tools (no draft)
@@ -5159,7 +5166,6 @@ def test_mcp_freeze_evicted_image_falls_through_to_rebuild(monkeypatch, tmp_path
     # above — so the test reaches the cache-miss/rebuild path it's actually about.
     monkeypatch.setattr(m, "_check_docker_available", lambda: None)
     monkeypatch.setattr(m, "_env_cache", cache)
-    monkeypatch.setattr(m._env_mgr, "project_root", tmp_path)
     # force the build path to refuse so we get a clear post-cache signal that the
     # rebuild was attempted (which is the assertion that matters here).
     def fake_build(*a, **k):
@@ -7116,67 +7122,50 @@ def test_freeze_invokes_post_failure_prune_only_when_disk_stressed(monkeypatch, 
 # Pre-fix: env_reports/ was a mix of SHIPPABLE deliverables (ENV.html, attestation
 # .json, recipe.yaml, _env_cache.json) AND workspace state (pipeline drafts, W1
 # background freeze args + result JSON). An operator listing env_reports/ could
-# not tell at a glance which envs had shipped from which were half-finished. C1
-# splits: drafts → data/pipeline_drafts/, W1 ephemera → data/jobs/ (keyed by
-# job_id, sibling of the existing JobManager log/status files for the SAME
-# job). env_reports/ becomes deliverables-only.
+# not tell at a glance which envs had shipped from which were half-finished. The
+# split: drafts and W1 job ephemera go to the SCRATCH zone (jobs keyed by job_id,
+# sibling of the JobManager log/status files for the SAME job); the REPORTS zone
+# becomes deliverables-only.
 # =============================================================================
 
 
-def test_pipeline_drafts_land_in_drafts_dir_not_env_reports(tmp_path):
-    """C1 — a new draft writes to drafts_dir, NOT pipelines_dir/. Listing
-    pipelines_dir (env_reports/ in prod) should show ONLY frozen envs'
-    deliverables; an in-progress draft must not pollute that view."""
+def test_pipeline_drafts_land_in_scratch_not_in_the_reports_zone(tmp_path):
+    """A new draft writes to the scratch zone, NOT the reports zone. Listing
+    reports should show ONLY frozen envs' deliverables; an in-progress draft must
+    not pollute that view."""
     from agent.skills.pipeline_state import PipelineState
-    drafts = tmp_path / "drafts"
-    reports = tmp_path / "reports"
-    cfg = {"paths": {
-        "pipelines_dir": str(reports),
-        "drafts_dir": str(drafts),
-    }}
-    ps = PipelineState(cfg)
+    from agent.skills import workspace
+    ps = PipelineState({})
     ps.start("c1_test", "drafts-dir test")
     ps.patch("c1_test", {"description": "a"})
     draft_path = ps._draft_path("c1_test")
-    assert draft_path.parent == drafts, (
-        f"draft path was {draft_path}, expected parent dir {drafts}")
+    assert draft_path.parent == workspace.scratch_dir("pipeline_drafts"), (
+        f"draft path was {draft_path}, expected the scratch zone")
     assert draft_path.exists()
-    # AND pipelines_dir (the deliverables dir) must NOT contain the draft
-    pipelines_drafts = list(reports.glob("*.draft.yaml"))
-    assert not pipelines_drafts, (
-        f"pipelines_dir should never contain *.draft.yaml; found: "
-        f"{pipelines_drafts}")
+    leaked = list(workspace.reports_dir().glob("*.draft.yaml"))
+    assert not leaked, f"the reports zone should never hold a draft; found: {leaked}"
 
 
-def test_pipeline_state_back_compat_uses_pipelines_dir_when_drafts_dir_unset():
-    """C1 — an OLD config without `drafts_dir` falls back to pipelines_dir so a
-    pre-batch-3 deployment keeps working. The fallback is what makes this a
-    non-breaking change."""
+def test_the_drafts_zone_and_the_reports_zone_are_different_directories():
+    """They used to be able to collapse onto one another: `drafts_dir` fell back
+    to `pipelines_dir` when the config key was unset, which made "drafts never
+    pollute the deliverables" true only for configured deployments. With the
+    zones resolved rather than configured, they cannot coincide."""
     from agent.skills.pipeline_state import PipelineState
-    cfg_old = {"paths": {"pipelines_dir": "env_reports"}}
-    ps = PipelineState(cfg_old)
-    # drafts_dir collapses to pipelines_dir
-    assert ps.drafts_dir == ps.pipelines_dir
+    ps = PipelineState({})
+    assert ps.drafts_dir != ps.pipelines_dir
 
 
-def test_pipeline_state_scans_both_dirs_for_existing_drafts(tmp_path):
-    """C1 — _load_existing_drafts must scan BOTH drafts_dir AND pipelines_dir
-    so an upgrade with drafts still in the old location finds them.
-    Same-id wins by drafts_dir-first scan order (new location authoritative)."""
+def test_a_draft_left_in_the_reports_zone_is_still_found(tmp_path):
+    """_load_existing_drafts scans BOTH zones, so a draft written before the
+    split — or by a future writer that puts one in the wrong place — is loaded
+    rather than silently invisible. Same-id wins by scratch-first scan order."""
     from agent.skills.pipeline_state import PipelineState
-    drafts = tmp_path / "drafts"; drafts.mkdir()
-    reports = tmp_path / "reports"; reports.mkdir()
-    # An old-location draft (legacy) that should still be loaded
-    (reports / "legacy.draft.yaml").write_text("description: from legacy\n")
-    # A new-location draft (canonical)
-    (drafts / "modern.draft.yaml").write_text("description: from modern\n")
-    # PipelineState computes project_root from __file__ and prefixes the cfg
-    # paths to it. Absolute paths in the cfg short-circuit that prefix.
-    cfg = {"paths": {
-        "pipelines_dir": str(reports),
-        "drafts_dir": str(drafts),
-    }}
-    ps = PipelineState(cfg)
+    from agent.skills import workspace
+    (workspace.reports_dir() / "legacy.draft.yaml").write_text("description: from legacy\n")
+    (workspace.scratch_dir("pipeline_drafts") / "modern.draft.yaml").write_text(
+        "description: from modern\n")
+    ps = PipelineState({})
     assert "legacy" in ps._drafts
     assert "modern" in ps._drafts
 
@@ -7193,21 +7182,19 @@ def test_freeze_background_writes_args_to_jobs_dir(monkeypatch, tmp_path):
         started["log_path"] = str(tmp_path / f"{job_id}.log")
         return {"job_id": job_id, "log_path": started["log_path"], "state": "running"}
 
-    jobs_dir = tmp_path / "data" / "jobs"
-    jobs_dir.mkdir(parents=True)
+    # Read the jobs dir off the JobManager, which is the one reading of it — and
+    # which resolved at import, so asking the resolver again here would answer with
+    # this test's tmp_path and compare two different directories.
+    jobs_dir = ms._job_manager.jobs_dir
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
-    monkeypatch.setattr(ms._job_manager, "jobs_dir", jobs_dir)
-    monkeypatch.setattr(ms._env_mgr, "project_root", tmp_path)
     out = ms.freeze(env_name="bgrelocation", tools=["samtools=1.21"], background=True)
     assert out["background"] is True
-    # the args file lands in data/jobs/, NOT in env_reports/
-    args_files = list((tmp_path / "data" / "jobs").glob(f"{started['job_id']}.args.json"))
-    assert args_files, "args.json must be in data/jobs/, not env_reports/"
-    # env_reports/ must not have any W1 ephemera
-    bad_args = list((tmp_path / "env_reports").glob("*.freeze_args.*.json"))
-    bad_results = list((tmp_path / "env_reports").glob("*.freeze_result.json"))
-    assert not bad_args and not bad_results, (
-        f"env_reports/ should never see W1 ephemera; found {bad_args + bad_results}")
+    args_files = list(jobs_dir.glob(f"{started['job_id']}.args.json"))
+    assert args_files, "args.json must be in the scratch jobs dir, not the reports zone"
+    reports = jobs_dir.parent.parent / "reports"
+    bad = (list(reports.glob("*.freeze_args.*.json"))
+           + list(reports.glob("*.freeze_result.json"))) if reports.exists() else []
+    assert not bad, f"the reports zone should never see job ephemera; found {bad}"
 
 
 def test_freeze_does_not_prune_on_pre_docker_failure(monkeypatch):
@@ -7290,7 +7277,7 @@ def test_diff_snapshot_excludes_paths_outside_project_root(tmp_path):
     outside_link.symlink_to(outside_file)
 
     before = {}    # empty snapshot — every file is "new"
-    detected = EnvManager._diff_snapshot(before, shared, project_root=project)
+    detected = EnvManager._diff_snapshot(before, shared, scope_root=project)
     # the symlink resolving INTO project survives the filter
     assert any("step_output.bam" in p for p in detected)
     # the symlink resolving OUTSIDE project does NOT
@@ -7311,7 +7298,7 @@ def test_diff_snapshot_no_filter_when_watch_dir_inside_project(tmp_path):
     f.write_text("x")
     before = {}
     # watch_dir is project_root or inside it → filter is a no-op
-    detected = EnvManager._diff_snapshot(before, sub, project_root=project)
+    detected = EnvManager._diff_snapshot(before, sub, scope_root=project)
     assert any("out.bam" in p for p in detected)
 
 
@@ -7434,6 +7421,14 @@ def test_run_pipeline_step_output_types_lookup_order(monkeypatch, tmp_path):
 # list_installed_pipelines — the "what have I already built?" inventory
 # ---------------------------------------------------------------------------
 
+def _reports():
+    """The reports zone `list_pipelines` reads — this test's tmp_path, via the
+    root conftest. Writing the fixture anywhere else tests a directory nothing
+    looks in, which reads as "found nothing" rather than as a broken fixture."""
+    from agent.skills import workspace
+    return workspace.reports_dir()
+
+
 def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_path):
     """The inventory must read the artifacts the runtime ACTUALLY writes.
 
@@ -7448,7 +7443,7 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
     from agent.skills.freeze import EnvCache
     from env_records import env_record
 
-    (tmp_path / "demo.workflow.yaml").write_text(yaml.safe_dump({
+    (_reports() / "demo.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "demo", "description": "d", "created_at": "2026-01-01",
         "env_request_key": "samtools=1.21|linux/amd64|none",
         "env_content_digest": "sha256:" + "a" * 64, "env_image": "demo:1.0",
@@ -7469,7 +7464,7 @@ def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_pa
     # own contract, covered in tests/test_inventory_is_compact.py (which checks that a
     # DIVERGENCE and a contract violation survive compaction, since those are the two
     # things a smaller payload must never quietly drop).
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache,
+    r = list_pipelines({}, env_cache=cache,
                        detail=True)
 
     assert r["counts"] == {"envs": 1, "envs_contract_ok": 1, "workflows": 1}
@@ -7509,9 +7504,9 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
             d["usage_verification"] = uv
         return d
 
-    (tmp_path / "never.workflow.yaml").write_text(yaml.safe_dump(_spec(
+    (_reports() / "never.workflow.yaml").write_text(yaml.safe_dump(_spec(
         "never", {"status": "not_attempted", "reason": "inputs live on the cluster"})))
-    (tmp_path / "ran.workflow.yaml").write_text(yaml.safe_dump(_spec(
+    (_reports() / "ran.workflow.yaml").write_text(yaml.safe_dump(_spec(
         "ran", {"status": "verified", "reason": ""})))
     # An artifact sealed BEFORE the field existed: the honest read is `unrecorded`, never a
     # fabricated False the producer never wrote — and, since 2026-08-06, never
@@ -7523,14 +7518,14 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
     # `degraded(seal.sealed_howto_unproven)` landing — which a reader could not tell apart
     # from a workflow where nobody bothered to author one. That is the exact distinction the
     # three-state field was introduced to draw, lost again at the fallback.
-    (tmp_path / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
+    (_reports() / "legacy.workflow.yaml").write_text(yaml.safe_dump(_spec("legacy", None)))
 
     # Checked in BOTH forms. This is the highest-value property in the row, and adding a
     # second rendering of the row is a fresh chance to lose it in one of them — which is
     # exactly how `steps_validated` ended up correct in six places and inverted in the
     # seventh.
     for detail in (False, True):
-        r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+        r = list_pipelines({},
                            env_cache=EnvCache(tmp_path / "_env_cache.json"),
                            detail=detail)
         rows = {w["workflow_name"]: w for w in r["workflows"]}
@@ -7543,7 +7538,7 @@ def test_list_pipelines_reports_the_three_state_usage_not_a_bare_bool(tmp_path):
     # ...and the bare bool genuinely cannot tell the first two apart, which is why the
     # field above has to exist rather than the reader being told to be careful. Only the
     # detail form still carries it.
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+    r = list_pipelines({},
                        env_cache=EnvCache(tmp_path / "_env_cache.json"), detail=True)
     rows = {w["workflow_name"]: w for w in r["workflows"]}
     assert rows["never"]["usage_verified"] == rows["ran"]["usage_verified"] is False
@@ -7568,7 +7563,7 @@ def test_list_pipelines_counts_the_NORMAL_validation_shape_not_only_the_override
     from agent.skills.resources import list_pipelines
     from agent.skills.freeze import EnvCache
 
-    (tmp_path / "mixed.workflow.yaml").write_text(yaml.safe_dump({
+    (_reports() / "mixed.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "mixed", "description": "d", "created_at": "2026-01-01",
         "env_request_key": "", "pipeline_steps": [
             # what run_pipeline_step / run_step_in_container / run_step_on_cluster write
@@ -7581,7 +7576,7 @@ def test_list_pipelines_counts_the_NORMAL_validation_shape_not_only_the_override
         ],
     }))
 
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+    r = list_pipelines({},
                        env_cache=EnvCache(tmp_path / "_env_cache.json"))
     (wf,) = r["workflows"]
     assert (wf["steps_total"], wf["steps_validated"]) == (3, 2)
@@ -7600,7 +7595,7 @@ def test_list_pipelines_never_contradicts_its_own_usage_bool(tmp_path):
     from agent.skills.resources import list_pipelines
     from agent.skills.freeze import EnvCache
 
-    (tmp_path / "legacyok.workflow.yaml").write_text(yaml.safe_dump({
+    (_reports() / "legacyok.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "legacyok", "description": "d", "created_at": "2026-01-01",
         "env_request_key": "", "usage_verified": True,   # ...and NO usage_verification
         "pipeline_steps": [{"step": 1, "returncode": 0,
@@ -7612,13 +7607,13 @@ def test_list_pipelines_never_contradicts_its_own_usage_bool(tmp_path):
     # stronger position — a field with two readings cannot disagree with itself if only
     # the unambiguous one ships — but it means the contradiction can only be reproduced
     # here, where both are present.
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+    r = list_pipelines({},
                        env_cache=EnvCache(tmp_path / "_env_cache.json"), detail=True)
     (wf,) = r["workflows"]
     assert wf["usage_verified"] is True
     assert wf["usage_verification_status"] == "verified"
 
-    compact = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}},
+    compact = list_pipelines({},
                              env_cache=EnvCache(tmp_path / "_env_cache.json"))
     (cwf,) = compact["workflows"]
     assert cwf["usage_verification_status"] == "verified"
@@ -7646,7 +7641,7 @@ def test_list_pipelines_marks_an_env_that_would_be_REFUSED_today(tmp_path):
     cache._save({"stale=1.0|linux/amd64|none":
                  env_record(name="stale", verifications=[])})
 
-    r = list_pipelines({"paths": {"pipelines_dir": str(tmp_path)}}, env_cache=cache)
+    r = list_pipelines({}, env_cache=cache)
     (env,) = r["envs"]
     assert env["contract_ok"] is False, "a record failing check_build must not read as usable"
     assert env["contract_violations"], "the failing clause must be NAMED, not just flagged"

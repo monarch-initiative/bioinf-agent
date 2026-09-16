@@ -75,20 +75,19 @@ def _write_spec(dir_, spec_dict: dict) -> str:
     tests were exercising a parallel implementation that merely happened to agree.
     Call the real writer and a change in it reaches these tests.
     """
-    res = write_workflow_spec(spec_dict, {"paths": {"pipelines_dir": str(dir_)}})
+    res = write_workflow_spec(spec_dict, {})
     assert "workflow_spec_path" in res, f"write_workflow_spec refused the fixture: {res}"
     return res["workflow_spec_path"]
 
 
 @pytest.fixture()
-def reports_dir(tmp_path, monkeypatch):
-    """Point the tool's reports dir at a hermetic tmp dir. describe_sealed_step reads
-    `project_root / config['paths']['pipelines_dir']`; an ABSOLUTE pipelines_dir wins
-    the pathlib join, so this fully redirects the read off the live env_reports/."""
-    d = tmp_path / "env_reports"
-    d.mkdir()
-    monkeypatch.setitem(ms.config["paths"], "pipelines_dir", str(d))
-    return d
+def reports_dir():
+    """The reports zone the tool actually reads. The root conftest has already
+    pointed the workspace at this test's tmp_path, so asking the resolver gives a
+    hermetic directory AND the exact one `describe_sealed_step` will look in —
+    no override, and no second spelling of the path to keep in sync."""
+    from agent.skills import workspace
+    return workspace.reports_dir()
 
 
 # ---------------------------------------------------------------------------

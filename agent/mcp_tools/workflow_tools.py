@@ -32,6 +32,7 @@ from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
+from agent.skills import workspace as _workspace
 
 
 # ---------------------------------------------------------------------------
@@ -837,8 +838,7 @@ def seal_workflow(
                       f"was run, and a pass/fail badge cannot show the difference."),
         )
     if write:
-        project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / _ms.config["paths"]["pipelines_dir"]
+        out_dir = _workspace.reports_dir()
         # Phase-3 Piece A: refuse to silently clobber a prior sealed spec that
         # pins a DIFFERENT env (locus accretion writes through). See
         # _guard_spec_overwrite — this is the terminal-WRITE gate, and it fires
@@ -1143,7 +1143,7 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
         # env_status/pipeline_status nominal stamps that were never transitioned
         # (Phase-3 Piece B). state_checks binds the re-earned frozen/sealed checks.
         from agent.skills.pipeline_state import current_state, state_checks
-        _reports_dir = Path(__file__).resolve().parents[2] / _ms.config["paths"]["pipelines_dir"]
+        _reports_dir = _workspace.reports_dir()
         _state = current_state(draft, **state_checks(_ms._env_cache, _reports_dir))
         r["summary"] = {
             "conda_env":              draft.get("conda_env"),

@@ -19,36 +19,14 @@
 # accelerator code path consults, sitting right beside an I12 accelerator
 # contract that IS enforced.
 
-paths:
-  data_dir: ./data
-  # WorkflowSpec final deliverables AND Layer-1 freeze deliverables
-  # (ENV.html / attestation.json / recipe.yaml / _env_cache.json) live here.
-  # env_reports/ is the SHIPPABLE deliverables dir — nothing transient.
-  #
-  # PARTIALLY HONOURED — do not assume this relocates Layer-1 state. Nine call
-  # sites read it; five others hardcode "env_reports" (mcp_server.py, env_manager.py,
-  # agent_status.py, scripts/rerender_run_dashboards.py). Changing it today would
-  # split the ENV cache and install logs away from the deliverables. Tracked.
-  pipelines_dir: ./env_reports
-  # In-progress pipeline drafts live in their own dir, NOT env_reports/, so
-  # listing env_reports/ shows only what shipped. A draft is workspace state,
-  # not a deliverable.
-  drafts_dir: ./data/pipeline_drafts
-  # W1 background-freeze job ephemera (args + result JSON) ride next to the
-  # JobManager log/status files already there.
-  jobs_dir: ./data/jobs
-  conda_envs_prefix: ./envs
-  # Core test data convention: {data_dir}/core_test_data_{genome_build}/
-  # Pipeline test data convention: {data_dir}/{pipeline_name}_test_data/
-  #
-  # NOTE: there is no `docker_output_dir`. The freeze tarball path is
-  # `<repo>/docker_images/<name>/<name>.tar`, written by exactly one producer
-  # (mcp_tools/freeze_tools.py), and `DockerBuilder.save_archive` creates the
-  # directory on demand. The key used to exist, was read into a field nothing
-  # else touched, and mkdir'd a directory no writer ever used — so setting it
-  # created an empty folder while every tarball still landed in docker_images/.
-  # A key that lies WITH a reader pointing at it survives a name-grep audit;
-  # that is why it is called out here rather than silently dropped.
+# NO `paths:` block. Where artifacts live is not configuration — it is resolved
+# by agent/skills/workspace.py, which is the single answer for the code checkout,
+# the workspace umbrella and each of its zones. The block that used to sit here
+# carried a comment admitting it was "PARTIALLY HONOURED": nine call sites read
+# it and five hardcoded the directory, so setting a key relocated some state and
+# split the rest away from it. Two answers to "where does this go" is the defect
+# the workspace split exists to remove, and a config key is the most durable way
+# to reintroduce it.
 
 conda:
   base_channels:

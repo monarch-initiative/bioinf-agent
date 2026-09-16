@@ -82,14 +82,13 @@ def _envmgr(tmp_path: Path, monkeypatch):
     envs_dir.mkdir()
     (envs_dir / "fake").mkdir()       # so env_path.exists() passes
 
-    cfg = {"paths": {"conda_envs_prefix": str(envs_dir)},
-           "conda": {"python_version": "3.11"}}
+    cfg = {"conda": {"python_version": "3.11"}}
     # Bypass _detect_conda (it requires conda on PATH; we don't need it for
     # the host_build=False path which never solves).
     monkeypatch.setattr(EnvManager, "_detect_conda", staticmethod(lambda: "conda"))
     em = EnvManager(cfg)
-    em.envs_dir = envs_dir            # force the fixture path (constructor
-                                      # resolves vs project_root by default)
+    em.envs_dir = envs_dir            # force the fixture path (the constructor
+                                      # resolves the workspace conda zone)
 
     def _fake_run_in_env(self, env_name, command, working_dir=None,
                          timeout=120, inputs=None, watch_dir=None):

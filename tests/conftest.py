@@ -22,13 +22,41 @@ The records still get written (a test can assert on them) — they just land in 
 """
 from __future__ import annotations
 
+import os
 import socket
+import tempfile
 from pathlib import Path
 
 import pytest
 
 _RECORD_DIRS = ("transfer_history", "job_submissions")
 _REPO = Path(__file__).resolve().parent.parent
+
+
+# --- the workspace redirect has to happen BEFORE the first agent import -------
+#
+# Several singletons resolve their directory ONCE, at import: `mcp_server._env_cache`,
+# `EnvManager.envs_dir`, `JobManager.jobs_dir`, `PipelineState.drafts_dir`. That is
+# correct for the server — one process, one workspace, resolved once — but it means a
+# fixture cannot redirect them, because by the time any fixture runs the import has
+# already happened and the directories have already been mkdir'd.
+#
+# It is not theoretical: the first run after the workspace split created
+# ~/bioinf_agent/{environments,reports,scratch} on the developer's machine, from a
+# suite that never intended to touch it.
+#
+# conftest.py is imported before any test module, so this is the last moment that is
+# still "before". THE REAL WORKSPACE IS CAPTURED FIRST — tests/_artifacts.py reads the
+# machine's actual sealed artifacts and must not be pointed at the sandbox.
+from agent.skills import workspace as _workspace   # noqa: E402
+
+# Handed on through the ENVIRONMENT rather than as an importable name: `conftest`
+# is not a unique module (tests/live/conftest.py answers to it too), so a
+# `from conftest import ...` resolves to whichever one pytest imported last.
+REAL_WORKSPACE = _workspace.workspace_root()
+os.environ["BIOINF_REAL_WORKSPACE"] = str(REAL_WORKSPACE)
+os.environ["BIOINF_WORKSPACE"] = tempfile.mkdtemp(prefix="bioinf_suite_ws_")
+os.environ.pop("BIOINF_RESOURCES", None)
 
 # Contract-clean EnvCache record builders live in tests/env_records.py — importable as
 # `from env_records import env_record, env_evidence` from anywhere in the suite.
@@ -159,22 +187,36 @@ def _quiet_package_family_search(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_agent_record_writers(tmp_path: Path, monkeypatch):
-    """Redirect every repo-root-anchored record writer at tmp_path, for EVERY test.
+    """Point the WHOLE workspace at tmp_path, for EVERY test.
 
     Autouse + root-scoped is the point: an opt-in guard is one a new test file can forget,
     and forgetting is silent — a leaked record is byte-identical to a real one.
+
+    One knob now covers every writer, because every writer resolves through
+    `agent.skills.workspace`. That is the split's dividend: this fixture used to
+    redirect exactly one anchor (`transfer._repo_root`) and `submit_workflow` leaked
+    precisely because it did not route through it. Redirecting the resolver redirects
+    the reports zone, the conda envs, the images, the job state and the drafts at once
+    — and a writer that does NOT route through it now fails the lint in
+    tests/test_workspace_resolution.py rather than leaking silently.
+
+    $BIOINF_RESOURCES is cleared rather than set: the resources zone follows the
+    workspace unless a test asks otherwise, and an inherited value from the
+    developer's shell would point a hermetic test at a real reference corpus.
     """
-    from agent.skills import transfer
-    monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
+    monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "_workspace"))
+    monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
     yield
 
 
 def _live_records() -> set[str]:
+    """Every record file in the places a leak would land: the legacy in-checkout
+    dirs, and the user's REAL workspace."""
     out: set[str] = set()
-    for d in _RECORD_DIRS:
-        base = _REPO / d
+    for base in ([_REPO / d for d in _RECORD_DIRS]
+                 + [REAL_WORKSPACE / "reports", REAL_WORKSPACE / "scratch"]):
         if base.exists():
-            out |= {str(p.relative_to(_REPO)) for p in base.rglob("*.json")}
+            out |= {str(p) for p in base.rglob("*.json")}
     return out
 
 
@@ -194,9 +236,11 @@ def pytest_sessionfinish(session, exitstatus):
     paths but does not delete them — deciding what to remove from a user's audit trail is
     the user's call, not the test suite's.
 
-    This is the writer-agnostic backstop to the fixture above, and it earns its keep: the
-    fixture redirects `transfer._repo_root`, but `submit_workflow` leaked precisely
-    because it did NOT route through that anchor. A future writer could do the same.
+    This is the writer-agnostic backstop to the fixture above, and it earns its keep:
+    the fixture used to redirect one anchor and `submit_workflow` leaked precisely
+    because it did NOT route through it. A future writer could hardcode a path the same
+    way — the fixture is now much harder to escape, but "harder" is not "impossible",
+    and this check does not care how the bytes got there.
     """
     before = getattr(session, "stash_live_records", None)
     if before is None:
@@ -210,5 +254,5 @@ def pytest_sessionfinish(session, exitstatus):
             print(f"      {s}")
         if len(leaked) > 20:
             print(f"      … and {len(leaked) - 20} more")
-        print("*** Route the writer through transfer._repo_root (which the autouse fixture "
-              "in tests/conftest.py redirects), then delete the records above.\n")
+        print("*** Route the writer through agent.skills.workspace (which the autouse "
+              "fixture in tests/conftest.py redirects), then delete the records above.\n")

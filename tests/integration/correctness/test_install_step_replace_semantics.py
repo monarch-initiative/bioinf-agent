@@ -23,10 +23,7 @@ from agent.skills.pipeline_state import PipelineState
 
 
 def _state(tmp_path: Path) -> PipelineState:
-    cfg = {"paths": {
-        "pipelines_dir": str(tmp_path / "env_reports"),
-        "drafts_dir":    str(tmp_path / "drafts"),
-    }}
+    cfg = {}
     return PipelineState(cfg)
 
 

@@ -113,6 +113,10 @@ data/
 # launcher (start_mcp_server.sh) and bootstrap wrapper resolve it by this path.
 .conda_runtime/
 
+# The workspace pointer — one line naming where this clone keeps its generated
+# artifacts. Written by scripts/setup.sh; per-machine, like the runtime env.
+/.bioinf_workspace
+
 # Private miniforge — installed by scripts/setup.sh only on machines with no
 # conda anywhere (with consent). Repo-local, no shell integration.
 .miniforge/

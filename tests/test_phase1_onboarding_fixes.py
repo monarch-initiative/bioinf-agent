@@ -123,8 +123,7 @@ def test_check_job_labels_the_tool_outcome(tmp_path, payload, expected):
 
     from agent.skills.job_manager import JobManager
 
-    jm = JobManager({"paths": {"conda_envs_prefix": str(tmp_path),
-                               "jobs_dir": str(tmp_path)}})
+    jm = JobManager({})
     status = {"state": "exited"}
     jm.args_path("j1").parent.mkdir(parents=True, exist_ok=True)
     jm.args_path("j1").write_text("{}")

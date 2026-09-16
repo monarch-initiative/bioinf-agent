@@ -33,6 +33,7 @@ from typing import Mapping, Optional
 
 from agent.skills import compute_access, data_pins, stage_apptainer, submit_workflow
 from agent.skills.outcomes import proven, refused, broke, degraded
+from agent.skills import workspace
 
 
 # ${name} — the SAME placeholder syntax workflow_render uses, so one command
@@ -373,9 +374,7 @@ def _load_sealed_spec(sealed_workflow: str) -> tuple:
     acting on one. A malformed artifact fails here, loudly, rather than
     surfacing as a bogus divergence."""
     from agent.skills.spec_writer import load_workflow_spec
-    from agent import mcp_server as _ms
-    reports = (Path(__file__).resolve().parents[2]
-               / _ms.config["paths"]["pipelines_dir"])
+    reports = workspace.reports_dir()
     path = reports / f"{sealed_workflow}.workflow.yaml"
     if not path.is_file():
         available = sorted(p.name[: -len(".workflow.yaml")]

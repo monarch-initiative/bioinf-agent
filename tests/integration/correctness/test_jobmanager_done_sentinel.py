@@ -37,7 +37,7 @@ from agent.skills.job_manager import JobManager
 def _jm(tmp_path: Path) -> JobManager:
     """JobManager wired to tmp_path. We don't need a real conda env for the
     no-env_name code path — EnvManager just constructs."""
-    cfg = {"paths": {"conda_envs_prefix": str(tmp_path / "envs")}}
+    cfg = {}
     jm = JobManager(cfg)
     # JobManager hard-codes jobs_dir to project_root/data/jobs in __init__.
     # Redirect onto tmp_path so the test doesn't litter the real dir.

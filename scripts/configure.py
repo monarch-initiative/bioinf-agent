@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402  (runtime env only — config.sh guarantees it)
 
+from agent.skills import workspace  # noqa: E402
 from agent.skills.compute_access import (  # noqa: E402
     PERMISSIONS,
     VALID_JOB_MANAGERS,
@@ -50,8 +51,10 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
 
 TRANSFER_TYPES = ["scp_head_node", "globus"]
 
-#: The three env-level zones, in the order the agent uses them. `key` is the
-#: schema key, `default_perms` what the bridge needs to use the zone at all.
+#: The env-level zones, in the order the agent uses them. `key` is the schema
+#: key, `default_perms` what the bridge needs to use the zone at all. Same four
+#: zones the local workspace has — full parity, so a production run is the same
+#: kind of thing on either locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
      ["file_name_only", "upload", "download", "exec"]),
@@ -59,12 +62,16 @@ ZONES = [
      ["file_name_only", "upload", "download", "exec"]),
     ("container_upload_target", "where .sif container images are staged",
      ["file_name_only", "upload"]),
+    # No `exec`: reports are read, never run.
+    ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
+     ["file_name_only", "upload", "download"]),
 ]
 
 ZONE_LABELS = {
     "agent_scratch_target": "scratch",
     "agent_common_data_target": "common_data",
     "container_upload_target": "containers",
+    "agent_reports_target": "reports",
 }
 
 #: Every compute_envs[] key the menu can write, in the order it writes them.
@@ -76,7 +83,7 @@ ENV_KEYS = (
     "name", "type", "host", "user", "job_manager", "email",
     "apptainer_module", "nextflow_module",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
-    "data_transfer", "slurm",
+    "agent_reports_target", "data_transfer", "slurm",
 )
 
 HEADER = """\
@@ -354,6 +361,7 @@ def ssh_defaults(user: str) -> dict[str, str]:
     validator requires — a breach of one zone must not reach another."""
     base = f"/scratch/{user}"
     return {
+        "agent_reports_target": f"{base}/CLAUDE_REPORTS/",
         "agent_scratch_target": f"{base}/CLAUDE_SCRATCH/",
         "agent_common_data_target": f"{base}/CLAUDE_GENOMES/",
         "container_upload_target": f"{base}/CLAUDE_CONTAINERS/",
@@ -363,12 +371,13 @@ def ssh_defaults(user: str) -> dict[str, str]:
 def local_defaults() -> dict[str, str]:
     """A local env is at zone-parity with a cluster — same three zones, local
     paths — which is what lets a production run be the same kind of thing on
-    either locus. Kept under the repo so nothing is written outside it."""
-    base = ROOT / "data" / "local_env"
+    either locus. Under the workspace, with every other generated artifact."""
+    base = workspace.scratch_dir("local_env")
     return {
         "agent_scratch_target": f"{base}/scratch/",
         "agent_common_data_target": f"{base}/common_data/",
         "container_upload_target": f"{base}/containers/",
+        "agent_reports_target": f"{base}/reports/",
     }
 
 
@@ -811,7 +820,8 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="print the configuration and exit")
     ap.add_argument("--validate", action="store_true",
                     help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
-    ap.add_argument("--file", default=None, help="configuration file (default: ./projects_access.yaml)")
+    ap.add_argument("--file", default=None,
+                    help="configuration file (default: <workspace>/projects_access.yaml)")
     args = ap.parse_args()
 
     path = Path(args.file) if args.file else default_access_path()

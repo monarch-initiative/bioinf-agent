@@ -76,6 +76,7 @@ from agent.models.core_data import record_is_gated as _record_is_gated
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills import workspace
 
 
 def _short_digest(content_digest: str) -> str:
@@ -87,10 +88,17 @@ def _short_digest(content_digest: str) -> str:
     return hexdigest[:12] if hexdigest else "unknown"
 
 
-# Where locally-built .sif files are staged before upload. Under the repo
-# ($HOME) so Globus Connect Personal can read them (its Accessible-Folders scan
-# refuses a system temp dir). Mirrors acquire_data._DL_STAGE_DIR. Gitignored.
-_LOCAL_SIF_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "apptainer_local_sif"
+# Where locally-built .sif files are staged before upload. In the workspace
+# (required to be under $HOME) so Globus Connect Personal can read them — its
+# Accessible-Folders scan refuses a system temp dir. Mirrors
+# acquire_data._dl_stage_dir.
+# A FUNCTION, not a module constant. The location depends on the resolved
+# workspace, and a constant computed at import freezes whatever the environment
+# said at import time — which for a test process is "before the fixture
+# redirected it", so every staged file would land in the developer's real
+# workspace.
+def _local_sif_stage_dir():
+    return workspace.scratch_dir("apptainer_local_sif")
 
 
 def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> bool:
@@ -168,8 +176,7 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
                           f"{(pull.stderr or '').strip()[:400]}")
 
     # 4. Build the .sif LOCALLY (apptainer-in-docker; no cluster involvement).
-    _LOCAL_SIF_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    local_sif_path = _LOCAL_SIF_STAGE_DIR / Path(sif_remote_abs).name
+    local_sif_path = _local_sif_stage_dir() / Path(sif_remote_abs).name
     built = local_sif.build_sif_locally(
         out_sif=str(local_sif_path),
         tarball=(str(tarball) if (tarball and not image_tag) else ""),

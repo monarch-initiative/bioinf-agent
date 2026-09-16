@@ -1264,22 +1264,22 @@ def sha256_file_or_none(path: Any) -> Optional[str]:
         return None
 
 
-#: Repo root — `agent/models/core_data.py` → parents[2]. Relative test_data paths are
-#: relative to THIS, never to the CWD: the manifest builds them from `core_dir`, which is
-#: relative in the shipped config, and the MCP server's CWD is not guaranteed.
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def resolve_data_path(path: Any, project_root: Optional[Path] = None) -> Path:
+def resolve_data_path(path: Any, data_root: Optional[Path] = None) -> Path:
     """Turn a `test_data` path — relative or absolute — into the file it names.
 
+    Relative paths anchor at the RESOURCES zone, never at the CWD: the manifest
+    builds them from `core_dir`, and the MCP server's CWD is not guaranteed.
+
     The other half of `test_data_paths`'s one-reading job. `_check_composition_coherence`
-    already knew relative paths anchor at the project root and did it inline; every other
+    already knew relative paths needed an anchor and did it inline; every other
     reader either assumed absolute or silently resolved against the CWD."""
     p = Path(str(path)).expanduser()
     if p.is_absolute():
         return p
-    return (project_root or _PROJECT_ROOT) / p
+    if data_root is None:
+        from agent.skills import workspace
+        data_root = workspace.resources_root()
+    return data_root / p
 
 
 def anchor_for_path(path: Any) -> Optional[ContentAnchor]:

@@ -44,7 +44,7 @@ could not read.
     python scripts/rerender_env_reports.py             # re-render all, report diffs
     python scripts/rerender_env_reports.py --check     # report only; write nothing
     python scripts/rerender_env_reports.py NAME ...    # just these envs
-    python scripts/rerender_env_reports.py --dir PATH  # a corpus outside the repo
+    python scripts/rerender_env_reports.py --dir PATH  # a corpus elsewhere
 """
 from __future__ import annotations
 
@@ -55,6 +55,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+
+from agent.skills import workspace  # noqa: E402
 
 from agent.skills.env_report_html import render_env_report_html   # noqa: E402
 from agent.skills.env_recipe_render import render_recipe_markdown  # noqa: E402
@@ -127,10 +129,11 @@ def main() -> int:
     ap.add_argument("names", nargs="*", help="env names (default: every record in the cache)")
     ap.add_argument("--check", action="store_true",
                     help="report which pages are stale; write nothing (CI-friendly)")
-    ap.add_argument("--dir", default="env_reports", help="directory holding the artifacts")
+    ap.add_argument("--dir", default=None,
+                    help="directory holding the artifacts (default: the workspace reports zone)")
     args = ap.parse_args()
 
-    out_dir = Path(args.dir) if Path(args.dir).is_absolute() else (REPO / args.dir)
+    out_dir = Path(args.dir).expanduser().resolve() if args.dir else workspace.reports_dir()
     records = _records(out_dir / "_env_cache.json")
     if args.names:
         wanted = set(args.names)

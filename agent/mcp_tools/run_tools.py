@@ -26,6 +26,7 @@ from agent.skills.outcomes import proven, refused, broke
 # it mirrors, because it existed twice (here and run_cluster_step._infer_etype)
 # and the copies disagreed on `x.sorted.bam` — see infer_validator_type's docstring.
 from agent.validators.output_validator import infer_validator_type as _infer_validator_type
+from agent.skills import workspace as _workspace
 
 
 def _stamp_i7_authority(resource_usage, platform: str):
@@ -253,7 +254,7 @@ def run_step_in_container(
             return broke("run_container.image_pull_failed",
                          error=f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}")
 
-    ddir = (Path(data_dir) if data_dir else (_ms._env_mgr.project_root / "data")).resolve()
+    ddir = (Path(data_dir) if data_dir else _workspace.resources_root()).resolve()
     mounts = [(str(ddir), str(ddir))]   # same-path mount → host abs paths work verbatim
     for m in extra_mounts:
         if isinstance(m, str) and ":" in m:

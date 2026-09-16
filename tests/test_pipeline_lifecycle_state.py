@@ -158,7 +158,7 @@ def test_spec_sealed_false_when_the_pinned_env_is_evicted(tmp_path):
 # ── the pointer writers on a real PipelineState ────────────────────────────────
 
 def _ps(tmp_path):
-    return PipelineState({"paths": {"pipelines_dir": str(tmp_path / "drafts")}})
+    return PipelineState({})
 
 
 def test_set_frozen_pointer_writes_and_persists(tmp_path):

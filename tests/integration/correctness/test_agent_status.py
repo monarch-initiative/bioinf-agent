@@ -74,7 +74,7 @@ class _FakeJobManager:
 def test_agent_status_top_level_shape(tmp_path):
     """Pin the canonical record shape — downstream consumers (the agent's
     UI, future renderers, etc.) depend on the key set being stable."""
-    config = {"paths": {"data_dir": str(tmp_path / "data")}}
+    config = {}
     rec = agent_status(
         pipeline_state=_FakePipelineState(),
         env_cache=_FakeEnvCache(),
@@ -84,16 +84,24 @@ def test_agent_status_top_level_shape(tmp_path):
         include_repo=False,
     )
     assert set(rec.keys()) == {
-        "drafts", "envs_on_disk", "frozen_envs", "sealed_workflows",
+        "workspace", "drafts", "envs_on_disk", "frozen_envs", "sealed_workflows",
         "core_test_data", "compute_env_bridge", "background_jobs",
     }
+    # `workspace` is first for a reason: this is the first call of a resumed
+    # session, and the split moved every artifact out of the checkout, so an
+    # agent carrying a "look in env_reports/" habit is looking at a directory
+    # that is not there any more.
+    ws = rec["workspace"]
+    assert {"workspace_root", "workspace_source", "reports", "scratch",
+            "conda_envs", "images", "resources"} <= set(ws)
+    assert ws["workspace_source"] in ("env", "pointer", "default")
 
 
 @pytest.mark.integration
 def test_agent_status_include_repo_adds_repo_key(tmp_path):
     """include_repo=True adds a `repo` slice — even outside a git tree
     (where it'll be empty)."""
-    config = {"paths": {"data_dir": str(tmp_path / "data")}}
+    config = {}
     rec = agent_status(
         pipeline_state=_FakePipelineState(), env_cache=_FakeEnvCache(),
         job_manager=_FakeJobManager(), config=config, access_path=None,

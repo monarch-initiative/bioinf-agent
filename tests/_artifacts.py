@@ -1,13 +1,14 @@
 """Reading the repo's REAL generated artifacts from a test, safely.
 
-`env_reports/` and `data/` are gitignored. On a developer machine that has run a
-freeze or a seal they are full; on a fresh clone and in CI they are empty or absent.
+The workspace's `reports/` zone is outside the checkout entirely. On a developer
+machine that has run a freeze or a seal it is full; on a fresh clone and in CI it is
+empty or absent.
 A test that reads them directly therefore has two failure modes and both have now
 happened in this repository:
 
-  * a bare `open("env_reports/x.workflow.yaml")` — FileNotFoundError in CI, red for
+  * a bare `open("<reports>/x.workflow.yaml")` — FileNotFoundError in CI, red for
     every run since it was written, unnoticed because the branch had not been pushed;
-  * `parametrize(glob("env_reports/*.workflow.yaml"))` — zero parameters in CI, so
+  * `parametrize(glob("<reports>/*.workflow.yaml"))` — zero parameters in CI, so
     the test reports PASS having checked nothing, which is indistinguishable from
     coverage.
 
@@ -31,13 +32,24 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: Directories holding generated artifacts. Gitignored — may be empty or absent.
-SEALED_SPEC_GLOB = "env_reports/*.workflow.yaml"
+#: The REAL reports zone. `conftest` captures the machine's workspace before it
+#: redirects $BIOINF_WORKSPACE at a sandbox, and hands it over here — asking the
+#: resolver at this point would return the sandbox, and every artifact check in the
+#: suite would silently become a no-op against an empty directory.
+#:
+#: This is the one place in the suite that deliberately reads outside the sandbox,
+#: and it only ever READS.
+import os   # noqa: E402
+
+REPORTS = Path(os.environ["BIOINF_REAL_WORKSPACE"]) / "reports"
+
+#: Generated artifacts — may be empty or absent. Never in the checkout.
+SEALED_SPEC_GLOB = "*.workflow.yaml"
 
 
 def sealed_spec_paths() -> list[str]:
     """Every sealed workflow artifact on this machine. May be empty."""
-    return sorted(_glob.glob(str(REPO / SEALED_SPEC_GLOB)))
+    return sorted(_glob.glob(str(REPORTS / SEALED_SPEC_GLOB)))
 
 
 def sealed_spec_params() -> list[Optional[str]]:
@@ -50,12 +62,12 @@ def load_or_skip(path: Optional[str]) -> Any:
     """The sealed spec at `path`, or a visible skip naming why it is absent."""
     if path is None:
         pytest.skip(
-            "no sealed workflow artifacts on this machine (env_reports/ is "
-            "gitignored) — this check only has force in a tree that has sealed "
-            "something; it is not evidence of anything here")
+            f"no sealed workflow artifacts in {REPORTS} — this check only has "
+            f"force on a machine that has sealed something; it is not evidence "
+            f"of anything here")
     p = Path(path)
     if not p.is_absolute():
-        p = REPO / p
+        p = REPORTS / p
     if not p.is_file():
         pytest.skip(f"{path} is not on this machine (generated artifact, gitignored) "
                     f"— run the pipeline that produces it to exercise this check")

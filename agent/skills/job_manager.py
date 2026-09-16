@@ -43,6 +43,7 @@ from typing import Any, Optional
 
 from agent.skills import outcomes
 from agent.skills.outcomes import broke, refused
+from agent.skills import workspace
 
 #: How long `check` will wait for a process whose completion sentinel has ALREADY
 #: been written. Bounds the gap between a bash EXIT trap firing and the shell
@@ -56,14 +57,10 @@ _DONE_REAP_GRACE_S = 2.0
 class JobManager:
     def __init__(self, config: dict):
         self.config = config
-        self.project_root = Path(__file__).parent.parent.parent.resolve()
-        # `paths.jobs_dir` used to be honoured by the freeze background path and
-        # hardcoded here — two spellings of one directory, identical only for as
-        # long as nobody set the key. One reading: everything that needs the jobs
-        # dir asks THIS attribute.
-        rel = (config or {}).get("paths", {}).get("jobs_dir") or "data/jobs"
-        self.jobs_dir = (self.project_root / rel).resolve()
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        # One reading: everything that needs the jobs dir asks THIS attribute,
+        # which asks the workspace resolver. There is no config key — a second
+        # spelling of one directory is identical only for as long as nobody sets it.
+        self.jobs_dir = workspace.scratch_dir("jobs")
         # Lazy import to avoid circular reference at module load time.
         from agent.skills.env_manager import EnvManager
         self._env_mgr = EnvManager(config)
@@ -129,7 +126,7 @@ class JobManager:
         else:
             argv = ["/bin/bash", "-c", script]
 
-        cwd = working_dir or str(self.project_root)
+        cwd = working_dir or str(workspace.scratch_dir("run"))
 
         # Open the log file once and hand it to the child as both stdout and
         # stderr. The child can stream gigabytes through it without keeping

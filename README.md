@@ -36,9 +36,14 @@ git clone https://github.com/monarch-initiative/bioinf-agent && cd bioinf-agent
 | `./scripts/setup.sh --yes` | non-interactive consent, for CI and scripted installs |
 
 > **Editable install, on purpose.** This is a workspace-rooted service, not a
-> site-packages library — it reads and writes `config/`, `data/`, `env_reports/`,
-> `envs/` and `docker_images/` relative to the repo root. A plain `pip install .` would
-> relocate the code away from those directories and config loading would fail.
+> site-packages library: it reads `config/` and `scripts/` from the checkout it was
+> installed from. A plain `pip install .` would relocate the code away from them.
+>
+> **Setup also asks where your WORKSPACE goes** — the directory the agent writes
+> everything into. It is never inside the checkout: envs, images, reports and sealed
+> specs outlive any clone, and a system whose product is auditable artifacts cannot keep
+> them in its own git tree. The answer is recorded in `.bioinf_workspace`;
+> `./scripts/setup.sh --check` prints every resolved location.
 
 ---
 
@@ -60,7 +65,8 @@ Report the freeze_request_key and the ENV report path." \
   --allowedTools "mcp__bioinf__*"
 ```
 
-The deliverables land in `env_reports/`:
+The deliverables land in your workspace's `reports/` — `./scripts/setup.sh --check`
+prints the path:
 
 | Artifact | What it is |
 |----------|-----------|
@@ -87,7 +93,8 @@ python -m agent      # direct launch from the repo root — prints the startup b
 
 Two files, and only one of them is yours to edit by hand.
 
-**`projects_access.yaml`** (repo root, gitignored — it's personal) is the agent's
+**`projects_access.yaml`** (at your workspace root — it's personal, and it describes a
+compute world that outlives any checkout) is the agent's
 command-and-control file: which clusters exist, which projects may use them, and exactly
 which directories the agent may list, upload to, download from, or run jobs in. Every
 bridge primitive is gated by it, and nothing in it is inferred. Author it with the menu:
@@ -120,8 +127,8 @@ Three environment layers:
 | Layer | Where | Role |
 |-------|-------|------|
 | **runtime env** | `./.conda_runtime/` | runs the MCP server itself; created by `setup.sh`, per-clone |
-| **iteration envs** | `envs/` | per-tool conda envs used while solving an install |
-| **frozen images** | Docker / `docker_images/` | **the product**: content-addressed images validated inside the bytes that ship |
+| **iteration envs** | `<workspace>/environments/conda/` | per-tool conda envs used while solving an install |
+| **frozen images** | Docker / `<workspace>/environments/images/` | **the product**: content-addressed images validated inside the bytes that ship |
 
 Two lifecycles on top of them:
 

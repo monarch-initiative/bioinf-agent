@@ -41,22 +41,11 @@ def _isolate_pipeline_drafts(monkeypatch, tmp_path):
     from agent import mcp_server as m
     from agent.skills.pipeline_state import PipelineState
 
-    # Build a tmp-rooted config matching the live one's `paths` block.
-    orig_paths = dict(m.config.get("paths", {}))
-    tmp_drafts_dir = tmp_path / "pipeline_drafts"
-    tmp_drafts_dir.mkdir()
-    tmp_config = {
-        **m.config,
-        "paths": {
-            **orig_paths,
-            # PipelineState reads `drafts_dir` (with `pipelines_dir` as
-            # back-compat fallback). Point both at the tmp tree so neither
-            # path leaks into the real working dir.
-            "drafts_dir":     str(tmp_drafts_dir),
-            "pipelines_dir":  str(tmp_path / "env_reports"),
-        },
-    }
-    isolated = PipelineState(tmp_config)
+    # No path plumbing: PipelineState resolves its drafts and reports zones from
+    # the workspace, which the root conftest has already redirected at tmp_path.
+    # What this fixture still buys is a SEPARATE INSTANCE — the live singleton
+    # holds in-memory drafts, and a test that mutated it would bleed into the next.
+    isolated = PipelineState(m.config)
     monkeypatch.setattr(m, "_pipeline_state", isolated)
     yield isolated
     # monkeypatch teardown automatically restores the original singleton.
