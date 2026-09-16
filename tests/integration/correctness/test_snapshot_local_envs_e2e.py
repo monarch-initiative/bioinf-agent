@@ -36,7 +36,11 @@ from agent.skills.compute_access import PermissionDenied
 
 # Resolve repo root from the test file. tests/integration/correctness/<file>
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ENVS_DIR = REPO_ROOT / "envs"
+
+# The conda envs live in the WORKSPACE, not the checkout — and specifically in the
+# MACHINE'S workspace, not the per-test sandbox, because this module needs a real
+# bootstrapped env to snapshot and the sandbox is empty by construction.
+from _artifacts import CONDA_ENVS as ENVS_DIR   # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +73,10 @@ def _project_block(*, name: str, env_name: str, dirs: list[dict],
 
 @pytest.fixture(scope="module")
 def envs_root() -> Path:
-    """Skip the whole module if the bootstrapped envs/ tree isn't here.
-    This isn't a CI-machine test — it requires a real local conda env to
-    have been built (e.g. via setup_core_test_data.sh)."""
-    if not ENVS_DIR.is_dir() or not any(ENVS_DIR.iterdir()):
-        pytest.skip("envs/ empty — bootstrap via scripts/setup_core_test_data.sh")
-    return ENVS_DIR
+    """Skip the whole module if no bootstrapped conda env is here. This isn't a
+    CI-machine test — it requires a real local conda env to have been built."""
+    from _artifacts import real_dir_or_skip
+    return real_dir_or_skip(ENVS_DIR, "run ./scripts/setup_core_test_data.sh")
 
 
 @pytest.fixture

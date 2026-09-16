@@ -53,7 +53,16 @@ from agent.skills import workspace as _workspace   # noqa: E402
 # Handed on through the ENVIRONMENT rather than as an importable name: `conftest`
 # is not a unique module (tests/live/conftest.py answers to it too), so a
 # `from conftest import ...` resolves to whichever one pytest imported last.
-REAL_WORKSPACE = _workspace.workspace_root()
+#
+# ASK THE RESOLVER ONLY ONCE PER SESSION. xdist workers are spawned with the
+# controller's environment, which by then already carries the sandbox — so a
+# worker that re-derived "the real workspace" would derive the CONTROLLER'S
+# SANDBOX and call it the machine's. Every artifact check would then look in an
+# empty temp dir and skip, announcing "nothing sealed on this machine" on a
+# machine that had just sealed something. Inheriting the answer is what makes it
+# the same answer in all 15 processes.
+_inherited = os.environ.get("BIOINF_REAL_WORKSPACE", "").strip()
+REAL_WORKSPACE = Path(_inherited) if _inherited else _workspace.workspace_root()
 os.environ["BIOINF_REAL_WORKSPACE"] = str(REAL_WORKSPACE)
 os.environ["BIOINF_WORKSPACE"] = tempfile.mkdtemp(prefix="bioinf_suite_ws_")
 os.environ.pop("BIOINF_RESOURCES", None)

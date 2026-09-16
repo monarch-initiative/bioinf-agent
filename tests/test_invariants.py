@@ -729,8 +729,11 @@ def test_package_in_registry_finds_installed_and_misses_absent():
         _pytest.skip("conda or agent_config.yaml not available")
     cfg = _yaml.safe_load(cfg_path.read_text())
     em = EnvManager(cfg)
-    # Find any existing bioinf_* env to probe against.
-    envs_dir = em.envs_dir
+    # Find any existing bioinf_* env to probe against. THE MACHINE'S conda zone,
+    # not the per-test sandbox: this probes a real conda registry, and the sandbox
+    # has no env in it by construction.
+    from _artifacts import CONDA_ENVS
+    envs_dir = CONDA_ENVS
     candidates = [p.name for p in envs_dir.glob("bioinf_*") if p.is_dir()] if envs_dir.exists() else []
     if not candidates:
         _pytest.skip("no bioinf_* env to probe")

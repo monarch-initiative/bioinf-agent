@@ -36,7 +36,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "projects_access.yaml"
+
+# The config lives at the WORKSPACE root, not in the checkout. Reading it here
+# used to be the same thing; after the workspace split it is not, and this guard
+# — the one that stops real cluster hostnames reaching tracked files in a public
+# repo — skipped itself on a machine that had a config, because it looked in the
+# old place and found nothing. A guard that cannot find its input reports the
+# same "nothing to leak" as a machine with genuinely nothing to leak.
+from _artifacts import PROJECTS_ACCESS as CONFIG   # noqa: E402
 
 #: Config values that are SUPPOSED to be in the tree. Each needs a reason, because each is
 #: a hole in the guard and a reviewer should be able to judge it in one line.

@@ -41,7 +41,33 @@ REPO = Path(__file__).resolve().parent.parent
 #: and it only ever READS.
 import os   # noqa: E402
 
-REPORTS = Path(os.environ["BIOINF_REAL_WORKSPACE"]) / "reports"
+REAL_WORKSPACE = Path(os.environ["BIOINF_REAL_WORKSPACE"])
+
+#: The machine's real zones. A handful of checks are only meaningful against what
+#: this machine has actually built — a freeze that really ran, a seal that really
+#: sealed, the core_tools env that really exists — and the sandbox is empty by
+#: construction. They ask HERE, so "the machine's real state" is spelled once.
+#:
+#: Everything else in the suite must use the redirected workspace. These are
+#: READ-ONLY by rule: a test that writes into the real workspace is a test that
+#: pollutes the user's audit trail.
+REPORTS = REAL_WORKSPACE / "reports"
+CONDA_ENVS = REAL_WORKSPACE / "environments" / "conda"
+RESOURCES = REAL_WORKSPACE / "resources"
+PROJECTS_ACCESS = REAL_WORKSPACE / "projects_access.yaml"
+
+
+def real_dir_or_skip(path: Path, what: str) -> Path:
+    """`path` if it exists and is non-empty, else a skip that names what to run.
+
+    The skip has to say WHICH machine state is missing and how to produce it —
+    "envs/ empty" was accurate for years and then quietly became wrong when the
+    directory moved, and a skip that names a path nobody writes to any more reads
+    as "not bootstrapped" on a fully bootstrapped machine.
+    """
+    if not path.is_dir() or not any(path.iterdir()):
+        pytest.skip(f"{path} is empty — {what}")
+    return path
 
 #: Generated artifacts — may be empty or absent. Never in the checkout.
 SEALED_SPEC_GLOB = "*.workflow.yaml"
