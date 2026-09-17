@@ -344,6 +344,85 @@ class TestPermissionDeniedClassifier:
         assert out["hint"] == "GCP Accessible Folders restriction on local source"
 
     @pytest.mark.integration
+    def test_event_written_late_is_still_classified(self, monkeypatch,
+                                                    tmp_path):
+        # THE RACE. Globus flips the TASK to PERMISSION_DENIED before it
+        # writes the error EVENT. We detect the status and classify at once,
+        # so the first event-list read can come back empty — and empty is
+        # indistinguishable from undecodable.
+        #
+        # Measured on a real cluster: a download whose local destination sat
+        # outside GCP's Access list — the commonest setup mistake, and one
+        # this classifier already has a bucket for — degraded to `unknown`
+        # purely because it asked too early. The bucket and the hint both
+        # existed; the user got the generic fallback anyway.
+        import json as _json
+        calls = {"event_list": 0}
+
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                calls["event_list"] += 1
+                # Empty history on the first read; the real event lands next.
+                if calls["event_list"] == 1:
+                    mock.stdout = _json.dumps({"DATA": []})
+                else:
+                    mock.stdout = _json.dumps(
+                        TestPermissionDeniedClassifier
+                        ._local_path_block_event())
+            return mock
+
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert calls["event_list"] >= 2, "classifier gave up after one read"
+        assert out["classification"] == "local_path_not_allowed"
+        assert "Accessible Folders" in out["error"]
+
+    @pytest.mark.integration
+    def test_persistently_empty_history_stays_unknown(self, monkeypatch,
+                                                      tmp_path):
+        # The retry must not invent a verdict. A history that never carries a
+        # decodable error stays `unknown` — bounded, and honest about why.
+        import json as _json
+
+        def fake_run(argv, *a, **kw):
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            if argv[1] == "transfer":
+                mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "task" and argv[2] == "show":
+                mock.stdout = _json.dumps({
+                    "DATA_TYPE": "task", "task_id": _TASK_ID,
+                    "status": "ACTIVE", "nice_status": "PERMISSION_DENIED",
+                })
+            elif argv[1] == "task" and argv[2] == "event-list":
+                mock.stdout = _json.dumps({"DATA": []})
+            return mock
+
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *a, **kw: None)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert out["classification"] == "unknown"
+        assert "attempt(s)" in out["error"]
+
+    @pytest.mark.integration
     def test_remote_consent_missing(self, monkeypatch, tmp_path):
         import json as _json
         def fake_run(argv, *a, **kw):
