@@ -338,9 +338,10 @@ class ScpHeadNodeProvider(TransferProvider):
 # ---------------------------------------------------------------------------
 # GlobusProvider
 #
-# Shells out to the `globus` CLI (user-installed via `pipx install
-# globus-cli` + `globus login`). Tokens live in ~/.globus/ out-of-band
-# from us, same posture as ssh-agent.
+# Shells out to the `globus` CLI (setup.sh installs it into the runtime
+# env via the [hpc] extra; the launcher puts that bin/ on PATH; the user
+# runs `globus login`). Tokens live in ~/.globus/ out-of-band from us,
+# same posture as ssh-agent.
 #
 # Per-transfer shape (sync default):
 #   1. Submit:  `globus transfer <src_ep>:<src> <dst_ep>:<dst>
@@ -481,7 +482,8 @@ class GlobusProvider(TransferProvider):
         except FileNotFoundError:
             return broke("transfer.globus_ls_cli_missing", error=
                 "globus CLI not on PATH for the no-overwrite check. "
-                "Install it (`pipx install globus-cli`) and `globus "
+                "Re-run ./scripts/setup.sh (installs globus-cli into the "
+                "runtime env; the launcher puts its bin/ on PATH) and `globus "
                 "login`, then retry.",
                 provider=self.name)
         except subprocess.TimeoutExpired as e:
@@ -672,8 +674,9 @@ class GlobusProvider(TransferProvider):
         except FileNotFoundError:
             return broke("transfer.globus_submit_cli_missing",
                 error=
-                    "globus CLI not on PATH. Install it (`pipx install "
-                    "globus-cli`) and authenticate (`globus login`), "
+                    "globus CLI not on PATH. Re-run ./scripts/setup.sh "
+                    "(installs globus-cli into the runtime env; the launcher "
+                    "puts its bin/ on PATH), authenticate (`globus login`), "
                     "then retry.",
                 provider=self.name,
                 hint=    "globus CLI not installed",

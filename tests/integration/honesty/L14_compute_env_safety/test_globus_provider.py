@@ -675,7 +675,9 @@ class TestCliMissing:
             local_sha256="0"*64, timeout=60)
         assert "error" in out
         assert "not on PATH" in out["error"]
-        assert "pipx install globus-cli" in out["error"]
+        # The remedy names the install path setup actually uses now — the CLI
+        # ships via the [hpc] extra, not a tool the user hunts down themselves.
+        assert "setup.sh" in out["error"] and "globus login" in out["error"]
 
     @pytest.mark.integration
     def test_auth_error_emits_hint(self, monkeypatch, tmp_path):

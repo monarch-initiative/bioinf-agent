@@ -29,8 +29,9 @@ git clone https://github.com/monarch-initiative/bioinf-agent && cd bioinf-agent
 `setup.sh` does five things, in order: finds conda (**asks** before installing a
 private miniforge under the repo if the machine has none); **asks** where the artifact
 store goes; creates the repo-local runtime env at `./.conda_runtime` and installs the
-agent into it (including the Globus CLI); pulls the core toolkit and chr22 test data;
-runs the systems check. It is idempotent — re-run it any time.
+agent into it, editable and with the Globus CLI (editable on purpose — the code must
+stay attached to this checkout); pulls the core toolkit and chr22 test data; runs the
+systems check. It is idempotent — re-run it any time.
 
 **The two questions it asks:**
 
@@ -38,9 +39,11 @@ runs the systems check. It is idempotent — re-run it any time.
    dir, no shell integration; delete `.miniforge/` to remove it.
 2. **Where should the artifact store go?** The directory every generated artifact
    lives in — envs, images, reports, sealed specs, reference data. Press Enter for the
-   offered default. Never inside the checkout: artifacts outlive any clone. (The code
-   and prompts call this directory *the workspace* — it is a per-machine store shared
-   by all your sessions and projects, not a per-session thing.)
+   offered default; the answer is recorded in `.bioinf_workspace`, and `--check`
+   prints every resolved location. Never inside the checkout: artifacts outlive any
+   clone. (The code and prompts call this directory *the workspace* — it is a
+   per-machine store shared by all your sessions and projects, not a per-session
+   thing.)
 
 Scripted installs answer both up front: `BIOINF_WORKSPACE=/path ./scripts/setup.sh --yes`.
 
@@ -85,12 +88,15 @@ Two situations ask something of you:
   talking, not a failure: the env is registered and shippable, and the tag says how much
   was *observed*. Each reason names what would close it — act on it or accept it.
 - **License-gated tools** (Novoalign-class) are never fetched by the agent. Download the
-  artifact under your own license and hand the local path over; the record then carries
-  `redistributable: false` and the image is delivered tarball-only.
+  artifact under your own license and hand the local path over; the agent freezes it
+  license-gated, so the record carries `redistributable: false` and the image is
+  delivered tarball-only.
 
-Any MCP client works, not just Claude Code — the tool surface is plain MCP, and the
-sealed artifacts (`workflow.yaml` + `recipe.yaml` + image digest) are self-contained,
-so another agent or system can consume them without this repo in the loop.
+Any MCP client works, not just Claude Code — the tool surface is plain MCP (no client:
+`python -m agent` runs the server directly). The sealed artifacts (`workflow.yaml` +
+`recipe.yaml` + image digest) are designed to be self-contained — the spec re-checks
+its own invariants standalone — so another agent or system can consume them without
+this repo in the loop.
 
 ---
 
@@ -110,8 +116,9 @@ The menu writes `projects_access.yaml` at the artifact-store root: which compute
 environments exist — `type: local` (this machine) and/or `type: ssh` (a cluster) —
 and, for remote machines, exactly which of your directories the agent may touch.
 Permissions are discrete grants (`file_name_only`, `upload`, `download`, `exec`);
-anything not listed is denied. Every save is validated by the agent's own loader, and
-the previous file is kept as `.bak`.
+anything not listed is denied. Every save is validated by the agent's own loader.
+Hand-editing the file is fine, but a menu save rewrites it (dropping hand-written
+comments) — the previous version is kept as `.bak`.
 
 **What you'll need to type, per scenario:**
 
@@ -161,10 +168,12 @@ timeout; it rarely changes.
 
 ## Tests
 
+pytest lives in the runtime env, so run it on that interpreter:
+
 ```bash
-pytest                                          # the project suite
-pytest -m "not live and not integration_docker" # the fast hermetic tier (what CI runs)
-pytest -m live                                  # opt-in: hits real package registries
+./.conda_runtime/bin/python -m pytest                                           # the project suite
+./.conda_runtime/bin/python -m pytest -m "not live and not integration_docker"  # fast hermetic tier (what CI runs)
+./.conda_runtime/bin/python -m pytest -m live                                   # opt-in: hits real package registries
 ```
 
 ## Docs

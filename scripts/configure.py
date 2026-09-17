@@ -520,12 +520,19 @@ def edit_slurm(env: dict) -> None:
 
 def _globus_cli() -> str:
     """The globus CLI, if installed. Resolved at use, never at import — the menu
-    must work on a machine that will never touch Globus."""
-    return shutil.which("globus") or ""
+    must work on a machine that will never touch Globus. PATH first, then the
+    runtime env's bin/ — setup installs globus-cli THERE, and this menu may be
+    the first thing that runs after setup, on a shell whose PATH never saw it."""
+    found = shutil.which("globus")
+    if found:
+        return found
+    runtime_copy = Path(sys.executable).parent / "globus"
+    return str(runtime_copy) if os.access(runtime_copy, os.X_OK) else ""
 
 
-_GLOBUS_INSTALL_HINT = ("globus CLI not found — install it (`pipx install globus-cli`) "
-                        "and run `globus login`, or type the UUIDs by hand below")
+_GLOBUS_INSTALL_HINT = ("globus CLI not found — re-run ./scripts/setup.sh (it installs "
+                        "globus-cli into the runtime env), then `globus login` — or "
+                        "type the UUIDs by hand below")
 
 
 def _globus_search(query: str) -> tuple[list[dict], str]:

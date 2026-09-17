@@ -24,13 +24,29 @@ goes through this same canonical path.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
-# Before fastmcp loads: its CLI banner otherwise carries a "🎉 Update available —
-# pip install --upgrade fastmcp" call to action. The pin (pyproject: fastmcp<4)
-# is deliberate, so the nag is never actionable here — and typed at a bare shell
-# it upgrades BASE python's copy, changing nothing about this server. setdefault,
-# so a user who wants the check back can export their own value.
+# Environment the server needs REGARDLESS of how it was launched. The dev
+# launcher (start_mcp_server.sh, via _env.sh) sets the same things for its
+# children, but `python -m agent` — the documented production launch — sources
+# nothing, so this module is the one place both paths share. All setdefault,
+# so an explicit user value always wins.
+#
+# - FASTMCP_CHECK_FOR_UPDATES: before fastmcp loads, or its banner carries a
+#   "🎉 Update available — pip install --upgrade fastmcp" call to action. The
+#   pin (pyproject: fastmcp<4) is deliberate, so the nag is never actionable
+#   here — and typed at a bare shell it upgrades BASE python's copy, changing
+#   nothing about this server.
+# - CONDA_NOTIFY_OUTDATED_CONDA: conda's own "update base conda" banner, which
+#   its child runs (EnvManager) would otherwise print mid-install.
+# - PATH: the interpreter's own bin/ carries the runtime env's console scripts
+#   (globus-cli above all — the transfer layer invokes `globus` off PATH).
 os.environ.setdefault("FASTMCP_CHECK_FOR_UPDATES", "off")
+os.environ.setdefault("CONDA_NOTIFY_OUTDATED_CONDA", "false")
+_bin = str(Path(sys.executable).resolve().parent)
+if _bin not in os.environ.get("PATH", "").split(os.pathsep):
+    os.environ["PATH"] = _bin + os.pathsep + os.environ.get("PATH", "")
 
 from agent.mcp_server import (  # noqa: E402
     _reap_orphan_service_pids,
