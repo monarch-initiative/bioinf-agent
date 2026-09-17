@@ -395,17 +395,35 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
         for op in operator_supplied_steps(recipe):
             out += _fence(render_step_commands(op))
     elif longtail:
-        # No transcript on this record (frozen before it was captured). Render the
-        # DERIVED form and label it as derived — a reader must be able to tell a
-        # recorded command from a reconstructed one, because only the first is
-        # evidence of how these bytes came to exist.
+        # No transcript on this record. Render the DERIVED form and label it as
+        # derived — a reader must be able to tell a recorded command from a
+        # reconstructed one, because only the first is evidence of how these bytes
+        # came to exist.
+        #
+        # TWO routes land here, and the old text asserted the wrong one (CS63): it
+        # said the env "was frozen before the build transcript was captured" and
+        # prescribed a re-freeze — on an artifact a cold-start reader had frozen four
+        # minutes earlier, for whom the remedy costs a rebuild and reproduces this
+        # exact warning. An install routed through the engine's conda/PyPI layer (a
+        # plain `pip install`) NEVER produces a RUN transcript; its provenance is the
+        # lock. Only a RUN-baked tier that predates transcript capture is the case
+        # the old sentence described. The recipe cannot always tell the two apart,
+        # so the warning now states the observable fact (no transcript IN THIS
+        # RECIPE) and explains both routes instead of asserting an age.
+        lock_note = (
+            " — but an install routed through the engine's conda/PyPI layer (a plain "
+            "`pip install`) never produces one: its exact bytes are pinned by the "
+            "lock carried in `recipe.yaml`, which is the stronger anchor."
+            if recipe.get("conda_lock") else ".")
         out += ["# 2. install the non-conda tools (each baked + validated in the image):",
                 "",
-                "> ⚠ **Derived, not recorded.** This env was frozen before the build "
-                "transcript was captured, so the commands below are RECONSTRUCTED from "
-                "the recorded install methods rather than quoted from the build. They "
-                "describe how this tool installs; they are not proof of how THIS image "
-                "was built. Re-freeze to get the verbatim transcript.", ""]
+                "> ⚠ **Derived, not recorded.** This recipe carries no verbatim build "
+                "transcript for these steps, so the commands below are RECONSTRUCTED "
+                "from the recorded install methods rather than quoted from the build. "
+                "They describe how each tool installs; they are not proof of how THIS "
+                "image was built. A freeze at current HEAD records RUN-baked install "
+                "commands verbatim, so for those tiers a re-freeze captures the "
+                "transcript" + lock_note, ""]
         for p in longtail:
             cmds = render_step_commands(p)
             if cmds:

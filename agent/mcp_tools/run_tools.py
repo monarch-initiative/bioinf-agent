@@ -17,7 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
-from agent.models.core_data import PipelineStep
+from agent.models.core_data import PipelineStep, default_step_tool
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
@@ -129,7 +129,7 @@ def run_pipeline_step(
     # Constructed THROUGH the model (typed-records Seam A): a shape the record
     # refuses is refused here, at the producer, not discovered at seal.
     step_data = PipelineStep.produce(
-        tool=tool or (command.split() or [""])[0],
+        tool=tool or default_step_tool(command),
         subcommand=subcommand or None,
         purpose=purpose or None,
         command=command,
@@ -347,7 +347,7 @@ def run_step_in_container(
     # seal can verify same-path-same-bytes against downstream consumers.
     output_sha256 = _ms._env_mgr.hash_outputs(detected)
     step_data = PipelineStep.produce(
-        tool=tool or (command.split() or [""])[0],
+        tool=tool or default_step_tool(command),
         subcommand=subcommand or None,
         purpose=purpose or None,
         command=command,
@@ -480,7 +480,7 @@ def run_in_env(
     )
     if pipeline_id:
         step_data = PipelineStep.produce(
-            tool=tool or (command.split() or [""])[0],
+            tool=tool or default_step_tool(command),
             subcommand=subcommand or None,
             purpose=purpose or None,
             command=command,

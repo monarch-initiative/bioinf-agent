@@ -1787,6 +1787,53 @@ class UsageTemplate(BaseModel):
     example:          Optional[str] = None    # concrete invocation example
 
 
+#: Shell words that set the stage without naming the work — a step whose command
+#: begins `mkdir -p out && samtools flagstat …` is a samtools step, and titling it
+#: "mkdir" names the least important token on the line (CS22). Shell vocabulary,
+#: not tool vocabulary: adding a bioinformatics tool name here would be the
+#: tool-specific-code rule violation, and none is needed. Two classes because they
+#: skip differently: a WRAPPER's argument IS the real command (`time -v tool run`),
+#: a terminal builtin's arguments are not (`mkdir -p out`).
+_SHELL_PRELUDE = frozenset({
+    "mkdir", "cd", "set", "export", "touch", "true", "echo",
+    "ulimit", "umask", "source", ".",
+})
+_SHELL_WRAPPERS = frozenset({"time", "nice", "env", "ionice", "stdbuf"})
+
+
+def default_step_tool(command: str) -> str:
+    """The fallback `tool` for a recorded step whose producer was not told one —
+    THE one reading, for every run primitive that stamps a step record.
+
+    The old default at all six producer sites was the command's first token,
+    which titled a `mkdir -p … && samtools flagstat …` step "mkdir" on the RUN
+    dashboard — the heading is the scannable part of the page and it named shell
+    plumbing. Walk the &&/;/| segments: unwrap wrapper commands (their argument
+    is the real command), skip VAR=value assignments, and return the first
+    command word that is not stage-setting shell. When every segment is prelude,
+    fall back to the first token, which at least states the truth of a command
+    that really is only `mkdir`."""
+    def _drop_assignments(toks: list) -> None:
+        while toks and "=" in toks[0] and not toks[0].startswith(("=", "/")):
+            toks.pop(0)
+
+    first = ""
+    for seg in re.split(r"[;|&]+", command or ""):
+        toks = seg.split()
+        _drop_assignments(toks)
+        while toks and toks[0].rsplit("/", 1)[-1] in _SHELL_WRAPPERS:
+            toks.pop(0)                                   # the wrapper itself
+            while toks and toks[0].startswith("-"):
+                toks.pop(0)                               # its flags
+            _drop_assignments(toks)                       # env VAR=… cmd
+        if not toks:
+            continue
+        first = first or toks[0]
+        if toks[0].rsplit("/", 1)[-1] not in _SHELL_PRELUDE:
+            return toks[0]
+    return first
+
+
 def usage_commands(usage: Any) -> list[str]:
     """The ordered, non-empty commands in a usage block — THE one reading of
     `command_template`, for every consumer (I4 self-test, I6 placeholder scan, the
