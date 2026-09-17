@@ -156,41 +156,87 @@ def _parse_sbatch_parsable(stdout: str) -> Optional[str]:
 _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
-def _resolve_slurm_and_email(per_job_slurm: Mapping, env: Mapping) -> tuple[dict, str]:
+def resolve_gpu_placement(per_job_slurm: Mapping, env: Mapping) -> dict:
+    """Decide a GPU job's partition/qos from the two places either can come from,
+    and STATE which happened. Returns
+
+        {"state": <one of workflow_render._GPU_PLACEMENT_STATES>,
+         "gpus": int,
+         "partition": str|None, "partition_source": "job"|"env_convention"|None,
+         "qos":       str|None, "qos_source":       "job"|"env_convention"|None}
+
+    Two sources, filled PER SLOT with the job winning:
+
+      job             the caller named it in this job's `slurm` request. It wins
+                      because it is the more specific statement AND the better
+                      informed one: a caller that just ran `cluster_partitions`
+                      read the placement off the live cluster, while the env
+                      block is whatever was typed into the config once.
+      env_convention  env.slurm.gpu.{partition,qos} — this HPC's standing rule,
+                      filling any slot the job left open.
+
+    Neither is required. A GPU request used to be REFUSED when the env declared
+    no `slurm.gpu` block, which made the env key a de-facto requirement for GPU
+    work and — because the env also OVERRODE the job's own values — left a caller
+    who had discovered a real partition with no way to use it. Both halves are
+    gone: every slot is fillable from either side or from neither, and what
+    actually resolved is reported rather than demanded.
+    """
+    sl = compute_access.get_slurm_config(env) or {}
+    gpu = sl.get("gpu") or {}
+    job = per_job_slurm or {}
+    try:
+        gpus = int(job.get("gpus", 0) or 0)
+    except (TypeError, ValueError):
+        gpus = 0
+    out: dict = {"gpus": gpus}
+    for slot in ("partition", "qos"):
+        if job.get(slot):
+            out[slot], out[f"{slot}_source"] = job[slot], "job"
+        elif gpus > 0 and gpu.get(slot):
+            out[slot], out[f"{slot}_source"] = gpu[slot], "env_convention"
+        else:
+            out[slot], out[f"{slot}_source"] = None, None
+    out["state"] = workflow_render.gpu_placement_state(
+        gpus, out["partition"], out["qos"])
+    return out
+
+
+def _resolve_slurm_and_email(per_job_slurm: Mapping,
+                             env: Mapping) -> tuple[dict, str, dict]:
     """Merge the per-job resource request with the env's slurm POLICY into the
     final render spec, and pull the notification email from the env.
 
     The agent's per-job dict carries resource SIZING (time/mem/cpus/ntasks/gpus);
     the HPC's constants (account, default partition, GPU convention) live in the
     env `slurm:` block and are merged here so a header follows the cluster's rules:
-      - GPU (gpus>0): partition + qos come from env.slurm.gpu — the HPC's GPU
-        convention. Refuse if the env declares none (GPU not configured here).
+      - GPU (gpus>0): partition + qos per `resolve_gpu_placement` — job first,
+        then the env convention, then neither. Never a refusal.
       - CPU (gpus==0): default partition from env.slurm.partition if the job set
-        none; qos dropped (it's GPU-only in our convention).
+        none; a job-supplied qos is HONOURED (it used to be dropped as "GPU-only",
+        which is this codebase's convention and not SLURM's — plenty of sites
+        attach a qos to CPU work, and silently discarding one the caller typed is
+        the accept-a-knob-and-ignore-it shape we delete elsewhere).
       - account: from env.slurm.account unless the job set one explicitly.
-    Returns (merged_slurm, email)."""
+    Returns (merged_slurm, email, gpu_placement)."""
     sl = compute_access.get_slurm_config(env) or {}
     merged = dict(per_job_slurm or {})
-    try:
-        gpus = int(merged.get("gpus", 0) or 0)
-    except (TypeError, ValueError):
-        gpus = 0
-    if gpus > 0:
-        gpu = sl.get("gpu") or {}
-        if not (gpu.get("partition") and gpu.get("qos")):
-            raise ValueError(
-                f"job requests gpus={gpus} but compute env {env.get('name')!r} "
-                f"declares no slurm.gpu convention (partition + qos) — GPU is not "
-                f"configured on this env")
-        merged["partition"] = gpu["partition"]
-        merged["qos"] = gpu["qos"]
-    else:
-        merged.pop("qos", None)                      # qos is GPU-only
-        if "partition" not in merged and sl.get("partition"):
-            merged["partition"] = sl["partition"]
+    placement = resolve_gpu_placement(merged, env)
+    for slot in ("partition", "qos"):
+        if placement[slot]:
+            merged[slot] = placement[slot]
+        else:
+            merged.pop(slot, None)
+    # env.slurm.partition is the CPU DEFAULT, so it fills only a CPU job's empty
+    # slot. Letting it fill a GPU job's would take the one outcome the old refusal
+    # existed to prevent — a GPU request landing on a CPU partition — and make it
+    # the silent default. `undeclared` has to mean no --partition line at all.
+    if placement["state"] == "not_applicable" and not merged.get("partition") \
+            and sl.get("partition"):
+        merged["partition"] = sl["partition"]
     if "account" not in merged and sl.get("account"):
         merged["account"] = sl["account"]
-    return merged, (env.get("email") or "")
+    return merged, (env.get("email") or ""), placement
 
 
 def render_workflow_files(*, tool_name: str, command: str,
@@ -209,12 +255,18 @@ def render_workflow_files(*, tool_name: str, command: str,
     (each of which authorizes a DIFFERENT workflow_dir family — directories[] vs
     scratch) share the same render+merge shape without sharing the upload/auth
     logic. `env` is optional for back-compat: when None, the per-job slurm renders
-    as-is with no email."""
+    as-is with no email.
+
+    The returned dict carries `gpu_placement` alongside the file strings — the
+    stated record of which GPU partition/qos resolved and from where, so the
+    caller can put it in its own record. A relaxed gate that reported nothing
+    would just be a deleted gate."""
     if env is not None:
-        slurm, email = _resolve_slurm_and_email(slurm, env)
+        slurm, email, placement = _resolve_slurm_and_email(slurm, env)
     else:
         email = ""
-    return workflow_render.render_workflow(
+        placement = resolve_gpu_placement(slurm, {})
+    rendered = workflow_render.render_workflow(
         tool_name=tool_name,
         command=command,
         inputs=inputs,
@@ -226,6 +278,8 @@ def render_workflow_files(*, tool_name: str, command: str,
         workflow_name=workflow_name,
         email=email,
     )
+    rendered["gpu_placement"] = placement
+    return rendered
 
 
 def sbatch_via_ssh(env: dict, workflow_dir: str, *,
@@ -454,6 +508,11 @@ def submit_workflow_job(project_name: str,
             "apptainer_module": apptainer_module,
             "nextflow_module":  nextflow_module,
             "slurm":            dict(slurm),
+            # What the header ACTUALLY resolved for GPU placement, and from
+            # which source. `slurm` above is the caller's REQUEST; this is the
+            # observation, and for a `gpus>0` job it is the difference between
+            # a run that saw a device and one that did not.
+            "gpu_placement":    rendered.get("gpu_placement"),
             "files_uploaded":   files_uploaded,
             "sbatch_command":   sb.get("sbatch_command"),
             "submitted_at":     submitted_at,
@@ -487,6 +546,7 @@ def submit_workflow_job(project_name: str,
             submitted_at=submitted_at,
             upload_started=upload_started,
             manifest_path=manifest_path,
+            gpu_placement=rendered.get("gpu_placement"),
         )
 
     except (ValueError, compute_access.PermissionDenied,

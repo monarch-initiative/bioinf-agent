@@ -591,10 +591,62 @@ class TestSlurmConvention:
         assert "#SBATCH --gres=gpu:2" in sh
 
     @pytest.mark.integration
-    def test_gpu_without_partition_or_qos_refused(self):
-        """A GPU count with no partition/qos would land on a CPU node — refuse."""
-        with pytest.raises(ValueError, match="gpus"):
-            _render({"time": "1:00:00", "mem": "8G", "gpus": 1})
+    def test_gpu_without_partition_or_qos_renders_and_says_so(self):
+        """A GPU count with no partition/qos is a STATE, not a refusal.
+
+        It used to raise, which made the env's `slurm.gpu` block a de-facto
+        requirement for any GPU work — wrong on a cluster whose scheduler routes
+        gres requests itself and is SLOWED by being handed a partition. What the
+        renderer owes instead is the consequence, in the artifact a human reads.
+        """
+        sh = _render({"time": "1:00:00", "mem": "8G", "gpus": 1})
+        assert "#SBATCH --gres=gpu:1" in sh
+        assert "#SBATCH --partition" not in sh
+        assert "#SBATCH --qos" not in sh
+        assert "GPU placement:" in sh and "the scheduler" in sh
+
+    @pytest.mark.integration
+    def test_gpu_without_qos_never_renders_the_literal_none(self):
+        """`--qos` is emitted on PRESENCE, not on gpus>0.
+
+        The old gate was `line(sv["gpus"] > 0, f"--qos={sv.get('qos')}")`, safe
+        only because the refusal above guaranteed a qos existed. Relaxing that
+        without this would have shipped `#SBATCH --qos=None` to a scheduler.
+        """
+        sh = _render({"time": "1:00:00", "mem": "8G", "gpus": 1,
+                      "partition": "a100-gpu"})
+        assert "#SBATCH --qos" not in sh
+        assert "None" not in sh
+        assert "#SBATCH --partition=a100-gpu" in sh
+        assert "GPU placement:" in sh          # partially_declared is stated too
+
+    @pytest.mark.integration
+    def test_cpu_job_keeps_a_qos_it_was_given(self):
+        """qos is not GPU-only in SLURM; a CPU job that names one gets it."""
+        sh = _render({"time": "1:00:00", "mem": "8G", "qos": "cpu_access"})
+        assert "#SBATCH --qos=cpu_access" in sh
+        assert "--gres" not in sh
+        assert "GPU placement:" not in sh      # not_applicable says nothing
+
+    @pytest.mark.integration
+    def test_fully_declared_gpu_job_carries_no_placement_note(self):
+        sh = _render({"time": "2-", "mem": "20g", "gpus": 1,
+                      "partition": "a100-gpu", "qos": "gpu_access"})
+        assert "GPU placement:" not in sh
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("gpus,partition,qos,expected", [
+        (0, None, None, "not_applicable"),
+        (0, "general", "cpu_access", "not_applicable"),
+        (1, "a100-gpu", "gpu_access", "declared"),
+        (1, "a100-gpu", None, "partially_declared"),
+        (1, None, "gpu_access", "partially_declared"),
+        (1, None, None, "undeclared"),
+        (2, "", "", "undeclared"),
+    ])
+    def test_placement_state_classifier(self, gpus, partition, qos, expected):
+        from agent.skills.workflow_render import gpu_placement_state
+        assert gpu_placement_state(gpus, partition, qos) == expected
 
     @pytest.mark.integration
     def test_multi_partition_comma_allowed(self):
@@ -610,7 +662,7 @@ class TestSlurmPolicyMerge:
     @pytest.mark.integration
     def test_email_pulled_from_env(self):
         from agent.skills.submit_workflow import _resolve_slurm_and_email
-        merged, email = _resolve_slurm_and_email(
+        merged, email, _ = _resolve_slurm_and_email(
             {"time": "1:00:00", "mem": "4G"},
             {"name": "c", "type": "ssh", "email": "aaron@tislab.org"})
         assert email == "aaron@tislab.org"
@@ -618,7 +670,7 @@ class TestSlurmPolicyMerge:
     @pytest.mark.integration
     def test_account_and_default_partition_from_env(self):
         from agent.skills.submit_workflow import _resolve_slurm_and_email
-        merged, _ = _resolve_slurm_and_email(
+        merged, _, _ = _resolve_slurm_and_email(
             {"time": "1:00:00", "mem": "4G"},
             {"name": "c", "type": "ssh",
              "slurm": {"account": "lab1", "partition": "general"}})
@@ -628,28 +680,90 @@ class TestSlurmPolicyMerge:
     @pytest.mark.integration
     def test_gpu_partition_qos_from_env_convention(self):
         from agent.skills.submit_workflow import _resolve_slurm_and_email
-        merged, _ = _resolve_slurm_and_email(
+        merged, _, placement = _resolve_slurm_and_email(
             {"time": "2-", "mem": "20g", "gpus": 1},
             {"name": "c", "type": "ssh",
              "slurm": {"gpu": {"partition": "a100-gpu", "qos": "gpu_access"}}})
         assert merged["partition"] == "a100-gpu"
         assert merged["qos"] == "gpu_access"
+        assert placement["state"] == "declared"
+        assert placement["partition_source"] == "env_convention"
+        assert placement["qos_source"] == "env_convention"
 
     @pytest.mark.integration
-    def test_gpu_request_refused_when_env_has_no_gpu_convention(self):
+    def test_gpu_request_allowed_when_env_has_no_gpu_convention(self):
+        """The env's slurm.gpu block is fillable, not required.
+
+        This used to raise `GPU is not configured on this env`, which turned a
+        config key into a prerequisite for GPU work and could not be satisfied
+        on a cluster where naming a partition is the wrong move. The placement
+        is now reported as `undeclared` — absence stated as absence.
+        """
         from agent.skills.submit_workflow import _resolve_slurm_and_email
-        with pytest.raises(ValueError, match="GPU is not configured"):
-            _resolve_slurm_and_email(
-                {"time": "2-", "mem": "20g", "gpus": 1},
-                {"name": "plain", "type": "ssh"})
+        merged, _, placement = _resolve_slurm_and_email(
+            {"time": "2-", "mem": "20g", "gpus": 1},
+            {"name": "plain", "type": "ssh"})
+        assert placement["state"] == "undeclared"
+        assert placement["partition"] is None and placement["qos"] is None
+        assert placement["partition_source"] is None
+        assert "partition" not in merged and "qos" not in merged
 
     @pytest.mark.integration
-    def test_cpu_job_drops_qos_and_omits_policy_when_env_bare(self):
+    def test_job_supplied_gpu_placement_beats_the_env_convention(self):
+        """A caller that ran `cluster_partitions` knows more than the config.
+
+        The env used to OVERWRITE the job's values, so a discovered partition was
+        unusable: you could read a real one off the cluster and have no way to
+        submit with it.
+        """
         from agent.skills.submit_workflow import _resolve_slurm_and_email
-        merged, email = _resolve_slurm_and_email(
-            {"time": "1:00:00", "mem": "4G", "qos": "sneaky"},
+        merged, _, placement = _resolve_slurm_and_email(
+            {"time": "2-", "mem": "20g", "gpus": 1,
+             "partition": "l40-gpu", "qos": "gpu_access_plus"},
+            {"name": "c", "type": "ssh",
+             "slurm": {"gpu": {"partition": "a100-gpu", "qos": "gpu_access"}}})
+        assert merged["partition"] == "l40-gpu"
+        assert merged["qos"] == "gpu_access_plus"
+        assert placement["state"] == "declared"
+        assert placement["partition_source"] == "job"
+        assert placement["qos_source"] == "job"
+
+    @pytest.mark.integration
+    def test_slots_fill_independently_from_job_and_env(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, _, placement = _resolve_slurm_and_email(
+            {"time": "2-", "mem": "20g", "gpus": 1, "partition": "l40-gpu"},
+            {"name": "c", "type": "ssh",
+             "slurm": {"gpu": {"partition": "a100-gpu", "qos": "gpu_access"}}})
+        assert merged["partition"] == "l40-gpu"     # job wins its slot
+        assert merged["qos"] == "gpu_access"        # env fills the one left open
+        assert placement["partition_source"] == "job"
+        assert placement["qos_source"] == "env_convention"
+
+    @pytest.mark.integration
+    def test_cpu_default_partition_never_captures_a_gpu_job(self):
+        """`env.slurm.partition` is the CPU default and must not fill a GPU slot.
+
+        Letting it would take the exact outcome the old refusal existed to
+        prevent — a GPU request landing on a CPU partition — and make it silent.
+        """
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, _, placement = _resolve_slurm_and_email(
+            {"time": "2-", "mem": "20g", "gpus": 1},
+            {"name": "c", "type": "ssh", "slurm": {"partition": "general"}})
+        assert "partition" not in merged
+        assert placement["state"] == "undeclared"
+
+    @pytest.mark.integration
+    def test_cpu_job_keeps_qos_and_omits_policy_when_env_bare(self):
+        from agent.skills.submit_workflow import _resolve_slurm_and_email
+        merged, email, placement = _resolve_slurm_and_email(
+            {"time": "1:00:00", "mem": "4G", "qos": "cpu_access"},
             {"name": "bare", "type": "ssh"})
-        assert "qos" not in merged          # qos is GPU-only in our convention
+        # qos used to be dropped here as "GPU-only" — this codebase's convention,
+        # not SLURM's, and an accepted-then-discarded knob either way.
+        assert merged["qos"] == "cpu_access"
+        assert placement["state"] == "not_applicable"
         assert "partition" not in merged and "account" not in merged
         assert email == ""
 

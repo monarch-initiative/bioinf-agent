@@ -118,6 +118,30 @@ class TestResourceMapping:
         assert out == {"mem": "8g", "time": "02:00:00", "cpus": 4, "gpus": 0}
 
     @pytest.mark.integration
+    def test_gpu_placement_passes_through_to_the_cluster_locus(self):
+        """A GPU production run must be able to say WHERE it lands.
+
+        Without this passthrough `resources` could ask for `gpus: N` and had no
+        way to name a partition, so placement came only from the env's standing
+        convention — and a partition read off the live cluster with
+        `cluster_partitions` was unusable from this verb.
+        """
+        out = run_production._resources_to_slurm(
+            {"mem_gb": 40, "time": "04:00:00", "cpus": 8, "gpus": 1,
+             "partition": "l40-gpu", "qos": "gpu_access"})
+        assert out["partition"] == "l40-gpu"
+        assert out["qos"] == "gpu_access"
+        assert out["gpus"] == 1
+
+    @pytest.mark.integration
+    def test_omitting_placement_stays_omitted(self):
+        """Neither key is invented — an absent partition renders no --partition
+        line, which is `gpu_placement: undeclared`, not a CPU default."""
+        out = run_production._resources_to_slurm(
+            {"mem_gb": 40, "time": "04:00:00", "gpus": 1})
+        assert "partition" not in out and "qos" not in out
+
+    @pytest.mark.integration
     def test_docker_flags(self):
         assert run_production._docker_resource_flags({"mem_gb": 2, "cpus": 1}) == \
             ["--memory", "2g", "--cpus", "1"]

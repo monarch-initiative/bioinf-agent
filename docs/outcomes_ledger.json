@@ -125,8 +125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_to_cluster",
-    "where": "agent/skills/acquire_data.py:341",
-    "end_line": 343,
+    "where": "agent/skills/acquire_data.py:344",
+    "end_line": 346,
     "named_in_test": false
   },
   {
@@ -135,8 +135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:512",
-    "end_line": 514,
+    "where": "agent/skills/acquire_data.py:518",
+    "end_line": 520,
     "named_in_test": false
   },
   {
@@ -1305,8 +1305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:519",
-    "end_line": 519,
+    "where": "agent/skills/run_production.py:533",
+    "end_line": 533,
     "named_in_test": false
   },
   {
@@ -1315,8 +1315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:521",
-    "end_line": 522,
+    "where": "agent/skills/run_production.py:535",
+    "end_line": 536,
     "named_in_test": false
   },
   {
@@ -1375,8 +1375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "sbatch_via_ssh",
-    "where": "agent/skills/submit_workflow.py:254",
-    "end_line": 256,
+    "where": "agent/skills/submit_workflow.py:308",
+    "end_line": 310,
     "named_in_test": false
   },
   {
@@ -1385,8 +1385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "sbatch_via_ssh",
-    "where": "agent/skills/submit_workflow.py:268",
-    "end_line": 268,
+    "where": "agent/skills/submit_workflow.py:322",
+    "end_line": 322,
     "named_in_test": false
   },
   {
@@ -1395,8 +1395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "sbatch_via_ssh",
-    "where": "agent/skills/submit_workflow.py:272",
-    "end_line": 279,
+    "where": "agent/skills/submit_workflow.py:326",
+    "end_line": 333,
     "named_in_test": false
   },
   {
@@ -1405,8 +1405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:421",
-    "end_line": 427,
+    "where": "agent/skills/submit_workflow.py:475",
+    "end_line": 481,
     "named_in_test": true
   },
   {
@@ -1415,8 +1415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:515",
-    "end_line": 515,
+    "where": "agent/skills/submit_workflow.py:575",
+    "end_line": 575,
     "named_in_test": false
   },
   {
@@ -1425,8 +1425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:517",
-    "end_line": 517,
+    "where": "agent/skills/submit_workflow.py:577",
+    "end_line": 577,
     "named_in_test": false
   },
   {
@@ -1995,8 +1995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_disclose",
-    "where": "agent/skills/run_production.py:323",
-    "end_line": 326,
+    "where": "agent/skills/run_production.py:332",
+    "end_line": 335,
     "named_in_test": true
   },
   {
@@ -2005,8 +2005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_disclose",
-    "where": "agent/skills/run_production.py:328",
-    "end_line": 331,
+    "where": "agent/skills/run_production.py:337",
+    "end_line": 340,
     "named_in_test": false
   },
   {
@@ -2175,8 +2175,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_to_cluster",
-    "where": "agent/skills/acquire_data.py:400",
-    "end_line": 414,
+    "where": "agent/skills/acquire_data.py:403",
+    "end_line": 417,
     "named_in_test": false
   },
   {
@@ -2185,8 +2185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:581",
-    "end_line": 596,
+    "where": "agent/skills/acquire_data.py:587",
+    "end_line": 602,
     "named_in_test": false
   },
   {
@@ -2635,8 +2635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_on_cluster",
-    "where": "agent/skills/run_cluster_step.py:736",
-    "end_line": 759,
+    "where": "agent/skills/run_cluster_step.py:741",
+    "end_line": 764,
     "named_in_test": false
   },
   {
@@ -2675,8 +2675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:480",
-    "end_line": 490,
+    "where": "agent/skills/submit_workflow.py:539",
+    "end_line": 550,
     "named_in_test": false
   },
   {
@@ -2985,8 +2985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/mcp_tools/bridge_tools.py:286",
-    "end_line": 287,
+    "where": "agent/mcp_tools/bridge_tools.py:292",
+    "end_line": 293,
     "named_in_test": false
   },
   {
@@ -2995,8 +2995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/mcp_tools/bridge_tools.py:290",
-    "end_line": 291,
+    "where": "agent/mcp_tools/bridge_tools.py:296",
+    "end_line": 297,
     "named_in_test": false
   },
   {
@@ -3545,8 +3545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_to_cluster",
-    "where": "agent/skills/acquire_data.py:315",
-    "end_line": 315,
+    "where": "agent/skills/acquire_data.py:318",
+    "end_line": 318,
     "named_in_test": false
   },
   {
@@ -3555,8 +3555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_to_cluster",
-    "where": "agent/skills/acquire_data.py:323",
-    "end_line": 323,
+    "where": "agent/skills/acquire_data.py:326",
+    "end_line": 326,
     "named_in_test": false
   },
   {
@@ -3565,8 +3565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:440",
-    "end_line": 442,
+    "where": "agent/skills/acquire_data.py:443",
+    "end_line": 445,
     "named_in_test": true
   },
   {
@@ -3575,8 +3575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:445",
-    "end_line": 447,
+    "where": "agent/skills/acquire_data.py:448",
+    "end_line": 450,
     "named_in_test": true
   },
   {
@@ -3585,8 +3585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:459",
-    "end_line": 459,
+    "where": "agent/skills/acquire_data.py:462",
+    "end_line": 462,
     "named_in_test": false
   },
   {
@@ -3595,8 +3595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:461",
-    "end_line": 463,
+    "where": "agent/skills/acquire_data.py:464",
+    "end_line": 466,
     "named_in_test": true
   },
   {
@@ -3605,8 +3605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:466",
-    "end_line": 467,
+    "where": "agent/skills/acquire_data.py:469",
+    "end_line": 470,
     "named_in_test": true
   },
   {
@@ -3615,8 +3615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:472",
-    "end_line": 474,
+    "where": "agent/skills/acquire_data.py:475",
+    "end_line": 477,
     "named_in_test": true
   },
   {
@@ -3625,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:487",
-    "end_line": 487,
+    "where": "agent/skills/acquire_data.py:493",
+    "end_line": 493,
     "named_in_test": false
   },
   {
@@ -3635,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_via_recipe",
-    "where": "agent/skills/acquire_data.py:495",
-    "end_line": 495,
+    "where": "agent/skills/acquire_data.py:501",
+    "end_line": 501,
     "named_in_test": false
   },
   {
@@ -3645,8 +3645,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:731",
-    "end_line": 735,
+    "where": "agent/skills/acquire_data.py:737",
+    "end_line": 741,
     "named_in_test": true
   },
   {
@@ -3655,8 +3655,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:738",
-    "end_line": 745,
+    "where": "agent/skills/acquire_data.py:744",
+    "end_line": 751,
     "named_in_test": true
   },
   {
@@ -3665,8 +3665,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:747",
-    "end_line": 753,
+    "where": "agent/skills/acquire_data.py:753",
+    "end_line": 759,
     "named_in_test": true
   },
   {
@@ -3675,8 +3675,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:755",
-    "end_line": 761,
+    "where": "agent/skills/acquire_data.py:761",
+    "end_line": 767,
     "named_in_test": true
   },
   {
@@ -3685,8 +3685,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "check_cluster_reference_db",
-    "where": "agent/skills/acquire_data.py:765",
-    "end_line": 776,
+    "where": "agent/skills/acquire_data.py:771",
+    "end_line": 782,
     "named_in_test": true
   },
   {
@@ -4705,8 +4705,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:439",
-    "end_line": 442,
+    "where": "agent/skills/run_production.py:453",
+    "end_line": 456,
     "named_in_test": false
   },
   {
@@ -4715,8 +4715,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:444",
-    "end_line": 445,
+    "where": "agent/skills/run_production.py:458",
+    "end_line": 459,
     "named_in_test": false
   },
   {
@@ -4725,8 +4725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:463",
-    "end_line": 467,
+    "where": "agent/skills/run_production.py:477",
+    "end_line": 481,
     "named_in_test": true
   },
   {
@@ -4735,8 +4735,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:477",
-    "end_line": 478,
+    "where": "agent/skills/run_production.py:491",
+    "end_line": 492,
     "named_in_test": true
   },
   {
@@ -4745,8 +4745,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:506",
-    "end_line": 508,
+    "where": "agent/skills/run_production.py:520",
+    "end_line": 522,
     "named_in_test": false
   },
   {
@@ -4755,8 +4755,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:517",
-    "end_line": 517,
+    "where": "agent/skills/run_production.py:531",
+    "end_line": 531,
     "named_in_test": true
   },
   {
@@ -5215,8 +5215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:361",
-    "end_line": 363,
+    "where": "agent/skills/submit_workflow.py:415",
+    "end_line": 417,
     "named_in_test": false
   },
   {
@@ -5225,8 +5225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:366",
-    "end_line": 372,
+    "where": "agent/skills/submit_workflow.py:420",
+    "end_line": 426,
     "named_in_test": false
   },
   {
@@ -5235,8 +5235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "submit_workflow_job",
-    "where": "agent/skills/submit_workflow.py:502",
-    "end_line": 502,
+    "where": "agent/skills/submit_workflow.py:562",
+    "end_line": 562,
     "named_in_test": true
   },
   {
@@ -5815,8 +5815,8 @@
     "source": "raw",
     "tagged": false,
     "func": "_probe_cluster_path",
-    "where": "agent/skills/acquire_data.py:625",
-    "end_line": 625,
+    "where": "agent/skills/acquire_data.py:631",
+    "end_line": 631,
     "named_in_test": null
   },
   {

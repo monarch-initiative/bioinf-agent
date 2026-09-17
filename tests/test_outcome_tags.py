@@ -112,15 +112,23 @@ def test_committed_ledger_matches_a_fresh_sweep_of_the_code():
     def ident(entries):
         return {(e["code"], e["where"]) for e in entries}
 
+    # `code` is None on an UNTAGGED terminal, so these tuples are not sortable
+    # against each other — and the only place they get sorted is inside the
+    # failure message below. This lint's whole job is to name its own fix; it
+    # was raising TypeError from the f-string instead of printing the fix, so a
+    # routine ledger shift read as a crash in the test.
+    def _preview(ids):
+        return sorted(ids, key=lambda t: (t[0] or "", t[1] or ""))[:5]
+
     phantom = ident(committed) - ident(fresh)   # in the ledger, not in the code
     missing = ident(fresh) - ident(committed)   # in the code, not in the ledger
     assert not phantom, (
         f"{len(phantom)} ledger terminal(s) no longer exist in the code — the "
-        f"dashboard is rendering ghosts. Run scripts/extract_outcomes.py. {sorted(phantom)[:5]}")
+        f"dashboard is rendering ghosts. Run scripts/extract_outcomes.py. {_preview(phantom)}")
     assert not missing, (
         f"{len(missing)} real terminal(s) are ABSENT from the ledger — they are "
         f"invisible to the dashboard and to the seaworthy meter, so a gate can "
-        f"exist and be uncounted. Run scripts/extract_outcomes.py. {sorted(missing)[:5]}")
+        f"exist and be uncounted. Run scripts/extract_outcomes.py. {_preview(missing)}")
     assert committed == fresh, (
         "ledger metadata drifted from a fresh sweep (outcome/source/func/"
         "named_in_test/end_line). Run scripts/extract_outcomes.py")

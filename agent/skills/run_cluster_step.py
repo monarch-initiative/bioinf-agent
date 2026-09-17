@@ -702,6 +702,11 @@ def run_step_on_cluster(
         # reader can edit them and resubmit variants by hand.
         "cluster_rendered_files":   {fn: rendered[fn] for fn in _RENDERED_FILES
                                      if isinstance(rendered.get(fn), str)},
+        # Which GPU partition/qos the header resolved, and from where. A
+        # `gpus>0` step that ran `undeclared` is a step whose placement the
+        # scheduler chose, and the recorded step should say so rather than
+        # leave a reader to infer it from the absence of a --partition line.
+        "gpu_placement":            rendered.get("gpu_placement"),
     }
     step_data = {k: v for k, v in step_data.items() if v is not None}
     step_index = _pipeline_state.add_step(pipeline_id, step_data)

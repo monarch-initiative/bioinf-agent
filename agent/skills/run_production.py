@@ -293,6 +293,15 @@ def _resources_to_slurm(resources: Mapping) -> dict:
     for k in ("cpus", "gpus", "ntasks"):
         if resources.get(k) is not None:
             out[k] = resources[k]
+    # partition / qos pass through to the cluster locus (the local branch has no
+    # scheduler to read them). Without this a production run could ask for
+    # `gpus: N` and had NO way to say where it should land — the placement came
+    # only from the env's standing convention, so a partition discovered with
+    # `cluster_partitions` was unusable from this verb. Omitting them is still
+    # fine: the job renders `gpu_placement: undeclared` and the scheduler picks.
+    for k in ("partition", "qos"):
+        if resources.get(k):
+            out[k] = resources[k]
     return out
 
 
@@ -411,8 +420,13 @@ def run_production_pipeline(project_name: str,
     command: ${PLACEHOLDER} slots. inputs: {NAME: absolute_path}. outputs:
       {NAME: bare_filename} (lands in workflow_dir). Same contract both loci.
     workflow_dir: a directories[] path with both `upload` and `exec`.
-    resources: {mem_gb, cpus, time, gpus?} — optional locally, REQUIRED on the
-      cluster (a SLURM job must declare mem + time).
+    resources: {mem_gb, cpus, time, gpus?, partition?, qos?} — optional locally,
+      REQUIRED on the cluster (a SLURM job must declare mem + time).
+      `partition`/`qos` are read only by the cluster locus (the local branch has
+      no scheduler) and are OPTIONAL there: name a pair from `cluster_partitions`
+      to place a GPU job yourself, or omit both and let the env's `slurm.gpu`
+      convention — or, failing that, the scheduler — decide. The resulting
+      `gpu_placement` state is reported in the return and the manifest.
     sealed_workflow: name of a sealed `{name}.workflow.yaml` to check this run's
       DATA against — the artifacts it binds vs the ones the workflow was
       validated with. Optional, and deliberately EXPLICIT rather than inferred
