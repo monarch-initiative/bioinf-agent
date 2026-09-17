@@ -80,7 +80,7 @@ from agent.skills import (
     submit_workflow,
     transfer,
 )
-from agent.models.core_data import PipelineStep
+from agent.models.core_data import PipelineStep, default_step_tool
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
@@ -202,7 +202,7 @@ def _record_failed_cluster_step(
 
     Returns the step_index (or None if the draft is gone)."""
     fields = {
-        "tool":             tool_name or (command.split() or [""])[0],
+        "tool":             tool_name or default_step_tool(command),
         "purpose":          f"cluster run of {tool_name or 'tool'} — FAILED "
                             f"({failure_code})",
         "command":          command,
@@ -647,7 +647,7 @@ def run_step_on_cluster(
 
     # ─── 7. Build the pipeline_step record + add to draft ─────────────
     step_data = {
-        "tool":                   tool_name or (command.split() or [""])[0],
+        "tool":                   tool_name or default_step_tool(command),
         "purpose":                f"cluster run of {tool_name or 'tool'}",
         "command":                command,
         "returncode":             rc,

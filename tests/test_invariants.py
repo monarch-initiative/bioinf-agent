@@ -4287,7 +4287,7 @@ def test_freeze_background_response_advertises_done_marker(monkeypatch, tmp_path
     watch (instead of misreading status.json as the completion signal)."""
     import agent.mcp_server as ms
 
-    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+    def _stub_start(command, *, env_name="", job_id="", working_dir="", tool=""):
         return {"job_id": job_id, "log_path": "/dev/null", "state": "running"}
     monkeypatch.setattr(ms._job_manager, "start", _stub_start)
     out = ms.freeze(env_name="n6_smoke", tools=["t=1"], background=True)
@@ -6152,7 +6152,7 @@ def test_freeze_background_returns_job_id_immediately(monkeypatch, tmp_path):
 
     started_jobs = {}
 
-    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+    def _stub_start(command, *, env_name="", job_id="", working_dir="", tool=""):
         started_jobs["command"]  = command
         started_jobs["job_id"]   = job_id
         started_jobs["log_path"] = str(tmp_path / f"{job_id}.log")
@@ -7190,7 +7190,7 @@ def test_freeze_background_writes_args_to_jobs_dir(monkeypatch, tmp_path):
     from agent import mcp_server as ms
 
     started = {}
-    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+    def _stub_start(command, *, env_name="", job_id="", working_dir="", tool=""):
         started["job_id"] = job_id
         started["log_path"] = str(tmp_path / f"{job_id}.log")
         return {"job_id": job_id, "log_path": started["log_path"], "state": "running"}

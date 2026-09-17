@@ -80,6 +80,7 @@ class JobManager:
         env_name: str = "",
         job_id: str = "",
         working_dir: str = "",
+        tool: str = "",
     ) -> dict[str, Any]:
         """Spawn `command` as a background process. Returns immediately.
 
@@ -89,6 +90,12 @@ class JobManager:
         job_id:   caller-supplied identifier (must be unique). If empty,
                   a 12-char hex ID is auto-generated.
         working_dir: subprocess cwd. Default: project root.
+        tool:     for a detached TOOL run, the MCP tool name being executed —
+                  captured into the status file so a ledger row can say WHAT the
+                  job is. For a backgrounded tool the `command` is the job_runner
+                  interpreter line (all N look identical truncated); the producer
+                  captures the meaningful name, the reader must not scrape it back
+                  out of the argv.
         """
         jid = job_id or self._auto_id()
         if self._is_active(jid):
@@ -164,6 +171,7 @@ class JobManager:
             "job_id":          jid,
             "state":           "running",
             "command":         command,
+            "tool":            tool,
             "env_name":        env_name,
             "working_dir":     cwd,
             "pid":             proc.pid,
@@ -362,9 +370,20 @@ class JobManager:
         handle) stays 'running' on disk forever. So a bare read reports zombies as live —
         exactly the agent_status inaccuracy this fixes. Here we re-observe: a 'running'
         record whose PID is no longer alive is reported as 'exited' with reconciled=True,
-        so the caller sees the truth without needing to have polled every job."""
+        so the caller sees the truth without needing to have polled every job.
+
+        Three ledger properties bought by a real cold-start drive (CS17), where ten
+        jobs — four refused, six succeeded — came back byte-identical in shape:
+          * `returncode` is IN the row. It was always in the status file and this
+            reader dropped it, so the one surface for "what happened to my work"
+            could not say which jobs failed. None while running / never reaped.
+          * NEWEST FIRST — the documented ordering. Globbing sorted by job_id, i.e.
+            alphabetically by tool name, which is no order a returning user wants.
+          * `tool` is the captured MCP tool name when the producer recorded one
+            (detached tool runs); "" on raw shell jobs and on status files from
+            before the field existed — absence, not scraped from the argv."""
         out = []
-        for f in sorted(self.jobs_dir.glob("*.status.json")):
+        for f in self.jobs_dir.glob("*.status.json"):
             try:
                 status = json.loads(f.read_text())
             except Exception:
@@ -380,7 +399,9 @@ class JobManager:
             row = {
                 "job_id":          status.get("job_id"),
                 "state":           state,
-                "command":         (status.get("command") or "")[:80],
+                "returncode":      status.get("returncode"),
+                "tool":            status.get("tool", ""),
+                "command":         (status.get("command") or "")[:120],
                 "env_name":        status.get("env_name", ""),
                 "start_time_iso":  status.get("start_time_iso"),
                 "elapsed_seconds": status.get("elapsed_seconds", 0.0),
@@ -388,6 +409,7 @@ class JobManager:
             if reconciled:
                 row["reconciled"] = True   # state was 'running' on disk but the PID is gone
             out.append(row)
+        out.sort(key=lambda r: r.get("start_time_iso") or "", reverse=True)
         return out
 
     # ------------------------------------------------------------------
