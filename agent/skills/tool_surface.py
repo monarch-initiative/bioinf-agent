@@ -139,6 +139,7 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="phenopacket_to_vcf", position=PRIMITIVE),
     _t(tool="snapshot_project", position=PRIMITIVE),
     _t(tool="cluster_module_avail", position=PRIMITIVE),
+    _t(tool="cluster_partitions", position=PRIMITIVE),
     _t(tool="upload", position=PRIMITIVE),
     _t(tool="download", position=PRIMITIVE),
     _t(tool="globus_task_status", position=PRIMITIVE),

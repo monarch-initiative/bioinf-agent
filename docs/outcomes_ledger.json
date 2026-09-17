@@ -270,6 +270,26 @@
     "named_in_test": false
   },
   {
+    "code": "partitions.sinfo_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_partitions",
+    "where": "agent/skills/cluster_partitions.py:390",
+    "end_line": 393,
+    "named_in_test": false
+  },
+  {
+    "code": "partitions.timeout",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_partitions",
+    "where": "agent/skills/cluster_partitions.py:438",
+    "end_line": 439,
+    "named_in_test": false
+  },
+  {
     "code": "container_build.validation_in_image_failed",
     "outcome": "broke",
     "source": "helper",
@@ -2965,8 +2985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/mcp_tools/bridge_tools.py:232",
-    "end_line": 233,
+    "where": "agent/mcp_tools/bridge_tools.py:286",
+    "end_line": 287,
     "named_in_test": false
   },
   {
@@ -2975,8 +2995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/mcp_tools/bridge_tools.py:236",
-    "end_line": 237,
+    "where": "agent/mcp_tools/bridge_tools.py:290",
+    "end_line": 291,
     "named_in_test": false
   },
   {
@@ -3787,6 +3807,36 @@
     "func": "cluster_module_avail",
     "where": "agent/skills/cluster_modules.py:230",
     "end_line": 230,
+    "named_in_test": false
+  },
+  {
+    "code": "partitions.no_env_access",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_partitions",
+    "where": "agent/skills/cluster_partitions.py:374",
+    "end_line": 377,
+    "named_in_test": false
+  },
+  {
+    "code": "partitions.not_ssh_env",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_partitions",
+    "where": "agent/skills/cluster_partitions.py:381",
+    "end_line": 383,
+    "named_in_test": false
+  },
+  {
+    "code": "partitions.bad_arg",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "cluster_partitions",
+    "where": "agent/skills/cluster_partitions.py:436",
+    "end_line": 436,
     "named_in_test": false
   },
   {
