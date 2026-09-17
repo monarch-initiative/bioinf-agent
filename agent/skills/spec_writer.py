@@ -811,28 +811,17 @@ def check_invariants(spec: dict) -> list[dict]:
                 "failed_files": failed_validations[:5],
             })
 
-        # I3 amendment: expected_type="any" is the lazy fallback that only
-        # checks file-exists-and-nonzero. For biomedical-grade specs, every
-        # validation must declare a real type so OutputValidator dispatches
-        # to a type-aware checker (samtools view for BAM, bcftools for VCF,
-        # json.loads for JSON, etc.). Forces agents to pass output_types in
-        # run_pipeline_step rather than leaning on extension-inference
-        # falling through to "any".
-        any_typed = [
-            (fn, v) for fn, v in validation.items()
-            if isinstance(v, dict) and (v.get("expected_type") or "").lower() == "any"
-        ]
-        if any_typed:
-            violations.append({
-                "invariant": "I3.declared_output_type",
-                "message":   f"pipeline_step {step_n} has {len(any_typed)} output(s) "
-                             f"validated as expected_type='any' (exists-nonzero only). "
-                             f"Declare a real type via run_pipeline_step's output_types "
-                             f"so the validator does type-aware checks. Lazy 'any' fails "
-                             f"the honesty contract — `touch foo.bar` would pass.",
-                "where":     f"pipeline_steps[step={step_n}].validation",
-                "any_typed_files": [fn for fn, _ in any_typed[:5]],
-            })
+        # NO refusal on expected_type="any" (I3.declared_output_type, DELETED
+        # 2026-09-16, user ruling). Existence + non-empty is a legitimate PRIMARY
+        # validation — snapshot, exit code and non-empty carry the run's evidence;
+        # the 18 type-aware checkers are a bonus where the format is known, never a
+        # requirement. The old refusal was worse than no gate: the identical
+        # exists-nonzero check sealed GREEN under any unknown type string ("pod5",
+        # "h5ad", a typo) and was REFUSED only when honestly declared "any" — so it
+        # punished stating the truth and rewarded inventing a format name. The
+        # record states what actually ran (`validation_method`: "tool" vs
+        # "exists_nonzero") and the RUN dashboard renders it; a reader sees the
+        # depth, nothing rounds it up.
 
     # ------------------------------------------------------------------
     # I6: paths in known-path fields are absolute. Relative paths in a

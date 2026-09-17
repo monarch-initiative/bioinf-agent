@@ -173,10 +173,22 @@ def test_invariant_checker_catches_orphan_step_input():
         "orphan input path with no producing source should violate I8"
 
 
-def test_invariant_checker_catches_any_typed_validation():
-    """I3 strengthening: a step whose validations all use expected_type='any'
-    (the lazy `_check_any` exists-nonzero fallback) is a violation. Forces
-    declared types so OutputValidator does real type-aware checks.
+def test_invariant_checker_accepts_any_typed_validation():
+    """expected_type='any' (exists + non-empty) is a LEGITIMATE primary
+    validation and must seal cleanly — user ruling 2026-09-16.
+
+    This test used to assert the OPPOSITE: an `I3.declared_output_type`
+    refusal on any validation typed 'any', on the reasoning that only a
+    type-aware check counts. That gate was deleted because it was worse
+    than no gate: the identical exists-nonzero check sealed GREEN under
+    any unknown type string ('pod5', 'h5ad', a typo — the dispatch table
+    falls through to the same _check_any), and was refused only when the
+    producer honestly declared 'any'. Same bytes, same check, opposite
+    verdicts, decided by which string was spelled — so the gate punished
+    stating the truth and taught every producer to invent a format name.
+    Snapshot + exit code + non-empty are the primary evidence; the
+    type-aware checkers are a bonus where the format is known, and the
+    record states which ran via `validation_method`.
     """
     spec = {
         "pipeline_name": "test",
@@ -188,18 +200,22 @@ def test_invariant_checker_catches_any_typed_validation():
             "returncode": 0,
             "inputs":  [{"path": "/abs/x.bam"}],
             "detected_outputs": ["/abs/out.weird"],
-            "validation": {"out.weird": {"passed": True, "expected_type": "any"}},
+            "validation": {"out.weird": {"passed": True, "expected_type": "any",
+                                         "validation_method": "exists_nonzero"}},
             "validation_status": "passed",
             "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0},
         }],
     }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I3.declared_output_type" for v in violations), \
-        "expected_type='any' should violate I3"
+    i3 = [v for v in check_invariants(spec) if v["invariant"].startswith("I3")]
+    assert not i3, \
+        f"an honestly-declared 'any' validation must not refuse the seal: {i3}"
 
 
 def test_invariant_checker_accepts_typed_validation():
-    """I3 sanity: a step with declared types (bam/json/etc) passes."""
+    """I3 sanity: a step with declared types (bam/json/etc) passes. Kept
+    alongside the 'any' twin above so both depths are pinned as sealable —
+    the difference between them is what the record SAYS ran, never the
+    verdict."""
     spec = {
         "pipeline_name": "test",
         "packages": [{"name": "samtools", "verify_output": "v1.21"}],
@@ -216,7 +232,7 @@ def test_invariant_checker_accepts_typed_validation():
         }],
     }
     violations = [v for v in check_invariants(spec)
-                  if v["invariant"] == "I3.declared_output_type"]
+                  if v["invariant"].startswith("I3")]
     assert not violations, f"typed validation should pass I3: {violations}"
 
 

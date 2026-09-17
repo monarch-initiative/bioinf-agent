@@ -72,9 +72,11 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          statement="every top-level list-of-records holds only dicts (shape sanity)",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants"),
     _inv(id="I3", layer=LAYER_WORKFLOW, status=ACTIVE,
-         statement="every rc=0 pipeline_step has validated detected_outputs, none typed "
-                   "'any', and no validation record says passed=False",
-         enforced_by="agent.skills.spec_writer.check_workflow_invariants"),
+         statement="every rc=0 pipeline_step has validated detected_outputs and no "
+                   "validation record says passed=False",
+         enforced_by="agent.skills.spec_writer.check_workflow_invariants",
+         note="exists+non-empty (expected_type='any') is a legitimate primary validation "
+              "— the record states validation_method, nothing refuses on depth"),
     _inv(id="I4", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="usage.command_template executes against every declared trial and each "
                    "produced file passes type-aware validation",

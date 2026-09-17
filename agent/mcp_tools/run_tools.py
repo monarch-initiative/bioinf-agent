@@ -68,12 +68,14 @@ def run_pipeline_step(
                   to expected_type (e.g. `{".vcf.gz": "vcf", ".bam": "bam",
                   "/tmp/report.html": "html"}`). Lookup order on each detected
                   output: absolute resolved path → as-detected path → basename
-                  → ".ext" → "ext" → extension inference. Pre-N8 only the
-                  basename/extension keys worked — passing a full path
-                  silently fell through to inference (which yields
-                  expected_type='any', an I3 violation at seal time). Unmatched
-                  output_types keys are reported back in the response as
-                  `output_types_unmatched` so a typo doesn't go silent.
+                  → ".ext" → "ext" → extension inference. An output that matches
+                  no key falls through to expected_type='any' — a legitimate
+                  exists-and-non-empty validation, recorded as such
+                  (validation_method='exists_nonzero'); declaring a known type
+                  upgrades it to a type-aware check (samtools/bcftools/…) for
+                  free. Unmatched output_types keys are reported back in the
+                  response as `output_types_unmatched` so a typo doesn't go
+                  silent.
 
     pipeline_id is required (this primitive's purpose is the merged flow).
     """
@@ -109,7 +111,8 @@ def run_pipeline_step(
     # N8 (batch-3): track which output_types keys were consumed so we can
     # surface unmatched keys back to the caller — a typo or a path that
     # didn't actually get produced should not silently fall through to
-    # _infer_validator_type (which returns "any" → I3 violation at seal).
+    # _infer_validator_type (which returns "any", downgrading the intended
+    # type-aware check to exists-nonzero without the caller knowing).
     output_types_used: set[str] = set()
     validations: dict = {}
     if result.get("returncode") == 0 and idx is not None:
