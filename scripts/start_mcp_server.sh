@@ -28,6 +28,11 @@ export BIOINF_MCP_AUTO_RELOAD="${BIOINF_MCP_AUTO_RELOAD:-1}"
 # the server inherit it.
 bioinf_conda_on_path >/dev/null || true
 
+# The runtime env's console scripts (globus-cli above all — the transfer layer
+# invokes `globus` off PATH) belong on the server's PATH: the deps went into
+# .conda_runtime, so its bin/ is where they answer from.
+export PATH="$BIOINF_RUNTIME/bin:$PATH"
+
 if [ -x "$BIOINF_RUNTIME_PY" ]; then
     if "$BIOINF_RUNTIME_PY" -c "import fastmcp" >/dev/null 2>&1; then
         exec "$BIOINF_RUNTIME_PY" -m agent

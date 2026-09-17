@@ -25,7 +25,14 @@ from __future__ import annotations
 
 import os
 
-from agent.mcp_server import (
+# Before fastmcp loads: its CLI banner otherwise carries a "🎉 Update available —
+# pip install --upgrade fastmcp" call to action. The pin (pyproject: fastmcp<4)
+# is deliberate, so the nag is never actionable here — and typed at a bare shell
+# it upgrades BASE python's copy, changing nothing about this server. setdefault,
+# so a user who wants the check back can export their own value.
+os.environ.setdefault("FASTMCP_CHECK_FOR_UPDATES", "off")
+
+from agent.mcp_server import (  # noqa: E402
     _reap_orphan_service_pids,
     _watch_and_exit_on_change,
     mcp,

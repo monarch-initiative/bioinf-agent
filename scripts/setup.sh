@@ -186,7 +186,9 @@ fi
 
 # --- 3. editable install -----------------------------------------------------
 say "installing bioinf-agent (editable) into the runtime env..."
-"$RUNTIME_PY" -m pip install -q -e "$PROJECT_ROOT[dev]"
+# [hpc] carries globus-cli so the Globus wire works out of the box; the only
+# step left to the user is `globus login` (interactive OAuth, not ours to run).
+"$RUNTIME_PY" -m pip install -q -e "$PROJECT_ROOT[dev,hpc]"
 say "installed: $("$RUNTIME_PY" -c 'import fastmcp; print("fastmcp", fastmcp.__version__)')"
 
 # --- 4. core toolkit + test data --------------------------------------------

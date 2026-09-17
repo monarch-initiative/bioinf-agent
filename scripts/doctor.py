@@ -132,10 +132,13 @@ def check_docker() -> None:
         row("PASS", "docker", f"daemon up (server {out.splitlines()[-1]})")
     elif rc == 127:
         row("FAIL", "docker", "docker CLI not found",
-            "install Docker Desktop (macOS) or docker-ce (Linux); freeze/validate need the daemon")
+            "install Docker Desktop (macOS; or colima for a no-Desktop daemon: "
+            "`brew install colima docker && colima start`) or docker-ce (Linux); "
+            "freeze/validate need the daemon")
     else:
         row("FAIL", "docker", "daemon not reachable",
-            "start Docker Desktop / `systemctl start docker`, then re-run --check")
+            "start Docker Desktop (or `colima start`) / `systemctl start docker`, "
+            "then re-run --check")
 
 
 # --- MCP registration --------------------------------------------------------
@@ -250,6 +253,55 @@ def check_hpc_config() -> None:
     n_envs, n_projects = (out.split() + ["0", "0"])[:2]
     row("PASS", "hpc bridge", f"projects_access.yaml — {n_envs} compute env(s), "
         f"{n_projects} project(s), loads clean (reachability is probed at drive time)")
+    check_bridge_prerequisites(cfg)
+
+
+def check_bridge_prerequisites(cfg: Path) -> None:
+    """The two manual prerequisites a declared bridge stands on — a live ssh
+    ControlMaster session (the bridge is BatchMode-only and never prompts) and,
+    when an env picks the Globus wire, a logged-in globus CLI. Probed only for
+    what the config actually declares; nothing here opens a new connection."""
+    rc, out = run([str(RUNTIME_PY), "-c", (
+        "import json, yaml, pathlib; "
+        f"d = yaml.safe_load(pathlib.Path({str(cfg)!r}).read_text()) or {{}}; "
+        "print(json.dumps([{'name': e.get('name'), 'type': e.get('type'), "
+        "'host': e.get('host'), 'user': e.get('user'), "
+        "'wire': ((e.get('data_transfer') or {}).get('type'))} "
+        "for e in (d.get('compute_envs') or []) if isinstance(e, dict)]))")])
+    try:
+        envs = json.loads(out.splitlines()[-1]) if rc == 0 and out else []
+    except json.JSONDecodeError:
+        envs = []
+
+    for env in envs:
+        if env.get("type") != "ssh" or not env.get("host"):
+            continue
+        target = (f"{env['user']}@{env['host']}" if env.get("user") else env["host"])
+        # `ssh -O check` asks the LOCAL ControlMaster socket whether a session is
+        # alive — it never dials the host, so this is safe to run unattended.
+        rc2, _ = run(["ssh", "-O", "check", target], timeout=10)
+        if rc2 == 0:
+            row("PASS", f"ssh session ({env['name']})",
+                f"live ControlMaster socket for {target}")
+        else:
+            row("SKIP", f"ssh session ({env['name']})",
+                f"no live ControlMaster session for {target} — fine until you "
+                f"drive the bridge; then open `ssh {env['host']}` in a separate "
+                f"terminal and leave it open (BatchMode rides that socket)")
+
+    if any(env.get("wire") == "globus" for env in envs):
+        rc3, _ = run(["globus", "version"], timeout=15)
+        if rc3 == 127:
+            rc3, _ = run([str(RUNTIME_PY.parent / "globus"), "version"], timeout=15)
+        if rc3 == 0:
+            row("PASS", "globus CLI",
+                "present (an env declares the Globus wire; login state is "
+                "checked at first transfer — `globus login` if it refuses)")
+        else:
+            row("FAIL", "globus CLI",
+                "an env declares data_transfer: globus but no globus CLI answers",
+                "re-run ./scripts/setup.sh (installs globus-cli into the runtime "
+                "env), then `globus login`")
 
 
 def main() -> int:
