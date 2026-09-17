@@ -152,6 +152,12 @@ def test_presence_probes_are_named_presence_not_promoted(ev, tool):
     ("bwa 2>&1 | head", "bwa", "help"),
     ("set -o pipefail; bwa > /tmp/h.txt 2>&1; grep -q 'Program: bwa' /tmp/h.txt",
      "bwa", "help"),
+    # a wrapper must not hide the bare probe back into 'functional' (audit) —
+    # the segment's command word comes from the same reading the run
+    # primitives use to name a step, which unwraps time/nice/env
+    ("time bwa > /tmp/h.txt 2>&1", "bwa", "help"),
+    # an INPUT redirect is work (stdin feeding), never banner capture
+    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", "functional"),
     ("mytool --help | cat", "mytool", "help"),
     ("pigz --version > /dev/null", "pigz", "version"),
 ])
