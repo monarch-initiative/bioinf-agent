@@ -348,8 +348,15 @@ The suite tells you the code does what it says. Neither of these does that; they
 
 **A map of ANSWERS cannot show a QUESTION with no answer.** An intent that reaches no terminal isn't a dark cell — it isn't a cell. And a terminal can be **green with the wrong tool in it**: `resolve('cellranger')` picks a CRAN *spreadsheet-range parser*; `resolve('dorado')` picks an *astronomy* package on PyPI. Every terminal behaves perfectly; nothing is broken except the meaning, and no amount of terminal coverage finds that. **Nor does a table of tool names** — one was tried on 2026-08-06 and removed the same day (see the ruling in `tests/live/test_intent_corpus.py`). What the resolver owes is the FACT, and it PAYS it: re-measured 2026-09-16, both picks carry a `SAME NAME, DIFFERENT PROJECTS` block naming every github repo that owns the name exactly — `10XGenomics/cellranger`, `nanoporetech/dorado (875★) "Oxford Nanopore's Basecaller"` — each with the `github_repo=` to re-run with, and the `install_call` itself is commented with it. (This paragraph claimed the install_call was "clean, fully-tagged" long after it stopped being one, so the example argued for a defect that had been fixed.) Judging whether the entry's own words describe the tool you meant remains the ride's call, because the ride is the reader with the world knowledge to make it.
 
-    python scripts/extract_outcomes.py && python scripts/measure_terminal_coverage.py   # output side
+    ./scripts/refresh_meters.sh   # output side: ledger + coverage overlay + dashboard (--fast skips the re-measure)
     pytest -m live && python scripts/build_intent_corpus.py && python scripts/render_intent_grid.py   # input side
+
+**The meters are DERIVED, and derived files are never line-merged.** `outcomes_ledger.json`
+and `terminal_coverage.json` are tracked RECORDS (the CI ratchet and the tests read them);
+the dashboard HTML is an untracked VIEW both scripts re-render (it had zero byte-readers,
+and tracking it made every pair of parallel branches conflict on a file whose only correct
+merge is a re-render). On any merge conflict in the two records: take EITHER side, run
+`./scripts/refresh_meters.sh` on the merged tree, commit what it writes.
 
 **The intent corpus** (`tests/live/test_intent_corpus.py`) is a **ratchet, not a green suite**: each row is one real user intent with the outcome it deserves. A *change detector* fires on any behaviour drift; a *correctness ratchet* (`xfail(strict=True)`) fails-on-XPASS so a fix must be PROMOTED, never left to rot back into a silent regression. Its meter is the not-yet-correct count — read it off the grid, never from prose.
 

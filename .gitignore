@@ -46,6 +46,13 @@ venv/
 .coverage.*
 coverage.json
 
+# The outcomes dashboard is a VIEW — a pure render of two tracked records
+# (outcomes_ledger.json + terminal_coverage.json), with zero byte-readers in
+# tests or CI. Tracking it made every pair of parallel branches conflict on a
+# file whose only correct merge is a re-render. scripts/refresh_meters.sh
+# rebuilds it; the records stay tracked and ratcheted.
+docs/outcomes_dashboard.html
+
 # Advisory flock sentinels (agent/skills/store_lock.py), runtime only.
 *.lock
 
