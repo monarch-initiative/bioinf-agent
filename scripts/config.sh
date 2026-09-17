@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/config.sh            # the interactive menu
+#   ./scripts/config.sh --web      # the same menu, rendered in the browser
 #   ./scripts/config.sh --show     # print the current configuration and exit
 #   ./scripts/config.sh --validate # validate and exit (rc = number of errors)
 

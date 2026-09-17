@@ -6,12 +6,17 @@ environments exist, which projects may use them, and exactly which directories
 the agent is allowed to list, upload to, download from, or run jobs in. Nothing
 in the HPC bridge works without it, and every path in it is a permission grant.
 
-Run via `./scripts/config.sh` (which resolves the runtime interpreter). This
-module drives the menu; it does NOT define what a valid configuration is —
-every save is checked by `agent.skills.compute_access.load_access`, the same
-loader the agent itself uses, so the menu cannot bless a file the agent will
-later refuse. The annotated schema reference is
-`agent/skills/projects_access.yaml.example`.
+Run via `./scripts/config.sh` (which resolves the runtime interpreter); pass
+`--web` for the browser rendering of the same menu (scripts/config_web.py —
+both renderers read the ONE field spec declared in this module: ZONES,
+PERMISSION_GLOSSES, TRANSFER_TYPES, MODULE_PLACEHOLDERS, the zone-path
+defaults, and the loader's PROJECT_NAME_RE). This module drives the menu; it
+does NOT define what a valid configuration is — every save is checked by
+`agent.skills.compute_access.load_access`, the same loader the agent itself
+uses, so the menu cannot bless a file the agent will later refuse. The
+annotated schema reference is `agent/skills/projects_access.yaml.example`; an
+agent authoring the file non-interactively writes that YAML directly and
+checks it with `--validate`.
 
 The file is rewritten on save, which drops hand-written comments; the previous
 version is copied to `projects_access.yaml.bak` first and the menu says so.
@@ -19,7 +24,9 @@ version is copied to `projects_access.yaml.bak` first and the menu says so.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,8 +42,10 @@ import yaml  # noqa: E402  (runtime env only — config.sh guarantees it)
 from agent.skills import workspace  # noqa: E402
 from agent.skills.compute_access import (  # noqa: E402
     PERMISSIONS,
+    PROJECT_NAME_RE,
     VALID_JOB_MANAGERS,
     ConfigError,
+    _UUID_RE,
     default_access_path,
     load_access,
 )
@@ -49,22 +58,47 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
     f"permission tokens changed: {sorted(set(PERMISSIONS) ^ set(PERMISSION_ORDER))} — "
     f"add them to PERMISSION_ORDER so the menu can offer them")
 
+#: What each token GRANTS, one axis each — `upload` is about putting bytes,
+#: `exec` about running jobs, and the glosses must keep them distinguishable.
+#: Every renderer (terminal prompt, web page) reads THIS dict; a second
+#: spelling of a permission's meaning is how the two drift.
+PERMISSION_GLOSSES = {
+    "file_name_only": "list what is in this dir (names only, one level)",
+    "upload":         "put files into this dir",
+    "download":       "fetch files out of this dir",
+    "exec":           "run jobs that use this dir as their working directory",
+    "none":           "no access (placeholder — a dir with only this is unreachable)",
+}
+assert set(PERMISSION_GLOSSES) == set(PERMISSIONS), "every token needs a gloss"
+
 TRANSFER_TYPES = ["scp_head_node", "globus"]
 
+#: Placeholder Lmod module names shown while a cluster's real ones are unknown
+#: (`cluster_module_avail` discovers the real ones once the env is reachable).
+#: One spelling for both renderers.
+MODULE_PLACEHOLDERS = {"apptainer_module": "apptainer/1.5.0",
+                       "nextflow_module": "nextflow/25.04.7"}
+
+#: Least-privilege default for a freshly granted project directory.
+DIR_DEFAULT_PERMS = ["file_name_only"]
+
 #: The env-level zones, in the order the agent uses them. `key` is the schema
-#: key, `default_perms` what the bridge needs to use the zone at all. Same four
-#: zones the local workspace has — full parity, so a production run is the same
-#: kind of thing on either locus.
+#: key, `default_perms` what the bridge needs to use the zone at all, `required`
+#: whether the menu insists the zone be declared (scratch + common_data are what
+#: make an env USABLE — the bridge's run/stage primitives refuse without them,
+#: so an env missing either is a config that fails far from where it was typed).
+#: Same four zones the local workspace has — full parity, so a production run is
+#: the same kind of thing on either locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
-     ["file_name_only", "upload", "download", "exec"]),
+     ["file_name_only", "upload", "download", "exec"], True),
     ("agent_common_data_target", "shared reference data — genomes, public databases",
-     ["file_name_only", "upload", "download", "exec"]),
+     ["file_name_only", "upload", "download", "exec"], True),
     ("container_upload_target", "where .sif container images are staged",
-     ["file_name_only", "upload"]),
+     ["file_name_only", "upload"], False),
     # No `exec`: reports are read, never run.
     ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
-     ["file_name_only", "upload", "download"]),
+     ["file_name_only", "upload", "download"], False),
 ]
 
 ZONE_LABELS = {
@@ -126,6 +160,12 @@ class Abort(Exception):
     """The user backed out of a sub-flow. Nothing is committed."""
 
 
+def _print_notice(kind: str, text: str) -> None:
+    """Default `Config.notify` sink — the terminal rendering of save messages."""
+    color = {"ok": GREEN, "error": RED}.get(kind, DIM)
+    print(color(f"  {text}"))
+
+
 def ask(prompt: str, default: str = "", allow_empty: bool = False) -> str:
     """One line of input. Blank accepts `default`. `-` aborts the sub-flow."""
     suffix = f" [{default}]" if default else ""
@@ -180,8 +220,10 @@ def ask_permissions(default: list[str]) -> list[str]:
     """Permissions are DISCRETE, not a lattice — `upload` does not imply
     `download`. So this asks for the exact set rather than a level."""
     print(f"  permissions — space-separated subset of {' '.join(PERMISSION_ORDER)}")
-    print(DIM("    file_name_only: list this dir (one level)   upload: write new files"))
-    print(DIM("    download: fetch files back                  exec: a job may write here"))
+    print(DIM("    independent grants, not a ladder — upload does not imply download"))
+    for tok in PERMISSION_ORDER:
+        if tok != "none":
+            print(DIM(f"    {tok:<15} {PERMISSION_GLOSSES[tok]}"))
     while True:
         raw = ask("permissions", " ".join(default))
         tokens = raw.split()
@@ -238,13 +280,19 @@ def rule(title: str = "") -> None:
 
 class Config:
     """The in-memory document plus its dirty flag. Nothing reaches disk until
-    `save`, and `save` refuses a document the agent's own loader rejects."""
+    `save`, and `save` refuses a document the agent's own loader rejects.
 
-    def __init__(self, path: Path):
+    `notify` receives every message `save` produces, as (kind, text) with kind in
+    {ok, error, note}. The default renders to the terminal; the web app passes a
+    collector so the SAME save path (validate → .bak → write) serves both
+    renderers instead of the page growing its own."""
+
+    def __init__(self, path: Path, notify: Optional[Callable[[str, str], None]] = None):
         self.path = path
         self.data: dict[str, Any] = {"compute_envs": [], "projects": []}
         self.dirty = False
         self.load_error = ""
+        self._notify = notify or _print_notice
         self.reload()
 
     def reload(self) -> None:
@@ -324,9 +372,10 @@ class Config:
     def save(self) -> bool:
         err = self.validate()
         if err:
-            print(RED("  NOT saved — the agent's loader rejects this configuration:"))
-            print(f"    {err}")
-            print(DIM("  fix it in the menu, or quit without saving to keep the file on disk."))
+            self._notify("error", "NOT saved — the agent's loader rejects this "
+                                  f"configuration: {err}")
+            self._notify("note", "fix it in the menu, or quit without saving to "
+                                 "keep the file on disk.")
             return False
         backup = ""
         try:
@@ -340,15 +389,14 @@ class Config:
             # unwritable destination must cost the user the save, not the work:
             # raising here unwinds out of the menu loop and everything staged in
             # this session is gone.
-            print(RED(f"  NOT saved — could not write {self.path}:"))
-            print(f"    {e}")
-            print(DIM("  the configuration is still loaded here; fix the path or "
-                      "permissions and save again."))
+            self._notify("error", f"NOT saved — could not write {self.path}: {e}")
+            self._notify("note", "the configuration is still loaded here; fix the "
+                                 "path or permissions and save again.")
             return False
         self.dirty = False
-        print(GREEN(f"  saved {self.path}"))
+        self._notify("ok", f"saved {self.path}")
         if backup:
-            print(DIM(f"  previous version: {backup}"))
+            self._notify("note", f"previous version: {backup}")
         return True
 
 
@@ -396,7 +444,7 @@ def describe_env(env: dict) -> str:
     bits = [env.get("type", "?")]
     if env.get("type") == "ssh":
         bits.append(ssh_target(env))
-    zones = [ZONE_LABELS[k] for k, _, _ in ZONES if env.get(k)]
+    zones = [ZONE_LABELS[k] for k, _, _, _ in ZONES if env.get(k)]
     bits.append("zones: " + (", ".join(zones) if zones else DIM("none")))
     dt = (env.get("data_transfer") or {}).get("type")
     if dt:
@@ -404,12 +452,27 @@ def describe_env(env: dict) -> str:
     return "  ".join(bits)
 
 
+def note_if_missing_locally(env: dict, path: str) -> None:
+    """CS60: on a `type: local` env the path is on THIS filesystem, so checking
+    costs nothing. A note, never a refusal and never a mkdir — the standing rule
+    is that the agent does not create directories on the user's behalf."""
+    if env.get("type") == "local" and not Path(path).is_dir():
+        print(YELLOW(f"  note: {path} does not exist yet (accepted — nothing "
+                     f"creates it for you)"))
+
+
 def edit_zone(env: dict, key: str, purpose: str, default_perms: list[str],
-              path_default: str) -> None:
+              path_default: str, required: bool) -> None:
     current = env.get(key)
     rule(key)
     print(DIM(f"  {purpose}"))
-    if current:
+    if required:
+        # scratch + common_data make the env USABLE — the bridge's run/stage
+        # primitives refuse without them, so declining here just moves the
+        # failure to drive time. Not offered as a choice.
+        if current:
+            print(f"  current: {current.get('path')}  {current.get('permissions')}")
+    elif current:
         print(f"  current: {current.get('path')}  {current.get('permissions')}")
         if not ask_yes_no("keep this zone?", True):
             env.pop(key, None)
@@ -419,6 +482,7 @@ def edit_zone(env: dict, key: str, purpose: str, default_perms: list[str],
         env.pop(key, None)
         return
     path = ask_abs_path("path", (current or {}).get("path") or path_default)
+    note_if_missing_locally(env, path)
     perms = ask_permissions((current or {}).get("permissions") or default_perms)
     desc = ask_optional("description", (current or {}).get("description") or purpose)
     block = {"path": path, "permissions": perms}
@@ -454,11 +518,83 @@ def edit_slurm(env: dict) -> None:
         env.pop("slurm")
 
 
+def _globus_cli() -> str:
+    """The globus CLI, if installed. Resolved at use, never at import — the menu
+    must work on a machine that will never touch Globus."""
+    return shutil.which("globus") or ""
+
+
+_GLOBUS_INSTALL_HINT = ("globus CLI not found — install it (`pipx install globus-cli`) "
+                        "and run `globus login`, or type the UUIDs by hand below")
+
+
+def _globus_search(query: str) -> tuple[list[dict], str]:
+    """`globus endpoint search` → ([{id, display_name, owner_string}], "") or
+    ([], why-not). Any CLI failure degrades to manual entry, never blocks."""
+    exe = _globus_cli()
+    if not exe:
+        return [], _GLOBUS_INSTALL_HINT
+    if query.startswith("-"):
+        return [], "search text may not start with '-' (it would read as a CLI option)"
+    try:
+        p = subprocess.run([exe, "endpoint", "search", query, "-F", "json",
+                            "--limit", "10"],
+                           capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return [], "globus endpoint search timed out after 30s"
+    if p.returncode != 0:
+        tail = ((p.stderr or p.stdout).strip().splitlines() or ["?"])[-1]
+        return [], f"globus endpoint search failed: {tail}"
+    try:
+        rows = json.loads(p.stdout).get("DATA") or []
+    except (json.JSONDecodeError, AttributeError):
+        return [], "globus endpoint search returned unparseable output"
+    return [r for r in rows if isinstance(r, dict) and r.get("id")], ""
+
+
+def _globus_local_id() -> str:
+    """This machine's Globus Connect Personal endpoint, or "". The one UUID that
+    never needs a search — the CLI knows it outright."""
+    exe = _globus_cli()
+    if not exe:
+        return ""
+    try:
+        p = subprocess.run([exe, "endpoint", "local-id"],
+                           capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return ""
+    out = p.stdout.strip()
+    return out if p.returncode == 0 and _UUID_RE.match(out) else ""
+
+
+def _pick_globus_endpoint(which: str, cur_id: str, cur_name: str) -> tuple[str, str]:
+    """Search-and-pick one endpoint, so the UUID is READ off Globus rather than
+    typed. Falls back to manual UUID entry on decline or any CLI failure."""
+    if ask_yes_no(f"search Globus for the {which} endpoint by name?", not cur_id):
+        rows, why = _globus_search(ask("search text (the endpoint's display name)",
+                                       cur_name))
+        if why:
+            print(YELLOW(f"  {why}"))
+        elif not rows:
+            print(YELLOW("  no endpoints matched — check the spelling, or enter "
+                         "the UUID by hand"))
+        else:
+            for i, r in enumerate(rows, 1):
+                print(f"    {i}) {r.get('display_name') or '?'}  "
+                      f"{DIM(r['id'])}  {DIM(r.get('owner_string') or '')}")
+            raw = ask("choose (number; blank to enter the UUID by hand)", "",
+                      allow_empty=True)
+            if raw.isdigit() and 1 <= int(raw) <= len(rows):
+                r = rows[int(raw) - 1]
+                return r["id"], r.get("display_name") or cur_name or "?"
+    return (ask(f"{which} endpoint UUID", cur_id),
+            ask(f"{which} endpoint display name", cur_name))
+
+
 def edit_transfer(env: dict) -> None:
     rule("data transfer (optional)")
-    print(DIM("  How bytes move. scp_head_node is the default and needs no setup;"))
-    print(DIM("  globus is off-head-node and checksummed end-to-end, and needs both"))
-    print(DIM("  endpoint UUIDs (globus endpoint search '<display name>')."))
+    print(DIM("  How bytes move to/from this env. scp_head_node is the default and"))
+    print(DIM("  needs no setup; globus is off-head-node and checksummed end-to-end."))
     current = env.get("data_transfer") or {}
     if not ask_yes_no("declare a data_transfer block?", bool(current)):
         env.pop("data_transfer", None)
@@ -468,14 +604,23 @@ def edit_transfer(env: dict) -> None:
     blk: dict[str, Any] = {"type": ttype}
     if ttype == "globus":
         g = current.get("globus") or {}
+        lid, lname = g.get("local_endpoint_id", ""), g.get("local_endpoint_name", "")
+        detected = "" if lid else _globus_local_id()
+        if detected:
+            print(DIM(f"  local endpoint detected (`globus endpoint local-id`): {detected}"))
+        lid = ask("local endpoint UUID (this machine's Globus Connect Personal)",
+                  lid or detected)
+        lname = ask("local endpoint display name", lname)
+        rid, rname = _pick_globus_endpoint("remote", g.get("remote_endpoint_id", ""),
+                                           g.get("remote_endpoint_name", ""))
         blk["globus"] = {
-            "local_endpoint_id": ask("local endpoint UUID", g.get("local_endpoint_id", "")),
-            "local_endpoint_name": ask("local endpoint display name",
-                                       g.get("local_endpoint_name", "")),
-            "remote_endpoint_id": ask("remote endpoint UUID", g.get("remote_endpoint_id", "")),
-            "remote_endpoint_name": ask("remote endpoint display name",
-                                        g.get("remote_endpoint_name", "")),
+            "local_endpoint_id": lid,
+            "local_endpoint_name": lname,
+            "remote_endpoint_id": rid,
+            "remote_endpoint_name": rname,
         }
+        print(DIM("  note: a read-only `globus ls` succeeding does NOT prove transfers"))
+        print(DIM("  will work — verify with one small test transfer before anything big."))
     env["data_transfer"] = blk
 
 
@@ -514,8 +659,7 @@ def edit_env(cfg: Config, env: Optional[dict]) -> None:
             new["email"] = email
         print(DIM("  Lmod modules a cluster production run loads on the compute node."))
         print(DIM("  `cluster_module_avail` finds the exact names once this env is reachable."))
-        for key, placeholder in (("apptainer_module", "apptainer/1.5.0"),
-                                 ("nextflow_module", "nextflow/25.04.7")):
+        for key, placeholder in MODULE_PLACEHOLDERS.items():
             val = ask_optional(key, src.get(key) or placeholder)
             if val:
                 new[key] = val
@@ -523,15 +667,24 @@ def edit_env(cfg: Config, env: Optional[dict]) -> None:
     else:
         defaults = local_defaults()
 
-    for key, purpose, perms in ZONES:
+    for key, purpose, perms, required in ZONES:
         new[key] = src.get(key)              # carry current so edit_zone sees it
-        edit_zone(new, key, purpose, perms, defaults[key])
+        edit_zone(new, key, purpose, perms, defaults[key], required)
 
+    # CS59: data_transfer and slurm are NETWORK/scheduler questions. A local env
+    # is asked neither — but hand-written blocks are carried through untouched
+    # rather than silently dropped on the next edit (the loader accepts both on
+    # any env type, and this menu must not be lossier than the loader).
     new["data_transfer"] = src.get("data_transfer")
-    edit_transfer(new)
+    new["slurm"] = src.get("slurm")
     if etype == "ssh":
-        new["slurm"] = src.get("slurm")
+        edit_transfer(new)
         edit_slurm(new)
+    else:
+        kept = [k for k in ("data_transfer", "slurm") if new.get(k)]
+        if kept:
+            print(DIM(f"  {' + '.join(kept)}: kept as-is (declared in the file; "
+                      f"a local env does not use them)"))
 
     # Project through ENV_KEYS: fixes key order, and drops the `None` a declined
     # zone leaves behind. An absent key and an explicit `null` both disable a
@@ -636,8 +789,10 @@ def edit_directories(cfg: Config, proj: dict) -> None:
                 env_name = (allowed[0] if len(allowed) == 1
                             else ask_choice("which env does this directory live on?",
                                             allowed, allowed[0] if allowed else None))
-                path = ask_abs_path("absolute path", "")
-                perms = ask_permissions(["file_name_only"])
+                env = next((e for e in cfg.envs if e.get("name") == env_name), {})
+                path = ask_abs_path("absolute path (e.g. /work/mylab/rnaseq_2026)", "")
+                note_if_missing_locally(env, path)
+                perms = ask_permissions(list(DIR_DEFAULT_PERMS))
                 desc = ask_optional("description", "")
                 block = {"env": env_name, "path": path, "permissions": perms}
                 if desc:
@@ -661,8 +816,17 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
         print(RED("  declare a compute environment first — a project must name one."))
         raise Abort()
 
-    name = ask("name (also the auto-prefix in scratch; letters, digits, _ and - only)",
-               src.get("name", ""))
+    while True:
+        name = ask("name (also the auto-prefix in scratch; letters, digits, . _ and - only)",
+                   src.get("name", ""))
+        if PROJECT_NAME_RE.match(name):
+            break
+        bad = sorted({ch for ch in name if not re.match(r"[A-Za-z0-9._-]", ch)})
+        # The name becomes a path component — enforce the rule the prompt states,
+        # here where the fix is one keystroke away rather than in a job launcher.
+        print(RED(f"  {name!r} breaks the stated rule"
+                  + (f" (illegal: {' '.join(map(repr, bad))})" if bad else "")
+                  + " — letters, digits, . _ and - only"))
     if creating and name in [p.get("name") for p in cfg.projects]:
         print(RED(f"  a project named {name!r} already exists"))
         raise Abort()
@@ -690,6 +854,23 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
         cfg.projects.append(target)
     cfg.dirty = True
     edit_directories(cfg, target)
+
+
+def projects_unlocked(cfg: Config) -> bool:
+    """D10: 'project' does two jobs — a label for your work, and an access-grant
+    list. The grant list exists for one situation: the agent touching YOUR
+    territory on a shared (ssh) machine. A purely local setup runs in the env's
+    own zones (the `_ad_hoc` project), so the concept is deferred until a remote
+    env exists — or until a project already exists in the file, which must stay
+    editable regardless of how it got there."""
+    return bool(cfg.projects) or any(e.get("type") == "ssh" for e in cfg.envs)
+
+
+#: One spelling of the D10 lock explanation, read by both renderers.
+PROJECTS_LOCKED_NOTE = (
+    "Projects grant the agent access to YOUR directories on a remote machine — "
+    "they unlock once an ssh compute env is declared. Local runs need no grant: "
+    "the agent works inside the local env's own zones.")
 
 
 def menu_projects(cfg: Config) -> None:
@@ -771,7 +952,7 @@ def show(cfg: Config) -> None:
         print(YELLOW(f"  {cfg.load_error}"))
     for env in cfg.envs:
         print(f"\n  {BOLD(env.get('name', '?'))}  {describe_env(env)}")
-        for key, _, _ in ZONES:
+        for key, _, _, _ in ZONES:
             blk = env.get(key)
             if blk:
                 print(f"      {key:<26} {blk.get('path')}  {blk.get('permissions')}")
@@ -804,8 +985,9 @@ def status_line(cfg: Config) -> str:
 
 def offer_template(cfg: Config) -> None:
     rule("no configuration yet")
-    print("  The HPC bridge needs projects_access.yaml: which clusters exist, which")
-    print("  projects may use them, and exactly which directories the agent may touch.")
+    print("  projects_access.yaml declares where the agent may RUN and TOUCH things:")
+    print("  compute environments (this machine, an HPC cluster, or both) and — for")
+    print("  remote machines — exactly which of your directories it may reach.")
     print(DIM("  Nothing local depends on it — install, freeze and seal work without it."))
     print()
     if ask_yes_no("build one now?", True):
@@ -820,12 +1002,21 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="print the configuration and exit")
     ap.add_argument("--validate", action="store_true",
                     help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
+    ap.add_argument("--web", action="store_true",
+                    help="open the browser menu instead (127.0.0.1 only; dies on Ctrl-C)")
+    ap.add_argument("--port", type=int, default=0,
+                    help="port for --web (default: an ephemeral free port)")
     ap.add_argument("--file", default=None,
                     help="configuration file (default: <workspace>/projects_access.yaml)")
     args = ap.parse_args()
 
     path = Path(args.file) if args.file else default_access_path()
     cfg = Config(path)
+
+    if args.web:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import config_web  # noqa: E402  (needs starlette/uvicorn — runtime env only)
+        return config_web.serve(path, sys.modules[__name__], port=args.port)
 
     if args.validate:
         state, msg = cfg.state()
@@ -840,7 +1031,11 @@ def main() -> int:
 
     if not sys.stdin.isatty():
         print("configure.py is an interactive menu and stdin is not a terminal.", file=sys.stderr)
-        print("Use --show or --validate for a non-interactive read.", file=sys.stderr)
+        print("Use --show or --validate for a non-interactive read, or --web for the "
+              "browser menu.", file=sys.stderr)
+        print("(An agent authoring this file should write the YAML directly — schema: "
+              "agent/skills/projects_access.yaml.example — then check it with --validate.)",
+              file=sys.stderr)
         return 2
 
     print(BOLD("\nbioinf-agent — configuration"))
@@ -857,8 +1052,13 @@ def main() -> int:
         if cfg.load_error:
             print(YELLOW(f"  {cfg.load_error}"))
         print()
+        unlocked = projects_unlocked(cfg)
         print("  1) compute environments   add / edit / remove")
-        print("  2) projects               add / edit / remove")
+        if unlocked:
+            print("  2) projects               add / edit / remove")
+        else:
+            print(DIM("  2) projects               (locked — needs a remote env; "
+                      "choose it to see why)"))
         print("  3) show                   the full configuration")
         print("  4) test ssh reachability")
         print("  5) save                   6) reload from disk      q) quit")
@@ -866,9 +1066,13 @@ def main() -> int:
             choice = ask("choose", "1")
         except Abort:
             choice = "q"
+
+        def explain_lock() -> None:
+            print(DIM(f"  {PROJECTS_LOCKED_NOTE}"))
+
         actions: dict[str, Callable[[], Any]] = {
             "1": lambda: menu_envs(cfg),
-            "2": lambda: menu_projects(cfg),
+            "2": (lambda: menu_projects(cfg)) if unlocked else explain_lock,
             "3": lambda: show(cfg),
             "4": lambda: test_reachability(cfg),
             "5": cfg.save,

@@ -112,9 +112,9 @@ def _run_suite_under_coverage() -> dict:
         # the datafile as soon as the process starts, so a conftest that fails to import
         # gives rc=4 WITH a datafile present — measured, not reasoned. The script then
         # computed coverage over a run where ZERO tests executed and wrote
-        # docs/terminal_coverage.json plus the dashboard, both committed. A sweeping
-        # "everything went dark" regression would have looked like a measurement rather
-        # than a broken run.
+        # docs/terminal_coverage.json (committed) plus the locally rendered dashboard.
+        # A sweeping "everything went dark" regression would have looked like a
+        # measurement rather than a broken run.
         refusal = refuse_reason_for_pytest_rc(r.returncode)
         if refusal:
             print(f"  ! {refusal}", file=sys.stderr)

@@ -66,6 +66,7 @@ building block, two locations.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -139,6 +140,18 @@ class PermissionDenied(Exception):
 
 class ConfigError(Exception):
     """projects_access.yaml is malformed or missing required fields."""
+
+
+#: A project name becomes a PATH COMPONENT: the scratch zone is project-prefixed
+#: (`<scratch>/<project>/…`), so it flows into remote paths and sbatch lines. A
+#: space or shell metacharacter here fails far from where it was typed — in a
+#: job launcher, possibly on a cluster. The config menu re-prompts on this same
+#: pattern; enforcing it here too holds a hand-edited file to the same rule.
+#: The charset is every path-safe character and nothing else: letters, digits,
+#: `.`, `_`, `-` — so no name that worked as a path is retroactively refused.
+#: Leading `_` is allowed (the synthesized `_ad_hoc` project uses it); leading
+#: `.` and `-` are not (hidden dirs / option-lookalikes).
+PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
 def default_access_path() -> Path:
@@ -391,6 +404,17 @@ def _validate_project(proj: object, idx: int, project_names: set[str],
     name = proj.get("name")
     if not isinstance(name, str) or not name:
         raise ConfigError(f"{path}: projects[{idx}].name must be a non-empty string")
+    if not PROJECT_NAME_RE.match(name):
+        bad = sorted({ch for ch in name if not re.match(r"[A-Za-z0-9._-]", ch)})
+        detail = (f"has illegal character(s) {bad!r}" if bad
+                  else f"may not start with {name[0]!r}")
+        raise ConfigError(
+            f"{path}: projects[{idx}].name {name!r} {detail} — letters, digits, "
+            f". _ and - only. The name becomes a path component (the scratch "
+            f"zone is <scratch>/<project>/…), so anything else fails later "
+            f"inside a job launcher instead of here. NOTE renaming an existing "
+            f"project changes that scratch prefix — data under the old name "
+            f"stays where it is and must be moved by hand.")
     if name in project_names:
         raise ConfigError(f"{path}: duplicate project name {name!r}")
     project_names.add(name)

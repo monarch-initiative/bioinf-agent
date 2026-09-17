@@ -24,7 +24,7 @@ install a private miniforge under the repo.
 ```bash
 git clone https://github.com/monarch-initiative/bioinf-agent && cd bioinf-agent
 ./scripts/setup.sh          # ~4 min — runtime env, deps, core toolkit, chr22 test data
-./scripts/config.sh         # optional — only if you want to drive an HPC cluster
+./scripts/config.sh         # optional — declare where the agent may run jobs: your laptop, an HPC cluster, or both
 ```
 
 `setup.sh` is idempotent; re-run it any time.
@@ -95,12 +95,15 @@ Two files, and only one of them is yours to edit by hand.
 
 **`projects_access.yaml`** (at your workspace root — it's personal, and it describes a
 compute world that outlives any checkout) is the agent's
-command-and-control file: which clusters exist, which projects may use them, and exactly
-which directories the agent may list, upload to, download from, or run jobs in. Every
-bridge primitive is gated by it, and nothing in it is inferred. Author it with the menu:
+command-and-control file: which compute environments exist — `type: local` (this
+machine, which is what unlocks production runs on your own laptop) and/or `type: ssh`
+(an HPC cluster) — which projects may use them, and exactly which directories the
+agent may list, upload to, download from, or run jobs in. Every bridge primitive is
+gated by it, and nothing in it is inferred. Author it with the menu:
 
 ```bash
 ./scripts/config.sh              # the menu: compute envs, projects, directories, save
+./scripts/config.sh --web        # the same menu in the browser
 ./scripts/config.sh --show       # print the current configuration
 ./scripts/config.sh --validate   # rc 0 when the agent's loader accepts it
 ```
