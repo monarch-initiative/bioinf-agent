@@ -103,7 +103,7 @@ internal `mkdir -p` handles it.
 ```python
 # Layer 1 — frozen env. Builds the apptainer .sif locally.
 freeze(env_name="samtools_view_demo", tools=["samtools"], pipeline_id=...)
-# Result has .sif under docker_images/ + an attestation
+# Result has .sif under <workspace>/environments/images/ + an attestation
 ```
 
 Then push the .sif to common_data:
@@ -112,7 +112,7 @@ Then push the .sif to common_data:
 upload_to_common_data(
     project_name="phase_b_samtools_demo",
     compute_env_name="hpc_cluster",
-    local_path="docker_images/samtools_view_demo/samtools_<v>.sif",
+    local_path="<workspace>/environments/images/samtools_view_demo/samtools_<v>.sif",
     remote_subpath="samtools/samtools_<v>.sif",
 )
 ```

@@ -58,15 +58,12 @@ def _resolve_access_path() -> str | None:
     alongside the source tree), falling back to ~/.bioinf/. Returns None if
     neither exists — the primitive then surfaces a clean FileNotFoundError.
 
-    Same resolution that `agent_status` uses; kept inline here so this
-    submodule's MCP wrappers don't grow a cross-submodule import."""
+    One resolution, in `compute_access.default_access_path` — this used to
+    re-derive a repo-root candidate first, which is a second answer to where the
+    file lives."""
     from agent.skills import compute_access as _ca
-    repo_root = _ms._env_mgr.project_root
-    candidate = repo_root / "projects_access.yaml"
-    if candidate.exists():
-        return str(candidate)
-    default = _ca.default_access_path()
-    return str(default) if default.exists() else None
+    p = _ca.default_access_path()
+    return str(p) if p.exists() else None
 
 
 @mcp.tool()

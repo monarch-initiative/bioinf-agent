@@ -87,6 +87,38 @@ def _tag(kind: str, code: str, fields: dict) -> dict:
 # key in a spread — `broke("x", success=False, **d)` where `d` also has
 # `success` still raises. Prefer the dict-literal merge there: `**{**d,
 # "success": False}` (the literal de-dups before unpacking).
+#: Outcome classes that mean the call did the work it was asked to do.
+#: `degraded` counts — it proceeded, with its reduced assurance stated on the
+#: record. `loop` does not: it is a hand-back for a retry, so the work is unfinished.
+_DID_THE_WORK = frozenset({PROVEN, DEGRADED})
+
+
+def call_verdict(result: object) -> bool | None:
+    """Did this tool call succeed? THREE answers: True, False, or None — unstated.
+
+    The one reading of a tool return's verdict. `outcome` is the contracted
+    field (stamped by the helpers above, harvested by extract_outcomes.py,
+    build-gated by tests/test_outcome_tags.py); `success` is the older ad-hoc
+    convention, still emitted by most tools and still honoured here.
+
+    `None` is the case that has to exist. Most terminals in this codebase carry
+    neither key — the outcome-tag lint is scoped to the seal subsystem — so a
+    reader that treats `.get("success")` as the whole answer converts *no
+    statement* into *failure*, which is a verdict manufactured from a field
+    nobody wrote. Callers must branch on all three; `if not call_verdict(r)`
+    reintroduces the bug this function exists to remove.
+    """
+    if not isinstance(result, dict):
+        return None
+    outcome = result.get("outcome")
+    if outcome in OUTCOME_CLASSES:
+        return outcome in _DID_THE_WORK
+    success = result.get("success")
+    if isinstance(success, bool):
+        return success
+    return None
+
+
 def proven(code, /, **fields):   return _tag(PROVEN,   code, fields)
 def refused(code, /, **fields):  return _tag(REFUSED,  code, fields)
 def broke(code, /, **fields):    return _tag(BROKE,    code, fields)

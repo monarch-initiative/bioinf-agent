@@ -25,7 +25,6 @@ from agent.validators.output_validator import OutputValidator
 
 def _validator() -> OutputValidator:
     return OutputValidator({
-        "paths": {"conda_envs_prefix": "envs/"},
         "conda": {"env_prefix": "bioinf_"},
         "core_tools": {"env_name": "bioinf_core_tools"},
     })

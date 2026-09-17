@@ -146,7 +146,20 @@ def main() -> int:
 
     _write_result(result_path, result)
     print(f"[job_runner] wrote result_path={result_path}", flush=True)
-    return 0 if result.get("success") else 1
+
+    # THREE outcomes, not two. `result.get("success")` alone made every tool that
+    # states no verdict exit non-zero, so a container step that ran clean, detected
+    # its outputs and validated them still finished as a red job. An unstated
+    # outcome is reported as unstated: the child ran to completion, which is the
+    # only thing actually observed, and check_job carries the real return inline.
+    from agent.skills.outcomes import call_verdict
+    verdict = call_verdict(result)
+    if verdict is None:
+        print(f"[job_runner] {tool}() stated no outcome (no 'outcome' or 'success' "
+              f"key) — job exits 0; read `result` in check_job for the real return",
+              flush=True)
+        return 0
+    return 0 if verdict else 1
 
 
 def _write_result(path: str, result: dict) -> None:

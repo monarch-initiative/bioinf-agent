@@ -98,13 +98,16 @@ def test_a_value_that_is_not_a_path_is_not_promoted_to_one(key, val):
 
 def test_a_relative_path_resolves_against_the_project_root_not_the_cwd(monkeypatch,
                                                                       tmp_path):
-    """`select_test_data` records paths built from the manifest's `core_dir`, which the
-    shipped config leaves relative. Resolving those against the CWD — which for the MCP
-    server is not guaranteed to be anything — silently points the check at nothing."""
+    """`select_test_data` records paths built from the manifest's `core_dir`.
+    Resolving a relative one against the CWD — which for the MCP server is not
+    guaranteed to be anything — silently points the check at nothing. The anchor
+    is the RESOURCES ZONE, which is where core test data lives."""
+    from agent.skills import workspace
     monkeypatch.chdir(tmp_path)
-    p = cd.resolve_data_path("data/core_test_data_hg38/x.fastq.gz")
-    assert p.is_absolute() and str(p).startswith(str(cd._PROJECT_ROOT))
-    assert tmp_path not in p.parents
+    p = cd.resolve_data_path("core_test_data_hg38/x.fastq.gz")
+    assert p.is_absolute()
+    assert p.is_relative_to(workspace.resources_root())
+    assert p.parent != tmp_path, "resolved against the CWD"
 
 
 def test_both_readers_now_go_through_the_leaf():
@@ -118,8 +121,8 @@ def test_both_readers_now_go_through_the_leaf():
     test used an absolute pod5_dir for both halves — which the old data_pins reader also
     matched, so reverting it left the suite green."""
     td = {"genome_build": "hg38",
-          "pod5_dir": "/abs/signal",                            # spec_writer missed
-          "r1": "data/core_test_data_hg38/x_R1.fastq.gz"}       # data_pins missed
+          "pod5_dir": "/abs/signal",                       # spec_writer missed
+          "r1": "core_test_data_hg38/x_R1.fastq.gz"}       # data_pins missed
     assert {"pod5_dir", "r1"} <= set(cd.test_data_paths(td))
 
     named = {a["name"] for a in data_pins.sealed_anchors({"test_data": td}).values()}
@@ -130,18 +133,19 @@ def test_both_readers_now_go_through_the_leaf():
 
 
 def test_a_relative_test_data_path_becomes_a_comparable_pin():
-    """The shape BOTH sealed specs on disk carry, and the one that made the production
-    data check blind. `select_test_data` builds paths from the manifest's `core_dir`,
-    relative in the shipped config; `sealed_anchors` must key on the resolved absolute
-    path, because that is what a production run binds and compares against."""
+    """The shape that made the production data check blind. A `test_data` path may
+    be recorded relative to the resources zone; `sealed_anchors` must key on the
+    RESOLVED absolute path, because that is what a production run binds and
+    compares against."""
+    from agent.skills import workspace
     td = {"genome_build": "hg38",
-          "r1": "data/core_test_data_hg38/short_read/paired_end/rnaseq/x_R1.fastq.gz"}
+          "r1": "core_test_data_hg38/short_read/paired_end/rnaseq/x_R1.fastq.gz"}
     anchors = data_pins.sealed_anchors({"test_data": td})
     assert len(anchors) == 1, f"the relative test_data path was not seen at all: {anchors}"
     key = next(iter(anchors))
     assert key.startswith("/") and key.endswith("x_R1.fastq.gz"), key
-    assert str(cd._PROJECT_ROOT) in key, \
-        "a relative test_data path must resolve against the project root"
+    assert str(workspace.resources_root()) in key, \
+        "a relative test_data path must resolve against the resources zone"
 
 
 # ---------------------------------------------------------------------------
@@ -342,8 +346,16 @@ def test_an_oversized_input_is_not_reported_as_mutated(tmp_path, monkeypatch):
 
 def _manifest_config(tmp_path: Path) -> tuple[dict, Path]:
     """A miniature core-test-data tree with REAL files, so select_test_data runs the
-    production path (list_resources -> score -> anchor) with nothing stubbed."""
-    core = tmp_path / "data" / "core_test_data_hg38"
+    production path (list_resources -> score -> anchor) with nothing stubbed.
+
+    The tree is built in the RESOURCES ZONE the resolver reports — already
+    redirected at this test's tmp_path by the root conftest. Building it at a
+    hand-picked path and passing that in via config is what used to work; the
+    location is no longer configurable, so the fixture has to write where the
+    producer will read.
+    """
+    from agent.skills import workspace
+    core = workspace.resources_root() / "core_test_data_hg38"
     reads = core / "short_read" / "paired_end" / "rnaseq"
     reads.mkdir(parents=True)
     (reads / "S_R1.fastq.gz").write_text("@a\nACGT\n+\nIIII\n")
@@ -358,7 +370,7 @@ def _manifest_config(tmp_path: Path) -> tuple[dict, Path]:
                 "r2": "short_read/paired_end/rnaseq/S_R2.fastq.gz",
                 "num_reads": 10000, "available": True}}}]}}},
     }))
-    return {"paths": {"data_dir": str(tmp_path / "data")}}, core
+    return {}, core
 
 
 def test_select_test_data_anchors_every_path_it_emits(tmp_path, monkeypatch):
@@ -461,9 +473,13 @@ def test_the_real_sealed_specs_are_read_as_unanchored_not_as_verified():
     read as `unanchored` — the honest third state — and must not refuse, since their
     inputs are still where they were left. Guards against the tempting shortcut of
     treating "no anchor" as "nothing to complain about, call it verified"."""
-    repo = Path(__file__).resolve().parents[1]
+    from _artifacts import sealed_spec_paths
+    paths = sealed_spec_paths()
+    if not paths:
+        pytest.skip("no sealed workflow artifacts in the workspace reports zone — "
+                    "this check only has force on a machine that has sealed something")
     seen = 0
-    for f in sorted((repo / "env_reports").glob("*.workflow.yaml")):
+    for f in [Path(x) for x in paths]:
         spec = yaml.safe_load(f.read_text())
         if not cd.test_data_paths(spec.get("test_data")):
             continue
@@ -518,12 +534,14 @@ def test_the_dashboard_reads_paths_through_the_leaf(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _inventory(tmp_path: Path, spec: dict, **kw):
+    """Write the spec into the reports zone `list_pipelines` reads, then read it
+    back. The zone is this test's tmp_path (redirected by the root conftest), so
+    "where the writer put it" and "where the reader looks" are one path."""
     from agent.skills.resources import list_pipelines
-    d = tmp_path / "specs"
-    d.mkdir(exist_ok=True)
+    from agent.skills import workspace
+    d = workspace.reports_dir()
     (d / f"{spec['workflow_name']}.workflow.yaml").write_text(yaml.safe_dump(spec))
-    cfg = {"paths": {"pipelines_dir": str(d), "envs_dir": str(tmp_path / "envs")}}
-    return list_pipelines(cfg, **kw)["workflows"][0]
+    return list_pipelines({}, **kw)["workflows"][0]
 
 
 def _sealed(name: str, td: dict | None, integrity: dict | None) -> dict:

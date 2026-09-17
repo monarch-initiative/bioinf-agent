@@ -66,7 +66,15 @@ class _Cache:
 
 
 def _cfg(tmp_path):
-    return {"paths": {"pipelines_dir": str(tmp_path)}}
+    """`list_pipelines` reads the workspace reports zone — already this test's
+    tmp_path via the root conftest — so there is no path to pass. The argument
+    stays for the config the function still takes."""
+    return {}
+
+
+def _reports():
+    from agent.skills import workspace
+    return workspace.reports_dir()
 
 
 def _rec(**over):
@@ -138,7 +146,7 @@ def test_an_unverified_how_to_keeps_its_reason(tmp_path):
     """`not_attempted` alone cannot distinguish "nobody authored a usage block" from
     "it spans two images and structurally cannot be self-tested" — two very different
     facts about the same artifact."""
-    (tmp_path / "w.workflow.yaml").write_text(
+    (_reports() / "w.workflow.yaml").write_text(
         "workflow_name: w\n"
         "env_request_key: k\n"
         "pipeline_steps: []\n"
@@ -152,7 +160,7 @@ def test_an_unverified_how_to_keeps_its_reason(tmp_path):
 
 def test_a_verified_how_to_does_not_carry_a_redundant_reason(tmp_path):
     """The other direction — compaction has to actually compact in the common case."""
-    (tmp_path / "w.workflow.yaml").write_text(
+    (_reports() / "w.workflow.yaml").write_text(
         "workflow_name: w\n"
         "env_request_key: k\n"
         "pipeline_steps: []\n"
@@ -219,7 +227,7 @@ def test_steps_validated_is_correct_in_both_forms(detail, tmp_path):
     lived in exactly this row. Adding a second rendering of the row is a fresh chance to
     reintroduce it, so both forms are checked against the NORMAL validation shape (per-
     file records) rather than the agent override that almost no real step has."""
-    (tmp_path / "w.workflow.yaml").write_text(
+    (_reports() / "w.workflow.yaml").write_text(
         "workflow_name: w\n"
         "env_request_key: k\n"
         "pipeline_steps:\n"

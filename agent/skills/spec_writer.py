@@ -36,6 +36,7 @@ from agent.skills.outcomes import refused
 # and the store agree on how a record is keyed — pipeline_state imports only stdlib + yaml
 # + outcomes, so this stays cycle-free.
 from agent.skills.pipeline_state import validation_covers as _validation_covers
+from agent.skills import workspace
 
 
 # ---------------------------------------------------------------------------
@@ -210,9 +211,7 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     # (helper below is module-level; see _shape_fix_hint)
     from agent.models.core_data import WorkflowSpec
 
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    out_dir = project_root / config["paths"]["pipelines_dir"]
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = workspace.reports_dir()
     try:
         wf = WorkflowSpec.model_validate(workflow)
     except Exception as e:
@@ -1580,10 +1579,10 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
       - paths under any conda env directory (envs/{...}/) — bundled tool data
       - URLs (http:// https:// ftp://)
     """
-    # Project root for resolving relative test_data paths into absolute
-    # form — select_test_data records paths relative to project root, but
-    # pipeline_steps store absolute paths. Both shapes must compare equal.
-    project_root = Path(__file__).parent.parent.parent.resolve()
+    # Relative test_data paths anchor at the resources zone — the same anchor
+    # `core_data.resolve_data_path` uses, because a second answer here is a
+    # second answer to "does this input trace", which is what I8 decides.
+    data_root = workspace.resources_root()
 
     def _add_external(s: str) -> None:
         if not isinstance(s, str) or not s:
@@ -1591,7 +1590,7 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
         external_paths.add(s)
         p = Path(s)
         if not p.is_absolute():
-            joined = project_root / p
+            joined = data_root / p
             external_paths.add(str(joined))            # absolute, unresolved
             try:
                 external_paths.add(str(joined.resolve()))   # symlink-resolved

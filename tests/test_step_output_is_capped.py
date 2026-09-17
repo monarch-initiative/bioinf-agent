@@ -38,13 +38,13 @@ VERBOSE = "\n".join(f"[build] compiling module_{i}.o ... ok" for i in range(1, 4
 def test_a_short_stream_is_returned_untouched_and_unannotated(tmp_path):
     """The common case must cost nothing and must not grow a truncation note that a
     reader would have to interpret."""
-    text, note = cap_stream("all good\n", _STDOUT_KEEP_CHARS, project_root=tmp_path)
+    text, note = cap_stream("all good\n", _STDOUT_KEEP_CHARS, spill_dir=tmp_path)
     assert text == "all good\n"
     assert note == {}
 
 
 def test_a_flooding_stream_is_bounded(tmp_path):
-    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, project_root=tmp_path)
+    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, spill_dir=tmp_path)
     assert len(text) == _STDOUT_KEEP_CHARS
     assert note["dropped_chars"] == len(VERBOSE) - _STDOUT_KEEP_CHARS
     assert note["total_chars"] == len(VERBOSE)
@@ -55,7 +55,7 @@ def test_the_tail_is_kept_because_that_is_where_the_error_is(tmp_path):
     boilerplate banner and reliably discard the reason the step failed."""
     noisy = "ok\n" * 5000 + "Traceback (most recent call last):\nValueError: boom\n"
     text, note = cap_stream(noisy, _STDERR_KEEP_CHARS, kind="stderr",
-                            project_root=tmp_path)
+                            spill_dir=tmp_path)
     assert "ValueError: boom" in text
     assert note["kept"] == "tail"
 
@@ -64,7 +64,7 @@ def test_truncation_is_disclosed_and_the_full_stream_stays_retrievable(tmp_path)
     """Nothing is destroyed. The bytes that were cut are one Read away, at a path the
     payload itself names — an agent that needs the middle of a build log can still get
     it."""
-    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, project_root=tmp_path)
+    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, spill_dir=tmp_path)
     full = Path(note["full_log"])
     assert full.is_file()
     assert full.read_text() == VERBOSE, "the spilled log must be the COMPLETE stream"
@@ -75,7 +75,7 @@ def test_the_spill_lands_under_the_given_root_not_the_live_repo(tmp_path):
     """Route through the passed project_root, so the suite cannot litter the user's
     working tree — the same discipline tests/conftest.py enforces for the record
     writers."""
-    _, note = cap_stream(VERBOSE, 100, project_root=tmp_path)
+    _, note = cap_stream(VERBOSE, 100, spill_dir=tmp_path)
     assert Path(note["full_log"]).is_relative_to(tmp_path)
 
 
@@ -84,7 +84,7 @@ def test_a_failed_spill_still_returns_the_capped_text(tmp_path):
     simply carries no `full_log` key rather than a path that is not there."""
     blocked = tmp_path / "not_a_dir"
     blocked.write_text("i am a file")
-    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, project_root=blocked)
+    text, note = cap_stream(VERBOSE, _STDOUT_KEEP_CHARS, spill_dir=blocked)
     assert len(text) == _STDOUT_KEEP_CHARS
     assert note["dropped_chars"] > 0
     assert "full_log" not in note

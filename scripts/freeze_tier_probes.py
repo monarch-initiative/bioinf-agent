@@ -168,7 +168,7 @@ def build_method_tier(spec: dict) -> dict:
     an image WITHOUT a container-native reconstruction, so they don't ride build_env_image.
     Uses the SAME injectable executors the freeze() MCP surface uses (freeze_from_image /
     build_from_authors_recipe), pointed at a THROWAWAY EnvCache + reports dir so nothing
-    touches the real cache or env_reports/. Returns the normalized build_tier outcome."""
+    touches the real cache or the reports zone. Returns the normalized build_tier outcome."""
     import tempfile
     from agent.skills import freeze_from_image as ffi
     from agent.skills.biocontainers import resolve_biocontainer

@@ -23,8 +23,7 @@ def _isolate_singletons(monkeypatch, tmp_path):
     monkeypatch.setattr(m._env_cache, "path", tmp_path / "_env_cache.json")
 
     drafts = tmp_path / "pipeline_drafts"; drafts.mkdir()
-    cfg = {**m.config, "paths": {**m.config.get("paths", {}),
-                                 "drafts_dir": str(drafts),
-                                 "pipelines_dir": str(tmp_path / "env_reports")}}
+    cfg = {**m.config,
+}
     monkeypatch.setattr(m, "_pipeline_state", PipelineState(cfg))
     yield

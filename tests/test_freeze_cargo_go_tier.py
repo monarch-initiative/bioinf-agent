@@ -164,9 +164,8 @@ def _ps_in_tmp(tmp_path, monkeypatch):
     from agent import mcp_server as _ms
     from agent.skills.pipeline_state import PipelineState
     (tmp_path / "drafts").mkdir(); (tmp_path / "reports").mkdir()
-    cfg = {**_ms.config, "paths": {**_ms.config.get("paths", {}),
-                                   "drafts_dir": str(tmp_path / "drafts"),
-                                   "pipelines_dir": str(tmp_path / "reports")}}
+    cfg = {**_ms.config,
+}
     ps = PipelineState(cfg)
     monkeypatch.setattr(_ms, "_pipeline_state", ps)
     return _ms, ps

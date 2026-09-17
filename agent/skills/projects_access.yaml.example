@@ -137,9 +137,12 @@ compute_envs:
       description: "where the agent uploads .sif container images for this env"
 
     # ─── Phase 2: HPC actuator surface ──────────────────────────────────────
-    # All three blocks below are OPTIONAL. Declare a block to ENABLE the
-    # corresponding primitives on this env; omit it to keep them disabled.
-    # All paths must be disjoint subtrees on this env.
+    # The blocks below are OPTIONAL. Declare a block to ENABLE the corresponding
+    # primitives on this env; omit it to keep them disabled. All paths must be
+    # disjoint subtrees on this env.
+    #
+    # These are the SAME four zones the local workspace has — full parity, which
+    # is what lets a production run be the same kind of thing on either locus.
 
     agent_scratch_target:                        # the agent's sandbox on this env
       path: /scratch/alice/CLAUDE_SCRATCH/
@@ -150,6 +153,13 @@ compute_envs:
       path: /work/users/a/alice/CLAUDE_GENOMES/
       permissions: [file_name_only, upload, download, exec]
       description: "shared reference data — genomes, public DBs, etc."
+
+    agent_reports_target:                        # the record, mirrored from local
+      path: /work/users/a/alice/CLAUDE_REPORTS/
+      permissions: [file_name_only, upload, download]
+      description: "ENV/RUN reports + sealed specs, mirrored so the record sits
+                    next to the .sif it describes. No `exec`: reports are read,
+                    never run."
 
     slurm:                                       # OPTIONAL — the HPC's scheduler POLICY.
                                                  # EVERY key optional; typos still REFUSED. Omit

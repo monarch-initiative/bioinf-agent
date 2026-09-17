@@ -61,11 +61,7 @@ def agent_status() -> dict:
     rather than crashing the whole call."""
     from agent.skills.agent_status import agent_status as _agent_status
     from agent.skills import compute_access as _compute_access
-    # Prefer the repo-root projects_access.yaml (the live file convention
-    # the user is using); fall back to the canonical homedir path.
-    repo_root = _ms._env_mgr.project_root
-    candidate = repo_root / "projects_access.yaml"
-    access_path = candidate if candidate.exists() else _compute_access.default_access_path()
+    access_path = _compute_access.default_access_path()
     if not access_path.exists():
         access_path = None
     return _agent_status(

@@ -24,6 +24,7 @@ import pytest
 import yaml
 
 from agent.models.core_data import SampleMeta
+from agent.skills import workspace
 from agent.skills.core_test_data import add_core_pod5_data
 
 
@@ -35,7 +36,7 @@ FAKE_SHA256 = hashlib.sha256(FAKE_POD5_BYTES).hexdigest()
 
 def _config(tmp_path: Path) -> dict:
     """Minimal config dict the helper needs (just paths.data_dir)."""
-    return {"paths": {"data_dir": str(tmp_path / "data")}}
+    return {}
 
 
 def _mock_urlopen(payload: bytes):
@@ -195,7 +196,7 @@ def test_select_test_data_routes_pod5_by_file_format(tmp_path, mock_gen_manifest
     from agent.skills.resources import list_resources
 
     config = _config(tmp_path)
-    core_dir = Path(config["paths"]["data_dir"]) / "core_test_data_hg38"
+    core_dir = workspace.resources_root() / "core_test_data_hg38"
 
     # Build a manifest by hand — same shape gen_manifest produces.
     seq_data = {

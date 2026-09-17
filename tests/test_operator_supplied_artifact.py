@@ -77,8 +77,9 @@ def test_a_file_url_is_refused_and_names_the_honest_route(tmp_path):
     fetchable. Refused — and the message must name `local_path`, because a refusal
     that doesn't say what to do instead just relocates the dead end."""
     from agent.skills.env_manager import EnvManager
-    em = EnvManager({"paths": {"conda_envs_prefix": str(tmp_path / "envs")}})
-    (tmp_path / "envs" / "e").mkdir(parents=True)
+    from agent.skills import workspace
+    em = EnvManager({})
+    (workspace.conda_envs_dir() / "e").mkdir(parents=True, exist_ok=True)
     tgz, sha = _artifact(tmp_path)
 
     r = em.install_release_binary("e", "faketool", url=f"file://{tgz}", sha256=sha)
@@ -92,8 +93,9 @@ def test_url_and_local_path_together_are_refused(tmp_path):
     there is no sensible merge — and silently preferring one would make the
     record disagree with what the caller asked for."""
     from agent.skills.env_manager import EnvManager
-    em = EnvManager({"paths": {"conda_envs_prefix": str(tmp_path / "envs")}})
-    (tmp_path / "envs" / "e").mkdir(parents=True)
+    from agent.skills import workspace
+    em = EnvManager({})
+    (workspace.conda_envs_dir() / "e").mkdir(parents=True, exist_ok=True)
     tgz, _ = _artifact(tmp_path)
 
     r = em.install_release_binary("e", "faketool", url="https://x/y.tar.gz",
@@ -104,8 +106,9 @@ def test_url_and_local_path_together_are_refused(tmp_path):
 
 def test_neither_url_nor_local_path_is_refused(tmp_path):
     from agent.skills.env_manager import EnvManager
-    em = EnvManager({"paths": {"conda_envs_prefix": str(tmp_path / "envs")}})
-    (tmp_path / "envs" / "e").mkdir(parents=True)
+    from agent.skills import workspace
+    em = EnvManager({})
+    (workspace.conda_envs_dir() / "e").mkdir(parents=True, exist_ok=True)
 
     r = em.install_release_binary("e", "faketool")
     assert r["success"] is False
@@ -127,8 +130,9 @@ def test_a_caller_hash_over_a_local_file_does_not_earn_authenticated(tmp_path):
     Mutation guard: restore `asset_authenticated = bool(sha256)` and this fails.
     """
     from agent.skills.env_manager import EnvManager
-    em = EnvManager({"paths": {"conda_envs_prefix": str(tmp_path / "envs")}})
-    (tmp_path / "envs" / "e").mkdir(parents=True)
+    from agent.skills import workspace
+    em = EnvManager({})
+    (workspace.conda_envs_dir() / "e").mkdir(parents=True, exist_ok=True)
     tgz, sha = _artifact(tmp_path)
 
     r = em.install_release_binary("e", "faketool", local_path=str(tgz),
@@ -146,8 +150,9 @@ def test_a_wrong_hash_still_hard_fails_on_the_local_route(tmp_path):
     """Declining to call it `authenticated` must not weaken the check itself:
     the hash still says WHAT the bytes are, and a mismatch is still a hard fail."""
     from agent.skills.env_manager import EnvManager
-    em = EnvManager({"paths": {"conda_envs_prefix": str(tmp_path / "envs")}})
-    (tmp_path / "envs" / "e").mkdir(parents=True)
+    from agent.skills import workspace
+    em = EnvManager({})
+    (workspace.conda_envs_dir() / "e").mkdir(parents=True, exist_ok=True)
     tgz, _ = _artifact(tmp_path)
 
     r = em.install_release_binary("e", "faketool", local_path=str(tgz),

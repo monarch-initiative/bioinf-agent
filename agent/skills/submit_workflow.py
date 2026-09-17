@@ -73,6 +73,7 @@ from typing import Mapping, Optional
 from agent.skills import compute_access, transfer, workflow_render
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills import workspace
 
 
 # A SLURM job_id as parsed from `sbatch --parsable`: digits, length-capped.
@@ -93,17 +94,23 @@ _MANIFEST_ROOT = "job_submissions"
 
 
 def _manifest_root() -> Path:
-    return transfer._repo_root() / _MANIFEST_ROOT
+    return transfer._record_root() / _MANIFEST_ROOT
 
 
 # Where the rendered workflow files are staged locally before upload. MUST live
 # under a Globus-accessible location: Globus Connect Personal only scans its
 # Accessible Folders (default $HOME) and REFUSES a system temp dir like macOS's
 # /var/folders (which tempfile.TemporaryDirectory() defaults to) — that surfaced
-# as a live `submit.upload_failed` on the first production run. The repo sits
-# under $HOME, so a repo-local staging dir works for BOTH transports (scp doesn't
-# care where the source is). Mirrors run_cluster_step._RENDER_STAGE_DIR.
-_RENDER_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "submit_render_staging"
+# as a live `submit.upload_failed` on the first production run. The workspace is
+# required to sit under $HOME, so the scratch zone works for BOTH transports (scp
+# doesn't care where the source is). Mirrors run_cluster_step._render_stage_dir.
+# A FUNCTION, not a module constant. The location depends on the resolved
+# workspace, and a constant computed at import freezes whatever the environment
+# said at import time — which for a test process is "before the fixture
+# redirected it", so every staged file would land in the developer's real
+# workspace.
+def _render_stage_dir():
+    return workspace.scratch_dir("submit_render_staging")
 
 
 def _validate_workflow_dir(workflow_dir: str) -> str:
@@ -394,9 +401,8 @@ def submit_workflow_job(project_name: str,
         # ─── Materialize them into a local tempdir, then upload ────────
         files_uploaded: list[str] = []
         upload_started = datetime.now(timezone.utc).isoformat()
-        _RENDER_STAGE_DIR.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="bioinf_submit_",
-                                         dir=str(_RENDER_STAGE_DIR)) as td:
+                                         dir=str(_render_stage_dir())) as td:
             tdp = Path(td)
             for fname in _RENDERED_FILES:
                 (tdp / fname).write_text(rendered[fname])

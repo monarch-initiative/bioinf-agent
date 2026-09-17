@@ -63,9 +63,8 @@ def _sandbox(monkeypatch, tmp_path):
 
     # 1) scope the pipeline-state singleton to tmp (no draft leaks into the repo).
     tmp_drafts = tmp_path / "pipeline_drafts"; tmp_drafts.mkdir()
-    cfg = {**m.config, "paths": {**m.config.get("paths", {}),
-                                 "drafts_dir": str(tmp_drafts),
-                                 "pipelines_dir": str(tmp_path / "env_reports")}}
+    cfg = {**m.config,
+}
     monkeypatch.setattr(m, "_pipeline_state", PipelineState(cfg))
 
     # scope the job manager's on-disk writes to tmp (a spawn-path test writes a

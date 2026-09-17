@@ -142,7 +142,8 @@ class TestDashboardHeadlineBothTruths:
 # ─────────────────────────── FD4 — the sample name is the subject id ────────────────
 
 def _write_ppkt_meta(tmp_path: Path, subject_id: str) -> dict:
-    core = tmp_path / "data" / "core_test_data_hg38" / "phenopackets"
+    from agent.skills import workspace
+    core = workspace.resources_root() / "core_test_data_hg38" / "phenopackets"
     core.mkdir(parents=True)
     import yaml
     (core / "PPK_1_meta.yaml").write_text(yaml.safe_dump({
@@ -153,7 +154,7 @@ def _write_ppkt_meta(tmp_path: Path, subject_id: str) -> dict:
     }))
     # config paths.data_dir is read relative to the PROJECT root, so hand the skill an
     # absolute path via a config rooted at tmp_path
-    return {"paths": {"data_dir": str(tmp_path / "data")}}
+    return {}
 
 
 class TestVcfSampleNameVerbatim:

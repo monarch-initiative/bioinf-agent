@@ -83,6 +83,7 @@ from agent.skills import (
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
+from agent.skills import workspace
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -100,7 +101,13 @@ _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 # staging dir works for BOTH transports (scp doesn't care where the source
 # is) and keeps everything self-contained in the project tree per the user's
 # rails. TemporaryDirectory still auto-cleans each run.
-_RENDER_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "cluster_render_staging"
+# A FUNCTION, not a module constant. The location depends on the resolved
+# workspace, and a constant computed at import freezes whatever the environment
+# said at import time — which for a test process is "before the fixture
+# redirected it", so every staged file would land in the developer's real
+# workspace.
+def _render_stage_dir():
+    return workspace.scratch_dir("cluster_render_staging")
 
 
 # Terminal SLURM states — once we hit one of these the job is over.
@@ -402,9 +409,8 @@ def run_step_on_cluster(
                 stage_result=stage)
 
     files_uploaded: list[str] = []
-    _RENDER_STAGE_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="bioinf_cluster_step_",
-                                     dir=str(_RENDER_STAGE_DIR)) as td:
+                                     dir=str(_render_stage_dir())) as td:
         tdp = Path(td)
         for fname in _RENDERED_FILES:
             (tdp / fname).write_text(rendered[fname])

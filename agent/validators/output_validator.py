@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.skills.outcomes import proven, refused, broke
+from agent.skills import workspace
 
 
 def infer_validator_type(filename: str) -> str:
@@ -66,8 +67,7 @@ _QC_NO_TARGETS = 8
 class OutputValidator:
     def __init__(self, config: dict):
         self.config = config
-        self._project_root = Path(__file__).parent.parent.parent.resolve()
-        self._envs_dir = self._project_root / config["paths"]["conda_envs_prefix"]
+        self._envs_dir = workspace.conda_envs_dir()
         # Core tools env (samtools / bcftools / seqkit / bwa) is created by
         # the bootstrap and is the canonical source of validator binaries.
         # Falls back to the legacy "{prefix}validators" name for older installs.

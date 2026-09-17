@@ -25,16 +25,16 @@ from typing import Any
 from agent.skills import _proc
 from agent.skills.container_build import _BUILD_LABEL, _BUILD_OWNER_LABEL
 from agent.skills.outcomes import proven, broke
+from agent.skills import workspace
 
 
 class DockerBuilder:
     def __init__(self, config: dict):
         self.config = config
-        self.project_root = Path(__file__).parent.parent.parent.resolve()
-        self.envs_dir = self.project_root / config["paths"]["conda_envs_prefix"]
+        self.envs_dir = workspace.conda_envs_dir()
         # NO `self.output_dir`. It was read from `paths.docker_output_dir`, used only
         # to mkdir itself, and never consulted again — while the sole producer of a
-        # freeze tarball hardcodes `<repo>/docker_images/<name>/` and `save_archive`
+        # freeze tarball asks `workspace.images_dir()` and `save_archive`
         # mkdirs that parent on demand. So setting the key created an empty directory
         # and moved nothing. Deleted with the key on 2026-08-06.
 
@@ -187,12 +187,12 @@ class DockerBuilder:
         # the system. The full stream spills to data/step_logs/ and the note names it.
         from agent.skills.env_manager import (_STDERR_KEEP_CHARS, _STDOUT_KEEP_CHARS,
                                               cap_stream)
-        _root = Path(__file__).resolve().parents[2]
+        _logs = workspace.scratch_dir("step_logs")
         _out, _out_note = cap_stream(logs.get("stdout", ""), _STDOUT_KEEP_CHARS,
-                                     kind="stdout", project_root=_root)
+                                     kind="stdout", spill_dir=_logs)
         _err, _err_note = cap_stream(
             logs.get("stderr", "") + (" [killed: timeout]" if killed else ""),
-            _STDERR_KEEP_CHARS, kind="stderr", project_root=_root)
+            _STDERR_KEEP_CHARS, kind="stderr", spill_dir=_logs)
         return {
             "returncode": -1 if killed else rc,
             "stdout": _out,
@@ -279,6 +279,6 @@ class DockerBuilder:
         # conventional 124/127 (was -1 for everything; nothing branched on -1,
         # measured 2026-09-14 before the change).
         try:
-            return _proc.run_argv(cmd, timeout, cwd=str(self.project_root))
+            return _proc.run_argv(cmd, timeout, cwd=str(workspace.scratch_dir("run")))
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}

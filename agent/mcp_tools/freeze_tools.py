@@ -26,6 +26,7 @@ from agent.models.core_data import ShippedBinary as _ShippedBinary
 from agent.skills.backgroundable import backgroundable
 from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS
 from agent.skills.outcomes import proven, refused, broke, degraded
+from agent.skills import workspace as _workspace
 
 
 def _image_build_preflight():
@@ -402,7 +403,7 @@ def freeze(
         never silently swallowed."""
         nonlocal push_status
         idg = _ms._docker.image_digest(image)
-        tar_path = _ms._env_mgr.project_root / "docker_images" / name / f"{name}.tar"
+        tar_path = _workspace.images_dir() / name / f"{name}.tar"
         save = _ms._docker.save_archive(image, tar_path)
         tball = save.get("tarball") if save.get("success") else None
         pushed = None
@@ -488,7 +489,7 @@ def freeze(
             if br.get("stage") in _DOCKER_STAGES:
                 try:
                     import shutil as _sh
-                    free_gb = _sh.disk_usage(str(_ms.PROJECT_ROOT)).free / (1024 ** 3)
+                    free_gb = _sh.disk_usage(str(_workspace.workspace_root())).free / (1024 ** 3)
                 except Exception:
                     free_gb = None
                 soft_threshold = _ms._FREEZE_MIN_DISK_GB_DEFAULT * 1.5
@@ -758,7 +759,7 @@ def freeze(
     # deliverable; .md was a redundant view that only existed during the AUDIT#2
     # phase to ease grep-based diff). Two artifacts now: ENV.html + attestation.json.
     report_html_path = attestation_path = None
-    reports_dir = _ms._env_mgr.project_root / "env_reports"
+    reports_dir = _workspace.reports_dir()
     reports_dir.mkdir(parents=True, exist_ok=True)
     try:
         (reports_dir / f"{name}.ENV.html").write_text(_ms._env_report_html.render_env_report_html(record))
@@ -1002,7 +1003,7 @@ def generate_user_guide(
         # the latter wrote every sealed guide to the literal "pipeline.GUIDE.md"
         # (measured 2026-09-14).
         stem = s.get("workflow_name") or s.get("pipeline_name") or "pipeline"
-        out = _ms._env_mgr.project_root / "env_reports" / f"{stem}.GUIDE.md"
+        out = _workspace.reports_dir() / f"{stem}.GUIDE.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(md)
         result["path"] = str(out)
@@ -1052,7 +1053,7 @@ def freeze_from_image(
         dockerfile_source=dict(dockerfile_source) if dockerfile_source else None,
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        reports_dir=_ms._env_mgr.project_root / "env_reports")
+        reports_dir=_workspace.reports_dir())
 
 
 @mcp.tool()
@@ -1093,4 +1094,4 @@ def build_env_from_authors_recipe(
         version=version, platform=platform, build_args=dict(build_args or {}),
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        reports_dir=_ms._env_mgr.project_root / "env_reports")
+        reports_dir=_workspace.reports_dir())

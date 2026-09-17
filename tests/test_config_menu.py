@@ -217,3 +217,72 @@ def test_the_wrapper_is_executable_and_delegates_to_the_shared_resolver():
     assert os.access(CONFIG_SH, os.X_OK), "scripts/config.sh is not executable"
     text = CONFIG_SH.read_text()
     assert "_env.sh" in text and "BIOINF_RUNTIME_PY" in text
+
+
+# --- absence is a state, not a pass (second cold-start drive) ----------------
+
+def _run_configure(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(CONFIGURE), *args],
+                          cwd=ROOT, capture_output=True, text=True)
+
+
+def test_validate_does_not_call_a_missing_file_valid(tmp_path):
+    """`validate()` answers a question about the in-memory DOCUMENT, and an empty
+    document is one the loader accepts. Every reporting surface called it
+    directly, so `--validate` on a path holding no file printed `valid` and
+    returned rc 0 — a green light for an unconfigured bridge."""
+    missing = tmp_path / "nowhere" / "projects_access.yaml"
+    res = _run_configure("--validate", "--file", str(missing))
+    assert res.returncode == 2, (
+        f"rc {res.returncode} for a nonexistent file; rc 0 claims the agent's "
+        f"loader accepted something that is not there")
+    # Match the verdict, not the stream — tmp_path itself contains "valid".
+    verdict = res.stdout.split(":")[-1].strip()
+    assert verdict.startswith("no configuration file"), res.stdout
+
+
+def test_validate_accepts_a_real_file(tmp_path):
+    cfg = tmp_path / "projects_access.yaml"
+    cfg.write_text("compute_envs: []\nprojects: []\n")
+    res = _run_configure("--validate", "--file", str(cfg))
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_validate_rejects_a_broken_file(tmp_path):
+    cfg = tmp_path / "projects_access.yaml"
+    cfg.write_text("compute_envs:\n  - name: x\n    type: not_a_type\nprojects: []\n")
+    res = _run_configure("--validate", "--file", str(cfg))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "invalid" in res.stdout
+
+
+def test_state_reports_three_values(cfgmod, tmp_path):
+    """absent / valid / invalid — the third exists because a file that is not
+    there is not a configuration the loader accepted, it is no configuration."""
+    assert cfgmod.Config(tmp_path / "gone.yaml").state()[0] == "absent"
+
+    good = tmp_path / "good.yaml"
+    good.write_text("compute_envs: []\nprojects: []\n")
+    assert cfgmod.Config(good).state()[0] == "valid"
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("compute_envs:\n  - name: x\n    type: bogus\nprojects: []\n")
+    assert cfgmod.Config(bad).state()[0] == "invalid"
+
+
+def test_save_creates_its_parent_directory(cfgmod, tmp_path):
+    """`save` wrote straight to the path. Pointed at a directory that does not
+    exist yet, that raised FileNotFoundError out of the menu loop and took every
+    environment staged in the session with it."""
+    target = tmp_path / "does" / "not" / "exist" / "projects_access.yaml"
+    cfg = cfgmod.Config(target)
+    assert cfg.save() is True
+    assert target.is_file()
+
+
+def test_save_returns_false_instead_of_raising_when_unwritable(cfgmod, tmp_path):
+    """An unwritable destination costs the user the save, never the work."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("i am a file, not a directory\n")
+    cfg = cfgmod.Config(blocker / "sub" / "projects_access.yaml")
+    assert cfg.save() is False

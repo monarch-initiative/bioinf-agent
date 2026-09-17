@@ -18,12 +18,20 @@ import pytest
 from agent.validators.output_validator import OutputValidator
 
 
-def _validator() -> OutputValidator:
-    return OutputValidator({
-        "paths": {"conda_envs_prefix": "envs/"},
+def _validator(*, real_envs: bool = False) -> OutputValidator:
+    """An OutputValidator. `real_envs=True` points it at the MACHINE'S conda zone
+    rather than the per-test sandbox — needed only by the one test below that runs
+    a real samtools, since the sandbox contains no env by construction."""
+    v = OutputValidator({
         "conda": {"env_prefix": "bioinf_"},
         "core_tools": {"env_name": "bioinf_core_tools"},
     })
+    if real_envs:
+        # Only the DIRECTORY. `_core_tools_env` is an env NAME that gets joined
+        # onto `_envs_dir`, so assigning a path to it would break the join.
+        from _artifacts import CONDA_ENVS
+        v._envs_dir = CONDA_ENVS
+    return v
 
 
 def _fake_run(returncode: int, *, tool_found: bool, stderr: str = ""):
@@ -181,7 +189,7 @@ def test_unaligned_bam_with_zero_records_is_refused(tmp_path, monkeypatch):
 
 
 def _samtools_available() -> bool:
-    return bool(getattr(_validator()._run_tool(["samtools", "--version"]),
+    return bool(getattr(_validator(real_envs=True)._run_tool(["samtools", "--version"]),
                         "tool_found", False))
 
 
@@ -192,7 +200,9 @@ def test_real_unaligned_bam_validates_and_real_truncation_does_not(tmp_path):
     that a real samtools really does score an unaligned BAM 8 and a truncated
     one 24. If a future samtools renumbers those bits, the mocks would all
     still pass while production silently rejected every uBAM again."""
-    v = _validator()
+    # real_envs, to match the skipif above — otherwise the guard probes the real
+    # samtools, decides to run, and the body then looks for one in the sandbox.
+    v = _validator(real_envs=True)
     sam = tmp_path / "mini.sam"
     sam.write_text(
         "@HD\tVN:1.6\tSO:queryname\n"

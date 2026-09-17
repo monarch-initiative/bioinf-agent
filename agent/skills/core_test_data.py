@@ -32,6 +32,7 @@ from agent.models.core_data import (
     SubsetInfo,
 )
 from agent.skills.outcomes import broke, proven, refused
+from agent.skills import workspace
 
 
 def phenopacket_to_vcf(
@@ -54,8 +55,7 @@ def phenopacket_to_vcf(
     Returns the path of the written VCF + the sample name (the phenopacket's
     subject_id, or "sample" if absent).
     """
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    data_dir     = project_root / config["paths"]["data_dir"]
+    data_dir     = workspace.resources_root()
     core_dir     = data_dir / f"core_test_data_{genome_build}"
     pk_meta_path = core_dir / "phenopackets" / f"{phenopacket_id}_meta.yaml"
     if not pk_meta_path.exists():
@@ -258,8 +258,7 @@ def add_core_test_data(
     if read_type == "long_read":
         end_type = "single_end"   # long reads are always single-ended
 
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    data_dir = project_root / config["paths"]["data_dir"]
+    data_dir = workspace.resources_root()
 
     core_dir = data_dir / f"core_test_data_{genome_build}"
     if read_type == "long_read":
@@ -360,7 +359,7 @@ def add_core_test_data(
     # ------------------------------------------------------------------
     # Rebuild manifest
     # ------------------------------------------------------------------
-    gen_manifest = project_root / "scripts" / "gen_manifest.py"
+    gen_manifest = workspace.code_root() / "scripts" / "gen_manifest.py"
     ret = subprocess.run(
         ["python3", str(gen_manifest), "--core-dir", str(core_dir)],
         capture_output=True, text=True,
@@ -440,8 +439,7 @@ def add_core_pod5_data(
     are enough to route to a paired modbase model (e.g. 5mC/5hmC/6mA) at
     pipeline-build time. No pre-declared modbase model list here — chemistry
     is the anchor, the basecaller's registry is the source of truth."""
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    data_dir = project_root / config["paths"]["data_dir"]
+    data_dir = workspace.resources_root()
     core_dir = data_dir / f"core_test_data_{genome_build}"
 
     # Long-read layout mirrors add_core_test_data's: long_read/<platform>/<assay_type>/
@@ -548,7 +546,7 @@ def add_core_pod5_data(
     # ------------------------------------------------------------------
     # Rebuild manifest
     # ------------------------------------------------------------------
-    gen_manifest = project_root / "scripts" / "gen_manifest.py"
+    gen_manifest = workspace.code_root() / "scripts" / "gen_manifest.py"
     ret = subprocess.run(
         ["python3", str(gen_manifest), "--core-dir", str(core_dir)],
         capture_output=True, text=True,
@@ -594,8 +592,7 @@ def add_phenopacket(
 
     Idempotent: re-running refreshes the sidecar without re-downloading.
     """
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    data_dir     = project_root / config["paths"]["data_dir"]
+    data_dir     = workspace.resources_root()
     core_dir     = data_dir / f"core_test_data_{genome_build}"
     pk_dir       = core_dir / "phenopackets"
     pk_dir.mkdir(parents=True, exist_ok=True)
@@ -640,7 +637,7 @@ def add_phenopacket(
     # ------------------------------------------------------------------
     # Rebuild manifest
     # ------------------------------------------------------------------
-    gen_manifest = project_root / "scripts" / "gen_manifest.py"
+    gen_manifest = workspace.code_root() / "scripts" / "gen_manifest.py"
     ret = subprocess.run(
         ["python3", str(gen_manifest), "--core-dir", str(core_dir)],
         capture_output=True, text=True,

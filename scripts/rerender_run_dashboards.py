@@ -36,6 +36,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from agent.skills import workspace  # noqa: E402
+
 from agent.skills.run_dashboard_html import render_run_dashboard_html   # noqa: E402
 from agent.skills.spec_writer import load_workflow_spec                  # noqa: E402
 
@@ -54,7 +56,7 @@ def _env_record(request_key: str) -> dict:
         from agent.skills.freeze import EnvCache
         # Same location the server constructs it at (mcp_server.py:118) and the same one
         # resources.py:240 reads — env_reports/_env_cache.json, NOT a config key.
-        return EnvCache(REPO / "env_reports" / "_env_cache.json").lookup(request_key) or {}
+        return EnvCache(workspace.reports_dir() / "_env_cache.json").lookup(request_key) or {}
     except Exception:
         return {}
 
@@ -65,10 +67,11 @@ def main() -> int:
     ap.add_argument("names", nargs="*", help="workflow names (default: all sealed specs)")
     ap.add_argument("--check", action="store_true",
                     help="report which dashboards are stale; write nothing (CI-friendly)")
-    ap.add_argument("--dir", default="env_reports", help="directory holding the artifacts")
+    ap.add_argument("--dir", default=None,
+                    help="directory holding the artifacts (default: the workspace reports zone)")
     args = ap.parse_args()
 
-    out_dir = (REPO / args.dir) if not Path(args.dir).is_absolute() else Path(args.dir)
+    out_dir = Path(args.dir).expanduser().resolve() if args.dir else workspace.reports_dir()
     specs = sorted(out_dir.glob("*.workflow.yaml"))
     if args.names:
         wanted = set(args.names)

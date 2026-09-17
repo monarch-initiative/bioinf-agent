@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402  (runtime env only — config.sh guarantees it)
 
+from agent.skills import workspace  # noqa: E402
 from agent.skills.compute_access import (  # noqa: E402
     PERMISSIONS,
     VALID_JOB_MANAGERS,
@@ -50,8 +51,10 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
 
 TRANSFER_TYPES = ["scp_head_node", "globus"]
 
-#: The three env-level zones, in the order the agent uses them. `key` is the
-#: schema key, `default_perms` what the bridge needs to use the zone at all.
+#: The env-level zones, in the order the agent uses them. `key` is the schema
+#: key, `default_perms` what the bridge needs to use the zone at all. Same four
+#: zones the local workspace has — full parity, so a production run is the same
+#: kind of thing on either locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
      ["file_name_only", "upload", "download", "exec"]),
@@ -59,12 +62,16 @@ ZONES = [
      ["file_name_only", "upload", "download", "exec"]),
     ("container_upload_target", "where .sif container images are staged",
      ["file_name_only", "upload"]),
+    # No `exec`: reports are read, never run.
+    ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
+     ["file_name_only", "upload", "download"]),
 ]
 
 ZONE_LABELS = {
     "agent_scratch_target": "scratch",
     "agent_common_data_target": "common_data",
     "container_upload_target": "containers",
+    "agent_reports_target": "reports",
 }
 
 #: Every compute_envs[] key the menu can write, in the order it writes them.
@@ -76,7 +83,7 @@ ENV_KEYS = (
     "name", "type", "host", "user", "job_manager", "email",
     "apptainer_module", "nextflow_module",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
-    "data_transfer", "slurm",
+    "agent_reports_target", "data_transfer", "slurm",
 )
 
 HEADER = """\
@@ -298,6 +305,22 @@ class Config:
         finally:
             tmp.unlink(missing_ok=True)
 
+    def state(self) -> tuple[str, str]:
+        """The configuration's state, in THREE values — `absent`, `valid`,
+        `invalid` — and the message that goes with it.
+
+        Every surface that REPORTS on the configuration reads this, not
+        `validate`. `validate` asks whether the in-memory document would be
+        accepted, and an empty document is accepted; a path holding no file must
+        not answer that question with `valid`. Staged-but-unsaved work is graded
+        on the document, because the useful question there is whether `save`
+        will take it.
+        """
+        if not self.path.exists() and not self.dirty:
+            return "absent", f"no configuration file at {self.path}"
+        err = self.validate()
+        return ("valid", "") if not err else ("invalid", err)
+
     def save(self) -> bool:
         err = self.validate()
         if err:
@@ -306,10 +329,22 @@ class Config:
             print(DIM("  fix it in the menu, or quit without saving to keep the file on disk."))
             return False
         backup = ""
-        if self.path.exists():
-            backup = str(self.path) + ".bak"
-            shutil.copy2(self.path, backup)
-        self.path.write_text(HEADER + "\n" + dump(self.data))
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists():
+                backup = str(self.path) + ".bak"
+                shutil.copy2(self.path, backup)
+            self.path.write_text(HEADER + "\n" + dump(self.data))
+        except OSError as e:
+            # Returning False keeps the menu open with the document intact. An
+            # unwritable destination must cost the user the save, not the work:
+            # raising here unwinds out of the menu loop and everything staged in
+            # this session is gone.
+            print(RED(f"  NOT saved — could not write {self.path}:"))
+            print(f"    {e}")
+            print(DIM("  the configuration is still loaded here; fix the path or "
+                      "permissions and save again."))
+            return False
         self.dirty = False
         print(GREEN(f"  saved {self.path}"))
         if backup:
@@ -326,6 +361,7 @@ def ssh_defaults(user: str) -> dict[str, str]:
     validator requires — a breach of one zone must not reach another."""
     base = f"/scratch/{user}"
     return {
+        "agent_reports_target": f"{base}/CLAUDE_REPORTS/",
         "agent_scratch_target": f"{base}/CLAUDE_SCRATCH/",
         "agent_common_data_target": f"{base}/CLAUDE_GENOMES/",
         "container_upload_target": f"{base}/CLAUDE_CONTAINERS/",
@@ -335,12 +371,13 @@ def ssh_defaults(user: str) -> dict[str, str]:
 def local_defaults() -> dict[str, str]:
     """A local env is at zone-parity with a cluster — same three zones, local
     paths — which is what lets a production run be the same kind of thing on
-    either locus. Kept under the repo so nothing is written outside it."""
-    base = ROOT / "data" / "local_env"
+    either locus. Under the workspace, with every other generated artifact."""
+    base = workspace.scratch_dir("local_env")
     return {
         "agent_scratch_target": f"{base}/scratch/",
         "agent_common_data_target": f"{base}/common_data/",
         "container_upload_target": f"{base}/containers/",
+        "agent_reports_target": f"{base}/reports/",
     }
 
 
@@ -744,17 +781,24 @@ def show(cfg: Config) -> None:
         print(f"\n  {BOLD(p.get('name', '?'))}  envs: {', '.join(p.get('compute_envs') or [])}")
         for d in p.get("directories") or []:
             print(f"      [{d.get('env')}] {d.get('path')}  {d.get('permissions')}")
-    err = cfg.validate()
+    state, msg = cfg.state()
     print()
-    print(GREEN("  valid — the agent's loader accepts this configuration") if not err
-          else RED(f"  invalid: {err}"))
+    if state == "absent":
+        print(YELLOW(f"  {msg}"))
+        print(DIM("  nothing is configured — the HPC bridge is unavailable. Local "
+                  "install, freeze and seal do not need this file."))
+    elif state == "valid":
+        print(GREEN("  valid — the agent's loader accepts this configuration"))
+    else:
+        print(RED(f"  invalid: {msg}"))
 
 
 def status_line(cfg: Config) -> str:
-    err = cfg.validate()
-    state = GREEN("valid") if not err else RED("invalid")
+    state, _ = cfg.state()
+    shown = {"valid": GREEN("valid"), "invalid": RED("invalid"),
+             "absent": YELLOW("not created yet")}[state]
     mark = YELLOW("  * unsaved changes") if cfg.dirty else ""
-    return (f"  {cfg.path.name}: {state}   "
+    return (f"  {cfg.path.name}: {shown}   "
             f"{len(cfg.envs)} compute env(s), {len(cfg.projects)} project(s){mark}")
 
 
@@ -775,17 +819,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--show", action="store_true", help="print the configuration and exit")
     ap.add_argument("--validate", action="store_true",
-                    help="validate and exit; rc 0 when the agent's loader accepts it")
-    ap.add_argument("--file", default=None, help="configuration file (default: ./projects_access.yaml)")
+                    help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
+    ap.add_argument("--file", default=None,
+                    help="configuration file (default: <workspace>/projects_access.yaml)")
     args = ap.parse_args()
 
     path = Path(args.file) if args.file else default_access_path()
     cfg = Config(path)
 
     if args.validate:
-        err = cfg.validate()
-        print(f"{path}: " + ("valid" if not err else f"invalid\n  {err}"))
-        return 0 if not err else 1
+        state, msg = cfg.state()
+        if state == "absent":
+            print(f"{path}: no configuration file — nothing to validate")
+            return 2
+        print(f"{path}: " + ("valid" if state == "valid" else f"invalid\n  {msg}"))
+        return 0 if state == "valid" else 1
     if args.show:
         show(cfg)
         return 0

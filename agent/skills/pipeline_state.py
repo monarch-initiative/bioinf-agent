@@ -35,6 +35,7 @@ import yaml
 
 from agent.skills import store_lock as _store_lock
 from agent.skills.outcomes import refused
+from agent.skills import workspace
 
 
 def validation_key(path: str) -> str:
@@ -72,15 +73,11 @@ def validation_covers(validation: dict, output_path: str) -> bool:
 class PipelineState:
     def __init__(self, config: dict):
         self.config = config
-        project_root = Path(__file__).parent.parent.parent.resolve()
-        self.pipelines_dir = project_root / config["paths"]["pipelines_dir"]
-        self.pipelines_dir.mkdir(parents=True, exist_ok=True)
-        # Drafts live in their own dir (NOT env_reports/) — see module docstring.
-        # Back-compat: if drafts_dir isn't set, fall back to pipelines_dir so an
-        # older config keeps working without forcing a migration.
-        drafts_rel = config["paths"].get("drafts_dir") or config["paths"]["pipelines_dir"]
-        self.drafts_dir = project_root / drafts_rel
-        self.drafts_dir.mkdir(parents=True, exist_ok=True)
+        self.pipelines_dir = workspace.reports_dir()
+        # Drafts live in scratch, NOT with the deliverables — see module docstring.
+        # A draft is in-flight state: listing the reports zone must show only what
+        # shipped.
+        self.drafts_dir = workspace.scratch_dir("pipeline_drafts")
         self._drafts: dict[str, dict] = {}
         self._load_existing_drafts()
 

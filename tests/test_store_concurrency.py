@@ -141,9 +141,7 @@ def _state(tmp_path):
     (tmp_path / "drafts").mkdir(exist_ok=True)
     (tmp_path / "reports").mkdir(exist_ok=True)
     return PipelineState({**_ms.config,
-                          "paths": {**_ms.config.get("paths", {}),
-                                    "drafts_dir": str(tmp_path / "drafts"),
-                                    "pipelines_dir": str(tmp_path / "reports")}})
+})
 
 
 def test_a_pointer_written_by_another_process_is_not_erased(tmp_path):

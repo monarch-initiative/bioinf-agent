@@ -37,7 +37,7 @@ from agent.skills.job_manager import JobManager
 def _jm(tmp_path: Path) -> JobManager:
     """JobManager wired to tmp_path. We don't need a real conda env for the
     no-env_name code path — EnvManager just constructs."""
-    cfg = {"paths": {"conda_envs_prefix": str(tmp_path / "envs")}}
+    cfg = {}
     jm = JobManager(cfg)
     # JobManager hard-codes jobs_dir to project_root/data/jobs in __init__.
     # Redirect onto tmp_path so the test doesn't litter the real dir.
@@ -197,3 +197,42 @@ def test_a_zombie_child_reads_as_finished_not_running(tmp_path):
     assert s["state"] == "exited"
     assert s["returncode"] == 7, \
         f"the restart branch did not reap the child to recover its code (got {s.get('returncode')})"
+
+
+@pytest.mark.integration
+def test_check_right_after_the_sentinel_never_says_running(tmp_path):
+    """THE RACE BEHIND AN INTERMITTENT RED. The sentinel is written from a bash
+    EXIT trap, and a trap runs while the shell is STILL ALIVE — so between
+    `touch X.done` and the process becoming reapable there is a window in which
+    poll() returns None and check() reported `running` for a job that had just
+    told the world it finished.
+
+    That is the sequence `done_path`'s own docstring prescribes ("wait on .done,
+    then call check_job once") landing on the wrong answer, so a caller who uses
+    `done_marker` as intended is sent back to polling — the affordance's entire
+    purpose.
+
+    NOTE THE TIGHT SPIN, it is the point. `_wait_file` sleeps 50ms between looks,
+    which is long enough for the process to finish exiting, so a wait built on it
+    steps over the window and this test passes with or without the fix. Spinning
+    catches the sentinel within microseconds of its creation, which is where the
+    race lives: measured 53/60 before the fix, 0/60 after. The one intermittent
+    full-suite failure that started this was the same race, widened by load.
+    """
+    jm = _jm(tmp_path)
+    for i in range(25):
+        jid = f"teardown_{i}"
+        jm.start("true", job_id=jid)
+        done = jm.done_path(jid)
+        deadline = time.time() + 10.0
+        while not done.exists() and time.time() < deadline:
+            pass                      # no sleep — see the docstring
+        assert done.exists(), f"{jid} never wrote its sentinel"
+
+        s = jm.check(jid, log_tail_lines=0)
+        assert s["state"] == "exited", (
+            f"{jid}: check() said {s['state']!r} the instant the completion "
+            f"sentinel appeared. The job is over — its own EXIT trap said so — "
+            f"and a caller following the documented wait-then-check sequence "
+            f"must not be told it is still running")
+        assert s["returncode"] == 0

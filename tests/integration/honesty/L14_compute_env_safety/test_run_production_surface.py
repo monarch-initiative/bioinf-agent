@@ -309,8 +309,6 @@ class TestLocalHappyPath:
         import agent.mcp_server as ms
         monkeypatch.setattr(ms, "_check_docker_available", lambda: None)
         monkeypatch.setattr(ms._locus, "daemon_is_remote", lambda: False)
-        from agent.skills import transfer
-        monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
 
         d = tmp_path / "proj"; d.mkdir()
         # The declared input must EXIST — production now fails fast on a path
@@ -349,8 +347,6 @@ class TestLocalHappyPath:
         import agent.mcp_server as ms
         monkeypatch.setattr(ms, "_check_docker_available", lambda: None)
         monkeypatch.setattr(ms._locus, "daemon_is_remote", lambda: False)
-        from agent.skills import transfer
-        monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
 
         d = tmp_path / "proj"; d.mkdir()
         refs = tmp_path / "refs"; refs.mkdir()
@@ -432,14 +428,13 @@ class TestReferenceRebind:
 
     @staticmethod
     def _seal(tmp_path, monkeypatch, spec: dict, name="sealedwf"):
-        """Write a sealed WorkflowSpec where the verb will look for it."""
-        import agent.mcp_server as ms
-        reports = tmp_path / "env_reports"
-        reports.mkdir(exist_ok=True)
+        """Write a sealed WorkflowSpec where the verb will look for it.
+
+        Which is the workspace reports zone — already redirected at this test's
+        tmp_path by the root conftest, so there is nothing to override here."""
+        from agent.skills import workspace
+        reports = workspace.reports_dir()
         (reports / f"{name}.workflow.yaml").write_text(yaml.safe_dump(spec))
-        monkeypatch.setitem(ms.config["paths"], "pipelines_dir", str(reports))
-        # _load_sealed_spec resolves pipelines_dir against the repo root, so an
-        # absolute override has to survive the join — it does (Path / abs = abs).
         return name
 
     @staticmethod
@@ -453,8 +448,6 @@ class TestReferenceRebind:
         import agent.mcp_server as ms
         monkeypatch.setattr(ms, "_check_docker_available", lambda: None)
         monkeypatch.setattr(ms._locus, "daemon_is_remote", lambda: False)
-        from agent.skills import transfer
-        monkeypatch.setattr(transfer, "_repo_root", lambda: tmp_path)
         d = tmp_path / "proj"
         d.mkdir(exist_ok=True)
         ap = _local_access(tmp_path, str(d))

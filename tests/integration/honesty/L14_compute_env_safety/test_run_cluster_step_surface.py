@@ -799,18 +799,28 @@ class TestClusterShippedImageBadge:
 
 class TestRenderStagingLocation:
     @pytest.mark.integration
-    def test_render_stage_dir_is_repo_local_not_system_temp(self):
+    def test_render_stage_dir_is_under_home_not_system_temp(self):
         import tempfile
         import agent.skills.run_cluster_step as rcs
-        stage = rcs._RENDER_STAGE_DIR.resolve()
+        stage = rcs._render_stage_dir().resolve()
+        """Globus Connect Personal only scans its Accessible Folders (default
+        $HOME) and REFUSES a system temp dir — that surfaced as a live
+        `submit.upload_failed` on the first production run. Staging therefore
+        goes to the workspace scratch zone, never to tempfile.gettempdir().
+
+        The zone is checked, not the absolute prefix: under test the workspace IS
+        redirected into pytest's tmp_path, which lives under the system temp dir.
+        What keeps the REAL workspace Globus-readable is the $HOME guard that
+        setup and the doctor share — see
+        tests/test_workspace_resolution.py::test_home_containment_is_one_implementation.
+        """
+        from agent.skills import workspace
         sys_tmp = Path(tempfile.gettempdir()).resolve()
-        assert sys_tmp not in stage.parents and stage != sys_tmp, \
-            f"render staging {stage} must NOT be under the system temp dir " \
-            f"{sys_tmp} — Globus refuses to scan it"
-        repo_root = Path(rcs.__file__).resolve().parents[2]
-        assert str(stage).startswith(str(repo_root)), \
-            f"render staging {stage} must live under the repo {repo_root} " \
-            f"(which is under $HOME, so Globus can access it)"
+        assert stage != sys_tmp and stage.parent != sys_tmp, \
+            f"staging {stage} is a bare system temp dir — Globus refuses to scan it"
+        assert stage.is_relative_to(workspace.scratch_dir()), \
+            f"staging {stage} is outside the workspace scratch zone"
+
 
 
 # ---------------------------------------------------------------------------

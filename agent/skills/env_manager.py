@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.skills import evidence
+from agent.skills import workspace
 from agent.skills import store_lock
 from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke
@@ -42,16 +43,29 @@ from agent.skills.outcomes import proven, refused, broke
 _STDOUT_KEEP_CHARS = 4000
 _STDERR_KEEP_CHARS = 8000
 
+#: The service PID registry. Deliberately in /tmp and NOT in the workspace: a PID
+#: file is only meaningful while the machine is up, and /tmp is cleared on reboot.
+#: A registry that outlived a reboot would hold PIDs the kernel has since reissued,
+#: and `os.kill(pid, 0)` would report a stranger's process as our healthy service.
+#:
+#: ONE spelling. It was written out three times — start, stop, reap — which is
+#: three places to disagree, and a module constant is also what lets a test point
+#: the reaper somewhere private instead of scrubbing the machine's real registry.
+SERVICE_PID_DIR = Path("/tmp/bioinf_services")
 
-def _spill_full_stream(project_root: Path, kind: str, text: str) -> str:
+
+def _spill_full_stream(spill_dir: Path, kind: str, text: str) -> str:
     """Write an over-long stream to disk and return its path, or "" on failure.
 
     Truncation must not DESTROY evidence — this codebase refuses to let a report be the
     only record of a run. The agent gets the tail; the bytes stay on disk at a path the
     payload names, so anything cut is one Read away instead of gone.
+
+    Takes the DIRECTORY, not a root to derive it from: a helper that knows how to turn
+    a project root into a log path is a second answer to where artifacts live.
     """
     try:
-        d = project_root / "data" / "step_logs"
+        d = spill_dir
         d.mkdir(parents=True, exist_ok=True)
         import hashlib
         h = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
@@ -64,7 +78,7 @@ def _spill_full_stream(project_root: Path, kind: str, text: str) -> str:
 
 
 def cap_stream(text: Any, keep: int, *, kind: str = "stdout",
-               project_root: Path | None = None) -> tuple[str, dict]:
+               spill_dir: Path | None = None) -> tuple[str, dict]:
     """Return `(text_for_the_agent, note)`. `note` is {} when nothing was cut.
 
     The note is never silent: it states how much was dropped and where the full stream
@@ -74,7 +88,7 @@ def cap_stream(text: Any, keep: int, *, kind: str = "stdout",
     s = text if isinstance(text, str) else ("" if text is None else str(text))
     if len(s) <= keep:
         return s, {}
-    full = _spill_full_stream(project_root, kind, s) if project_root else ""
+    full = _spill_full_stream(spill_dir, kind, s) if spill_dir else ""
     note = {"dropped_chars": len(s) - keep, "total_chars": len(s), "kept": "tail"}
     if full:
         note["full_log"] = full
@@ -141,9 +155,11 @@ def parse_conda_spec(spec: str) -> dict:
 class EnvManager:
     def __init__(self, config: dict):
         self.config = config
-        self.project_root = Path(__file__).parent.parent.parent.resolve()
-        self.envs_dir = self.project_root / config["paths"]["conda_envs_prefix"]
-        self.envs_dir.mkdir(parents=True, exist_ok=True)
+        # NO `project_root` attribute. It used to mean three unrelated things —
+        # where the code is, where artifacts go, and the default cwd for a
+        # subprocess — and a name with three meanings is a name that cannot be
+        # moved. Each is now asked for by the thing it actually is.
+        self.envs_dir = workspace.conda_envs_dir()
         self._conda_exe = self._detect_conda()
 
     @staticmethod
@@ -604,15 +620,15 @@ class EnvManager:
 
         result = self._run_monitored(
             cmd,
-            cwd=working_dir or str(self.project_root),
+            cwd=working_dir or str(workspace.scratch_dir("run")),
             timeout=timeout,
         )
         # Capped before it travels — see _STDOUT_KEEP_CHARS. The full stream spills to
-        # data/step_logs/ and the note names the path, so nothing is destroyed.
+        # the scratch zone and the note names the path, so nothing is destroyed.
         _out, _out_note = cap_stream(result["stdout"], _STDOUT_KEEP_CHARS,
-                                     kind="stdout", project_root=self.project_root)
+                                     kind="stdout", spill_dir=workspace.scratch_dir("step_logs"))
         _err, _err_note = cap_stream(result["stderr"], _STDERR_KEEP_CHARS,
-                                     kind="stderr", project_root=self.project_root)
+                                     kind="stderr", spill_dir=workspace.scratch_dir("step_logs"))
         run_fields = dict(
             returncode=result["returncode"],
             stdout=_out,
@@ -622,10 +638,10 @@ class EnvManager:
             runtime_seconds=result["resource_usage"]["wall_seconds"],
             resource_usage=result["resource_usage"],
             inputs=inputs or [],
-            # N7: pass project_root so a system-shared watch_dir (e.g. /tmp)
-            # only reports project-resident files; harness transcripts and other
+            # Pass the workspace so a system-shared watch_dir (e.g. /tmp) only
+            # reports files that are ours; harness transcripts and other
             # processes' droppings are filtered out.
-            detected_outputs=self._diff_snapshot(before, watch, self.project_root),
+            detected_outputs=self._diff_snapshot(before, watch, workspace.workspace_root()),
         )
         if _out_note:
             run_fields["stdout_truncated"] = _out_note
@@ -1605,7 +1621,7 @@ class EnvManager:
         cmd = [self._conda_exe, "env", "export", "--prefix", str(env_path)]
         if from_history:
             cmd.append("--from-history")
-        result = self._run(cmd, cwd=str(self.project_root), timeout=120)
+        result = self._run(cmd, cwd=str(workspace.scratch_dir("run")), timeout=120)
         if result["returncode"] != 0:
             return ""
 
@@ -1643,7 +1659,7 @@ class EnvManager:
         platforms = platforms or ["linux-64"]
         env_yml = self.export_environment_yml(env_name, from_history=True)
         out = Path(out_path) if out_path else (
-            self.project_root / "env_reports" / f"{env_name}.conda-lock.yml"
+            workspace.reports_dir() / f"{env_name}.conda-lock.yml"
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as td:
@@ -1714,7 +1730,7 @@ class EnvManager:
     ) -> dict[str, Any]:
         """Start a background service inside the env and wait until healthy."""
         env_path = self.envs_dir / env_name
-        pid_dir = Path("/tmp/bioinf_services")
+        pid_dir = SERVICE_PID_DIR
         pid_dir.mkdir(parents=True, exist_ok=True)
         pid_file = pid_dir / f"{service_name}.pid"
         log_file = pid_dir / f"{service_name}.log"
@@ -1737,7 +1753,7 @@ class EnvManager:
         # MCP server down). Detaching is also just correct for a daemon.
         launch = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30,
-            cwd=working_dir or str(self.project_root), env=extra_env,
+            cwd=working_dir or str(workspace.scratch_dir("run")), env=extra_env,
             start_new_session=True,
         )
         if launch.returncode != 0:
@@ -1839,7 +1855,7 @@ class EnvManager:
         working_dir: str | None = None,
     ) -> dict[str, Any]:
         """Stop a background service by running stop_command or killing by PID file."""
-        pid_file = Path("/tmp/bioinf_services") / f"{service_name}.pid"
+        pid_file = SERVICE_PID_DIR / f"{service_name}.pid"
         if stop_command:
             result = self.run_in_env(env_name, stop_command, working_dir=working_dir, timeout=30)
             if result["returncode"] == 0:
@@ -1869,7 +1885,7 @@ class EnvManager:
 
     @staticmethod
     def cleanup_orphan_service_pids() -> dict[str, Any]:
-        """Scan /tmp/bioinf_services/ for stale PID files (the process no
+        """Scan SERVICE_PID_DIR for stale PID files (the process no
         longer exists) and remove them. Called at MCP server startup to keep
         the service registry clean across agent restarts.
 
@@ -1877,7 +1893,7 @@ class EnvManager:
         of services whose owning process has already exited (crash, kill,
         previous agent session).
         """
-        pid_dir = Path("/tmp/bioinf_services")
+        pid_dir = SERVICE_PID_DIR
         if not pid_dir.exists():
             return {"checked": 0, "removed": []}
         removed: list[str] = []
@@ -1935,7 +1951,7 @@ class EnvManager:
 
     @staticmethod
     def _diff_snapshot(before: dict[str, float], directory: Path | None,
-                       project_root: Path | None = None) -> list[str]:
+                       scope_root: Path | None = None) -> list[str]:
         """Return absolute paths of files created or modified since the snapshot.
 
         Returns absolute paths so downstream tools (validate_output, the next
@@ -1951,23 +1967,28 @@ class EnvManager:
         files aren't this step's outputs even if they appeared during the
         run; including them in detected_outputs pollutes the install_step
         record and causes I8 to chase orphans at seal time. Filter to paths
-        that resolve UNDER project_root. The filter only applies when both
-        project_root is supplied AND the watched dir is NOT itself inside
-        project_root (i.e. a system-shared watch like /tmp); a watch inside
-        project_root needs no filter because every produced file is already
-        a project file by construction.
+        that resolve UNDER `scope_root`. The filter only applies when both
+        `scope_root` is supplied AND the watched dir is NOT itself inside it
+        (i.e. a system-shared watch like /tmp); a watch inside needs no filter
+        because every produced file is already in scope by construction.
+
+        `scope_root` is "the region whose files are OURS" — the workspace, which
+        is where outputs land. It is a parameter rather than a resolver call so a
+        test can point it somewhere small, and it is deliberately NOT named for
+        the code checkout: under the workspace split those are different
+        directories, and the one that matters here is where files are written.
         """
         if not directory or not directory.exists():
             return []
         # Decide whether to apply the project-scope filter
         scope_filter = None
-        if project_root is not None:
+        if scope_root is not None:
             try:
-                pr = project_root.resolve()
+                pr = scope_root.resolve()
                 wd = directory.resolve()
-                # If the watch_dir is itself outside project_root (e.g. /tmp),
-                # filter the diff to project-resident files. A watch_dir
-                # inside project_root needs no filter.
+                # If the watch_dir is itself outside scope_root (e.g. /tmp),
+                # filter the diff to in-scope files. A watch_dir inside
+                # scope_root needs no filter.
                 pr_parts = pr.parts
                 wd_under_pr = wd.parts[:len(pr_parts)] == pr_parts
                 if not wd_under_pr:
@@ -2046,7 +2067,7 @@ class EnvManager:
         run_env = env if env is not None else os.environ.copy()
         try:
             return _proc.run_argv(cmd, timeout,
-                                  cwd=cwd or str(self.project_root), env=run_env)
+                                  cwd=cwd or str(workspace.scratch_dir("run")), env=run_env)
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
 
@@ -2083,7 +2104,7 @@ class EnvManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                cwd=cwd or str(self.project_root),
+                cwd=cwd or str(workspace.scratch_dir("run")),
                 env=env,
             )
         except Exception as e:

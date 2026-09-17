@@ -140,18 +140,13 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
     monkeypatch.setattr(spec_writer, "self_test_usage",
                         lambda *_a, **_kw: {"ok": True})
 
-    # ---- redirect the WorkflowSpec writer to a tmp out_dir ------------------
-    # write_workflow_spec resolves its out_dir from spec_writer's project_root
-    # constant + config["paths"]["pipelines_dir"]; the agent's normal output
-    # path is env_reports/ in the repo. For the test we shim the function to
-    # land deliverables under tmp_path so each test is hermetic.
-    out_dir = tmp_path / "env_reports"
-    out_dir.mkdir(exist_ok=True)
-
-    # seal_workflow ALSO renders the Layer-2 {workflow}.RUN.html dashboard into
-    # config["paths"]["pipelines_dir"]. Point that at the tmp out_dir too so the
-    # test can't leak a RUN.html into the repo's env_reports/.
-    monkeypatch.setitem(m.config["paths"], "pipelines_dir", str(out_dir))
+    # ---- where the deliverables land ---------------------------------------
+    # write_workflow_spec and the Layer-2 {workflow}.RUN.html renderer both write
+    # to the workspace reports zone, which the root conftest has pointed at this
+    # test's tmp_path. Asking the resolver is what keeps the shim below writing
+    # where the real writer would.
+    from agent.skills import workspace
+    out_dir = workspace.reports_dir()
 
     from agent.skills import spec_writer
     real_write = spec_writer.write_workflow_spec

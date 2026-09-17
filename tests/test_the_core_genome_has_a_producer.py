@@ -66,7 +66,16 @@ _MANIFEST = {
 
 
 def _core_tree(tmp_path: Path, manifest: dict = None) -> tuple[dict, Path]:
-    core = tmp_path / "data" / "core_test_data_hg38"
+    """A miniature core tree in the resources zone.
+
+    The tree is built in the RESOURCES ZONE the resolver reports — already
+    redirected at this test's tmp_path by the root conftest. Building it at a
+    hand-picked path and passing that in via config is what used to work; the
+    location is no longer configurable, so the fixture has to write where the
+    producer will read.
+    """
+    from agent.skills import workspace
+    core = workspace.resources_root() / "core_test_data_hg38"
     reads = core / "short_read" / "paired_end" / "wgs"
     reads.mkdir(parents=True)
     (reads / "S_R1.fastq.gz").write_text("@a\nACGT\n+\nIIII\n")
@@ -79,7 +88,7 @@ def _core_tree(tmp_path: Path, manifest: dict = None) -> tuple[dict, Path]:
         (genome / idx).write_text("index-bytes\n")
     (core / "manifest.yaml").write_text(
         yaml.safe_dump(_MANIFEST if manifest is None else manifest))
-    return {"paths": {"data_dir": str(tmp_path / "data")}}, core
+    return {}, core
 
 
 @pytest.fixture()

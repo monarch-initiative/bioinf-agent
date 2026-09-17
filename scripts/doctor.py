@@ -23,6 +23,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENV_SH = ROOT / "scripts" / "_env.sh"
 
+# The resolver is stdlib-only and carries no third-party import, so it is safe to
+# use from a script whose job is to diagnose a machine with no dependencies
+# installed. Importing it — rather than re-deriving the layout here — is the whole
+# point: a systems check that computes paths its own way can report PASS for
+# directories the agent never looks at.
+sys.path.insert(0, str(ROOT))
+from agent.skills import workspace   # noqa: E402
+
 ROWS: list[tuple[str, str, str, str]] = []   # (verdict, name, detail, fix)
 
 
@@ -155,18 +163,57 @@ def check_mcp_registration() -> None:
     row("PASS", "mcp register", ".mcp.json → bioinf via scripts/start_mcp_server.sh")
 
 
+# --- workspace ---------------------------------------------------------------
+def check_workspace() -> None:
+    """PRINT the resolved locations. Two surfaces disagreeing about where a file
+    lives is invisible until something reports both, so this row states the
+    workspace, how it was chosen, and every zone under it."""
+    z = workspace.zones()
+    root = Path(z["workspace_root"])
+    src = {"env":     "$BIOINF_WORKSPACE",
+           "pointer": f"{workspace.POINTER_FILENAME} in the checkout",
+           "default": "built-in default (setup has not recorded a choice)"}[z["workspace_source"]]
+
+    err = workspace.home_containment_error(root)
+    if err:
+        row("FAIL", "workspace", err,
+            "run ./scripts/setup.sh and choose a workspace under $HOME, or set "
+            "$BIOINF_WORKSPACE to one")
+    elif z["workspace_source"] == "default":
+        row("SKIP", "workspace", f"{root} — {src}",
+            "run ./scripts/setup.sh to record the choice; until then a second "
+            "clone resolves the same default and shares this workspace")
+    else:
+        row("PASS", "workspace", f"{root} — from {src}")
+
+
+def print_layout() -> None:
+    """The resolved zones, listed after the rows. Informational, not a verdict:
+    an absent zone is created on first write, so its absence says "nothing has
+    run here yet", not "broken"."""
+    z = workspace.zones()
+    print("\nlayout")
+    print(f"  code        {z['code_root']}")
+    print(f"  workspace   {z['workspace_root']}")
+    for key in ("conda_envs", "images", "reports", "scratch", "resources"):
+        mark = "*" if Path(z[key]).exists() else " "
+        print(f"   {mark} {key:<9} {z[key]}")
+    print("  (* = present; the rest are created on first write)")
+
+
 # --- core data ---------------------------------------------------------------
 def check_core_data() -> None:
-    chr22 = ROOT / "data" / "core_test_data_hg38" / "genome" / "chr22.fa"
-    core_env = ROOT / "envs" / "bioinf_core_tools"
-    missing = [str(p.relative_to(ROOT)) for p in (chr22, core_env) if not p.exists()]
+    z = workspace.zones()
+    chr22 = Path(z["resources"]) / "core_test_data_hg38" / "genome" / "chr22.fa"
+    core_env = Path(z["conda_envs"]) / "bioinf_core_tools"
+    missing = [str(p) for p in (chr22, core_env) if not p.exists()]
     if missing:
         row("FAIL", "core data", f"missing: {', '.join(missing)}",
             "run ./scripts/setup.sh (bootstraps the core_tools env + chr22 test data)")
         return
     # manifest.yaml is written by the FULL bootstrap (it enumerates the read-
     # dataset corpus) — its absence after --minimal is a state, not a failure.
-    manifest = ROOT / "data" / "core_test_data_hg38" / "manifest.yaml"
+    manifest = Path(z["resources"]) / "core_test_data_hg38" / "manifest.yaml"
     corpus = ("read-dataset corpus present" if manifest.exists()
               else "minimal bootstrap (no read-dataset corpus — ./scripts/setup.sh --full adds it)")
     row("PASS", "core data", f"chr22 reference + core_tools env present; {corpus}")
@@ -174,7 +221,7 @@ def check_core_data() -> None:
 
 # --- HPC bridge (optional) ---------------------------------------------------
 def check_hpc_config() -> None:
-    cfg = ROOT / "projects_access.yaml"
+    cfg = Path(workspace.zones()["projects_access"])
     if not cfg.exists():
         row("SKIP", "hpc bridge", "no projects_access.yaml — local-only mode "
             "(fine; run ./scripts/config.sh to add a cluster)")
@@ -185,7 +232,11 @@ def check_hpc_config() -> None:
     # Delegate to the menu's own --validate: it runs compute_access.load_access,
     # which is the loader the agent enforces at drive time. A shallow parse here
     # would report PASS on a file the first bridge call rejects.
-    rc, out = run([str(RUNTIME_PY), str(ROOT / "scripts" / "configure.py"), "--validate"])
+    # --file pins it to the file checked above. Without it the menu resolves its
+    # own default, so this check could report on a different path than the one it
+    # just found.
+    rc, out = run([str(RUNTIME_PY), str(ROOT / "scripts" / "configure.py"),
+                   "--validate", "--file", str(cfg)])
     if rc != 0:
         detail = out.splitlines()[-1].strip() if out else "?"
         row("FAIL", "hpc bridge", f"projects_access.yaml is not loadable: {detail}",
@@ -202,6 +253,7 @@ def check_hpc_config() -> None:
 
 def main() -> int:
     print(f"bioinf-agent systems check — {ROOT}")
+    check_workspace()
     check_conda()
     check_runtime_env()
     check_agent_import()
@@ -221,6 +273,7 @@ def main() -> int:
     n_pass = sum(1 for v, *_ in ROWS if v == "PASS")
     n_skip = sum(1 for v, *_ in ROWS if v == "SKIP")
     print(f"{n_pass} passed, {fails} failed, {n_skip} skipped")
+    print_layout()
     return fails
 
 

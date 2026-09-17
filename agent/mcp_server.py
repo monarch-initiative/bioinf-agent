@@ -67,7 +67,12 @@ OptStrList = Annotated[Optional[list[str]], BeforeValidator(_coerce_str_list)]
 # Config + skill singletons (initialised once at server startup)
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from agent.skills import workspace
+
+#: The code checkout. Config and scripts live here; NO artifact does — those
+#: resolve through `workspace`, which is the only module that answers "where do
+#: generated files go".
+PROJECT_ROOT = workspace.code_root()
 
 
 def _load_config() -> dict:
@@ -112,7 +117,7 @@ _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
 _job_manager    = JobManager(config)
-_env_cache      = _freeze.EnvCache(_env_mgr.project_root / "env_reports" / "_env_cache.json")
+_env_cache      = _freeze.EnvCache(workspace.reports_dir() / "_env_cache.json")
 
 # Reap stale PID files from prior agent sessions whose owning process has
 # already exited. Living services owned by other processes are left alone.
@@ -192,7 +197,7 @@ def _shrink_stdio_for_response(result: dict, *, label: str) -> dict:
         return result
 
     import time
-    log_dir = _env_mgr.project_root / "env_reports" / "install_logs"
+    log_dir = workspace.reports_dir() / "install_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in label)[:60]
     log_path = log_dir / f"{safe}.{int(time.time() * 1000)}.log"
@@ -383,7 +388,7 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
     if min_gb <= 0:
         return None
     try:
-        usage = shutil.disk_usage(str(PROJECT_ROOT))
+        usage = shutil.disk_usage(str(workspace.workspace_root()))
     except Exception:
         return None
     free_gb = usage.free / (1024 ** 3)
@@ -542,8 +547,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 def _watch_and_exit_on_change():
     """Poll agent/ + config/ for .py / .yaml mtime changes. exit() on any."""
     import threading, time as _time
-    project_root = Path(__file__).parent.parent.resolve()
-    watch_dirs = [project_root / "agent", project_root / "config"]
+    watch_dirs = [PROJECT_ROOT / "agent", PROJECT_ROOT / "config"]
 
     def snapshot() -> dict:
         out = {}

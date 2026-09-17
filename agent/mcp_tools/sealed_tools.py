@@ -31,6 +31,7 @@ from pathlib import Path
 
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp
+from agent.skills import workspace as _workspace
 
 
 @mcp.tool()
@@ -83,8 +84,7 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
     """
     from agent.skills.spec_writer import load_workflow_spec, select_pipeline_step
 
-    project_root = Path(__file__).resolve().parents[2]
-    reports_dir = project_root / _ms.config["paths"]["pipelines_dir"]
+    reports_dir = _workspace.reports_dir()
     spec_path = reports_dir / f"{workflow_name}.workflow.yaml"
     if not spec_path.exists():
         available = (sorted(p.name[: -len(".workflow.yaml")]

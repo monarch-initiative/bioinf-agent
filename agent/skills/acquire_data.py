@@ -44,14 +44,22 @@ from typing import Mapping, Optional
 
 from agent.skills import compute_access, transfer, submit_workflow, workflow_render
 from agent.skills.outcomes import proven, refused, broke
+from agent.skills import workspace
 
 
 # Where the rendered SLURM download script is staged locally before upload. MUST
 # live under a Globus-accessible location ($HOME): Globus Connect Personal only
 # scans its Accessible Folders and refuses a system temp dir like /var/folders.
-# The repo sits under $HOME. Mirrors submit_workflow._RENDER_STAGE_DIR and
-# run_cluster_step._RENDER_STAGE_DIR (both surfaced by real cluster runs).
-_DL_STAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "acquire_render_staging"
+# The workspace is required to sit under $HOME. Mirrors
+# submit_workflow._render_stage_dir and run_cluster_step._render_stage_dir (both
+# surfaced by real cluster runs).
+# A FUNCTION, not a module constant. The location depends on the resolved
+# workspace, and a constant computed at import freezes whatever the environment
+# said at import time — which for a test process is "before the fixture
+# redirected it", so every staged file would land in the developer's real
+# workspace.
+def _dl_stage_dir():
+    return workspace.scratch_dir("acquire_render_staging")
 
 # The SLURM download script's fixed filename in the acquisition dir (sbatch_via_ssh
 # expects `launcher.sh` in the workflow_dir).
@@ -157,6 +165,18 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
     # Force the recipe's non-interactive path: mirror the full PATH into a shim
     # dir MINUS the masked tools (recipe-agnostic — nothing legitimate is lost,
     # only the interactive orchestrators the batch context can't support).
+    #
+    # This loop body runs once per executable on $PATH, so anything that forks
+    # inside it forks once per binary on the machine. Both the basename and the
+    # link are therefore fork-free per file: parameter expansion for the name,
+    # and one batched `ln -s ... "$SHIM/"` per PATH DIRECTORY rather than one per
+    # entry. Measured on a dev laptop with conda envs on PATH: 44s with both
+    # forks, 19s with only `ln`, ~0.2s with neither. A compute node with modules
+    # loaded carries a longer PATH, and this is pure overhead sitting in front of
+    # every recipe-based acquisition.
+    #
+    # `ln -s` without -f, so the first PATH entry to claim a name keeps it —
+    # which is PATH precedence, the semantics being mirrored here.
     mask_block = ""
     if mask:
         mask_block = (
@@ -164,11 +184,15 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
             f'SHIM="$(mktemp -d)"\n'
             f'for d in $(printf "%s" "$PATH" | tr ":" " "); do\n'
             f'  [ -d "$d" ] || continue\n'
+            f'  batch=()\n'
             f'  for f in "$d"/*; do\n'
-            f'    b="$(basename "$f")"\n'
+            f'    [ -e "$f" ] || continue\n'
+            f'    b="${{f##*/}}"\n'
             f'    case " {mask} " in *" $b "*) continue;; esac\n'
-            f'    [ -e "$SHIM/$b" ] || ln -s "$f" "$SHIM/$b" 2>/dev/null\n'
+            f'    [ -e "$SHIM/$b" ] && continue\n'
+            f'    batch+=("$f")\n'
             f'  done\n'
+            f'  [ ${{#batch[@]}} -gt 0 ] && ln -s "${{batch[@]}}" "$SHIM/" 2>/dev/null\n'
             f'done\n'
             f'RECIPE_PATH="$SHIM"\n'
             f'echo "[acquire] masked from recipe PATH: {mask}"\n'
@@ -297,11 +321,9 @@ def acquire_to_cluster(*, name: str, url: str, compute_env: str,
             extract=extract, slurm_v=slurm_v, email=email)
     except ValueError as e:
         return refused("acquire.render_failed", error=f"script render failed: {e}")
-
-    _DL_STAGE_DIR.mkdir(parents=True, exist_ok=True)
     import tempfile
     with tempfile.TemporaryDirectory(prefix="bioinf_acquire_",
-                                     dir=str(_DL_STAGE_DIR)) as td:
+                                     dir=str(_dl_stage_dir())) as td:
         local_launcher = Path(td) / _LAUNCHER_NAME
         local_launcher.write_text(script)
 
@@ -471,11 +493,9 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
             mask_tools=tuple(mask_tools or ()), slurm_v=slurm_v, email=email)
     except ValueError as e:
         return refused("acquire.render_failed", error=f"runner render failed: {e}")
-
-    _DL_STAGE_DIR.mkdir(parents=True, exist_ok=True)
     import tempfile
     with tempfile.TemporaryDirectory(prefix="bioinf_recipe_",
-                                     dir=str(_DL_STAGE_DIR)) as td:
+                                     dir=str(_dl_stage_dir())) as td:
         (Path(td) / _LAUNCHER_NAME).write_text(launcher)
         (Path(td) / recipe_filename).write_text(recipe_p.read_text())
         # Upload the tool's recipe verbatim, then our launcher, into acq_dir

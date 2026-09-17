@@ -128,15 +128,16 @@ def test_the_repo_dashboards_are_current():
     with the renderer. Without it the regression recurs the next time the renderer
     improves: code fixed, artifacts stale, suite green.
 
-    SKIPS EXPLICITLY WHEN THERE ARE NO ARTIFACTS, rather than passing. `env_reports/` is
-    gitignored, so on CI and on a fresh clone this check has nothing to look at — and a
-    green tick over zero artifacts is precisely the absence-reads-as-compliance defect
-    this whole change set exists to remove. It would be absurd to reintroduce it here. A
-    skip is visible in the report; a vacuous pass is not."""
-    specs = sorted((ROOT / "env_reports").glob("*.workflow.yaml"))
+    SKIPS EXPLICITLY WHEN THERE ARE NO ARTIFACTS, rather than passing. The reports zone
+    lives outside the checkout, so on CI and on a fresh clone this check has nothing to
+    look at — and a green tick over zero artifacts is precisely the absence-reads-as-
+    compliance defect this whole change set exists to remove. It would be absurd to
+    reintroduce it here. A skip is visible in the report; a vacuous pass is not."""
+    from _artifacts import REPORTS
+    specs = sorted(REPORTS.glob("*.workflow.yaml"))
     if not specs:
-        pytest.skip("no sealed workflows in env_reports/ (gitignored) — nothing to ratchet; "
-                    "this check is meaningful only on a machine that has driven a seal")
+        pytest.skip(f"no sealed workflows in {REPORTS} — nothing to ratchet; this check "
+                    f"is meaningful only on a machine that has driven a seal")
     r = _run("--check")
     assert r.returncode == 0, (
         f"{len(specs)} sealed workflow(s) present and their .RUN.html has drifted from "
