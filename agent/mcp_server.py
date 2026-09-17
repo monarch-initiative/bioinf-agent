@@ -639,6 +639,7 @@ from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     upload,
     download,
     cluster_module_avail,
+    cluster_partitions,
     cluster_job_status,
     globus_task_status,
     submit_workflow_job,

@@ -112,6 +112,7 @@ ROUTING INDEX: it tells you which primitive the job belongs to. The long-form ra
 | `phenopacket_to_vcf` | Materialize a single-sample VCF from a phenopacket |
 | `snapshot_project` | **HPC bridge.** Read-only one-level walk of a project's authorized cluster dirs |
 | `cluster_module_avail` | **HPC bridge.** Discover loadable Lmod modules so you pick a real `module load` line |
+| `cluster_partitions` | **HPC bridge.** Discover SLURM partitions, which carry GPUs (parsed from gres, with the card type), and which QoS each accepts — so `slurm.gpu: {partition, qos}` is READ off the cluster rather than typed. Two probes (`sinfo` + `scontrol show partition`) in one ssh round trip; returns `gpu_convention_candidates`. Candidates, not a pick: A100 vs consumer card is a sizing judgement. A partition whose QoS went unobserved yields no candidate but stays visible with `qos_observed: False` |
 | `upload` / `download` | **HPC bridge — the transfer surface.** Auto-routed by where the remote path falls (scratch / common_data / project_path). Blocks until the bytes are verified |
 | `globus_task_status` | Resolve a Globus task's real end state. Reach for it after `transfer.globus_sync_wait_exceeded` — that means WE stopped waiting, not that Globus stopped |
 | `cluster_job_status` | **HPC bridge.** SLURM state query. Read `verdict`, not the exit code — a scheduler-killed job reports rc=0 |

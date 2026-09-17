@@ -16,6 +16,7 @@ Today the surface is:
   run_step_on_cluster            — validation/seal run in scratch
   cluster_job_status             — sacct job-state poll
   cluster_module_avail           — Lmod discovery
+  cluster_partitions             — SLURM partition / GPU discovery
   globus_task_status             — poll a Globus task to its real end state
 
 Four transfer auth zones coexist (intentional), routed by where the
@@ -177,6 +178,59 @@ def cluster_module_avail(project_name: str,
     ControlMaster session)."""
     from agent.skills import cluster_modules
     return cluster_modules.cluster_module_avail(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        pattern=pattern or None,
+        access_path=_resolve_access_path(),
+    )
+
+
+@mcp.tool()
+def cluster_partitions(project_name: str,
+                       compute_env_name: str,
+                       pattern: str = "") -> dict:
+    """Discover the SLURM partitions on a compute env — so a GPU convention
+    can be read off the cluster instead of typed by hand.
+
+    Pure-read: runs ONE ssh invocation of `bash -lc 'sinfo -h -o …'`, parses
+    the output, returns one record per partition. Submits nothing, loads
+    nothing, writes nothing.
+
+    Authorization: project must have a `compute_env_access` entry for
+    `compute_env_name`. No per-directory permission needed — the filesystem
+    is not touched, and SLURM's own ACLs scope what sinfo reports.
+
+    `pattern` (optional): client-side substring filter on the partition name
+    (`sinfo` has no substring filter of its own, and `-p` demands an exact
+    name). Must be a safe token (alnum + `_+.-/`).
+
+    Each partition carries {name, is_default, avail, time_limit,
+    cpus_per_node, memory_mb, gres, gpus[], has_gpu, states[], node_count};
+    `gpus[]` holds {type, count_per_node} parsed out of gres, so "has GPUs"
+    and "has A100s" are distinguishable when the site records the type.
+
+    **Both halves of the GPU convention.** `workflow_render` needs
+    `slurm.gpu: {partition, qos}`. `sinfo` answers the hardware half; a
+    second probe (`scontrol show partition -o`, same ssh round trip) reads
+    `AllowQos=` for the other. `gpu_convention_candidates` holds the
+    `{partition, qos}` pairs the cluster would accept, each tagged with its
+    `gpu_types` and limits.
+
+    They are CANDIDATES, not a pick: choosing between an A100 partition and
+    a consumer-card partition is a sizing judgement about the workload, which
+    is yours. A partition whose QoS was NOT observed contributes no candidate
+    — half a convention renders a GPU header that lands the job on the wrong
+    queue — but stays visible in `partitions[]` with `qos_observed: False`,
+    so the gap is legible rather than silently dropped. `AllowQos=ALL`
+    (constrains nothing) is kept distinct from "never looked".
+
+    Returns {compute_env, pattern, partitions, partition_count,
+    gpu_partitions, default_partition, qos_observable,
+    gpu_convention_candidates, captured_at} on success; {"error": "...",
+    hint: ...} on failure (e.g. no ControlMaster session, or no SLURM
+    here)."""
+    from agent.skills import cluster_partitions as _cp
+    return _cp.cluster_partitions(
         project_name=project_name,
         compute_env_name=compute_env_name,
         pattern=pattern or None,
