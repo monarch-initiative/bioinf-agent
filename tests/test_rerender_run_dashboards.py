@@ -50,6 +50,8 @@ def _sealed_spec(name: str, usage_verification: dict | None) -> dict:
         "pipeline_steps": [{
             "step": 1, "tool": "fake", "command": "fake --go",
             "returncode": 0, "validation_status": "passed",
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0,
+                               "max_cpu_percent": 5.0},
         }],
     }
     if usage_verification is not None:

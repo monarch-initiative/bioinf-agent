@@ -131,9 +131,9 @@ def test_a_fully_enforced_claim_leaves_no_clause_behind():
 # The funnel is actually wired
 # ---------------------------------------------------------------------------
 
-def test_the_draft_funnel_calls_the_shadow_check():
-    """`_write_draft_file` is the one exit every draft mutation takes; the shadow
-    check lives there or it lives nowhere. Checked against the AST, not a substring —
+def test_the_draft_funnel_calls_the_typed_check():
+    """`_write_draft_file` is the one exit every draft mutation takes; the typed
+    gate lives there or it lives nowhere. Checked against the AST, not a substring —
     a call moved into a comment must not count."""
     tree = ast.parse(inspect.getsource(pipeline_state.PipelineState))
     fn = next((n for n in ast.walk(tree)
@@ -143,10 +143,10 @@ def test_the_draft_funnel_calls_the_shadow_check():
     calls = [n for n in ast.walk(fn)
              if isinstance(n, ast.Call)
              and isinstance(n.func, ast.Attribute)
-             and n.func.attr == "shadow_check_draft"]
+             and n.func.attr == "check_draft"]
     assert calls, (
         "PipelineState._write_draft_file no longer calls "
-        "typed_nouns.shadow_check_draft — the shadow gate is present in the "
+        "typed_nouns.check_draft — the typed gate is present in the "
         "registry and absent in effect."
     )
 
@@ -157,24 +157,54 @@ def test_the_draft_funnel_calls_the_shadow_check():
 
 def test_shadow_mode_never_raises_and_logs_the_mismatch(tmp_path):
     garbage = {
-        "pipeline_steps": ["not a dict", {"step": "not-an-int"}],
         "usage": {"description": "missing its command_template"},
         "install_steps": "not even a list",
     }
-    typed_nouns.shadow_check_draft(garbage, source="test:garbage")   # must not raise
+    typed_nouns.check_draft(garbage, source="test:garbage")   # must not raise
     log = typed_nouns.mismatch_log_path()
     assert log.exists(), "shadow mode saw malformed records and logged nothing"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     nouns_logged = {e["noun"] for e in entries}
-    assert {"pipeline_steps", "usage", "install_steps"} <= nouns_logged
+    assert {"usage", "install_steps"} <= nouns_logged
     for e in entries:
         assert e["errors"] and e["source"] == "test:garbage"
 
 
-def test_shadow_mode_is_silent_on_model_built_records():
-    """The workflow_records builders and the shadow check must agree — a builder
-    that trips its own noun's shadow validation is a fixture encoding a shape the
-    model refuses, the exact defect both exist to end."""
+def test_an_enforced_noun_raises_at_the_funnel():
+    """pipeline_steps is ENFORCED (Seam A): a malformed record REFUSES the write
+    instead of logging. The raise must carry the field so the producer can act
+    on it — the gate is the guide."""
+    with pytest.raises(typed_nouns.TypedNounViolation, match="command"):
+        typed_nouns.check_draft(
+            {"pipeline_steps": [{"step": 1, "tool": "samtools",
+                                 "returncode": 0}]},   # no command, no resource_usage
+            source="test:enforced")
+    with pytest.raises(typed_nouns.TypedNounViolation, match="list"):
+        typed_nouns.check_draft({"pipeline_steps": "not a list"},
+                                source="test:enforced")
+
+
+def test_the_enforced_raise_is_not_swallowed_by_the_shadow_fence():
+    """The shadow fence exists so observation can never break a write; the
+    enforced gate exists so a bad record can never land. One function serves
+    both, so pin that the fence does not extend over the raise."""
+    tree = ast.parse(inspect.getsource(typed_nouns.check_draft))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+    trys = [n for n in ast.walk(fn) if isinstance(n, ast.Try)]
+    assert trys, "the shadow half lost its fence"
+    for t in trys:
+        fenced_calls = {c.func.id for n in ast.walk(t) for c in ast.walk(n)
+                        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        assert "_enforce_one" not in fenced_calls, (
+            "_enforce_one runs inside a try/except fence — an enforced gate "
+            "that can be swallowed is a shadow gate with a misleading name")
+
+
+def test_the_typed_check_is_silent_on_model_built_records():
+    """The workflow_records builders and the typed gate must agree — a builder
+    that trips its own noun's validation is a fixture encoding a shape the
+    model refuses, the exact defect both exist to end. pipeline_steps is
+    ENFORCED here, so agreement means: no raise, and no log entry."""
     from workflow_records import install_step, package_record, pipeline_step
     draft = {
         "pipeline_name": "demo",
@@ -182,22 +212,26 @@ def test_shadow_mode_is_silent_on_model_built_records():
         "install_steps": [install_step()],
         "packages": [package_record()],
     }
-    typed_nouns.shadow_check_draft(draft, source="test:clean")
+    typed_nouns.check_draft(draft, source="test:clean")   # must not raise
     log = typed_nouns.mismatch_log_path()
     assert not log.exists() or not log.read_text().strip(), (
-        f"model-built records tripped the shadow check: {log.read_text()}"
+        f"model-built records tripped the typed gate: {log.read_text()}"
     )
 
 
-def test_a_write_through_the_store_shadow_checks(tmp_path):
-    """End to end through the real funnel: a mutator that lands a malformed record
-    produces a log entry attributed to its draft."""
+def test_a_write_through_the_store_is_refused_when_enforced(tmp_path):
+    """End to end through the real funnel: a mutator that lands a malformed
+    pipeline_step is REFUSED (the write never reaches disk), and a well-formed
+    one still lands. This is the write-side half of assert-at-both-ends; the
+    serve-side half is WorkflowSpec.model_validate at seal."""
+    from workflow_records import pipeline_step
     store = pipeline_state.PipelineState(config={})
-    store.start("shadow_probe", "typed-records wave 0 funnel test")
-    store.add_step("shadow_probe", {"step": 1, "tool": "samtools"})   # no `command`
-    log = typed_nouns.mismatch_log_path()
-    assert log.exists()
-    entries = [json.loads(line) for line in log.read_text().splitlines()]
-    assert any(e["noun"] == "pipeline_steps" and e["source"] == "draft:shadow_probe"
-               and any(err["loc"] == "command" for err in e["errors"])
-               for e in entries)
+    store.start("enforce_probe", "typed-records seam A funnel test")
+    with pytest.raises(typed_nouns.TypedNounViolation, match="command"):
+        store.add_step("enforce_probe", {"step": 1, "tool": "samtools"})
+    draft = store.get_draft("enforce_probe")
+    assert not draft.get("pipeline_steps"), (
+        "the refused record reached the draft anyway — the gate ran after the write")
+    idx = store.add_step("enforce_probe", pipeline_step())
+    assert idx == 1
+    assert store.get_draft("enforce_probe")["pipeline_steps"][0]["command"]

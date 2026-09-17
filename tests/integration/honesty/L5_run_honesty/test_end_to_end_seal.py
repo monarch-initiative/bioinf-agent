@@ -108,13 +108,13 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         "purpose": "Produce output.txt",
         "command": f"fake_pkg --in {art_path} --out {out_path}",
         "returncode": 0,
-        "inputs": [{"path": str(art_path), "kind": "authored_artifact"}],
+        "inputs": [{"path": str(art_path)}],
         "outputs": [str(out_path)],
         "detected_outputs": [str(out_path)],
-        "validation": {out_path.name: {"valid": True, "expected_type": "txt"}},
+        "validation": {out_path.name: {"passed": True, "expected_type": "txt"}},
         "validation_status": "passed",
         "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 12.0,
-                            "peak_cpu_pct": 5.0},
+                            "max_cpu_percent": 5.0},
         "ran_in_container": True,
         "container_image":  image_name,
         "container_image_digest": image_digest,
@@ -269,22 +269,34 @@ def test_e2e_seal_refuses_mutated_authored_artifact(_staged_pipeline):
 
 @pytest.mark.integration
 def test_e2e_seal_refuses_step_without_resource_usage(_staged_pipeline):
-    """I7 — every rc=0 pipeline_step must have resource_usage. Stripping it
-    from the draft must refuse at seal."""
+    """I7 presence is TYPED since Seam A, so this pins both ends. Write end:
+    a mutation stripping resource_usage from an rc=0 step is refused at the
+    funnel (the strip never lands on disk). Serve end: a draft hand-edited
+    AROUND the funnel is still refused when seal builds the WorkflowSpec —
+    the assert-at-both-ends rule, so a record grandfathered onto disk cannot
+    seal."""
+    import yaml as _yaml
+    from agent.skills.typed_nouns import TypedNounViolation
     pipeline_id, request_key, *_ = _staged_pipeline
-    # Strip it ON DISK. `get_draft` returns a COPY (it re-reads under a shared lock), so
-    # mutating its result changes nothing seal will ever see — and this test would then
-    # pass a draft that still HAS resource_usage and assert it was refused, i.e. it would
-    # silently stop testing I7.
-    m._pipeline_state.mutate_on_disk(
-        pipeline_id, lambda d: d["pipeline_steps"][0].pop("resource_usage", None))
+
+    with pytest.raises(TypedNounViolation, match="resource_usage"):
+        m._pipeline_state.mutate_on_disk(
+            pipeline_id, lambda d: d["pipeline_steps"][0].pop("resource_usage", None))
+    on_disk = m._pipeline_state.get_draft(pipeline_id)
+    assert "resource_usage" in on_disk["pipeline_steps"][0], \
+        "the refused strip reached the draft anyway — the gate ran after the write"
+
+    # Bypass the funnel the only way left: edit the draft file by hand.
+    draft_path = m._pipeline_state._draft_path(pipeline_id)
+    d = _yaml.safe_load(draft_path.read_text())
+    d["pipeline_steps"][0].pop("resource_usage", None)
+    draft_path.write_text(_yaml.safe_dump(d))
 
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
                               workflow_name="e2e_seal_no_rss")
-    assert result.get("success") is False
-    invs = [v.get("invariant", "") for v in result.get("violations") or []]
-    assert any(i.startswith("I7") for i in invs), \
-        f"expected I7 violation when resource_usage missing: {invs}"
+    assert result.get("success") is not True
+    assert "resource_usage" in str(result), \
+        f"expected the serve-side model refusal to name resource_usage: {result}"
 
 
 @pytest.mark.integration

@@ -17,6 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.models.core_data import PipelineStep
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
@@ -27,6 +28,37 @@ from agent.skills.outcomes import proven, refused, broke
 # and the copies disagreed on `x.sorted.bam` — see infer_validator_type's docstring.
 from agent.validators.output_validator import infer_validator_type as _infer_validator_type
 from agent.skills import workspace as _workspace
+
+
+def _inputs_refusal(inputs: list, code: str):
+    """Refuse caller-supplied inputs BEFORE the command executes.
+
+    The step record is constructed through PipelineStep after the run; inputs
+    are the one channel the CALLER controls, so a relative path or an
+    undeclared key would otherwise execute the whole command and then crash
+    record construction — the run's outputs, rc and validations all discarded.
+    Same rules as the model (StepInput + core_data.violates_absolute_rule),
+    asked early. Returns a refusal dict, or None when the inputs are clean."""
+    from pydantic import ValidationError
+    from agent.models.core_data import StepInput, violates_absolute_rule
+    problems = []
+    for i, item in enumerate(inputs or []):
+        entry = {"path": item, "references": []} if isinstance(item, str) else item
+        try:
+            si = StepInput.model_validate(entry)
+        except ValidationError as e:
+            first = e.errors()[0]
+            problems.append(f"inputs[{i}] ({item!r}): {first.get('msg')} "
+                            f"at {'.'.join(str(x) for x in first.get('loc', ()))}")
+            continue
+        if violates_absolute_rule(si.path):
+            problems.append(f"inputs[{i}]: relative path {si.path!r} — recorded steps "
+                            f"require absolute paths (they must reproduce from any CWD)")
+    if problems:
+        return refused(code, error="; ".join(problems[:5]),
+                       fix="Pass inputs as absolute paths — plain strings or "
+                           "{path, references} dicts (no other keys).")
+    return None
 
 
 def _stamp_i7_authority(resource_usage, platform: str):
@@ -82,6 +114,8 @@ def run_pipeline_step(
     if not pipeline_id:
         return refused("run_pipeline_step.pipeline_id_required",
                        error="pipeline_id is required for run_pipeline_step")
+    if (_bad := _inputs_refusal(inputs, "run_pipeline_step.invalid_inputs")):
+        return _bad
 
     result = _ms._env_mgr.run_in_env(
         env_name, command, timeout=timeout_seconds, inputs=inputs,
@@ -92,19 +126,20 @@ def run_pipeline_step(
     # downstream consumer. Cheap (one sha256 per produced file), file-type-
     # agnostic, and the producer's own bytes — agent can't substitute.
     output_sha256 = _ms._env_mgr.hash_outputs(result.get("detected_outputs", []))
-    step_data = {
-        "tool":            tool or (command.split() or [""])[0],
-        "subcommand":      subcommand or None,
-        "purpose":         purpose or None,
-        "command":         command,
-        "returncode":      result.get("returncode"),
-        "runtime_seconds": result.get("runtime_seconds"),
-        "resource_usage":  result.get("resource_usage"),
-        "inputs":          result.get("inputs", []),
-        "detected_outputs": result.get("detected_outputs", []),
-        "output_sha256":   output_sha256 or None,
-    }
-    step_data = {k: v for k, v in step_data.items() if v is not None}
+    # Constructed THROUGH the model (typed-records Seam A): a shape the record
+    # refuses is refused here, at the producer, not discovered at seal.
+    step_data = PipelineStep.produce(
+        tool=tool or (command.split() or [""])[0],
+        subcommand=subcommand or None,
+        purpose=purpose or None,
+        command=command,
+        returncode=result.get("returncode"),
+        runtime_seconds=result.get("runtime_seconds"),
+        resource_usage=result.get("resource_usage"),
+        inputs=result.get("inputs", []),
+        detected_outputs=result.get("detected_outputs", []),
+        output_sha256=output_sha256 or None,
+    )
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 
     # Auto-validate every detected output if the run succeeded.
@@ -213,6 +248,8 @@ def run_step_in_container(
     if not pipeline_id:
         return refused("run_container.pipeline_id_required",
                        error="pipeline_id is required for run_step_in_container")
+    if (_bad := _inputs_refusal(inputs, "run_container.invalid_inputs")):
+        return _bad
     # The SERVING question, not "is there a record?". This step's whole purpose is
     # `validated == shipped` — recording a run inside the shipped image AS evidence.
     # Running in an image whose own Layer-1 contract no longer holds would launder an
@@ -309,28 +346,27 @@ def run_step_in_container(
     # L11 (universal lineage): hash detected_outputs at production time so
     # seal can verify same-path-same-bytes against downstream consumers.
     output_sha256 = _ms._env_mgr.hash_outputs(detected)
-    step_data = {
-        "tool":            tool or (command.split() or [""])[0],
-        "subcommand":      subcommand or None,
-        "purpose":         purpose or None,
-        "command":         command,
-        "returncode":      res.get("returncode"),
-        "resource_usage":  res.get("resource_usage"),
-        "inputs":          norm_inputs,
-        "detected_outputs": detected,
-        "output_sha256":   output_sha256 or None,
-        "ran_in_container": True,
-        "container_image":  image,
+    step_data = PipelineStep.produce(
+        tool=tool or (command.split() or [""])[0],
+        subcommand=subcommand or None,
+        purpose=purpose or None,
+        command=command,
+        returncode=res.get("returncode"),
+        resource_usage=res.get("resource_usage"),
+        inputs=norm_inputs,
+        detected_outputs=detected,
+        output_sha256=output_sha256 or None,
+        ran_in_container=True,
+        container_image=image,
         # OBSERVED (see above), never the nominal digest we were handed.
-        "container_image_digest": observed_digest or None,
+        container_image_digest=observed_digest or None,
         # ...and when the two disagree, say so on the step rather than only withholding
         # the badge: a silent absence reads as "not checked", a recorded mismatch reads
         # as "checked, and the image moved".
-        "container_digest_nominal": (nominal_digest
-                                     if nominal_digest and nominal_digest != observed_digest
-                                     else None),
-    }
-    step_data = {k: v for k, v in step_data.items() if v is not None}
+        container_digest_nominal=(nominal_digest
+                                  if nominal_digest and nominal_digest != observed_digest
+                                  else None),
+    )
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 
     validations: dict = {}
@@ -431,6 +467,10 @@ def run_in_env(
 
     Return keys: returncode, stdout, stderr, success, command, runtime_seconds,
                  inputs, detected_outputs, [pipeline_merge]."""
+    # Gate only what would be RECORDED: without a pipeline_id no step record is
+    # built, and an ad-hoc shell run has no shape contract to satisfy.
+    if pipeline_id and (_bad := _inputs_refusal(inputs, "run_in_env.invalid_inputs")):
+        return _bad
     result = _ms._env_mgr.run_in_env(
         env_name, command,
         working_dir=working_dir or None,
@@ -439,18 +479,17 @@ def run_in_env(
         watch_dir=watch_dir or working_dir or None,
     )
     if pipeline_id:
-        step_data = {
-            "tool":            tool or (command.split() or [""])[0],
-            "subcommand":      subcommand or None,
-            "purpose":         purpose or None,
-            "command":         command,
-            "returncode":      result.get("returncode"),
-            "runtime_seconds": result.get("runtime_seconds"),
-            "resource_usage":  result.get("resource_usage"),
-            "inputs":          result.get("inputs", []),
-            "outputs":         result.get("detected_outputs", []),
-        }
-        step_data = {k: v for k, v in step_data.items() if v is not None}
+        step_data = PipelineStep.produce(
+            tool=tool or (command.split() or [""])[0],
+            subcommand=subcommand or None,
+            purpose=purpose or None,
+            command=command,
+            returncode=result.get("returncode"),
+            runtime_seconds=result.get("runtime_seconds"),
+            resource_usage=result.get("resource_usage"),
+            inputs=result.get("inputs", []),
+            outputs=result.get("detected_outputs", []),
+        )
         idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
         result["pipeline_merge"] = (
             {"status": "merged", "pipeline_id": pipeline_id, "step_index": idx}

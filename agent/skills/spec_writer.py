@@ -824,58 +824,21 @@ def check_invariants(spec: dict) -> list[dict]:
         # depth, nothing rounds it up.
 
     # ------------------------------------------------------------------
-    # I6: paths in known-path fields are absolute. Relative paths in a
-    # spec are reproducibility landmines (depend on the agent's CWD at
-    # finalize time). Skip slot placeholders like {INPUT_VCF}.
+    # I6.absolute_paths was RETIRED here (typed-records Seam A): step-path
+    # absoluteness is enforced at construction by PipelineStep._paths_are_absolute
+    # (scoped by core_data.is_path_like), raised at the write funnel
+    # (typed_nouns.check_draft) and re-validated when seal builds the
+    # WorkflowSpec. The placeholder-declaredness half of I6 below is a
+    # cross-field check (template vs declared inputs) and stays a walk clause.
     # ------------------------------------------------------------------
-    def _is_path_like(s: str) -> bool:
-        if not isinstance(s, str) or not s:
-            return False
-        if s.startswith(("{", "$", "<")):
-            return False   # placeholder
-        if "/" not in s:
-            return False   # bare token, not a path
-        return True
-
-    for s in spec.get("pipeline_steps", []) or []:
-        if not isinstance(s, dict):
-            continue
-        step_n = s.get("step")
-        for inp in s.get("inputs", []) or []:
-            p = inp.get("path") if isinstance(inp, dict) else inp
-            if _is_path_like(p) and not Path(p).is_absolute():
-                violations.append({
-                    "invariant": "I6.absolute_paths",
-                    "message":   f"pipeline_step {step_n} has a relative input path: {p}",
-                    "where":     f"pipeline_steps[step={step_n}].inputs",
-                })
-        for o in s.get("detected_outputs", []) or []:
-            if _is_path_like(o) and not Path(o).is_absolute():
-                violations.append({
-                    "invariant": "I6.absolute_paths",
-                    "message":   f"pipeline_step {step_n} has a relative output path: {o}",
-                    "where":     f"pipeline_steps[step={step_n}].detected_outputs",
-                })
-        # remote_outputs feeds the I8 universe, so it is a path channel into the
-        # lineage graph and gets the same absoluteness rule. A field that other
-        # invariants trust and this one does not examine is how an unchecked
-        # channel opens.
-        for o in s.get("remote_outputs", []) or []:
-            if _is_path_like(o) and not Path(o).is_absolute():
-                violations.append({
-                    "invariant": "I6.absolute_paths",
-                    "message":   f"pipeline_step {step_n} has a relative remote output "
-                                 f"path: {o}",
-                    "where":     f"pipeline_steps[step={step_n}].remote_outputs",
-                })
 
     # ------------------------------------------------------------------
-    # I6 (extended): every {PLACEHOLDER} in usage.command_template must
-    # resolve to a declared usage.inputs[*].name OR be one of the auto-
-    # allocated scratch slots (OUTPUT_DIR / OUT_DIR). A typo like
-    # {OUPUT_DIR} silently passes _is_path_like (it starts with `{`) and
-    # the dynamic self-test only catches it when a trial actually runs —
-    # this static check surfaces it sooner.
+    # I6: every {PLACEHOLDER} in usage.command_template must resolve to a
+    # declared usage.inputs[*].name OR be one of the auto-allocated scratch
+    # slots (OUTPUT_DIR / OUT_DIR). A typo like {OUPUT_DIR} reads as a
+    # placeholder everywhere paths are checked, and the dynamic self-test
+    # only catches it when a trial actually runs — this static check
+    # surfaces it sooner.
     # ------------------------------------------------------------------
     usage = spec.get("usage") if isinstance(spec.get("usage"), dict) else None
     if usage:
@@ -906,11 +869,12 @@ def check_invariants(spec: dict) -> list[dict]:
                 })
 
     # ------------------------------------------------------------------
-    # I7: every rc=0 pipeline_step has resource_usage populated by the
-    # runtime psutil monitor. wall_seconds, peak_rss_mb, max_cpu_percent
-    # are observations of a real execution — an agent can't synthesize
-    # them without bypassing run_pipeline_step / run_in_env entirely.
-    # Downstream HPC users need honest cost data to size jobs.
+    # I7 — the VALUES half only. Presence (I7.resource_usage_recorded) was
+    # RETIRED here (typed-records Seam A): an rc=0 step without resource_usage
+    # is unconstructible (PipelineStep._rc0_has_resource_usage), refused at the
+    # write funnel and again when seal builds the WorkflowSpec. Whether the
+    # recorded values are a REAL observation stays a walk check, because only
+    # the producer context distinguishes fabrication from a sampling limit.
     # ------------------------------------------------------------------
     for s in spec.get("pipeline_steps", []) or []:
         if not isinstance(s, dict):
@@ -919,15 +883,8 @@ def check_invariants(spec: dict) -> list[dict]:
         if s.get("returncode") not in (None, 0):
             continue   # failed / not-run steps don't need resource data
         ru = s.get("resource_usage")
-        if not isinstance(ru, dict) or "wall_seconds" not in ru or "peak_rss_mb" not in ru:
-            violations.append({
-                "invariant": "I7.resource_usage_recorded",
-                "message":   f"pipeline_step {step_n} has no resource_usage — "
-                             f"the runtime monitor never observed it run. "
-                             f"Use run_pipeline_step or run_in_env (which populate this).",
-                "where":     f"pipeline_steps[step={step_n}]",
-            })
-            continue
+        if not isinstance(ru, dict):
+            continue   # absence for rc=0 is unconstructible at the typed gate
 
         # I7 amendment (C3): the KEYS existing is not enough — the VALUES must
         # be a real observation. A cluster step whose sacct query hiccuped

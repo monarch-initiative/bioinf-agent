@@ -110,7 +110,9 @@ def test_run_pipeline_step_hints_when_output_undetected(monkeypatch):
     from agent.mcp_tools import run_tools as R
     _patch_state(monkeypatch)
     monkeypatch.setattr(ms._env_mgr, "run_in_env",
-                        lambda *a, **k: {"returncode": 0, "detected_outputs": [], "inputs": []},
+                        lambda *a, **k: {"returncode": 0, "detected_outputs": [], "inputs": [],
+                                         "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0,
+                                                            "max_cpu_percent": 1.0}},
                         raising=False)
 
     out = R.run_pipeline_step(env_name="x", command="seqkit stats -T -o /elsewhere/s.tsv in.fq",
@@ -129,7 +131,9 @@ def test_run_pipeline_step_no_hint_when_output_detected(monkeypatch):
     _patch_state(monkeypatch)
     monkeypatch.setattr(ms._env_mgr, "run_in_env",
                         lambda *a, **k: {"returncode": 0,
-                                         "detected_outputs": ["/w/s.tsv"], "inputs": []},
+                                         "detected_outputs": ["/w/s.tsv"], "inputs": [],
+                                         "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0,
+                                                            "max_cpu_percent": 1.0}},
                         raising=False)
     monkeypatch.setattr(ms._validator, "validate",
                         lambda *a, **k: {"passed": True, "validation_method": "tsv_parse"},

@@ -40,7 +40,7 @@ def _two_step(step2_input: str, *, locus: str = "") -> dict:
                 "detected_outputs": outs,
                 "validation": {o: {"passed": True} for o in outs},
                 "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 1.0,
-                                   "peak_cpu_percent": 1.0}}
+                                   "max_cpu_percent": 1.0}}
     s2 = _s(2, [step2_input], ["/run1/out.vcf"])
     if locus:
         s2["validation_locus"] = locus
@@ -187,7 +187,7 @@ def test_step_records_the_observed_digest_not_the_one_it_was_handed(monkeypatch,
     monkeypatch.setattr(m._docker, "image_digest", lambda img: "sha256:OBSERVED")
     monkeypatch.setattr(m._docker, "run_in_container",
                         lambda *a, **k: {"returncode": 0, "stdout": "", "stderr": "",
-                                         "resource_usage": {"wall_seconds": 1.0}})
+                                         "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 5.0, "max_cpu_percent": 10.0}})
     monkeypatch.setattr(m._env_mgr, "hash_outputs", lambda outs: {})
 
     captured: dict = {}
@@ -217,7 +217,7 @@ def test_an_unobservable_digest_is_recorded_as_absent_not_as_the_nominal_one(mon
     monkeypatch.setattr(m._docker, "image_digest", lambda img: "")        # inspect failed
     monkeypatch.setattr(m._docker, "run_in_container",
                         lambda *a, **k: {"returncode": 0, "stdout": "", "stderr": "",
-                                         "resource_usage": {"wall_seconds": 1.0}})
+                                         "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 5.0, "max_cpu_percent": 10.0}})
     monkeypatch.setattr(m._env_mgr, "hash_outputs", lambda outs: {})
     captured: dict = {}
     monkeypatch.setattr(m._pipeline_state, "add_step",

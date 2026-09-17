@@ -41,9 +41,9 @@ def _step(outputs, validation=None, **over):
     s = {
         "step": 1, "tool": "samtools", "command": "samtools view -b in.bam",
         "returncode": 0,
-        "inputs": [{"path": "/data/in.bam", "source": "test_data"}],
+        "inputs": [{"path": "/data/in.bam"}],
         "detected_outputs": list(outputs),
-        "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "peak_cpu_percent": 5.0},
+        "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 5.0},
     }
     if validation is not None:
         s["validation"] = validation

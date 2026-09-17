@@ -43,15 +43,18 @@ def _spec_dict(name: str = "talos_wf", steps=None) -> dict:
     present (workflow_name/description/created_at/env_*/pipeline_status). This is the
     shape write_workflow_spec validates and dumps, so a round-trip is authentic."""
     if steps is None:
+        _ru = {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 5.0}
         steps = [
             {"step": 1, "tool": "bcftools",
              "command": "bcftools view /data/in.vcf -o /data/step1.vcf",
              "inputs": [{"path": "/data/in.vcf", "references": []}],
-             "returncode": 0, "validation_status": "passed"},
+             "returncode": 0, "validation_status": "passed",
+             "resource_usage": dict(_ru)},
             {"step": 2, "tool": "echtvar",
              "command": "echtvar anno /data/step1.vcf /data/step2.vcf",
              "inputs": [{"path": "/data/step1.vcf"}],   # a str-coercible / dict input
-             "returncode": 0, "validation_status": "passed"},
+             "returncode": 0, "validation_status": "passed",
+             "resource_usage": dict(_ru)},
         ]
     return {
         "workflow_name":      name,
@@ -107,9 +110,11 @@ def test_load_workflow_spec_round_trips_a_written_spec(tmp_path):
 
 
 def test_load_workflow_spec_preserves_runtime_extra_keys(tmp_path):
-    """WorkflowSpec is extra='allow'; the runtime-authored extras a real seal writes
-    onto a step (detected_outputs, container_image_digest) must ride back untouched —
-    the reader validates the declared fields without dropping the rest."""
+    """The runtime-authored step fields a real seal writes (detected_outputs,
+    container_image_digest) must ride back untouched. These were extras riding
+    on extra='allow' when this test was written; since Seam A they are DECLARED
+    PipelineStep fields — the property this test pins (nothing dropped on the
+    round-trip) is the same, the mechanism is now the model."""
     sd = _spec_dict()
     sd["pipeline_steps"][0]["detected_outputs"] = ["/data/step1.vcf"]
     sd["pipeline_steps"][0]["container_image_digest"] = "sha256:deadbeefcafe"
@@ -224,7 +229,8 @@ def test_describe_sealed_step_preconditions_are_honest_about_missing_inputs(repo
         {"step": 1, "tool": "bcftools",
          "command": f"bcftools view {present} /data/missing.vcf",
          "inputs": [{"path": str(present)}, {"path": "/data/does_not_exist.vcf"}],
-         "returncode": 0, "validation_status": "passed"},
+         "returncode": 0, "validation_status": "passed",
+         "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 5.0}},
     ]
     _write_spec(reports_dir, _spec_dict(steps=steps))
     r = ST.describe_sealed_step("talos_wf", 1)

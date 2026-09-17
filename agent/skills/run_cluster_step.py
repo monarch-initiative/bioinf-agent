@@ -80,6 +80,7 @@ from agent.skills import (
     submit_workflow,
     transfer,
 )
+from agent.models.core_data import PipelineStep
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
@@ -200,7 +201,7 @@ def _record_failed_cluster_step(
         without asserting graph membership.
 
     Returns the step_index (or None if the draft is gone)."""
-    step_data = {
+    fields = {
         "tool":             tool_name or (command.split() or [""])[0],
         "purpose":          f"cluster run of {tool_name or 'tool'} — FAILED "
                             f"({failure_code})",
@@ -218,9 +219,8 @@ def _record_failed_cluster_step(
         "cluster_sif_sha256":     cluster_sif_sha256,
     }
     if extra:
-        step_data.update(extra)
-    step_data = {k: v for k, v in step_data.items() if v is not None}
-    return _pipeline_state.add_step(pipeline_id, step_data)
+        fields.update(extra)
+    return _pipeline_state.add_step(pipeline_id, PipelineStep.produce(**fields))
 
 
 def run_step_on_cluster(
@@ -279,6 +279,16 @@ def run_step_on_cluster(
             error=f"workflow_name must match {_WORKFLOW_NAME_RE.pattern!r} "
             f"(it becomes a path component under scratch); got "
             f"{workflow_name!r}")
+    # Pre-flight, BEFORE any ssh: a relative input path would survive the whole
+    # submit/poll/download chain and then refuse record construction
+    # (PipelineStep._paths_are_absolute) — a burned allocation with no durable
+    # trace. Refuse it while it costs nothing.
+    from agent.models.core_data import violates_absolute_rule
+    _rel = [p for p in (inputs or {}).values() if violates_absolute_rule(p)]
+    if _rel:
+        return refused("run_cluster.invalid_inputs",
+            error=f"relative input path(s) {_rel[:5]} — recorded steps require "
+                  f"absolute paths (they must reproduce from any CWD)")
 
     # Late-bind the singletons (preserves [[feedback-mcp-tools-conventions]]
     # monkeypatchability — tests inject overrides via the _* kwargs).
@@ -708,7 +718,31 @@ def run_step_on_cluster(
         # leave a reader to infer it from the absence of a --partition line.
         "gpu_placement":            rendered.get("gpu_placement"),
     }
-    step_data = {k: v for k, v in step_data.items() if v is not None}
+    # Constructed THROUGH the model (typed-records Seam A): the cluster
+    # producer is held to the same shape gate as the local ones. If OUR OWN
+    # emission fails its model — inputs were pre-flighted, so this is a
+    # producer bug — the job already ran and its outputs are downloaded;
+    # record a failed step naming the refusal rather than vanishing an
+    # allocation's worth of work behind a raw traceback.
+    try:
+        step_data = PipelineStep.produce(**step_data)
+    except Exception as e:
+        step_index = _record_failed_cluster_step(
+            _pipeline_state, pipeline_id,
+            tool_name=tool_name, command=command, inputs=inputs,
+            failure_code="run_cluster.step_record_refused",
+            error=f"the completed run's step record failed its typed model: {e}",
+            job_id=job_id, workflow_dir=workflow_dir,
+            sif_path_remote=sif_path_remote, image_digest=image_digest,
+            cluster_sif_sha256=cluster_sif_sha256)
+        return broke("run_cluster.step_record_refused",
+            error=f"the cluster job SUCCEEDED and its outputs were downloaded, but the "
+                  f"step record this producer built failed its typed model — a producer "
+                  f"bug, not a run failure: {e}",
+            job_id=job_id, workflow_dir=workflow_dir, downloaded=downloaded,
+            pipeline_merge={"status": "recorded_failed",
+                            "pipeline_id": pipeline_id,
+                            "step_index": step_index})
     step_index = _pipeline_state.add_step(pipeline_id, step_data)
 
     # ─── 8. Validate outputs (type-aware, same as local steps) ────────

@@ -95,11 +95,22 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
     _inv(id="I6", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every input/output path is absolute and every {PLACEHOLDER} in "
                    "usage.command_template is declared",
-         enforced_by="agent.skills.spec_writer.check_workflow_invariants"),
+         enforced_by="agent.skills.spec_writer.check_workflow_invariants",
+         note="SPLIT since typed-records Seam A: the absolute-paths half is enforced at "
+              "construction (PipelineStep._paths_are_absolute, raised at the write funnel "
+              "by typed_nouns.check_draft and re-validated when seal builds the "
+              "WorkflowSpec); the walk emits only I6.template_placeholders_declared, "
+              "which is cross-field (template vs declared inputs) and stays."),
     _inv(id="I7", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every rc=0 pipeline_step records real resource_usage (wall, peak RSS, "
                    "peak CPU) — not absent, not all zeros, not a capture error",
-         enforced_by="agent.skills.spec_writer.check_workflow_invariants"),
+         enforced_by="agent.skills.spec_writer.check_workflow_invariants",
+         note="SPLIT since typed-records Seam A: presence (the old "
+              "I7.resource_usage_recorded) is enforced at construction "
+              "(PipelineStep._rc0_has_resource_usage); the walk emits only "
+              "I7.resource_usage_captured — whether the values are a real observation "
+              "(all-zeros sentinel, sacct_error) — because only the producer context "
+              "distinguishes fabrication from a sampling limit."),
     _inv(id="I8", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every pipeline_step input traces to a prior step's output or a declared "
                    "external source, and every traced artifact still hashes to what was recorded",

@@ -38,49 +38,43 @@ def test_invariant_checker_catches_pipeline_step_without_outputs():
         "silent-empty-success pipeline_step should violate I3"
 
 
-def test_invariant_checker_catches_relative_paths():
-    """Relative paths in pipeline_step inputs/outputs violate I6."""
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [{
-            "step": 1, "tool": "samtools",
+def test_relative_input_path_is_unconstructible():
+    """The old I6.absolute_paths walk clause, in its typed form (Seam A): a
+    relative input path never becomes a record at all — PipelineStep refuses at
+    construction, so the shape cannot reach the walk to begin with."""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    with pytest.raises(ValidationError, match="absolute"):
+        PipelineStep.model_validate({
+            "step": 1, "tool": "samtools", "command": "samtools view",
             "returncode": 0,
             "inputs":  [{"path": "data/relative/input.bam"}],
             "detected_outputs": ["/abs/output.vcf"],
             "validation": {"output.vcf": {"passed": True}},
             "validation_status": "passed",
-            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 12.3},
-        }],
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I6.absolute_paths" for v in violations), \
-        "relative input path should violate I6"
+            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 12.3,
+                               "max_cpu_percent": 0.0},
+        })
 
 
-def test_invariant_checker_catches_missing_resource_usage():
-    """I7: a pipeline_step that exited 0 but has no resource_usage means the
-    runtime monitor never observed it — agent could be synthesizing the step.
-    """
-    spec = {
-        "pipeline_name": "test",
-        "packages": [{"name": "samtools", "verify_output": "v1.21"}],
-        "install_steps": [{"step": 1, "returncode": 0}],
-        "pipeline_steps": [{
+def test_rc0_step_without_resource_usage_is_unconstructible():
+    """The old I7.resource_usage_recorded walk clause, in its typed form (Seam
+    A): a step that exited 0 with no resource_usage means the runtime monitor
+    never observed it — the record refuses to exist rather than the walk
+    refusing to seal it. (The VALUES half — zeros, sacct_error — is still the
+    I7.resource_usage_captured walk clause, tested below.)"""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    with pytest.raises(ValidationError, match="resource_usage"):
+        PipelineStep.model_validate({
             "step": 1, "tool": "samtools", "command": "samtools view x.bam",
             "returncode": 0,
             "inputs":  [{"path": "/abs/x.bam"}],
             "detected_outputs": ["/abs/x.sam"],
             "validation": {"x.sam": {"passed": True}},
             "validation_status": "passed",
-            # NO resource_usage key — should trigger I7.
-        }],
-        "test_data": {"bam": "/abs/x.bam"},
-    }
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I7.resource_usage_recorded" for v in violations), \
-        "rc=0 pipeline_step missing resource_usage should violate I7"
+            # NO resource_usage key.
+        })
 
 
 def _spec_with_resource_usage(ru):
@@ -110,7 +104,7 @@ def test_i7_rejects_a_fabricated_cluster_zero_via_the_producers_marker():
     pins the end of that chain — the shape that used to seal clean must now be refused.
     """
     v = check_invariants(_spec_with_resource_usage({
-        "wall_seconds": 14.0, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0,
+        "wall_seconds": 14.0, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0,
         "locus": "cluster", "sacct_error": "sacct returned no MaxRSS for job 123 …"}))
     assert any(x["invariant"] == "I7.resource_usage_captured" for x in v), \
         "a cluster step whose peak RSS was never accounted must not seal"
@@ -127,7 +121,7 @@ def test_i7_accepts_a_fast_host_step_that_the_sampler_missed():
     the producer that knows, via sacct_error, and not by the value here.
     """
     v = check_invariants(_spec_with_resource_usage(
-        {"wall_seconds": 0.01, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0,
+        {"wall_seconds": 0.01, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0,
          "sample_count": 1}))
     assert not any(x["invariant"].startswith("I7") for x in v), v
 
@@ -135,7 +129,7 @@ def test_i7_accepts_a_fast_host_step_that_the_sampler_missed():
 def test_i7_still_rejects_an_all_zeros_record():
     """The monitor captured nothing at all — no wall, no RSS."""
     v = check_invariants(_spec_with_resource_usage(
-        {"wall_seconds": 0.0, "peak_rss_mb": 0.0, "peak_cpu_percent": 0.0}))
+        {"wall_seconds": 0.0, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0}))
     assert any(x["invariant"] == "I7.resource_usage_captured" for x in v)
 
 
@@ -143,7 +137,7 @@ def test_i7_accepts_a_real_observation():
     """Guard against 'fixed' meaning 'refuses everything' — these are the real values
     the sealed samtools_cluster_rung3 workflow recorded on a cluster."""
     v = check_invariants(_spec_with_resource_usage(
-        {"wall_seconds": 16.0, "peak_rss_mb": 377.5, "peak_cpu_percent": 100.0}))
+        {"wall_seconds": 16.0, "peak_rss_mb": 377.5, "max_cpu_percent": 100.0}))
     assert not any(x["invariant"].startswith("I7") for x in v), v
 
 
@@ -2120,7 +2114,7 @@ def _guide_spec():
                      {"name": "samtools", "version": "1.21", "verify_output": "y"}],
         "pipeline_steps": [
             {"step": 1, "command": "bwa mem ref.fa r1.fq > out.sam", "returncode": 0,
-             "detected_outputs": ["/abs/out.sam"], "validation": {"out.sam": {"valid": True}}},
+             "detected_outputs": ["/abs/out.sam"], "validation": {"out.sam": {"passed": True}}},
             {"step": 2, "command": "SHOULD_NOT_APPEAR --broken", "returncode": 1,
              "detected_outputs": []},
         ],
@@ -7349,7 +7343,8 @@ def test_run_pipeline_step_output_types_accepts_full_path_keys(monkeypatch, tmp_
         return {
             "returncode": 0, "stdout": "", "stderr": "", "success": True,
             "command": command, "runtime_seconds": 0.1,
-            "resource_usage": {}, "inputs": inputs or [],
+            "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},
+            "inputs": inputs or [],
             "detected_outputs": [out_path],
         }
     monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
@@ -7387,7 +7382,8 @@ def test_run_pipeline_step_output_types_reports_unmatched_keys(monkeypatch, tmp_
     def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None):
         return {"returncode": 0, "stdout": "", "stderr": "", "success": True,
                 "command": command, "runtime_seconds": 0.1,
-                "resource_usage": {}, "inputs": inputs or [],
+                "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},
+            "inputs": inputs or [],
                 "detected_outputs": [out_path]}
     monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
     monkeypatch.setattr(ms._validator, "validate",
@@ -7416,7 +7412,8 @@ def test_run_pipeline_step_output_types_lookup_order(monkeypatch, tmp_path):
 
     def fake_run(*a, **kw):
         return {"returncode": 0, "detected_outputs": [out_path],
-                "inputs": [], "resource_usage": {}, "runtime_seconds": 0.1,
+                "inputs": [], "runtime_seconds": 0.1,
+                "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},
                 "success": True, "stdout": "", "stderr": "", "command": kw.get("command", "")}
     monkeypatch.setattr(ms._env_mgr, "run_in_env", fake_run)
     seen = {}

@@ -69,8 +69,11 @@ def _step(n, ins, outs, *, remote=None, locus="cluster"):
          "detected_outputs": outs,
          "validation": {o: {"passed": True} for o in outs},
          "validation_locus": locus,
+         # max_cpu_percent, the producers' real dialect — this fixture used to
+         # write `peak_cpu_percent`, a key no producer has ever emitted, which
+         # the hardened PipelineStep (Seam A) now refuses as an undeclared extra.
          "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 1.0,
-                            "peak_cpu_percent": 1.0}}
+                            "max_cpu_percent": 1.0}}
     if remote is not None:
         s["remote_outputs"] = remote
     return s
@@ -162,13 +165,14 @@ def test_remote_outputs_does_not_rescue_a_step_that_produced_nothing():
 
 def test_remote_outputs_is_held_to_the_same_absoluteness_rule():
     """It feeds the I8 universe, so it is a path channel into the lineage graph.
-    A field other invariants trust and I6 does not examine is an unchecked
-    channel."""
-    spec = {"pipeline_steps": [_step(1, [], ["/local/a.tsv"],
-                                     remote=["relative/a.tsv"])]}
-    msgs = [v["message"] for v in sw.check_workflow_invariants(spec)
-            if v["invariant"] == "I6.absolute_paths"]
-    assert any("remote output" in m for m in msgs), msgs
+    A field other invariants trust and nothing examines is an unchecked channel.
+    Since Seam A the rule is typed: a relative remote output never becomes a
+    record (PipelineStep._paths_are_absolute), rather than the walk refusing it."""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    step = _step(1, [], ["/local/a.tsv"], remote=["relative/a.tsv"])
+    with pytest.raises(ValidationError, match="remote_outputs.*relative/a.tsv"):
+        PipelineStep.model_validate(step)
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +271,7 @@ def test_remote_outputs_survives_into_the_sealed_spec():
             "remote_outputs": ["/remote/wf/x.tsv"],
             "cluster_job_verdict": "succeeded", "validation_locus": "cluster",
             "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 1.0,
-                               "peak_cpu_percent": 1.0}}
+                               "max_cpu_percent": 1.0}}
     spec = WorkflowSpec.model_validate({
         "workflow_name": "w", "description": "d", "created_at": "t",
         "env_request_key": "k", "env_content_digest": "sha256:c",
@@ -298,7 +302,8 @@ def test_a_local_step_carries_no_empty_remote_keys():
         "env_request_key": "k", "env_content_digest": "sha256:c",
         "env_image": "i", "pipeline_status": "fully_validated",
         "pipeline_steps": [{"step": 1, "tool": "t", "command": "c",
-                            "returncode": 0, "detected_outputs": ["/x"]}]})
+                            "returncode": 0, "detected_outputs": ["/x"],
+                            "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 5.0}}]})
     on_disk = _yaml.safe_load(spec.to_yaml())["pipeline_steps"][0]
     assert "remote_outputs" not in on_disk
     assert "cluster_job_verdict" not in on_disk

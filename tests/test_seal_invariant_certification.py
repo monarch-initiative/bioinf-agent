@@ -39,15 +39,19 @@ def _base_spec():
     }
 
 
-def test_i6_fires_on_relative_output_path():
-    """I6: a RELATIVE detected_output (not just input) must trip I6.absolute_paths.
-    An absolute-path contract is what lets the sealed spec be re-run anywhere;
-    a relative output silently binds to wherever it happened to run."""
-    spec = _base_spec()
-    spec["pipeline_steps"][0]["detected_outputs"] = ["relative/out.sam"]  # <- relative
-    violations = check_invariants(spec)
-    assert any(v["invariant"] == "I6.absolute_paths"
-               and "output" in v["message"] for v in violations), violations
+def test_a_relative_output_path_is_unconstructible():
+    """The old I6.absolute_paths clause on detected_outputs, in its typed form
+    (Seam A): an absolute-path contract is what lets the sealed spec be re-run
+    anywhere; a relative output silently binds to wherever it happened to run.
+    The record now refuses to exist instead of the walk refusing to seal it."""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    step = dict(_base_spec()["pipeline_steps"][0])
+    step["detected_outputs"] = ["relative/out.sam"]  # <- relative
+    step["resource_usage"] = {"wall_seconds": 1.0, "peak_rss_mb": 12.3,
+                              "max_cpu_percent": 50.0}
+    with pytest.raises(ValidationError, match="absolute"):
+        PipelineStep.model_validate(step)
 
 
 def test_i8_fires_on_unreadable_authored_artifact(tmp_path, monkeypatch):
