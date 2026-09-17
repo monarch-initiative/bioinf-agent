@@ -89,8 +89,9 @@ ALLOWED = {
         "Reads the `reason` sibling, which the leaf does not answer — the leaf returns "
         "the status only.",
     "skills/run_dashboard_html.py:usage_verification":
-        "Reads the `locus` sibling for display; the status two lines above comes from "
-        "the leaf.",
+        "Reads the `locus` and `reason` siblings for display (the how-to panel's "
+        "locus line, and the seal-outcome row's recorded remedy); every status read "
+        "comes from the leaf.",
     "skills/pipeline_state.py:health_check_log":
         "The field-MERGE, which concatenates a new probe onto the existing list. It "
         "reads the old value only to append to it and never asks whether any probe was "

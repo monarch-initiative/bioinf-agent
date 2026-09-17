@@ -402,8 +402,15 @@ def _seal_outcome_html(spec: dict) -> str:
     uv = spec.get("usage_verification") or {}
     reason = _e(uv.get("reason") or "") if isinstance(uv, dict) else ""
     if status == "verified":
-        return ('<span class="pill ok">proven</span> the run is validated AND the '
-                'declared how-to executed against every trial (I4)')
+        # Say ONLY what this derivation knows. This sentence used to add "the run
+        # is validated AND" — a claim derived from nothing here, and false on the
+        # FD3 shape this same page supports (failed iteration steps + a verified
+        # I4): the row printed "the run is validated" one line under a Run status
+        # row saying `failed`. Run validation has its own row; this one speaks
+        # for the how-to.
+        return ('<span class="pill ok">proven</span> the declared how-to executed '
+                'against every trial (I4); the run’s own verdict is the Run '
+                'status row above')
     if status == "failed":
         # Unreachable on a spec sealed at HEAD (seal refuses an I4 failure) — but a
         # record that carries it must not be softened by this renderer.

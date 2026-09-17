@@ -133,7 +133,8 @@ def download_reference_database(
             f"&& {_hash_into_sidecar(str(target))}"
         )
 
-    job = _ms._job_manager.start(cmd, job_id=f"refdb_{name}_{int(time.time())}")
+    job = _ms._job_manager.start(cmd, job_id=f"refdb_{name}_{int(time.time())}",
+                                 tool="download_reference_database")
     if pipeline_id:
         # Append the ReferenceDatabase entry now; `available` is re-derived at
         # finalize from filesystem state (so an in-progress download correctly
