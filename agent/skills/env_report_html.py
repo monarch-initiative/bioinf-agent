@@ -662,9 +662,14 @@ def render_env_report_html(record: dict) -> str:
             head_rows.append(("Outcome",
                               '<span class="pill na">degraded</span> ' + _e(_advisory)))
         else:
+            # "APPLICABLE" is load-bearing: the proven branch means no clause was
+            # UNOBSERVED, but NOT_APPLICABLE clauses (accelerator/license/provenance
+            # on an ordinary env) examined nothing by design, and the guarantee
+            # table below renders them n/a. "Every clause examined something" would
+            # be disproved by the table beside it.
             head_rows.append(("Outcome",
-                              '<span class="pill ok">proven</span> every clause of the '
-                              'honesty contract examined something on this record'))
+                              '<span class="pill ok">proven</span> every applicable '
+                              'clause of the honesty contract was checked on this record'))
     # A loud, dedicated header line when any observed version diverges from the request —
     # so the mismatch is unmissable before the reader even scrolls to the Tools table (W5).
     if diverging:

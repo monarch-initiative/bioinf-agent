@@ -179,31 +179,36 @@ def _strip_plumbing(ev: str) -> str:
 
 
 def _bare_invocation(ev: str, tool: str) -> bool:
-    """True when the tool IS invoked at a command position and EVERY such invocation
-    is bare — nothing follows it in its own segment except redirects and their file
-    operands. A bare invocation answers with its banner/usage (or exits non-zero),
-    which proves exactly what `--help` proves; the redirect that captures that banner
-    is plumbing, not work, and must not promote the probe to 'functional' (CS19).
+    """True when the tool IS invoked as a segment's command word and EVERY such
+    invocation is bare — nothing follows it in its own segment except output
+    redirects and their capture files. A bare invocation answers with its
+    banner/usage (or exits non-zero), which proves exactly what `--help` proves;
+    the redirect that captures that banner is plumbing, not work, and must not
+    promote the probe to 'functional' (CS19).
 
-    Command position = start of string or preceded by `;` `&` `|` `(` or a backtick,
-    so a mention inside a grep pattern (`grep -q 'Program: bwa'`) or a path
-    (`/tmp/bwa_help.txt` — blocked by the lookbehind/lookahead) never counts as an
-    invocation. When no command-position invocation is visible at all this returns
-    False and the caller's classification is unchanged — declining to see is not a
-    finding, same rule as 'unknown'."""
-    low = ev.lower()
+    The command word of each `;`/`|`/`&` segment comes from
+    `core_data.default_step_tool` — the SAME reading the run primitives use to
+    name a step — so `time bwa > /tmp/h.txt` and `env FOO=1 bwa` are still seen
+    as invocations of bwa (a wrapper must not hide the bare probe back into
+    'functional'), while a mention inside a grep pattern or a capture path never
+    counts. An INPUT redirect (`tool < data.gz`) is kept as an operand: stdin
+    feeding is work, not banner capture. When no invocation is visible this
+    returns False and the caller's classification is unchanged — declining to
+    see is not a finding, same rule as 'unknown'."""
+    from agent.models.core_data import default_step_tool
+    toks = {t.lower() for t in _tool_tokens(tool)}
     found = False
-    for t in _tool_tokens(tool):
-        tl = re.escape(t.lower())
-        for m in re.finditer(rf"(?<![\w./-]){tl}(?![\w-])", low):
-            before = low[:m.start()].rstrip()
-            if before and before[-1] not in ";&|(`":
-                continue                    # a mention, not an invocation
-            found = True
-            seg = re.split(r"[;|&]", low[m.end():], 1)[0]
-            seg = re.sub(r"\d?>>?\s*\S+|<\s*\S+", " ", seg)   # redirects + their files
-            if seg.strip():
-                return False                # a real operand → not bare
+    for seg in re.split(r"[;|&]+", ev):
+        words = seg.split()
+        cmdtok = default_step_tool(seg)             # one of `words`, or ""
+        if not cmdtok or cmdtok.rsplit("/", 1)[-1].lower() not in toks:
+            continue
+        found = True
+        idx = next(i for i, w in enumerate(words) if w.lower() == cmdtok.lower())
+        rest = " ".join(words[idx + 1:])
+        rest = re.sub(r"\d?>>?\s*\S+", " ", rest)   # OUTPUT redirects + capture files
+        if rest.strip():
+            return False                            # a real operand → not bare
     return found
 
 

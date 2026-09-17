@@ -108,6 +108,29 @@ def test_a_proven_seal_renders_proven_not_degraded():
     assert "degraded" not in html.lower()
 
 
+def test_the_proven_sentence_claims_only_the_howto_never_the_run():
+    """FD3 shape: failed iteration steps + a verified I4. The Run status row says
+    failed; the seal-outcome row must not say "the run is validated" one line
+    below it (audit finding on the first cut of this row)."""
+    failed_step = pipeline_step(
+        returncode=1, detected_outputs=["/data/out/bad.bam"],
+        validation={"/data/out/bad.bam": {"passed": False,
+                                          "validation_method": "tool"}},
+        resource_usage=None)
+    failed_step["step"] = 1
+    ok_step = pipeline_step(returncode=0, detected_outputs=["/tmp/out/x.bam"],
+                            validation={"x.bam": {"passed": True}})
+    ok_step["step"] = 2
+    spec = {
+        "workflow_name": "wf", "pipeline_steps": [failed_step, ok_step],
+        "validated_in_shipped_image": True, "pipeline_status": "failed",
+        "usage_verification": {"status": "verified", "trials": [], "locus": "image"},
+    }
+    html = render_run_dashboard_html(spec)
+    assert ">proven</span>" in html
+    assert "the run is validated" not in html
+
+
 def test_an_unrecorded_seal_outcome_renders_absence_not_a_verdict():
     """A spec sealed before the producer stated an outcome gets NO retroactive
     verdict — same rule as a Layer-1 UNOBSERVED clause."""
@@ -262,6 +285,18 @@ def test_default_step_tool_skips_shell_prelude():
     assert default_step_tool("/usr/bin/time -v seqkit stats a.fq") == "seqkit"
 
 
+def test_default_step_tool_skips_a_wrapper_flags_value_not_just_the_flag():
+    """`nice -n 10 samtools …` must land on samtools, not on "10" (audit finding:
+    popping only `-` tokens left the flag's VALUE as the command word). And a flag
+    that takes no value must not eat the command — `time -v STAR` is STAR."""
+    assert default_step_tool("nice -n 10 samtools sort /w/a.bam") == "samtools"
+    assert default_step_tool("ionice -c 3 bwa mem ref.fa") == "bwa"
+    assert default_step_tool("env -u DISPLAY fastqc /w/a.fq") == "fastqc"
+    assert default_step_tool("time -v STAR --runMode alignReads") == "STAR"
+
+
 def test_default_step_tool_states_the_truth_of_a_prelude_only_command():
     assert default_step_tool("mkdir -p /w/out") == "mkdir"
+    # a bare wrapper falls back to its own name, never to ""
+    assert default_step_tool("env") == "env"
     assert default_step_tool("") == ""

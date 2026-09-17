@@ -1799,6 +1799,14 @@ _SHELL_PRELUDE = frozenset({
     "ulimit", "umask", "source", ".",
 })
 _SHELL_WRAPPERS = frozenset({"time", "nice", "env", "ionice", "stdbuf"})
+#: Wrapper flags whose VALUE is a separate token (`nice -n 10 samtools …`) — the
+#: value must be skipped with its flag or it becomes the "tool" ("10"). Flags not
+#: listed take no separate value (`time -v`, `stdbuf -oL`), so only their own
+#: token is dropped — which is what keeps `time -v STAR …` landing on STAR.
+_WRAPPER_VALUE_FLAGS = {
+    "nice": {"-n"}, "ionice": {"-c", "-n"}, "env": {"-u", "-C", "-S"},
+    "stdbuf": {"-i", "-o", "-e"}, "time": {"-f", "-o"},
+}
 
 
 def default_step_tool(command: str) -> str:
@@ -1809,10 +1817,11 @@ def default_step_tool(command: str) -> str:
     which titled a `mkdir -p … && samtools flagstat …` step "mkdir" on the RUN
     dashboard — the heading is the scannable part of the page and it named shell
     plumbing. Walk the &&/;/| segments: unwrap wrapper commands (their argument
-    is the real command), skip VAR=value assignments, and return the first
-    command word that is not stage-setting shell. When every segment is prelude,
-    fall back to the first token, which at least states the truth of a command
-    that really is only `mkdir`."""
+    is the real command, minus the wrapper's own flags and flag values), skip
+    VAR=value assignments, and return the first command word that is not
+    stage-setting shell. When a segment never reaches a command word (prelude
+    only, or a bare wrapper), fall back to the segment's own first token, which
+    at least states the truth of a command that really is only `mkdir`."""
     def _drop_assignments(toks: list) -> None:
         while toks and "=" in toks[0] and not toks[0].startswith(("=", "/")):
             toks.pop(0)
@@ -1821,14 +1830,18 @@ def default_step_tool(command: str) -> str:
     for seg in re.split(r"[;|&]+", command or ""):
         toks = seg.split()
         _drop_assignments(toks)
+        if toks:
+            first = first or toks[0]        # the honest fallback, pre-unwrap
         while toks and toks[0].rsplit("/", 1)[-1] in _SHELL_WRAPPERS:
-            toks.pop(0)                                   # the wrapper itself
+            wrapper = toks.pop(0).rsplit("/", 1)[-1]
+            value_flags = _WRAPPER_VALUE_FLAGS.get(wrapper, set())
             while toks and toks[0].startswith("-"):
-                toks.pop(0)                               # its flags
+                flag = toks.pop(0)
+                if flag in value_flags and toks:
+                    toks.pop(0)                           # the flag's value
             _drop_assignments(toks)                       # env VAR=… cmd
         if not toks:
             continue
-        first = first or toks[0]
         if toks[0].rsplit("/", 1)[-1] not in _SHELL_PRELUDE:
             return toks[0]
     return first

@@ -164,7 +164,7 @@ class _FakeCache:
 class _FakeJobManager:
     def __init__(self):
         self.calls = []
-    def start(self, command, env_name="", job_id="", working_dir=""):
+    def start(self, command, env_name="", job_id="", working_dir="", tool=""):
         self.calls.append({"command": command, "job_id": job_id,
                            "working_dir": working_dir})
         return {"job_id": job_id or "j1", "state": "running"}

@@ -187,7 +187,8 @@ def _run_local(*, project: dict, project_name: str, compute_env_name: str,
     started = datetime.now(timezone.utc).isoformat()
     job_id = f"prod_{workflow_name}_{_short_stamp(started)}"
     launch = _job_manager.start(command=f"bash {shlex.quote(str(run_sh))}",
-                                job_id=job_id, working_dir=normed_dir)
+                                job_id=job_id, working_dir=normed_dir,
+                                tool="run_production_pipeline")
     if "error" in launch:
         return {**launch, "run_script": str(run_sh)}
     job_id = launch.get("job_id", job_id)
