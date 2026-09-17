@@ -3,8 +3,10 @@ Layer-2 (workflow) seal contract: seal_workflow refuses to write a
 WorkflowSpec on any of:
 
   I0  shape sanity — top-level lists hold only dicts
-  I3  validated outputs — every rc=0 step has detected_outputs AND no
-                          validation uses expected_type='any'
+  I3  validated outputs — every rc=0 step has detected_outputs and no
+                          validation record says passed=False
+                          (expected_type='any' — exists + non-empty — is a
+                          legitimate validation, stated as such in the record)
   I6  paths/placeholders — every input/output path is absolute AND every
                            {PLACEHOLDER} in usage.command_template is
                            declared in usage.inputs (or OUTPUT_DIR/OUT_DIR)
@@ -87,17 +89,25 @@ def test_i3_step_with_no_outputs_refused():
 
 
 @pytest.mark.integration
-def test_i3_expected_type_any_refused():
-    """The amendment: every validation must declare a real type so the
-    validator dispatches to a type-aware checker. `touch foo.bar`
-    creating a non-empty file passes type='any' but fails the contract."""
+def test_i3_expected_type_any_seals():
+    """expected_type='any' (exists + non-empty) seals cleanly — it is a
+    legitimate primary validation, not a refusal (user ruling 2026-09-16).
+
+    This test asserted the opposite until the `I3.declared_output_type`
+    gate was deleted. The gate refused the honest 'any' while the SAME
+    exists-nonzero check sealed green under any unknown type string
+    ('pod5', 'h5ad', a typo — the dispatch table falls through to
+    _check_any either way), which rewarded inventing a format name and
+    punished stating the truth. The depth of the check lives in the
+    record (`validation_method`) and on the dashboard, never in the
+    verdict."""
     spec = _minimal_passing_spec()
     spec["pipeline_steps"][0]["validation"] = {
-        "out.txt": {"valid": True, "expected_type": "any"},
+        "out.txt": {"passed": True, "expected_type": "any",
+                    "validation_method": "exists_nonzero"},
     }
     v = _violations(spec, "I3.")
-    assert any(x["invariant"] == "I3.declared_output_type" for x in v), \
-        f"expected_type=any was not refused: {v}"
+    assert not v, f"expected_type=any must not refuse the seal: {v}"
 
 
 @pytest.mark.integration

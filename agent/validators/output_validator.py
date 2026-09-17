@@ -39,9 +39,10 @@ def infer_validator_type(filename: str) -> str:
 
     Unknown extensions return "any" — the validator's existence/non-empty check
     — never a guessed concrete type: a fabricated expectation manufactures a
-    failure nobody declared, and I3 refuses `expected_type="any"` at seal with
-    its own remedy (declare the type via output_types), which is the gate
-    teaching rather than this function guessing.
+    failure nobody declared. "any" is a legitimate validation, recorded as such
+    (`validation_method: exists_nonzero`); declaring a known type via
+    output_types upgrades it to a type-aware check, but nothing refuses on
+    depth.
     """
     ext = "".join(Path(filename).suffixes).lstrip(".").lower()
     # Strip .gz: validators handle compressed forms natively.

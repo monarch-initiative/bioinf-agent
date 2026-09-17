@@ -426,11 +426,11 @@ class PipelineState:
                 # add_step), so a re-run's step_data never carries it — and the merge
                 # above would preserve the PRIOR command's per-file validation records.
                 # That silently violates the "throw away whatever was at N" contract:
-                # replacing an index-build step (8 .ht2 outputs validated 'any') with a
-                # fastqc step leaves the 8 stale 'any' records behind, which then fail
-                # I3.declared_output_type at seal even though the current step's outputs
-                # are all clean. A re-run re-validates its OWN outputs, so drop the
-                # inherited records unless the caller explicitly provided replacements.
+                # replacing an index-build step (8 .ht2 outputs) with a fastqc step
+                # leaves 8 stale validation records behind, attributed to a command
+                # that never produced them. A re-run re-validates its OWN outputs, so
+                # drop the inherited records unless the caller explicitly provided
+                # replacements.
                 if "validation" not in step_data:
                     merged.pop("validation", None)
                 steps.insert(replace_step - 1, merged)
