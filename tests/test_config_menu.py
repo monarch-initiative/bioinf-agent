@@ -61,7 +61,7 @@ def test_every_zone_the_menu_offers_is_an_env_key_it_declares(cfgmod):
     """ZONES drives the prompts; ENV_KEYS decides what survives to the file. A
     zone missing from ENV_KEYS is a block the user fills in and the menu then
     silently discards."""
-    zone_keys = {k for k, _, _ in cfgmod.ZONES}
+    zone_keys = {k for k, _, _, _ in cfgmod.ZONES}
     assert zone_keys <= set(cfgmod.ENV_KEYS), (
         f"zone(s) {sorted(zone_keys - set(cfgmod.ENV_KEYS))} are prompted for but not "
         f"projected into the saved env — the user's answer would be dropped on save")
@@ -286,3 +286,114 @@ def test_save_returns_false_instead_of_raising_when_unwritable(cfgmod, tmp_path)
     blocker.write_text("i am a file, not a directory\n")
     cfg = cfgmod.Config(blocker / "sub" / "projects_access.yaml")
     assert cfg.save() is False
+
+
+# --- the menu-pass findings (second cold-start drive, round 2) ---------------
+
+def test_project_name_rule_is_enforced_by_the_loader(tmp_path):
+    """CS57: the prompt states 'letters, digits, _ and - only' and then nothing
+    checked it — `my project!` sealed into the file and would have failed far
+    away, as a scratch path component inside a job launcher. The rule now lives
+    in the loader, so a hand-edited file is held to it too."""
+    path = tmp_path / "pa.yaml"
+    path.write_text(yaml.safe_dump({
+        "compute_envs": [_env()],
+        "projects": [{"name": "my project!", "compute_envs": ["cluster"],
+                      "directories": []}]}))
+    with pytest.raises(compute_access.ConfigError) as e:
+        compute_access.load_access(path)
+    msg = str(e.value)
+    assert "my project!" in msg and "path component" in msg
+    assert "' '" in msg and "'!'" in msg, \
+        f"the refusal must name the illegal characters: {msg}"
+
+
+def test_project_name_rule_still_admits_every_real_name(tmp_path):
+    """`_ad_hoc` (leading underscore, synthesized) and ordinary names pass."""
+    for name in ("_ad_hoc", "chr22_demo", "RNA-seq-run-3", "p1"):
+        assert compute_access.PROJECT_NAME_RE.match(name), name
+
+
+def test_scratch_and_common_data_are_required_zones_in_the_spec(cfgmod):
+    """The menu (both renderers) must not offer 'skip' for the two zones that
+    make an env usable — the bridge's run/stage primitives refuse without them.
+    Menu-level by design: the loader gate was measured at 153 fixture breaks
+    and deliberately not taken in this pass."""
+    required = {k for k, _, _, req in cfgmod.ZONES if req}
+    assert required == {"agent_scratch_target", "agent_common_data_target"}
+
+
+def test_permission_glosses_distinguish_upload_from_exec(cfgmod):
+    """CS58: `upload` and `exec` were both glossed as writing, so a real
+    first-run user could not choose deliberately and fell back to defaults.
+    The glosses are the ONE spelling both renderers read."""
+    g = cfgmod.PERMISSION_GLOSSES
+    assert set(g) == set(cfgmod.PERMISSION_ORDER)
+    assert len(set(g.values())) == len(g), "two tokens share a gloss"
+    assert "run" in g["exec"], "exec must be glossed on the axis its name implies"
+    assert "write" not in g["exec"], "exec glossed as writing is CS58 again"
+
+
+def test_local_path_existence_note_fires_only_for_local_envs(cfgmod, tmp_path, capsys):
+    """CS60: on a `type: local` env the path is on THIS filesystem, so the check
+    is free — a note, never a refusal. An ssh env cannot be checked and gets
+    no note (absence of evidence, stated by staying silent)."""
+    missing = str(tmp_path / "not" / "there")
+    cfgmod.note_if_missing_locally({"type": "local"}, missing)
+    out = capsys.readouterr().out
+    assert "does not exist yet" in out and missing in out
+
+    cfgmod.note_if_missing_locally({"type": "ssh"}, missing)
+    assert "does not exist" not in capsys.readouterr().out
+
+    existing = str(tmp_path)
+    cfgmod.note_if_missing_locally({"type": "local"}, existing)
+    assert "does not exist" not in capsys.readouterr().out
+
+
+def test_projects_menu_is_locked_until_a_remote_env_exists(cfgmod, tmp_path):
+    """D10: 'project' is an access-grant list for YOUR territory on a shared
+    machine; a purely local setup has nothing to grant, so the concept arrives
+    when it is needed. But a file that already holds projects must stay
+    editable regardless — hiding data would make it unfixable."""
+    cfg = cfgmod.Config(tmp_path / "pa.yaml")
+    assert cfgmod.projects_unlocked(cfg) is False
+
+    cfg.envs.append({"name": "laptop", "type": "local"})
+    assert cfgmod.projects_unlocked(cfg) is False, "a local env must not unlock"
+
+    cfg.envs.append(_env())
+    assert cfgmod.projects_unlocked(cfg) is True, "an ssh env unlocks"
+
+    cfg2 = cfgmod.Config(tmp_path / "pa2.yaml")
+    cfg2.projects.append({"name": "p", "compute_envs": [], "directories": []})
+    assert cfgmod.projects_unlocked(cfg2) is True, \
+        "existing projects must stay reachable however they got there"
+
+
+def test_a_local_env_is_never_asked_the_transfer_question(cfgmod, monkeypatch, capsys):
+    """CS59: data_transfer picks how bytes cross a NETWORK; a local env moves
+    bytes on this disk, so every noun in the prompt (head node, endpoint UUIDs)
+    is wrong for it. Driven through the real prompt flow: the scripted answers
+    below carry NO reply for a data_transfer question, so if the flow asks it,
+    input is exhausted and the env never stages."""
+    answers = iter(
+        ["local", ""]            # type, name (accept default)
+        + ["", "", ""] * 2       # scratch + common_data: path, permissions, description
+        + ["", "", "", ""] * 2   # container + reports: declare?, path, perms, desc
+    )
+
+    def scripted_input(*_a):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError    # the flow asked a question the script has no answer for
+
+    monkeypatch.setattr("builtins.input", scripted_input)
+    cfg = cfgmod.Config(Path("/nonexistent/pa.yaml"))
+    cfgmod.edit_env(cfg, None)
+    out = capsys.readouterr().out
+    assert len(cfg.envs) == 1 and cfg.envs[0]["type"] == "local"
+    assert "data_transfer" not in out.replace("data_transfer: kept", ""), \
+        "a local env was asked about data transfer"
+    assert "slurm" not in cfg.envs[0]

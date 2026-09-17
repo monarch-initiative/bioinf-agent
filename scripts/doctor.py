@@ -223,8 +223,9 @@ def check_core_data() -> None:
 def check_hpc_config() -> None:
     cfg = Path(workspace.zones()["projects_access"])
     if not cfg.exists():
-        row("SKIP", "hpc bridge", "no projects_access.yaml — local-only mode "
-            "(fine; run ./scripts/config.sh to add a cluster)")
+        row("SKIP", "compute envs", "no projects_access.yaml — no declared compute "
+            "envs (fine; ./scripts/config.sh declares where the agent may run jobs: "
+            "this machine, an HPC cluster, or both)")
         return
     if not RUNTIME_PY.exists():
         row("SKIP", "hpc bridge", "projects_access.yaml present, but no runtime env to parse it with")

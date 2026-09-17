@@ -41,6 +41,11 @@ dependencies = [
     "pydantic>=2.0",
     "psutil>=5.9",
     "conda-lock>=2.5",
+    # The browser config menu (scripts/config_web.py). Both already arrive via
+    # fastmcp; declared so the menu does not ride a transitive dependency that a
+    # fastmcp major could silently drop.
+    "starlette>=1.0",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
