@@ -4525,8 +4525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:608",
-    "end_line": 619,
+    "where": "agent/skills/pipeline_state.py:609",
+    "end_line": 620,
     "named_in_test": true
   },
   {
@@ -4535,8 +4535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:621",
-    "end_line": 629,
+    "where": "agent/skills/pipeline_state.py:622",
+    "end_line": 630,
     "named_in_test": false
   },
   {
@@ -4545,8 +4545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:633",
-    "end_line": 634,
+    "where": "agent/skills/pipeline_state.py:634",
+    "end_line": 635,
     "named_in_test": false
   },
   {

@@ -34,6 +34,7 @@ from typing import Optional
 import yaml
 
 from agent.skills import store_lock as _store_lock
+from agent.skills import typed_nouns
 from agent.skills.outcomes import refused
 from agent.skills import workspace
 
@@ -652,6 +653,12 @@ class PipelineState:
 
     def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
         """The atomic write itself — assumes the caller holds the lock."""
+        # SHADOW-mode typed-record check (agent/skills/typed_nouns.py). This is the one
+        # exit every draft mutation takes — _mutate, patch, upsert, all of them — so
+        # hooking here means no per-mutator wiring exists to forget. Logs mismatches to
+        # scratch; never raises, never blocks the write. A noun graduates to a raising
+        # gate only via the registry's ENFORCED mode.
+        typed_nouns.shadow_check_draft(draft, source=f"draft:{pipeline_id}")
         path = self._draft_path(pipeline_id)
         with tempfile.NamedTemporaryFile(
             mode="w", dir=str(path.parent),
