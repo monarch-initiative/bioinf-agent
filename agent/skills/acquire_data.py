@@ -308,7 +308,10 @@ def acquire_to_cluster(*, name: str, url: str, compute_env: str,
     # NOT apply the controlled-vocab defaults; _check_slurm does that (and raises
     # on a bad request) so _render_sbatch_header sees ntasks/cpus/gpus filled in.
     try:
-        merged, email = submit_workflow._resolve_slurm_and_email(
+        # The GPU placement state is dropped: this path fetches bytes, and the
+        # rendered header goes through _check_slurm below, which emits whatever
+        # partition/qos resolved. Nothing downstream reads a placement here.
+        merged, email, _ = submit_workflow._resolve_slurm_and_email(
             dict(slurm) if slurm else dict(_DEFAULT_DL_SLURM), env)
         slurm_v = workflow_render._check_slurm(merged)
     except ValueError as e:
@@ -480,7 +483,10 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
 
     # ─── SLURM header (generous walltime — a full bundle runs for hours) ──
     try:
-        merged, email = submit_workflow._resolve_slurm_and_email(
+        # The GPU placement state is dropped: this path fetches bytes, and the
+        # rendered header goes through _check_slurm below, which emits whatever
+        # partition/qos resolved. Nothing downstream reads a placement here.
+        merged, email, _ = submit_workflow._resolve_slurm_and_email(
             dict(slurm) if slurm else dict(_DEFAULT_DL_SLURM), env)
         slurm_v = workflow_render._check_slurm(merged)
     except ValueError as e:

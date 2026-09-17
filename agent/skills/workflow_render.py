@@ -195,13 +195,16 @@ def _check_command_renders_faithfully(command: str, declared: set[str]) -> None:
 #   mem  (req)     6G | 45g | 12000M            → --mem
 #   cpus (def 1)   int 1..256                   → --cpus-per-task
 #   ntasks (def 1) int 1..256                   → --ntasks
-#   gpus (def 0)   int 0..16                    → --gres=gpu:N (+ partition/qos)
+#   gpus (def 0)   int 0..16                    → --gres=gpu:N
 #   partition (opt) safe token                  → --partition (OMITTED ⇒ scheduler
 #                                                  default, e.g. many HPC CPU jobs)
 #   qos (opt)       safe token                  → --qos (GPU access on many HPCs)
 #   account (opt)   safe token                  → --account (OMITTED when unset)
-# partition/qos/account are normally MERGED IN from the env's slurm policy by the
-# caller (bridge_tools) — the agent's per-job dict carries time/mem/cpus/ntasks/gpus.
+# partition/qos/account may be MERGED IN from the env's slurm policy by the caller
+# (submit_workflow._resolve_slurm_and_email) — the agent's per-job dict carries
+# time/mem/cpus/ntasks/gpus. Every one of the three is OPTIONAL at every source:
+# a job may set them, the env may supply them, or neither may. See
+# gpu_placement_state for what a GPU job with neither means.
 _SLURM_REQUIRED = ("time", "mem")
 _SLURM_OPTIONAL = ("cpus", "ntasks", "gpus", "partition", "qos", "account")
 _SLURM_ALL = _SLURM_REQUIRED + _SLURM_OPTIONAL
@@ -264,15 +267,61 @@ def _check_slurm(slurm: Mapping) -> dict:
         if slurm.get(key):
             _check_safe_token(f"slurm.{key}", slurm[key])
             out[key] = slurm[key]
-    # GPU coherence: a GPU job MUST carry a partition + qos (the HPC's GPU
-    # convention, merged in from the env slurm.gpu block by the caller). Without
-    # them the job would land on a CPU partition and never see a GPU.
-    if out["gpus"] > 0 and not (out.get("partition") and out.get("qos")):
-        raise ValueError(
-            f"slurm.gpus={out['gpus']} requires both a partition and a qos (the HPC's "
-            f"GPU convention from the env slurm.gpu block) — resolved partition="
-            f"{out.get('partition')!r}, qos={out.get('qos')!r}")
     return out
+
+
+# ── GPU placement — a STATE, not a gate ────────────────────────────────────
+# A GPU job used to be REFUSED unless both a partition and a qos resolved, on the
+# reasoning that a bare `--gres=gpu:N` can land on a CPU partition and never see a
+# device. That reasoning is true on SOME clusters and false on others: a site whose
+# scheduler routes gres requests on its own is slowed down by being handed a
+# partition, so naming one is the wrong default there. A cluster-shaped judgement
+# cannot be a hard requirement in the renderer.
+#
+# So the requirement became an OBSERVATION, in the same posture every other
+# unfilled field in this codebase takes: say which of the states you are in, and
+# never round absence up to a pass. `cluster_partitions` is how a caller DISCOVERS
+# a real partition/qos pair when it wants one; nothing forces it to.
+_GPU_PLACEMENT_STATES = ("not_applicable", "declared", "partially_declared",
+                         "undeclared")
+
+
+def gpu_placement_state(gpus: int, partition: object, qos: object) -> str:
+    """Classify a job header's GPU placement into one of _GPU_PLACEMENT_STATES.
+
+    THE one reading of this question — the sbatch header comment and the stated
+    record `submit_workflow.resolve_gpu_placement` builds both call it, so the
+    launcher a human reads and the manifest a machine reads cannot disagree.
+
+      not_applicable      gpus == 0 — there is no GPU placement to make
+      declared            both a partition and a qos resolved
+      partially_declared  exactly one of them resolved
+      undeclared          a GPU job with neither; the scheduler's default decides
+    """
+    try:
+        g = int(gpus or 0)
+    except (TypeError, ValueError):
+        g = 0
+    if g <= 0:
+        return "not_applicable"
+    have = bool(partition) + bool(qos)
+    return ("declared" if have == 2
+            else "partially_declared" if have == 1
+            else "undeclared")
+
+
+# Emitted into the #SBATCH block so the consequence is legible in the artifact a
+# human re-runs, not only in the manifest. Silent for `declared` (nothing to say)
+# and `not_applicable` (no GPU).
+_GPU_PLACEMENT_HEADER_NOTE = {
+    "partially_declared": (
+        "# GPU placement: only one of --partition/--qos is set; the cluster's "
+        "default supplies the other."),
+    "undeclared": (
+        "# GPU placement: --gres only, no --partition/--qos — the scheduler "
+        "chooses. Where GPU nodes sit in a dedicated partition this job can land "
+        "without a device; `cluster_partitions` lists this cluster's."),
+}
 
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -293,10 +342,17 @@ def _render_sbatch_header(workflow_name: str, slurm_v: dict, email: str) -> str:
     directives (%x=job-name, %j=job-id) so logs self-name with the real job ID and
     never collide. Optional lines (partition/qos/gres/account/mail) are emitted
     ONLY when their value is present, so a typical CPU job renders no --partition
-    and no --account."""
+    and no --account.
+
+    `--qos` is emitted on PRESENCE, not on `gpus > 0`. It was gated on the latter,
+    which was safe only because a GPU job with no qos was refused upstream: the
+    moment that became a state rather than a gate, the same line would have
+    rendered the literal `--qos=None`. The presence gate also stops silently
+    discarding a qos on a CPU job, which plenty of sites do use."""
     def line(cond: object, text: str) -> str:
         return f"{text}\n" if cond else ""
     sv = slurm_v
+    placement = gpu_placement_state(sv["gpus"], sv.get("partition"), sv.get("qos"))
     return (
         f"#SBATCH --job-name={workflow_name}\n"
         f"#SBATCH --time={sv['time']}\n"
@@ -305,8 +361,10 @@ def _render_sbatch_header(workflow_name: str, slurm_v: dict, email: str) -> str:
         f"#SBATCH --ntasks={sv['ntasks']}\n"
         f"#SBATCH --cpus-per-task={sv['cpus']}\n"
         + line(sv.get("partition"), f"#SBATCH --partition={sv.get('partition')}")
-        + line(sv["gpus"] > 0, f"#SBATCH --qos={sv.get('qos')}")
+        + line(sv.get("qos"), f"#SBATCH --qos={sv.get('qos')}")
         + line(sv["gpus"] > 0, f"#SBATCH --gres=gpu:{sv['gpus']}")
+        + line(placement in _GPU_PLACEMENT_HEADER_NOTE,
+               _GPU_PLACEMENT_HEADER_NOTE.get(placement, ""))
         + line(sv.get("account"), f"#SBATCH --account={sv.get('account')}")
         + f"#SBATCH --output=%x-%j.out\n"
         + f"#SBATCH --error=%x-%j.err\n"

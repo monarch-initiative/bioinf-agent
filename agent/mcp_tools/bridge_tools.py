@@ -209,20 +209,26 @@ def cluster_partitions(project_name: str,
     `gpus[]` holds {type, count_per_node} parsed out of gres, so "has GPUs"
     and "has A100s" are distinguishable when the site records the type.
 
-    **Both halves of the GPU convention.** `workflow_render` needs
-    `slurm.gpu: {partition, qos}`. `sinfo` answers the hardware half; a
-    second probe (`scontrol show partition -o`, same ssh round trip) reads
-    `AllowQos=` for the other. `gpu_convention_candidates` holds the
-    `{partition, qos}` pairs the cluster would accept, each tagged with its
-    `gpu_types` and limits.
+    **Both halves of the GPU convention.** A GPU header wants a `{partition,
+    qos}` pair. `sinfo` answers the hardware half; a second probe (`scontrol
+    show partition -o`, same ssh round trip) reads `AllowQos=` for the other.
+    `gpu_convention_candidates` holds the pairs the cluster would accept, each
+    tagged with its `gpu_types` and limits.
 
     They are CANDIDATES, not a pick: choosing between an A100 partition and
     a consumer-card partition is a sizing judgement about the workload, which
     is yours. A partition whose QoS was NOT observed contributes no candidate
-    — half a convention renders a GPU header that lands the job on the wrong
-    queue — but stays visible in `partitions[]` with `qos_observed: False`,
-    so the gap is legible rather than silently dropped. `AllowQos=ALL`
-    (constrains nothing) is kept distinct from "never looked".
+    — half a pair is not a convention — but stays visible in `partitions[]`
+    with `qos_observed: False`, so the gap is legible rather than silently
+    dropped. `AllowQos=ALL` (constrains nothing) is kept distinct from
+    "never looked".
+
+    **Nothing here is required to submit.** Pass a chosen pair straight into a
+    job's `slurm={"gpus": N, "partition": ..., "qos": ...}` and it wins over
+    whatever the env declares; pass neither and the job renders `--gres` alone
+    with `gpu_placement: undeclared`, which is the RIGHT submission on a
+    cluster whose scheduler places gres requests itself. Use this probe when
+    you want to name a partition, not because you must.
 
     Returns {compute_env, pattern, partitions, partition_count,
     gpu_partitions, default_partition, qos_observable,
@@ -390,12 +396,36 @@ def submit_workflow_job(project_name: str,
                          first; pass the resolved sif_path here.
       apptainer_module   Lmod token, e.g. "apptainer/1.4.1".
       nextflow_module    Lmod token, e.g. "nextflow/25.04.7".
-      slurm              {queue, time, mem, cpus, account?} —
-                         closed-key block (typos refused).
+      slurm              the per-job REQUEST — closed-key, typos refused.
+                         `time` + `mem` required; `cpus` / `ntasks` / `gpus`
+                         / `partition` / `qos` / `account` optional. (This
+                         line used to advertise a `queue` key, which the
+                         closed-key check has never accepted.)
+
+    GPU placement is a STATE, not a requirement
+    -------------------------------------------
+    `gpus: N` renders `--gres=gpu:N` and runs the container with `--nv`.
+    The `--partition` / `--qos` that decide WHERE it lands come from the
+    job's own `slurm` first, then the env's `slurm.gpu` convention, then
+    neither — and neither is allowed. The result is reported as
+    `gpu_placement: {state, partition, partition_source, qos, qos_source}`
+    in both the return and the durable manifest, with `state` one of:
+
+      not_applicable      gpus == 0
+      declared            both resolved
+      partially_declared  one resolved
+      undeclared          a GPU job with neither — the scheduler chooses
+
+    `undeclared` used to be a hard refusal. It is a legitimate submission on
+    a cluster that routes gres requests itself (naming a partition there
+    only narrows the search and slows placement), and a bad one where GPU
+    nodes sit in a dedicated partition — which is why it is stated in the
+    record and noted in the rendered launcher rather than guessed at. Run
+    `cluster_partitions` when you want to name a real pair.
 
     Returns on success:
       {success: True, compute_env, job_id, workflow_dir,
-       files_uploaded: [...], submitted_at, upload_started,
+       files_uploaded: [...], submitted_at, upload_started, gpu_placement,
        manifest_path:
          "job_submissions/<project>/<workflow_name>_<job_id>.submission.json"}
     Returns {"error": "...", ...} on any refusal/failure. If sbatch
@@ -472,9 +502,15 @@ def run_production_pipeline(project_name: str,
       freeze_request_key the frozen env handle (from freeze()); the uniform
                          env reference for BOTH loci.
       workflow_dir       absolute path under a `directories[]` grant.
-      resources          {mem_gb, cpus, time, gpus?} — the uniform per-run
-                         sizing knob. Optional locally (docker --memory/--cpus);
-                         REQUIRED on the cluster (SLURM needs mem + time).
+      resources          {mem_gb, cpus, time, gpus?, partition?, qos?} — the
+                         uniform per-run sizing knob. Optional locally (docker
+                         --memory/--cpus); REQUIRED on the cluster (SLURM needs
+                         mem + time). `partition`/`qos` are cluster-only and
+                         optional there: name a pair from `cluster_partitions`
+                         to place a GPU job yourself, or omit both and take the
+                         env's `slurm.gpu` convention — or, with neither, the
+                         scheduler's own choice. What resolved comes back as
+                         `gpu_placement` (see submit_workflow_job).
       sealed_workflow    OPTIONAL name of a sealed `{name}.workflow.yaml` to
                          check this run's DATA against. The env is pinned by
                          digest; without this NOTHING pins the references, so a

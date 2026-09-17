@@ -484,8 +484,16 @@ def _validate_dir_block(block: object, where: str, path: Path,
 # can omit the whole block. Email is NOT here — it's the env-level `email:` field.
 #   account      (str)  → --account on every job (omit ⇒ none, e.g. many clusters)
 #   partition    (str)  → default --partition for CPU jobs (omit ⇒ scheduler default)
-#   gpu          (map)  → this HPC's GPU convention {partition, qos}; present ⇒ GPU
-#                         jobs supported (a gpus>0 request renders -p/--qos/--gres)
+#   gpu          (map)  → this HPC's standing GPU convention {partition, qos},
+#                         filling either slot a `gpus>0` job left open. FILLABLE,
+#                         NOT REQUIRED: a GPU request used to be REFUSED without
+#                         it, which made the key a prerequisite for GPU work and
+#                         was wrong on a cluster whose scheduler places gres
+#                         requests itself (naming a partition there only narrows
+#                         the search). A job may name its own — discovered with
+#                         `cluster_partitions` — and the job wins its slot. What
+#                         resolved is reported as `gpu_placement`, in one of four
+#                         states, rather than demanded up front.
 #
 # REMOVED 2026-07-20: `max_cores_per_job` / `max_mem_gb_per_job` / `max_time_hours_per_job`
 # and `module_loads`. All four were accepted + validated here but NEVER consumed — the
@@ -791,7 +799,8 @@ def get_slurm_config(env: dict) -> Optional[dict]:
     All keys optional (see _SLURM_ALLOWED_KEYS): account, partition, and the gpu
     convention {partition, qos}. _resolve_slurm_and_email (submit_workflow) merges
     account/partition/gpu into each job's header. An HPC like the cluster (no partition,
-    no account for CPU jobs) legitimately has no block at all."""
+    no account for CPU jobs) legitimately has no block at all — including for GPU
+    work, which reports `gpu_placement: undeclared` rather than being refused."""
     blk = env.get("slurm")
     return blk if isinstance(blk, dict) else None
 

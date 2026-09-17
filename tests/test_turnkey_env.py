@@ -142,7 +142,7 @@ def test_the_env_gpu_convention_reaches_the_header_and_the_exec_line():
     from agent.skills import submit_workflow as SW
     env = {"name": "hpc", "slurm": {"account": "acct", "partition": "general",
                                     "gpu": {"partition": "gpu", "qos": "gpu_access"}}}
-    merged, _ = SW._resolve_slurm_and_email({"time": "01:00:00", "mem": "8G", "gpus": 2}, env)
+    merged, _, _ = SW._resolve_slurm_and_email({"time": "01:00:00", "mem": "8G", "gpus": 2}, env)
     assert merged["partition"] == "gpu"        # NOT the CPU default "general"
     assert merged["qos"] == "gpu_access"
     assert merged["account"] == "acct"
@@ -159,17 +159,65 @@ def test_the_env_gpu_convention_reaches_the_header_and_the_exec_line():
     assert "apptainer exec --nv --cleanenv" in out["main.nf"]
 
 
-def test_a_gpu_job_on_an_env_with_no_gpu_convention_refuses_before_rendering():
-    """An env whose `slurm:` block declares no gpu convention cannot express which
-    partition and qos a GPU job needs, and guessing one is how a job sits in the wrong
-    queue forever. Refusing here is why `submit_workflow_job(gpus>0)` currently returns
-    nothing on an env that has not declared it — the refusal is the honest state, not a
-    bug to route around."""
-    import pytest as _pytest
+def test_a_gpu_job_on_an_env_with_no_gpu_convention_renders_and_states_it():
+    """This test used to assert the OPPOSITE — that the same call raises — and
+    argued the refusal was "the honest state, not a bug to route around."
+
+    The premise was that an env declaring no gpu convention cannot express which
+    partition a GPU job needs, so guessing is how a job sits in the wrong queue
+    forever. What that missed: naming a partition is not always the better guess.
+    On a cluster whose scheduler places gres requests itself, handing it a
+    partition constrains the search and SLOWS placement, so `undeclared` is the
+    correct submission there, not a broken one. A cluster-shaped judgement cannot
+    be a hard requirement, and a config key that is unfillable-but-required is
+    just an unreachable feature.
+
+    Refusing was also never the only honest option — it was the option that
+    reported nothing. Stating which of the four placement states a job is in
+    keeps the fact and drops the veto.
+    """
     from agent.skills import submit_workflow as SW
-    with _pytest.raises(ValueError, match="no slurm.gpu convention"):
-        SW._resolve_slurm_and_email({"time": "01:00:00", "gpus": 1},
-                                    {"name": "hpc", "slurm": {"account": "acct"}})
+    env = {"name": "hpc", "slurm": {"account": "acct"}}
+    merged, _, placement = SW._resolve_slurm_and_email(
+        {"time": "01:00:00", "mem": "8G", "gpus": 1}, env)
+    assert placement["state"] == "undeclared"
+    assert merged["account"] == "acct"          # the rest of the policy still merges
+
+    out = SW.render_workflow_files(
+        tool_name="t", command="tool ${x} > ${y}",
+        inputs={"x": "/d/in"}, outputs={"y": "out.txt"},
+        apptainer_sif="/w/t.sif", apptainer_module="apptainer/1.5.0",
+        nextflow_module="nextflow/24.04.2",
+        slurm={"time": "01:00:00", "mem": "8G", "gpus": 1},
+        workflow_name="w", env=env)
+    launcher = out["launcher.sh"]
+    assert "#SBATCH --gres=gpu:1" in launcher
+    assert "#SBATCH --partition" not in launcher
+    assert "#SBATCH --qos" not in launcher
+    # The device still gets bound — --nv is gated on gpus, not on placement.
+    assert "apptainer exec --nv --cleanenv" in out["main.nf"]
+    # And the state travels with the render, so the caller's record can carry it.
+    assert out["gpu_placement"]["state"] == "undeclared"
+
+
+def test_a_discovered_partition_reaches_the_header_without_touching_the_config():
+    """`cluster_partitions` reads a real partition/qos off the live cluster; this
+    is the path that lets the caller USE one. Nothing is declared on the env."""
+    from agent.skills import submit_workflow as SW
+    out = SW.render_workflow_files(
+        tool_name="t", command="tool ${x} > ${y}",
+        inputs={"x": "/d/in"}, outputs={"y": "out.txt"},
+        apptainer_sif="/w/t.sif", apptainer_module="apptainer/1.5.0",
+        nextflow_module="nextflow/24.04.2",
+        slurm={"time": "01:00:00", "mem": "8G", "gpus": 1,
+               "partition": "l40-gpu", "qos": "gpu_access"},
+        workflow_name="w", env={"name": "hpc", "type": "ssh"})
+    assert "#SBATCH --partition=l40-gpu" in out["launcher.sh"]
+    assert "#SBATCH --qos=gpu_access" in out["launcher.sh"]
+    assert out["gpu_placement"] == {
+        "gpus": 1, "state": "declared",
+        "partition": "l40-gpu", "partition_source": "job",
+        "qos": "gpu_access", "qos_source": "job"}
 
 
 def test_gres_and_nv_agree_about_whether_this_is_a_gpu_job():
