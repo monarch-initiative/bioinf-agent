@@ -243,20 +243,38 @@ The two operations share the same render+sbatch machinery (via `submit_workflow.
 
 A single user-authored YAML at the WORKSPACE root (never in the checkout — it describes a compute world that outlives any clone, and it holds real hostnames and usernames). `compute_access.default_access_path()` is the one answer to where it lives; the config menu writes there and every reader looks there. Two top-level sections:
 
-- **`compute_envs[]`** — one block per environment (laptop, hpc_cluster, …). Each has `type: ssh|local`, ssh `host`/`user`, and optional Phase-2 target blocks: `agent_scratch_target` (sandbox), `agent_common_data_target` (shared reference data), `container_upload_target` (.sif zone), `agent_reports_target` (the record, mirrored up from local — `upload`+`download`, never `exec`), `slurm` (closed-key block: `queue_default`, `account`, etc.), `data_transfer` (closed-key block picking the wire protocol: `scp_head_node` (default) or `globus` — when globus, the nested `globus` block carries `local_endpoint_id` + `remote_endpoint_id` + display names), and — for ssh+apptainer envs — `apptainer_module` / `nextflow_module` (the Lmod names a cluster production run loads; a local docker env declares neither). A **local** env is at zone-parity with the cluster: it declares the same scratch/common_data/container zones with local paths, which is what lets a production run be the same kind of thing on either locus.
+- **`compute_envs[]`** — one block per environment (laptop, hpc_cluster, …). Each has `type: ssh|local`, ssh `host`/`user`, and optional Phase-2 target blocks: `agent_scratch_target` (sandbox), `agent_common_data_target` (shared reference data), `container_upload_target` (.sif zone), `agent_reports_target` (the record, mirrored up from local — `upload`+`download`, never `exec`), `slurm` (closed-key block — the cluster's SCHEDULER POLICY, merged into every job header by `submit_workflow._resolve_slurm_and_email`: `account`, `partition` (the CPU default), and `gpu: {partition, qos}` (this HPC's GPU convention — **an env that declares none hard-refuses any `gpus>0` request**, since the job would land on a CPU partition and never see a device). Per-job SIZING — `time`/`mem`/`cpus`/`gpus` — is NOT here; it is the caller's `slurm` argument. This line used to name `queue_default` alongside `max_cores_per_job`/`max_mem_gb_per_job`/`max_time_hours_per_job`/`module_loads`: all five were deleted from the schema on 2026-07-20 because they were accepted and validated but **never consumed** — three docs claimed "every submit validates against them" and no submit ever did — so the loader now REJECTS them, and this sentence was advertising keys that would fail the file), `data_transfer` (closed-key block picking the wire protocol: `scp_head_node` (default) or `globus` — when globus, the nested `globus` block carries `local_endpoint_id` + `remote_endpoint_id` + display names), and — for ssh+apptainer envs — `apptainer_module` / `nextflow_module` (the Lmod names a cluster production run loads; a local docker env declares neither). A **local** env is at zone-parity with the cluster: it declares the same scratch/common_data/container zones with local paths, which is what lets a production run be the same kind of thing on either locus.
 - **`projects[]`** — one block per logical project, **FLAT schema**: `compute_envs: [names]` (which envs this project may use — this ALSO carries the implicit scratch/common_data grant) + `directories: [{env, path, permissions, description}]` (the explicit user-territory grants, each dir tagged with the `env` it lives on; permission tokens `file_name_only`, `upload`, `download`, `exec`). The old `compute_env_access[]` wrapper is gone; the loader (`compute_access._normalize_projects`) folds the flat shape into the internal `compute_env_access[]` model every reader expects, so the yaml stays flat and clean while readers are unchanged.
 
 Auth is **discrete**, not a lattice: `upload` ≠ `download` ≠ `exec`. A dir declared `[upload]` does NOT implicitly grant `download`. The primitive table above shows which token each primitive requires; mismatches raise `PermissionDenied` BEFORE any ssh.
 
-### Three transfer auth families (intentionally separate)
+### Five transfer zones, routed by path (intentionally separate)
 
-| Family | Path syntax | Auth chain |
-|--------|-------------|------------|
-| **scratch** | relative `remote_subpath` | project on env + `env.agent_scratch_target.permissions` includes op; path auto-prefixed with `project_name` |
-| **common_data** | relative `remote_subpath` | project on env + `env.agent_common_data_target.permissions` includes op; NO project prefix (shared zone) |
-| **project_path** | absolute `abs_path` | Phase-1 explicit: `project.directories[]` longest-prefix-match contains `abs_path` AND has the right permission token |
+TWO primitives — `upload` / `download` — and the ZONE is decided by where
+`remote_abs_path` falls on that env, in this order (`transfer._classify_zone_and_authorize`).
+Every path is ABSOLUTE. The four env-implicit zones are granted by the env block itself;
+only `project_path` consults the project's `directories[]`.
 
-scratch is for per-run staging; common_data is for reference data + staged container images; project_path is for the user's real project layout. Each family is a separate primitive (so the agent can't accidentally mix authority).
+| Zone | Under | Auth chain |
+|------|-------|------------|
+| **scratch** | `env.agent_scratch_target.path` | env-implicit + `permissions` includes op; **path must be under `<scratch>/<project_name>/`** — the one zone with project isolation |
+| **common_data** | `env.agent_common_data_target.path` | env-implicit + `permissions` includes op; NO project prefix. **Reference data only** |
+| **container_upload** | `env.container_upload_target.path` | env-implicit + `permissions` includes op; NO project prefix (a `.sif` name is content-addressed by image digest, so collisions are impossible). Deliberately NOT common_data, per [[project-container-artifacts-routing]] |
+| **reports** | `env.agent_reports_target.path` | env-implicit + `permissions` includes op; NO project prefix (a report is named for the ARTIFACT, not the session that sealed it — prefixing would file one record under N names). The record mirrored beside the `.sif` it describes, so a colleague with cluster access can read what an artifact IS without reaching the machine that built it. `upload`+`download`, never `exec` |
+| **project_path** | anywhere else | explicit: `project.directories[]` longest-prefix-match contains the path AND carries the right permission token |
+
+A path matching no zone is refused with `PermissionDenied` — and because `_ad_hoc`
+carries an empty `directories[]`, that is exactly what bounds it to the env-implicit zones.
+
+This table said **three** families, in `remote_subpath` (relative) syntax, with "each family
+is a separate primitive" — all three statements describing the SIX zone-specific primitives
+that were collapsed into `upload`/`download` long before. It also routed container images to
+common_data, which the routing memo forbids. The cost was not cosmetic: **`reports` was
+declared, schema-validated, menu-offered and given an accessor while no router branch read
+it**, so every path under a configured `agent_reports_target` fell through to `project_path`
+and was refused — a zone you could configure but not reach. Same "gate present, absent in
+effect" shape the slurm caps were deleted for. Fixed 2026-09-17; `tests/integration/honesty/L14_compute_env_safety/test_transfer_surface.py`
+pins each zone, including that an UNDECLARED reports target still falls through unchanged.
 
 ### Wire protocol — scp_head_node vs globus
 
@@ -327,7 +345,7 @@ The suite tells you the code does what it says. Neither of these does that; they
 | **outcomes dashboard** | what can the code EMIT, and has it ever run? | AST sweep → `docs/outcomes_ledger.json` + real coverage | `docs/outcomes_dashboard.html` |
 | **intent grid** | what can a user MEAN, and does it reach that? | live-probed → `docs/intent_corpus.json` | `docs/intent_grid.html` |
 
-**A map of ANSWERS cannot show a QUESTION with no answer.** An intent that reaches no terminal isn't a dark cell — it isn't a cell. And a terminal can be **green with the wrong tool in it**: `resolve('cellranger')` emits a clean, fully-tagged `proven` install_call for a CRAN *spreadsheet-range parser*. Every terminal behaved perfectly; nothing is broken except the meaning. No amount of terminal coverage finds that. **Nor does a table of tool names** — one was tried on 2026-08-06 and removed the same day (see the ruling in `tests/live/test_intent_corpus.py`): the resolver surfaces the entry's own words as a FACT, and judging whether they describe the tool you meant is the ride's call, because the ride is the reader with the world knowledge to make it.
+**A map of ANSWERS cannot show a QUESTION with no answer.** An intent that reaches no terminal isn't a dark cell — it isn't a cell. And a terminal can be **green with the wrong tool in it**: `resolve('cellranger')` picks a CRAN *spreadsheet-range parser*; `resolve('dorado')` picks an *astronomy* package on PyPI. Every terminal behaves perfectly; nothing is broken except the meaning, and no amount of terminal coverage finds that. **Nor does a table of tool names** — one was tried on 2026-08-06 and removed the same day (see the ruling in `tests/live/test_intent_corpus.py`). What the resolver owes is the FACT, and it PAYS it: re-measured 2026-09-16, both picks carry a `SAME NAME, DIFFERENT PROJECTS` block naming every github repo that owns the name exactly — `10XGenomics/cellranger`, `nanoporetech/dorado (875★) "Oxford Nanopore's Basecaller"` — each with the `github_repo=` to re-run with, and the `install_call` itself is commented with it. (This paragraph claimed the install_call was "clean, fully-tagged" long after it stopped being one, so the example argued for a defect that had been fixed.) Judging whether the entry's own words describe the tool you meant remains the ride's call, because the ride is the reader with the world knowledge to make it.
 
     python scripts/extract_outcomes.py && python scripts/measure_terminal_coverage.py   # output side
     pytest -m live && python scripts/build_intent_corpus.py && python scripts/render_intent_grid.py   # input side

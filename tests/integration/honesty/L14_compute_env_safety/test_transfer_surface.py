@@ -41,6 +41,7 @@ def _make_access(tmp_path: Path, *,
                  scratch_path: str = "",
                  common_path: str = "",
                  container_path: str = "",
+                 reports_path: str = "",
                  project_dirs: list[dict] | None = None) -> Path:
     """Write a projects_access.yaml stub for tests. The compute env is
     `type: local` so the primitives do shutil.copy + no ssh."""
@@ -67,6 +68,15 @@ def _make_access(tmp_path: Path, *,
             "permissions": ["file_name_only", "upload", "download"],
         },
     }
+    # Declared only on request: the zone is optional, and leaving it out is
+    # what lets a test prove the UNDECLARED case still falls through to
+    # project_path rather than being silently swallowed.
+    if reports_path:
+        Path(reports_path).mkdir(parents=True, exist_ok=True)
+        env_block["agent_reports_target"] = {
+            "path":        reports_path,
+            "permissions": ["file_name_only", "upload", "download"],
+        }
 
     project_block = {
         "name":         "demo_project",
@@ -225,6 +235,63 @@ class TestZoneRouting:
             access_path=str(access_path))
         assert "error" not in out, out
         assert out["zone"] == "container_upload"
+
+    @pytest.mark.integration
+    def test_reports_zone_routes_correctly(self, tmp_path):
+        # A record file under agent_reports_target.path → reports zone.
+        # Env-implicit grant, no project prefix: a report is named for the
+        # ARTIFACT, so prefixing by project would file one record under N
+        # names. This is the regression guard for a zone that was declared,
+        # schema-validated, menu-offered and given an accessor while NO
+        # router branch read it — every path under it fell through to
+        # project_path and was refused.
+        access_path = _make_access(tmp_path,
+                                   reports_path=str(tmp_path / "records"))
+        src = _src_file(tmp_path, "demo.RUN.html", b"<html>the record</html>")
+        remote = str(tmp_path / "records" / "demo.RUN.html")
+        out = transfer.upload(
+            project_name="demo_project",
+            compute_env_name="fakehpc",
+            local_path=str(src),
+            remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" not in out, out
+        assert out["zone"] == "reports"
+
+    @pytest.mark.integration
+    def test_reports_zone_round_trips_back_down(self, tmp_path):
+        # The zone's whole point is that the record is READABLE at the
+        # locus, so `download` must route it too — the router is shared, and
+        # an upload-only mirror would be a write-only record.
+        access_path = _make_access(tmp_path,
+                                   reports_path=str(tmp_path / "records"))
+        remote_dir = tmp_path / "records"
+        remote_dir.mkdir(parents=True, exist_ok=True)
+        (remote_dir / "demo.workflow.yaml").write_text("name: demo\n")
+        out = transfer.download(
+            project_name="demo_project",
+            compute_env_name="fakehpc",
+            remote_abs_path=str(remote_dir / "demo.workflow.yaml"),
+            local_path=str(tmp_path / "fetched.yaml"),
+            access_path=str(access_path))
+        assert "error" not in out, out
+        assert out["zone"] == "reports"
+
+    @pytest.mark.integration
+    def test_undeclared_reports_target_still_falls_through(self, tmp_path):
+        # The branch must be inert when the zone is not declared — an env
+        # that never opted in keeps the exact routing it had before.
+        access_path = _make_access(tmp_path)          # no reports_path
+        src = _src_file(tmp_path)
+        remote = str(tmp_path / "nowhere" / "demo.RUN.html")
+        out = transfer.upload(
+            project_name="demo_project",
+            compute_env_name="fakehpc",
+            local_path=str(src),
+            remote_abs_path=remote,
+            access_path=str(access_path))
+        assert "error" in out
+        assert out["zone"] != "reports" if "zone" in out else True
 
     @pytest.mark.integration
     def test_project_path_zone_directories_match(self, tmp_path):

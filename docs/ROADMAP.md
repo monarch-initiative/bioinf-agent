@@ -92,8 +92,15 @@ consciously waived — scope calls are the user's.
 - `freeze_from_image` refuses a **multi-arch index digest** (correct) but nothing
   resolves the per-arch child digest yet, so an authors' multi-arch image is unusable.
 - `REFUSAL_REASONS` still lacks a *"a human must fetch this"* value for
-  registration-gated tools (the resolver now has world-describing vocabulary for
-  workflows only).
+  registration-gated tools (the resolver has world-describing vocabulary for workflows
+  only). **Waived for v1, 2026-09-16, after re-measuring rather than re-reading.** The
+  case this was filed under — a same-name squatter winning silently — no longer happens:
+  `resolve('cellranger')` and `resolve('dorado')` both emit a `SAME NAME, DIFFERENT
+  PROJECTS` block naming `10XGenomics/cellranger` / `nanoporetech/dorado` with the
+  `github_repo=` to re-run with, and the `install_call` carries it as comments. The
+  resolver states the fact and the ride decides, which is the designed behaviour. A
+  dedicated refusal state would add a second, name-shaped answer to a question already
+  answered by disclosure.
 - The accelerator probe's reach: loader-reachable `libcud*.so` layouts (or a
   *bundled-runtime* state for `accelerator`) — the docker-gated half of
   `tests/test_accelerator_probe_reach.py` fails loudly the moment the probe is widened.

@@ -790,24 +790,69 @@ class GlobusProvider(TransferProvider):
                 f"{(res.stdout or '').strip()[:200]!r}")
         return {"events": payload.get("DATA") or []}
 
+    # Globus sets the TASK's nice_status to PERMISSION_DENIED before it writes
+    # the error EVENT that says which endpoint refused and why. We detect the
+    # status in the poll loop and classify immediately, so the first event-list
+    # read can legitimately come back empty — and an empty history is
+    # indistinguishable here from a cause we cannot decode.
+    #
+    # Measured against a real cluster 2026-09-17: a download whose LOCAL
+    # destination sat outside Globus Connect Personal's Access list — the most
+    # common setup mistake there is, and one the classifier already has a
+    # bucket for (`local_path_not_allowed`) — landed as `unknown` purely
+    # because it asked too early. So the bucket existed, the hint existed, and
+    # the user got the generic fallback anyway.
+    #
+    # Retrying costs nothing on the success path (first read classifies) and is
+    # bounded: the task is already terminal-for-our-purposes, so there is no
+    # race to lose by waiting a few seconds.
+    _CLASSIFY_ATTEMPTS = 3
+    _CLASSIFY_BACKOFF_S = 2.0
+
     def _classify_permission_denied(self, task_id: str,
-                                    *, timeout: int = 30) -> dict:
+                                    *, timeout: int = 30,
+                                    attempts: Optional[int] = None,
+                                    backoff_s: Optional[float] = None) -> dict:
         """Pull the task's event list and classify the root cause of the
         PERMISSION_DENIED into one of four buckets. The event details
         carry an `error.endpoint` field (display name + UUID) and a
         `context[].path` — together they tell us WHICH endpoint refused
         WHICH path, which is what determines the actionable hint.
 
+        Retries the fetch (see the race note above) because the event we need
+        may not be written yet. `attempts`/`backoff_s` exist so tests can pin
+        the timing rather than sleep.
+
         Returns a dict with `classification`, `endpoint`, `endpoint_id`,
         `endpoint_is_local`, `path`, `body`, `operation`. If event-list
         is unavailable for any reason, classification is `'unknown'`
         and the caller surfaces a generic-but-honest hint."""
+        attempts = self._CLASSIFY_ATTEMPTS if attempts is None else attempts
+        backoff_s = (self._CLASSIFY_BACKOFF_S if backoff_s is None
+                     else backoff_s)
+        attempts = max(1, int(attempts))
+        for attempt in range(attempts):
+            evs = self._fetch_task_events(task_id, timeout=timeout)
+            if "error" in evs:
+                # The CLI itself failed — retrying cannot help.
+                return {"classification": "unknown",
+                        "fetch_error": evs["error"]}
+            hit = self._scan_events_for_error(evs["events"])
+            if hit is not None:
+                return hit
+            if attempt < attempts - 1:
+                time.sleep(backoff_s)
+        return {"classification": "unknown",
+                "fetch_error": (
+                    f"no decodable error event in task history after "
+                    f"{attempts} attempt(s) over "
+                    f"~{backoff_s * (attempts - 1):.0f}s")}
+
+    def _scan_events_for_error(self, events: list) -> Optional[dict]:
+        """Find the first decodable error event and classify it, or None if
+        the history holds none yet. Split out of _classify_permission_denied
+        so the fetch can be RETRIED: see the race note there."""
         import json as _json
-        evs = self._fetch_task_events(task_id, timeout=timeout)
-        if "error" in evs:
-            return {"classification": "unknown",
-                    "fetch_error": evs["error"]}
-        events = evs["events"]
         # Walk the events newest-first looking for the first error event
         # we can decode. Globus may emit multiple identical events (one
         # per retry) — first decodable one is enough to classify.
@@ -860,8 +905,7 @@ class GlobusProvider(TransferProvider):
                 "body":           body.strip(),
                 "operation":      operation,
             }
-        return {"classification": "unknown",
-                "fetch_error": "no decodable error event in task history"}
+        return None
 
     def _permission_denied_error(self, task_id: str, task: dict,
                                  *, timeout: int = 30) -> dict:
