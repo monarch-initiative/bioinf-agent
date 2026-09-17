@@ -594,6 +594,25 @@ def seal_workflow(
                        stage="workflow_invariants",
                        violations=violations, violation_count=len(violations))
 
+    # Typed-record gate, re-run at serve (typed-records Seam A). The draft on
+    # disk normally cannot violate this — check_draft refuses the write — but a
+    # hand-edited yaml is adopted in-process, and the clauses the types retired
+    # (I6.absolute_paths, I7.resource_usage_recorded) are gone from the walk
+    # above. Gating HERE, before the I4 self-test, refuses the cheap way (no
+    # container runs spent on a malformed draft) and holds for write=False,
+    # where write_workflow_spec's own model_validate never runs.
+    try:
+        from agent.skills import typed_nouns
+        typed_nouns.check_draft(draft, source=f"seal:{pipeline_id}")
+    except typed_nouns.TypedNounViolation as e:
+        return refused("seal.record_shape_violation", success=False,
+                       stage="typed_record_gate",
+                       error=str(e),
+                       fix="A record already in the draft does not satisfy its typed model. "
+                           "pipeline_steps is not patchable: re-run the offending step "
+                           "(replace_step=N) through its run primitive, or "
+                           "discard_pipeline_draft and rebuild the draft.")
+
     # WHICH FROZEN ENVS THIS RUN TOUCHED — computed BEFORE the I4 gate, because the I4
     # gate's honest "why not" depends on it. A workflow whose steps ran in more than one
     # shipped image CANNOT have a fully self-tested how-to: every command in

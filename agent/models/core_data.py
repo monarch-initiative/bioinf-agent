@@ -1426,24 +1426,56 @@ class InstallStep(BaseModel):
         return self
 
 
+class ValidationRecord(BaseModel):
+    """One output file's validate_output result, filed under the step.
+
+    Produced by OutputValidator (and by validate_output's malformed-entry
+    refusals); keyed in PipelineStep.validation by pipeline_state.validation_key.
+    `passed` is the one load-bearing field — I3 refuses a seal on passed=False
+    and counts coverage on the record's existence — so it is REQUIRED and
+    NON-NULLABLE: a record that cannot say pass/fail is not a validation, and a
+    nullable `passed` would count as I3 coverage while asserting nothing.
+    Everything else is the validator's own observation vocabulary (num_seqs for
+    fasta, top_keys for json, …), which varies by file type by design, hence
+    extra="allow"."""
+    model_config = ConfigDict(extra="allow")
+
+    passed: bool
+
+
 class ResourceUsage(BaseModel):
     """Observed resource consumption of one pipeline_step subprocess.
 
-    Populated by env_manager._run_monitored() — wall time from monotonic clock,
-    peak_rss_mb from psutil polling the process tree (Popen + all descendants),
-    max_cpu_percent likewise. These are observations of a real execution; the
-    agent cannot synthesize them without bypassing the run primitive.
+    Three producers, one shape: env_manager._run_monitored (host psutil),
+    DockerBuilder.run_in_container (GNU time -v in-image, docker-stats
+    fallback), cluster_jobs.cluster_job_resources (sacct). These are
+    observations of a real execution; the agent cannot synthesize them without
+    bypassing the run primitive.
 
-    Invariant I7 refuses to finalize a spec if any rc=0 pipeline_step lacks
-    resource_usage — HPC schedulers downstream of us need honest cost data.
+    rc=0 steps must carry one (PipelineStep._rc0_has_resource_usage — the typed
+    form of I7.resource_usage_recorded); I7.resource_usage_captured stays a walk
+    check because zeros-vs-sampling-limit is a value judgement only the producer
+    context can make.
     """
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     wall_seconds:    float
     peak_rss_mb:     float
-    max_cpu_percent: float = 0.0
-    sample_count:    int   = 0    # how many polls fed the peaks; 0 means monitoring failed
+    max_cpu_percent: float
+    # How many polls fed the peaks; 0 means monitoring failed. Absent on the
+    # sacct path, which accounts rather than samples.
+    sample_count:    Optional[int] = None
     peak_gpu_mb:     Optional[float] = None   # set only when nvidia-smi is available
+    # Authority of the numbers, in THREE states (read via
+    # core_data.resource_usage_authority, never as a bare bool): True = native
+    # locus, False = measured under emulation (wrong by ~2 orders of magnitude),
+    # absent = recorded before authority was captured.
+    i7_authoritative: Optional[bool] = None
+    locus:            Optional[str] = None
+    # sacct provenance (cluster locus only).
+    sacct_job_id: Optional[str] = None
+    sacct_rows:   Optional[list[dict[str, Any]]] = None
+    sacct_error:  Optional[str] = None
 
 
 class StepInput(BaseModel):
@@ -1457,10 +1489,35 @@ class StepInput(BaseModel):
     Tool calls may pass either a string (treated as path-only) or a dict; the
     PipelineStep validator coerces strings to StepInput(path=s).
     """
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     path:       str
     references: list[str] = []
+
+
+def is_path_like(s: Any) -> bool:
+    """Is this string a filesystem path (vs a placeholder or a bare token)?
+
+    The predicate the absolute-paths rule is scoped by: `{INPUT_VCF}` / `$HOME` /
+    `<stdin>` are slots, `samtools` is a token, `out/x.bam` is a path. ONE
+    reading — PipelineStep enforces absoluteness through this at construction
+    (the typed form of the old I6.absolute_paths walk clause)."""
+    if not isinstance(s, str) or not s:
+        return False
+    if s.startswith(("{", "$", "<")):
+        return False   # placeholder
+    if "/" not in s:
+        return False   # bare token, not a path
+    return True
+
+
+def violates_absolute_rule(p: Any) -> bool:
+    """True when a path-like string is RELATIVE — the one reading of the
+    absoluteness rule. PipelineStep._paths_are_absolute enforces it at
+    construction; the run primitives call it PRE-FLIGHT on caller-supplied
+    inputs, so a bad path refuses before the command executes instead of
+    crashing record construction after the work is already done."""
+    return is_path_like(p) and not p.startswith("/")
 
 
 class PipelineStep(BaseModel):
@@ -1475,51 +1532,109 @@ class PipelineStep(BaseModel):
         None means validate_output was never called for this step's outputs.
 
     A pipeline can only claim PipelineStatus.fully_validated if every step
-    has validation_status="passed" — exited 0 alone is not enough."""
-    model_config = ConfigDict(extra="allow")
+    has validation_status="passed" — exited 0 alone is not enough.
+
+    extra="forbid" + every producer key DECLARED (typed-records Seam A): the
+    five producers (run_pipeline_step / run_step_in_container / run_in_env /
+    run_step_on_cluster success+failure) construct through this model, the
+    draft funnel enforces it on write, and seal re-validates via WorkflowSpec.
+    Two walk clauses are absorbed here and deleted from the walk:
+    I6.absolute_paths (_paths_are_absolute) and I7.resource_usage_recorded
+    (_rc0_has_resource_usage)."""
+    model_config = ConfigDict(extra="forbid")
 
     step:              int
     tool:              str
     subcommand:        Optional[str] = None
     purpose:           Optional[str] = None
     command:           str
-    status:            Literal["validated", "failed", "skipped"] = "validated"
+    # Two states, not three: "skipped" was in this Literal while the validator
+    # below overwrites status from returncode unconditionally, so no record
+    # could ever hold it — dead vocabulary advertising an unreachable state.
+    status:            Literal["validated", "failed"] = "validated"
     validation_status: Optional[Literal["passed", "failed"]] = None
-    returncode:        Optional[int] = None
+    # REQUIRED: every producer observes an exit code (env_manager returns -1
+    # even when the spawn itself failed; the cluster failure recorder states -1
+    # explicitly). An absent rc used to fall through to the "validated" status
+    # default — a fabricating default for the one field that decides whether
+    # I3/I7 examine the step at all.
+    returncode:        int
 
     @model_validator(mode="after")
     def _derive_status_from_returncode(self) -> "PipelineStep":
-        if self.returncode is not None:
-            self.status = "validated" if self.returncode == 0 else "failed"
+        self.status = "validated" if self.returncode == 0 else "failed"
         return self
 
-    inputs:            list[StepInput] = []   # files consumed (with optional script-references)
-    outputs:           list[str] = []         # filenames produced
-    depends_on:        list[int] = []         # step numbers this step depends on (1-based); derived at finalize from input/output overlap if absent
+    inputs:            list[StepInput] = []   # files consumed (with optional script-references); deliberately [] on the cluster failure recorder — a step that never ran is not an I8 graph node (it records attempted_inputs instead)
+    # Filenames produced, as DECLARED by the caller (run_in_env's channel).
+    # None, not `= []`: the old empty-list default stamped itself into every
+    # sealed spec while the truth lived in detected_outputs — a permissive
+    # default doesn't catch drift, it authors it.
+    outputs:           Optional[list[str]] = None
+    # Step numbers this step depends on (1-based). None until finalize derives
+    # it from input/output overlap; [] after derivation means "derived: none".
+    depends_on:        Optional[list[int]] = None
     runtime_seconds:   Optional[float] = None
+    # Legacy: no producer writes this today; declared so pre-Seam-A records
+    # (which carry it as null) still parse under extra="forbid".
     output_size_bytes: Optional[int] = None
-    validation:        Optional[Any] = None
-    resource_usage:    Optional[ResourceUsage] = None   # I7 — observed wall/RSS/CPU from psutil monitor
+    # Per-output validate_output results, keyed by pipeline_state.validation_key
+    # (resolved path — basenames collide across a fan-out). Written out-of-band
+    # by add_validation, after the step lands.
+    validation:        Optional[dict[str, ValidationRecord]] = None
+    resource_usage:    Optional[ResourceUsage] = None   # I7 — observed wall/RSS/CPU
+
+    @model_validator(mode="after")
+    def _rc0_has_resource_usage(self) -> "PipelineStep":
+        """The typed form of I7.resource_usage_recorded: a step that exited 0
+        must carry the runtime monitor's observation. Downstream HPC users size
+        jobs from these numbers; absence would make the cost data fabricable.
+        (Whether the VALUES are a real observation — zeros, sacct_error — stays
+        a walk check: I7.resource_usage_captured.)"""
+        if self.returncode == 0 and self.resource_usage is None:
+            raise ValueError(
+                "a pipeline_step with returncode=0 must record resource_usage — "
+                "the runtime monitor observes it on every run primitive "
+                "(run_pipeline_step / run_step_in_container / run_step_on_cluster)")
+        return self
+
+    @model_validator(mode="after")
+    def _paths_are_absolute(self) -> "PipelineStep":
+        """The typed form of I6.absolute_paths: relative paths in a recorded
+        step are reproducibility landmines (they depend on the agent's CWD).
+        Scoped by is_path_like — placeholders and bare tokens pass through."""
+        offenders = [
+            f"{field}: {p}"
+            for field, values in (
+                ("inputs", [i.path for i in self.inputs]),
+                ("detected_outputs", self.detected_outputs or []),
+                ("remote_outputs", self.remote_outputs or []),
+            )
+            for p in values
+            if violates_absolute_rule(p)
+        ]
+        if offenders:
+            raise ValueError(
+                f"pipeline_step paths must be absolute (relative paths depend on "
+                f"the recorder's CWD and don't reproduce): {offenders}")
+        return self
+
     # L11 universal-lineage anchor: sha256 of each detected_output at
     # production time. Hash is computed by env_manager.hash_outputs after
     # the step completes; seal-time _check_lineage_integrity uses it to
     # verify same-path-same-bytes across consumer steps. Optional for
     # back-compat with older recorded runs.
     output_sha256:     Optional[dict[str, str]] = None
+    # What the runtime's filesystem snapshot OBSERVED the step produce — the
+    # field I3 validates and L11 hashes. Distinct from `outputs` (declared).
+    detected_outputs:  Optional[list[str]] = None
     # Where an OFF-HOST step's outputs live at the locus that produced them.
     # `detected_outputs` above holds the DOWNLOADED LOCAL copies — right for
     # validation, since those are the bytes we hashed and typed — but a second
     # cluster step consumes the remote originals, and no local path can match
-    # one. I8 unions this into the lineage universe and I6 holds it to the same
-    # absoluteness rule, which is exactly why it is DECLARED here rather than
-    # left to ride on `extra="allow"`: a field two invariants read is
-    # load-bearing, and an undeclared one lets a typo'd key vanish into extras
-    # while the suite stays green. (The shipped_binaries lesson, one layer down.)
-    # Optional/None, NOT `= []`: `to_yaml` excludes None, so a local step does
-    # not carry a meaningless empty key. `outputs: list[str] = []` is the
-    # counter-example in this very model — it stamps an empty list into every
-    # sealed spec while the truth lives elsewhere, which is a default AUTHORING
-    # drift rather than catching it.
+    # one. I8 unions this into the lineage universe and the absoluteness rule
+    # above holds it to the same standard. Optional/None, NOT `= []`: a local
+    # step does not carry a meaningless empty key.
     remote_outputs:    Optional[list[str]] = None
     # The scheduler's verdict on the job that produced this step, STATED rather
     # than left to be re-derived from cluster_state + cluster_exit_code. Deriving
@@ -1528,7 +1643,45 @@ class PipelineStep(BaseModel):
     # clean. Absent on a step that did not run off-host.
     cluster_job_verdict: Optional[str] = None
 
-    @field_validator("inputs", mode="before")
+    # validated == shipped (run_step_in_container / run_step_on_cluster):
+    # which image the step really ran in. container_image_digest is OBSERVED
+    # off the daemon at run time, never copied from the EnvCache record;
+    # container_digest_nominal is set only when the two disagreed.
+    ran_in_container:        Optional[bool] = None
+    container_image:         Optional[str] = None
+    container_image_digest:  Optional[str] = None
+    container_digest_nominal: Optional[str] = None
+
+    # Cluster locus (run_step_on_cluster). The failure recorder writes
+    # attempted_inputs INSTEAD of inputs — a step that never consumed anything
+    # must not become an I8 graph node — plus failure_code/failure_error.
+    validation_locus:        Optional[str] = None
+    attempted_inputs:        Optional[list[StepInput]] = None
+    failure_code:            Optional[str] = None
+    failure_error:           Optional[str] = None
+    cluster_job_id:          Optional[str] = None
+    cluster_workflow_dir:    Optional[str] = None
+    cluster_node:            Optional[str] = None
+    cluster_state:           Optional[str] = None
+    cluster_job_state:       Optional[str] = None   # failure-recorder forensics
+    cluster_exit_code:       Optional[str] = None
+    cluster_sacct_reason:    Optional[str] = None
+    cluster_stdout_log:      Optional[str] = None
+    cluster_stderr_log:      Optional[str] = None
+    cluster_sif_sha256:      Optional[str] = None
+    cluster_image_verified:  Optional[bool] = None
+    cluster_image_digest_match: Optional[bool] = None
+    cluster_apptainer_module: Optional[str] = None
+    cluster_nextflow_module:  Optional[str] = None
+    cluster_slurm:            Optional[dict[str, Any]] = None
+    cluster_rendered_files:   Optional[dict[str, str]] = None
+    # submit_workflow.resolve_gpu_placement's dict — {gpus, partition, qos,
+    # state, ...} with state ∈ not_applicable/declared/partially_declared/
+    # undeclared. A dict, not the bare state string: the step records WHAT
+    # resolved, not just which case it was.
+    gpu_placement:            Optional[dict[str, Any]] = None
+
+    @field_validator("inputs", "attempted_inputs", mode="before")
     @classmethod
     def _coerce_inputs(cls, v: Any) -> Any:
         """Accept either ['foo.R', ...] or [{path, references}, ...] from the wire."""
@@ -1540,6 +1693,18 @@ class PipelineStep(BaseModel):
                 out.append({"path": item, "references": []})
             else:
                 out.append(item)
+        return out
+
+    @classmethod
+    def produce(cls, **fields) -> dict:
+        """A validated draft record, for producers. `step` is OMITTED on
+        purpose: the funnel owns numbering (PipelineState._add_to_step_list
+        assigns and re-numbers on smart-replace), so producers cannot know it —
+        it is validated here with a placeholder, stripped from the dump, and
+        re-validated with the real number at the enforced write gate."""
+        rec = cls.model_validate({"step": 0, **fields})
+        out = rec.model_dump(exclude_none=True)
+        out.pop("step")
         return out
 
 

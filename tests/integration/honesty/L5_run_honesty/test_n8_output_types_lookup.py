@@ -46,7 +46,7 @@ def _mock_step(monkeypatch, tmp_path):
 
     def _fake_validate(self, path, etype, env_name=""):
         consumed_etypes.append((Path(path).name, etype))
-        return {"valid": True, "expected_type": etype, "path": path}
+        return {"passed": True, "expected_type": etype, "path": path}
 
     # Use a patched validator that records the etype the lookup chain
     # picked (the thing we actually want to assert on).
@@ -65,7 +65,7 @@ def _mock_step(monkeypatch, tmp_path):
                 "detected_outputs": [str(outp)],
                 "resource_usage": {"wall_seconds": 0.01,
                                    "peak_rss_mb": 1.0,
-                                   "peak_cpu_pct": 1.0},
+                                   "max_cpu_percent": 1.0},
                 "inputs": inputs or [],
             }
         monkeypatch.setattr(type(m._env_mgr), "run_in_env", _fake_run_in_env)

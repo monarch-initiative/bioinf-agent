@@ -27,7 +27,7 @@ docstring is the measured version of that story). This registry is that state:
 `tests/test_typed_noun_registry.py` fails the build when this table and reality drift:
 a walk clause deleted while a claimant noun is still SHADOW, a clause still present
 when every claimant is ENFORCED, an enforcement point that doesn't resolve, or a funnel
-that stopped calling the shadow check — the "gate present in code, absent in effect"
+that stopped calling `check_draft` — the "gate present in code, absent in effect"
 shape this codebase is defined by.
 
 SHADOW MODE NEVER RAISES. It is observation, priced at one model_validate per record
@@ -82,7 +82,14 @@ REGISTRY: dict[str, TypedNoun] = {tn.noun: tn for tn in [
     # walks the seven list nouns below; I6.absolute_paths and I7.resource_usage_recorded
     # read only pipeline_steps. I7.resource_usage_captured (all-zeros / sacct_error) and
     # I6.template_placeholders_declared are value/world checks and are claimed by nobody.
-    _tn(noun="pipeline_steps", model="PipelineStep", layer=LAYER_WORKFLOW, mode=SHADOW,
+    #
+    # pipeline_steps ENFORCED (Seam A): the five producers construct through
+    # PipelineStep.produce, check_draft raises at the write funnel, and seal re-validates
+    # via WorkflowSpec. Its two solely-claimed clauses (I6.absolute_paths,
+    # I7.resource_usage_recorded) were deleted from the walk in the same change; the
+    # I0.shape_sanity claim waits on the other six list nouns.
+    _tn(noun="pipeline_steps", model="PipelineStep", layer=LAYER_WORKFLOW, mode=ENFORCED,
+        enforced_at="agent.skills.typed_nouns.check_draft",
         retires=("I0.shape_sanity", "I6.absolute_paths", "I7.resource_usage_recorded")),
     _tn(noun="install_steps", model="InstallStep", layer=LAYER_WORKFLOW, mode=SHADOW,
         retires=("I0.shape_sanity",)),
@@ -125,8 +132,15 @@ def claimants(violation_id: str) -> list[TypedNoun]:
 
 
 # ---------------------------------------------------------------------------
-# Shadow mode — observation at the write funnel
+# The write-funnel check — raises for ENFORCED nouns, observes for SHADOW ones
 # ---------------------------------------------------------------------------
+
+class TypedNounViolation(ValueError):
+    """A record failed its noun's model at the write funnel while the noun is
+    ENFORCED. The message carries the pydantic error list — the gate is the
+    guide: the producer that built the record gets told exactly which field,
+    at the write, not at seal."""
+
 
 def mismatch_log_path():
     """Where shadow mismatches land. ONE answer, so the flip-gate check ("is the log
@@ -143,13 +157,35 @@ def mismatch_log_path():
 _seen: set[tuple] = set()
 
 
-def shadow_check_draft(draft: dict, *, source: str) -> None:
-    """Validate every SHADOW-mode layer-2 noun present in `draft`, logging mismatches.
+def check_draft(draft: dict, *, source: str) -> None:
+    """The typed-record gate at the draft write funnel.
 
     Called by `PipelineState._write_draft_file` — the one funnel every draft mutation
-    exits through — so no per-mutator wiring exists to forget. NEVER raises: shadow
-    mode is priced observation, and the whole body is fenced so a validator bug or an
-    unwritable log cannot fail the write it is watching."""
+    exits through — so no per-mutator wiring exists to forget. Two modes, from the
+    registry:
+
+    ENFORCED nouns RAISE `TypedNounViolation` (the write never lands). Deliberately
+    outside the fence below: an enforced gate that can be swallowed is a shadow gate
+    with a misleading name.
+
+    SHADOW nouns log mismatches and NEVER raise: shadow mode is priced observation,
+    and its whole body is fenced so a validator bug or an unwritable log cannot fail
+    the write it is watching."""
+    for tn in enforced_nouns(LAYER_WORKFLOW):
+        value = draft.get(tn.noun)
+        if value is None:
+            continue
+        model = _model(tn.model)
+        if tn.element:
+            if not isinstance(value, list):
+                raise TypedNounViolation(
+                    f"{source}: draft field '{tn.noun}' is "
+                    f"{type(value).__name__}, expected a list of {tn.model}")
+            for i, entry in enumerate(value):
+                _enforce_one(model, tn, entry, f"{tn.noun}[{i}]", source)
+        else:
+            _enforce_one(model, tn, value, tn.noun, source)
+
     try:
         for tn in shadow_nouns(LAYER_WORKFLOW):
             value = draft.get(tn.noun)
@@ -169,6 +205,21 @@ def shadow_check_draft(draft: dict, *, source: str) -> None:
                 _validate_one(model, tn, value, tn.noun, source)
     except Exception:
         return
+
+
+def _enforce_one(model, tn: TypedNoun, entry, where: str, source: str) -> None:
+    try:
+        model.model_validate(entry)
+    except Exception as e:
+        raise TypedNounViolation(
+            f"{source}: {where} does not satisfy {tn.model} (noun '{tn.noun}' is "
+            f"ENFORCED). This gate validates the WHOLE draft on every write, so the "
+            f"violating record may be one ALREADY IN THE DRAFT (hand-edited, or written "
+            f"before enforcement) rather than the one this mutation adds — check {where} "
+            f"against the error below. '{tn.noun}' is not patchable: re-run the offending "
+            f"record's producer (replace_step=N overwrites a failed slot), or "
+            f"discard_pipeline_draft and rebuild.\n{e}"
+        ) from e
 
 
 def _model(name: str):

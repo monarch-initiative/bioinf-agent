@@ -57,7 +57,10 @@ def _minimal_passing_spec() -> dict:
             "returncode": 0,
             "inputs": [{"path": in_bam}],
             "detected_outputs": ["/abs/path/out.txt"],
-            "validation": {"out.txt": {"valid": True, "expected_type": "txt"}},
+            # `passed`, the producers' real dialect — this fixture used to write
+            # `valid`, a key no validator has ever emitted; the hardened
+            # ValidationRecord (Seam A) requires `passed` outright.
+            "validation": {"out.txt": {"passed": True, "expected_type": "txt"}},
             "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 10.0,
                                "max_cpu_percent": 20.0},
         }],
@@ -208,14 +211,17 @@ def test_i7_sacct_error_refused():
 
 
 @pytest.mark.integration
-def test_i6_relative_input_path_refused():
+def test_i6_relative_input_path_refused_at_construction():
     """Relative paths are reproducibility landmines (they depend on the
-    agent's CWD at finalize time)."""
-    spec = _minimal_passing_spec()
-    spec["pipeline_steps"][0]["inputs"] = [{"path": "data/relative/in.bam"}]
-    v = _violations(spec, "I6.")
-    assert any(x["invariant"] == "I6.absolute_paths" for x in v), \
-        f"relative input path was not refused: {v}"
+    agent's CWD at finalize time). Typed since Seam A: the record refuses to
+    exist (PipelineStep._paths_are_absolute) instead of the walk refusing to
+    seal it."""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    step = dict(_minimal_passing_spec()["pipeline_steps"][0])
+    step["inputs"] = [{"path": "data/relative/in.bam"}]
+    with pytest.raises(ValidationError, match="absolute"):
+        PipelineStep.model_validate(step)
 
 
 @pytest.mark.integration
@@ -234,15 +240,18 @@ def test_i6_undeclared_template_placeholder_refused():
 
 
 @pytest.mark.integration
-def test_i7_missing_resource_usage_refused():
+def test_i7_missing_resource_usage_refused_at_construction():
     """psutil's wall/peak_rss observations are the proof that the runtime
     actually saw the step run. Without them an agent could synthesize a
-    pipeline_step record without ever running it."""
-    spec = _minimal_passing_spec()
-    spec["pipeline_steps"][0].pop("resource_usage")
-    v = _violations(spec, "I7.")
-    assert any(x["invariant"] == "I7.resource_usage_recorded" for x in v), \
-        f"missing resource_usage was not refused: {v}"
+    pipeline_step record without ever running it. Typed since Seam A: an rc=0
+    step with no resource_usage is unconstructible
+    (PipelineStep._rc0_has_resource_usage)."""
+    from pydantic import ValidationError
+    from agent.models.core_data import PipelineStep
+    step = dict(_minimal_passing_spec()["pipeline_steps"][0])
+    step.pop("resource_usage")
+    with pytest.raises(ValidationError, match="resource_usage"):
+        PipelineStep.model_validate(step)
 
 
 @pytest.mark.integration

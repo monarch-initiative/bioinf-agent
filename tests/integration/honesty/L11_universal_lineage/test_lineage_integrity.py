@@ -41,7 +41,7 @@ def _step(n: int, *, inputs=None, detected_outputs=None,
         "step": n, "tool": "tool", "command": f"tool step {n}",
         "returncode": 0,
         "resource_usage": {"wall_seconds": 0.01, "peak_rss_mb": 1.0,
-                            "peak_cpu_pct": 1.0},
+                            "max_cpu_percent": 1.0},
     }
     if inputs is not None:
         s["inputs"] = inputs

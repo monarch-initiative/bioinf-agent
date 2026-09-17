@@ -252,8 +252,13 @@ class PipelineState:
             if draft is None:
                 return False, default
             result = apply(draft)
-            self._drafts[pipeline_id] = draft
+            # Write BEFORE refreshing the cache: the write is the typed-record
+            # gate (typed_nouns.check_draft raises on an ENFORCED-noun
+            # violation), and a refused mutation must leave NEITHER copy
+            # mutated — cache-then-write kept the bad draft in memory while
+            # disk held the good one.
             self._write_draft_file(pipeline_id, draft)
+            self._drafts[pipeline_id] = draft
         return True, result
 
     def mutate_on_disk(self, pipeline_id: str, apply) -> bool:
@@ -653,12 +658,11 @@ class PipelineState:
 
     def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
         """The atomic write itself — assumes the caller holds the lock."""
-        # SHADOW-mode typed-record check (agent/skills/typed_nouns.py). This is the one
-        # exit every draft mutation takes — _mutate, patch, upsert, all of them — so
-        # hooking here means no per-mutator wiring exists to forget. Logs mismatches to
-        # scratch; never raises, never blocks the write. A noun graduates to a raising
-        # gate only via the registry's ENFORCED mode.
-        typed_nouns.shadow_check_draft(draft, source=f"draft:{pipeline_id}")
+        # Typed-record gate (agent/skills/typed_nouns.py). This is the one exit every
+        # draft mutation takes — _mutate, patch, upsert, all of them — so hooking here
+        # means no per-mutator wiring exists to forget. ENFORCED nouns raise (the write
+        # never lands); SHADOW nouns log mismatches to scratch and never block.
+        typed_nouns.check_draft(draft, source=f"draft:{pipeline_id}")
         path = self._draft_path(pipeline_id)
         with tempfile.NamedTemporaryFile(
             mode="w", dir=str(path.parent),

@@ -163,7 +163,7 @@ class _FakeValidator:
         self.calls: list = []
     def validate(self, path, etype):
         self.calls.append((path, etype))
-        return {"valid": True, "type": etype, "path": path}
+        return {"passed": True, "type": etype, "path": path}
 
 
 class _FakeEnvMgr:
@@ -568,7 +568,10 @@ class TestPhaseFailurePreservation:
         assert step["failure_code"] == "run_cluster.sbatch_failed"
         # The attempted inputs are forensic-only (attempted_inputs), NOT
         # `inputs` — a step that never ran must stay out of the I8 graph.
-        assert "inputs" not in step
+        # Since Seam A the typed record STATES inputs=[] ("consumed nothing")
+        # instead of omitting the key; either way the step contributes no
+        # nodes to the I8 graph, which is the contract.
+        assert not step.get("inputs")
         assert "attempted_inputs" in step
 
     @pytest.mark.integration
@@ -936,7 +939,7 @@ class TestJobDeath:
         assert step["cluster_sacct_reason"] == "TimeLimit"
         # attempted_inputs, NOT inputs — a step that never consumed its inputs
         # must not become a node in the I8 data-flow graph.
-        assert "attempted_inputs" in step and "inputs" not in step
+        assert "attempted_inputs" in step and not step.get("inputs")
 
     @pytest.mark.integration
     def test_the_caller_is_told_where_to_look(self, monkeypatch, tmp_path):
