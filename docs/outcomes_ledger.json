@@ -1515,8 +1515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_permission_denied_error",
-    "where": "agent/skills/transfer_providers.py:1005",
-    "end_line": 1014,
+    "where": "agent/skills/transfer_providers.py:1008",
+    "end_line": 1017,
     "named_in_test": false
   },
   {
@@ -1525,8 +1525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1107",
-    "end_line": 1109,
+    "where": "agent/skills/transfer_providers.py:1110",
+    "end_line": 1112,
     "named_in_test": false
   },
   {
@@ -1655,8 +1655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_exists",
-    "where": "agent/skills/transfer_providers.py:482",
-    "end_line": 486,
+    "where": "agent/skills/transfer_providers.py:483",
+    "end_line": 488,
     "named_in_test": false
   },
   {
@@ -1665,8 +1665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_exists",
-    "where": "agent/skills/transfer_providers.py:488",
-    "end_line": 491,
+    "where": "agent/skills/transfer_providers.py:490",
+    "end_line": 493,
     "named_in_test": false
   },
   {
@@ -1675,8 +1675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_exists",
-    "where": "agent/skills/transfer_providers.py:503",
-    "end_line": 507,
+    "where": "agent/skills/transfer_providers.py:505",
+    "end_line": 509,
     "named_in_test": false
   },
   {
@@ -1685,8 +1685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "remote_exists",
-    "where": "agent/skills/transfer_providers.py:511",
-    "end_line": 514,
+    "where": "agent/skills/transfer_providers.py:513",
+    "end_line": 516,
     "named_in_test": false
   },
   {
@@ -1695,8 +1695,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_transfer",
-    "where": "agent/skills/transfer_providers.py:568",
-    "end_line": 578,
+    "where": "agent/skills/transfer_providers.py:570",
+    "end_line": 580,
     "named_in_test": false
   },
   {
@@ -1705,8 +1705,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_transfer",
-    "where": "agent/skills/transfer_providers.py:580",
-    "end_line": 596,
+    "where": "agent/skills/transfer_providers.py:582",
+    "end_line": 598,
     "named_in_test": false
   },
   {
@@ -1715,8 +1715,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_transfer",
-    "where": "agent/skills/transfer_providers.py:607",
-    "end_line": 615,
+    "where": "agent/skills/transfer_providers.py:609",
+    "end_line": 617,
     "named_in_test": false
   },
   {
@@ -1725,8 +1725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_transfer",
-    "where": "agent/skills/transfer_providers.py:628",
-    "end_line": 634,
+    "where": "agent/skills/transfer_providers.py:630",
+    "end_line": 636,
     "named_in_test": false
   },
   {
@@ -1735,8 +1735,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_submit_transfer",
-    "where": "agent/skills/transfer_providers.py:673",
-    "end_line": 680,
+    "where": "agent/skills/transfer_providers.py:675",
+    "end_line": 683,
     "named_in_test": false
   },
   {
@@ -1745,8 +1745,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_submit_transfer",
-    "where": "agent/skills/transfer_providers.py:682",
-    "end_line": 685,
+    "where": "agent/skills/transfer_providers.py:685",
+    "end_line": 688,
     "named_in_test": false
   },
   {
@@ -1755,8 +1755,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_submit_transfer",
-    "where": "agent/skills/transfer_providers.py:688",
-    "end_line": 694,
+    "where": "agent/skills/transfer_providers.py:691",
+    "end_line": 697,
     "named_in_test": false
   },
   {
@@ -1765,8 +1765,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_submit_transfer",
-    "where": "agent/skills/transfer_providers.py:699",
-    "end_line": 705,
+    "where": "agent/skills/transfer_providers.py:702",
+    "end_line": 708,
     "named_in_test": false
   },
   {
@@ -1775,8 +1775,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_submit_transfer",
-    "where": "agent/skills/transfer_providers.py:708",
-    "end_line": 713,
+    "where": "agent/skills/transfer_providers.py:711",
+    "end_line": 716,
     "named_in_test": false
   },
   {
@@ -1785,8 +1785,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_task_show",
-    "where": "agent/skills/transfer_providers.py:726",
-    "end_line": 728,
+    "where": "agent/skills/transfer_providers.py:729",
+    "end_line": 731,
     "named_in_test": false
   },
   {
@@ -1795,8 +1795,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_task_show",
-    "where": "agent/skills/transfer_providers.py:730",
-    "end_line": 732,
+    "where": "agent/skills/transfer_providers.py:733",
+    "end_line": 735,
     "named_in_test": false
   },
   {
@@ -1805,8 +1805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_task_show",
-    "where": "agent/skills/transfer_providers.py:734",
-    "end_line": 739,
+    "where": "agent/skills/transfer_providers.py:737",
+    "end_line": 742,
     "named_in_test": false
   },
   {
@@ -1815,8 +1815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_task_show",
-    "where": "agent/skills/transfer_providers.py:743",
-    "end_line": 749,
+    "where": "agent/skills/transfer_providers.py:746",
+    "end_line": 752,
     "named_in_test": false
   },
   {
@@ -1825,8 +1825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_fetch_task_events",
-    "where": "agent/skills/transfer_providers.py:775",
-    "end_line": 776,
+    "where": "agent/skills/transfer_providers.py:778",
+    "end_line": 779,
     "named_in_test": false
   },
   {
@@ -1835,8 +1835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_fetch_task_events",
-    "where": "agent/skills/transfer_providers.py:778",
-    "end_line": 780,
+    "where": "agent/skills/transfer_providers.py:781",
+    "end_line": 783,
     "named_in_test": false
   },
   {
@@ -1845,8 +1845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_fetch_task_events",
-    "where": "agent/skills/transfer_providers.py:782",
-    "end_line": 784,
+    "where": "agent/skills/transfer_providers.py:785",
+    "end_line": 787,
     "named_in_test": false
   },
   {
@@ -1855,8 +1855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_fetch_task_events",
-    "where": "agent/skills/transfer_providers.py:788",
-    "end_line": 790,
+    "where": "agent/skills/transfer_providers.py:791",
+    "end_line": 793,
     "named_in_test": false
   },
   {
@@ -1865,8 +1865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_permission_denied_error",
-    "where": "agent/skills/transfer_providers.py:949",
-    "end_line": 962,
+    "where": "agent/skills/transfer_providers.py:952",
+    "end_line": 965,
     "named_in_test": false
   },
   {
@@ -1875,8 +1875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_permission_denied_error",
-    "where": "agent/skills/transfer_providers.py:964",
-    "end_line": 976,
+    "where": "agent/skills/transfer_providers.py:967",
+    "end_line": 979,
     "named_in_test": false
   },
   {
@@ -1885,8 +1885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_permission_denied_error",
-    "where": "agent/skills/transfer_providers.py:978",
-    "end_line": 989,
+    "where": "agent/skills/transfer_providers.py:981",
+    "end_line": 992,
     "named_in_test": false
   },
   {
@@ -1895,8 +1895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_permission_denied_error",
-    "where": "agent/skills/transfer_providers.py:991",
-    "end_line": 1000,
+    "where": "agent/skills/transfer_providers.py:994",
+    "end_line": 1003,
     "named_in_test": false
   },
   {
@@ -2035,8 +2035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1111",
-    "end_line": 1113,
+    "where": "agent/skills/transfer_providers.py:1114",
+    "end_line": 1116,
     "named_in_test": false
   },
   {
@@ -2725,8 +2725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1104",
-    "end_line": 1104,
+    "where": "agent/skills/transfer_providers.py:1107",
+    "end_line": 1107,
     "named_in_test": false
   },
   {
@@ -2755,8 +2755,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_run_transfer",
-    "where": "agent/skills/transfer_providers.py:654",
-    "end_line": 654,
+    "where": "agent/skills/transfer_providers.py:656",
+    "end_line": 656,
     "named_in_test": false
   },
   {
@@ -5305,8 +5305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1066",
-    "end_line": 1068,
+    "where": "agent/skills/transfer_providers.py:1069",
+    "end_line": 1071,
     "named_in_test": false
   },
   {
@@ -5315,8 +5315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1071",
-    "end_line": 1073,
+    "where": "agent/skills/transfer_providers.py:1074",
+    "end_line": 1076,
     "named_in_test": false
   },
   {
@@ -5325,8 +5325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "globus_task_status",
-    "where": "agent/skills/transfer_providers.py:1081",
-    "end_line": 1083,
+    "where": "agent/skills/transfer_providers.py:1084",
+    "end_line": 1086,
     "named_in_test": false
   },
   {

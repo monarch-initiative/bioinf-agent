@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -132,10 +133,13 @@ def check_docker() -> None:
         row("PASS", "docker", f"daemon up (server {out.splitlines()[-1]})")
     elif rc == 127:
         row("FAIL", "docker", "docker CLI not found",
-            "install Docker Desktop (macOS) or docker-ce (Linux); freeze/validate need the daemon")
+            "install Docker Desktop (macOS; or colima for a no-Desktop daemon: "
+            "`brew install colima docker && colima start`) or docker-ce (Linux); "
+            "freeze/validate need the daemon")
     else:
         row("FAIL", "docker", "daemon not reachable",
-            "start Docker Desktop / `systemctl start docker`, then re-run --check")
+            "start Docker Desktop (or `colima start`) / `systemctl start docker`, "
+            "then re-run --check")
 
 
 # --- MCP registration --------------------------------------------------------
@@ -250,6 +254,76 @@ def check_hpc_config() -> None:
     n_envs, n_projects = (out.split() + ["0", "0"])[:2]
     row("PASS", "hpc bridge", f"projects_access.yaml — {n_envs} compute env(s), "
         f"{n_projects} project(s), loads clean (reachability is probed at drive time)")
+    check_bridge_prerequisites(cfg)
+
+
+def _first_json_line(text: str):
+    """The first line that parses as JSON, or None. `run` returns stdout and
+    stderr concatenated, so a stray warning from the child python must not
+    silently turn a declared bridge into zero rows."""
+    for line in text.splitlines():
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def check_bridge_prerequisites(cfg: Path) -> None:
+    """The two manual prerequisites a declared bridge stands on — a live ssh
+    ControlMaster session (the bridge is BatchMode-only and never prompts) and,
+    when an env picks the Globus wire, a globus CLI that answers. Probed only
+    for what the config actually declares; nothing here opens a new connection."""
+    rc, out = run([str(RUNTIME_PY), "-c", (
+        "import json, yaml, pathlib; "
+        f"d = yaml.safe_load(pathlib.Path({str(cfg)!r}).read_text()) or {{}}; "
+        "print(json.dumps([{'name': e.get('name'), 'type': e.get('type'), "
+        "'host': e.get('host'), 'user': e.get('user'), "
+        "'wire': ((e.get('data_transfer') or {}).get('type'))} "
+        "for e in (d.get('compute_envs') or []) if isinstance(e, dict)]))")])
+    envs = _first_json_line(out) if rc == 0 else None
+    if envs is None:
+        row("SKIP", "bridge prereqs",
+            f"could not read the env list to probe (rc={rc}) — the rows below "
+            f"this one were not checked, not passed")
+        return
+
+    for env in envs:
+        if env.get("type") != "ssh" or not env.get("host"):
+            continue
+        target = (f"{env['user']}@{env['host']}" if env.get("user") else env["host"])
+        # `ssh -O check` asks the LOCAL ControlMaster socket whether a session is
+        # alive — it never dials the host, so this is safe to run unattended.
+        rc2, _ = run(["ssh", "-O", "check", target], timeout=10)
+        if rc2 == 0:
+            row("PASS", f"ssh session ({env['name']})",
+                f"live ControlMaster socket for {target}")
+        else:
+            row("SKIP", f"ssh session ({env['name']})",
+                f"no live ControlMaster session for {target} — fine until you "
+                f"drive the bridge; then open `ssh {target}` in a separate "
+                f"terminal and leave it open (needs a ControlMaster block in "
+                f"your ssh config — the bridge rides that socket in BatchMode)")
+
+    if any(env.get("wire") == "globus" for env in envs):
+        # PATH first, then the runtime env's copy — setup installs it there, and
+        # a broken PATH copy must not mask a working runtime one. FAIL (not SKIP)
+        # when neither answers: unlike the ssh session, which is a per-drive
+        # manual step, the CLI is setup's job — its absence means a broken install.
+        exe = shutil.which("globus") or str(RUNTIME_PY.parent / "globus")
+        rc3, _ = run([exe, "version"], timeout=15)
+        if rc3 != 0 and exe != str(RUNTIME_PY.parent / "globus"):
+            exe = str(RUNTIME_PY.parent / "globus")
+            rc3, _ = run([exe, "version"], timeout=15)
+        if rc3 == 0:
+            row("PASS", "globus CLI",
+                f"answers at {exe} (an env declares the Globus wire; login state "
+                f"is checked at first transfer — `globus login` if it refuses)")
+        else:
+            row("FAIL", "globus CLI",
+                "an env declares data_transfer: globus but no globus CLI answers",
+                "re-run ./scripts/setup.sh (installs globus-cli into the runtime "
+                "env), then `globus login`")
 
 
 def main() -> int:

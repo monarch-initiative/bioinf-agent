@@ -115,7 +115,21 @@ say "conda: $CONDA"
 # on a machine that grows a Desktop folder next month.
 POINTER="$PROJECT_ROOT/.bioinf_workspace"
 if [ -n "${BIOINF_WORKSPACE:-}" ]; then
-    say "workspace: $BIOINF_WORKSPACE (from \$BIOINF_WORKSPACE)"
+    # An env-var answer is recorded like an interactive one — otherwise it is
+    # true only for this run, and a server launched from a shell without the
+    # export resolves a DIFFERENT workspace than the one setup just bootstrapped.
+    case "$BIOINF_WORKSPACE" in
+        "$PROJECT_ROOT"|"$PROJECT_ROOT"/*)
+            echo "[setup] \$BIOINF_WORKSPACE=$BIOINF_WORKSPACE is inside the checkout." >&2
+            echo "[setup] Artifacts must outlive it — choose a path outside this repo." >&2
+            exit 2 ;;
+    esac
+    mkdir -p "$BIOINF_WORKSPACE"
+    printf '%s\n' \
+        "# The bioinf-agent workspace: where every generated artifact lives." \
+        "# Written by scripts/setup.sh. Override with \$BIOINF_WORKSPACE." \
+        "$BIOINF_WORKSPACE" > "$POINTER"
+    say "workspace: $BIOINF_WORKSPACE (from \$BIOINF_WORKSPACE; recorded in .bioinf_workspace)"
 elif [ -f "$POINTER" ]; then
     say "workspace: $(grep -v '^#' "$POINTER" | grep -v '^$' | head -1) (from .bioinf_workspace)"
 else
@@ -186,7 +200,9 @@ fi
 
 # --- 3. editable install -----------------------------------------------------
 say "installing bioinf-agent (editable) into the runtime env..."
-"$RUNTIME_PY" -m pip install -q -e "$PROJECT_ROOT[dev]"
+# [hpc] carries globus-cli so the Globus wire works out of the box; the only
+# step left to the user is `globus login` (interactive OAuth, not ours to run).
+"$RUNTIME_PY" -m pip install -q -e "$PROJECT_ROOT[dev,hpc]"
 say "installed: $("$RUNTIME_PY" -c 'import fastmcp; print("fastmcp", fastmcp.__version__)')"
 
 # --- 4. core toolkit + test data --------------------------------------------

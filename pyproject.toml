@@ -56,6 +56,10 @@ dependencies = [
 # the outcomes dashboard's `exercised` overlay. Without it that documented command
 # aborts on the env setup.sh builds.
 dev = ["pytest>=8.0", "pytest-xdist>=3.5", "coverage>=7.0"]
+# The Globus wire (transfer_providers shells out to `globus`). Installed by
+# setup.sh so the CLI is present before the first transfer needs it; the one
+# thing it cannot prepackage is `globus login` — an interactive OAuth consent.
+hpc = ["globus-cli>=3.30"]
 
 [project.urls]
 Homepage = "https://github.com/monarch-initiative/bioinf-agent"

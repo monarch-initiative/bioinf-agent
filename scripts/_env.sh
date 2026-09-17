@@ -23,6 +23,13 @@ BIOINF_RUNTIME="$BIOINF_ROOT/.conda_runtime"
 BIOINF_RUNTIME_PY="$BIOINF_RUNTIME/bin/python"
 BIOINF_PRIVATE_CONDA="$BIOINF_ROOT/.miniforge/condabin/conda"
 
+# conda's "a newer version of conda exists" banner tells the user to update BASE
+# conda — the one thing this repo's setup story keeps them away from, and never
+# relevant here: every env is created by a pinned conda against pinned specs.
+# Suppressed for every caller that sources this file (setup, the server and its
+# child conda runs). A user who wants the notice back can export "true".
+export CONDA_NOTIFY_OUTDATED_CONDA="${CONDA_NOTIFY_OUTDATED_CONDA:-false}"
+
 # The repo-local private copy wins over $CONDA_EXE and PATH: a clone that installed
 # its own miniforge built its runtime env and every envs/bioinf_* with it, and the
 # launcher puts it on PATH for the server and its children anyway.
