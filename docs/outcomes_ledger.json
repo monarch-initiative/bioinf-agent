@@ -1415,8 +1415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:1001",
-    "end_line": 1001,
+    "where": "agent/skills/transfer.py:1040",
+    "end_line": 1040,
     "named_in_test": false
   },
   {
@@ -1425,8 +1425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1020",
-    "end_line": 1025,
+    "where": "agent/skills/transfer.py:1059",
+    "end_line": 1064,
     "named_in_test": false
   },
   {
@@ -1435,8 +1435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1053",
-    "end_line": 1057,
+    "where": "agent/skills/transfer.py:1092",
+    "end_line": 1096,
     "named_in_test": false
   },
   {
@@ -1445,8 +1445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1069",
-    "end_line": 1073,
+    "where": "agent/skills/transfer.py:1108",
+    "end_line": 1112,
     "named_in_test": false
   },
   {
@@ -1455,8 +1455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:867",
-    "end_line": 868,
+    "where": "agent/skills/transfer.py:906",
+    "end_line": 907,
     "named_in_test": false
   },
   {
@@ -1465,8 +1465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:892",
-    "end_line": 893,
+    "where": "agent/skills/transfer.py:931",
+    "end_line": 932,
     "named_in_test": false
   },
   {
@@ -1475,8 +1475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:925",
-    "end_line": 925,
+    "where": "agent/skills/transfer.py:964",
+    "end_line": 964,
     "named_in_test": false
   },
   {
@@ -2665,8 +2665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1032",
-    "end_line": 1047,
+    "where": "agent/skills/transfer.py:1071",
+    "end_line": 1086,
     "named_in_test": false
   },
   {
@@ -2675,8 +2675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_local_mode",
-    "where": "agent/skills/transfer.py:1080",
-    "end_line": 1095,
+    "where": "agent/skills/transfer.py:1119",
+    "end_line": 1134,
     "named_in_test": false
   },
   {
@@ -2685,8 +2685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:945",
-    "end_line": 961,
+    "where": "agent/skills/transfer.py:984",
+    "end_line": 1000,
     "named_in_test": false
   },
   {
@@ -5190,43 +5190,13 @@
     "named_in_test": true
   },
   {
-    "code": "transfer.unsupported_env_type",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:813",
-    "end_line": 815,
-    "named_in_test": false
-  },
-  {
-    "code": "transfer.remote_exists_local",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:855",
-    "end_line": 860,
-    "named_in_test": false
-  },
-  {
-    "code": "transfer.remote_exists",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:873",
-    "end_line": 878,
-    "named_in_test": false
-  },
-  {
     "code": "transfer.validation_error",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:965",
-    "end_line": 966,
+    "where": "agent/skills/transfer.py:1004",
+    "end_line": 1005,
     "named_in_test": false
   },
   {
@@ -5235,8 +5205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:970",
-    "end_line": 972,
+    "where": "agent/skills/transfer.py:1009",
+    "end_line": 1011,
     "named_in_test": false
   },
   {
@@ -5245,8 +5215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:976",
-    "end_line": 978,
+    "where": "agent/skills/transfer.py:1015",
+    "end_line": 1017,
     "named_in_test": false
   },
   {
@@ -5255,8 +5225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:988",
-    "end_line": 989,
+    "where": "agent/skills/transfer.py:1027",
+    "end_line": 1028,
     "named_in_test": false
   },
   {
@@ -5265,8 +5235,38 @@
     "source": "helper",
     "tagged": true,
     "func": "_do_transfer",
-    "where": "agent/skills/transfer.py:996",
-    "end_line": 997,
+    "where": "agent/skills/transfer.py:1035",
+    "end_line": 1036,
+    "named_in_test": false
+  },
+  {
+    "code": "transfer.unsupported_env_type",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:852",
+    "end_line": 854,
+    "named_in_test": false
+  },
+  {
+    "code": "transfer.remote_exists_local",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:894",
+    "end_line": 899,
+    "named_in_test": false
+  },
+  {
+    "code": "transfer.remote_exists",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_do_transfer",
+    "where": "agent/skills/transfer.py:912",
+    "end_line": 917,
     "named_in_test": false
   },
   {

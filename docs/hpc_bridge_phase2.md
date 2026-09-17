@@ -7,7 +7,7 @@ In particular, the six zone-specific transfer primitives proposed here
 …) were collapsed into TWO unified primitives — `transfer.upload` /
 `transfer.download` — that auto-route authorization by which zone the
 absolute remote path falls in (scratch / common_data / container_upload
-/ project_path). Likewise `submit_cluster_job` shipped as the split
+/ reports / project_path). Likewise `submit_cluster_job` shipped as the split
 pair `submit_workflow_job` (production) + `run_step_on_cluster`
 (validation/seal). **For the current contract, read the "HPC bridge —
 Phase 2" section of CLAUDE.md, not this file.** This doc is retained
