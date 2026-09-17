@@ -133,7 +133,7 @@ def spawned(monkeypatch, tmp_path):
     import agent.mcp_server as ms
     rec: dict = {}
 
-    def _stub_start(command, *, env_name="", job_id="", working_dir=""):
+    def _stub_start(command, *, env_name="", job_id="", working_dir="", tool=""):
         rec["command"], rec["job_id"] = command, job_id
         return {"job_id": job_id, "log_path": str(tmp_path / f"{job_id}.log"),
                 "state": "running", "pid": 4242}

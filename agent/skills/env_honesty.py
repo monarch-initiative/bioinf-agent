@@ -178,6 +178,40 @@ def _strip_plumbing(ev: str) -> str:
     return out.strip()
 
 
+def _bare_invocation(ev: str, tool: str) -> bool:
+    """True when the tool IS invoked as a segment's command word and EVERY such
+    invocation is bare — nothing follows it in its own segment except output
+    redirects and their capture files. A bare invocation answers with its
+    banner/usage (or exits non-zero), which proves exactly what `--help` proves;
+    the redirect that captures that banner is plumbing, not work, and must not
+    promote the probe to 'functional' (CS19).
+
+    The command word of each `;`/`|`/`&` segment comes from
+    `core_data.default_step_tool` — the SAME reading the run primitives use to
+    name a step — so `time bwa > /tmp/h.txt` and `env FOO=1 bwa` are still seen
+    as invocations of bwa (a wrapper must not hide the bare probe back into
+    'functional'), while a mention inside a grep pattern or a capture path never
+    counts. An INPUT redirect (`tool < data.gz`) is kept as an operand: stdin
+    feeding is work, not banner capture. When no invocation is visible this
+    returns False and the caller's classification is unchanged — declining to
+    see is not a finding, same rule as 'unknown'."""
+    from agent.models.core_data import default_step_tool
+    toks = {t.lower() for t in _tool_tokens(tool)}
+    found = False
+    for seg in re.split(r"[;|&]+", ev):
+        words = seg.split()
+        cmdtok = default_step_tool(seg)             # one of `words`, or ""
+        if not cmdtok or cmdtok.rsplit("/", 1)[-1].lower() not in toks:
+            continue
+        found = True
+        idx = next(i for i, w in enumerate(words) if w.lower() == cmdtok.lower())
+        rest = " ".join(words[idx + 1:])
+        rest = re.sub(r"\d?>>?\s*\S+", " ", rest)   # OUTPUT redirects + capture files
+        if rest.strip():
+            return False                            # a real operand → not bare
+    return found
+
+
 def evidence_depth(evidence: str, tool: str = "") -> str:
     """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
 
@@ -266,6 +300,19 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
             return "functional"
         return "import"
 
+    # -- a BARE invocation: the tool runs at a command position with NO operands beyond
+    #    redirects/capture files. It can only answer with its banner/usage — exactly as
+    #    weak as `--help` — so it must not fall through to 'functional' on the strength
+    #    of its own capture plumbing. Measured on a real freeze (CS19):
+    #    `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q 'Program: bwa' /tmp/…`
+    #    graded 'functional' — the `>` and the /tmp path are the CAPTURE, not work —
+    #    while the samtools row beside it was correctly ⚠ 'version'. The page admits it
+    #    under-reports; this was the over-report, the direction that inflates an
+    #    assurance claim. Decided BEFORE the functional rule, only when the tool token
+    #    is known, and only when an invocation is actually visible at a command
+    #    position — anything else falls through unchanged.
+    if tool and _bare_invocation(ev, tool):
+        return "help"
     # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
     #    a file path operand, or an explicit -i/-o.
     if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:
@@ -327,12 +374,27 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
         # unpiped rc=127 — and a freeze had already registered `proven` on it.
         # Trimming output is a completely reasonable thing to want; `head` is not
         # a cheat, it is a convenience that silently disables the check. So name
-        # the two honest ways to keep it.
+        # the honest ways to keep it — and name the ACTUAL last stage, not a
+        # hardcoded `head`/`grep` templated from someone else's command (CS16).
+        #
+        # The remedy matters as much as the ruling: this used to suggest
+        # "redirect instead: `... > /dev/null`", which is a trap for the exact
+        # class of tool this repo installs — most bioinformatics CLIs print
+        # their banner/usage to STDERR and exit non-zero when bare, so the
+        # advice produced a second failure whose message then blamed the image.
+        # The capture-to-file idiom is the one that survives both: the redirect
+        # order `> file 2>&1` is load-bearing (`2>&1 > file` duplicates stderr
+        # to the terminal FIRST and leaves the file empty).
+        _last_stage = (_top_level(ex).rsplit("|", 1)[-1].strip().split() or ["?"])[0]
         return (f"evidence {ev!r} pipes into another command, and a pipeline exits with "
-                f"its LAST stage's status — so the recorded `passed` reports `head`/`grep`, "
-                f"not the tool. It would pass in an image without the tool at all. "
-                f"Either drop the pipe (redirect instead: `... > /dev/null`) or make the "
-                f"pipeline honest: `set -o pipefail; ...`")
+                f"its LAST stage's status — so the recorded `passed` reports "
+                f"`{_last_stage}`, not the tool. It would pass in an image without the "
+                f"tool at all. Two honest shapes: capture then check — "
+                f"`tool ... > /tmp/out.txt 2>&1; grep -q PATTERN /tmp/out.txt` (that "
+                f"redirect ORDER matters: most bioinformatics CLIs print to stderr, and "
+                f"`2>&1 > file` leaves the file empty) — or keep the pipe and make it "
+                f"honest: `set -o pipefail; ...` (note the tool's own exit code then "
+                f"counts, and many tools exit non-zero when run bare)")
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:
@@ -1313,11 +1375,28 @@ def evaluate_build(result: dict) -> BuildContract:
                                "where": f"verifications[{label}]",
                                "message": f"{label}: {shape}"})
         if not ver.get("passed"):
+            # SAY WHAT THE RECORD SAYS (CS16). This message used to end at "the tool
+            # is not provably present/runnable in what we ship" unconditionally —
+            # over a verification record whose own `out` field, four keys away,
+            # held the tool's version banner. bwa RAN; the evidence command's
+            # redirect order was broken. A reader acting on the stated diagnosis
+            # re-checks the image (a dead end); the correct action was in the shell
+            # line. When the run captured output, the refusal now points at the
+            # command and quotes the disproof instead of asserting its opposite.
+            _out = str(ver.get("out") or "").strip()
+            if _out:
+                diag = (f"— but the run CAPTURED OUTPUT, so something executed and "
+                        f"printed. Suspect the evidence COMMAND (redirect order — "
+                        f"`2>&1 > file` leaves the file empty; a grep pattern that "
+                        f"doesn't match; a tool that exits non-zero when bare), not "
+                        f"the image. Captured output begins: {_out[:200]!r}")
+            else:
+                diag = ("and nothing was captured on stdout/stderr — the tool is "
+                        "not provably present/runnable in what we ship.")
             violations.append({"invariant": "VALIDATED_IN_IMAGE.evidence_passed",
                                "where": f"verifications[{label}]",
                                "message": f"{label}: evidence {ver.get('check','')!r} did not pass "
-                                          f"(rc={ver.get('rc')}) in the shipped image — the tool is "
-                                          f"not provably present/runnable in what we ship."})
+                                          f"(rc={ver.get('rc')}) in the shipped image {diag}"})
 
     # -- VALIDATED_IN_IMAGE.discriminates --------------------------------
     # THE SERVE-SIDE HALF of the control experiment. The two producers re-run each

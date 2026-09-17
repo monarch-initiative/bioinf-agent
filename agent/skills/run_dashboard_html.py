@@ -382,6 +382,46 @@ def _usage_status(spec: dict) -> str:
 _USAGE_LABEL = USAGE_LABELS
 
 
+def _seal_outcome_html(spec: dict) -> str:
+    """The seal's own outcome tag — `proven (seal.sealed)` vs
+    `degraded (seal.sealed_howto_unproven)` — derived from the sealed record (CS20).
+
+    The seal RETURNS this tag and then it evaporates with the session; the README
+    teaches a reader to look for the word `degraded`, and this page used to answer
+    with an unqualified green headline. The derivation is the seal's own rule read
+    off the spec: `usage_verification.status == "verified"` is the exact branch
+    `seal_workflow` takes between its two literal terminals, and the status comes
+    through the `core_data.usage_status` leaf. The producer's stated `reason` — the
+    sentence carrying the remedy ("add patch_pipeline(usage=…) and re-seal") — is
+    rendered beside the tag instead of being dropped at the seal, which was the
+    other half of the finding.
+
+    `unrecorded` (sealed before the producer stated an outcome) gets NO verdict:
+    absence renders as absence, the same rule as a Layer-1 UNOBSERVED clause."""
+    status = _usage_status(spec)
+    uv = spec.get("usage_verification") or {}
+    reason = _e(uv.get("reason") or "") if isinstance(uv, dict) else ""
+    if status == "verified":
+        # Say ONLY what this derivation knows. This sentence used to add "the run
+        # is validated AND" — a claim derived from nothing here, and false on the
+        # FD3 shape this same page supports (failed iteration steps + a verified
+        # I4): the row printed "the run is validated" one line under a Run status
+        # row saying `failed`. Run validation has its own row; this one speaks
+        # for the how-to.
+        return ('<span class="pill ok">proven</span> the declared how-to executed '
+                'against every trial (I4); the run’s own verdict is the Run '
+                'status row above')
+    if status == "failed":
+        # Unreachable on a spec sealed at HEAD (seal refuses an I4 failure) — but a
+        # record that carries it must not be softened by this renderer.
+        return ('<span class="pill bad">how-to FAILED</span> ' + reason)
+    if status == "not_attempted":
+        return ('<span class="pill na">degraded — how-to unproven</span> '
+                + (reason or 'the I4 self-test did not run; no reason was recorded'))
+    return ('<span class="pill na">unrecorded</span> sealed before the seal stated '
+            'an outcome — absence, not a verdict')
+
+
 def _render_howto(spec: dict) -> str:
     usage = spec.get("usage")
     P = ['<section class="bx">']
@@ -795,6 +835,20 @@ def _render_inputs(spec: dict) -> str:
             if isinstance(content, str) and content.strip():
                 P.append(f'<p class="note"><b>{_e(c.get("name",""))}</b> — recorded '
                          f'contents</p><pre>{_e(content)}</pre>')
+    # WHAT THIS TABLE DELIBERATELY DOES NOT COVER (CS21). The table is headed
+    # "what the validated run consumed", so a reader concludes it is exhaustive —
+    # and then hits a runtime error on the one family it excludes by design:
+    # derived companions of a pinned input (aligner index sidecars — .bwt/.amb/…,
+    # .fai/.dict) are NOT content-pinned, because a workflow that legitimately
+    # regenerates them (`bwa index`, `samtools faidx`) would otherwise read as a
+    # mutation of its own inputs at seal. The how-to may name them as a hard
+    # prerequisite; this line is the disclosure that their absence from these rows
+    # is a design choice, not missing provenance.
+    P.append('<p class="note">Derived companions of a pinned input (e.g. aligner '
+             'index sidecars, <code>.fai</code>/<code>.dict</code>) are deliberately '
+             'not content-pinned here: a run that regenerates them would otherwise '
+             'read as mutating its own inputs. If the how-to names them, rebuild '
+             'them from the pinned file when absent.</p>')
     P.append("</div></section>")
     return "".join(P)
 
@@ -930,6 +984,17 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
                 f'do not run this as-is</span>')
     elif shipped:
         pill = '<span class="pill ok">✓ validated in shipped image</span>'
+        # THE COUNTERWEIGHT (CS20). A seal whose I4 never ran returns
+        # `degraded (seal.sealed_howto_unproven)` — and this page opened with an
+        # unqualified green badge over it, so a reader scanning the headline filed a
+        # degraded artifact as fully proven. The green is EARNED (the run really was
+        # validated in the shipped bytes); it is the absence of a qualifier that lied.
+        # `not_attempted` is the one status the seal tags degraded on: `verified` is
+        # proven, `failed` cannot seal, and `unrecorded` is absence — a spec sealed
+        # before the outcome was stated gets no retroactive verdict, exactly as the
+        # Layer-1 UNOBSERVED rule renders absence as absence.
+        if _usage_status(s) == "not_attempted":
+            pill += ' <span class="pill na">degraded — how-to unproven</span>'
     elif steps:
         pill = '<span class="pill na">not shipped-image verified</span>'
     else:
@@ -943,6 +1008,12 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         # `pipeline_status: failed` — and no renderer read the field. The record knew; the
         # view did not say. One line, and it is the most load-bearing byte on the page.
         ("Run status", _run_status_html(s, failed)),
+        # THE SEAL'S OWN TAG, NEXT TO THE RUN STATUS IT QUALIFIES (CS20). "Run
+        # status: fully_validated" answers "did the recorded steps validate";
+        # this row answers the second question a sealed spec makes a claim
+        # about — was the how-to proven — in the proven/degraded vocabulary the
+        # README teaches and the seal actually returned.
+        ("Seal outcome", _seal_outcome_html(s)),
         ("Steps validated", f"{len(validated)}/{len(steps)}"
                             + (f' <span class="pill bad">{len(failed)} FAILED</span>'
                                if failed else "")),

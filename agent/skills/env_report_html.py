@@ -578,7 +578,8 @@ def render_env_report_html(record: dict) -> str:
     # exists to prevent, in the one artifact the user actually opens. `check_build` is the
     # SAME function `freeze` refuses on, so the page and the gate now answer alike.
     from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
-                                          check_build, evaluate_build, guarantee_verdicts)
+                                          check_build, coverage_disclosure,
+                                          evaluate_build, guarantee_verdicts)
     try:
         _contract = evaluate_build(r)
         _violations = list(check_build(r))
@@ -642,6 +643,33 @@ def render_env_report_html(record: dict) -> str:
         ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
+    # -- THE OUTCOME TAG, IN THE README'S OWN VOCABULARY (CS14/CS62) ---------
+    # freeze returns `proven` or `degraded` and that value evaporates with the session;
+    # the README teaches a reader to scan the deliverable for the word, and until this
+    # row no durable artifact printed it. Derived at render time from the SAME contract
+    # walk the gate runs — `contract.unobserved` is the attribute freeze's two literal
+    # terminals branch on — and the advisory sentence comes from `coverage_disclosure`,
+    # the same function that writes it into the freeze return, so the page and the tag
+    # cannot drift apart. When the contract FAILS, the ⛔ section outranks any outcome
+    # tag and this row renders nothing: proven/degraded is a vocabulary for REGISTERED
+    # envs, and printing either over a violation would soften it.
+    if _contract is not None and not _violations and not _contract_error:
+        if _contract.unobserved:
+            try:
+                _advisory = coverage_disclosure(_contract).get("coverage_advisory", "")
+            except Exception:
+                _advisory = ""
+            head_rows.append(("Outcome",
+                              '<span class="pill na">degraded</span> ' + _e(_advisory)))
+        else:
+            # "APPLICABLE" is load-bearing: the proven branch means no clause was
+            # UNOBSERVED, but NOT_APPLICABLE clauses (accelerator/license/provenance
+            # on an ordinary env) examined nothing by design, and the guarantee
+            # table below renders them n/a. "Every clause examined something" would
+            # be disproved by the table beside it.
+            head_rows.append(("Outcome",
+                              '<span class="pill ok">proven</span> every applicable '
+                              'clause of the honesty contract was checked on this record'))
     # A loud, dedicated header line when any observed version diverges from the request —
     # so the mismatch is unmissable before the reader even scrolls to the Tools table (W5).
     if diverging:
@@ -848,7 +876,26 @@ def render_env_report_html(record: dict) -> str:
                     P.append(f"<pre>{_e(s.install_command.strip())}</pre>")
             P.append("</details>")
         else:
-            P.append(_empty("(no long-tail steps — pure conda env)"))
+            # SAY WHAT THE RECORD SAYS, NOT A CATEGORY (CS61). This branch fired the
+            # literal string "pure conda env" for ANY env with zero baked RUN steps —
+            # including a pip-built one, whose own Mode row (`engine pixi`) and
+            # Install-tier column (`pip (PyPI)`) sat two screens above contradicting
+            # it. A plain pip install leaves no baked command because it rides the
+            # ENGINE's PyPI layer and is pinned by the lock, not by a RUN line — so
+            # derive the sentence from the same `packages[].kind` the tier column
+            # reads, and only claim conda-only when the record shows conda-only.
+            _pypi = [p.get("name", "?") for p in (r.get("packages") or [])
+                     if isinstance(p, dict) and p.get("kind") == "pypi"]
+            if _pypi:
+                P.append(_empty(
+                    f"(no long-tail RUN steps — nothing was installed by a raw baked "
+                    f"command. Not a pure-conda env: {len(_pypi)} pip package(s) "
+                    f"({', '.join(sorted(_pypi)[:6])}{', …' if len(_pypi) > 6 else ''}) "
+                    f"came through the engine's PyPI layer and are pinned by the lock "
+                    f"in the recipe, not by a command shown here.)"))
+            else:
+                P.append(_empty("(no long-tail steps — every install came through "
+                                "the conda layer)"))
         P.append('</div></section>')
 
     # -- SYSTEM (apt) PACKAGES (always shown; foldable when present) --------

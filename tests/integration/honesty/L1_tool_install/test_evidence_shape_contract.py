@@ -111,8 +111,12 @@ from agent.skills.env_honesty import evidence_depth, is_shallow_evidence  # noqa
     ("python -m talos.validate_moi --help", "talos", "help"),
     ("samtools sort -o /tmp/out.bam /data/in.bam", "samtools", "functional"),
     ("seqkit stats /data/reads.fq", "seqkit", "functional"),
-    ("mytool", "mytool", "smoke"),
-    ("", "mytool", "unknown"),          # decline to guess rather than assume 'smoke'
+    # A BARE invocation reads 'help', not 'smoke' (CS19): with no operands the tool
+    # can only answer with its banner/usage — the same claim `--help` proves — and
+    # 'smoke' sits on the RUNS side of the shallow line, so the old reading dressed
+    # a banner probe as a run on the report's summary count.
+    ("mytool", "mytool", "help"),
+    ("", "mytool", "unknown"),          # decline to guess rather than assume a depth
     ("tool --frobnicate", "other", "unknown"),
 ])
 def test_evidence_depth_classifies(ev, tool, expected):
@@ -140,7 +144,20 @@ def test_presence_probes_are_named_presence_not_promoted(ev, tool):
 @pytest.mark.parametrize("ev,tool,expected", [
     ("samtools --version | head -1", "samtools", "version"),
     ("samtools --version 2>&1", "samtools", "version"),
-    ("bwa 2>&1 | head", "bwa", "smoke"),          # a bare invocation + plumbing is a smoke
+    # A bare invocation + plumbing is still a bare invocation (CS19): measured on a
+    # real freeze, `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q … /tmp/…`
+    # graded 'functional' off its own CAPTURE redirect while the samtools row beside
+    # it was correctly ⚠ 'version'. The banner-capture idiom the shape rule itself
+    # recommends must not out-grade the flag it replaces.
+    ("bwa 2>&1 | head", "bwa", "help"),
+    ("set -o pipefail; bwa > /tmp/h.txt 2>&1; grep -q 'Program: bwa' /tmp/h.txt",
+     "bwa", "help"),
+    # a wrapper must not hide the bare probe back into 'functional' (audit) —
+    # the segment's command word comes from the same reading the run
+    # primitives use to name a step, which unwraps time/nice/env
+    ("time bwa > /tmp/h.txt 2>&1", "bwa", "help"),
+    # an INPUT redirect is work (stdin feeding), never banner capture
+    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", "functional"),
     ("mytool --help | cat", "mytool", "help"),
     ("pigz --version > /dev/null", "pigz", "version"),
 ])

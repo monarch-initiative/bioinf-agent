@@ -111,5 +111,10 @@ def list_jobs(include_terminated: bool = True) -> dict:
     """List all jobs ever started on this machine, newest first.
 
     include_terminated: when False, only currently-running jobs are returned.
+
+    Each row carries `returncode` (None while running) and, for a backgrounded
+    MCP tool, `tool` — so refused and succeeded jobs are distinguishable from the
+    ledger alone. A non-zero returncode says the job's wrapper exited non-zero;
+    the tool's real return value (with its outcome tag) is check_job's `result`.
     """
     return {"jobs": _ms._job_manager.list_jobs(include_terminated=include_terminated)}

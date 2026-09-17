@@ -165,7 +165,7 @@ def spawn_detached(tool: str, kwargs: dict, name_from: tuple[str, ...] = ()) -> 
     cmd = " ".join(shlex.quote(x) for x in (
         sys.executable, "-m", "agent.skills.job_runner",
         tool, str(args_path), str(result_path)))
-    job = jm.start(cmd, job_id=job_id)
+    job = jm.start(cmd, job_id=job_id, tool=tool)
     if "error" in job:
         # `stage` is the key every background failure shares — the parent's
         # spawn refusal and the child's four in-runner failure modes all set it,
