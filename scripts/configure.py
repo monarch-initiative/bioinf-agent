@@ -9,7 +9,8 @@ in the HPC bridge works without it, and every path in it is a permission grant.
 Run via `./scripts/config.sh` (which resolves the runtime interpreter); pass
 `--web` for the browser rendering of the same menu (scripts/config_web.py —
 both renderers read the ONE field spec declared in this module: ZONES,
-PERMISSION_GLOSSES, TRANSFER_TYPES, ENV_KEYS). This module drives the menu; it
+PERMISSION_GLOSSES, TRANSFER_TYPES, MODULE_PLACEHOLDERS, the zone-path
+defaults, and the loader's PROJECT_NAME_RE). This module drives the menu; it
 does NOT define what a valid configuration is — every save is checked by
 `agent.skills.compute_access.load_access`, the same loader the agent itself
 uses, so the menu cannot bless a file the agent will later refuse. The
@@ -57,12 +58,10 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
     f"permission tokens changed: {sorted(set(PERMISSIONS) ^ set(PERMISSION_ORDER))} — "
     f"add them to PERMISSION_ORDER so the menu can offer them")
 
-#: What each token GRANTS, one axis each. `upload` and `exec` used to both read
-#: as "write" (upload: write new files / exec: a job may write here) and a real
-#: first-run drive could not tell them apart — so the user accepted defaults
-#: instead of choosing, the opposite of what a least-privilege model wants.
-#: Every renderer (terminal prompt, web page) reads THIS dict; a second spelling
-#: of a permission's meaning is how the two drift.
+#: What each token GRANTS, one axis each — `upload` is about putting bytes,
+#: `exec` about running jobs, and the glosses must keep them distinguishable.
+#: Every renderer (terminal prompt, web page) reads THIS dict; a second
+#: spelling of a permission's meaning is how the two drift.
 PERMISSION_GLOSSES = {
     "file_name_only": "list what is in this dir (names only, one level)",
     "upload":         "put files into this dir",
@@ -73,6 +72,15 @@ PERMISSION_GLOSSES = {
 assert set(PERMISSION_GLOSSES) == set(PERMISSIONS), "every token needs a gloss"
 
 TRANSFER_TYPES = ["scp_head_node", "globus"]
+
+#: Placeholder Lmod module names shown while a cluster's real ones are unknown
+#: (`cluster_module_avail` discovers the real ones once the env is reachable).
+#: One spelling for both renderers.
+MODULE_PLACEHOLDERS = {"apptainer_module": "apptainer/1.5.0",
+                       "nextflow_module": "nextflow/25.04.7"}
+
+#: Least-privilege default for a freshly granted project directory.
+DIR_DEFAULT_PERMS = ["file_name_only"]
 
 #: The env-level zones, in the order the agent uses them. `key` is the schema
 #: key, `default_perms` what the bridge needs to use the zone at all, `required`
@@ -526,6 +534,8 @@ def _globus_search(query: str) -> tuple[list[dict], str]:
     exe = _globus_cli()
     if not exe:
         return [], _GLOBUS_INSTALL_HINT
+    if query.startswith("-"):
+        return [], "search text may not start with '-' (it would read as a CLI option)"
     try:
         p = subprocess.run([exe, "endpoint", "search", query, "-F", "json",
                             "--limit", "10"],
@@ -649,8 +659,7 @@ def edit_env(cfg: Config, env: Optional[dict]) -> None:
             new["email"] = email
         print(DIM("  Lmod modules a cluster production run loads on the compute node."))
         print(DIM("  `cluster_module_avail` finds the exact names once this env is reachable."))
-        for key, placeholder in (("apptainer_module", "apptainer/1.5.0"),
-                                 ("nextflow_module", "nextflow/25.04.7")):
+        for key, placeholder in MODULE_PLACEHOLDERS.items():
             val = ask_optional(key, src.get(key) or placeholder)
             if val:
                 new[key] = val
@@ -662,18 +671,20 @@ def edit_env(cfg: Config, env: Optional[dict]) -> None:
         new[key] = src.get(key)              # carry current so edit_zone sees it
         edit_zone(new, key, purpose, perms, defaults[key], required)
 
-    # CS59: data_transfer picks how bytes cross a NETWORK (head-node scp vs
-    # Globus). A local env moves bytes on this disk, so the question does not
-    # apply — but a hand-written block is carried through untouched rather than
-    # silently dropped on the next edit.
+    # CS59: data_transfer and slurm are NETWORK/scheduler questions. A local env
+    # is asked neither — but hand-written blocks are carried through untouched
+    # rather than silently dropped on the next edit (the loader accepts both on
+    # any env type, and this menu must not be lossier than the loader).
     new["data_transfer"] = src.get("data_transfer")
+    new["slurm"] = src.get("slurm")
     if etype == "ssh":
         edit_transfer(new)
-        new["slurm"] = src.get("slurm")
         edit_slurm(new)
-    elif new["data_transfer"]:
-        print(DIM("  data_transfer: kept as-is (declared in the file; a local env "
-                  "does not use it)"))
+    else:
+        kept = [k for k in ("data_transfer", "slurm") if new.get(k)]
+        if kept:
+            print(DIM(f"  {' + '.join(kept)}: kept as-is (declared in the file; "
+                      f"a local env does not use them)"))
 
     # Project through ENV_KEYS: fixes key order, and drops the `None` a declined
     # zone leaves behind. An absent key and an explicit `null` both disable a
@@ -781,7 +792,7 @@ def edit_directories(cfg: Config, proj: dict) -> None:
                 env = next((e for e in cfg.envs if e.get("name") == env_name), {})
                 path = ask_abs_path("absolute path (e.g. /work/mylab/rnaseq_2026)", "")
                 note_if_missing_locally(env, path)
-                perms = ask_permissions(["file_name_only"])
+                perms = ask_permissions(list(DIR_DEFAULT_PERMS))
                 desc = ask_optional("description", "")
                 block = {"env": env_name, "path": path, "permissions": perms}
                 if desc:
@@ -806,16 +817,16 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
         raise Abort()
 
     while True:
-        name = ask("name (also the auto-prefix in scratch; letters, digits, _ and - only)",
+        name = ask("name (also the auto-prefix in scratch; letters, digits, . _ and - only)",
                    src.get("name", ""))
         if PROJECT_NAME_RE.match(name):
             break
-        bad = sorted({ch for ch in name if not re.match(r"[A-Za-z0-9_-]", ch)})
+        bad = sorted({ch for ch in name if not re.match(r"[A-Za-z0-9._-]", ch)})
         # The name becomes a path component — enforce the rule the prompt states,
         # here where the fix is one keystroke away rather than in a job launcher.
         print(RED(f"  {name!r} breaks the stated rule"
                   + (f" (illegal: {' '.join(map(repr, bad))})" if bad else "")
-                  + " — letters, digits, _ and - only"))
+                  + " — letters, digits, . _ and - only"))
     if creating and name in [p.get("name") for p in cfg.projects]:
         print(RED(f"  a project named {name!r} already exists"))
         raise Abort()
@@ -855,10 +866,11 @@ def projects_unlocked(cfg: Config) -> bool:
     return bool(cfg.projects) or any(e.get("type") == "ssh" for e in cfg.envs)
 
 
+#: One spelling of the D10 lock explanation, read by both renderers.
 PROJECTS_LOCKED_NOTE = (
-    "projects grant the agent access to YOUR directories on a remote machine —\n"
-    "  they unlock once an ssh compute env is declared. Local runs need no grant:\n"
-    "  the agent works inside the local env's own zones.")
+    "Projects grant the agent access to YOUR directories on a remote machine — "
+    "they unlock once an ssh compute env is declared. Local runs need no grant: "
+    "the agent works inside the local env's own zones.")
 
 
 def menu_projects(cfg: Config) -> None:

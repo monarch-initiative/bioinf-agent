@@ -47,7 +47,10 @@ def webmod():
 @pytest.fixture()
 def client(cfgmod, webmod, tmp_path):
     from starlette.testclient import TestClient
-    return TestClient(webmod.create_app(tmp_path / "pa.yaml", cfgmod)), tmp_path / "pa.yaml"
+    # base_url matters: the app answers loopback Hosts only (anti-rebinding).
+    return (TestClient(webmod.create_app(tmp_path / "pa.yaml", cfgmod),
+                       base_url="http://127.0.0.1"),
+            tmp_path / "pa.yaml")
 
 
 def _env(name="cluster"):
@@ -168,6 +171,68 @@ def test_posts_without_the_deliberate_write_header_are_refused(client):
     assert not path.exists()
 
 
+def test_a_non_loopback_host_is_refused_even_with_the_header(cfgmod, webmod, tmp_path):
+    """DNS rebinding makes an attacker's page same-origin with this server, so
+    it CAN attach the header — but its Host still names the attacker's domain,
+    and every route refuses it, reads included (GET /config carries real
+    hostnames and usernames)."""
+    from starlette.testclient import TestClient
+    path = tmp_path / "pa.yaml"
+    c = TestClient(webmod.create_app(path, cfgmod), base_url="http://evil.example")
+    assert c.get("/config").status_code == 403
+    assert c.post("/save", json=_doc(), headers=HDRS).status_code == 403
+    assert not path.exists()
+
+
+def test_a_malformed_body_is_a_400_never_the_empty_document(client):
+    """`null` (and any non-object body) used to coerce to the EMPTY config,
+    which the loader accepts — so a machine caller's garbage was written over
+    the file with a green verdict. Garbage must be refused, not rounded up."""
+    c, path = client
+    assert c.post("/save", json=_doc(), headers=HDRS).json()["ok"] is True
+    before = path.read_text()
+    for body in ("null", "[1, 2]", '"a string"', "{not json"):
+        r = c.post("/save", content=body,
+                   headers={**HDRS, "Content-Type": "application/json"})
+        assert r.status_code == 400, (body, r.status_code)
+    assert path.read_text() == before, "a malformed body reached the file"
+
+
+def test_no_user_string_is_ever_interpolated_into_a_js_string_literal(webmod):
+    """esc() cannot protect the JS-string-in-attribute context: the browser
+    HTML-decodes attribute values BEFORE compiling the handler, so an env name
+    like `x',alert(1),'` executes. Handler arguments must be indices. This pins
+    the pattern that made it exploitable."""
+    assert "'${esc(" not in webmod.PAGE
+
+
+def test_the_save_that_drops_unmanaged_keys_says_so(cfgmod, webmod, tmp_path):
+    """Config.reload announces top-level keys a save will DROP; the terminal
+    reprints that every loop. The web save is the moment the drop happens, so
+    its response must carry the warning too."""
+    from starlette.testclient import TestClient
+    path = tmp_path / "pa.yaml"
+    path.write_text(yaml.safe_dump({**_doc(), "future_section": {"a": 1}}))
+    c = TestClient(webmod.create_app(path, cfgmod), base_url="http://127.0.0.1")
+    r = c.post("/save", json=_doc(), headers=HDRS).json()
+    assert r["ok"] is True
+    assert any("future_section" in m["text"] and "DROP" in m["text"]
+               for m in r["messages"])
+
+
+def test_validate_answers_instead_of_500ing_on_a_non_string_path(client):
+    """A hand-edited YAML can carry `path: 123`; the notes pass must skip it,
+    not take the whole verdict down with a TypeError."""
+    c, _ = client
+    doc = {"compute_envs": [{"name": "laptop", "type": "local",
+                             "agent_scratch_target": {"path": 123,
+                                                      "permissions": ["upload"]}}],
+           "projects": []}
+    r = c.post("/validate", json=doc, headers=HDRS)
+    assert r.status_code == 200
+    assert r.json()["state"] == "invalid"     # the loader refuses it, with words
+
+
 def test_preview_returns_the_exact_bytes_a_save_would_write(client, cfgmod):
     c, path = client
     doc = _doc()
@@ -183,10 +248,11 @@ def test_config_get_reports_state_and_content_of_the_disk_file(cfgmod, webmod, t
     from starlette.testclient import TestClient
     path = tmp_path / "pa.yaml"
     path.write_text(yaml.safe_dump(_doc()))
-    c = TestClient(webmod.create_app(path, cfgmod))
+    c = TestClient(webmod.create_app(path, cfgmod), base_url="http://127.0.0.1")
     j = c.get("/config").json()
     assert j["exists"] is True and j["state"] == "valid"
     assert j["config"]["compute_envs"][0]["name"] == "cluster"
 
-    missing = TestClient(webmod.create_app(tmp_path / "gone.yaml", cfgmod))
+    missing = TestClient(webmod.create_app(tmp_path / "gone.yaml", cfgmod),
+                         base_url="http://127.0.0.1")
     assert missing.get("/config").json()["state"] == "absent"

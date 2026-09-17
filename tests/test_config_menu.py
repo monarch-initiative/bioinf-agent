@@ -309,9 +309,13 @@ def test_project_name_rule_is_enforced_by_the_loader(tmp_path):
 
 
 def test_project_name_rule_still_admits_every_real_name(tmp_path):
-    """`_ad_hoc` (leading underscore, synthesized) and ordinary names pass."""
-    for name in ("_ad_hoc", "chr22_demo", "RNA-seq-run-3", "p1"):
+    """`_ad_hoc` (leading underscore, synthesized) and every path-safe name
+    pass — the charset is exactly the path-safe set, so no name that worked as
+    a scratch prefix is retroactively refused (dots included: `run.1`)."""
+    for name in ("_ad_hoc", "chr22_demo", "RNA-seq-run-3", "p1", "run.1", "v1.2_x"):
         assert compute_access.PROJECT_NAME_RE.match(name), name
+    for name in (".hidden", "-flag", "a b", "x!"):
+        assert not compute_access.PROJECT_NAME_RE.match(name), name
 
 
 def test_scratch_and_common_data_are_required_zones_in_the_spec(cfgmod):
@@ -321,6 +325,25 @@ def test_scratch_and_common_data_are_required_zones_in_the_spec(cfgmod):
     and deliberately not taken in this pass."""
     required = {k for k, _, _, req in cfgmod.ZONES if req}
     assert required == {"agent_scratch_target", "agent_common_data_target"}
+
+
+def test_a_required_zone_is_never_offered_a_decline(cfgmod, monkeypatch):
+    """Behavioral half of the rule above: a required zone consumes exactly
+    path/permissions/description — no 'declare?' question. If the flow regrows
+    the decline prompt, the 3-answer script exhausts and the zone never lands."""
+    answers = iter(["/data/S/", "", ""])       # path, permissions, description
+
+    def scripted_input(*_a):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", scripted_input)
+    env = {"type": "ssh"}
+    cfgmod.edit_zone(env, "agent_scratch_target", "sandbox",
+                     ["upload", "download", "exec"], "/data/S/", True)
+    assert env["agent_scratch_target"]["path"] == "/data/S/"
 
 
 def test_permission_glosses_distinguish_upload_from_exec(cfgmod):
@@ -394,6 +417,37 @@ def test_a_local_env_is_never_asked_the_transfer_question(cfgmod, monkeypatch, c
     cfgmod.edit_env(cfg, None)
     out = capsys.readouterr().out
     assert len(cfg.envs) == 1 and cfg.envs[0]["type"] == "local"
-    assert "data_transfer" not in out.replace("data_transfer: kept", ""), \
-        "a local env was asked about data transfer"
-    assert "slurm" not in cfg.envs[0]
+    # The screen header `rule("data transfer (optional)")` goes through print()
+    # and reaches capsys even though input() prompt strings do not — so this IS
+    # the discriminating assertion, alongside the script-exhaustion one above.
+    assert "data transfer" not in out, "a local env was asked about data transfer"
+
+
+def test_editing_a_local_env_carries_hand_written_slurm_and_transfer_blocks(
+        cfgmod, monkeypatch, capsys):
+    """The menu must not be lossier than the loader: both blocks are legal on a
+    local env in a hand-written file, the menu just never ASKS about them there
+    — so an edit round-trip has to carry them, stated, not silently dropped."""
+    answers = iter(["", ""]        # type (keep local), name (keep)
+                   + ["", "", ""] * 2   # scratch + common_data
+                   + ["n", "n"])        # decline container + reports
+
+    def scripted_input(*_a):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", scripted_input)
+    env = {"name": "laptop", "type": "local",
+           "agent_scratch_target": {"path": "/tmp/S/", "permissions": ["upload"]},
+           "agent_common_data_target": {"path": "/tmp/G/", "permissions": ["upload"]},
+           "data_transfer": {"type": "scp_head_node"},
+           "slurm": {"account": "x"}}
+    cfg = cfgmod.Config(Path("/nonexistent/pa.yaml"))
+    cfg.envs.append(env)
+    cfgmod.edit_env(cfg, env)
+    out = capsys.readouterr().out
+    assert env["data_transfer"] == {"type": "scp_head_node"}
+    assert env["slurm"] == {"account": "x"}
+    assert "kept as-is" in out, "the carry must be stated, not silent"

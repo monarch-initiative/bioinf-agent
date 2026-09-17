@@ -19,12 +19,15 @@ JSON, which makes it a machine surface too:
     POST /preview   → {yaml}                        (the exact bytes a save writes)
     GET  /globus/local-id and /globus/search?q=     (the endpoint picker's data)
 
-POST routes require the header `X-Bioinf-Config: 1`. A browser page from another
-origin cannot attach a custom header without a CORS preflight (which this app
-never answers), so a drive-by page cannot rewrite the file; and it is a reminder
-that the write surface is deliberate. An agent authoring this file
-non-interactively does not need this server at all — write the YAML directly
-(schema: agent/skills/projects_access.yaml.example) and check it with
+Two rings guard the write surface. POST routes require the header
+`X-Bioinf-Config: 1` — a browser page from another origin cannot attach a
+custom header without a CORS preflight (which this app never answers). And
+every request must arrive with a loopback Host (`127.0.0.1`/`localhost`),
+which closes the DNS-rebinding hole the header check alone leaves open: a page
+whose hostname is rebound to 127.0.0.1 becomes same-origin with this server,
+but its Host header still names the attacker's domain. An agent authoring this
+file non-interactively does not need this server at all — write the YAML
+directly (schema: agent/skills/projects_access.yaml.example) and check it with
 `configure.py --validate`.
 
 Deliberately NOT a static file:// page: that would need its own validator in
@@ -65,15 +68,29 @@ def _meta(cfgmod) -> dict[str, Any]:
         # real resolved paths under this machine's workspace.
         "ssh_zone_templates": cfgmod.ssh_defaults("{user}"),
         "local_zone_defaults": cfgmod.local_defaults(),
+        "module_placeholders": cfgmod.MODULE_PLACEHOLDERS,
+        "dir_default_perms": cfgmod.DIR_DEFAULT_PERMS,
+        "projects_locked_note": cfgmod.PROJECTS_LOCKED_NOTE,
         "example_path": "agent/skills/projects_access.yaml.example",
     }
 
 
-def _doc_from(body: Any) -> dict[str, Any]:
+async def _read_doc(request):
+    """The posted document, or an error response. A malformed body must never
+    round up to the EMPTY document — the empty document is loader-valid, so a
+    machine caller's garbage would be written over the file with a green
+    verdict."""
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+    except Exception:
+        return None, JSONResponse({"error": "body must be JSON"}, status_code=400)
     if not isinstance(body, dict):
-        return {"compute_envs": [], "projects": []}
+        return None, JSONResponse(
+            {"error": "body must be a JSON object with compute_envs/projects"},
+            status_code=400)
     return {"compute_envs": body.get("compute_envs") or [],
-            "projects": body.get("projects") or []}
+            "projects": body.get("projects") or []}, None
 
 
 def _existence_notes(cfgmod, doc: dict) -> list[str]:
@@ -87,7 +104,7 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
             continue
         for key, _, _, _ in cfgmod.ZONES:
             p = (env.get(key) or {}).get("path") if isinstance(env.get(key), dict) else None
-            if p and not Path(p).is_dir():
+            if isinstance(p, str) and p and not Path(p).is_dir():
                 notes.append(f"{env.get('name')}: {key} path {p} does not exist yet "
                              f"(accepted — nothing creates it for you)")
     for proj in doc["projects"]:
@@ -95,7 +112,8 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
             continue
         for d in proj.get("directories") or []:
             if (isinstance(d, dict) and d.get("env") in local_envs
-                    and d.get("path") and not Path(str(d["path"])).is_dir()):
+                    and isinstance(d.get("path"), str) and d["path"]
+                    and not Path(d["path"]).is_dir()):
                 notes.append(f"{proj.get('name')}: directory {d['path']} does not "
                              f"exist yet (accepted — nothing creates it for you)")
     return notes
@@ -103,8 +121,24 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
 
 def create_app(cfg_path: Path, cfgmod):
     from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import HTMLResponse, JSONResponse
     from starlette.routing import Route
+
+    class LoopbackHostOnly(BaseHTTPMiddleware):
+        """Refuse any request whose Host is not loopback. A DNS-rebound page is
+        same-origin with this server and can attach any header it likes — but
+        its Host still names the attacker's domain, and this is where that
+        lie is caught."""
+        async def dispatch(self, request, call_next):
+            host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+            if host not in ("127.0.0.1", "localhost", "::1"):
+                return JSONResponse(
+                    {"error": f"this menu answers loopback requests only "
+                              f"(got Host: {host or '?'})"},
+                    status_code=403)
+            return await call_next(request)
 
     def _guarded(request) -> JSONResponse | None:
         if request.headers.get("x-bioinf-config") != "1":
@@ -125,7 +159,12 @@ def create_app(cfg_path: Path, cfgmod):
             "config": cfg.data,
             "meta": _meta(cfgmod),
         }
-        blob = json.dumps(bootstrap).replace("</", "<\\/")
+        # "</" would end the <script> block from inside a JSON string; "<!--"
+        # can push the HTML parser into escaped-script-data state. Both become
+        # JS-string escapes that decode back to the same characters.
+        blob = (json.dumps(bootstrap)
+                .replace("</", "<\\/")
+                .replace("<!--", "<\\u0021--"))
         return HTMLResponse(PAGE.replace("__BOOTSTRAP__", blob))
 
     async def config_get(request):
@@ -139,7 +178,9 @@ def create_app(cfg_path: Path, cfgmod):
     async def validate(request):
         if (deny := _guarded(request)) is not None:
             return deny
-        doc = _doc_from(await request.json())
+        doc, err_resp = await _read_doc(request)
+        if err_resp is not None:
+            return err_resp
         cfg = cfgmod.Config(cfg_path, notify=lambda k, t: None)
         cfg.data = doc
         err = cfg.validate()
@@ -150,10 +191,16 @@ def create_app(cfg_path: Path, cfgmod):
     async def save(request):
         if (deny := _guarded(request)) is not None:
             return deny
-        doc = _doc_from(await request.json())
+        doc, err_resp = await _read_doc(request)
+        if err_resp is not None:
+            return err_resp
         messages: list[dict[str, str]] = []
         cfg = cfgmod.Config(cfg_path,
                             notify=lambda k, t: messages.append({"kind": k, "text": t}))
+        if cfg.load_error:
+            # The terminal reprints this every loop; the save that actually
+            # drops the unmanaged keys must say so too, not just the page load.
+            messages.append({"kind": "note", "text": cfg.load_error})
         cfg.data = doc
         cfg.dirty = True
         ok = cfg.save()
@@ -163,7 +210,9 @@ def create_app(cfg_path: Path, cfgmod):
     async def preview(request):
         if (deny := _guarded(request)) is not None:
             return deny
-        doc = _doc_from(await request.json())
+        doc, err_resp = await _read_doc(request)
+        if err_resp is not None:
+            return err_resp
         return JSONResponse({"yaml": cfgmod.HEADER + "\n" + cfgmod.dump(doc)})
 
     async def globus_local_id(request):
@@ -188,7 +237,7 @@ def create_app(cfg_path: Path, cfgmod):
         Route("/preview", preview, methods=["POST"]),
         Route("/globus/local-id", globus_local_id),
         Route("/globus/search", globus_search),
-    ])
+    ], middleware=[Middleware(LoopbackHostOnly)])
 
 
 def serve(cfg_path: Path, cfgmod, port: int = 0) -> int:
@@ -480,11 +529,11 @@ function renderEnv(env, ei) {
     <div class="row">
       <div class="field"><label>apptainer module (Lmod)</label>
         <input type="text" value="${esc(env.apptainer_module || '')}"
-               placeholder="apptainer/1.5.0"
+               placeholder="${esc(META.module_placeholders.apptainer_module)}"
                onchange="setEnv(${ei}, 'apptainer_module', this.value)"></div>
       <div class="field"><label>nextflow module (Lmod)</label>
         <input type="text" value="${esc(env.nextflow_module || '')}"
-               placeholder="nextflow/25.04.7"
+               placeholder="${esc(META.module_placeholders.nextflow_module)}"
                onchange="setEnv(${ei}, 'nextflow_module', this.value)"></div>
     </div>`;
   const zones = META.zones.map(z => renderZone(ei, z)).join('');
@@ -588,18 +637,15 @@ function renderProjects() {
     return `<h2>Projects</h2>
       <div class="lockbox"><div class="glyph">⬦</div>
         <p><b>Locked — needs a remote env.</b></p>
-        <p style="margin-top:8px">Projects grant the agent access to YOUR
-        directories on a remote machine. They unlock once an ssh compute env is
-        declared. Local runs need no grant: the agent works inside the local
-        env's own zones.</p></div>`;
+        <p style="margin-top:8px">${esc(META.projects_locked_note)}</p></div>`;
   }
   const namePat = new RegExp(META.project_name_pattern);
   const cards = (doc.projects || []).map((p, pi) => {
     const badName = !namePat.test(p.name || '');
-    const envChecks = (doc.compute_envs || []).map(e => `
+    const envChecks = (doc.compute_envs || []).map((e, eidx) => `
       <label style="font-size:12px;cursor:pointer;margin-right:14px">
         <input type="checkbox" ${(p.compute_envs || []).includes(e.name) ? 'checked' : ''}
-               onchange="toggleProjEnv(${pi}, '${esc(e.name)}', this.checked)">
+               onchange="toggleProjEnv(${pi}, ${eidx}, this.checked)">
         ${esc(e.name)} <span style="color:var(--dim)">(${e.type})</span></label>`).join('');
     const dirs = (p.directories || []).map((d, di) => `
       <div class="zone">
@@ -631,7 +677,7 @@ function renderProjects() {
                  onchange="setProj(${pi}, 'name', this.value)">
         <span style="flex:1"></span>
         <button class="danger" onclick="removeProj(${pi})">remove</button></h3>
-      ${badName ? '<div class="errline">name must be letters, digits, _ and - only — it becomes a path component (the scratch prefix)</div>' : ''}
+      ${badName ? '<div class="errline">name must be letters, digits, . _ and - only (no leading . or -) — it becomes a path component (the scratch prefix)</div>' : ''}
       <div class="row"><div class="field"><label>description</label>
         <input type="text" value="${esc(p.description || '')}" size="50"
                onchange="setProj(${pi}, 'description', this.value)"></div></div>
@@ -696,7 +742,7 @@ function addEnv(type) {
     const path = (defaults[z.key] || '').replace('{user}', 'USER');
     env[z.key] = {path, permissions: [...z.default_perms], description: z.gloss};
   }
-  if (type === 'ssh') { env.host = ''; env.job_manager = 'slurm'; }
+  if (type === 'ssh') { env.host = ''; env.job_manager = META.job_managers[0]; }
   doc.compute_envs.push(env);
   markDirty(); render();
 }
@@ -797,7 +843,11 @@ function setProj(pi, key, val) {
   if (val) doc.projects[pi][key] = val; else delete doc.projects[pi][key];
   markDirty(); render();
 }
-function toggleProjEnv(pi, name, on) {
+// Handler args are INDICES, never user strings: a name interpolated into a JS
+// string literal inside an on* attribute survives esc() (the browser decodes
+// entities before compiling the handler), which is an XSS door.
+function toggleProjEnv(pi, eidx, on) {
+  const name = doc.compute_envs[eidx].name;
   const p = doc.projects[pi];
   p.compute_envs = (p.compute_envs || []).filter(e => e !== name);
   if (on) p.compute_envs.push(name);
@@ -811,7 +861,7 @@ function addDir(pi) {
   const p = doc.projects[pi];
   if (!(p.compute_envs || []).length) { alert('pick a compute env for this project first'); return; }
   (p.directories ||= []).push({env: p.compute_envs[0], path: '',
-                               permissions: ['file_name_only']});
+                               permissions: [...META.dir_default_perms]});
   markDirty(); render();
 }
 function removeDir(pi, di) { doc.projects[pi].directories.splice(di, 1); markDirty(); render(); }
@@ -871,17 +921,22 @@ async function doValidate() {
   renderVerdict();
 }
 function renderVerdict() {
+  const state = lastVerdict.state || BOOT.state;
   const pill = document.getElementById('statepill');
-  pill.textContent = lastVerdict.state || BOOT.state;
-  pill.className = 'pill ' + (lastVerdict.state || BOOT.state);
+  pill.textContent = state;
+  pill.className = 'pill ' + state;
   const v = document.getElementById('verdict');
   const notes = (lastVerdict.notes || []).map(n => `<div class="note">note: ${esc(n)}</div>`).join('');
-  if (lastVerdict.state === 'invalid')
-    v.innerHTML = `<span class="errline">${esc(lastVerdict.message)}</span>` + notes;
-  else if (BOOT.load_error && !dirty)
-    v.innerHTML = `<div class="note">${esc(BOOT.load_error)}</div>` + notes;
+  // The unmanaged-keys warning must survive edits: the save is the moment the
+  // keys are actually dropped, so hiding it once dirty would hide it exactly
+  // when it matters.
+  const loadErr = BOOT.load_error ? `<div class="note">${esc(BOOT.load_error)}</div>` : '';
+  if (state === 'absent')
+    v.innerHTML = `<div class="note">no configuration file yet — nothing validated; SAVE writes the first one</div>` + loadErr + notes;
+  else if (state === 'invalid')
+    v.innerHTML = `<span class="errline">${esc(lastVerdict.message)}</span>` + loadErr + notes;
   else
-    v.innerHTML = `<span class="okline">the agent's loader accepts this configuration</span>` + notes;
+    v.innerHTML = `<span class="okline">the agent's loader accepts this configuration</span>` + loadErr + notes;
 }
 async function saveCfg() {
   const r = await fetch('/save', {method: 'POST', headers: HDRS,
