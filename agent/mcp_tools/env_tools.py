@@ -26,6 +26,7 @@ from typing import Annotated, Any, Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
 # so test monkeypatching on mcp_server reaches us.
+from agent.models.core_data import default_step_tool
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.skills.backgroundable import backgroundable
@@ -1588,7 +1589,7 @@ def run_install_command(
             )
     if pipeline_id:
         step_data = {
-            "tool":               tool or (command.split() or [""])[0],
+            "tool":               tool or default_step_tool(command),
             "subcommand":         subcommand or None,
             "purpose":            purpose or None,
             "command":            command,
