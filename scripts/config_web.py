@@ -108,8 +108,8 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
         for key, _, _, _ in cfgmod.ZONES:
             p = (env.get(key) or {}).get("path") if isinstance(env.get(key), dict) else None
             if isinstance(p, str) and p and not Path(p).is_dir():
-                notes.append(f"{env.get('name')}: {key} path {p} does not exist yet "
-                             f"(accepted — nothing creates it for you)")
+                notes.append(f"{env.get('name') or '(unnamed env)'}: {key} path {p} "
+                             f"does not exist yet (accepted — nothing creates it for you)")
     for proj in doc["projects"]:
         if not isinstance(proj, dict):
             continue
@@ -353,7 +353,7 @@ nav .item.active {
 nav .item.locked { color: #44545c; }
 nav .item.locked::after { content: " ⬦"; }
 
-main { flex: 1; overflow-y: auto; padding: 26px 34px 120px; }
+main { flex: 1; overflow-y: auto; padding: 26px 34px 190px; }
 h2 { font-size: 13px; letter-spacing: .3em; text-transform: uppercase;
      color: var(--acc); margin: 4px 0 14px; }
 .hint { color: var(--dim); font-size: 13px; margin-bottom: 18px; max-width: 72ch; }
@@ -441,8 +441,11 @@ footer {
   padding: 12px 34px; display: flex; align-items: center; gap: 18px;
   backdrop-filter: blur(4px);
 }
-footer .verdict { flex: 1; font-size: 13px; min-width: 0; }
-footer button { line-height: 1.5; text-align: center; }
+/* The verdict never grows the footer past ~4 lines — past that it scrolls
+   internally, so a pile of notes cannot wall off the page content above. */
+footer .verdict { flex: 1; font-size: 13px; min-width: 0; max-height: 84px;
+                  overflow-y: auto; }
+footer button { line-height: 1.5; text-align: center; flex-shrink: 0; }
 .searchrows { margin-top: 6px; }
 .searchrows .srow { padding: 4px 8px; border: 1px solid var(--line);
   border-radius: 2px; margin-bottom: 4px; cursor: pointer; font-size: 12px; }
