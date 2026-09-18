@@ -387,8 +387,10 @@ select {
 .zone .zname { font-size: 12px; letter-spacing: .1em; color: var(--tx);
                text-transform: uppercase; }
 .zone .zgloss { color: var(--dim); font-size: 12px; }
-.req { color: var(--warn); font-size: 10px; letter-spacing: .15em; }
-.opt { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; }
+/* One badge style, two colors: required warns, optional stays dim. The
+   text-transform reset keeps them lowercase even inside uppercased labels. */
+.req { color: var(--warn); font-size: 10px; letter-spacing: .15em; text-transform: none; }
+.opt { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: none; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .chip {
   border: 1px solid var(--line); color: var(--dim); font-size: 11px;
@@ -609,8 +611,10 @@ function renderEnv(env, ei) {
   const zones = META.zones.map(z => renderZone(ei, z)).join('');
   return `<div class="card">
     <h3><span class="tag">${env.type}</span>
-      <input type="text" value="${esc(env.name || '')}" size="18"
-             onchange="renameEnv(${ei}, this.value)">
+      <div class="field">
+        <label>env name <span class="req">required</span></label>
+        <input type="text" value="${esc(env.name || '')}" size="18"
+               onchange="renameEnv(${ei}, this.value)"></div>
       <span style="flex:1"></span>
       <button class="danger" onclick="removeEnv(${ei})">remove</button></h3>
     ${sshFields}${zones}${isSSH ? renderTransfer(ei) : ''}${isSSH ? renderSlurm(ei) : ''}
@@ -731,11 +735,11 @@ function renderProjects() {
               ${(p.compute_envs || []).map(n =>
                 `<option ${d.env === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}
             </select></div>
-          <div class="field"><label>absolute path</label>
+          <div class="field"><label>absolute path <span class="req">required</span></label>
             <input type="text" value="${esc(d.path || '')}" size="44"
                    placeholder="/work/mylab/rnaseq_2026"
                    onchange="setDir(${pi}, ${di}, 'path', this.value)"></div>
-          <div class="field"><label>description</label>
+          <div class="field"><label>description <span class="opt">optional</span></label>
             <input type="text" value="${esc(d.description || '')}"
                    onchange="setDir(${pi}, ${di}, 'description', this.value)"></div>
           <div class="field"><label>permissions</label>
@@ -749,13 +753,16 @@ function renderProjects() {
             <button class="danger" onclick="removeDir(${pi}, ${di})">remove</button></div>
         </div></div>`).join('');
     return `<div class="card">
-      <h3><input type="text" class="${badName ? 'badname' : ''}"
+      <h3><div class="field">
+          <label>project name <span class="req">required</span></label>
+          <input type="text" class="${badName ? 'badname' : ''}"
                  value="${esc(p.name || '')}" size="24"
-                 onchange="setProj(${pi}, 'name', this.value)">
+                 onchange="setProj(${pi}, 'name', this.value)"></div>
         <span style="flex:1"></span>
         <button class="danger" onclick="removeProj(${pi})">remove</button></h3>
       ${badName ? '<div class="errline">name must be letters, digits, . _ and - only (no leading . or -) — it becomes a path component (the scratch prefix)</div>' : ''}
-      <div class="row"><div class="field"><label>description</label>
+      <div class="row"><div class="field">
+        <label>description <span class="opt">optional</span></label>
         <input type="text" value="${esc(p.description || '')}" size="50"
                onchange="setProj(${pi}, 'description', this.value)"></div></div>
       <div class="field"><label>compute envs this project may use</label>

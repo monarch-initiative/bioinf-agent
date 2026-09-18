@@ -227,6 +227,17 @@ def test_the_footer_and_env_buttons_say_what_they_do(webmod):
     assert "toggleZone" not in webmod.PAGE
 
 
+def test_required_and_optional_are_badged_consistently(webmod):
+    """User-reviewed convention: every name/path/description field carries the
+    same badge style — `required` (warn color) or `optional` (dim) — matching
+    the zone headers, so the whole form reads with one visual grammar."""
+    for marker in ('project name <span class="req">required</span>',
+                   'env name <span class="req">required</span>',
+                   'absolute path <span class="req">required</span>'):
+        assert marker in webmod.PAGE, marker
+    assert webmod.PAGE.count('<span class="opt">optional</span>') >= 2  # both descriptions
+
+
 def test_every_write_posts_the_pruned_document_and_the_verdict_names_the_field(webmod):
     """Two page-side seams. (1) validate/save/preview all post outDoc() — the
     pruning that turns a blank optional-zone path into 'undeclared' — so the
