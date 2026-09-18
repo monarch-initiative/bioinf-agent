@@ -63,10 +63,13 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
 #: Every renderer (terminal prompt, web page) reads THIS dict; a second
 #: spelling of a permission's meaning is how the two drift.
 PERMISSION_GLOSSES = {
-    "file_name_only": "list what is in this dir (names only, one level)",
-    "upload":         "put files into this dir",
-    "download":       "fetch files out of this dir",
-    "exec":           "run jobs that use this dir as their working directory",
+    "file_name_only": "list the file names in this dir (one level only — a "
+                      "subdir's contents need their own grant)",
+    "upload":         "put new files into this dir or anywhere under it (never overwrites)",
+    "download":       "fetch files from this dir or anywhere under it back to this machine",
+    "exec":           "run jobs that use this dir as their working directory — "
+                      "outputs land in place; this alone does not let the agent "
+                      "list, push or fetch",
     "none":           "no access (placeholder — a dir with only this is unreachable)",
 }
 assert set(PERMISSION_GLOSSES) == set(PERMISSIONS), "every token needs a gloss"
@@ -96,8 +99,11 @@ ZONES = [
      ["file_name_only", "upload", "download", "exec"], True),
     ("agent_common_data_target", "shared reference data — genomes, public databases",
      ["file_name_only", "upload", "download", "exec"], True),
+    # `download` has no consumer in the staging flow (verification is a remote
+    # checksum) but is granted by default so a staged .sif can be pulled back
+    # when ever needed (user call, menu review 2026-09-18).
     ("container_upload_target", "where .sif container images are staged",
-     ["file_name_only", "upload"], True),
+     ["file_name_only", "upload", "download"], True),
     # No `exec`: reports are read, never run.
     ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
      ["file_name_only", "upload", "download"], True),
