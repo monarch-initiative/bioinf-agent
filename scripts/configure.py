@@ -83,22 +83,24 @@ MODULE_PLACEHOLDERS = {"apptainer_module": "apptainer/1.5.0",
 DIR_DEFAULT_PERMS = ["file_name_only"]
 
 #: The env-level zones, in the order the agent uses them. `key` is the schema
-#: key, `default_perms` what the bridge needs to use the zone at all, `required`
-#: whether the menu insists the zone be declared (scratch + common_data are what
-#: make an env USABLE — the bridge's run/stage primitives refuse without them,
-#: so an env missing either is a config that fails far from where it was typed).
-#: Same four zones the local workspace has — full parity, so a production run is
-#: the same kind of thing on either locus.
+#: key, `default_perms` the tokens the bridge needs to use the zone as intended
+#: (the menu's "defaults" reset writes exactly these), `required` whether the
+#: menu insists the zone be declared. ALL FOUR are required (menu review,
+#: 2026-09-18): scratch + common_data are what the run primitives refuse
+#: without, containers is where every staged .sif lands, and reports is where
+#: the record mirrors — an env missing any of them fails far from where it was
+#: typed. Same four zones the local workspace has — full parity, so a
+#: production run is the same kind of thing on either locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
      ["file_name_only", "upload", "download", "exec"], True),
     ("agent_common_data_target", "shared reference data — genomes, public databases",
      ["file_name_only", "upload", "download", "exec"], True),
     ("container_upload_target", "where .sif container images are staged",
-     ["file_name_only", "upload"], False),
+     ["file_name_only", "upload"], True),
     # No `exec`: reports are read, never run.
     ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
-     ["file_name_only", "upload", "download"], False),
+     ["file_name_only", "upload", "download"], True),
 ]
 
 ZONE_LABELS = {
@@ -417,15 +419,17 @@ def ssh_defaults(user: str) -> dict[str, str]:
 
 
 def local_defaults() -> dict[str, str]:
-    """A local env is at zone-parity with a cluster — same three zones, local
+    """A local env is at zone-parity with a cluster — same four zones, local
     paths — which is what lets a production run be the same kind of thing on
-    either locus. Under the workspace, with every other generated artifact."""
-    base = workspace.scratch_dir("local_env")
+    either locus. Each zone maps to the WORKSPACE zone that already holds that
+    kind of artifact: the old defaults nested all four under scratch/local_env/,
+    which filed reference data, staged images and the record inside the one
+    zone whose contract is 'delete freely'."""
     return {
-        "agent_scratch_target": f"{base}/scratch/",
-        "agent_common_data_target": f"{base}/common_data/",
-        "container_upload_target": f"{base}/containers/",
-        "agent_reports_target": f"{base}/reports/",
+        "agent_scratch_target": f"{workspace.scratch_dir('local_env')}/",
+        "agent_common_data_target": f"{workspace.resources_root()}/",
+        "container_upload_target": f"{workspace.images_dir()}/",
+        "agent_reports_target": f"{workspace.reports_dir()}/",
     }
 
 
@@ -467,9 +471,9 @@ def edit_zone(env: dict, key: str, purpose: str, default_perms: list[str],
     rule(key)
     print(DIM(f"  {purpose}"))
     if required:
-        # scratch + common_data make the env USABLE — the bridge's run/stage
-        # primitives refuse without them, so declining here just moves the
-        # failure to drive time. Not offered as a choice.
+        # A required zone is not offered a decline — declining here just moves
+        # the failure to drive time, where the message is about a job instead
+        # of a config line.
         if current:
             print(f"  current: {current.get('path')}  {current.get('permissions')}")
     elif current:

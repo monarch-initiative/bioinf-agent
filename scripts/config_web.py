@@ -363,11 +363,15 @@ h2 { font-size: 13px; letter-spacing: .3em; text-transform: uppercase;
   padding: 16px 20px; margin-bottom: 16px;
   box-shadow: 0 0 0 1px #00000055, 0 6px 24px #00000066;
 }
-.card h3 { font-size: 14px; color: var(--tx); display: flex; align-items: center;
+.card h3 { font-size: 14px; color: var(--tx); display: flex; align-items: flex-end;
            gap: 10px; margin-bottom: 8px; }
 .tag { font-size: 10px; letter-spacing: .15em; text-transform: uppercase;
        color: var(--acc); border: 1px solid var(--acc2); padding: 0 6px;
        border-radius: 2px; }
+/* In a card header the type tag stands beside the name input: same height,
+   tops and bottoms aligned (the header row aligns to flex-end). */
+.card h3 .tag { display: inline-flex; align-items: center; height: 34px;
+                padding: 0 10px; }
 .row { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field label { font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
@@ -400,6 +404,10 @@ select {
 }
 .chip.on { border-color: var(--acc); color: #06211d; background: var(--acc); }
 .chip:hover { border-color: var(--acc2); }
+.chip.reset { border-style: dashed; color: var(--dim); }
+.chip.reset:hover { color: var(--tx); }
+.leghead { font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+           color: var(--dim); margin: 14px 0 4px; }
 button {
   background: transparent; border: 1px solid var(--acc2); color: var(--acc);
   padding: 7px 18px; font-size: 12px; letter-spacing: .18em;
@@ -577,7 +585,9 @@ function renderZone(ei, z) {
         `<span class="chip ${perms.includes(t) ? 'on' : ''}"
                title="${esc(META.permission_glosses[t])}"
                onclick="togglePerm(${ei}, '${z.key}', '${t}')">${t}</span>`).join('') +
-      `</div></div>
+      `<span class="chip reset" title="reset to the recommended set: ${esc(z.default_perms.join(', '))}"
+             onclick="resetPerms(${ei}, '${z.key}')">defaults ↺</span>
+      </div></div>
     </div></div>`;
 }
 
@@ -692,10 +702,14 @@ function renderSlurm(ei) {
       own slurm settings win over these.</div></div>`;
 }
 
+// Both intro legends render off the same spec the form renders (META.zones /
+// META.permission_glosses), so neither can describe a thing the form doesn't show.
+function permLegendRows() {
+  return META.permission_order.map(t =>
+    `<tr><td>${t}</td><td>${esc(META.permission_glosses[t])}</td></tr>`).join('');
+}
 function renderEnvs() {
   const cards = (doc.compute_envs || []).map((e, i) => renderEnv(e, i)).join('');
-  // The zone list renders off META.zones — the same spec the cards render —
-  // so this intro can never describe zones the form doesn't show.
   const zoneRows = META.zones.map(z =>
     `<tr><td>${z.label}${z.required ? ' *' : ''}</td><td>${esc(z.gloss)}</td></tr>`).join('');
   return `<h2>Compute Environments</h2>
@@ -704,8 +718,11 @@ function renderEnvs() {
     <b>ssh</b> is a remote machine (an HPC cluster / external compute resource).
     Each env declares the same kind of four zones, so data processing happens in
     the same way between compute resources (local, or remote HPC / external
-    compute):</p>
-    <table class="legend" style="margin:-8px 0 18px 16px">${zoneRows}</table>
+    compute).</p>
+    <div class="leghead">the compute env directories (* = required)</div>
+    <table class="legend" style="margin:0 0 4px 16px">${zoneRows}</table>
+    <div class="leghead">the permissions — independent grants, not a ladder</div>
+    <table class="legend" style="margin:0 0 18px 16px">${permLegendRows()}</table>
     ${cards || '<p class="hint">none declared yet</p>'}
     <div class="row">
       <button onclick="addEnv('local')">+ add new local env (this machine)</button>
@@ -750,7 +767,9 @@ function renderProjects() {
             `<span class="chip ${(d.permissions || []).includes(t) ? 'on' : ''}"
                    title="${esc(META.permission_glosses[t])}"
                    onclick="toggleDirPerm(${pi}, ${di}, '${t}')">${t}</span>`).join('') +
-          `</div></div>
+          `<span class="chip reset" title="reset to least privilege: ${esc(META.dir_default_perms.join(', '))}"
+                 onclick="resetDirPerms(${pi}, ${di})">defaults ↺</span>
+          </div></div>
           <div class="field" style="justify-content:flex-end">
             <button class="danger" onclick="removeDir(${pi}, ${di})">remove</button></div>
         </div></div>`).join('');
@@ -778,8 +797,9 @@ function renderProjects() {
   }).join('');
   return `<h2>Projects</h2>
     <p class="hint">A project is a label for a piece of work plus the list of
-    YOUR directories the agent may touch for it. Permissions are independent
-    grants, not a ladder — <code>upload</code> does not imply <code>download</code>.</p>
+    YOUR directories the agent may touch for it.</p>
+    <div class="leghead">the permissions — independent grants, not a ladder</div>
+    <table class="legend" style="margin:0 0 18px 16px">${permLegendRows()}</table>
     ${cards || '<p class="hint">none declared yet</p>'}
     <button onclick="addProj()">+ project</button>`;
 }
@@ -804,8 +824,7 @@ function renderReference() {
     <p class="hint">Independent grants, not a ladder — granting one never implies another.</p>
     <table class="legend">${permRows}</table>
     <h3 style="margin:18px 0 6px;color:var(--tx)">Environment zones</h3>
-    <p class="hint">Every env declares the same zones (* = required — the bridge's
-    run and stage primitives refuse without them).</p>
+    <p class="hint">Every env declares the same four zones (* = required).</p>
     <table class="legend">${zoneRows}</table>
     <h3 style="margin:18px 0 6px;color:var(--tx)">Edit configuration settings without a browser</h3>
     <p class="hint">Two other ways in. Run the terminal menu:
@@ -886,6 +905,15 @@ function togglePerm(ei, key, tok) {
   const blk = zoneBlk(ei, key);
   const i = (blk.permissions || []).indexOf(tok);
   if (i >= 0) blk.permissions.splice(i, 1); else (blk.permissions ||= []).push(tok);
+  markDirty(); render();
+}
+function resetPerms(ei, key) {
+  const z = META.zones.find(x => x.key === key);
+  zoneBlk(ei, key).permissions = [...z.default_perms];
+  markDirty(); render();
+}
+function resetDirPerms(pi, di) {
+  doc.projects[pi].directories[di].permissions = [...META.dir_default_perms];
   markDirty(); render();
 }
 function setTransfer(ei, t) {

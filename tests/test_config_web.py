@@ -227,6 +227,18 @@ def test_the_footer_and_env_buttons_say_what_they_do(webmod):
     assert "toggleZone" not in webmod.PAGE
 
 
+def test_the_intro_legends_and_permission_resets_render_off_the_spec(webmod):
+    """Menu review: the envs intro carries TWO legends (directories, then
+    permissions) and the projects intro reuses the same permissions legend —
+    all rendered from META, one function for the permission rows. Every
+    permissions field also offers a 'defaults ↺' reset to the spec's
+    recommended set."""
+    assert webmod.PAGE.count("permLegendRows()") >= 3   # def-site + envs + projects
+    assert "the compute env directories" in webmod.PAGE
+    assert "resetPerms(" in webmod.PAGE and "resetDirPerms(" in webmod.PAGE
+    assert webmod.PAGE.count("defaults ↺") == 2         # zone + directory chip rows
+
+
 def test_required_and_optional_are_badged_consistently(webmod):
     """User-reviewed convention: every name/path/description field carries the
     same badge style — `required` (warn color) or `optional` (dim) — matching

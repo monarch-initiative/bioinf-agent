@@ -318,13 +318,27 @@ def test_project_name_rule_still_admits_every_real_name(tmp_path):
         assert not compute_access.PROJECT_NAME_RE.match(name), name
 
 
-def test_scratch_and_common_data_are_required_zones_in_the_spec(cfgmod):
-    """The menu (both renderers) must not offer 'skip' for the two zones that
-    make an env usable — the bridge's run/stage primitives refuse without them.
-    Menu-level by design: the loader gate was measured at 153 fixture breaks
-    and deliberately not taken in this pass."""
+def test_all_four_zones_are_required_in_the_spec(cfgmod):
+    """The menu (both renderers) must not offer 'skip' for any zone (menu
+    review, 2026-09-18): scratch + common_data are what the run primitives
+    refuse without, containers is where every staged .sif lands, reports is
+    where the record mirrors. Menu-level by design: the loader gate was
+    measured at 153 fixture breaks and deliberately not taken."""
     required = {k for k, _, _, req in cfgmod.ZONES if req}
-    assert required == {"agent_scratch_target", "agent_common_data_target"}
+    assert required == {k for k, _, _, _ in cfgmod.ZONES}
+
+
+def test_local_zone_defaults_map_to_the_workspace_zones_not_a_scratch_nest(cfgmod):
+    """The old defaults nested all four zones under scratch/local_env/ — which
+    filed reference data, staged images and the record inside the one zone
+    whose contract is 'delete freely'. Each zone now defaults to the workspace
+    zone that already holds that kind of artifact."""
+    from agent.skills import workspace
+    d = cfgmod.local_defaults()
+    assert d["agent_scratch_target"].rstrip("/") == str(workspace.scratch_dir("local_env"))
+    assert d["agent_common_data_target"].rstrip("/") == str(workspace.resources_root())
+    assert d["container_upload_target"].rstrip("/") == str(workspace.images_dir())
+    assert d["agent_reports_target"].rstrip("/") == str(workspace.reports_dir())
 
 
 def test_a_required_zone_is_never_offered_a_decline(cfgmod, monkeypatch):
@@ -401,8 +415,7 @@ def test_a_local_env_is_never_asked_the_transfer_question(cfgmod, monkeypatch, c
     input is exhausted and the env never stages."""
     answers = iter(
         ["local", ""]            # type, name (accept default)
-        + ["", "", ""] * 2       # scratch + common_data: path, permissions, description
-        + ["", "", "", ""] * 2   # container + reports: declare?, path, perms, desc
+        + ["", "", ""] * 4       # all four zones (required): path, permissions, description
     )
 
     def scripted_input(*_a):
@@ -428,8 +441,7 @@ def test_editing_a_local_env_carries_hand_written_slurm_and_transfer_blocks(
     local env in a hand-written file, the menu just never ASKS about them there
     — so an edit round-trip has to carry them, stated, not silently dropped."""
     answers = iter(["", ""]        # type (keep local), name (keep)
-                   + ["", "", ""] * 2   # scratch + common_data
-                   + ["n", "n"])        # decline container + reports
+                   + ["", "", ""] * 4)  # all four zones (required): path, perms, desc
 
     def scripted_input(*_a):
         try:
