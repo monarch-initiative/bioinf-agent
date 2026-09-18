@@ -374,19 +374,18 @@ def test_local_path_existence_note_fires_only_for_local_envs(cfgmod, tmp_path, c
     assert "does not exist" not in capsys.readouterr().out
 
 
-def test_projects_menu_is_locked_until_a_remote_env_exists(cfgmod, tmp_path):
-    """D10: 'project' is an access-grant list for YOUR territory on a shared
-    machine; a purely local setup has nothing to grant, so the concept arrives
-    when it is needed. But a file that already holds projects must stay
-    editable regardless — hiding data would make it unfixable."""
+def test_projects_menu_is_locked_until_any_compute_env_exists(cfgmod, tmp_path):
+    """D10, revised in menu review (2026-09-18): a project must name at least
+    one compute env to run on, so the section unlocks once ANY env exists —
+    local or ssh, since work computes on either. A file that already holds
+    projects must stay editable regardless — hiding data would make it
+    unfixable."""
     cfg = cfgmod.Config(tmp_path / "pa.yaml")
     assert cfgmod.projects_unlocked(cfg) is False
 
     cfg.envs.append({"name": "laptop", "type": "local"})
-    assert cfgmod.projects_unlocked(cfg) is False, "a local env must not unlock"
-
-    cfg.envs.append(_env())
-    assert cfgmod.projects_unlocked(cfg) is True, "an ssh env unlocks"
+    assert cfgmod.projects_unlocked(cfg) is True, \
+        "a local env unlocks — a project can compute there"
 
     cfg2 = cfgmod.Config(tmp_path / "pa2.yaml")
     cfg2.projects.append({"name": "p", "compute_envs": [], "directories": []})

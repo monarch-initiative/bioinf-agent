@@ -864,20 +864,21 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
 
 
 def projects_unlocked(cfg: Config) -> bool:
-    """D10: 'project' does two jobs — a label for your work, and an access-grant
-    list. The grant list exists for one situation: the agent touching YOUR
-    territory on a shared (ssh) machine. A purely local setup runs in the env's
-    own zones (the `_ad_hoc` project), so the concept is deferred until a remote
-    env exists — or until a project already exists in the file, which must stay
-    editable regardless of how it got there."""
-    return bool(cfg.projects) or any(e.get("type") == "ssh" for e in cfg.envs)
+    """D10, revised in menu review (2026-09-18): a project names the compute
+    environments its work runs on — and, on remote machines, the directory
+    grants into the user's territory. With no env declared there is nothing a
+    project could name, so the section unlocks once ANY compute env exists,
+    local or ssh — or when the file already holds projects, which must stay
+    editable regardless of how they got there."""
+    return bool(cfg.projects) or bool(cfg.envs)
 
 
 #: One spelling of the D10 lock explanation, read by both renderers.
 PROJECTS_LOCKED_NOTE = (
-    "Projects grant the agent access to YOUR directories on a remote machine — "
-    "they unlock once an ssh compute env is declared. Local runs need no grant: "
-    "the agent works inside the local env's own zones.")
+    "A project names which compute environments its work runs on — and, for "
+    "remote machines, exactly which of YOUR directories the agent may touch. "
+    "It unlocks once a compute environment (local or ssh) is declared, because "
+    "a project must name at least one env to compute on.")
 
 
 def menu_projects(cfg: Config) -> None:
@@ -1065,7 +1066,7 @@ def main() -> int:
         if unlocked:
             print("  2) projects               add / edit / remove")
         else:
-            print(DIM("  2) projects               (locked — needs a remote env; "
+            print(DIM("  2) projects               (locked — needs a compute env; "
                       "choose it to see why)"))
         print("  3) show                   the full configuration")
         print("  4) test ssh reachability")

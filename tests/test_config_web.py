@@ -91,12 +91,13 @@ def test_the_meta_payload_is_the_field_spec_not_a_copy(cfgmod, client):
 
 def test_the_page_carries_the_spec_and_the_lock(client):
     """The page bootstrap embeds the spec (so the first paint needs no second
-    request) and the D10 lock text is present for the no-remote-env state."""
+    request) and the D10 lock text is present for the no-env state (revised in
+    menu review: ANY compute env unlocks — a project computes on local too)."""
     c, _ = client
     html = c.get("/").text
     assert "agent_scratch_target" in html
     assert "working directory" in html        # CS58: exec's distinguishing gloss
-    assert "Locked — needs a remote env" in html
+    assert "Locked — declare a compute env first" in html
     assert "cdn" not in html.lower() and "https://" not in html.split("</head>")[0], \
         "the page must be self-contained — no external assets"
 

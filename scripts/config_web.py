@@ -506,8 +506,7 @@ function outDoc() {
 }
 
 function projectsUnlocked() {
-  return (doc.projects || []).length > 0 ||
-         (doc.compute_envs || []).some(e => e.type === 'ssh');
+  return (doc.projects || []).length > 0 || (doc.compute_envs || []).length > 0;
 }
 
 // ---------- nav + shell ----------
@@ -689,12 +688,18 @@ function renderSlurm(ei) {
 
 function renderEnvs() {
   const cards = (doc.compute_envs || []).map((e, i) => renderEnv(e, i)).join('');
+  // The zone list renders off META.zones — the same spec the cards render —
+  // so this intro can never describe zones the form doesn't show.
+  const zoneRows = META.zones.map(z =>
+    `<tr><td>${z.label}${z.required ? ' *' : ''}</td><td>${esc(z.gloss)}</td></tr>`).join('');
   return `<h2>Compute Environments</h2>
     <p class="hint">Where the agent may run jobs. <b>local</b> is this machine —
     a first-class environment that unlocks production runs on your own hardware;
-    <b>ssh</b> is a remote machine (an HPC cluster). Each env declares the same
-    four zones, which is what makes a production run the same kind of thing on
-    either.</p>
+    <b>ssh</b> is a remote machine (an HPC cluster / external compute resource).
+    Each env declares the same kind of four zones, so data processing happens in
+    the same way between compute resources (local, or remote HPC / external
+    compute):</p>
+    <table class="legend" style="margin:-8px 0 18px 16px">${zoneRows}</table>
     ${cards || '<p class="hint">none declared yet</p>'}
     <div class="row">
       <button onclick="addEnv('local')">+ add new local env (this machine)</button>
@@ -707,7 +712,7 @@ function renderProjects() {
   if (!projectsUnlocked()) {
     return `<h2>Projects</h2>
       <div class="lockbox"><div class="glyph">⬦</div>
-        <p><b>Locked — needs a remote env.</b></p>
+        <p><b>Locked — declare a compute env first.</b></p>
         <p style="margin-top:8px">${esc(META.projects_locked_note)}</p></div>`;
   }
   const namePat = new RegExp(META.project_name_pattern);
@@ -794,13 +799,13 @@ function renderReference() {
     <p class="hint">Every env declares the same zones (* = required — the bridge's
     run and stage primitives refuse without them).</p>
     <table class="legend">${zoneRows}</table>
-    <h3 style="margin:18px 0 6px;color:var(--tx)">Driving this without a browser</h3>
-    <p class="hint">The terminal menu is <code>./scripts/config.sh</code>. An agent
-    (or script) should write the YAML directly — annotated schema at
-    <code>${esc(META.example_path)}</code> — and check it with
-    <code>./scripts/config.sh --validate</code>. This page's own surface is plain
-    JSON: GET /config, POST /validate, POST /save (header
-    <code>X-Bioinf-Config: 1</code>).</p>`;
+    <h3 style="margin:18px 0 6px;color:var(--tx)">Edit configuration settings without a browser</h3>
+    <p class="hint">Two other ways in. Run the terminal menu:
+    <code>./scripts/config.sh</code>. Or edit <code>projects_access.yaml</code>
+    directly — by hand, or by an agent (an agent or script should write the YAML
+    directly; annotated schema at <code>${esc(META.example_path)}</code>).
+    Either way, check the file with <code>./scripts/config.sh --validate</code> —
+    it runs the agent's own loader, so a pass means the agent will accept it.</p>`;
 }
 
 // ---------- mutations ----------
