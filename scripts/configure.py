@@ -156,6 +156,26 @@ RED = lambda s: c("31", s)      # noqa: E731
 YELLOW = lambda s: c("33", s)   # noqa: E731
 
 
+def path_source(path: Path) -> str:
+    """WHERE the menu's file path came from, in words — so "is this the right
+    file?" is answerable from either renderer instead of from source code.
+    The default path is `<workspace>/projects_access.yaml`, resolved by the
+    SAME workspace resolver the agent uses (never the checkout: the file
+    outlives any clone and carries real hostnames, so it must not be
+    committable)."""
+    if path != default_access_path():
+        return "an explicit --file override — NOT the agent's default path"
+    ws = workspace.workspace_root()
+    how = {
+        "env": "chosen by $BIOINF_WORKSPACE",
+        "pointer": "recorded in .bioinf_workspace",
+        "default": "the built-in default; re-run ./scripts/setup.sh to record "
+                   "it in .bioinf_workspace",
+    }[workspace.workspace_source()]
+    return (f"the workspace at {ws} ({how}) — the same path the agent "
+            f"resolves, so this menu and the agent read one file")
+
+
 def dump(data: dict) -> str:
     """Serialize the document. One spelling, because the text this produces is
     what the user reads and hand-edits afterwards: `allow_unicode` keeps em-dashes
@@ -1060,6 +1080,7 @@ def main() -> int:
 
     print(BOLD("\nbioinf-agent — configuration"))
     print(DIM(f"  {path}"))
+    print(DIM(f"  ({path_source(path)})"))
     if not path.exists():
         try:
             offer_template(cfg)

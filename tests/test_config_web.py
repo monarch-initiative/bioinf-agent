@@ -309,6 +309,21 @@ def test_preview_returns_the_exact_bytes_a_save_would_write(client, cfgmod):
 
 # --- reading a real file -----------------------------------------------------
 
+def test_the_page_says_where_its_file_path_came_from(cfgmod, client):
+    """'Is this the right file?' must be answerable from the page: the
+    bootstrap carries path_source — the workspace + which of the three
+    resolution answers chose it, or a plain statement that --file overrode
+    the agent's default. The fixture path IS an override, so that is what
+    it must say (not a workspace story for a path the agent won't read)."""
+    c, _ = client
+    j = c.get("/config").json()
+    assert "--file override" in j["path_source"]
+
+    from agent.skills.compute_access import default_access_path
+    src = cfgmod.path_source(default_access_path())
+    assert "workspace" in src and "the agent" in src
+
+
 def test_config_get_reports_state_and_content_of_the_disk_file(cfgmod, webmod, tmp_path):
     from starlette.testclient import TestClient
     path = tmp_path / "pa.yaml"

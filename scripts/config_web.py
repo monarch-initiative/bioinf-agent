@@ -156,6 +156,7 @@ def create_app(cfg_path: Path, cfgmod, on_close=None):
         state, message = cfg.state()
         bootstrap = {
             "path": str(cfg_path),
+            "path_source": cfgmod.path_source(cfg_path),
             "exists": cfg_path.exists(),
             "state": state, "message": message,
             "load_error": cfg.load_error,
@@ -173,7 +174,9 @@ def create_app(cfg_path: Path, cfgmod, on_close=None):
     async def config_get(request):
         cfg = cfgmod.Config(cfg_path, notify=lambda k, t: None)
         state, message = cfg.state()
-        return JSONResponse({"path": str(cfg_path), "exists": cfg_path.exists(),
+        return JSONResponse({"path": str(cfg_path),
+                             "path_source": cfgmod.path_source(cfg_path),
+                             "exists": cfg_path.exists(),
                              "state": state, "message": message,
                              "load_error": cfg.load_error, "config": cfg.data,
                              "meta": _meta(cfgmod)})
@@ -811,9 +814,10 @@ function renderProjects() {
 function renderFile() {
   return `<h2>File</h2>
     <p class="hint">The configuration settings are saved to
-    <code>${esc(BOOT.path)}</code>. A new save keeps the previous version as
-    <code>.bak</code>. The <code>projects_access.yaml</code> can be hand edited
-    as well — this menu will re-read and attempt to validate.</p>
+    <code>${esc(BOOT.path)}</code> — ${esc(BOOT.path_source)}. A new save keeps
+    the previous version as <code>.bak</code>. The
+    <code>projects_access.yaml</code> can be hand edited as well — this menu
+    will re-read and attempt to validate.</p>
     <pre class="filedump" id="filedump">…</pre>`;
 }
 
