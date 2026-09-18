@@ -166,7 +166,7 @@ def test_posts_without_the_deliberate_write_header_are_refused(client):
     preflight this app never answers — so the 403 is what stands between a
     drive-by page and the user's permission grants."""
     c, path = client
-    for route in ("/save", "/validate", "/preview"):
+    for route in ("/save", "/validate", "/preview", "/shutdown"):
         assert c.post(route, json=_doc()).status_code == 403, route
     assert not path.exists()
 
@@ -196,6 +196,47 @@ def test_a_malformed_body_is_a_400_never_the_empty_document(client):
                    headers={**HDRS, "Content-Type": "application/json"})
         assert r.status_code == 400, (body, r.status_code)
     assert path.read_text() == before, "a malformed body reached the file"
+
+
+def test_the_pages_close_buttons_stop_the_serving_process(cfgmod, webmod, tmp_path):
+    """SAVE & CLOSE / CANCEL CHANGES & CLOSE end the terminal process from the
+    page — POST /shutdown flips the server's exit flag via the on_close hook, so
+    the user never has to Ctrl-C. Header-guarded like every other POST: stopping
+    someone's menu is a deliberate act."""
+    from starlette.testclient import TestClient
+    calls = []
+    c = TestClient(webmod.create_app(tmp_path / "pa.yaml", cfgmod,
+                                     on_close=lambda: calls.append(1)),
+                   base_url="http://127.0.0.1")
+    assert c.post("/shutdown").status_code == 403 and calls == []
+    r = c.post("/shutdown", headers=HDRS).json()
+    assert r["ok"] is True and r["closing"] is True and calls == [1]
+
+
+def test_the_footer_and_env_buttons_say_what_they_do(webmod):
+    """The user-reviewed control surface: three explicit footer actions (revert
+    one change at a time; save-and-exit; discard-and-exit) and add-env buttons
+    that name what they add. The 'declared' checkbox is gone — every zone is
+    always on screen, and a blank optional path IS 'not declared'."""
+    for marker in ("revert<br>last<br>change", "save<br>&amp;<br>close",
+                   "cancel<br>changes<br>&amp; close",
+                   "+ add new local env (this machine)",
+                   "+ add new ssh env (cluster/external compute resource)"):
+        assert marker in webmod.PAGE, marker
+    assert "toggleZone" not in webmod.PAGE
+
+
+def test_every_write_posts_the_pruned_document_and_the_verdict_names_the_field(webmod):
+    """Two page-side seams. (1) validate/save/preview all post outDoc() — the
+    pruning that turns a blank optional-zone path into 'undeclared' — so the
+    preview is byte-identical to what a save writes. (2) The loader speaks yaml
+    keys (`globus.local_endpoint_name`); the verdict pipes its message through
+    the ONE label map the inputs render from, so an error names the field the
+    user sees ('local display name'), not just the key."""
+    assert webmod.PAGE.count("body: JSON.stringify(outDoc())") == 3
+    assert "body: JSON.stringify(doc)" not in webmod.PAGE
+    assert "GLOBUS_LABELS.local_endpoint_name" in webmod.PAGE   # inputs read the map
+    assert "nameTheField(lastVerdict.message)" in webmod.PAGE   # the verdict glosses with it
 
 
 def test_no_user_string_is_ever_interpolated_into_a_js_string_literal(webmod):

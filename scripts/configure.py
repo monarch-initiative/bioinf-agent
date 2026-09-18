@@ -1010,7 +1010,8 @@ def main() -> int:
     ap.add_argument("--validate", action="store_true",
                     help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
     ap.add_argument("--web", action="store_true",
-                    help="open the browser menu instead (127.0.0.1 only; dies on Ctrl-C)")
+                    help="open the browser menu instead (127.0.0.1 only; the page's "
+                         "close buttons end it, as does Ctrl-C)")
     ap.add_argument("--port", type=int, default=0,
                     help="port for --web (default: an ephemeral free port)")
     ap.add_argument("--file", default=None,

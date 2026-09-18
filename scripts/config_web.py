@@ -17,6 +17,9 @@ JSON, which makes it a machine surface too:
     POST /validate  → {state, message, notes[]}     (verdict only; writes nothing)
     POST /save      → {ok, messages[], state}       (validate → .bak → write)
     POST /preview   → {yaml}                        (the exact bytes a save writes)
+    POST /shutdown  → {ok, closing}                 (the page's close buttons — stops
+                                                     the serving process, so the user
+                                                     never has to Ctrl-C the terminal)
     GET  /globus/local-id and /globus/search?q=     (the endpoint picker's data)
 
 Two rings guard the write surface. POST routes require the header
@@ -119,7 +122,7 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
     return notes
 
 
-def create_app(cfg_path: Path, cfgmod):
+def create_app(cfg_path: Path, cfgmod, on_close=None):
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -215,6 +218,15 @@ def create_app(cfg_path: Path, cfgmod):
             return err_resp
         return JSONResponse({"yaml": cfgmod.HEADER + "\n" + cfgmod.dump(doc)})
 
+    async def shutdown(request):
+        # Header-guarded like every POST: stopping the user's menu process is a
+        # deliberate act, not one an ambient cross-origin request gets to take.
+        if (deny := _guarded(request)) is not None:
+            return deny
+        if on_close is not None:
+            on_close()
+        return JSONResponse({"ok": True, "closing": on_close is not None})
+
     async def globus_local_id(request):
         return JSONResponse({"id": cfgmod._globus_local_id()})
 
@@ -235,6 +247,7 @@ def create_app(cfg_path: Path, cfgmod):
         Route("/validate", validate, methods=["POST"]),
         Route("/save", save, methods=["POST"]),
         Route("/preview", preview, methods=["POST"]),
+        Route("/shutdown", shutdown, methods=["POST"]),
         Route("/globus/local-id", globus_local_id),
         Route("/globus/search", globus_search),
     ], middleware=[Middleware(LoopbackHostOnly)])
@@ -253,13 +266,28 @@ def serve(cfg_path: Path, cfgmod, port: int = 0) -> int:
         s.close()
     url = f"http://127.0.0.1:{port}/"
     print(f"  config menu: {url}")
-    print("  nothing is written until you SAVE in the page; Ctrl-C here stops it")
+    print("  nothing is written until you SAVE & CLOSE in the page; the page's close")
+    print("  buttons end this process (Ctrl-C here also works)")
+
+    # The page's close buttons POST /shutdown; the callback flips uvicorn's own
+    # exit flag, so `server.run()` returns and the terminal gets its prompt back
+    # without a Ctrl-C. The holder exists because the app must be built before
+    # the server that the callback needs to reach.
+    holder: dict[str, Any] = {}
+
+    def _close() -> None:
+        if (srv := holder.get("server")) is not None:
+            srv.should_exit = True
+
+    app = create_app(cfg_path, cfgmod, on_close=_close)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                           log_level="warning"))
+    holder["server"] = server
     try:
         webbrowser.open(url)
     except Exception:
         pass
-    uvicorn.run(create_app(cfg_path, cfgmod), host="127.0.0.1", port=port,
-                log_level="warning")
+    server.run()
     return 0
 
 
@@ -360,6 +388,7 @@ select {
                text-transform: uppercase; }
 .zone .zgloss { color: var(--dim); font-size: 12px; }
 .req { color: var(--warn); font-size: 10px; letter-spacing: .15em; }
+.opt { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .chip {
   border: 1px solid var(--line); color: var(--dim); font-size: 11px;
@@ -373,6 +402,7 @@ button {
   text-transform: uppercase; cursor: pointer; border-radius: 2px;
 }
 button:hover { background: #57d7c31a; border-color: var(--acc); }
+button:disabled { opacity: .35; cursor: default; pointer-events: none; }
 button.subtle { border-color: var(--line); color: var(--dim); }
 button.subtle:hover { color: var(--tx); }
 button.danger { border-color: #6b2f2f; color: var(--bad); }
@@ -400,6 +430,7 @@ footer {
   backdrop-filter: blur(4px);
 }
 footer .verdict { flex: 1; font-size: 13px; min-width: 0; }
+footer button { line-height: 1.5; text-align: center; }
 .searchrows { margin-top: 6px; }
 .searchrows .srow { padding: 4px 8px; border: 1px solid var(--line);
   border-radius: 2px; margin-bottom: 4px; cursor: pointer; font-size: 12px; }
@@ -420,8 +451,9 @@ footer .verdict { flex: 1; font-size: 13px; min-width: 0; }
 </div>
 <footer>
   <div class="verdict" id="verdict"></div>
-  <button class="subtle" onclick="revert()">Revert</button>
-  <button onclick="saveCfg()">Save</button>
+  <button class="subtle" onclick="revertLast()">revert<br>last<br>change</button>
+  <button onclick="saveAndClose()">save<br>&amp;<br>close</button>
+  <button class="danger" onclick="cancelAndClose()">cancel<br>changes<br>&amp; close</button>
 </footer>
 <script>
 const BOOT = __BOOTSTRAP__;
@@ -434,6 +466,44 @@ let lastVerdict = {state: BOOT.state, message: BOOT.message, notes: []};
 const HDRS = {'Content-Type': 'application/json', 'X-Bioinf-Config': '1'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// One spelling of each globus field's on-screen label — the inputs render these
+// AND the verdict glosses the loader's yaml-key messages with them, so an error
+// about `local_endpoint_name` names the field the user actually sees.
+const GLOBUS_LABELS = {
+  local_endpoint_id: 'local endpoint UUID (this machine)',
+  local_endpoint_name: 'local display name',
+  remote_endpoint_id: 'remote endpoint UUID',
+  remote_endpoint_name: 'remote display name',
+};
+function nameTheField(msg) {
+  let out = String(msg || '');
+  for (const [k, label] of Object.entries(GLOBUS_LABELS))
+    out = out.split('globus.' + k).join(`globus.${k} (the "${label}" field)`);
+  return out;
+}
+
+// The undo stack: markDirty runs exactly once per mutation, AFTER it, so the
+// checkpoint taken at the END of the previous markDirty is this mutation's
+// pre-state. REVERT LAST CHANGE pops one state at a time back to the loaded
+// document.
+let undoStack = [];
+let checkpoint = JSON.parse(JSON.stringify(doc));
+
+// What actually gets validated/saved/previewed: an OPTIONAL zone with a blank
+// path is "not declared" and is pruned; a REQUIRED zone with a blank path is
+// kept so the loader refuses it by name (the menu-level required-ness, stated
+// where the save happens rather than silently rounded away).
+function outDoc() {
+  const d = JSON.parse(JSON.stringify(doc));
+  for (const env of d.compute_envs || []) {
+    for (const z of META.zones) {
+      const blk = env[z.key];
+      if (blk && !z.required && !(blk.path || '').trim()) delete env[z.key];
+    }
+  }
+  return d;
+}
 
 function projectsUnlocked() {
   return (doc.projects || []).length > 0 ||
@@ -458,6 +528,9 @@ function renderNav() {
 function go(k) { section = k; render(); }
 
 function markDirty() {
+  undoStack.push(checkpoint);
+  if (undoStack.length > 200) undoStack.shift();
+  checkpoint = JSON.parse(JSON.stringify(doc));
   dirty = true;
   document.getElementById('dirtypill').style.display = '';
   scheduleValidate();
@@ -477,34 +550,32 @@ function render() {
 // ---------- compute envs ----------
 function renderZone(ei, z) {
   const env = doc.compute_envs[ei];
-  const blk = env[z.key];
-  const declared = !!blk;
-  const zoneToggle = z.required ? `<span class="req">required</span>` :
-    `<label style="font-size:11px;color:var(--dim);cursor:pointer">
-       <input type="checkbox" ${declared ? 'checked' : ''}
-              onchange="toggleZone(${ei}, '${z.key}', this.checked)"> declared</label>`;
-  let body = '';
-  if (declared) {
-    const perms = blk.permissions || [];
-    body = `
-      <div class="row">
-        <div class="field"><label>path</label>
-          <input type="text" value="${esc(blk.path || '')}" size="46"
-                 onchange="setZone(${ei}, '${z.key}', 'path', this.value)"></div>
-        <div class="field"><label>description</label>
-          <input type="text" value="${esc(blk.description || '')}" size="30"
-                 onchange="setZone(${ei}, '${z.key}', 'description', this.value)"></div>
-      </div>
-      <div class="chips">` +
+  const blk = env[z.key] || null;
+  const defaults = env.type === 'ssh' ? META.ssh_zone_templates : META.local_zone_defaults;
+  const phPath = (defaults[z.key] || '').replace('{user}', env.user || 'USER');
+  const perms = blk ? (blk.permissions || []) : z.default_perms;
+  const badge = z.required ? `<span class="req">required</span>` :
+    `<span class="opt">optional — blank path leaves it undeclared</span>`;
+  return `<div class="zone">
+    <div class="zhead"><span class="zname">${z.label}</span> ${badge}
+      <span class="zgloss">${esc(z.gloss)}</span></div>
+    <div class="row">
+      <div class="field"><label>path</label>
+        <input type="text" value="${esc(blk ? blk.path || '' : '')}" size="42"
+               placeholder="${esc(phPath)}"
+               onchange="setZone(${ei}, '${z.key}', 'path', this.value)"></div>
+      <div class="field"><label>description</label>
+        <input type="text" value="${esc(blk ? blk.description || '' : '')}" size="26"
+               placeholder="${esc(z.gloss)}"
+               onchange="setZone(${ei}, '${z.key}', 'description', this.value)"></div>
+      <div class="field"><label>permissions</label>
+        <div class="chips">` +
       META.permission_order.map(t =>
         `<span class="chip ${perms.includes(t) ? 'on' : ''}"
                title="${esc(META.permission_glosses[t])}"
                onclick="togglePerm(${ei}, '${z.key}', '${t}')">${t}</span>`).join('') +
-      `</div>`;
-  }
-  return `<div class="zone">
-    <div class="zhead"><span class="zname">${z.label}</span> ${zoneToggle}
-      <span class="zgloss">${esc(z.gloss)}</span></div>${body}</div>`;
+      `</div></div>
+    </div></div>`;
 }
 
 function renderEnv(env, ei) {
@@ -554,20 +625,20 @@ function renderTransfer(ei) {
   const g = (dt && dt.globus) || {};
   const globusFields = t !== 'globus' ? '' : `
     <div class="row">
-      <div class="field"><label>local endpoint UUID (this machine)</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.local_endpoint_id)}</label>
         <input type="text" id="lep${ei}" value="${esc(g.local_endpoint_id || '')}" size="40"
                onchange="setGlobus(${ei}, 'local_endpoint_id', this.value)"></div>
-      <div class="field"><label>local display name</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.local_endpoint_name)}</label>
         <input type="text" value="${esc(g.local_endpoint_name || '')}"
                onchange="setGlobus(${ei}, 'local_endpoint_name', this.value)"></div>
       <div class="field" style="justify-content:flex-end">
         <button class="subtle" onclick="detectLocal(${ei})">detect</button></div>
     </div>
     <div class="row">
-      <div class="field"><label>remote endpoint UUID</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.remote_endpoint_id)}</label>
         <input type="text" id="rep${ei}" value="${esc(g.remote_endpoint_id || '')}" size="40"
                onchange="setGlobus(${ei}, 'remote_endpoint_id', this.value)"></div>
-      <div class="field"><label>remote display name</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.remote_endpoint_name)}</label>
         <input type="text" id="ren${ei}" value="${esc(g.remote_endpoint_name || '')}"
                onchange="setGlobus(${ei}, 'remote_endpoint_name', this.value)"></div>
       <div class="field" style="justify-content:flex-end">
@@ -626,8 +697,8 @@ function renderEnvs() {
     either.</p>
     ${cards || '<p class="hint">none declared yet</p>'}
     <div class="row">
-      <button onclick="addEnv('local')">+ local env (this machine)</button>
-      <button onclick="addEnv('ssh')">+ ssh env (a cluster)</button>
+      <button onclick="addEnv('local')">+ add new local env (this machine)</button>
+      <button onclick="addEnv('ssh')">+ add new ssh env (cluster/external compute resource)</button>
     </div>`;
 }
 
@@ -662,15 +733,16 @@ function renderProjects() {
           <div class="field"><label>description</label>
             <input type="text" value="${esc(d.description || '')}"
                    onchange="setDir(${pi}, ${di}, 'description', this.value)"></div>
+          <div class="field"><label>permissions</label>
+            <div class="chips">` +
+          META.permission_order.map(t =>
+            `<span class="chip ${(d.permissions || []).includes(t) ? 'on' : ''}"
+                   title="${esc(META.permission_glosses[t])}"
+                   onclick="toggleDirPerm(${pi}, ${di}, '${t}')">${t}</span>`).join('') +
+          `</div></div>
           <div class="field" style="justify-content:flex-end">
             <button class="danger" onclick="removeDir(${pi}, ${di})">remove</button></div>
-        </div>
-        <div class="chips">` +
-        META.permission_order.map(t =>
-          `<span class="chip ${(d.permissions || []).includes(t) ? 'on' : ''}"
-                 title="${esc(META.permission_glosses[t])}"
-                 onclick="toggleDirPerm(${pi}, ${di}, '${t}')">${t}</span>`).join('') +
-        `</div></div>`).join('');
+        </div></div>`).join('');
     return `<div class="card">
       <h3><input type="text" class="${badName ? 'badname' : ''}"
                  value="${esc(p.name || '')}" size="24"
@@ -781,23 +853,24 @@ function setEnvUser(ei, user) {
   }
   setEnv(ei, 'user', user);
 }
-function toggleZone(ei, key, on) {
+// Every zone is always on screen; the block materializes (with the spec's
+// default perms) on the first edit, and a blank optional path un-declares it
+// again at outDoc() time.
+function zoneBlk(ei, key) {
   const env = doc.compute_envs[ei];
-  if (on) {
+  if (!env[key]) {
     const z = META.zones.find(x => x.key === key);
-    const defaults = env.type === 'ssh' ? META.ssh_zone_templates : META.local_zone_defaults;
-    env[key] = {path: (defaults[key] || '').replace('{user}', env.user || 'USER'),
-                permissions: [...z.default_perms], description: z.gloss};
-  } else delete env[key];
-  markDirty(); render();
+    env[key] = {path: '', permissions: [...z.default_perms], description: z.gloss};
+  }
+  return env[key];
 }
 function setZone(ei, key, field, val) {
-  const blk = doc.compute_envs[ei][key];
+  const blk = zoneBlk(ei, key);
   if (val) blk[field] = val; else delete blk[field];
   markDirty(); render();
 }
 function togglePerm(ei, key, tok) {
-  const blk = doc.compute_envs[ei][key];
+  const blk = zoneBlk(ei, key);
   const i = (blk.permissions || []).indexOf(tok);
   if (i >= 0) blk.permissions.splice(i, 1); else (blk.permissions ||= []).push(tok);
   markDirty(); render();
@@ -916,7 +989,7 @@ function scheduleValidate() {
 }
 async function doValidate() {
   const r = await fetch('/validate', {method: 'POST', headers: HDRS,
-                                      body: JSON.stringify(doc)});
+                                      body: JSON.stringify(outDoc())});
   lastVerdict = await r.json();
   renderVerdict();
 }
@@ -932,32 +1005,47 @@ function renderVerdict() {
   // when it matters.
   const loadErr = BOOT.load_error ? `<div class="note">${esc(BOOT.load_error)}</div>` : '';
   if (state === 'absent')
-    v.innerHTML = `<div class="note">no configuration file yet — nothing validated; SAVE writes the first one</div>` + loadErr + notes;
+    v.innerHTML = `<div class="note">no configuration file yet — nothing validated; SAVE &amp; CLOSE writes the first one</div>` + loadErr + notes;
   else if (state === 'invalid')
-    v.innerHTML = `<span class="errline">${esc(lastVerdict.message)}</span>` + loadErr + notes;
+    v.innerHTML = `<span class="errline">${esc(nameTheField(lastVerdict.message))}</span>` + loadErr + notes;
   else
     v.innerHTML = `<span class="okline">the agent's loader accepts this configuration</span>` + loadErr + notes;
 }
-async function saveCfg() {
+function revertLast() {
+  if (!undoStack.length) return;
+  doc = undoStack.pop();
+  checkpoint = JSON.parse(JSON.stringify(doc));
+  dirty = undoStack.length > 0;
+  document.getElementById('dirtypill').style.display = dirty ? '' : 'none';
+  scheduleValidate(); render();
+}
+async function closeServer(doneLine) {
+  // Stop the terminal process serving this page, so nobody has to Ctrl-C it.
+  try { await fetch('/shutdown', {method: 'POST', headers: HDRS}); } catch (e) {}
+  document.getElementById('verdict').innerHTML +=
+    `<div class="okline">${esc(doneLine)} — the menu process has exited; close this tab.</div>`;
+  document.querySelectorAll('footer button').forEach(b => b.disabled = true);
+  window.close();   // works when the browser lets it; the line above covers when it doesn't
+}
+async function saveAndClose() {
   const r = await fetch('/save', {method: 'POST', headers: HDRS,
-                                  body: JSON.stringify(doc)});
+                                  body: JSON.stringify(outDoc())});
   const j = await r.json();
   const v = document.getElementById('verdict');
   v.innerHTML = j.messages.map(m =>
-    `<div class="${m.kind === 'error' ? 'errline' : m.kind === 'ok' ? 'okline' : 'note'}">${esc(m.text)}</div>`).join('');
-  if (j.ok) { dirty = false; document.getElementById('dirtypill').style.display = 'none'; }
+    `<div class="${m.kind === 'error' ? 'errline' : m.kind === 'ok' ? 'okline' : 'note'}">${esc(nameTheField(m.text))}</div>`).join('');
+  if (!j.ok) return;   // an invalid document never closes the menu out from under the fix
+  dirty = false; document.getElementById('dirtypill').style.display = 'none';
+  await closeServer('saved');
 }
-async function revert() {
-  const r = await fetch('/config');
-  const j = await r.json();
-  doc = j.config; dirty = false;
-  lastVerdict = {state: j.state, message: j.message, notes: []};
-  document.getElementById('dirtypill').style.display = 'none';
-  render();
+async function cancelAndClose() {
+  if (dirty && !confirm('discard the unsaved changes and close?')) return;
+  document.getElementById('verdict').innerHTML = '';
+  await closeServer('nothing written');
 }
 async function loadPreview() {
   const r = await fetch('/preview', {method: 'POST', headers: HDRS,
-                                     body: JSON.stringify(doc)});
+                                     body: JSON.stringify(outDoc())});
   const j = await r.json();
   const el = document.getElementById('filedump');
   if (el) el.textContent = j.yaml;
