@@ -320,8 +320,11 @@ def test_the_page_says_where_its_file_path_came_from(cfgmod, client):
     assert "--file override" in j["path_source"]
 
     from agent.skills.compute_access import default_access_path
+    # Under the suite, $BIOINF_PROJECTS_ACCESS is the isolation seam, so the
+    # default path's story names the env var; with it unset the story names
+    # the fixed machine home.
     src = cfgmod.path_source(default_access_path())
-    assert "workspace" in src and "the agent" in src
+    assert "BIOINF_PROJECTS_ACCESS" in src and "the agent" in src
 
 
 def test_config_get_reports_state_and_content_of_the_disk_file(cfgmod, webmod, tmp_path):

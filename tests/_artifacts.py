@@ -54,7 +54,11 @@ REAL_WORKSPACE = Path(os.environ["BIOINF_REAL_WORKSPACE"])
 REPORTS = REAL_WORKSPACE / "reports"
 CONDA_ENVS = REAL_WORKSPACE / "environments" / "conda"
 RESOURCES = REAL_WORKSPACE / "resources"
-PROJECTS_ACCESS = REAL_WORKSPACE / "projects_access.yaml"
+# NOT under REAL_WORKSPACE: the config home moved to the fixed machine-level
+# dotdir (2026-09-18), and this line following it is what keeps the access-file
+# checks from skipping as "not configured" on a fully configured machine —
+# the exact rot [[feedback_a_skip_is_only_as_honest_as_its_path]] names.
+PROJECTS_ACCESS = Path(os.environ["BIOINF_REAL_PROJECTS_ACCESS"])
 
 
 def real_dir_or_skip(path: Path, what: str) -> Path:

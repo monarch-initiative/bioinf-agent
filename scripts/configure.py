@@ -159,21 +159,17 @@ YELLOW = lambda s: c("33", s)   # noqa: E731
 def path_source(path: Path) -> str:
     """WHERE the menu's file path came from, in words — so "is this the right
     file?" is answerable from either renderer instead of from source code.
-    The default path is `<workspace>/projects_access.yaml`, resolved by the
-    SAME workspace resolver the agent uses (never the checkout: the file
-    outlives any clone and carries real hostnames, so it must not be
-    committable)."""
+    The default is the FIXED machine-level home, ~/.bioinf_agent/ — the
+    ~/.ssh-config pattern: per machine, hidden, never in a checkout (the file
+    carries real hostnames and outlives any clone)."""
     if path != default_access_path():
         return "an explicit --file override — NOT the agent's default path"
-    ws = workspace.workspace_root()
-    how = {
-        "env": "chosen by $BIOINF_WORKSPACE",
-        "pointer": "recorded in .bioinf_workspace",
-        "default": "the built-in default; re-run ./scripts/setup.sh to record "
-                   "it in .bioinf_workspace",
-    }[workspace.workspace_source()]
-    return (f"the workspace at {ws} ({how}) — the same path the agent "
-            f"resolves, so this menu and the agent read one file")
+    if os.environ.get("BIOINF_PROJECTS_ACCESS", "").strip():
+        return ("chosen by $BIOINF_PROJECTS_ACCESS — the same path the agent "
+                "reads, so this menu and the agent read one file")
+    return ("the agent's fixed config home (~/.bioinf_agent/, like "
+            "~/.ssh/config) — the same path the agent reads, so this menu "
+            "and the agent read one file")
 
 
 def dump(data: dict) -> str:
@@ -329,6 +325,16 @@ class Config:
         self.load_error = ""
         if not self.path.exists():
             self.data = {"compute_envs": [], "projects": []}
+            # The config home moved to ~/.bioinf_agent/ (2026-09-18). A file
+            # still sitting at the old workspace-root location would otherwise
+            # read as "nothing configured" — absence with a findable cause is
+            # stated, with the one-command fix.
+            legacy = workspace.workspace_root() / "projects_access.yaml"
+            if self.path == default_access_path() and legacy.exists():
+                self.load_error = (
+                    f"found a configuration at the LEGACY location {legacy} — "
+                    f"this menu and the agent now read {self.path}; adopt it "
+                    f"with: mv {legacy} {self.path}")
             return
         try:
             raw = yaml.safe_load(self.path.read_text()) or {}

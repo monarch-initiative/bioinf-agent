@@ -64,7 +64,19 @@ from agent.skills import workspace as _workspace   # noqa: E402
 _inherited = os.environ.get("BIOINF_REAL_WORKSPACE", "").strip()
 REAL_WORKSPACE = Path(_inherited) if _inherited else _workspace.workspace_root()
 os.environ["BIOINF_REAL_WORKSPACE"] = str(REAL_WORKSPACE)
+# The config home is decoupled from the workspace, so it gets the same
+# capture-before-redirect treatment — asked once, inherited by every worker.
+_inherited_pa = os.environ.get("BIOINF_REAL_PROJECTS_ACCESS", "").strip()
+REAL_PROJECTS_ACCESS = (Path(_inherited_pa) if _inherited_pa
+                        else _workspace.projects_access_path())
+os.environ["BIOINF_REAL_PROJECTS_ACCESS"] = str(REAL_PROJECTS_ACCESS)
 os.environ["BIOINF_WORKSPACE"] = tempfile.mkdtemp(prefix="bioinf_suite_ws_")
+# The config home is DECOUPLED from the workspace (fixed ~/.bioinf_agent), so
+# it needs its own sandbox twin — without this line every test that touches
+# the default access path reads (or writes!) the developer's real config.
+# Kept at the sandbox workspace root, where the suite's fixtures always put it.
+os.environ["BIOINF_PROJECTS_ACCESS"] = os.path.join(
+    os.environ["BIOINF_WORKSPACE"], "projects_access.yaml")
 os.environ.pop("BIOINF_RESOURCES", None)
 
 # Contract-clean EnvCache record builders live in tests/env_records.py — importable as
@@ -214,6 +226,8 @@ def _isolate_agent_record_writers(tmp_path: Path, monkeypatch):
     developer's shell would point a hermetic test at a real reference corpus.
     """
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "_workspace"))
+    monkeypatch.setenv("BIOINF_PROJECTS_ACCESS",
+                       str(tmp_path / "_workspace" / "projects_access.yaml"))
     monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
     yield
 
