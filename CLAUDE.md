@@ -110,7 +110,7 @@ ROUTING INDEX: it tells you which primitive the job belongs to. The long-form ra
 | `add_core_test_data` / `add_core_pod5_data` | Pull a NEW sequencing dataset into the core manifest when nothing on disk fits — short-read/assay by accession, or nanopore pod5 signal. Both register what they fetched, so `select_test_data` can anchor it |
 | `add_phenopacket` | Register a GA4GH phenopacket from a URL. Every field is read out of the JSON — nothing is supplied by hand. Feeds `phenopacket_to_vcf` |
 | `phenopacket_to_vcf` | Materialize a single-sample VCF from a phenopacket |
-| `snapshot_project` | **HPC bridge.** Read-only one-level walk of a project's authorized cluster dirs |
+| `snapshot_project` | **HPC bridge.** Read-only listing of a project's authorized dirs — a one-level overview, or (with `path=`) a RECURSIVE capped listing under any granted dir, `name_glob`-filterable, truncation stated with its remedy |
 | `cluster_module_avail` | **HPC bridge.** Discover loadable Lmod modules so you pick a real `module load` line |
 | `cluster_partitions` | **HPC bridge.** Discover SLURM partitions, which carry GPUs (parsed from gres, with the card type), and which QoS each accepts — so `slurm.gpu: {partition, qos}` is READ off the cluster rather than typed. Two probes (`sinfo` + `scontrol show partition`) in one ssh round trip; returns `gpu_convention_candidates`. Candidates, not a pick: A100 vs consumer card is a sizing judgement. A partition whose QoS went unobserved yields no candidate but stays visible with `qos_observed: False`. Feed a chosen pair straight into a job's `slurm={partition, qos}` — it wins over the env's convention. Naming one is OPTIONAL: submitting with neither is valid and reports `gpu_placement: undeclared` |
 | `upload` / `download` | **HPC bridge — the transfer surface.** Auto-routed by where the remote path falls (scratch / common_data / project_path). Blocks until the bytes are verified |
@@ -309,7 +309,7 @@ Use this once an env is validated and the user wants to run their real pipeline 
 4. **`cluster_job_status(project, env, job_id)`** — Query whenever the user (or a future agent invocation) wants to check. sacct-backed; covers both running and completed jobs. The manifest from step 3 carries the `job_id`.
 5. **`download(project, env, remote_abs_path, local_path)`** — Pull outputs back when done; sha256 round-trip on the fetch (or Globus end-to-end if configured).
 
-For pre-submission exploration: **`snapshot_project(project_name)`** is a read-only `find -maxdepth 1` against the project's authorized dirs; **`cluster_module_avail(project, env, pattern=)`** lists Lmod modules so the agent picks the right `module load X/Y.Z` line.
+For pre-submission exploration: **`snapshot_project(project_name)`** is a read-only `find` against the project's authorized dirs — one level by default; `path=` + `name_glob=` gives a recursive capped listing under any granted dir (an 11k-sample sheet is one call with `name_glob='*.fastq.gz'`), truncation always stated; **`cluster_module_avail(project, env, pattern=)`** lists Lmod modules so the agent picks the right `module load X/Y.Z` line.
 
 ### The renderer's contract (per [[project-nextflow-module-principles]])
 

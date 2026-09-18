@@ -63,8 +63,9 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
 #: Every renderer (terminal prompt, web page) reads THIS dict; a second
 #: spelling of a permission's meaning is how the two drift.
 PERMISSION_GLOSSES = {
-    "file_name_only": "list the file names in this dir (one level only — a "
-                      "subdir's contents need their own grant)",
+    "file_name_only": "list the file and dir names under this path — never "
+                      "file contents; a deep listing is capped per call and "
+                      "says so when truncated",
     "upload":         "put new files into this dir or anywhere under it (never overwrites)",
     "download":       "fetch files from this dir or anywhere under it back to this machine",
     "exec":           "run jobs that use this dir as their working directory — "
