@@ -778,11 +778,10 @@ function renderProjects() {
 // ---------- file + reference ----------
 function renderFile() {
   return `<h2>File</h2>
-    <p class="hint">The exact bytes a save writes to
-    <code>${esc(BOOT.path)}</code>. A save keeps the previous version as
-    <code>.bak</code>. Hand-editing the file is fine — this menu re-reads and
-    validates it. An agent can author it directly (schema:
-    <code>${esc(META.example_path)}</code>) and check with <code>--validate</code>.</p>
+    <p class="hint">The configuration settings are saved to
+    <code>${esc(BOOT.path)}</code>. A new save keeps the previous version as
+    <code>.bak</code>. The <code>projects_access.yaml</code> can be hand edited
+    as well — this menu will re-read and attempt to validate.</p>
     <pre class="filedump" id="filedump">…</pre>`;
 }
 
