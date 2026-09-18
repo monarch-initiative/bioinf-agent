@@ -388,9 +388,11 @@ select {
                text-transform: uppercase; }
 .zone .zgloss { color: var(--dim); font-size: 12px; }
 /* One badge style, two colors: required warns, optional stays dim. The
-   text-transform reset keeps them lowercase even inside uppercased labels. */
+   text-transform reset keeps them lowercase even inside uppercased labels;
+   the dim middot + gap separates badge from label everywhere it appears. */
 .req { color: var(--warn); font-size: 10px; letter-spacing: .15em; text-transform: none; }
 .opt { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: none; }
+.req::before, .opt::before { content: '·'; color: var(--dim); margin: 0 .6em 0 .35em; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .chip {
   border: 1px solid var(--line); color: var(--dim); font-size: 11px;
