@@ -6,30 +6,46 @@ project tree (`snapshot_project`). Both are zero-mutation.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.skills.outcomes import refused
 @mcp.tool()
-def snapshot_project(project_name: str) -> dict:
-    """Walk a project's authorized directories — across every compute env it
-    spans — and return a file-tree snapshot tagged by env. Each entry is
-    {compute_env, path, size, mtime, type}; one-level visibility per declared
-    directory (no recursion).
+def snapshot_project(project_name: str, path: Optional[str] = None,
+                     name_glob: Optional[str] = None,
+                     max_entries: int = 20000) -> dict:
+    """List a project's authorized directories — across every compute env it
+    spans — as a file-tree snapshot tagged by env. Each entry is
+    {compute_env, path, size, mtime, type}. Two modes:
+
+    OVERVIEW (no `path`): every authorized dir at ONE level — root + its
+    immediate children, subdirs by name. The cheap orientation call.
+
+    DEEP LISTING (`path=` an absolute path under any granted dir): the
+    RECURSIVE listing of that subtree. `name_glob` filters by basename
+    ('*.fastq.gz' turns an 11k-sample tree into exactly the sample files);
+    `max_entries` caps ONE CALL's output (default 20000) and is raisable
+    without ceiling — a truncated result says `truncated: true` and names
+    the remedy, so a complete sweep is always reachable and never silently
+    short. Building a sample sheet: deep-list with a glob, raise the cap if
+    `truncated`, then write the CSV from `entries[].path`.
 
     This is the read-only INSPECTION primitive for a user's compute env —
     `upload` / `download` / `submit_workflow_job` / `run_step_on_cluster` are
-    the actuators. The shell that runs here is fixed: `find <authorized_path>
-    -maxdepth 1 -printf '...'` locally (or `ssh <user>@<host> "find …"`
-    remotely). No file contents are read; no other commands are reachable.
+    the actuators. The shell that runs here is fixed: `find` with a pinned
+    printf template (plus `-name <glob> | head -n <cap>` in deep mode) over
+    ssh; local envs use no subprocess at all. No file contents are read; no
+    other commands are reachable.
 
     Authorization lives at the PROJECT level: each project's flat
     `directories[]` list (entries tagged with `env:`) names the dirs the
-    agent may walk, with explicit `permissions:` tokens (see
-    compute_access.PERMISSIONS for the full set). A dir not in that
-    allowlist, or declared with permissions that don't include
-    `file_name_only`, raises PermissionDenied before any shell runs.
+    agent may touch, with explicit `permissions:` tokens (see
+    compute_access.PERMISSIONS). Listing requires `file_name_only`; a
+    `path` not under any such grant (or under another project's zone
+    namespace) raises PermissionDenied before any shell runs.
 
     See `agent/skills/projects_access.yaml.example` for the schema; see
     `tests/integration/honesty/L14_compute_env_safety/` for the contract
@@ -38,7 +54,9 @@ def snapshot_project(project_name: str) -> dict:
     from agent.skills import snapshot
     from agent.skills.compute_access import PermissionDenied, ConfigError
     try:
-        return snapshot.snapshot_project(project_name)
+        return snapshot.snapshot_project(project_name, path=path,
+                                         name_glob=name_glob,
+                                         max_entries=max_entries)
     except (PermissionDenied, ConfigError, FileNotFoundError, KeyError) as e:
         return refused("status.snapshot_gate_rejected", error=f"{type(e).__name__}: {e}")
 

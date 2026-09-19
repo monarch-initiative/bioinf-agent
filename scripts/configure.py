@@ -63,10 +63,14 @@ assert set(PERMISSION_ORDER) == set(PERMISSIONS), (
 #: Every renderer (terminal prompt, web page) reads THIS dict; a second
 #: spelling of a permission's meaning is how the two drift.
 PERMISSION_GLOSSES = {
-    "file_name_only": "list what is in this dir (names only, one level)",
-    "upload":         "put files into this dir",
-    "download":       "fetch files out of this dir",
-    "exec":           "run jobs that use this dir as their working directory",
+    "file_name_only": "list the file and dir names under this path — never "
+                      "file contents; a deep listing is capped per call and "
+                      "says so when truncated",
+    "upload":         "put new files into this dir or anywhere under it (never overwrites)",
+    "download":       "fetch files from this dir or anywhere under it back to this machine",
+    "exec":           "run jobs that use this dir as their working directory — "
+                      "outputs land in place; this alone does not let the agent "
+                      "list, push or fetch",
     "none":           "no access (placeholder — a dir with only this is unreachable)",
 }
 assert set(PERMISSION_GLOSSES) == set(PERMISSIONS), "every token needs a gloss"
@@ -83,22 +87,27 @@ MODULE_PLACEHOLDERS = {"apptainer_module": "apptainer/1.5.0",
 DIR_DEFAULT_PERMS = ["file_name_only"]
 
 #: The env-level zones, in the order the agent uses them. `key` is the schema
-#: key, `default_perms` what the bridge needs to use the zone at all, `required`
-#: whether the menu insists the zone be declared (scratch + common_data are what
-#: make an env USABLE — the bridge's run/stage primitives refuse without them,
-#: so an env missing either is a config that fails far from where it was typed).
-#: Same four zones the local workspace has — full parity, so a production run is
-#: the same kind of thing on either locus.
+#: key, `default_perms` the tokens the bridge needs to use the zone as intended
+#: (the menu's "defaults" reset writes exactly these), `required` whether the
+#: menu insists the zone be declared. ALL FOUR are required (menu review,
+#: 2026-09-18): scratch + common_data are what the run primitives refuse
+#: without, containers is where every staged .sif lands, and reports is where
+#: the record mirrors — an env missing any of them fails far from where it was
+#: typed. Same four zones the local workspace has — full parity, so a
+#: production run is the same kind of thing on either locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
      ["file_name_only", "upload", "download", "exec"], True),
     ("agent_common_data_target", "shared reference data — genomes, public databases",
      ["file_name_only", "upload", "download", "exec"], True),
+    # `download` has no consumer in the staging flow (verification is a remote
+    # checksum) but is granted by default so a staged .sif can be pulled back
+    # when ever needed (user call, menu review 2026-09-18).
     ("container_upload_target", "where .sif container images are staged",
-     ["file_name_only", "upload"], False),
+     ["file_name_only", "upload", "download"], True),
     # No `exec`: reports are read, never run.
     ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
-     ["file_name_only", "upload", "download"], False),
+     ["file_name_only", "upload", "download"], True),
 ]
 
 ZONE_LABELS = {
@@ -145,6 +154,22 @@ DIM = lambda s: c("2", s)       # noqa: E731
 GREEN = lambda s: c("32", s)    # noqa: E731
 RED = lambda s: c("31", s)      # noqa: E731
 YELLOW = lambda s: c("33", s)   # noqa: E731
+
+
+def path_source(path: Path) -> str:
+    """WHERE the menu's file path came from, in words — so "is this the right
+    file?" is answerable from either renderer instead of from source code.
+    The default is the FIXED machine-level home, ~/.bioinf_agent/ — the
+    ~/.ssh-config pattern: per machine, hidden, never in a checkout (the file
+    carries real hostnames and outlives any clone)."""
+    if path != default_access_path():
+        return "an explicit --file override — NOT the agent's default path"
+    if os.environ.get("BIOINF_PROJECTS_ACCESS", "").strip():
+        return ("chosen by $BIOINF_PROJECTS_ACCESS — the same path the agent "
+                "reads, so this menu and the agent read one file")
+    return ("the agent's fixed config home (~/.bioinf_agent/, like "
+            "~/.ssh/config) — the same path the agent reads, so this menu "
+            "and the agent read one file")
 
 
 def dump(data: dict) -> str:
@@ -300,6 +325,16 @@ class Config:
         self.load_error = ""
         if not self.path.exists():
             self.data = {"compute_envs": [], "projects": []}
+            # The config home moved to ~/.bioinf_agent/ (2026-09-18). A file
+            # still sitting at the old workspace-root location would otherwise
+            # read as "nothing configured" — absence with a findable cause is
+            # stated, with the one-command fix.
+            legacy = workspace.workspace_root() / "projects_access.yaml"
+            if self.path == default_access_path() and legacy.exists():
+                self.load_error = (
+                    f"found a configuration at the LEGACY location {legacy} — "
+                    f"this menu and the agent now read {self.path}; adopt it "
+                    f"with: mv {legacy} {self.path}")
             return
         try:
             raw = yaml.safe_load(self.path.read_text()) or {}
@@ -417,10 +452,14 @@ def ssh_defaults(user: str) -> dict[str, str]:
 
 
 def local_defaults() -> dict[str, str]:
-    """A local env is at zone-parity with a cluster — same three zones, local
-    paths — which is what lets a production run be the same kind of thing on
-    either locus. Under the workspace, with every other generated artifact."""
-    base = workspace.scratch_dir("local_env")
+    """Conventional local layout — the four zones FLAT under
+    ~/bioinf_workspace, mirroring how `ssh_defaults` is a convention
+    (/scratch/{user}/CLAUDE_*) rather than a resolver lookup. A menu default
+    only, machine-independent on purpose: routing it through workspace_root()
+    made the offered paths follow this machine's pointer into whatever dir an
+    older setup recorded, which read as broken. The zone names ARE the
+    directory names, so the structure explains itself."""
+    base = Path.home() / workspace.DEFAULT_WORKSPACE_NAME
     return {
         "agent_scratch_target": f"{base}/scratch/",
         "agent_common_data_target": f"{base}/common_data/",
@@ -467,9 +506,9 @@ def edit_zone(env: dict, key: str, purpose: str, default_perms: list[str],
     rule(key)
     print(DIM(f"  {purpose}"))
     if required:
-        # scratch + common_data make the env USABLE — the bridge's run/stage
-        # primitives refuse without them, so declining here just moves the
-        # failure to drive time. Not offered as a choice.
+        # A required zone is not offered a decline — declining here just moves
+        # the failure to drive time, where the message is about a job instead
+        # of a config line.
         if current:
             print(f"  current: {current.get('path')}  {current.get('permissions')}")
     elif current:
@@ -864,20 +903,21 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
 
 
 def projects_unlocked(cfg: Config) -> bool:
-    """D10: 'project' does two jobs — a label for your work, and an access-grant
-    list. The grant list exists for one situation: the agent touching YOUR
-    territory on a shared (ssh) machine. A purely local setup runs in the env's
-    own zones (the `_ad_hoc` project), so the concept is deferred until a remote
-    env exists — or until a project already exists in the file, which must stay
-    editable regardless of how it got there."""
-    return bool(cfg.projects) or any(e.get("type") == "ssh" for e in cfg.envs)
+    """D10, revised in menu review (2026-09-18): a project names the compute
+    environments its work runs on — and, on remote machines, the directory
+    grants into the user's territory. With no env declared there is nothing a
+    project could name, so the section unlocks once ANY compute env exists,
+    local or ssh — or when the file already holds projects, which must stay
+    editable regardless of how they got there."""
+    return bool(cfg.projects) or bool(cfg.envs)
 
 
 #: One spelling of the D10 lock explanation, read by both renderers.
 PROJECTS_LOCKED_NOTE = (
-    "Projects grant the agent access to YOUR directories on a remote machine — "
-    "they unlock once an ssh compute env is declared. Local runs need no grant: "
-    "the agent works inside the local env's own zones.")
+    "A project names which compute environments its work runs on — and, for "
+    "remote machines, exactly which of YOUR directories the agent may touch. "
+    "It unlocks once a compute environment (local or ssh) is declared, because "
+    "a project must name at least one env to compute on.")
 
 
 def menu_projects(cfg: Config) -> None:
@@ -1010,7 +1050,8 @@ def main() -> int:
     ap.add_argument("--validate", action="store_true",
                     help="validate and exit; rc 0 accepted, 1 rejected, 2 no file to check")
     ap.add_argument("--web", action="store_true",
-                    help="open the browser menu instead (127.0.0.1 only; dies on Ctrl-C)")
+                    help="open the browser menu instead (127.0.0.1 only; the page's "
+                         "close buttons end it, as does Ctrl-C)")
     ap.add_argument("--port", type=int, default=0,
                     help="port for --web (default: an ephemeral free port)")
     ap.add_argument("--file", default=None,
@@ -1047,6 +1088,7 @@ def main() -> int:
 
     print(BOLD("\nbioinf-agent — configuration"))
     print(DIM(f"  {path}"))
+    print(DIM(f"  ({path_source(path)})"))
     if not path.exists():
         try:
             offer_template(cfg)
@@ -1064,7 +1106,7 @@ def main() -> int:
         if unlocked:
             print("  2) projects               add / edit / remove")
         else:
-            print(DIM("  2) projects               (locked — needs a remote env; "
+            print(DIM("  2) projects               (locked — needs a compute env; "
                       "choose it to see why)"))
         print("  3) show                   the full configuration")
         print("  4) test ssh reachability")

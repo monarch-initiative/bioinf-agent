@@ -157,12 +157,14 @@ PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 def default_access_path() -> Path:
     """Canonical location for projects_access.yaml.
 
-    ONE answer: ``<workspace>/projects_access.yaml``. Returned whether or not
-    the file exists, so a caller always has a deterministic path to name in its
-    FileNotFoundError — and so the path the menu WRITES is the path every reader
-    LOOKS AT. There used to be two candidates, checkout-then-homedir, and the
-    config menu wrote to the second while the doctor read the first: three
-    surfaces reported a valid configuration the agent could not see.
+    ONE answer: ``~/.bioinf_agent/projects_access.yaml`` (the fixed
+    machine-level home; ``$BIOINF_PROJECTS_ACCESS`` overrides — see
+    ``workspace.projects_access_path``). Returned whether or not the file
+    exists, so a caller always has a deterministic path to name in its
+    FileNotFoundError — and so the path the menu WRITES is the path every
+    reader LOOKS AT. There used to be two candidates, checkout-then-homedir,
+    and the config menu wrote to the second while the doctor read the first:
+    three surfaces reported a valid configuration the agent could not see.
 
     Callers may override with an explicit ``access_path=`` kwarg.
     """

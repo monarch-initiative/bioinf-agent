@@ -91,12 +91,13 @@ def test_the_meta_payload_is_the_field_spec_not_a_copy(cfgmod, client):
 
 def test_the_page_carries_the_spec_and_the_lock(client):
     """The page bootstrap embeds the spec (so the first paint needs no second
-    request) and the D10 lock text is present for the no-remote-env state."""
+    request) and the D10 lock text is present for the no-env state (revised in
+    menu review: ANY compute env unlocks — a project computes on local too)."""
     c, _ = client
     html = c.get("/").text
     assert "agent_scratch_target" in html
     assert "working directory" in html        # CS58: exec's distinguishing gloss
-    assert "Locked — needs a remote env" in html
+    assert "Locked — declare a compute env first" in html
     assert "cdn" not in html.lower() and "https://" not in html.split("</head>")[0], \
         "the page must be self-contained — no external assets"
 
@@ -166,7 +167,7 @@ def test_posts_without_the_deliberate_write_header_are_refused(client):
     preflight this app never answers — so the 403 is what stands between a
     drive-by page and the user's permission grants."""
     c, path = client
-    for route in ("/save", "/validate", "/preview"):
+    for route in ("/save", "/validate", "/preview", "/shutdown"):
         assert c.post(route, json=_doc()).status_code == 403, route
     assert not path.exists()
 
@@ -196,6 +197,70 @@ def test_a_malformed_body_is_a_400_never_the_empty_document(client):
                    headers={**HDRS, "Content-Type": "application/json"})
         assert r.status_code == 400, (body, r.status_code)
     assert path.read_text() == before, "a malformed body reached the file"
+
+
+def test_the_pages_close_buttons_stop_the_serving_process(cfgmod, webmod, tmp_path):
+    """SAVE & CLOSE / CANCEL CHANGES & CLOSE end the terminal process from the
+    page — POST /shutdown flips the server's exit flag via the on_close hook, so
+    the user never has to Ctrl-C. Header-guarded like every other POST: stopping
+    someone's menu is a deliberate act."""
+    from starlette.testclient import TestClient
+    calls = []
+    c = TestClient(webmod.create_app(tmp_path / "pa.yaml", cfgmod,
+                                     on_close=lambda: calls.append(1)),
+                   base_url="http://127.0.0.1")
+    assert c.post("/shutdown").status_code == 403 and calls == []
+    r = c.post("/shutdown", headers=HDRS).json()
+    assert r["ok"] is True and r["closing"] is True and calls == [1]
+
+
+def test_the_footer_and_env_buttons_say_what_they_do(webmod):
+    """The user-reviewed control surface: three explicit footer actions (revert
+    one change at a time; save-and-exit; discard-and-exit) and add-env buttons
+    that name what they add. The 'declared' checkbox is gone — every zone is
+    always on screen, and a blank optional path IS 'not declared'."""
+    for marker in ("revert<br>last<br>change", "save<br>&amp;<br>close",
+                   "cancel<br>changes<br>&amp; close",
+                   "+ add new local env (this machine)",
+                   "+ add new ssh env (cluster/external compute resource)"):
+        assert marker in webmod.PAGE, marker
+    assert "toggleZone" not in webmod.PAGE
+
+
+def test_the_intro_legends_and_permission_resets_render_off_the_spec(webmod):
+    """Menu review: the envs intro carries TWO legends (directories, then
+    permissions) and the projects intro reuses the same permissions legend —
+    all rendered from META, one function for the permission rows. Every
+    permissions field also offers a 'defaults ↺' reset to the spec's
+    recommended set."""
+    assert webmod.PAGE.count("permLegendRows()") >= 3   # def-site + envs + projects
+    assert "the compute env directories" in webmod.PAGE
+    assert "resetPerms(" in webmod.PAGE and "resetDirPerms(" in webmod.PAGE
+    assert webmod.PAGE.count("defaults ↺") == 2         # zone + directory chip rows
+
+
+def test_required_and_optional_are_badged_consistently(webmod):
+    """User-reviewed convention: every name/path/description field carries the
+    same badge style — `required` (warn color) or `optional` (dim) — matching
+    the zone headers, so the whole form reads with one visual grammar."""
+    for marker in ('project name <span class="req">required</span>',
+                   'env name <span class="req">required</span>',
+                   'absolute path <span class="req">required</span>'):
+        assert marker in webmod.PAGE, marker
+    assert webmod.PAGE.count('<span class="opt">optional</span>') >= 2  # both descriptions
+
+
+def test_every_write_posts_the_pruned_document_and_the_verdict_names_the_field(webmod):
+    """Two page-side seams. (1) validate/save/preview all post outDoc() — the
+    pruning that turns a blank optional-zone path into 'undeclared' — so the
+    preview is byte-identical to what a save writes. (2) The loader speaks yaml
+    keys (`globus.local_endpoint_name`); the verdict pipes its message through
+    the ONE label map the inputs render from, so an error names the field the
+    user sees ('local display name'), not just the key."""
+    assert webmod.PAGE.count("body: JSON.stringify(outDoc())") == 3
+    assert "body: JSON.stringify(doc)" not in webmod.PAGE
+    assert "GLOBUS_LABELS.local_endpoint_name" in webmod.PAGE   # inputs read the map
+    assert "nameTheField(lastVerdict.message)" in webmod.PAGE   # the verdict glosses with it
 
 
 def test_no_user_string_is_ever_interpolated_into_a_js_string_literal(webmod):
@@ -243,6 +308,24 @@ def test_preview_returns_the_exact_bytes_a_save_would_write(client, cfgmod):
 
 
 # --- reading a real file -----------------------------------------------------
+
+def test_the_page_says_where_its_file_path_came_from(cfgmod, client):
+    """'Is this the right file?' must be answerable from the page: the
+    bootstrap carries path_source — the workspace + which of the three
+    resolution answers chose it, or a plain statement that --file overrode
+    the agent's default. The fixture path IS an override, so that is what
+    it must say (not a workspace story for a path the agent won't read)."""
+    c, _ = client
+    j = c.get("/config").json()
+    assert "--file override" in j["path_source"]
+
+    from agent.skills.compute_access import default_access_path
+    # Under the suite, $BIOINF_PROJECTS_ACCESS is the isolation seam, so the
+    # default path's story names the env var; with it unset the story names
+    # the fixed machine home.
+    src = cfgmod.path_source(default_access_path())
+    assert "BIOINF_PROJECTS_ACCESS" in src and "the agent" in src
+
 
 def test_config_get_reports_state_and_content_of_the_disk_file(cfgmod, webmod, tmp_path):
     from starlette.testclient import TestClient
