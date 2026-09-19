@@ -328,17 +328,21 @@ def test_all_four_zones_are_required_in_the_spec(cfgmod):
     assert required == {k for k, _, _, _ in cfgmod.ZONES}
 
 
-def test_local_zone_defaults_map_to_the_workspace_zones_not_a_scratch_nest(cfgmod):
-    """The old defaults nested all four zones under scratch/local_env/ — which
-    filed reference data, staged images and the record inside the one zone
-    whose contract is 'delete freely'. Each zone now defaults to the workspace
-    zone that already holds that kind of artifact."""
-    from agent.skills import workspace
+def test_local_zone_defaults_are_the_flat_convention_not_a_resolver_lookup(cfgmod):
+    """User-set convention (menu review): ~/bioinf_workspace/{scratch,
+    common_data, containers, reports} — flat, zone-named, and NOT routed
+    through workspace_root(), whose pointer on an older machine made the
+    offered defaults follow a legacy directory and read as broken. (The two
+    earlier shapes were both wrong: a nest under scratch/local_env/ filed the
+    record inside the delete-freely zone, and the resolver lookup leaked
+    machine history into a form default.)"""
+    from pathlib import Path as _P
     d = cfgmod.local_defaults()
-    assert d["agent_scratch_target"].rstrip("/") == str(workspace.scratch_dir("local_env"))
-    assert d["agent_common_data_target"].rstrip("/") == str(workspace.resources_root())
-    assert d["container_upload_target"].rstrip("/") == str(workspace.images_dir())
-    assert d["agent_reports_target"].rstrip("/") == str(workspace.reports_dir())
+    base = _P.home() / "bioinf_workspace"
+    assert d["agent_scratch_target"] == f"{base}/scratch/"
+    assert d["agent_common_data_target"] == f"{base}/common_data/"
+    assert d["container_upload_target"] == f"{base}/containers/"
+    assert d["agent_reports_target"] == f"{base}/reports/"
 
 
 def test_a_required_zone_is_never_offered_a_decline(cfgmod, monkeypatch):

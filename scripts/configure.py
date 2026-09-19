@@ -452,17 +452,19 @@ def ssh_defaults(user: str) -> dict[str, str]:
 
 
 def local_defaults() -> dict[str, str]:
-    """A local env is at zone-parity with a cluster — same four zones, local
-    paths — which is what lets a production run be the same kind of thing on
-    either locus. Each zone maps to the WORKSPACE zone that already holds that
-    kind of artifact: the old defaults nested all four under scratch/local_env/,
-    which filed reference data, staged images and the record inside the one
-    zone whose contract is 'delete freely'."""
+    """Conventional local layout — the four zones FLAT under
+    ~/bioinf_workspace, mirroring how `ssh_defaults` is a convention
+    (/scratch/{user}/CLAUDE_*) rather than a resolver lookup. A menu default
+    only, machine-independent on purpose: routing it through workspace_root()
+    made the offered paths follow this machine's pointer into whatever dir an
+    older setup recorded, which read as broken. The zone names ARE the
+    directory names, so the structure explains itself."""
+    base = Path.home() / workspace.DEFAULT_WORKSPACE_NAME
     return {
-        "agent_scratch_target": f"{workspace.scratch_dir('local_env')}/",
-        "agent_common_data_target": f"{workspace.resources_root()}/",
-        "container_upload_target": f"{workspace.images_dir()}/",
-        "agent_reports_target": f"{workspace.reports_dir()}/",
+        "agent_scratch_target": f"{base}/scratch/",
+        "agent_common_data_target": f"{base}/common_data/",
+        "container_upload_target": f"{base}/containers/",
+        "agent_reports_target": f"{base}/reports/",
     }
 
 
