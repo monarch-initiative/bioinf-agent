@@ -3205,8 +3205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "snapshot_project",
-    "where": "agent/mcp_tools/observability_tools.py:43",
-    "end_line": 43,
+    "where": "agent/mcp_tools/observability_tools.py:61",
+    "end_line": 61,
     "named_in_test": false
   },
   {
@@ -4790,13 +4790,43 @@
     "named_in_test": true
   },
   {
+    "code": "snapshot.deep_path_not_absolute",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_deep_listing",
+    "where": "agent/skills/snapshot.py:319",
+    "end_line": 320,
+    "named_in_test": false
+  },
+  {
+    "code": "snapshot.deep_bad_cap",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_deep_listing",
+    "where": "agent/skills/snapshot.py:325",
+    "end_line": 328,
+    "named_in_test": false
+  },
+  {
+    "code": "snapshot.deep_bad_glob",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_deep_listing",
+    "where": "agent/skills/snapshot.py:331",
+    "end_line": 333,
+    "named_in_test": false
+  },
+  {
     "code": "snapshot.no_env_access_blocks",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "snapshot_project",
-    "where": "agent/skills/snapshot.py:279",
-    "end_line": 279,
+    "where": "agent/skills/snapshot.py:475",
+    "end_line": 475,
     "named_in_test": false
   },
   {
@@ -4805,8 +4835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "snapshot_project",
-    "where": "agent/skills/snapshot.py:305",
-    "end_line": 307,
+    "where": "agent/skills/snapshot.py:504",
+    "end_line": 506,
     "named_in_test": false
   },
   {

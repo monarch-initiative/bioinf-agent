@@ -27,25 +27,23 @@ git clone https://github.com/monarch-initiative/bioinf-agent && cd bioinf-agent
 ```
 
 `setup.sh` does five things, in order: finds conda (**asks** before installing a
-private miniforge under the repo if the machine has none); **asks** where the artifact
-store goes; creates the repo-local runtime env at `./.conda_runtime` and installs the
+private miniforge under the repo if the machine has none); states where the working
+directories go (default `~/bioinf_workspace` — envs, images, reports, sealed specs,
+reference data; recorded in `.bioinf_workspace`, relocatable with
+`BIOINF_WORKSPACE=/path`, never inside the checkout because artifacts outlive any
+clone); creates the repo-local runtime env at `./.conda_runtime` and installs the
 agent into it, editable and with the Globus CLI (editable on purpose — the code must
 stay attached to this checkout); pulls the core toolkit and chr22 test data; runs the
 systems check. It is idempotent — re-run it any time.
 
-**The two questions it asks:**
+**The one question it asks:** install a private miniforge? Only if no conda exists.
+Nothing outside the repo dir, no shell integration; delete `.miniforge/` to remove it.
 
-1. **Install a private miniforge?** Only if no conda exists. Nothing outside the repo
-   dir, no shell integration; delete `.miniforge/` to remove it.
-2. **Where should the artifact store go?** The directory every generated artifact
-   lives in — envs, images, reports, sealed specs, reference data. Press Enter for the
-   offered default; the answer is recorded in `.bioinf_workspace`, and `--check`
-   prints every resolved location. Never inside the checkout: artifacts outlive any
-   clone. (The code and prompts call this directory *the workspace* — it is a
-   per-machine store shared by all your sessions and projects, not a per-session
-   thing.)
+Compute-env configuration is separate and fixed: `~/.bioinf_agent/projects_access.yaml`
+(the `~/.ssh`-config pattern — per machine, hidden, never in a checkout). The config
+menu reads and writes it; see *Declaring compute*.
 
-Scripted installs answer both up front: `BIOINF_WORKSPACE=/path ./scripts/setup.sh --yes`.
+Scripted installs: `BIOINF_WORKSPACE=/path ./scripts/setup.sh --yes`.
 
 | | |
 |---|---|

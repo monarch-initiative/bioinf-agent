@@ -10,9 +10,11 @@
 #   0. Find conda — or, if the machine has none, install a PRIVATE miniforge at
 #      ./.miniforge (with consent: interactive prompt, or --yes). No shell
 #      integration, nothing outside the repo dir; delete .miniforge/ to remove.
-#   1. Ask where the WORKSPACE goes — the directory every generated artifact
-#      lives in (envs, images, reports, scratch, resources). Never inside the
-#      checkout: these outlive any clone. Recorded in ./.bioinf_workspace.
+#   1. State where the WORKING DIRECTORIES go — the directory every generated
+#      artifact lives in (envs, images, reports, scratch, resources); default
+#      ~/bioinf_workspace, relocatable with $BIOINF_WORKSPACE, recorded in
+#      ./.bioinf_workspace. Never inside the checkout: these outlive any clone.
+#      (The config file is separate and fixed: ~/.bioinf_agent/projects_access.yaml.)
 #   2. Create the repo-local RUNTIME env at ./.conda_runtime (conda, Python 3.11).
 #      This is the Python that runs the MCP server. It is per-clone and gitignored;
 #      start_mcp_server.sh and setup_core_test_data.sh resolve it by path, so there
@@ -104,18 +106,18 @@ bioinf_find_conda >/dev/null || install_private_conda
 CONDA="$(bioinf_conda_on_path)"
 say "conda: $CONDA"
 
-# --- 1. workspace ------------------------------------------------------------
-# Asked, never picked silently. The agent's product is auditable artifacts, and a
-# system that chooses their location on the user's behalf is how a config menu
-# came to write one file while the systems check read another.
-#
-# The offered default prefers ~/Desktop when one exists, because reports/ is a
-# directory people are meant to OPEN. That preference lives HERE, in front of a
-# human who confirms it — never in the resolver, which must answer the same way
-# on a machine that grows a Desktop folder next month.
+# --- 1. working directories ---------------------------------------------------
+# STATED, no longer asked (menu review 2026-09-18). The question existed to keep
+# a config menu from writing one file while the systems check read another
+# (CS55) — but the config now has a FIXED machine-level home
+# (~/.bioinf_agent/projects_access.yaml), so what remains here is only where the
+# PRODUCTS default to: reports/, resources/, environments/, scratch/, under
+# ~/bioinf_workspace. A default, not a requirement — $BIOINF_WORKSPACE relocates
+# it (cloud machines with ephemeral $HOME), and each compute env's zones are
+# independently declarable in the config regardless.
 POINTER="$PROJECT_ROOT/.bioinf_workspace"
 if [ -n "${BIOINF_WORKSPACE:-}" ]; then
-    # An env-var answer is recorded like an interactive one — otherwise it is
+    # An env-var answer is recorded like a default one — otherwise it is
     # true only for this run, and a server launched from a shell without the
     # export resolves a DIFFERENT workspace than the one setup just bootstrapped.
     case "$BIOINF_WORKSPACE" in
@@ -126,67 +128,22 @@ if [ -n "${BIOINF_WORKSPACE:-}" ]; then
     esac
     mkdir -p "$BIOINF_WORKSPACE"
     printf '%s\n' \
-        "# The bioinf-agent workspace: where every generated artifact lives." \
+        "# The bioinf-agent working directories: where every generated artifact lives." \
         "# Written by scripts/setup.sh. Override with \$BIOINF_WORKSPACE." \
         "$BIOINF_WORKSPACE" > "$POINTER"
-    say "workspace: $BIOINF_WORKSPACE (from \$BIOINF_WORKSPACE; recorded in .bioinf_workspace)"
+    say "working directories: $BIOINF_WORKSPACE (from \$BIOINF_WORKSPACE; recorded in .bioinf_workspace)"
 elif [ -f "$POINTER" ]; then
-    say "workspace: $(grep -v '^#' "$POINTER" | grep -v '^$' | head -1) (from .bioinf_workspace)"
+    say "working directories: $(grep -v '^#' "$POINTER" | grep -v '^$' | head -1) (from .bioinf_workspace)"
 else
-    if [ -d "$HOME/Desktop" ]; then
-        WS_DEFAULT="$HOME/Desktop/bioinf_agent"
-    else
-        WS_DEFAULT="$HOME/bioinf_agent"
-    fi
-    echo
-    echo "  Where should bioinf-agent keep what it BUILDS?"
-    echo "    environments/  conda envs + container images   (rebuildable)"
-    echo "    reports/       ENV + RUN reports, sealed specs (the record — never deleted)"
-    echo "    resources/     reference genomes + test data   (expensive to refetch)"
-    echo "    scratch/       job state, drafts, staging      (delete freely)"
-    echo
-    echo "  Not inside this checkout: these outlive it."
-    if [ "$ASSUME_YES" = "1" ]; then
-        WS="$WS_DEFAULT"
-        say "workspace: $WS (default, accepted by --yes)"
-    else
-        printf "  workspace [%s]: " "$WS_DEFAULT"
-        # `read` works on a pipe as well as a terminal, so a piped answer is an
-        # answer. Only END OF INPUT — nobody there to ask — falls through, and it
-        # REFUSES rather than picking: silently choosing where a user's records
-        # live is the failure this prompt exists to prevent, and a non-interactive
-        # caller has two ways to say what it wants.
-        if read -r WS; then
-            [ -n "$WS" ] || WS="$WS_DEFAULT"     # bare Enter accepts the shown default
-        else
-            echo >&2
-            echo "[setup] no answer on stdin, and the workspace is not something to" >&2
-            echo "[setup] guess at — it is where your envs, reports and sealed specs" >&2
-            echo "[setup] will live. For a scripted install, either:" >&2
-            echo "[setup]   BIOINF_WORKSPACE=/path/to/workspace ./scripts/setup.sh" >&2
-            echo "[setup]   ./scripts/setup.sh --yes        # accept $WS_DEFAULT" >&2
-            exit 2
-        fi
-    fi
-    WS="${WS/#\~/$HOME}"
-    case "$WS" in
-        "$HOME"|"$HOME"/*) ;;
-        *) echo "[setup] $WS is outside \$HOME. Docker bind-mounts resolve against the" >&2
-           echo "[setup] Docker VM's shared prefixes, so an env frozen there would validate" >&2
-           echo "[setup] against an empty directory. Choose a workspace under \$HOME." >&2
-           exit 2 ;;
-    esac
-    case "$WS" in
-        "$PROJECT_ROOT"|"$PROJECT_ROOT"/*)
-           echo "[setup] $WS is inside the checkout. Artifacts must outlive it." >&2
-           exit 2 ;;
-    esac
+    WS="$HOME/bioinf_workspace"
     mkdir -p "$WS"
     printf '%s\n' \
-        "# The bioinf-agent workspace: where every generated artifact lives." \
+        "# The bioinf-agent working directories: where every generated artifact lives." \
         "# Written by scripts/setup.sh. Override with \$BIOINF_WORKSPACE." \
         "$WS" > "$POINTER"
-    say "workspace: $WS (recorded in .bioinf_workspace)"
+    say "working directories: $WS (default; relocate with BIOINF_WORKSPACE=/path ./scripts/setup.sh)"
+    say "  reports/ = the record (never deleted) · resources/ = genomes/test data"
+    say "  environments/ = envs + images · scratch/ = delete freely"
 fi
 
 # --- 2. runtime env ----------------------------------------------------------

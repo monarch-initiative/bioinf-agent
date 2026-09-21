@@ -3,13 +3,16 @@ L14 cheat guard — the snapshot primitive's command surface.
 
 Snapshot is the read-only INSPECTION primitive against a compute env (the
 actuators — upload/download/submit/run — each carry their own L14 guard).
-It runs a single `find` invocation with a fixed `-printf`
-template and `-maxdepth 1` (one-level visibility). These tests pin:
+It runs a single `find` invocation with a fixed `-printf` template —
+`-maxdepth 1` in overview mode (one level), plus an optional quoted
+`-name <glob>` and a `| head -n <cap>` in deep mode (recursive, capped,
+truncation stated). These tests pin:
 
-  - the LITERAL argv (local) and LITERAL remote-shell string (ssh) — any
-    code change that introduces a new shell pattern fails CI
-  - the one-level visibility contract (no recursion past depth 1)
-  - permission gate fires BEFORE subprocess for unauthorized paths
+  - the LITERAL argv (local) and LITERAL remote-shell strings (ssh), both
+    modes — any code change that introduces a new shell pattern fails CI
+  - overview stays one level; deep mode recurses but STATES truncation
+  - permission gate fires BEFORE subprocess for unauthorized paths,
+    in both modes
   - permission gate refuses dirs whose permissions[] don't include the
     operation's required token
   - shell injection in path is neutralized by shlex.quote
@@ -796,3 +799,129 @@ def test_mcp_wrapper_translates_permission_denied_to_error_dict(monkeypatch, tmp
     result = m.snapshot_project("anything")
     assert "error" in result, f"MCP wrapper leaked exception: {result!r}"
     assert "FileNotFoundError" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Deep listing — recursive on request, capped with the truncation STATED
+#    (menu review 2026-09-18: the grant is the boundary; the cap bounds one
+#    call's output and is raisable, so a complete sweep is always reachable)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_deep_remote_cmd_is_pinned():
+    """The deep-mode remote shell string, literally. No -maxdepth (recursive
+    by design); `head` asks for cap+1 lines so truncation is DETECTED, not
+    guessed."""
+    q = shlex.quote(snapshot._FIND_PRINTF)
+    cmd = snapshot._ssh_remote_cmd_deep("/scratch/me/proj", None, 100)
+    assert cmd == (f"find /scratch/me/proj '(' -type f -o -type d ')' "
+                   f"-printf {q} | head -n 101")
+
+
+@pytest.mark.integration
+def test_deep_remote_cmd_neutralizes_glob_injection():
+    """The glob rides the remote command line like the path does, so it gets
+    the same treatment: shlex.quote'd into ONE argv element, metachars
+    inert."""
+    evil = "*.fastq.gz; rm -rf /"
+    cmd = snapshot._ssh_remote_cmd_deep("/p", evil, 10)
+    find_part = cmd.split(" | head -n ")[0]
+    parsed = shlex.split(find_part)
+    assert evil in parsed, f"glob not one quoted argv element: {parsed!r}"
+    contaminants = [a for a in parsed
+                    if any(c in a for c in [";", "&&", "`"]) and a != evil]
+    assert not contaminants, f"metachars leaked out of the glob: {contaminants!r}"
+    assert cmd.endswith("| head -n 11")
+
+
+@pytest.mark.integration
+def test_deep_local_walk_recurses_globs_and_stops_at_the_cap(tmp_path, monkeypatch):
+    """Local deep mode: recursive (depth-2 files visible), basename-glob
+    filtered, cap honored with truncation reported — and still ZERO
+    subprocess."""
+    called = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **kw: called.append(a) or MagicMock())
+    root = tmp_path / "d"
+    (root / "samples").mkdir(parents=True)
+    for i in range(5):
+        (root / "samples" / f"s{i}.fastq.gz").write_bytes(b"x")
+    (root / "notes.txt").write_text("n")
+
+    entries, trunc = snapshot._local_walk_deep(str(root), None, 100)
+    assert any(e["path"].endswith("samples/s0.fastq.gz") for e in entries)
+    assert trunc is False
+
+    entries, trunc = snapshot._local_walk_deep(str(root), "*.fastq.gz", 100)
+    assert len(entries) == 5
+    assert all(e["path"].endswith(".fastq.gz") for e in entries)
+
+    entries, trunc = snapshot._local_walk_deep(str(root), "*.fastq.gz", 3)
+    assert len(entries) == 3 and trunc is True
+    assert called == []
+
+
+@pytest.mark.integration
+def test_deep_listing_full_surface_returns_depth2_and_states_truncation(_local_access):
+    """Through snapshot_project itself: the deep listing sees what the
+    overview deliberately does not (samples/deep.fq.gz), and a capped call
+    says so in words a caller can act on."""
+    access_path, proj_dir = _local_access
+    res = snapshot.snapshot_project("myproj", path=str(proj_dir),
+                                    access_path=str(access_path))
+    assert res["mode"] == "deep_listing" and res["truncated"] is False
+    assert any(e["path"].endswith("samples/deep.fq.gz") for e in res["entries"])
+
+    capped = snapshot.snapshot_project("myproj", path=str(proj_dir),
+                                       max_entries=2,
+                                       access_path=str(access_path))
+    assert capped["truncated"] is True and capped["entry_count"] == 2
+    assert "max_entries" in capped["note"], "truncation must name its remedy"
+
+
+@pytest.mark.integration
+def test_deep_listing_outside_every_grant_refused_before_subprocess(
+        _local_access, monkeypatch):
+    """The grant stays the boundary: a deep path under NO authorized dir
+    raises PermissionDenied with zero subprocess calls."""
+    access_path, _proj_dir = _local_access
+    called = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **kw: called.append(a) or MagicMock())
+    with pytest.raises(PermissionDenied):
+        snapshot.snapshot_project("myproj", path="/etc",
+                                  access_path=str(access_path))
+    assert called == []
+
+
+@pytest.mark.integration
+def test_deep_listing_upload_only_grant_refused(_local_access, monkeypatch):
+    """file_name_only is still the listing token in deep mode — a dir granted
+    only `upload` refuses the deep listing before any subprocess."""
+    access_path, proj_dir = _local_access
+    data = yaml.safe_load(access_path.read_text())
+    data["projects"][0]["directories"][0]["permissions"] = ["upload"]
+    access_path.write_text(yaml.safe_dump(data))
+    called = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **kw: called.append(a) or MagicMock())
+    with pytest.raises(PermissionDenied):
+        snapshot.snapshot_project("myproj", path=str(proj_dir),
+                                  access_path=str(access_path))
+    assert called == []
+
+
+@pytest.mark.integration
+def test_deep_listing_bad_args_are_clean_refusals_and_traversal_is_denied(_local_access):
+    """Malformed deep args come back as {error} dicts naming the rule; a
+    traversal component in the path is a PermissionDenied, not a walk."""
+    access_path, proj_dir = _local_access
+    kw = {"access_path": str(access_path)}
+    assert "error" in snapshot.snapshot_project(
+        "myproj", path=str(proj_dir), name_glob="a/b", **kw)
+    assert "error" in snapshot.snapshot_project(
+        "myproj", path=str(proj_dir), name_glob="-delete", **kw)
+    assert "error" in snapshot.snapshot_project(
+        "myproj", path=str(proj_dir), max_entries=0, **kw)
+    with pytest.raises(PermissionDenied):
+        snapshot.snapshot_project("myproj", path=str(proj_dir) + "/../other", **kw)

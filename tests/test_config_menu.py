@@ -318,13 +318,31 @@ def test_project_name_rule_still_admits_every_real_name(tmp_path):
         assert not compute_access.PROJECT_NAME_RE.match(name), name
 
 
-def test_scratch_and_common_data_are_required_zones_in_the_spec(cfgmod):
-    """The menu (both renderers) must not offer 'skip' for the two zones that
-    make an env usable — the bridge's run/stage primitives refuse without them.
-    Menu-level by design: the loader gate was measured at 153 fixture breaks
-    and deliberately not taken in this pass."""
+def test_all_four_zones_are_required_in_the_spec(cfgmod):
+    """The menu (both renderers) must not offer 'skip' for any zone (menu
+    review, 2026-09-18): scratch + common_data are what the run primitives
+    refuse without, containers is where every staged .sif lands, reports is
+    where the record mirrors. Menu-level by design: the loader gate was
+    measured at 153 fixture breaks and deliberately not taken."""
     required = {k for k, _, _, req in cfgmod.ZONES if req}
-    assert required == {"agent_scratch_target", "agent_common_data_target"}
+    assert required == {k for k, _, _, _ in cfgmod.ZONES}
+
+
+def test_local_zone_defaults_are_the_flat_convention_not_a_resolver_lookup(cfgmod):
+    """User-set convention (menu review): ~/bioinf_workspace/{scratch,
+    common_data, containers, reports} — flat, zone-named, and NOT routed
+    through workspace_root(), whose pointer on an older machine made the
+    offered defaults follow a legacy directory and read as broken. (The two
+    earlier shapes were both wrong: a nest under scratch/local_env/ filed the
+    record inside the delete-freely zone, and the resolver lookup leaked
+    machine history into a form default.)"""
+    from pathlib import Path as _P
+    d = cfgmod.local_defaults()
+    base = _P.home() / "bioinf_workspace"
+    assert d["agent_scratch_target"] == f"{base}/scratch/"
+    assert d["agent_common_data_target"] == f"{base}/common_data/"
+    assert d["container_upload_target"] == f"{base}/containers/"
+    assert d["agent_reports_target"] == f"{base}/reports/"
 
 
 def test_a_required_zone_is_never_offered_a_decline(cfgmod, monkeypatch):
@@ -374,19 +392,18 @@ def test_local_path_existence_note_fires_only_for_local_envs(cfgmod, tmp_path, c
     assert "does not exist" not in capsys.readouterr().out
 
 
-def test_projects_menu_is_locked_until_a_remote_env_exists(cfgmod, tmp_path):
-    """D10: 'project' is an access-grant list for YOUR territory on a shared
-    machine; a purely local setup has nothing to grant, so the concept arrives
-    when it is needed. But a file that already holds projects must stay
-    editable regardless — hiding data would make it unfixable."""
+def test_projects_menu_is_locked_until_any_compute_env_exists(cfgmod, tmp_path):
+    """D10, revised in menu review (2026-09-18): a project must name at least
+    one compute env to run on, so the section unlocks once ANY env exists —
+    local or ssh, since work computes on either. A file that already holds
+    projects must stay editable regardless — hiding data would make it
+    unfixable."""
     cfg = cfgmod.Config(tmp_path / "pa.yaml")
     assert cfgmod.projects_unlocked(cfg) is False
 
     cfg.envs.append({"name": "laptop", "type": "local"})
-    assert cfgmod.projects_unlocked(cfg) is False, "a local env must not unlock"
-
-    cfg.envs.append(_env())
-    assert cfgmod.projects_unlocked(cfg) is True, "an ssh env unlocks"
+    assert cfgmod.projects_unlocked(cfg) is True, \
+        "a local env unlocks — a project can compute there"
 
     cfg2 = cfgmod.Config(tmp_path / "pa2.yaml")
     cfg2.projects.append({"name": "p", "compute_envs": [], "directories": []})
@@ -402,8 +419,7 @@ def test_a_local_env_is_never_asked_the_transfer_question(cfgmod, monkeypatch, c
     input is exhausted and the env never stages."""
     answers = iter(
         ["local", ""]            # type, name (accept default)
-        + ["", "", ""] * 2       # scratch + common_data: path, permissions, description
-        + ["", "", "", ""] * 2   # container + reports: declare?, path, perms, desc
+        + ["", "", ""] * 4       # all four zones (required): path, permissions, description
     )
 
     def scripted_input(*_a):
@@ -429,8 +445,7 @@ def test_editing_a_local_env_carries_hand_written_slurm_and_transfer_blocks(
     local env in a hand-written file, the menu just never ASKS about them there
     — so an edit round-trip has to carry them, stated, not silently dropped."""
     answers = iter(["", ""]        # type (keep local), name (keep)
-                   + ["", "", ""] * 2   # scratch + common_data
-                   + ["n", "n"])        # decline container + reports
+                   + ["", "", ""] * 4)  # all four zones (required): path, perms, desc
 
     def scripted_input(*_a):
         try:

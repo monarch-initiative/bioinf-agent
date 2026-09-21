@@ -17,6 +17,9 @@ JSON, which makes it a machine surface too:
     POST /validate  → {state, message, notes[]}     (verdict only; writes nothing)
     POST /save      → {ok, messages[], state}       (validate → .bak → write)
     POST /preview   → {yaml}                        (the exact bytes a save writes)
+    POST /shutdown  → {ok, closing}                 (the page's close buttons — stops
+                                                     the serving process, so the user
+                                                     never has to Ctrl-C the terminal)
     GET  /globus/local-id and /globus/search?q=     (the endpoint picker's data)
 
 Two rings guard the write surface. POST routes require the header
@@ -105,8 +108,8 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
         for key, _, _, _ in cfgmod.ZONES:
             p = (env.get(key) or {}).get("path") if isinstance(env.get(key), dict) else None
             if isinstance(p, str) and p and not Path(p).is_dir():
-                notes.append(f"{env.get('name')}: {key} path {p} does not exist yet "
-                             f"(accepted — nothing creates it for you)")
+                notes.append(f"{env.get('name') or '(unnamed env)'}: {key} path {p} "
+                             f"does not exist yet (accepted — nothing creates it for you)")
     for proj in doc["projects"]:
         if not isinstance(proj, dict):
             continue
@@ -119,7 +122,7 @@ def _existence_notes(cfgmod, doc: dict) -> list[str]:
     return notes
 
 
-def create_app(cfg_path: Path, cfgmod):
+def create_app(cfg_path: Path, cfgmod, on_close=None):
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -153,6 +156,7 @@ def create_app(cfg_path: Path, cfgmod):
         state, message = cfg.state()
         bootstrap = {
             "path": str(cfg_path),
+            "path_source": cfgmod.path_source(cfg_path),
             "exists": cfg_path.exists(),
             "state": state, "message": message,
             "load_error": cfg.load_error,
@@ -170,7 +174,9 @@ def create_app(cfg_path: Path, cfgmod):
     async def config_get(request):
         cfg = cfgmod.Config(cfg_path, notify=lambda k, t: None)
         state, message = cfg.state()
-        return JSONResponse({"path": str(cfg_path), "exists": cfg_path.exists(),
+        return JSONResponse({"path": str(cfg_path),
+                             "path_source": cfgmod.path_source(cfg_path),
+                             "exists": cfg_path.exists(),
                              "state": state, "message": message,
                              "load_error": cfg.load_error, "config": cfg.data,
                              "meta": _meta(cfgmod)})
@@ -215,6 +221,15 @@ def create_app(cfg_path: Path, cfgmod):
             return err_resp
         return JSONResponse({"yaml": cfgmod.HEADER + "\n" + cfgmod.dump(doc)})
 
+    async def shutdown(request):
+        # Header-guarded like every POST: stopping the user's menu process is a
+        # deliberate act, not one an ambient cross-origin request gets to take.
+        if (deny := _guarded(request)) is not None:
+            return deny
+        if on_close is not None:
+            on_close()
+        return JSONResponse({"ok": True, "closing": on_close is not None})
+
     async def globus_local_id(request):
         return JSONResponse({"id": cfgmod._globus_local_id()})
 
@@ -235,6 +250,7 @@ def create_app(cfg_path: Path, cfgmod):
         Route("/validate", validate, methods=["POST"]),
         Route("/save", save, methods=["POST"]),
         Route("/preview", preview, methods=["POST"]),
+        Route("/shutdown", shutdown, methods=["POST"]),
         Route("/globus/local-id", globus_local_id),
         Route("/globus/search", globus_search),
     ], middleware=[Middleware(LoopbackHostOnly)])
@@ -253,13 +269,28 @@ def serve(cfg_path: Path, cfgmod, port: int = 0) -> int:
         s.close()
     url = f"http://127.0.0.1:{port}/"
     print(f"  config menu: {url}")
-    print("  nothing is written until you SAVE in the page; Ctrl-C here stops it")
+    print("  nothing is written until you SAVE & CLOSE in the page; the page's close")
+    print("  buttons end this process (Ctrl-C here also works)")
+
+    # The page's close buttons POST /shutdown; the callback flips uvicorn's own
+    # exit flag, so `server.run()` returns and the terminal gets its prompt back
+    # without a Ctrl-C. The holder exists because the app must be built before
+    # the server that the callback needs to reach.
+    holder: dict[str, Any] = {}
+
+    def _close() -> None:
+        if (srv := holder.get("server")) is not None:
+            srv.should_exit = True
+
+    app = create_app(cfg_path, cfgmod, on_close=_close)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                           log_level="warning"))
+    holder["server"] = server
     try:
         webbrowser.open(url)
     except Exception:
         pass
-    uvicorn.run(create_app(cfg_path, cfgmod), host="127.0.0.1", port=port,
-                log_level="warning")
+    server.run()
     return 0
 
 
@@ -325,7 +356,7 @@ nav .item.active {
 nav .item.locked { color: #44545c; }
 nav .item.locked::after { content: " ⬦"; }
 
-main { flex: 1; overflow-y: auto; padding: 26px 34px 120px; }
+main { flex: 1; overflow-y: auto; padding: 26px 34px 190px; }
 h2 { font-size: 13px; letter-spacing: .3em; text-transform: uppercase;
      color: var(--acc); margin: 4px 0 14px; }
 .hint { color: var(--dim); font-size: 13px; margin-bottom: 18px; max-width: 72ch; }
@@ -335,11 +366,15 @@ h2 { font-size: 13px; letter-spacing: .3em; text-transform: uppercase;
   padding: 16px 20px; margin-bottom: 16px;
   box-shadow: 0 0 0 1px #00000055, 0 6px 24px #00000066;
 }
-.card h3 { font-size: 14px; color: var(--tx); display: flex; align-items: center;
+.card h3 { font-size: 14px; color: var(--tx); display: flex; align-items: flex-end;
            gap: 10px; margin-bottom: 8px; }
 .tag { font-size: 10px; letter-spacing: .15em; text-transform: uppercase;
        color: var(--acc); border: 1px solid var(--acc2); padding: 0 6px;
        border-radius: 2px; }
+/* In a card header the type tag stands beside the name input: same height,
+   tops and bottoms aligned (the header row aligns to flex-end). */
+.card h3 .tag { display: inline-flex; align-items: center; height: 34px;
+                padding: 0 10px; }
 .row { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field label { font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
@@ -359,7 +394,12 @@ select {
 .zone .zname { font-size: 12px; letter-spacing: .1em; color: var(--tx);
                text-transform: uppercase; }
 .zone .zgloss { color: var(--dim); font-size: 12px; }
-.req { color: var(--warn); font-size: 10px; letter-spacing: .15em; }
+/* One badge style, two colors: required warns, optional stays dim. The
+   text-transform reset keeps them lowercase even inside uppercased labels;
+   the dim middot + gap separates badge from label everywhere it appears. */
+.req { color: var(--warn); font-size: 10px; letter-spacing: .15em; text-transform: none; }
+.opt { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: none; }
+.req::before, .opt::before { content: '·'; color: var(--dim); margin: 0 .6em 0 .35em; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .chip {
   border: 1px solid var(--line); color: var(--dim); font-size: 11px;
@@ -367,12 +407,17 @@ select {
 }
 .chip.on { border-color: var(--acc); color: #06211d; background: var(--acc); }
 .chip:hover { border-color: var(--acc2); }
+.chip.reset { border-style: dashed; color: var(--dim); }
+.chip.reset:hover { color: var(--tx); }
+.leghead { font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+           color: var(--dim); margin: 14px 0 4px; }
 button {
   background: transparent; border: 1px solid var(--acc2); color: var(--acc);
   padding: 7px 18px; font-size: 12px; letter-spacing: .18em;
   text-transform: uppercase; cursor: pointer; border-radius: 2px;
 }
 button:hover { background: #57d7c31a; border-color: var(--acc); }
+button:disabled { opacity: .35; cursor: default; pointer-events: none; }
 button.subtle { border-color: var(--line); color: var(--dim); }
 button.subtle:hover { color: var(--tx); }
 button.danger { border-color: #6b2f2f; color: var(--bad); }
@@ -399,7 +444,11 @@ footer {
   padding: 12px 34px; display: flex; align-items: center; gap: 18px;
   backdrop-filter: blur(4px);
 }
-footer .verdict { flex: 1; font-size: 13px; min-width: 0; }
+/* The verdict never grows the footer past ~4 lines — past that it scrolls
+   internally, so a pile of notes cannot wall off the page content above. */
+footer .verdict { flex: 1; font-size: 13px; min-width: 0; max-height: 84px;
+                  overflow-y: auto; }
+footer button { line-height: 1.5; text-align: center; flex-shrink: 0; }
 .searchrows { margin-top: 6px; }
 .searchrows .srow { padding: 4px 8px; border: 1px solid var(--line);
   border-radius: 2px; margin-bottom: 4px; cursor: pointer; font-size: 12px; }
@@ -420,8 +469,9 @@ footer .verdict { flex: 1; font-size: 13px; min-width: 0; }
 </div>
 <footer>
   <div class="verdict" id="verdict"></div>
-  <button class="subtle" onclick="revert()">Revert</button>
-  <button onclick="saveCfg()">Save</button>
+  <button class="subtle" onclick="revertLast()">revert<br>last<br>change</button>
+  <button onclick="saveAndClose()">save<br>&amp;<br>close</button>
+  <button class="danger" onclick="cancelAndClose()">cancel<br>changes<br>&amp; close</button>
 </footer>
 <script>
 const BOOT = __BOOTSTRAP__;
@@ -435,9 +485,46 @@ const HDRS = {'Content-Type': 'application/json', 'X-Bioinf-Config': '1'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+// One spelling of each globus field's on-screen label — the inputs render these
+// AND the verdict glosses the loader's yaml-key messages with them, so an error
+// about `local_endpoint_name` names the field the user actually sees.
+const GLOBUS_LABELS = {
+  local_endpoint_id: 'local endpoint UUID (this machine)',
+  local_endpoint_name: 'local display name',
+  remote_endpoint_id: 'remote endpoint UUID',
+  remote_endpoint_name: 'remote display name',
+};
+function nameTheField(msg) {
+  let out = String(msg || '');
+  for (const [k, label] of Object.entries(GLOBUS_LABELS))
+    out = out.split('globus.' + k).join(`globus.${k} (the "${label}" field)`);
+  return out;
+}
+
+// The undo stack: markDirty runs exactly once per mutation, AFTER it, so the
+// checkpoint taken at the END of the previous markDirty is this mutation's
+// pre-state. REVERT LAST CHANGE pops one state at a time back to the loaded
+// document.
+let undoStack = [];
+let checkpoint = JSON.parse(JSON.stringify(doc));
+
+// What actually gets validated/saved/previewed: an OPTIONAL zone with a blank
+// path is "not declared" and is pruned; a REQUIRED zone with a blank path is
+// kept so the loader refuses it by name (the menu-level required-ness, stated
+// where the save happens rather than silently rounded away).
+function outDoc() {
+  const d = JSON.parse(JSON.stringify(doc));
+  for (const env of d.compute_envs || []) {
+    for (const z of META.zones) {
+      const blk = env[z.key];
+      if (blk && !z.required && !(blk.path || '').trim()) delete env[z.key];
+    }
+  }
+  return d;
+}
+
 function projectsUnlocked() {
-  return (doc.projects || []).length > 0 ||
-         (doc.compute_envs || []).some(e => e.type === 'ssh');
+  return (doc.projects || []).length > 0 || (doc.compute_envs || []).length > 0;
 }
 
 // ---------- nav + shell ----------
@@ -458,6 +545,9 @@ function renderNav() {
 function go(k) { section = k; render(); }
 
 function markDirty() {
+  undoStack.push(checkpoint);
+  if (undoStack.length > 200) undoStack.shift();
+  checkpoint = JSON.parse(JSON.stringify(doc));
   dirty = true;
   document.getElementById('dirtypill').style.display = '';
   scheduleValidate();
@@ -477,34 +567,34 @@ function render() {
 // ---------- compute envs ----------
 function renderZone(ei, z) {
   const env = doc.compute_envs[ei];
-  const blk = env[z.key];
-  const declared = !!blk;
-  const zoneToggle = z.required ? `<span class="req">required</span>` :
-    `<label style="font-size:11px;color:var(--dim);cursor:pointer">
-       <input type="checkbox" ${declared ? 'checked' : ''}
-              onchange="toggleZone(${ei}, '${z.key}', this.checked)"> declared</label>`;
-  let body = '';
-  if (declared) {
-    const perms = blk.permissions || [];
-    body = `
-      <div class="row">
-        <div class="field"><label>path</label>
-          <input type="text" value="${esc(blk.path || '')}" size="46"
-                 onchange="setZone(${ei}, '${z.key}', 'path', this.value)"></div>
-        <div class="field"><label>description</label>
-          <input type="text" value="${esc(blk.description || '')}" size="30"
-                 onchange="setZone(${ei}, '${z.key}', 'description', this.value)"></div>
-      </div>
-      <div class="chips">` +
+  const blk = env[z.key] || null;
+  const defaults = env.type === 'ssh' ? META.ssh_zone_templates : META.local_zone_defaults;
+  const phPath = (defaults[z.key] || '').replace('{user}', env.user || 'USER');
+  const perms = blk ? (blk.permissions || []) : z.default_perms;
+  const badge = z.required ? `<span class="req">required</span>` :
+    `<span class="opt">optional — blank path leaves it undeclared</span>`;
+  return `<div class="zone">
+    <div class="zhead"><span class="zname">${z.label}</span> ${badge}
+      <span class="zgloss">${esc(z.gloss)}</span></div>
+    <div class="row">
+      <div class="field"><label>path</label>
+        <input type="text" value="${esc(blk ? blk.path || '' : '')}" size="42"
+               placeholder="${esc(phPath)}"
+               onchange="setZone(${ei}, '${z.key}', 'path', this.value)"></div>
+      <div class="field"><label>description</label>
+        <input type="text" value="${esc(blk ? blk.description || '' : '')}" size="26"
+               placeholder="${esc(z.gloss)}"
+               onchange="setZone(${ei}, '${z.key}', 'description', this.value)"></div>
+      <div class="field"><label>permissions</label>
+        <div class="chips">` +
       META.permission_order.map(t =>
         `<span class="chip ${perms.includes(t) ? 'on' : ''}"
                title="${esc(META.permission_glosses[t])}"
                onclick="togglePerm(${ei}, '${z.key}', '${t}')">${t}</span>`).join('') +
-      `</div>`;
-  }
-  return `<div class="zone">
-    <div class="zhead"><span class="zname">${z.label}</span> ${zoneToggle}
-      <span class="zgloss">${esc(z.gloss)}</span></div>${body}</div>`;
+      `<span class="chip reset" title="reset to the recommended set: ${esc(z.default_perms.join(', '))}"
+             onclick="resetPerms(${ei}, '${z.key}')">defaults ↺</span>
+      </div></div>
+    </div></div>`;
 }
 
 function renderEnv(env, ei) {
@@ -539,8 +629,10 @@ function renderEnv(env, ei) {
   const zones = META.zones.map(z => renderZone(ei, z)).join('');
   return `<div class="card">
     <h3><span class="tag">${env.type}</span>
-      <input type="text" value="${esc(env.name || '')}" size="18"
-             onchange="renameEnv(${ei}, this.value)">
+      <div class="field">
+        <label>env name <span class="req">required</span></label>
+        <input type="text" value="${esc(env.name || '')}" size="18"
+               onchange="renameEnv(${ei}, this.value)"></div>
       <span style="flex:1"></span>
       <button class="danger" onclick="removeEnv(${ei})">remove</button></h3>
     ${sshFields}${zones}${isSSH ? renderTransfer(ei) : ''}${isSSH ? renderSlurm(ei) : ''}
@@ -554,20 +646,20 @@ function renderTransfer(ei) {
   const g = (dt && dt.globus) || {};
   const globusFields = t !== 'globus' ? '' : `
     <div class="row">
-      <div class="field"><label>local endpoint UUID (this machine)</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.local_endpoint_id)}</label>
         <input type="text" id="lep${ei}" value="${esc(g.local_endpoint_id || '')}" size="40"
                onchange="setGlobus(${ei}, 'local_endpoint_id', this.value)"></div>
-      <div class="field"><label>local display name</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.local_endpoint_name)}</label>
         <input type="text" value="${esc(g.local_endpoint_name || '')}"
                onchange="setGlobus(${ei}, 'local_endpoint_name', this.value)"></div>
       <div class="field" style="justify-content:flex-end">
         <button class="subtle" onclick="detectLocal(${ei})">detect</button></div>
     </div>
     <div class="row">
-      <div class="field"><label>remote endpoint UUID</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.remote_endpoint_id)}</label>
         <input type="text" id="rep${ei}" value="${esc(g.remote_endpoint_id || '')}" size="40"
                onchange="setGlobus(${ei}, 'remote_endpoint_id', this.value)"></div>
-      <div class="field"><label>remote display name</label>
+      <div class="field"><label>${esc(GLOBUS_LABELS.remote_endpoint_name)}</label>
         <input type="text" id="ren${ei}" value="${esc(g.remote_endpoint_name || '')}"
                onchange="setGlobus(${ei}, 'remote_endpoint_name', this.value)"></div>
       <div class="field" style="justify-content:flex-end">
@@ -616,18 +708,31 @@ function renderSlurm(ei) {
       own slurm settings win over these.</div></div>`;
 }
 
+// Both intro legends render off the same spec the form renders (META.zones /
+// META.permission_glosses), so neither can describe a thing the form doesn't show.
+function permLegendRows() {
+  return META.permission_order.map(t =>
+    `<tr><td>${t}</td><td>${esc(META.permission_glosses[t])}</td></tr>`).join('');
+}
 function renderEnvs() {
   const cards = (doc.compute_envs || []).map((e, i) => renderEnv(e, i)).join('');
+  const zoneRows = META.zones.map(z =>
+    `<tr><td>${z.label}${z.required ? ' *' : ''}</td><td>${esc(z.gloss)}</td></tr>`).join('');
   return `<h2>Compute Environments</h2>
     <p class="hint">Where the agent may run jobs. <b>local</b> is this machine —
     a first-class environment that unlocks production runs on your own hardware;
-    <b>ssh</b> is a remote machine (an HPC cluster). Each env declares the same
-    four zones, which is what makes a production run the same kind of thing on
-    either.</p>
+    <b>ssh</b> is a remote machine (an HPC cluster / external compute resource).
+    Each env declares the same kind of four zones, so data processing happens in
+    the same way between compute resources (local, or remote HPC / external
+    compute).</p>
+    <div class="leghead">the compute env directories (* = required)</div>
+    <table class="legend" style="margin:0 0 4px 16px">${zoneRows}</table>
+    <div class="leghead">the permissions — independent grants, not a ladder</div>
+    <table class="legend" style="margin:0 0 18px 16px">${permLegendRows()}</table>
     ${cards || '<p class="hint">none declared yet</p>'}
     <div class="row">
-      <button onclick="addEnv('local')">+ local env (this machine)</button>
-      <button onclick="addEnv('ssh')">+ ssh env (a cluster)</button>
+      <button onclick="addEnv('local')">+ add new local env (this machine)</button>
+      <button onclick="addEnv('ssh')">+ add new ssh env (cluster/external compute resource)</button>
     </div>`;
 }
 
@@ -636,7 +741,7 @@ function renderProjects() {
   if (!projectsUnlocked()) {
     return `<h2>Projects</h2>
       <div class="lockbox"><div class="glyph">⬦</div>
-        <p><b>Locked — needs a remote env.</b></p>
+        <p><b>Locked — declare a compute env first.</b></p>
         <p style="margin-top:8px">${esc(META.projects_locked_note)}</p></div>`;
   }
   const namePat = new RegExp(META.project_name_pattern);
@@ -655,30 +760,36 @@ function renderProjects() {
               ${(p.compute_envs || []).map(n =>
                 `<option ${d.env === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}
             </select></div>
-          <div class="field"><label>absolute path</label>
+          <div class="field"><label>absolute path <span class="req">required</span></label>
             <input type="text" value="${esc(d.path || '')}" size="44"
                    placeholder="/work/mylab/rnaseq_2026"
                    onchange="setDir(${pi}, ${di}, 'path', this.value)"></div>
-          <div class="field"><label>description</label>
+          <div class="field"><label>description <span class="opt">optional</span></label>
             <input type="text" value="${esc(d.description || '')}"
                    onchange="setDir(${pi}, ${di}, 'description', this.value)"></div>
+          <div class="field"><label>permissions</label>
+            <div class="chips">` +
+          META.permission_order.map(t =>
+            `<span class="chip ${(d.permissions || []).includes(t) ? 'on' : ''}"
+                   title="${esc(META.permission_glosses[t])}"
+                   onclick="toggleDirPerm(${pi}, ${di}, '${t}')">${t}</span>`).join('') +
+          `<span class="chip reset" title="reset to least privilege: ${esc(META.dir_default_perms.join(', '))}"
+                 onclick="resetDirPerms(${pi}, ${di})">defaults ↺</span>
+          </div></div>
           <div class="field" style="justify-content:flex-end">
             <button class="danger" onclick="removeDir(${pi}, ${di})">remove</button></div>
-        </div>
-        <div class="chips">` +
-        META.permission_order.map(t =>
-          `<span class="chip ${(d.permissions || []).includes(t) ? 'on' : ''}"
-                 title="${esc(META.permission_glosses[t])}"
-                 onclick="toggleDirPerm(${pi}, ${di}, '${t}')">${t}</span>`).join('') +
-        `</div></div>`).join('');
+        </div></div>`).join('');
     return `<div class="card">
-      <h3><input type="text" class="${badName ? 'badname' : ''}"
+      <h3><div class="field">
+          <label>project name <span class="req">required</span></label>
+          <input type="text" class="${badName ? 'badname' : ''}"
                  value="${esc(p.name || '')}" size="24"
-                 onchange="setProj(${pi}, 'name', this.value)">
+                 onchange="setProj(${pi}, 'name', this.value)"></div>
         <span style="flex:1"></span>
         <button class="danger" onclick="removeProj(${pi})">remove</button></h3>
       ${badName ? '<div class="errline">name must be letters, digits, . _ and - only (no leading . or -) — it becomes a path component (the scratch prefix)</div>' : ''}
-      <div class="row"><div class="field"><label>description</label>
+      <div class="row"><div class="field">
+        <label>description <span class="opt">optional</span></label>
         <input type="text" value="${esc(p.description || '')}" size="50"
                onchange="setProj(${pi}, 'description', this.value)"></div></div>
       <div class="field"><label>compute envs this project may use</label>
@@ -692,8 +803,9 @@ function renderProjects() {
   }).join('');
   return `<h2>Projects</h2>
     <p class="hint">A project is a label for a piece of work plus the list of
-    YOUR directories the agent may touch for it. Permissions are independent
-    grants, not a ladder — <code>upload</code> does not imply <code>download</code>.</p>
+    YOUR directories the agent may touch for it.</p>
+    <div class="leghead">the permissions — independent grants, not a ladder</div>
+    <table class="legend" style="margin:0 0 18px 16px">${permLegendRows()}</table>
     ${cards || '<p class="hint">none declared yet</p>'}
     <button onclick="addProj()">+ project</button>`;
 }
@@ -701,11 +813,11 @@ function renderProjects() {
 // ---------- file + reference ----------
 function renderFile() {
   return `<h2>File</h2>
-    <p class="hint">The exact bytes a save writes to
-    <code>${esc(BOOT.path)}</code>. A save keeps the previous version as
-    <code>.bak</code>. Hand-editing the file is fine — this menu re-reads and
-    validates it. An agent can author it directly (schema:
-    <code>${esc(META.example_path)}</code>) and check with <code>--validate</code>.</p>
+    <p class="hint">The configuration settings are saved to
+    <code>${esc(BOOT.path)}</code> — ${esc(BOOT.path_source)}. A new save keeps
+    the previous version as <code>.bak</code>. The
+    <code>projects_access.yaml</code> can be hand edited as well — this menu
+    will re-read and attempt to validate.</p>
     <pre class="filedump" id="filedump">…</pre>`;
 }
 
@@ -719,16 +831,15 @@ function renderReference() {
     <p class="hint">Independent grants, not a ladder — granting one never implies another.</p>
     <table class="legend">${permRows}</table>
     <h3 style="margin:18px 0 6px;color:var(--tx)">Environment zones</h3>
-    <p class="hint">Every env declares the same zones (* = required — the bridge's
-    run and stage primitives refuse without them).</p>
+    <p class="hint">Every env declares the same four zones (* = required).</p>
     <table class="legend">${zoneRows}</table>
-    <h3 style="margin:18px 0 6px;color:var(--tx)">Driving this without a browser</h3>
-    <p class="hint">The terminal menu is <code>./scripts/config.sh</code>. An agent
-    (or script) should write the YAML directly — annotated schema at
-    <code>${esc(META.example_path)}</code> — and check it with
-    <code>./scripts/config.sh --validate</code>. This page's own surface is plain
-    JSON: GET /config, POST /validate, POST /save (header
-    <code>X-Bioinf-Config: 1</code>).</p>`;
+    <h3 style="margin:18px 0 6px;color:var(--tx)">Edit configuration settings without a browser</h3>
+    <p class="hint">Two other ways in. Run the terminal menu:
+    <code>./scripts/config.sh</code>. Or edit <code>projects_access.yaml</code>
+    directly — by hand, or by an agent (an agent or script should write the YAML
+    directly; annotated schema at <code>${esc(META.example_path)}</code>).
+    Either way, check the file with <code>./scripts/config.sh --validate</code> —
+    it runs the agent's own loader, so a pass means the agent will accept it.</p>`;
 }
 
 // ---------- mutations ----------
@@ -781,25 +892,35 @@ function setEnvUser(ei, user) {
   }
   setEnv(ei, 'user', user);
 }
-function toggleZone(ei, key, on) {
+// Every zone is always on screen; the block materializes (with the spec's
+// default perms) on the first edit, and a blank optional path un-declares it
+// again at outDoc() time.
+function zoneBlk(ei, key) {
   const env = doc.compute_envs[ei];
-  if (on) {
+  if (!env[key]) {
     const z = META.zones.find(x => x.key === key);
-    const defaults = env.type === 'ssh' ? META.ssh_zone_templates : META.local_zone_defaults;
-    env[key] = {path: (defaults[key] || '').replace('{user}', env.user || 'USER'),
-                permissions: [...z.default_perms], description: z.gloss};
-  } else delete env[key];
-  markDirty(); render();
+    env[key] = {path: '', permissions: [...z.default_perms], description: z.gloss};
+  }
+  return env[key];
 }
 function setZone(ei, key, field, val) {
-  const blk = doc.compute_envs[ei][key];
+  const blk = zoneBlk(ei, key);
   if (val) blk[field] = val; else delete blk[field];
   markDirty(); render();
 }
 function togglePerm(ei, key, tok) {
-  const blk = doc.compute_envs[ei][key];
+  const blk = zoneBlk(ei, key);
   const i = (blk.permissions || []).indexOf(tok);
   if (i >= 0) blk.permissions.splice(i, 1); else (blk.permissions ||= []).push(tok);
+  markDirty(); render();
+}
+function resetPerms(ei, key) {
+  const z = META.zones.find(x => x.key === key);
+  zoneBlk(ei, key).permissions = [...z.default_perms];
+  markDirty(); render();
+}
+function resetDirPerms(pi, di) {
+  doc.projects[pi].directories[di].permissions = [...META.dir_default_perms];
   markDirty(); render();
 }
 function setTransfer(ei, t) {
@@ -916,7 +1037,7 @@ function scheduleValidate() {
 }
 async function doValidate() {
   const r = await fetch('/validate', {method: 'POST', headers: HDRS,
-                                      body: JSON.stringify(doc)});
+                                      body: JSON.stringify(outDoc())});
   lastVerdict = await r.json();
   renderVerdict();
 }
@@ -932,32 +1053,47 @@ function renderVerdict() {
   // when it matters.
   const loadErr = BOOT.load_error ? `<div class="note">${esc(BOOT.load_error)}</div>` : '';
   if (state === 'absent')
-    v.innerHTML = `<div class="note">no configuration file yet — nothing validated; SAVE writes the first one</div>` + loadErr + notes;
+    v.innerHTML = `<div class="note">no configuration file yet — nothing validated; SAVE &amp; CLOSE writes the first one</div>` + loadErr + notes;
   else if (state === 'invalid')
-    v.innerHTML = `<span class="errline">${esc(lastVerdict.message)}</span>` + loadErr + notes;
+    v.innerHTML = `<span class="errline">${esc(nameTheField(lastVerdict.message))}</span>` + loadErr + notes;
   else
     v.innerHTML = `<span class="okline">the agent's loader accepts this configuration</span>` + loadErr + notes;
 }
-async function saveCfg() {
+function revertLast() {
+  if (!undoStack.length) return;
+  doc = undoStack.pop();
+  checkpoint = JSON.parse(JSON.stringify(doc));
+  dirty = undoStack.length > 0;
+  document.getElementById('dirtypill').style.display = dirty ? '' : 'none';
+  scheduleValidate(); render();
+}
+async function closeServer(doneLine) {
+  // Stop the terminal process serving this page, so nobody has to Ctrl-C it.
+  try { await fetch('/shutdown', {method: 'POST', headers: HDRS}); } catch (e) {}
+  document.getElementById('verdict').innerHTML +=
+    `<div class="okline">${esc(doneLine)} — the menu process has exited; close this tab.</div>`;
+  document.querySelectorAll('footer button').forEach(b => b.disabled = true);
+  window.close();   // works when the browser lets it; the line above covers when it doesn't
+}
+async function saveAndClose() {
   const r = await fetch('/save', {method: 'POST', headers: HDRS,
-                                  body: JSON.stringify(doc)});
+                                  body: JSON.stringify(outDoc())});
   const j = await r.json();
   const v = document.getElementById('verdict');
   v.innerHTML = j.messages.map(m =>
-    `<div class="${m.kind === 'error' ? 'errline' : m.kind === 'ok' ? 'okline' : 'note'}">${esc(m.text)}</div>`).join('');
-  if (j.ok) { dirty = false; document.getElementById('dirtypill').style.display = 'none'; }
+    `<div class="${m.kind === 'error' ? 'errline' : m.kind === 'ok' ? 'okline' : 'note'}">${esc(nameTheField(m.text))}</div>`).join('');
+  if (!j.ok) return;   // an invalid document never closes the menu out from under the fix
+  dirty = false; document.getElementById('dirtypill').style.display = 'none';
+  await closeServer('saved');
 }
-async function revert() {
-  const r = await fetch('/config');
-  const j = await r.json();
-  doc = j.config; dirty = false;
-  lastVerdict = {state: j.state, message: j.message, notes: []};
-  document.getElementById('dirtypill').style.display = 'none';
-  render();
+async function cancelAndClose() {
+  if (dirty && !confirm('discard the unsaved changes and close?')) return;
+  document.getElementById('verdict').innerHTML = '';
+  await closeServer('nothing written');
 }
 async function loadPreview() {
   const r = await fetch('/preview', {method: 'POST', headers: HDRS,
-                                     body: JSON.stringify(doc)});
+                                     body: JSON.stringify(outDoc())});
   const j = await r.json();
   const el = document.getElementById('filedump');
   if (el) el.textContent = j.yaml;

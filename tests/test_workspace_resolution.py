@@ -313,11 +313,22 @@ def test_the_singletons_land_in_the_workspace(monkeypatch, tmp_path, module, att
 
 
 def test_the_access_file_has_one_home(monkeypatch, tmp_path):
-    """CS55, as a standing check. The menu WRITES where every reader LOOKS."""
+    """CS55, as a standing check. The menu WRITES where every reader LOOKS —
+    and the home is DECOUPLED from the workspace (menu review 2026-09-18):
+    the fixed machine-level dotdir, ~/.bioinf_agent, like ~/.ssh. Relocating
+    the products must never relocate the config out from under the agent."""
     from agent.skills import compute_access, workspace
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.delenv("BIOINF_PROJECTS_ACCESS", raising=False)
     assert compute_access.default_access_path() == workspace.projects_access_path()
-    assert compute_access.default_access_path().parent == workspace.workspace_root()
+    assert (compute_access.default_access_path()
+            == Path.home() / ".bioinf_agent" / "projects_access.yaml"), \
+        "the config home must not follow the workspace"
+
+    # The override is a FILE path, honored verbatim — the suite's isolation
+    # seam and the cloud escape hatch.
+    monkeypatch.setenv("BIOINF_PROJECTS_ACCESS", str(tmp_path / "cfg" / "pa.yaml"))
+    assert compute_access.default_access_path() == tmp_path / "cfg" / "pa.yaml"
 
 
 def test_agent_status_reports_the_zones():

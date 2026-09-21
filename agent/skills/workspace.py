@@ -56,7 +56,9 @@ POINTER_FILENAME = ".bioinf_workspace"
 
 #: Resolution fallback when neither the env var nor the pointer file answers.
 #: Deliberately not environment-sensitive; see the module docstring.
-DEFAULT_WORKSPACE_NAME = "bioinf_agent"
+# "bioinf_agent" until 2026-09-18: colliding with the repo's own directory
+# name made the split read as a leak rather than a design.
+DEFAULT_WORKSPACE_NAME = "bioinf_workspace"
 
 
 def code_root() -> Path:
@@ -201,12 +203,23 @@ def resources_root() -> Path:
 def projects_access_path() -> Path:
     """The operator's command-and-control file.
 
-    At the workspace root, not in the checkout: it describes a compute world
-    (clusters, accounts, directories) that outlives any clone, and it holds real
-    hostnames and usernames, so a checkout is the wrong container for it in two
-    independent ways.
+    A FIXED machine-level home — ``~/.bioinf_agent/projects_access.yaml`` —
+    the ``~/.ssh``/``~/.aws`` pattern (menu review, 2026-09-18): the file
+    describes a compute world (clusters, accounts, directory grants) that
+    belongs to the MACHINE, not to any clone and not to wherever the
+    working-directory default happens to point, and it holds real hostnames
+    and usernames, so a checkout is the wrong container twice over.
+    DELIBERATELY decoupled from ``workspace_root()``: relocating the products
+    must never relocate the config out from under the agent.
+
+    ``$BIOINF_PROJECTS_ACCESS`` overrides with an explicit FILE path — the
+    test suite's isolation seam, and the escape hatch for cloud machines
+    whose ``$HOME`` is ephemeral.
     """
-    return workspace_root() / "projects_access.yaml"
+    env = os.environ.get("BIOINF_PROJECTS_ACCESS", "").strip()
+    if env:
+        return Path(env)
+    return Path.home() / ".bioinf_agent" / "projects_access.yaml"
 
 
 def zones() -> dict[str, str]:
@@ -231,7 +244,11 @@ def zones() -> dict[str, str]:
         "reports":          str(root / "reports"),
         "scratch":          str(root / "scratch"),
         "resources":        str(_resources_path()),
-        "projects_access":  str(root / "projects_access.yaml"),
+        # Through the resolver, never re-derived: the config home is DECOUPLED
+        # from the workspace (fixed ~/.bioinf_agent), and a second spelling
+        # here is exactly how the doctor once validated a file the agent
+        # could not see.
+        "projects_access":  str(projects_access_path()),
     }
 
 
