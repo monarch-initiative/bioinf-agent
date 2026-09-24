@@ -1,10 +1,10 @@
-# Most of what this file used to hold is gone, and not because the rules were
-# wrong. Generated artifacts — conda envs, container tarballs, ENV/RUN reports,
-# sealed specs, drafts, job state, transfer receipts, reference data — no longer
-# live in the checkout at all. They resolve through agent/skills/workspace.py into
-# a workspace outside it, and tests/test_workspace_resolution.py fails the build if
-# one comes back. "Artifacts never reach GitHub" is structural now rather than
-# maintained by a list somebody has to remember to extend.
+# The checkout holds the SYSTEM: code, plus what setup.sh downloads into it
+# (private conda, runtime env, tool envs, the test-data corpus) — all listed
+# here, so a clone stays small and nothing downloaded ever reaches git. What
+# the agent PRODUCES (reports, containers, scratch) doesn't need a rule at
+# all: it resolves through agent/skills/workspace.py to a directory outside
+# the checkout, and tests/test_workspace_resolution.py fails the build if an
+# artifact zone comes back inside.
 
 # Python
 __pycache__/
@@ -23,15 +23,19 @@ venv/
 # launcher (start_mcp_server.sh) and bootstrap wrapper resolve it by this path.
 .conda_runtime/
 
-# Private miniforge — installed by scripts/setup.sh only on machines with no
-# conda anywhere (with consent). Repo-local, no shell integration.
+# The repo-private miniforge — scripts/setup.sh always installs it here; a
+# machine's own conda is never consulted. Repo-local, no shell integration.
 .miniforge/
 
-# The workspace pointer — one line naming where this clone keeps its generated
-# artifacts. Written by scripts/setup.sh; per-machine, like the runtime env.
-/.bioinf_workspace
+# Host tool envs (pre-freeze iteration) — built into the checkout by the
+# install primitives, rebuildable from any env's recipe.
+/envs/
 
-# The agent's command-and-control file lives at the WORKSPACE root, so nothing
+# The core/test-data corpus (reference genomes + read datasets) — multi-GB,
+# downloaded into the checkout by scripts/setup.sh, never tracked.
+/resources/
+
+# The agent's command-and-control file lives at ~/.bioinf_agent/, so nothing
 # should be writing it here. Kept as a belt-and-braces rule anyway: it carries
 # real cluster hostnames, usernames and paths, and the cost of the rule is one
 # line against the cost of the mistake. The glob covers the .bak sidecar, because

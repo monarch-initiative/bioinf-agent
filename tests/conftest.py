@@ -70,6 +70,17 @@ _inherited_pa = os.environ.get("BIOINF_REAL_PROJECTS_ACCESS", "").strip()
 REAL_PROJECTS_ACCESS = (Path(_inherited_pa) if _inherited_pa
                         else _workspace.projects_access_path())
 os.environ["BIOINF_REAL_PROJECTS_ACCESS"] = str(REAL_PROJECTS_ACCESS)
+# The two SYSTEM zones live in the checkout (untracked) and have their own
+# override seams, so they get the same capture-before-redirect treatment.
+# zones() describes without creating — resources_root() would mkdir.
+_real_zones = _workspace.zones()
+_inherited_res = os.environ.get("BIOINF_REAL_RESOURCES", "").strip()
+REAL_RESOURCES = Path(_inherited_res) if _inherited_res else Path(_real_zones["resources"])
+os.environ["BIOINF_REAL_RESOURCES"] = str(REAL_RESOURCES)
+_inherited_envs = os.environ.get("BIOINF_REAL_ENVS", "").strip()
+REAL_ENVS = Path(_inherited_envs) if _inherited_envs else Path(_real_zones["envs"])
+os.environ["BIOINF_REAL_ENVS"] = str(REAL_ENVS)
+
 os.environ["BIOINF_WORKSPACE"] = tempfile.mkdtemp(prefix="bioinf_suite_ws_")
 # The config home is DECOUPLED from the workspace (fixed ~/.bioinf_agent), so
 # it needs its own sandbox twin — without this line every test that touches
@@ -77,7 +88,13 @@ os.environ["BIOINF_WORKSPACE"] = tempfile.mkdtemp(prefix="bioinf_suite_ws_")
 # Kept at the sandbox workspace root, where the suite's fixtures always put it.
 os.environ["BIOINF_PROJECTS_ACCESS"] = os.path.join(
     os.environ["BIOINF_WORKSPACE"], "projects_access.yaml")
-os.environ.pop("BIOINF_RESOURCES", None)
+# The system zones default INTO the checkout now, so these are SET, never
+# popped: an unset override here would point every import-time singleton
+# (EnvManager.envs_dir above all) at the developer's real envs/ and resources/.
+os.environ["BIOINF_RESOURCES"] = os.path.join(
+    os.environ["BIOINF_WORKSPACE"], "resources")
+os.environ["BIOINF_ENVS"] = os.path.join(
+    os.environ["BIOINF_WORKSPACE"], "envs")
 
 # Contract-clean EnvCache record builders live in tests/env_records.py — importable as
 # `from env_records import env_record, env_evidence` from anywhere in the suite.
@@ -221,14 +238,16 @@ def _isolate_agent_record_writers(tmp_path: Path, monkeypatch):
     — and a writer that does NOT route through it now fails the lint in
     tests/test_workspace_resolution.py rather than leaking silently.
 
-    $BIOINF_RESOURCES is cleared rather than set: the resources zone follows the
-    workspace unless a test asks otherwise, and an inherited value from the
-    developer's shell would point a hermetic test at a real reference corpus.
+    $BIOINF_RESOURCES and $BIOINF_ENVS are SET rather than cleared: those two
+    zones default into the CHECKOUT (they are the system's own untracked
+    dirs), so an unset override would point a hermetic test at the developer's
+    real corpus and real envs.
     """
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "_workspace"))
     monkeypatch.setenv("BIOINF_PROJECTS_ACCESS",
                        str(tmp_path / "_workspace" / "projects_access.yaml"))
-    monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
+    monkeypatch.setenv("BIOINF_RESOURCES", str(tmp_path / "_workspace" / "resources"))
+    monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "_workspace" / "envs"))
     yield
 
 

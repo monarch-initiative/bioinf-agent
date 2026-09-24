@@ -452,15 +452,7 @@ def main() -> None:
                         choices=sorted(GENOME_BUILDS.keys()))
     parser.add_argument("--skip-smoke", action="store_true",
                         help="Skip the post-bootstrap alignment smoke test")
-    parser.add_argument("--minimal", action="store_true",
-                        help="Stand up the core env skeleton + reference genome only; "
-                             "skip the multi-GB read/long-read/pod5 dataset downloads "
-                             "(implies --skip-smoke, which needs those datasets)")
     args = parser.parse_args()
-    if args.minimal:
-        # The smoke test aligns a real paired-end dataset (Step 3's output); with the
-        # datasets skipped there is nothing to align, so --minimal forces --skip-smoke.
-        args.skip_smoke = True
 
     config = load_config()
     env_name = config["core_tools"]["env_name"]
@@ -477,13 +469,8 @@ def main() -> None:
         log(f"FATAL: {genome['error']}")
         sys.exit(1)
 
-    if args.minimal:
-        log("=== Step 3: test datasets SKIPPED (--minimal) ===")
-        # Keep the shape the summary block + smoke_test expect, just empty.
-        datasets = {"short_read": [], "long_read": [], "pod5": [], "phenopackets": []}
-    else:
-        log("=== Step 3: test datasets ===")
-        datasets = download_datasets(config, load_datasets(), args.genome_build)
+    log("=== Step 3: test datasets ===")
+    datasets = download_datasets(config, load_datasets(), args.genome_build)
 
     if args.skip_smoke:
         log("=== Step 4: smoke test SKIPPED ===")

@@ -1,29 +1,27 @@
-"""The setup surface answers "where is conda?" in exactly ONE place.
+"""The setup surface answers "where is conda?" with ONE fixed path and NO search.
 
 WHY THIS FILE EXISTS. Four scripts each carried their own hand-maintained list of
-conda locations — setup.sh, doctor.py, start_mcp_server.sh, setup_core_test_data.sh —
-and two of them had already DIVERGED on order: setup.sh searched the repo-local
-private conda LAST, doctor.py searched it FIRST. On a machine carrying both a private
-./.miniforge and an off-PATH system conda they resolve to different binaries, so the
-systems check could report PASS for a conda that setup never used. A check that
-describes something other than what happened is the defect this whole repo is built to
-refuse, and it had reached the first script a new user runs.
+conda locations, and two had DIVERGED on order — the systems check could report
+PASS for a conda that setup never used. The first fix unified the search into
+scripts/_env.sh; the second (README review, 2026-09-21) DELETED the search: THE
+conda is the repo-private ./.miniforge, installed unconditionally by setup.sh,
+because a machine's own conda carries that machine's variance and every clone of
+this system is meant to bootstrap identically. So the lint now refuses a conda
+SEARCH anywhere in scripts/ — _env.sh included — and the resolution itself is
+DRIVEN: miniforge-or-nothing, whatever condas the environment dangles.
 
-The fix was structural (scripts/_env.sh, one implementation and four callers) and this
-lint is what keeps it that way — the shell-layer form of
-tests/test_one_reading_per_field.py. The failure mode it guards is not malice but
-convenience: the next person who needs a conda path in a new script will copy five
-lines rather than source one file, and nothing else in the build would notice.
+The failure mode guarded is not malice but convenience: the next person who needs
+a conda path will "helpfully" fall back to PATH, and nothing else in the build
+would notice that one machine now resolves differently from every other.
 
-SCOPE: scripts/ only. agent/ resolves conda through shutil.which at runtime (PATH is
-set up by the launcher), which is a different mechanism and deliberately not policed
-here.
+SCOPE: scripts/ only. agent/ resolves conda through shutil.which at runtime (PATH
+is set up by the launcher, which puts ./.miniforge there), a different mechanism
+and deliberately not policed here.
 """
 from __future__ import annotations
 
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -49,19 +47,51 @@ _INTERPRETER_PATH = ("conda_runtime/bin", '".conda_runtime" / "bin"')
 
 
 def _surface_files() -> list[Path]:
+    # _env.sh is NOT excluded: since the search was deleted (2026-09-21) the
+    # resolver itself may not hold a search list either.
     return sorted(p for p in SCRIPTS.iterdir()
-                  if p.is_file() and p.suffix in {".sh", ".py"} and p != ENV_SH)
+                  if p.is_file() and p.suffix in {".sh", ".py"})
 
 
-def test_env_sh_actually_holds_the_search_lists():
-    """Falsifiability: if _env.sh stopped carrying them, every assertion below would
-    pass vacuously and this file would be a lint comparing against nothing."""
-    assert ENV_SH.is_file(), f"{ENV_SH} missing — it is the single resolver"
-    text = ENV_SH.read_text()
-    missing = [t for t in _SEARCH_TOKENS if t not in text]
-    assert not missing, (
-        f"_env.sh no longer contains {missing}, so this lint proves nothing. Either the "
-        f"search moved (point this test at its new home) or it was deleted (say so).")
+def _drive_find_conda(tmp_path, *, with_miniforge: bool) -> subprocess.CompletedProcess:
+    """Run bioinf_find_conda from a COPY of _env.sh rooted in a temp repo, inside
+    an environment that dangles every kind of machine conda — $CONDA_EXE, one on
+    PATH, one at ~/miniforge3. The only thing allowed to matter is whether the
+    temp repo's own ./.miniforge exists."""
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "_env.sh").write_text(ENV_SH.read_text())
+    home = tmp_path / "home"
+    for fake in (tmp_path / "onpath" / "conda",
+                 tmp_path / "condaexe" / "conda",
+                 home / "miniforge3" / "condabin" / "conda"):
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_text("#!/bin/sh\necho fake\n")
+        fake.chmod(0o755)
+    if with_miniforge:
+        private = repo / ".miniforge" / "condabin" / "conda"
+        private.parent.mkdir(parents=True)
+        private.write_text("#!/bin/sh\necho private\n")
+        private.chmod(0o755)
+    return subprocess.run(
+        ["bash", "-c", f'source "{repo}/scripts/_env.sh" && bioinf_find_conda'],
+        capture_output=True, text=True, timeout=30,
+        env={"HOME": str(home),
+             "PATH": f"{tmp_path / 'onpath'}:{os.environ['PATH']}",
+             "CONDA_EXE": str(tmp_path / "condaexe" / "conda")})
+
+
+def test_find_conda_is_miniforge_or_nothing(tmp_path):
+    """The driven half of the no-search rule: with machine condas on PATH, in
+    $CONDA_EXE and at ~/miniforge3, resolution still FAILS when the repo has no
+    ./.miniforge — and returns exactly ./.miniforge when it does."""
+    r = _drive_find_conda(tmp_path, with_miniforge=False)
+    assert r.returncode != 0 and not r.stdout.strip(), (
+        f"a machine conda was resolved despite no ./.miniforge: {r.stdout!r}")
+
+    r = _drive_find_conda(tmp_path, with_miniforge=True)
+    assert r.returncode == 0
+    assert r.stdout.strip() == str(tmp_path / "repo" / ".miniforge" / "condabin" / "conda")
 
 
 @pytest.mark.parametrize("path", _surface_files(), ids=lambda p: p.name)
@@ -111,104 +141,3 @@ def test_the_doctor_delegates_rather_than_searching():
     text = (SCRIPTS / "doctor.py").read_text()
     assert "_env.sh" in text and "conda" in text, (
         "doctor.py must ask scripts/_env.sh for conda, not carry its own search")
-
-
-# ---------------------------------------------------------------------------
-# The working-directories block — a STATED default, not a question
-# ---------------------------------------------------------------------------
-#
-# Until 2026-09-18 this block prompted for "the workspace", and that prompt is
-# what a user reported as "I didn't know a workspace was required". The
-# question existed to prevent CS55 (the menu wrote one path while the doctor
-# read another) — but the config file now has a FIXED machine-level home
-# (~/.bioinf_agent/projects_access.yaml), so this block only decides where the
-# PRODUCTS default to: ~/bioinf_workspace, relocatable via $BIOINF_WORKSPACE,
-# recorded in the pointer either way. Driven, not grepped, because the last
-# version of this block shipped a branch that read an answer and discarded it.
-
-_WS_START = "# --- 1. working directories ---"
-_WS_END = "# --- 2. runtime env ---"
-
-
-def _workspace_block() -> str:
-    """The block, lifted out of setup.sh so it can be driven without running a
-    setup. Extracted by marker rather than copied, so it cannot drift."""
-    text = (SCRIPTS / "setup.sh").read_text()
-    start, end = text.index(_WS_START), text.index(_WS_END)
-    return text[start:end]
-
-
-def _drive(tmp_path, *, env_ws: str | None = None,
-           checkout_under_home: bool = False) -> subprocess.CompletedProcess:
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    checkout = (home if checkout_under_home else tmp_path) / "checkout"
-    checkout.mkdir(parents=True, exist_ok=True)
-    block = tmp_path / "block.sh"
-    block.write_text(_workspace_block())
-    driver = tmp_path / "drive.sh"
-    driver.write_text(textwrap.dedent(f"""
-        set -euo pipefail
-        say() {{ echo "[setup] $*"; }}
-        PROJECT_ROOT="{checkout}"
-        source "{block}"
-        echo "CHOSE:$(grep -v '^#' "$POINTER" | tail -1)"
-    """))
-    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
-    if env_ws is not None:
-        env["BIOINF_WORKSPACE"] = env_ws
-    # stdin is CLOSED: no branch of this block may ever need an answer.
-    return subprocess.run(["bash", str(driver)], input="",
-                          capture_output=True, text=True, timeout=30, env=env)
-
-
-def _chosen(r: subprocess.CompletedProcess) -> str:
-    for line in r.stdout.splitlines():
-        if line.startswith("CHOSE:"):
-            return line[len("CHOSE:"):]
-    return ""
-
-
-def test_the_default_is_stated_and_recorded_with_no_question(tmp_path):
-    """Fresh machine, no env var, closed stdin: the block picks
-    ~/bioinf_workspace, records the pointer, and SAYS both the choice and the
-    relocation remedy — a silent default is how a user comes to ask what a
-    workspace even is."""
-    r = _drive(tmp_path)
-    assert r.returncode == 0, r.stderr
-    assert _chosen(r) == str(tmp_path / "home" / "bioinf_workspace")
-    assert "BIOINF_WORKSPACE" in r.stdout, "the relocation remedy must be stated"
-
-
-def test_an_env_var_relocates_and_is_recorded(tmp_path):
-    """$BIOINF_WORKSPACE is the cloud escape hatch (ephemeral $HOME, persistent
-    volume) — and it is RECORDED, otherwise it is true only for this run and a
-    server launched without the export resolves a different place than the one
-    setup bootstrapped."""
-    target = str(tmp_path / "home" / "on_volume")
-    r = _drive(tmp_path, env_ws=target)
-    assert r.returncode == 0, r.stderr
-    assert _chosen(r) == target
-    assert Path(target).is_dir()
-
-
-def test_an_env_var_inside_the_checkout_is_refused(tmp_path):
-    """The lifetime rule survives the question's removal: artifacts outlive
-    the clone, so the one way left to point them INTO the clone must still
-    refuse."""
-    home = tmp_path / "home"
-    r = _drive(tmp_path, env_ws=str(home / "checkout" / "ws"),
-               checkout_under_home=True)
-    assert r.returncode == 2
-    assert "inside the checkout" in r.stderr
-
-
-def test_a_second_run_reads_the_pointer_not_the_default(tmp_path):
-    """Idempotence, and continuity for machines set up before the default
-    changed: an existing pointer wins over the (possibly renamed) default."""
-    target = str(tmp_path / "home" / "recorded_before")
-    first = _drive(tmp_path, env_ws=target)
-    assert first.returncode == 0, first.stderr
-    again = _drive(tmp_path)
-    assert again.returncode == 0, again.stderr
-    assert _chosen(again) == target

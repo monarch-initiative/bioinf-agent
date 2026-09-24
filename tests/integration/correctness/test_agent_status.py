@@ -93,8 +93,8 @@ def test_agent_status_top_level_shape(tmp_path):
     # that is not there any more.
     ws = rec["workspace"]
     assert {"workspace_root", "workspace_source", "reports", "scratch",
-            "conda_envs", "images", "resources"} <= set(ws)
-    assert ws["workspace_source"] in ("env", "pointer", "default")
+            "envs", "containers", "resources"} <= set(ws)
+    assert ws["workspace_source"] in ("env", "default")
 
 
 @pytest.mark.integration
