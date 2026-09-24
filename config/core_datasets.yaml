@@ -14,6 +14,16 @@
 #   subset      — 500 | 1K | 10K (default) | 50K | 100K | 500K | 1M
 #   source_url  — override EBI SRA URL builder (NCBI FTP, S3, etc.)
 #   source_url_r2 — R2 override for paired-end with source_url
+#
+# Every entry ALSO carries its terms of use, read by nothing at bootstrap and by
+# tests/test_data_sources_credited.py at build time:
+#   license     — the terms the upstream source publishes for these bytes
+#                 (INSDC-unrestricted | CC0-1.0 | CC-BY-4.0 | BSD-3-Clause |
+#                 public-domain | ENCODE-open)
+#   citation    — who to cite or acknowledge when this dataset is used
+# docs/data_sources.md is the human table; the test fails when an entry here
+# has no row there, or lacks either field. Nothing in this repo redistributes
+# the data — each user downloads it from the source at setup time.
 
 short_read:
   - accession: SRR1517830
@@ -21,31 +31,43 @@ short_read:
     end_type: paired_end
     sample: HG00096
     description: 1000 Genomes HG00096 exome
+    license: INSDC-unrestricted
+    citation: "1000 Genomes Project Consortium, Nature 526:68 (2015); IGSR/EMBL-EBI"
   - accession: SRR1039508
     assay_type: rnaseq
     end_type: single_end
     sample: airway
     description: Airway smooth muscle RNA-seq (Himes et al. 2014)
+    license: INSDC-unrestricted
+    citation: "Himes BE et al., PLoS ONE 9:e99625 (2014); GEO GSE52778"
   - accession: ERR188297
     assay_type: rnaseq
     end_type: paired_end
     sample: NA20503
     description: GEUVADIS NA20503 paired-end RNA-seq
+    license: INSDC-unrestricted
+    citation: "Lappalainen T et al., Nature 501:506 (2013); ArrayExpress E-GEUV-1"
   - accession: SRR1658581
     assay_type: hic
     end_type: paired_end
     sample: GM12878
     description: GM12878 in-situ Hi-C (Rao et al. 2014)
+    license: INSDC-unrestricted
+    citation: "Rao SSP et al., Cell 159:1665 (2014); GEO GSE63525"
   - accession: ERR001268
     assay_type: wgs
     end_type: paired_end
     sample: NA12878
     description: 1000 Genomes NA12878 WGS
+    license: INSDC-unrestricted
+    citation: "1000 Genomes Project Consortium, Nature 467:1061 (2010); IGSR/EMBL-EBI"
   - accession: SRR4235788
     assay_type: wgbs
     end_type: paired_end
     sample: ENCSR890UQO
     description: ENCODE ENCSR890UQO WGBS (GSE86765)
+    license: ENCODE-open
+    citation: "ENCODE Project Consortium, Nature 583:699 (2020); ENCSR890UQO, Richard Myers lab (HudsonAlpha)"
 
 phenopackets:
   # GA4GH Phenopacket v2 JSON files. Each entry is downloaded via
@@ -54,6 +76,8 @@ phenopackets:
   # GitHub blob URLs are auto-normalized to their raw form.
   - source_url: https://github.com/monarch-initiative/phenopacket-store/blob/main/notebooks/ACTB/phenopackets/PMID_30315159_Patient_N.json
     description: Thrombocytopenia 8 (OMIM:620475), ACTB variant — Patient N from PMID 30315159 (phenopacket-store)
+    license: BSD-3-Clause
+    citation: "Danis D et al., HGG Advances (2025), phenopacket-store; case report PMID 30315159"
 
 long_read:
   # 500 reads each — best-effort. Failures are surfaced, not silenced.
@@ -63,6 +87,8 @@ long_read:
     platform: ont
     subset: "500"
     description: NA12878 ONT ultralong reads (Jain et al. 2018, PRJEB26791)
+    license: CC-BY-4.0
+    citation: "Jain M et al., Nat Biotechnol 36:338 (2018); nanopore-wgs-consortium"
   - accession: HG002_CCS_15kb
     assay_type: pacbio_hifi
     sample: HG002
@@ -70,29 +96,36 @@ long_read:
     subset: "500"
     source_url: https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/PacBio_CCS_15kb_20kb_chemistry2/reads/m64011_190830_220126.fastq.gz
     description: GIAB HG002 PacBio HiFi 15-20 kb CCS reads
+    license: public-domain
+    citation: "Zook JM et al., Sci Data 3:160025 (2016); NIST Genome in a Bottle"
 
 pod5:
-  # Raw nanopore signal files (pod5) for basecaller pipelines — dorado /
-  # bonito / remora. Whole-file downloads (binary Arrow; not subsettable);
-  # pinned by sha256 against an immutable upstream tag.
+  # Raw nanopore signal (pod5) for basecaller pipelines — dorado / bonito /
+  # remora. Whole-file, sha256-pinned. `chemistry` + `suggested_model` let a
+  # downstream pipeline pick the base-caller model AND the paired modbase model
+  # (5mC / 6mA / …) from dorado's registry — no additional declarations here.
   #
-  # `chemistry`+`suggested_model` lets a downstream pipeline pick the right
-  # base-caller model AND the paired modbase model (5mC / 6mA / etc.) from
-  # dorado's registry — no additional declarations needed here.
-  - accession: HG002_chr1_MAT_pod5
+  # This entry is a SEED committed to the repo rather than a download:
+  # `source_path` is repo-relative and the bootstrap serves it as a file:// URL.
+  # It was derived from a CC0 source by scripts/derive_pod5_seed.py; the
+  # sidecar next to it records the upstream tarball, member, byte hashes and
+  # read ids. Public pod5 from Oxford Nanopore's own releases is CC BY-NC, which
+  # is why the seed is derived from HPRC/GIAB data instead.
+  - accession: HG002_PAM69552_R1041_5reads
     sample: HG002
     assay_type: ont_wgs
     platform: ont
-    chemistry: dna_r10.4.1_e8.2_400bps_5khz
+    chemistry: dna_r10.4.1_e8.2_400bps_4khz
     flowcell: FLO-PRO114M
     kit: SQK-LSK114
-    suggested_model: dna_r10.4.1_e8.2_400bps_hac@v5.0.0
-    source_url: https://raw.githubusercontent.com/nanoporetech/dorado/release-v2.0/tests/cram/single_read/chr1_MAT.pod5
-    expected_size: 95320
-    # Pinned after first successful download — URL is on immutable
-    # release-v2.0 tag, so this hash is the integrity anchor for the asset.
-    expected_sha256: af51c3ec4f9b60bf9e81326cc25be0c80ae8cc51a01b734f7172633858f84627
+    suggested_model: dna_r10.4.1_e8.2_400bps_hac@v4.1.0
+    source_path: config/seed_data/pod5/HG002_PAM69552_R1041_5reads.pod5
+    expected_size: 187216
+    expected_sha256: 41afaffdda4b12cb527f102716726aeaf8cffd96d929d205c74b468225999cf4
+    license: CC0-1.0
+    citation: "Human Pangenome Reference Consortium (BioProject PRJNA730823) and NHGRI; Liao W-W et al., Nature 617:312 (2023); sample HG002/NA24385 from NIST Genome in a Bottle"
     description: >
-      Single native HG002/NA24385 chr1-maternal read on R10.4.1 5 kHz PromethION
-      (dorado's own tests/cram/single_read fixture, release-v2.0).
-      Documented basecallable input for dna_r10.4.1_e8.2_400bps_hac@v5.0.0.
+      Five native HG002/NA24385 reads on R10.4.1 (FLO-PRO114M, SQK-LSK114,
+      4 kHz, 400 bps) from the UCSC sheared-DNA PromethION run PAM69552
+      (2022-10-04), subset from one fast5 in the HPRC open-data bucket
+      (CC0 1.0). Basecallable with dna_r10.4.1_e8.2_400bps_hac@v4.1.0.

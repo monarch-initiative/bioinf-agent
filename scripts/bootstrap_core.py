@@ -317,11 +317,15 @@ def download_datasets(config: dict, datasets_cfg: dict, genome_build: str) -> di
             label = f"{d['accession']} ({d.get('chemistry') or d.get('assay_type','?')})"
             log(f"Adding {label}...")
             try:
+                # A seed committed to the repo declares `source_path` (repo-relative)
+                # instead of `source_url`; urllib serves it as a file:// URL, so the
+                # same sha256/size anchors apply to both.
+                source_url = d.get("source_url") or (PROJECT_ROOT / d["source_path"]).resolve().as_uri()
                 res = add_core_pod5_data(
                     config,
                     accession=d["accession"],
                     sample=d.get("sample", d["accession"]),
-                    source_url=d["source_url"],
+                    source_url=source_url,
                     assay_type=d.get("assay_type", "ont_wgs"),
                     platform=d.get("platform", "ont"),
                     chemistry=d.get("chemistry", ""),
