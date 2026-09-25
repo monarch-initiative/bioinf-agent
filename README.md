@@ -9,10 +9,15 @@ An AI-driven bioinformatics assistant primarily designed to perform the followin
 - creates installation reports, environment build recipes, workflow run reports, how-to guides
 - create data processing pipelines that leverage the previously installed and validated environments
 - intended to scale up bioinformatics workflows reliably via on rails agentic capabilities
+- work on your local machine should perform without issue, however only certain HPC features are supported. See below
+  - Globus connect for file transfers, scp as fallback
+  - SLURM, bash script as fallback
+  - Lmod (Lua-based environment module system)
+    - apptainer module
+    - nextflow module (will run nextflow through a slurm script, as nextflow itself is a management process)
 
-This repo acts as an MCP server for agentic orchestration of bioiformatics on your local and HPC systems. We've tried to 
-limit the agents ability to wreak havoc on your institutions HPC (or your own machine) by leveraging a `project_access.yaml` file 
-that declares where and how the agent is allowed to do its work, editable in gui based menu system. Full agent contract found in [CLAUDE.md](CLAUDE.md).
+This repo acts as an MCP server for agentic orchestration of bioinformatics on your local and HPC systems. We've tried to 
+limit the agent's capacity to perform unintended behavior by leveraging a `projects_access.yaml` file that declares where and how the agent is allowed to do its work, editable in a gui based menu system. Full agent contract found in [CLAUDE.md](CLAUDE.md). The idea is you create an ssh profile and login to the system yourself (if connecting to an HPC). Then the agent can piggy back, run jobs on your behalf using the declared settings / locations from the projects_access.yaml, and experiment in its own scratch space to ensure things actually work before launching larger scale production level jobs (or simply just generating those jobs scripts for you for review). Once you close the connection the agent no longer has access. Installation and setup of environments directly on the HPC can be cumbersome or impossible without the appropriate permissions. Our system by default builds and runs every environment locally as a docker image, and ships to external compute resources as an apptainer `.sif` file to get around these install limitations. 
 
 ---
 
@@ -20,29 +25,73 @@ that declares where and how the agent is allowed to do its work, editable in gui
 
 ### Initial local setup
 
-You need two things running: **Docker** (the daemon) and an **MCP client** —
-[Claude Code](https://claude.com/claude-code) is the one this is developed against.
-Everything else is self-served, in two steps: **build the system** (`setup.sh`),
-then **tell it what compute it may use** (`config.sh` — optional, but this is
-how the system scales beyond your laptop).
+Apart from the code within this repo, you will need Docker (the daemon) running and an MCP client (we specifically developed and tested with Claude Code). Other agents in theory could also drive this system, but we have not tested this. The idea is to clone the repo, run the `setup.sh` and `config.sh` steps to provide the agent with the necessary toolset, context, and locations where it may do work. By default, it will use your home directory to place a bioinf_workspace directory where it can perform its work and will only write there if no other locations are provided.
+
 
 ```bash
 git clone https://github.com/monarch-initiative/bioinf-agent
 cd bioinf-agent
 ./scripts/setup.sh          # the system builds itself — allow time for multi-GB downloads
 ./scripts/setup.sh --check  # systems check only — PASS/FAIL per requirement, every FAIL names its fix
-./scripts/config.sh --web   # the settings menu, in your browser (recommended, but run without the --web option for terminal menu)
+./scripts/config.sh --web   # the settings menu, in your browser (recommended, run without --web option for terminal based menu)
 ```
 
-Clone the repo, then run the setup.sh script to build the initial set of bioinformatics tools and testing datasets. Then provide the agent access to compute resources, and project dirctories of your choosing by configuring compute enviornment and project level access to the system within the menu. See below for adding an HPC into the mix
+## Step 1 — build the system: `setup.sh`
+
+The clone itself is small — git tracks only code. `setup.sh` downloads and builds
+everything else **into the repo directory**, untracked. This produces a core set of bioinformatics tools and test files intended to aid in the agent's installation and validation efforts for any given request. This allows the agent to test out any pipelines it creates with available test data, or generate its own given its set of tools. This setup.sh process happens in 5 steps:
+
+- installs a private conda miniforge at `./.miniforge` (never touches any conda your
+  machine already has)
+- creates the runtime env at `./.conda_runtime` and installs the agent into it along
+  with the Globus CLI for file transfers (if applicable)
+- pulls the core toolkit env into `./envs/`
+- pulls the test-data corpus into `./resources/` — chr22 reference plus real sequencing
+  datasets for validating tools (the multi-GB part)
+- runs the systems check — every FAIL names its fix
+
+Re-runs will skip what already exists and never delete anything that already exists.
+
+What the agent **produces** — reports, build recipes, staged containers — lands
+*outside* the repo, in `~/bioinf_workspace` by default.
+
+## Step 2 — declare your compute: `config.sh`
+
+Step 1 gave you a complete local system. This step tells the agent **what it is
+allowed to touch beyond it** — which machines it may compute on, and which of
+your directories it may reach. It is technically optional: installing,
+validating and freezing tools on this machine needs no configuration at all and will default to a directory in your home called `~/bioinf_workspace`. Declaring external compute and projects is how you use the system at
+scale to leverage an HPC cluster running real experiments over your data, with the
+agent doing the shipping, submitting and fetching.
+
+```bash
+./scripts/config.sh --web        # the settings menu, in your browser (recommended)
+./scripts/config.sh --show       # print the current configuration
+./scripts/config.sh --validate   # rc 0 when the agent's loader accepts it
+./scripts/config.sh              # the same menu, but in the terminal
+```
+
+The menu edits one file — `~/.bioinf_agent/projects_access.yaml`. If it isn't declared here, 
+the agent isn't meant to touch it. You declare two things: compute environments, and projects, 
+along with the permissions allowed for each. 
+
+Hand-editing the file is also fine, but a menu save rewrites it (dropping hand-written
+comments) — the previous version is kept with an extra extension of `.bak`.
 
 
-### How to leverage an HPC (recommended)
+### Defining compute environments
+
+- **Compute environments** — the machines the agent may use: `local` (this
+  machine) and/or `ssh` (an HPC cluster / external compute resource). Each env
+  also names the agent's own working zones on that machine — scratch space,
+  shared reference data, containers, and reports. All four directories are required to be specified for each compute env with defaults provided. This system was developed around apptainer and nextflow for scaling up bioinformatic workflows. If your system uses an Lmod system for module management, we recommend setting the apptainer and nextflow modules within the configuration menu. These are the module paths you would normally load with a `module load your/module/path/here` command, so the agent knows to use them to run your data.
+
+#### How to leverage an HPC (recommended)
 If you want to leverage an HPC to run your bioinformatic workflows, we recommend setting up an ssh profile. To do so, paste the following template into your home `~/.ssh/config` file and change the `HostName` and `User` fields to match your HPC information instead.
 ```
 
 # ─── hpc-agent ─────────────────────────────────────────────────────────────
-# The agent's connection to exeternal compute. Reuses an interactive ssh session
+# The agent's connection to external compute. Reuses an interactive ssh session
 # YOU open via `ssh hpc-agent` so the agent never sees your password.
 #
 # Daily flow:
@@ -60,14 +109,33 @@ Host hpc-agent
     ControlPersist no
 ```
 
-Then in the `./scripts/config.sh --web` menu set an ssh compute env with `hpc-agent` under the `SSH HOST/ ALIAS` option. This was specifically developed with a high performance computing cluster in mind that leverages SLURM for job management, Lmod (Lua-based environment module system) to load apptainer + nextflow modules, and Globus Connect for file transfers between local and exeternal compute envs (scp as fallback). Together, these give the agent the ability create reproducible bioinformatic workflows that can scale up on the HPC reliably with human readable reports and workflows. As such, the current `./scripts/config.sh --web` supports options for these systems, but no others are currently supported. If you want to use Globus Connect for file transfers, this will require a command line login `globus login` from you before the endpoints can be resolved within the menu system. Note, you can search your institutions name to find the available endpoints within the menu system. This is the recommended option so scp isn't performed over the login node to move data. 
+Then in the `./scripts/config.sh --web` menu set an ssh compute env with `hpc-agent` under the `SSH HOST/ ALIAS` option. If your system uses SLURM and Lmod for software modules, you should set these options accordingly. Before, or during your agent session, you will need to login via `ssh hpc-agent` (and `globus login`, if you configured Globus) in separate terminals. 
 
-### Driving the system
+### Defining projects
+
+- **Projects** — named pieces of work. A project will define which compute envs it
+  may use, and which of **your** directories on those machines the agent may
+  see (e.g. your lab's data directory, your run's output directory). These are different directories than the compute envs.
+
+
+### Permissions for compute envs and projects
+
+- **Directory permissions** — a separate grant per directory, and they don't
+  imply each other: `file_name_only` (list what's there), `upload` (put new
+  files in), `download` (fetch files out), `exec` (run jobs there). Anything
+  not granted is denied, and there is no delete/overwrite grant at all.
+
+**Before work can be done on your HPC system:** open `ssh hpc-agent` in a separate terminal and login to your external compute resource and leave
+it open. Every bridge call uses that ControlMaster socket in BatchMode. To confirm a
+live session exists run `ssh -O check hpc-agent` or simply ask the agent if running in an interactive mode. 
+
+
+
+## Running the system
 
 This repo is an **MCP server**: a local program that holds the agent's tools (install, freeze, run, seal, …),
 and waits to be asked to run them. It has no chat interface and no AI of its own, it simply waits for requests from a client. 
-The AI lives in an **MCP client**, which hosts the conversation, decides which tool each request needs, and calls it. We developed
-against [Claude Code](https://claude.com/claude-code), but the tool surface is plain MCP, meanin any MCP client could drive it in theory.
+The AI lives in an **MCP client**, which hosts the conversation, decides which tool each request needs, and calls it. We developed against [Claude Code](https://claude.com/claude-code), but the tool surface is plain MCP, meaning any MCP client could drive it in theory.
 
 The general idea: **launch your agentic client from this repo's root, on the machine where
 you ran setup**. From there the client reads [.mcp.json](.mcp.json), starts the
@@ -75,7 +143,7 @@ server automatically as a subprocess, and uses its tools to orchestrate the work
 and that machine is where everything the tools need lives: the Docker daemon, the
 built system, your artifact store, and your open ssh session to the HPC.
 
-Three ways to drive it, all the same engine:
+Three ways to use the system (all use the same engine under the hood):
 
 - **A terminal** — `cd bioinf-agent && claude`, then simply ask/tell the agent about your 
   bioinformatics needs. Approve the `bioinf` server the first time it prompts.
@@ -85,6 +153,8 @@ Three ways to drive it, all the same engine:
 - **Headless, for scripting** — `claude -p "install samtools 1.21 and freeze it"
   --allowedTools "mcp__bioinf__*"` runs one request with no interactive session; the
   tool grant flag is required or every call is denied.
+- To give the agent access to your HPC, you will need to login with the ssh profile you setup `ssh hpc-agent`
+- To give the agent access to globus connect for file transfers, you will need to login to globus via a `globus login` command
 
 What does **not** work: Claude in the browser at claude.ai. A web session runs on
 Anthropic's servers, not your machine — it cannot see your Docker daemon, your built
@@ -94,9 +164,9 @@ client has to run where the system lives.
 
 ## How it works
 
-One agent, three territories. The repo is the **system** (rebuildable, disposable);
-what it produces lands in your **artifact store** (permanent, version-independent);
-and everything beyond your machine is reachable only through the **access file**:
+One agent, three territories: The code repository (the **system** itself), your local machine workspace, optional external compute workspace. The repo is the **system** (rebuildable, disposable);
+what it produces lands in your **artifact store** (version-independent, saved outside of the repo);
+and everything beyond your machine is reachable only through the **projects_access file**:
 
 ```mermaid
 flowchart TB
@@ -140,96 +210,10 @@ flowchart TB
     style hpc fill:none,stroke:#f59e0b80,stroke-width:1px
 ```
 
-
-
-## Step 1 — build the system: `setup.sh`
-
-```bash
-git clone https://github.com/monarch-initiative/bioinf-agent
-cd bioinf-agent
-./scripts/setup.sh          # the system builds itself — allow time for multi-GB downloads
-./scripts/setup.sh --check  # systems check only — PASS/FAIL per requirement, every FAIL names its fix
-```
-
-The clone itself is small — git tracks only code. `setup.sh` downloads and builds
-everything else **into the repo directory**, untracked. This produces a core set of bioinformatics tools and test files intended to aid in the agents installation and validation efforts for any given installation or pipeline generation request. In other words, the agent will test out the pipelines it creates if possible with available test data, or generate its own given its set of tools. This setup.sh process happens in 5 steps:
-
-- installs a private conda miniforge at `./.miniforge` (never touches any conda your
-  machine already has)
-- creates the runtime env at `./.conda_runtime` and installs the agent into it along
-  with the Globus CLI for file transfers (if applicable)
-- pulls the core toolkit env into `./envs/`
-- pulls the test-data corpus into `./resources/` — chr22 reference plus real sequencing
-  datasets for validating tools (the multi-GB part)
-- runs the systems check — every FAIL names its fix
-
-Re-runs will skip what already exists and never delete anything that already exists.
-
-What the agent **produces** — reports, build recipes, staged containers — lands
-*outside* the repo, in `~/bioinf_workspace` by default: your artifacts outlive any
-clone, and a new version of the system plugs straight into them. Compute-env
-configuration is likewise separate and fixed: `~/.bioinf_agent/projects_access.yaml`
-(written in step 2, below).
-
-
-## Step 2 — declare your compute: `config.sh`
-
-Step 1 gave you a complete local system. This step tells the agent **what it is
-allowed to touch beyond it** — which machines it may compute on, and which of
-your directories it may reach. It is technically optional: installing,
-validating and freezing tools on this machine needs no configuration at all.
-But declaring external compute and projects is how you use the system at
-scale — an HPC cluster running real experiments over your real data, with the
-agent doing the shipping, submitting and fetching.
-
-```bash
-./scripts/config.sh --web        # the settings menu, in your browser (recommended)
-./scripts/config.sh --show       # print the current configuration
-./scripts/config.sh --validate   # rc 0 when the agent's loader accepts it
-./scripts/config.sh              # the same menu, but in the terminal
-```
-
-The menu edits one file — `~/.bioinf_agent/projects_access.yaml` If it isn't declared here, 
-the agent is meant to touch it. You declare two things: compute environments, and projects, 
-along with the permissions allowed for each. 
-
-Hand-editing the file is also fine, but a menu save rewrites it (dropping hand-written
-comments) — the previous version is kept with an extra extension of `.bak`.
-
-
-### Defining compute environments
-
-- **Compute environments** — the machines the agent may use: `local` (this
-  machine) and/or `ssh` (an HPC cluster / external compute resource). Each env
-  also names the agent's own working zones on that machine — scratch space,
-  shared reference data, containers, and reports. All four directories are required to be specified for each compute env with defaults provided. This system was developed around apptainer and nextflow for scaling up bioinformatic workflows. If your system uses an Lmod system for module management, we recommend setting the apptainer and nextflow modules within the configuration menu. These are the module paths you would normally load with a `module load your/module/path/here` command, so the agent knows to use them to run your data.
-
-### Defining projects
-
-- **Projects** — named pieces of work. A project will define which compute envs it
-  may use, and which of **your** directories on those machines the agent may
-  see (e.g. your lab's data directory, your run's output directory). These are different directories than the compute envs.
-
-
-### Permissions for compute envs and projects
-
-- **Directory permissions** — a separate grant per directory, and they don't
-  imply each other: `file_name_only` (list what's there), `upload` (put new
-  files in), `download` (fetch files out), `exec` (run jobs there). Anything
-  not granted is denied, and there is no delete/overwrite grant at all.
-
-**Before work can be done on your HPC system:** open `ssh hpc-agent` in a separate terminal and login to your external compute resource and leave
-it open. Every bridge call uses that ControlMaster socket in BatchMode. To confirm a
-live session exists run `ssh -O check hpc-agent` or simply ask the agent if running in an interactive mode. 
-
 ---
 
 
 ## Examples
-
-The server is registered in [.mcp.json](.mcp.json) as `bioinf`, so Claude Code finds it
-when launched from the repo root (`claude`). **Approve the server when prompted**
-(first launch only), then just describe what you want.
 
 ### What it will decide for you — the defaults
 
@@ -247,16 +231,16 @@ otherwise. (The last six rows need an external compute env defined in the config
 | *"Install fastp, HISAT2, samtools, and htseq-count."* | All four go into one conda environment — they come from the same packaging world, so they can be installed and run together. Each tool is still validated individually. |
 | *"Install HISAT2, htseq-count, and DESeq2."* | HISAT2 and htseq-count share one environment; DESeq2, an R package, gets its own. Each packaging world gets its own environment — mixing a full R stack into a command-line environment makes installs fragile — and the final record states which step ran in which. |
 | *"Install this tool from GitHub — it isn't packaged anywhere."* | Built from the authors' own repository, pinned to an exact commit — and every build command is recorded as either lifted verbatim from a named file of theirs or authored by the agent, so the recipe carries its own audit trail. |
-| *"Download the human reference genome"* | There is only so much the agent can infer, but will likely result the latest release of the human genome (hg38.fa) from UCSC or Ensembl being downloaded to the common resources directory with a verifiable URL and traceable proveance. Alt contigs may or may not be included. More specific user supplied context and specification will allow the agent to make the proper decisions for your needs. | 
+| *"Download the human reference genome"* | There is only so much the agent can infer, but will likely result in the latest release of the human genome (hg38.fa) from UCSC or Ensembl being downloaded to the common resources directory with a verifiable URL and traceable provenance. Alt contigs may or may not be included. More specific user supplied context and specification will allow the agent to make the proper decisions for your needs. | 
 | *"Install STAR and check that it actually works."* | The latest version will be installed and test read data run through it: a matching test dataset is picked from the bundled corpus and every input is checksummed. "Works" means every output exists, is non-empty, and the run exited cleanly — plus format-specific checks (BAM, VCF, …) where the format is known. |
-| *"Download the human reference genome onto the cluster."* | Here, the agent will do its best to avoid using the login node for downloading and or uploading. If a SLURM job manager is selected in the configuration menu, then the download runs through a script submitted to the schedular (SLURM is only supported for now). If this is not configured, then the download will occur locally, and be pushed up to the cluster via Globus connect if it is configured, or the fallback is scp over the login node (checksum verified after the upload is complete). |
+| *"Download the human reference genome onto the cluster."* | Here, the agent will do its best to avoid using the login node for downloading and or uploading. If a SLURM job manager is selected in the configuration menu, then the download runs through a script submitted to the scheduler (SLURM is only supported for now). If this is not configured, then the download will occur locally, and be pushed up to the cluster via Globus connect if it is configured, or the fallback is scp over the login node (checksum verified after the upload is complete). |
 | *"Upload these fastq files to the cluster."* | Copied up, then checksum-verified on the far side before the transfer is called done. Plain scp by default; if you configured Globus, every transfer uses it instead — and a really big one hands back a task id to check on later rather than blocking for hours. This is a generic request, but the more context here the better so the agent knows exactly what you need. |
 | *"Make sure this pipeline works on the cluster."* | The pipeline runs in the agent's own scratch area on the cluster — then the outputs are pulled back, validated, and the cluster-side proof goes on the record in the containers and reports directories. |
 | *"Run the pipeline over the data in my project directory."* | It writes a readable workflow plus a SLURM launcher, submits the job, saves a record of the submission, and gets out of the way. Ask later *"how's the job doing?"* for status, and *"grab the results"* to fetch the outputs back, verified. |
 | *"Submit the job."* — with no account, partition, or memory given | The cluster's declared defaults fill in what you left out; anything still unknown is written on the record as unspecified rather than guessed. It can also read the available partitions and QoS off the live cluster for you. |
 | *"Write the outputs to my colleague's directory."* — one you never granted | Refused, before anything touches the cluster. And there is no delete permission to grant at all, while uploads only ever write *new* files — the transfer surface cannot overwrite anything, anywhere. |
 
-### A simple one — install a single tool
+### Simple example — install a single tool
 
 > *"Install samtools 1.21"*
 
@@ -271,9 +255,7 @@ What the system does:
   and you get the same solved artifact back by hash, no re-install
 
 What you end up with: the environment itself is a **container image in your local
-Docker daemon**, registered by digest — and when it later ships to a cluster, a
-tarball of it is staged under `~/bioinf_workspace/containers/` for the Apptainer
-conversion. Its paper trail lands in `~/bioinf_workspace/reports/`:
+Docker daemon**, registered by digest. Its paper trail lands in `~/bioinf_workspace/reports/`:
 
 | Artifact reports | Description |
 |----------|-----------|
@@ -287,17 +269,13 @@ conversion. Its paper trail lands in `~/bioinf_workspace/reports/`:
 | its registry entry — in `~/bioinf_workspace/reports/` | maps your request to that digest, with the full package list and where validation ran — this entry is how the same ask next month comes back by hash instead of re-installing |
 | `containers/{name}/{name}.tar` — only once it ships | a registry-free `docker save` of the image, staged in `~/bioinf_workspace/containers/`. The Apptainer conversion happens **on your machine** (apptainer running inside a pinned Linux container, so it works even on a Mac) and only the finished `.sif` is uploaded; until you ship somewhere, none of this exists |
 
-
-(Headless works too, and **the tool grant is required** — without it every call is denied:
-`claude -p "..." --allowedTools "mcp__bioinf__*"`.)
-
-### A big one — a full RNA-seq pipeline, local first, then the cluster
+### More complicated example — a full RNA-seq pipeline, local first, then the cluster
 
 > *"Create an mRNA-seq analysis pipeline that takes fastqs to gene-level count tables
 > ready for differential expression: fastp for trimming, HISAT2 2.2.1 for alignment,
 > htseq-count for counting, DESeq2 for the DE step. Make it work locally first, then
 > ship it to the cluster and prove it works there too. Use the genome and annotation
-> files in our RNA-seq-project for alignment and counting — and if I deleted those,
+> files in our RNA-seq-project directory for alignment and counting — and if I deleted those,
 > re-download them so we can run."*
 
 One request, but it exercises most of the system. What happens, in order:
@@ -394,11 +372,10 @@ identical environment.
   license-gated, so the record carries `redistributable: false` and the image is
   delivered tarball-only.
 
-Any MCP client works, not just Claude Code — the tool surface is plain MCP (no client:
-`python -m agent` runs the server directly). The sealed artifacts (`workflow.yaml` +
-`recipe.yaml` + image digest) are designed to be self-contained — the spec re-checks
-its own invariants standalone — so another agent or system can consume them without
-this repo in the loop.
+A client isn't even required — `python -m agent` runs the server directly. And the
+sealed artifacts (`workflow.yaml` + `recipe.yaml` + image digest) are designed to be
+self-contained — the spec re-checks its own invariants standalone — so another agent
+or system can consume them without this repo in the loop.
 
 ---
 
