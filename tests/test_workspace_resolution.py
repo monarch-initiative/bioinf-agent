@@ -139,53 +139,87 @@ def test_the_ambiguous_name_is_gone():
 
 
 # ---------------------------------------------------------------------------
-# 2. No artifact under the checkout
+# 2. The system/artifacts split (settled 2026-09-21)
 # ---------------------------------------------------------------------------
 
-#: The checkout may hold what DIES WITH IT, and nothing that outlives it. That is
-#: the actual rule — "no generated file under the checkout" is false as stated,
-#: because .mcp.json names ./.conda_runtime/bin/python, so the runtime env must be
-#: here. This list exists to make adding to it expensive: every entry is a thing
-#: that is worthless the moment the clone is deleted.
+#: The checkout holds the SYSTEM and nothing that outlives it: everything on
+#: this list is rebuilt by ./scripts/setup.sh from a fresh clone, so deleting
+#: the clone costs nothing but a re-download. What the agent PRODUCES
+#: (reports, containers, scratch) must resolve OUTSIDE — a new version of the
+#: system plugs into the artifacts previous versions made. This list exists to
+#: make adding to it expensive: every entry must be worthless-once-deleted.
 CHECKOUT_ALLOWED = {
     ".conda_runtime",      # the interpreter .mcp.json names by path
-    ".miniforge",          # private conda, installed only when the machine has none
-    ".bioinf_workspace",   # the pointer TO the workspace; meaningless elsewhere
+    ".miniforge",          # the repo-private conda setup always installs
+    "envs",                # host tool envs — rebuilt by the install primitives
+    "resources",           # core/test data corpus — re-downloaded by setup
     ".git",
     ".coverage",
 }
+
+#: The zones() keys that are SYSTEM (must default into the checkout) vs
+#: ARTIFACT (must never resolve into it). A new zone has to pick a side here,
+#: which is the point.
+SYSTEM_ZONES = {"envs", "resources"}
+ARTIFACT_ZONES = {"containers", "reports", "scratch", "projects_access"}
 
 
 def test_the_checkout_allowlist_is_small_and_justified():
     """The allowlist is the rule's escape hatch; a test that reads it is what
     keeps someone from quietly appending `env_reports` to it."""
     assert len(CHECKOUT_ALLOWED) <= 6, (
-        "the checkout allowlist grew. Every entry must be worthless once the "
-        "clone is deleted — if it outlives the checkout it belongs in the "
-        "workspace, not on this list.")
+        "the checkout allowlist grew. Every entry must be rebuildable by "
+        "setup.sh from a fresh clone — if it outlives the checkout it belongs "
+        "in the workspace, not on this list.")
 
 
-def test_no_zone_accessor_resolves_inside_the_checkout(monkeypatch, tmp_path):
-    """The load-bearing assertion. With a workspace configured, every zone must
-    land outside the checkout — otherwise the split is decorative."""
+def test_every_zone_is_classified():
+    """A zone nobody placed is a zone that lands wherever its author guessed."""
+    from agent.skills import workspace
+    keys = set(workspace.zones()) - {"code_root", "workspace_root", "workspace_source"}
+    assert keys == SYSTEM_ZONES | ARTIFACT_ZONES, (
+        f"zones() changed ({sorted(keys)}) — classify the new/renamed zone as "
+        f"SYSTEM or ARTIFACT above, and add gitignore/setup coverage if SYSTEM")
+
+
+def test_no_artifact_zone_resolves_inside_the_checkout(monkeypatch, tmp_path):
+    """The load-bearing assertion. Whatever the agent produces must land
+    outside the checkout — otherwise the split is decorative."""
     from agent.skills import workspace
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
-    monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
     code = workspace.code_root()
-    for name, value in workspace.zones().items():
-        if name in ("code_root", "workspace_source"):
-            continue
-        p = Path(value).resolve()
+    z = workspace.zones()
+    for name in ARTIFACT_ZONES:
+        p = Path(z[name]).resolve()
         assert code not in p.parents and p != code, \
-            f"zone {name!r} resolved to {p}, which is inside the checkout {code}"
+            f"artifact zone {name!r} resolved to {p}, inside the checkout {code}"
+
+
+def test_the_system_zones_default_into_the_checkout(monkeypatch):
+    """The other half: with no overrides, envs/ and resources/ are the
+    checkout's own untracked dirs — a fresh clone is self-contained."""
+    from agent.skills import workspace
+    for var in ("BIOINF_ENVS", "BIOINF_RESOURCES"):
+        monkeypatch.delenv(var, raising=False)
+    z = workspace.zones()
+    assert Path(z["envs"]) == workspace.code_root() / "envs"
+    assert Path(z["resources"]) == workspace.code_root() / "resources"
+
+
+def test_the_system_zones_are_gitignored():
+    """In the checkout but never in git — the clone stays small; the corpus is
+    downloaded, not tracked."""
+    ignore = (ROOT / ".gitignore").read_text().splitlines()
+    for name in ("/envs/", "/resources/"):
+        assert name in ignore, f"{name} missing from .gitignore — a bootstrap " \
+            f"would offer multi-GB of downloads to `git add -A`"
 
 
 def test_the_default_workspace_is_not_the_checkout(monkeypatch):
     """Even with nothing configured. A default that lands in the checkout would
-    make the rule true only for users who ran setup."""
+    make the rule true only for users who set the override."""
     from agent.skills import workspace
     monkeypatch.delenv("BIOINF_WORKSPACE", raising=False)
-    monkeypatch.setattr(workspace, "_read_pointer", lambda: "")
     root = workspace.workspace_root()
     assert workspace.code_root() not in root.parents
     assert root == Path.home() / workspace.DEFAULT_WORKSPACE_NAME
@@ -195,56 +229,32 @@ def test_the_default_workspace_is_not_the_checkout(monkeypatch):
 # 3. Resolution behaviour
 # ---------------------------------------------------------------------------
 
-def test_resolution_order_env_beats_pointer(monkeypatch, tmp_path):
+def test_resolution_is_env_or_default_and_consults_no_state(monkeypatch, tmp_path):
+    """$BIOINF_WORKSPACE wins; otherwise ~/bioinf_workspace, unconditionally.
+    No pointer file, no config key, no filesystem probe — so resolution cannot
+    silently answer differently tomorrow."""
     from agent.skills import workspace
-    monkeypatch.setattr(workspace, "_read_pointer", lambda: str(tmp_path / "from_pointer"))
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "from_env"))
     assert workspace.workspace_root() == (tmp_path / "from_env").resolve()
     assert workspace.workspace_source() == "env"
 
-
-def test_resolution_falls_back_to_the_pointer(monkeypatch, tmp_path):
-    from agent.skills import workspace
     monkeypatch.delenv("BIOINF_WORKSPACE", raising=False)
-    monkeypatch.setattr(workspace, "_read_pointer", lambda: str(tmp_path / "ws"))
-    assert workspace.workspace_root() == (tmp_path / "ws").resolve()
-    assert workspace.workspace_source() == "pointer"
+    assert workspace.workspace_root() == Path.home() / workspace.DEFAULT_WORKSPACE_NAME
+    assert workspace.workspace_source() == "default"
 
 
-def test_resolution_never_raises_on_a_hostile_pointer(monkeypatch):
+def test_resolution_never_raises_on_a_hostile_override(monkeypatch):
     """mcp_server builds artifact paths at IMPORT. A resolver that refuses an
-    unusable workspace costs the agent its entire tool surface — every tool
+    unusable value costs the agent its entire tool surface — every tool
     vanishes — rather than costing it one directory. Diagnose in the doctor,
-    where a human reads the message and can act on it."""
+    where a human reads the message and can act on it. (A NUL byte cannot
+    even enter os.environ on POSIX, so blank/whitespace is the whole
+    reachable junk space — those must yield the DEFAULT, not a cwd-relative
+    surprise.)"""
     from agent.skills import workspace
-    monkeypatch.delenv("BIOINF_WORKSPACE", raising=False)
-    for junk in ("", "   ", "\x00not a path", "relative/path"):
-        monkeypatch.setattr(workspace, "_read_pointer", lambda j=junk: j)
-        assert isinstance(workspace.workspace_root(), Path)
-
-
-def test_the_pointer_file_ignores_comments_and_blanks(tmp_path, monkeypatch):
-    """A human may edit this file; a leading comment must not become the path."""
-    from agent.skills import workspace
-    pointer = tmp_path / workspace.POINTER_FILENAME
-    pointer.write_text("# a comment\n\n   \n/some/where\n")
-    monkeypatch.setattr(workspace, "_pointer_path", lambda: pointer)
-    assert workspace._read_pointer() == "/some/where"
-
-
-def test_write_pointer_records_an_absolute_path(tmp_path, monkeypatch):
-    """Recording what the user TYPED would let a later `cd` change where the
-    agent looks."""
-    from agent.skills import workspace
-    pointer = tmp_path / workspace.POINTER_FILENAME
-    monkeypatch.setattr(workspace, "_pointer_path", lambda: pointer)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "ws").mkdir()
-    workspace.write_pointer("ws")
-    monkeypatch.setattr(workspace, "_read_pointer",
-                        lambda: [l for l in pointer.read_text().splitlines()
-                                 if l and not l.startswith("#")][0])
-    assert Path(workspace._read_pointer()).is_absolute()
+    for junk in ("", "   "):
+        monkeypatch.setenv("BIOINF_WORKSPACE", junk)
+        assert workspace.workspace_root() == Path.home() / workspace.DEFAULT_WORKSPACE_NAME
 
 
 def test_zones_describes_without_creating(monkeypatch, tmp_path):
@@ -254,9 +264,11 @@ def test_zones_describes_without_creating(monkeypatch, tmp_path):
     from agent.skills import workspace
     ws = tmp_path / "untouched"
     monkeypatch.setenv("BIOINF_WORKSPACE", str(ws))
-    monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
+    monkeypatch.setenv("BIOINF_RESOURCES", str(tmp_path / "untouched_res"))
+    monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "untouched_envs"))
     workspace.zones()
-    assert not ws.exists(), "workspace.zones() created the workspace it was describing"
+    for p in (ws, tmp_path / "untouched_res", tmp_path / "untouched_envs"):
+        assert not p.exists(), f"workspace.zones() created {p} while describing it"
 
 
 def test_zone_accessors_do_create(monkeypatch, tmp_path):
@@ -265,19 +277,24 @@ def test_zone_accessors_do_create(monkeypatch, tmp_path):
     accessor is about to write into it."""
     from agent.skills import workspace
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
-    monkeypatch.delenv("BIOINF_RESOURCES", raising=False)
+    monkeypatch.setenv("BIOINF_RESOURCES", str(tmp_path / "res"))
+    monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "envs"))
     for fn in (workspace.conda_envs_dir, workspace.images_dir, workspace.reports_dir,
                workspace.resources_root):
         assert fn().is_dir()
     assert workspace.scratch_dir("jobs").is_dir()
 
 
-def test_resources_is_independently_relocatable(monkeypatch, tmp_path):
-    """The zone most likely to already exist as a shared institutional mount."""
+def test_the_system_zones_are_independently_relocatable(monkeypatch, tmp_path):
+    """$BIOINF_RESOURCES: the shared institutional mount (one corpus feeding N
+    clones). $BIOINF_ENVS: the suite's own sandbox seam. Both relocate their
+    zone without moving anything else."""
     from agent.skills import workspace
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
     monkeypatch.setenv("BIOINF_RESOURCES", str(tmp_path / "shared"))
+    monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "elsewhere"))
     assert workspace.resources_root() == (tmp_path / "shared").resolve()
+    assert workspace.conda_envs_dir() == (tmp_path / "elsewhere").resolve()
     assert workspace.reports_dir().is_relative_to(tmp_path / "ws")
 
 
@@ -296,20 +313,21 @@ def test_home_containment_is_one_implementation(monkeypatch, tmp_path):
 # 4. The consumers actually moved
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("module,attr,zone", [
-    ("agent.skills.env_manager",  "envs_dir",      "conda"),
-    ("agent.skills.job_manager",  "jobs_dir",      "scratch"),
+@pytest.mark.parametrize("module,cls,attr,var,sub", [
+    ("agent.skills.env_manager", "EnvManager", "envs_dir", "BIOINF_ENVS",      ""),
+    ("agent.skills.job_manager", "JobManager", "jobs_dir", "BIOINF_WORKSPACE", "ws"),
 ])
-def test_the_singletons_land_in_the_workspace(monkeypatch, tmp_path, module, attr, zone):
-    """Constructing a manager must write into the configured workspace and
-    nowhere else — this is what a test redirecting $BIOINF_WORKSPACE relies on."""
+def test_the_singletons_land_where_the_resolver_points(monkeypatch, tmp_path,
+                                                       module, cls, attr, var, sub):
+    """Constructing a manager must write into the redirected zone and nowhere
+    else — this is what the suite's sandbox seams rely on. EnvManager follows
+    the envs override (a SYSTEM zone); JobManager follows the workspace."""
     import importlib
-    monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
+    target = tmp_path / (sub or "envs")
+    monkeypatch.setenv(var, str(target))
     mod = importlib.import_module(module)
-    cls = {"agent.skills.env_manager": "EnvManager",
-           "agent.skills.job_manager": "JobManager"}[module]
     inst = getattr(mod, cls)({})
-    assert Path(getattr(inst, attr)).is_relative_to(tmp_path / "ws")
+    assert Path(getattr(inst, attr)).is_relative_to(target)
 
 
 def test_the_access_file_has_one_home(monkeypatch, tmp_path):

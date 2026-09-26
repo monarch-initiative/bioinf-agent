@@ -79,9 +79,9 @@ def check_conda() -> None:
         return
     rc, conda = run(["bash", str(ENV_SH), "conda"])
     if rc != 0 or not conda:
-        row("FAIL", "conda", "not found ($CONDA_EXE, PATH, ./.miniforge, usual locations)",
-            "run ./scripts/setup.sh — it offers to install a private miniforge at ./.miniforge "
-            "(or install miniforge yourself: https://github.com/conda-forge/miniforge)")
+        row("FAIL", "conda", "no repo-private miniforge at ./.miniforge (the ONE conda "
+                             "this system uses — machine condas are never consulted)",
+            "run ./scripts/setup.sh — it installs it automatically, nothing outside the repo dir")
         return
     conda = conda.splitlines()[-1].strip()
     rc, out = run([conda, "--version"])
@@ -171,24 +171,19 @@ def check_mcp_registration() -> None:
 def check_workspace() -> None:
     """PRINT the resolved locations. Two surfaces disagreeing about where a file
     lives is invisible until something reports both, so this row states the
-    workspace, how it was chosen, and every zone under it."""
+    artifact root and how it was chosen. The default (~/bioinf_workspace) is
+    the normal converged state, not a missing choice."""
     z = workspace.zones()
     root = Path(z["workspace_root"])
-    src = {"env":     "$BIOINF_WORKSPACE",
-           "pointer": f"{workspace.POINTER_FILENAME} in the checkout",
-           "default": "built-in default (setup has not recorded a choice)"}[z["workspace_source"]]
+    src = {"env":     "from $BIOINF_WORKSPACE",
+           "default": "the default"}[z["workspace_source"]]
 
     err = workspace.home_containment_error(root)
     if err:
-        row("FAIL", "workspace", err,
-            "run ./scripts/setup.sh and choose a workspace under $HOME, or set "
-            "$BIOINF_WORKSPACE to one")
-    elif z["workspace_source"] == "default":
-        row("SKIP", "workspace", f"{root} — {src}",
-            "run ./scripts/setup.sh to record the choice; until then a second "
-            "clone resolves the same default and shares this workspace")
+        row("FAIL", "artifacts", err,
+            "set $BIOINF_WORKSPACE to a directory under $HOME")
     else:
-        row("PASS", "workspace", f"{root} — from {src}")
+        row("PASS", "artifacts", f"{root} — {src}")
 
 
 def print_layout() -> None:
@@ -197,30 +192,33 @@ def print_layout() -> None:
     run here yet", not "broken"."""
     z = workspace.zones()
     print("\nlayout")
-    print(f"  code        {z['code_root']}")
-    print(f"  workspace   {z['workspace_root']}")
-    for key in ("conda_envs", "images", "reports", "scratch", "resources"):
+    print(f"  system      {z['code_root']}  (the checkout — code + envs + test data)")
+    for key in ("envs", "resources"):
         mark = "*" if Path(z[key]).exists() else " "
-        print(f"   {mark} {key:<9} {z[key]}")
+        print(f"   {mark} {key:<10} {z[key]}")
+    print(f"  artifacts   {z['workspace_root']}  (what the agent produces — outlives any clone)")
+    for key in ("containers", "reports", "scratch"):
+        mark = "*" if Path(z[key]).exists() else " "
+        print(f"   {mark} {key:<10} {z[key]}")
     print("  (* = present; the rest are created on first write)")
 
 
 # --- core data ---------------------------------------------------------------
 def check_core_data() -> None:
     z = workspace.zones()
-    chr22 = Path(z["resources"]) / "core_test_data_hg38" / "genome" / "chr22.fa"
-    core_env = Path(z["conda_envs"]) / "bioinf_core_tools"
-    missing = [str(p) for p in (chr22, core_env) if not p.exists()]
+    core = Path(z["resources"]) / "core_test_data_hg38"
+    # manifest.yaml enumerates the read-dataset corpus; setup pulls the whole
+    # corpus (there is no partial mode), so its absence means an incomplete
+    # bootstrap, same as a missing genome.
+    chr22 = core / "genome" / "chr22.fa"
+    manifest = core / "manifest.yaml"
+    core_env = Path(z["envs"]) / "bioinf_core_tools"
+    missing = [str(p) for p in (chr22, manifest, core_env) if not p.exists()]
     if missing:
         row("FAIL", "core data", f"missing: {', '.join(missing)}",
-            "run ./scripts/setup.sh (bootstraps the core_tools env + chr22 test data)")
+            "run ./scripts/setup.sh (bootstraps the core_tools env + the test-data corpus)")
         return
-    # manifest.yaml is written by the FULL bootstrap (it enumerates the read-
-    # dataset corpus) — its absence after --minimal is a state, not a failure.
-    manifest = Path(z["resources"]) / "core_test_data_hg38" / "manifest.yaml"
-    corpus = ("read-dataset corpus present" if manifest.exists()
-              else "minimal bootstrap (no read-dataset corpus — ./scripts/setup.sh --full adds it)")
-    row("PASS", "core data", f"chr22 reference + core_tools env present; {corpus}")
+    row("PASS", "core data", "chr22 reference + read-dataset corpus + core_tools env present")
 
 
 # --- HPC bridge (optional) ---------------------------------------------------

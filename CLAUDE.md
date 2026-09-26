@@ -3,7 +3,7 @@
 Installs bioinformatics tools into isolated conda envs, validates them against test data, packages as HPC Docker images, and emits a machine-verified spec. Designed to be **a solved component** — call once per tool/version, get a trustworthy artifact, never look at it again.
 
 ```bash
-./scripts/setup.sh          # one-time: runtime env (./.conda_runtime) + editable install + core_tools env + chr22; --full adds the 8 read datasets + ACTB phenopacket
+./scripts/setup.sh          # one-time, one mode: private miniforge + runtime env (./.conda_runtime) + editable install + core_tools env + the full test-data corpus (chr22, 8 read datasets, ACTB phenopacket)
 ./scripts/setup.sh --check  # systems check (scripts/doctor.py) — every FAIL names its fix
 ```
 
@@ -174,31 +174,33 @@ Resuming a session and don't know what you left running? `check_job` needs a `jo
 
 ## Data on disk
 
-**NOTHING THE AGENT GENERATES LIVES IN THE CHECKOUT.** Artifacts are the product — they
-outlive any clone — so they live in a WORKSPACE outside it, resolved by
-`agent/skills/workspace.py` and by nothing else. Ask it; do not derive a path from
-`__file__`, and do not look for `env_reports/` (there is no such directory any more).
-`agent_status` reports every resolved zone, `./scripts/setup.sh --check` prints them, and
-`tests/test_workspace_resolution.py` fails the build on a second answer.
+**THE SYSTEM AND ITS ARTIFACTS LIVE APART** (settled 2026-09-21). The CHECKOUT is the
+system, self-contained: code plus everything setup rebuilds into it untracked —
+`.miniforge/`, `.conda_runtime/`, the host tool envs (`envs/`), the core/test-data
+corpus (`resources/`). Delete the clone and the system is gone; re-run
+`./scripts/setup.sh` on a fresh clone and it builds itself back. What the agent
+PRODUCES outlives any clone, so it lives in a WORKSPACE outside — `~/bioinf_workspace`
+default, `$BIOINF_WORKSPACE` overrides, and resolution consults no other state (the
+old `.bioinf_workspace` pointer file is gone). All of it is resolved by
+`agent/skills/workspace.py` and by nothing else: ask it; do not derive a path from
+`__file__`. `agent_status` reports every resolved zone, `./scripts/setup.sh --check`
+prints them, and `tests/test_workspace_resolution.py` fails the build on a second
+answer. (`projects_access.yaml` lives in NEITHER — its home is fixed at
+`~/.bioinf_agent/`, decoupled on purpose; see the HPC bridge section.)
 
-The checkout may hold only what DIES WITH IT: `.conda_runtime/`, `.miniforge/`, and the
-one-line `.bioinf_workspace` pointer setup writes. Resolution order: `$BIOINF_WORKSPACE`,
-that pointer, then `~/bioinf_workspace`. (`projects_access.yaml` does NOT live here —
-its home is fixed at `~/.bioinf_agent/`, decoupled on purpose; see the HPC bridge section.)
-
-| zone | accessor | holds | may I delete it? |
-|------|----------|-------|------------------|
-| `environments/conda` | `conda_envs_dir()` | host conda envs (pre-freeze iteration) | yes — rebuild from the recipe |
-| `environments/images` | `images_dir()` | `docker save` tarballs for Apptainer | yes — rebuild from the recipe |
-| `reports/` | `reports_dir()` | **the record** — ENV/RUN pages, attestations, recipes, sealed specs, the EnvCache, transfer + submission manifests | **never** — this IS the deliverable |
-| `scratch/` | `scratch_dir(…)` | job state, drafts, render staging | freely |
-| `resources/` | `resources_root()` | reference genomes + test datasets; relocatable via `$BIOINF_RESOURCES` | no — expensive to refetch |
+| zone | where | accessor | holds | may I delete it? |
+|------|-------|----------|-------|------------------|
+| `envs/` | checkout | `conda_envs_dir()` | host conda tool envs (pre-freeze iteration) | yes — rebuild from the recipe |
+| `resources/` | checkout | `resources_root()` | reference genomes + test datasets; relocatable via `$BIOINF_RESOURCES` (shared mount) | yes, reluctantly — setup refetches, but it is multi-GB |
+| `containers/` | workspace | `images_dir()` | `docker save` tarballs staged for Apptainer | yes — rebuild from the frozen env |
+| `reports/` | workspace | `reports_dir()` | **the record** — ENV/RUN pages, attestations, recipes, sealed specs, the EnvCache, transfer + submission manifests | **never** — this IS the deliverable |
+| `scratch/` | workspace | `scratch_dir(…)` | job state, drafts, render staging | freely |
 
 Core test data lives at `<resources>/core_test_data_hg38/` (8 read datasets + ACTB phenopacket + chr22 reference). Read `manifest.yaml` to enumerate. Pipeline-specific test data goes in `<resources>/{pipeline_name}_test_data/`.
 
 Generated artifacts:
-- `<workspace>/environments/conda/bioinf_{name}/` — the host conda env (pre-freeze iteration)
-- **Layer 1 (`freeze`)** — the env image in the local Docker daemon + its EnvCache record (`request_key` → digest, with the full SBOM + `validation_locus`); the Apptainer HPC delivery (registry-free `docker save` tarball under `<workspace>/environments/images/{name}/` → `apptainer build docker-archive`, or a registry push); and record-rendered deliverables: `<reports>/{name}.ENV.html` (the env report) + `<reports>/{name}.attestation.json` (in-toto/SLSA provenance) + `<reports>/{name}.recipe.yaml` (machine build recipe, self-contained) + `<reports>/{name}.recipe.md` (human build recipe — the runnable rebuild commands). The two recipe forms are written for EVERY install path (build/adopt/authors-dockerfile) so an env is always reproducible
+- `<checkout>/envs/bioinf_{name}/` — the host conda env (pre-freeze iteration)
+- **Layer 1 (`freeze`)** — the env image in the local Docker daemon + its EnvCache record (`request_key` → digest, with the full SBOM + `validation_locus`); the Apptainer HPC delivery (registry-free `docker save` tarball under `<workspace>/containers/{name}/` → `apptainer build docker-archive`, or a registry push); and record-rendered deliverables: `<reports>/{name}.ENV.html` (the env report) + `<reports>/{name}.attestation.json` (in-toto/SLSA provenance) + `<reports>/{name}.recipe.yaml` (machine build recipe, self-contained) + `<reports>/{name}.recipe.md` (human build recipe — the runnable rebuild commands). The two recipe forms are written for EVERY install path (build/adopt/authors-dockerfile) so an env is always reproducible
 - **Layer 2 (`seal_workflow`)** — `<reports>/{name}.workflow.yaml` (the `WorkflowSpec`, machine-verified) + `<reports>/{name}.RUN.html` (the run dashboard rendered from the validated run — validated evidence per compute locus, a distinct how-to panel carrying the I4 transcript, every external input source I8 traced, and the runtime prerequisites the Layer-2 I10 gated on. The markdown guide it replaced is available on demand via `generate_user_guide`). **The page must SHOW what the seal GATED ON** — a field the invariants read and no renderer prints is a fact the record knows and the artifact refuses to say, leaving the reader the yaml as their only recourse. Three were in that state until 2026-08-07 (the I4 transcript, `runtime_configs`, `service_dependencies`); `tests/integration/correctness/test_run_dashboard_shows_what_was_gated.py` is the standing form of the rule — add a row when a new field starts gating a seal. **The rule has a SECOND form, which cost more:** a page can print a field and drop the record's own qualifier on it. `resource_usage.i7_authoritative` says the wall/RSS/CPU numbers were measured under emulation and are wrong by ~2 orders of magnitude; nothing read it, and every step in the corpus is emulated, so the page a user sizes `#SBATCH --mem` from presented them flat. The self-test's per-file `validation_results` were computed, gated on, then dropped at the seal, so the how-to's `Type` column could only read the authored `usage.outputs[*].type` — empty on every spec. Read both through `core_data` (`resource_usage_authority`, `usage_output_type`), in three states, never a bare bool
 
 ---

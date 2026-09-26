@@ -1,9 +1,11 @@
-"""Bootstrap --minimal flag (P1 — front door / honest floor).
+"""Bootstrap has ONE mode: everything upfront (ruling 2026-09-21).
 
-`--minimal` stands up the core env skeleton + reference genome but skips the
-multi-GB read/long-read/pod5 dataset downloads, and (because the smoke test needs
-those datasets) forces --skip-smoke. These tests pin that behavior by mocking the
-four bootstrap steps and asserting which get called.
+`--minimal` (skip the read-dataset corpus) and setup.sh's `--full` were deleted
+together: a partial bootstrap made "is this machine ready?" a two-valued
+question, and the doctor, the docs and the corpus-dependent tests each answered
+it differently. Now a bootstrapped clone always holds the whole corpus, so the
+flag must stay gone — these tests pin both the default behavior and the
+refusal of the deleted flag.
 """
 from __future__ import annotations
 
@@ -46,21 +48,24 @@ def _stub_steps(bc, monkeypatch, calls):
     monkeypatch.setattr(bc, "smoke_test", _smoke)
 
 
-def test_minimal_skips_datasets_and_smoke(monkeypatch):
-    bc = _load_bootstrap()
-    calls = {"download_datasets": 0, "smoke_test": 0}
-    _stub_steps(bc, monkeypatch, calls)
-    monkeypatch.setattr(sys, "argv", ["bootstrap_core", "--minimal"])
-    bc.main()   # returns cleanly on success (no sys.exit)
-    assert calls["download_datasets"] == 0, "the multi-GB dataset pulls must be skipped"
-    assert calls["smoke_test"] == 0, "--minimal must force --skip-smoke (no data to align)"
-
-
-def test_full_run_calls_datasets_and_smoke(monkeypatch):
+def test_the_default_run_downloads_the_corpus_and_smokes(monkeypatch):
     bc = _load_bootstrap()
     calls = {"download_datasets": 0, "smoke_test": 0}
     _stub_steps(bc, monkeypatch, calls)
     monkeypatch.setattr(sys, "argv", ["bootstrap_core"])
-    bc.main()
+    bc.main()   # returns cleanly on success (no sys.exit)
     assert calls["download_datasets"] == 1
     assert calls["smoke_test"] == 1
+
+
+def test_the_minimal_flag_stays_deleted(monkeypatch):
+    """A partial bootstrap is a mode nothing downstream can distinguish from a
+    broken one; re-adding the flag must be a deliberate act, not a revert."""
+    bc = _load_bootstrap()
+    calls = {"download_datasets": 0, "smoke_test": 0}
+    _stub_steps(bc, monkeypatch, calls)
+    monkeypatch.setattr(sys, "argv", ["bootstrap_core", "--minimal"])
+    with pytest.raises(SystemExit) as exc:
+        bc.main()
+    assert exc.value.code == 2
+    assert calls["download_datasets"] == 0

@@ -52,8 +52,11 @@ REAL_WORKSPACE = Path(os.environ["BIOINF_REAL_WORKSPACE"])
 #: READ-ONLY by rule: a test that writes into the real workspace is a test that
 #: pollutes the user's audit trail.
 REPORTS = REAL_WORKSPACE / "reports"
-CONDA_ENVS = REAL_WORKSPACE / "environments" / "conda"
-RESOURCES = REAL_WORKSPACE / "resources"
+# The two SYSTEM zones live in the CHECKOUT (untracked), not the workspace —
+# and both have override seams the conftest redirects, so their real locations
+# are captured before the redirect, same as the workspace itself.
+CONDA_ENVS = Path(os.environ["BIOINF_REAL_ENVS"])
+RESOURCES = Path(os.environ["BIOINF_REAL_RESOURCES"])
 # NOT under REAL_WORKSPACE: the config home moved to the fixed machine-level
 # dotdir (2026-09-18), and this line following it is what keeps the access-file
 # checks from skipping as "not configured" on a fully configured machine —

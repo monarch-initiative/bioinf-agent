@@ -456,8 +456,8 @@ def local_defaults() -> dict[str, str]:
     ~/bioinf_workspace, mirroring how `ssh_defaults` is a convention
     (/scratch/{user}/CLAUDE_*) rather than a resolver lookup. A menu default
     only, machine-independent on purpose: routing it through workspace_root()
-    made the offered paths follow this machine's pointer into whatever dir an
-    older setup recorded, which read as broken. The zone names ARE the
+    once made the offered paths follow whatever dir this machine's older
+    setup had recorded, which read as broken. The zone names ARE the
     directory names, so the structure explains itself."""
     base = Path.home() / workspace.DEFAULT_WORKSPACE_NAME
     return {

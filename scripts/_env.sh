@@ -2,8 +2,7 @@
 # _env.sh — the ONE answer to "where is conda?" and "which python runs the agent?"
 #
 # Sourced by setup.sh, start_mcp_server.sh and setup_core_test_data.sh; invoked as a
-# CLI by scripts/doctor.py (which is stdlib-only by design and must not grow a second
-# copy of the search).
+# CLI by scripts/doctor.py (which is stdlib-only by design).
 #
 #   source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 #     -> $BIOINF_ROOT $BIOINF_RUNTIME $BIOINF_RUNTIME_PY $BIOINF_PRIVATE_CONDA
@@ -14,9 +13,12 @@
 #                                      # exit status says whether it is usable, so a
 #                                      # caller can name a missing env by path
 #
-# Single implementation on purpose: four callers resolving conda independently can
-# resolve it differently, and then the systems check reports on a conda setup did not
-# use. Pinned by tests/test_setup_surface_resolution.py.
+# "Where is conda" has exactly ONE answer — the repo-private ./.miniforge — and
+# deliberately NO search. Four callers used to search a machine's condas in
+# different orders (the doctor once reported PASS on a conda setup never used),
+# and any machine conda carries that machine's variance. setup.sh installs the
+# private copy unconditionally; every clone bootstraps identically.
+# Pinned by tests/test_setup_surface_resolution.py.
 
 BIOINF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIOINF_RUNTIME="$BIOINF_ROOT/.conda_runtime"
@@ -30,24 +32,16 @@ BIOINF_PRIVATE_CONDA="$BIOINF_ROOT/.miniforge/condabin/conda"
 # child conda runs). A user who wants the notice back can export "true".
 export CONDA_NOTIFY_OUTDATED_CONDA="${CONDA_NOTIFY_OUTDATED_CONDA:-false}"
 
-# The repo-local private copy wins over $CONDA_EXE and PATH: a clone that installed
-# its own miniforge built its runtime env and every envs/bioinf_* with it, and the
-# launcher puts it on PATH for the server and its children anyway.
+# THE conda is the repo-private miniforge, full stop. There is no search: a
+# machine's own conda can be arbitrarily broken (half-updated base, exotic
+# channels, shell hooks), and an agent system meant to run the same on every
+# machine cannot inherit that variance. setup.sh installs ./.miniforge
+# unconditionally when it is absent; until then this returns 1 and every
+# caller's failure message names setup.sh as the fix.
 bioinf_find_conda() {
     if [ -x "$BIOINF_PRIVATE_CONDA" ]; then
         echo "$BIOINF_PRIVATE_CONDA"; return 0
     fi
-    if [ -n "${CONDA_EXE:-}" ] && [ -x "$CONDA_EXE" ]; then
-        echo "$CONDA_EXE"; return 0
-    fi
-    if command -v conda >/dev/null 2>&1; then
-        command -v conda; return 0
-    fi
-    for c in "$HOME/miniforge3/condabin/conda" "$HOME/miniconda3/condabin/conda" \
-             "$HOME/anaconda3/condabin/conda" "/opt/conda/condabin/conda" \
-             "/opt/homebrew/opt/miniforge3/condabin/conda"; do
-        if [ -x "$c" ]; then echo "$c"; return 0; fi
-    done
     return 1
 }
 
@@ -74,24 +68,6 @@ bioinf_bootstrap_python() {
     fi
     if command -v python >/dev/null 2>&1; then echo "python"; return 0; fi
     echo "python3"
-}
-
-# Launcher fallback for machines provisioned before the runtime env existed: a
-# base-conda interpreter that can actually import the server's deps — importability
-# is probed, not assumed from the path existing.
-bioinf_legacy_server_python() {
-    for base in "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" \
-                "/opt/conda" "/opt/homebrew/opt/miniforge3"; do
-        if [ -x "$base/bin/python" ] && \
-           "$base/bin/python" -c "import fastmcp" >/dev/null 2>&1; then
-            echo "$base/bin/python"; return 0
-        fi
-    done
-    if command -v python3 >/dev/null 2>&1 && \
-       python3 -c "import fastmcp" >/dev/null 2>&1; then
-        command -v python3; return 0
-    fi
-    return 1
 }
 
 # CLI mode — only when executed, never when sourced.

@@ -358,7 +358,8 @@ def agent_status(
         # checkout, so an agent resuming a session with a "look in env_reports/"
         # habit is looking at a directory that no longer exists. The resolved
         # zones are the first thing this report states, and it names which of
-        # the three answers resolution used so a surprising path is traceable.
+        # the two answers resolution used (env | default) so a surprising path
+        # is traceable.
         "workspace":         workspace.zones(),
         "drafts":            _drafts_summary(pipeline_state, env_cache, env_reports_dir),
         "envs_on_disk":      _envs_on_disk_summary(envs_root),

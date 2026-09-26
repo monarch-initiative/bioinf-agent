@@ -6,12 +6,10 @@
 # restart on the next MCP call. Production deployments that want stable code
 # should call `python -m agent` directly without this var set.
 #
-# Interpreter resolution, in order (the path lists live in _env.sh):
-#   1. $BIOINF_RUNTIME_PY — the repo-local runtime env scripts/setup.sh creates and
-#      installs the agent into. The env the deps went into IS the env the server
-#      runs on, per clone, with no discovery.
-#   2. bioinf_legacy_server_python — a base-conda python that can import the deps.
-#   3. Otherwise: fail loudly, naming the fix.
+# Interpreter resolution (via _env.sh): $BIOINF_RUNTIME_PY — the repo-local
+# runtime env scripts/setup.sh creates and installs the agent into. The env the
+# deps went into IS the env the server runs on, per clone, with no discovery.
+# Anything else: fail loudly, naming setup.sh as the fix.
 #
 # NOTE: it's `python -m agent`, NOT `python -m agent.mcp_server` — running
 # mcp_server.py as __main__ creates two FastMCP instances and the wrong one
@@ -42,10 +40,6 @@ if [ -x "$BIOINF_RUNTIME_PY" ]; then
     exit 1
 fi
 
-if LEGACY_PY="$(bioinf_legacy_server_python)"; then
-    exec "$LEGACY_PY" -m agent
-fi
-
-echo "[start_mcp_server] no interpreter with the server's deps was found." >&2
+echo "[start_mcp_server] no runtime env at ./.conda_runtime." >&2
 echo "[start_mcp_server] fix: run ./scripts/setup.sh — it creates ./.conda_runtime and installs the agent into it." >&2
 exit 1
