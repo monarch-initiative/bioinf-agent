@@ -8,16 +8,13 @@ returns a normalized {ok, error, image_digest, content_digest, validation_locus}
 There is no main(), no JSON output, and NO COVERAGE CLAIM: nothing here counts tiers,
 carries a measurement forward, or writes a committed artifact.
 
-That is deliberate. These functions used to live in scripts/measure_freeze_tier_coverage.py,
-which wrapped them in a counter that published `install_tiers_proven: 10` to
-docs/freeze_tier_coverage.json. The counter was retired because it hand-built its own
-`{"install_steps": [{"installed_packages": [...]}]}` input and called NO install primitive —
-so the one hop it implied it covered (does the PRIMITIVE write a record the freeze dispatch
-can consume?) was precisely the hop it skipped. The drivers themselves were never the
-problem and are kept, because they are what the hermetic wiring tests exercise:
-tests/test_freeze_build_method_tiers.py and tests/test_freeze_synthesized_tier.py
-monkeypatch the executors these functions call and assert the right one is reached with the
-right arguments.
+That is deliberate: a coverage counter wrapped around these drivers would hand-build its
+own `{"install_steps": [{"installed_packages": [...]}]}` input and call NO install
+primitive — so the one hop such a number implies is covered (does the PRIMITIVE write a
+record the freeze dispatch can consume?) is precisely the hop it skips. The drivers are
+what the hermetic wiring tests exercise: tests/test_freeze_build_method_tiers.py and
+tests/test_freeze_synthesized_tier.py monkeypatch the executors these functions call and
+assert the right one is reached with the right arguments.
 
 Every heavy import stays FUNCTION-LOCAL on purpose — the hermetic tests monkeypatch module
 attributes (`env_freeze`, `ffi`) by string target, which only resolves because the import
@@ -103,7 +100,7 @@ def build_tier(spec: dict) -> dict:
             # The synthesized tier is NOT a static install_method: its honesty rests on
             # driving the REAL synth_fetch + validate_submission machinery so the shipped
             # provenance is the runtime's own re-verification (a hand-tagged install_method
-            # is exactly what check_build.PROVENANCE_CLEAN refuses — the 2026-07-20 gap).
+            # is exactly what check_build.PROVENANCE_CLEAN refuses).
             # `_synth_install_method` re-fetches at the pinned commit, re-verifies every
             # submitted command against those bytes, and returns a provenance-tagged
             # install_method — or raises with the reason (a mismatch/violation is a build

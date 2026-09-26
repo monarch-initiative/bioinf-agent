@@ -15,23 +15,9 @@ system will ever fix it. Re-freezing is not the answer either: a rebuild yields 
 record with a NEW digest, so "just re-freeze it" means discarding the artifact you were
 trying to correct.
 
-WHAT PROMPTED IT. On 2026-08-07 the ENV report was taught to draw
-`BuildContract.violations` — it had only ever drawn `.coverage`, so the word "violation"
-appeared nowhere in the renderer and the status pill was `passed == total` over the
-verifications list, which is a different and much weaker question. Rendered over the real
-corpus, two of eighteen envs FAIL the contract:
-
-    talos_v11   WELL_FORMED.shipped_binaries — the record uses the old key dialect, so
-                its contents cannot be read without guessing
-                -> the page said "✓ Validated in shipped image"
-    multiqc     VALIDATED_IN_IMAGE.evidence_shape — the evidence pipes into `head -5`, so
-                the recorded `passed` reports HEAD's exit status; it would pass in an image
-                that does not contain the tool at all
-                -> the page said "Adopted by digest"
-
-Without this script that fix reaches ZERO pages a human opens, which is the same as not
-having made it. The three artifacts a human reads are what this project is judged on; a
-renderer that is correct only in principle is not one of them.
+Without this script a renderer fix reaches ZERO pages a human opens, which is the same
+as not having made it. The three artifacts a human reads are what this project is judged
+on; a renderer that is correct only in principle is not one of them.
 
 SAFE BY CONSTRUCTION. This writes `.ENV.html` and `.recipe.md` and NOTHING else. It never
 touches `_env_cache.json`, `.recipe.yaml` or `.attestation.json`. Every page is rendered

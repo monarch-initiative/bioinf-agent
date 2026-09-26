@@ -78,13 +78,12 @@ def phenopacket_to_vcf(
 
     sample = meta.subject_id or "sample"
     # THE SAMPLE NAME IS THE SUBJECT ID, VERBATIM WHEREVER THE FORMAT ALLOWS. The VCF
-    # sample column is tab-delimited; a SPACE inside a sample name is legal. This used to
-    # flatten all whitespace ("Patient N" -> "Patient_N") while the phenopacket kept the
-    # original — and the primary consumer of the pair cross-checks them: Exomiser refused
-    # the analysis with "Proband sample name 'Patient N' is not found in the VCF sample.
-    # Expected one of [Patient_N]" (falsifier FD4, SLURM job 1128831). Only characters the
-    # format genuinely cannot carry (tab/newline) are rewritten, and a rewrite is DISCLOSED
-    # in the return rather than performed silently.
+    # sample column is tab-delimited; a SPACE inside a sample name is legal. Flattening
+    # whitespace ("Patient N" -> "Patient_N") desyncs the VCF from the phenopacket, and
+    # the primary consumer of the pair cross-checks them: Exomiser refuses the analysis
+    # when the proband sample name is not among the VCF's samples. Only characters the
+    # format genuinely cannot carry (tab/newline) are rewritten, and a rewrite is
+    # DISCLOSED in the return rather than performed silently.
     sample_id = re.sub(r"[\t\r\n]+", "_", sample) if sample else "sample"
     sample_rewritten = sample_id != sample
 

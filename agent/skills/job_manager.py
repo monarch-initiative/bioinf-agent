@@ -372,8 +372,7 @@ class JobManager:
         record whose PID is no longer alive is reported as 'exited' with reconciled=True,
         so the caller sees the truth without needing to have polled every job.
 
-        Three ledger properties bought by a real cold-start drive (CS17), where ten
-        jobs — four refused, six succeeded — came back byte-identical in shape:
+        Three ledger properties:
           * `returncode` is IN the row. It was always in the status file and this
             reader dropped it, so the one surface for "what happened to my work"
             could not say which jobs failed. None while running / never reaped.
@@ -513,9 +512,9 @@ class JobManager:
         this rejects it.
 
         Also unsound alone against a ZOMBIE: a finished child whose parent has not
-        reaped it still answers `os.kill(pid, 0)`, which is how a 40-second install
-        read as 'running' for 20 minutes (cold-start finding CS8). A zombie has
-        exited by definition, so it is reported dead here; check() reaps it."""
+        reaped it still answers `os.kill(pid, 0)`, so a finished job can read as 'running'
+        indefinitely. A zombie has exited by definition, so it is reported dead
+        here; check() reaps it."""
         try:
             os.kill(pid, 0)
         except ProcessLookupError:

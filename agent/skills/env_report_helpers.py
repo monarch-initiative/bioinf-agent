@@ -1,9 +1,6 @@
 """
 env_report_helpers — the small, pure helper functions the HTML env report
-renderer reads from. Extracted from env_report.py when the .md renderer was
-retired (batch-3, 2026-05-27): the helpers were the ONLY shared surface, so
-keeping a stub env_report module just to host them was dead weight. The .html
-renderer is now the canonical Layer-1 deliverable.
+renderer reads from. The .html renderer is the canonical Layer-1 deliverable.
 
 The contract these uphold:
   - PURE over the freeze record (no I/O, no clock, no environment reads)
@@ -112,10 +109,9 @@ def _install_anchor(tool: str, shipped: Optional[list]) -> str:
     Empty for conda / pip / binary tiers (their provenance carries no `@ <ref>`).
 
     `shipped` holds `ShippedBinary`-shaped dicts. Matching is on the `tool` field —
-    the exact PATH command the generator recorded — NOT a substring scan of prose.
-    The old `s.get("name") or s.get("purpose")` read a key one of the two producers
-    never wrote, so this rung never fired for authors'-image envs and the banner
-    scraper below won by default (audit 2026-07-16)."""
+    the exact PATH command the generator recorded — NOT a substring scan of prose,
+    and never a key some producer does not write: a rung keyed on an unwritten field
+    silently never fires, and the banner scraper below wins by default."""
     low = (tool or "").lower()
     if not low:
         return ""
@@ -140,10 +136,9 @@ def _is_sha(s: str) -> bool:
 def _resolved_version(tool: str, pkg: Optional[dict], v: Optional[dict],
                       shipped: Optional[list]) -> str:
     """THE single definition of a tool's installed-version cell — used by every
-    renderer, so the views can't disagree. (They did: `resources._semantic_versions`
-    forked this chain in tier 7, read only rung 1, and reported `bcftools: null`
-    while the ENV report said `1.23.1`. Two readings of one fact, both wrong,
-    disagreeing. Add a consumer? Call THIS. Don't fork it.)
+    renderer, so the views can't disagree. (A forked copy that reads only rung 1
+    reports `bcftools: null` while the ENV report says `1.23.1` — two readings of
+    one fact, disagreeing. Add a consumer? Call THIS. Don't fork it.)
 
     Ordered RECORDED-BEFORE-SCRAPED, which is the honesty ordering:
 
@@ -154,9 +149,9 @@ def _resolved_version(tool: str, pkg: Optional[dict], v: Optional[dict],
       5. install anchor (`@ <ref>`)    — the build-time pin from the provenance string
 
     1-2 are facts someone wrote down. 3-4 are inferences from prose, and an inference
-    is exactly what cited htslib's version for bcftools — so anything recorded must
-    outrank them. This ordering used to put the banner second, which meant a scraped
-    guess beat a captured fact whenever both existed.
+    is exactly what cites htslib's version under bcftools' name — so anything recorded
+    must outrank them: ranking the banner ahead of a recorded version lets a scraped
+    guess beat a captured fact whenever both exist.
 
     Returns '' when nothing resolves — and '' means UNRECORDED. Render it as absence.
     Never let a caller substitute a plausible number for it (Rule 2)."""
@@ -209,12 +204,9 @@ def requested_versions(record: dict) -> dict[str, str]:
     from the request_key (the canonical 'what was asked' tuple, present on every
     record build OR adopt) with conda_specs as a fallback for older records.
 
-    Carried forward from the retired env_report module — was the R1 fix point
-    that brought the .md renderer to parity with the .html one; .md is gone now
-    (batch-3) but the helper stays because the .html still needs it for the
-    requested-version cell in adopt mode (the biocontainer's digest binds the
-    artifact to exactly that version, so 'installed == requested' is honest
-    with no in-locus probe).
+    The .html renderer needs this for the requested-version cell in adopt mode
+    (the biocontainer's digest binds the artifact to exactly that version, so
+    'installed == requested' is honest with no in-locus probe).
     """
     out: dict[str, str] = {}
     rk = (record or {}).get("request_key", "") or ""

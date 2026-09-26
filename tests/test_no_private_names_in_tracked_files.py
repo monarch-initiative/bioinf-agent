@@ -58,8 +58,8 @@ PUBLIC_BY_DESIGN = {
     "envs_catalog",
     # The local (laptop) compute env in the zone-parity setup. Generic; names no institution.
     "my_mac",
-    # The demo project in docs/hpc_bridge_phase_b_playbook.md — a worked example, not a
-    # real workspace.
+    # Demo/fixture project name used by the bridge tests (conftest + L14 surface tests).
+    # Generic; names no institution.
     "phase_b_samtools_demo",
 }
 

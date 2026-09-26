@@ -4,15 +4,12 @@ freeze_tiers — the canonical DECLARATION of the freeze tiers: one row per tier
 naming the tier, a probe tool, and a build recipe. Data plus one lint. It is the
 sibling of seaworthy_scope.py for the outcomes dashboard.
 
-THIS MODULE MAKES NO COVERAGE CLAIM, and that is deliberate. It used to be read
-alongside a meter — scripts/measure_freeze_tier_coverage.py, which projected
-docs/freeze_tier_coverage.json + docs/freeze_tier_grid.html and published
-`install_tiers_proven: 10`. That meter was deleted because it hand-built its own
-`{"install_steps": [{"installed_packages": [...]}]}` input and called NO install
-primitive: it genuinely proved generator + freeze + honesty-contract given a
-hand-authored record, and skipped exactly one hop — whether the PRIMITIVE writes
-a record the freeze dispatch can consume. A number that omits the hop it implies
-it covers is worse than no number.
+THIS MODULE MAKES NO COVERAGE CLAIM, and that is deliberate. A meter over these
+rows would hand-build its own `{"install_steps": [{"installed_packages": [...]}]}`
+input and call NO install primitive: it would prove generator + freeze +
+honesty-contract given a hand-authored record while skipping exactly one hop —
+whether the PRIMITIVE writes a record the freeze dispatch can consume. A number
+that omits the hop it implies it covers is worse than no number.
 
 So: a row here says "this tier exists and here is a recipe that would exercise
 it." It does NOT say the tier has been proven. Any 'proven' claim belongs to a
@@ -145,7 +142,7 @@ FREEZE_TIERS: list[dict] = [
                 # linux/amd64 asset of THAT tag; the freeze re-fetches + sha256-
                 # anchors it. v0.3.8's `mosdepth` asset is a static x86_64 linux
                 # binary. asset_sha256 is the REAL install-time hash of that asset,
-                # so the freeze exercises the INSTALL→SHIP integrity firewall (F2)
+                # so the freeze exercises the INSTALL→SHIP integrity firewall
                 # for real (freeze re-fetch == install sha ⇒ chain_intact,
                 # disclosed `pinned_tofu`) — not just the sha-anchoring of shipped
                 # bytes. A mutated asset would REFUSE (build.binary_integrity_mismatch).
@@ -170,8 +167,8 @@ FREEZE_TIERS: list[dict] = [
                 # asked, so the tier takes its apt route: ic.jar DECLARES
                 # default-jre-headless (OpenJDK 17 on bookworm — Picard 3.x needs 17+)
                 # in `runtime_packages` and container_build unions that into the
-                # RUNTIME stage. (It used to sniff the "(java jar)" prose in `purpose`;
-                # that rule is gone — a declaration is what earns a runtime package.)
+                # RUNTIME stage. (A declaration is what earns a runtime package —
+                # never a sniff of the "(java jar)" prose in `purpose`.)
                 "source": "https://github.com/broadinstitute/picard/releases/download/3.4.0/picard.jar",
                 # FUNCTIONAL evidence (validated==ran, NOT presence): actually RUN
                 # Picard on an inline-generated fasta and assert it produced a .dict.
@@ -352,8 +349,8 @@ FREEZE_TIERS: list[dict] = [
             # the real synth_fetch + validate_submission machinery (see build_tier's
             # `synth_spec` branch) so the shipped provenance is the runtime's own
             # re-verification, NOT a hand-tag. That distinction is the whole slice — a
-            # 2026-07-20 bake that hand-tagged provenance BUILT the image but check_build
-            # correctly REFUSED it (PROVENANCE_CLEAN.untagged_command). The `submission`
+            # bake that hand-tags provenance BUILDS the image but check_build
+            # correctly REFUSES it (PROVENANCE_CLEAN.untagged_command). The `submission`
             # here is the agent's CLAIM (what it would type after reading synth_fetch);
             # validate_submission is the PROOF — it re-fetches at the pinned commit and
             # rejects any 'extracted' command not verbatim in its origin_file. So pinning
@@ -522,17 +519,12 @@ ALL_TIERS: list[str] = [t["tier"] for t in FREEZE_TIERS]
 # `assert_tiers_match_model()`, which asserts this dict names exactly every tier —
 # so its job is completeness, nothing else. The values are inert.
 #
-# Every entry here used to carry a "proven <date> via <tool>" comment. Those were
-# stripped, not moved: each one recorded what the RETIRED meter observed on a
-# HAND-BUILT install record (it called no install primitive), so none of them was
-# evidence that the tier works when driven through its own primitive. Keeping them
-# after deleting docs/freeze_tier_coverage.json would have relocated the dishonest
-# claim into the file we chose to keep rather than removing it.
-#
-# The concrete reason this matters: the perl row was stamped "proven 2026-07-21 via
-# Set::IntervalTree 0.12". Driving that exact tier, tool and version through
-# install_perl_package → freeze on 2026-08-03 FAILED to compile in the ship image.
-# A hand-built record cannot prove a primitive path.
+# NO "proven via <tool>" annotations on these rows: such a stamp records what a
+# meter observed on a HAND-BUILT install record (calling no install primitive),
+# which is not evidence that the tier works when driven through its own primitive —
+# a tier stamped "proven" that way has still failed to compile in the ship image
+# when actually driven through its primitive. A hand-built record cannot prove a
+# primitive path.
 FLOORS: dict[str, float] = {
     "conda":  1.0,
     "source": 1.0,
@@ -558,7 +550,7 @@ def recipe_fingerprint(spec: dict) -> str:
 
     This is the load-bearing anchor of INCREMENTAL measurement. When the generator
     measures one tier and carries the others forward (rather than re-baking all N every
-    run — the cost that used to force a full emulated sweep to add a single tier), a
+    run — the cost that would force a full emulated sweep to add a single tier), a
     carried-forward record is only honest if that tier's recipe is byte-identical to
     when it was measured. The fingerprint makes that checkable WITHOUT a rebuild: a
     changed recipe → a changed fingerprint → the carried measurement is auto-invalidated

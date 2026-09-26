@@ -143,7 +143,7 @@ def run_pipeline_step(
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 
     # Auto-validate every detected output if the run succeeded.
-    # N8 (batch-3): track which output_types keys were consumed so we can
+    # N8: track which output_types keys were consumed so we can
     # surface unmatched keys back to the caller — a typo or a path that
     # didn't actually get produced should not silently fall through to
     # _infer_validator_type (which returns "any", downgrading the intended
@@ -194,7 +194,7 @@ def run_pipeline_step(
         # produced; the caller just needs to know their output_types key
         # didn't bind to anything (typo, wrong extension, file not produced).
         out["output_types_unmatched"] = unmatched
-    # Legibility (sea-trial finding): rc=0 + the caller expected outputs
+    # Legibility: rc=0 + the caller expected outputs
     # (output_types given) + NOTHING detected is the silent-empty trap. The step
     # only sees files created/modified under watch_dir (defaults to the input's
     # dir), so an output written via `-o <path>`/`> <path>` to another directory
@@ -315,21 +315,12 @@ def run_step_in_container(
         return snap
 
     # OBSERVE THE DIGEST OF WHAT IS ABOUT TO RUN — do not echo the one we were handed.
-    #
-    # The step used to stamp `rec["image_digest"]`, i.e. the EnvCache's NOMINAL digest,
-    # copied straight from the record we looked the image up in. `seal_workflow` then
-    # earns `validated_in_shipped_image` by matching each step's digest against the
-    # frozen env's digest — the SAME value, copied twice. The headline claim of this
-    # codebase ("the bytes the user runs on HPC are the exact bytes we validated") was
-    # therefore self-confirming: it could not fail, including in the one case it exists
-    # to catch, where the tag has since been rebuilt or retagged and the daemon's image
-    # is no longer the one the record describes.
-    #
-    # `docker image inspect` on the ref we are about to run is an independent
-    # observation of the local daemon, so a drifted tag now produces a MISMATCH and the
-    # badge is withheld. Absence is recorded as absence: if the inspect fails we keep no
-    # digest at all rather than falling back to the nominal one, because a fallback here
-    # would restore exactly the tautology being removed.
+    # `seal_workflow` earns `validated_in_shipped_image` by matching each step's digest
+    # against the frozen env's; a step that copies the EnvCache's NOMINAL digest makes
+    # that check compare a value with itself, unable to catch a rebuilt or retagged tag.
+    # `docker image inspect` on the ref we are about to run is an independent observation
+    # of the daemon. If the inspect fails we keep NO digest rather than falling back to
+    # the nominal one — a fallback would restore exactly that tautology.
     observed_digest = _ms._docker.image_digest(image)
     nominal_digest = rec.get("image_digest") or ""
     before = _snap()

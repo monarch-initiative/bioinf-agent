@@ -32,19 +32,15 @@ from agent.skills import resolver  # noqa: E402
 
 # (tool, language, github_repo, expect, note).
 #
-# `expect` is the whole point, and it used to be missing. This probe drove the real
-# resolver, correctly classified `cellranger` as landing on the WRONG PACKAGE, wrote
-# `note: "COLLISION: CRAN cellranger != 10x cellranger"` into docs/capability_map.json
-# on 2026-07-03 — and returned 0. Thirteen days later a full-system audit "discovered"
-# that same defect and called it the most user-facing hole in the system (§3). The
-# detection was never the problem; the note was prose, so nothing could fail on it.
+# `expect` is the whole point: a probe that detects a wrong landing but records it only
+# as a prose note returns 0, and nothing can fail on prose — the finding sits in a JSON
+# file until someone re-discovers it by hand.
 #
 # A diagnostic that reports without asserting is a diagnostic that gets skipped. So the
 # expectation is machine-checked and a violated one exits non-zero:
 #   bucket=<str>       the routing bucket this tool MUST land in
-# It used to also carry identity=True/False (resolve must CONFIRM / FLAG the pick). The
-# reverse-theme-park Phase 2 (2026-07-17) DELETED the resolver's identity verdict: it now
-# surfaces identity FACTS and the LLM ride judges. So this probe pins ROUTING only — the
+# NO identity=True/False key: the resolver emits no identity verdict — it surfaces
+# identity FACTS and the LLM ride judges. So this probe pins ROUTING only — the
 # question a capability map exists to answer ("where does the router land real tools?").
 # Whether the landed tool is the one the user MEANT (cellranger) is the ride's judgment and
 # is unmeasurable here; it is the intent corpus's known_gap, tracked one level up.
@@ -99,12 +95,11 @@ def check(d: dict, bucket: str, expect: dict) -> list[str]:
     Only asserts what `expect` declares — an unlisted key is not a silent pass, it is
     a deliberate "we don't pin this yet".
 
-    ROUTING only. The identity verdict (`identity.confirmed`) this used to assert was
-    DELETED in the reverse-theme-park Phase 2 (2026-07-17): the resolver no longer
-    confirms/flags a pick, it surfaces identity FACTS (self_description, channel,
-    repo_anchored) and the LLM ride judges. So this probe pins WHERE a tool lands, which
-    is what a capability map is for; whether the landed tool is the one the user MEANT is
-    the ride's call and is unmeasurable by a resolve()-probe (see cellranger below)."""
+    ROUTING only — never an identity verdict: the resolver does not confirm/flag a
+    pick, it surfaces identity FACTS (self_description, channel, repo_anchored) and
+    the LLM ride judges. So this probe pins WHERE a tool lands, which is what a
+    capability map is for; whether the landed tool is the one the user MEANT is the
+    ride's call and is unmeasurable by a resolve()-probe (see cellranger below)."""
     bad = []
     want = expect.get("bucket")
     if want and bucket != want:

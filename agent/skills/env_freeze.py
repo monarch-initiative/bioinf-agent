@@ -101,7 +101,7 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     `(...)` group so it composes via `||` inside an outer evidence chain
     without bleeding `exit` to the parent.
 
-    The bug this fixes (N1, batch-3 Apollo3 stress): `conda install nodejs`
+    The problem: `conda install nodejs`
     delivers a binary named `node` (not `nodejs`); `conda install mongodb`
     delivers `mongod`; openjdk→java, mysql→mysqld, postgresql→postgres,
     python→python3. The generic `command -v {pkg}` probe can't find these,
@@ -144,9 +144,8 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     `/usr/local` is load-bearing for the ADOPT path: a published BioContainer
     installs its conda prefix at /usr/local, NOT /opt/conda. Without that glob the
     probe cannot see any adopted package whose binary name differs from its package
-    name, and gating adopt on it false-refuses healthy envs — measured on real
-    images: gatk4 rc=1, htslib rc=127, perl-bioperl rc=1, all perfectly fine
-    packages (audit 2026-07-16 Tier 2)."""
+    name (gatk4, htslib, perl-bioperl), and gating adopt on it false-refuses
+    perfectly healthy envs."""
     # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
     # interpolate directly into the subshell body.
     body = (
@@ -201,7 +200,7 @@ def _conda_presence_check(name: str) -> str:
 
       1. `command -v {name}` — the trivial case (samtools→samtools, bwa→bwa).
          Short-circuits on hit so a pure-CLI env doesn't need any of below.
-      2. conda-meta bin probe (N1, batch-3): for conda packages where the
+      2. conda-meta bin probe: for conda packages where the
          binary name differs from the package name (mongodb→mongod,
          nodejs→node, openjdk→java, mysql→mysqld, postgresql→postgres,
          python→python3, …). Reads the package's conda-meta JSON `files:`
@@ -365,8 +364,7 @@ def _map_install_spec(
     if t == "source":
         # Three replay shapes (mutually exclusive, all routed through this branch):
         #   1. ENTRYPOINT-ONLY  → script_repo (clone + wrapper; no build)
-        #   2. ENTRYPOINT + BUILD → script_repo with build_command (N2, batch-3:
-        #      yarn-PnP Node, pip-install-editable + python -m — needs the build
+        #   2. ENTRYPOINT + BUILD → script_repo with build_command (yarn-PnP Node, pip-install-editable + python -m — needs the build
         #      AND wraps an interpreter+script invocation)
         #   3. BUILD + BIN_PATH → source (clone + build + wrapper around the built
         #      compiled binary)
@@ -456,14 +454,13 @@ def _map_install_spec(
         # ── OPERATOR-SUPPLIED ARTIFACT ──────────────────────────────────────
         # Bytes the human handed us (a licence click-through, an internal mirror).
         # They are NOT re-fetchable, so this branch must run BEFORE the URL machinery
-        # below — and must not touch it at all. Measured 2026-08-04 on a real drive:
-        # a `file://` URL satisfies `resolve_linux_asset` AND `sha256_of_url`, so the
-        # whole URL tier accepted a path on the agent's laptop, "re-verified" it by
-        # reading the same file twice, awarded `assurance: authenticated /
-        # verified: True` (the TOP tier) — and then emitted a Dockerfile that ran
-        # `curl file:///Users/...` inside a container with no such path, which is the
-        # only reason nothing shipped. Comparing a file with itself and calling the
-        # agreement integrity is the I5 laundering shape, here in the binary tier.
+        # below — and must not touch it at all: a `file://` URL satisfies
+        # `resolve_linux_asset` AND `sha256_of_url`, so the URL tier would accept a
+        # path on the agent's laptop, "re-verify" it by reading the same file twice,
+        # award `assurance: authenticated / verified: True` (the TOP tier) — and then
+        # emit a Dockerfile that runs `curl file:///...` inside a container with no
+        # such path. Comparing a file with itself and calling the agreement integrity
+        # is the I5 laundering shape, here in the binary tier.
         if im.get("artifact_source") == "operator_supplied":
             art = (im.get("artifact_name") or "").strip()
             local = (im.get("artifact_local_path") or "").strip()
@@ -516,7 +513,7 @@ def _map_install_spec(
         # DIFFERENT asset — there is no install-time hash for it to compare to.
         same_asset   = bool(install_url) and la["url"] == install_url
 
-        # ── INSTALL→SHIP INTEGRITY FIREWALL (F2) ────────────────────────────
+        # ── INSTALL→SHIP INTEGRITY FIREWALL ────────────────────────────
         # When freeze re-fetches the SAME asset the install anchored, the bytes
         # MUST be unchanged. A mismatch means the release asset was mutated
         # between install and freeze (swapped upload / compromised mirror) —
@@ -606,9 +603,9 @@ def plan_conda(conda_deps: list[str], non_conda: list[dict]) -> list[str]:
     Dedup is BY PACKAGE NAME, not by exact string. An explicitly declared
     `openjdk=21` and an injected `openjdk=21` are the easy case; the one that
     matters is a user who declared `r-base=4.4.1` and an r_install record that
-    injects bare `r-base`, which used to append BOTH and hand `pixi add` the same
-    package twice. That is the same explicit-match guard `ensure_python_for_pip`
-    below has always applied, read one way now instead of two."""
+    injects bare `r-base` — exact-string dedup appends BOTH and hands `pixi add`
+    the same package twice. The same explicit-match guard `ensure_python_for_pip`
+    below applies, read one way, not two."""
     have = {spec_package_name(s) for s in conda_deps}
     extra: list[str] = []
     for x in non_conda:
@@ -629,14 +626,14 @@ def ensure_python_for_pip(conda_specs: list[str], has_pip: bool,
     toolchain injection. (A bare `python` lets the solver choose; a transitively-
     provided python makes this a no-op via the explicit-match guard.)
 
-    `has_flag_bearing_pip` (P4 fix, verification-driven 2026-05-27): when an env
-    has flag-bearing pip installs (routed through install_commands.pip_install_
-    with_flags as a long-tail tool, since `pixi add --pypi` doesn't honor pip
-    flags), the long-tail command runs `python -m pip install <flags> <spec>`.
-    That needs BOTH python AND the pip module in the env. pixi/uv envs do NOT
-    auto-install `pip` (uv is used instead of pip for engine-routed installs),
-    so we declare `pip` explicitly when at least one flag-bearing pip install
-    is present. Pre-fix: `pip: command not found` inside the build container.
+    `has_flag_bearing_pip`: when an env has flag-bearing pip installs (routed
+    through install_commands.pip_install_with_flags as a long-tail tool, since
+    `pixi add --pypi` doesn't honor pip flags), the long-tail command runs
+    `python -m pip install <flags> <spec>`. That needs BOTH python AND the pip
+    module in the env. pixi/uv envs do NOT auto-install `pip` (uv is used
+    instead of pip for engine-routed installs), so we declare `pip` explicitly
+    when at least one flag-bearing pip install is present — otherwise the build
+    container hits `pip: command not found`.
     """
     if not (has_pip or has_flag_bearing_pip):
         return conda_specs

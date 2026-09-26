@@ -43,9 +43,8 @@ from agent.skills import _proc
 from agent.skills.outcomes import proven, refused, broke, degraded
 
 
-# The {rc, out, err} runner this module reads. Was a private copy, byte-identical
-# to local_sif._run (measured 2026-09-14); both now alias the shared
-# implementation, which is the one property a copy can't have: it cannot drift.
+# The {rc, out, err} runner this module reads — an alias of the shared
+# implementation, never a private copy: an alias cannot drift.
 _sh = _proc.run_argv_rc
 
 
@@ -340,9 +339,10 @@ def freeze_from_image(
     _arch = _locus.image_arch(image)
     # The GPU claim gets the same treatment, and this path needs it most: an authors'
     # image is exactly where "it's a CUDA build" is taken on trust from a README —
-    # and, per F17, exactly where no claim gets made at all because this primitive has
-    # no `accelerator` parameter for the caller to make one with. Probed
-    # UNCONDITIONALLY since 2026-08-07; see freeze_tools for the measurement.
+    # and exactly where no claim gets made at all, because this primitive has no
+    # `accelerator` parameter for the caller to make one with. Probed
+    # UNCONDITIONALLY: the ENV report consumes the observation even when no claim
+    # exists to compare it against.
     _accel = _locus.image_accelerator(image)
     # THE ANCHOR AN ADOPT RECORD IS CHECKED AGAINST MUST BE THE ONE ANYONE CAN PULL.
     #
@@ -410,7 +410,7 @@ def freeze_from_image(
         ).model_dump()
         for t in tools]
 
-    # IDENTITY DISCLOSURE (audit #8): what each requested tool says it IS, read from the
+    # IDENTITY DISCLOSURE: what each requested tool says it IS, read from the
     # registry the shipped package came from (matched via the image's own SBOM). Agent-
     # asserted, best-effort — captured BEFORE check_build so the checked record is the
     # registered one; a probe miss yields self_description=None and never fails the freeze.
@@ -453,12 +453,9 @@ def freeze_from_image(
             record["adopt_pin_error"] = (
                 f"{image} carries no registry manifest digest — it was not pulled from a "
                 f"registry, so it cannot be pinned or re-pulled by anyone else")
-    # REGISTER AFTER THE PIN IS ON THE RECORD, NOT BEFORE.
-    # `env_cache.register` used to fire above this block, so the cached record was written
-    # without `image_by_digest` — measured across the corpus, all three adopt-image entries
-    # in _env_cache.json carry `image_by_digest: None` while their recipes carry a correct
-    # `adopt_image@sha256:…`. `attestation.py:152-153` reads the cached key, so the
-    # provenance document lost the pin the recipe beside it had.
+    # REGISTER AFTER THE PIN IS ON THE RECORD, NOT BEFORE: the attestation reads the
+    # CACHED record, so registering first writes `image_by_digest: None` into the
+    # cache and the provenance document loses the pin the recipe beside it carries.
     env_cache.register(rkey, record)
     recipe = env_recipe.extract_recipe(
         None, name=name, version=version, conda_deps=[],
@@ -471,9 +468,9 @@ def freeze_from_image(
     recipe["shipped_binaries"] = record["shipped_binaries"]
     recipe["tool_identities"] = record.get("tool_identities") or []
     # Carry the OBSERVED SBOM (what actually shipped) beside conda_deps so the machine
-    # recipe is self-describing about its installed contents (audit 2026-07-19, W4).
+    # recipe is self-describing about its installed contents.
     # Named `resolved_packages` (the record's OBSERVED-closure key), never
-    # `installed_packages` — that collides with the per-step request pin (hunt 2026-07-20).
+    # `installed_packages` — that collides with the per-step request pin.
     recipe["resolved_packages"] = record.get("resolved_packages") or []
     recipe["system_packages"] = record.get("system_packages") or []
 

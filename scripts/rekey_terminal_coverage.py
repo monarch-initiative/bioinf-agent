@@ -7,9 +7,9 @@ WHY THIS EXISTS
 literally `f"{rel}:{node.lineno}"` (scripts/extract_outcomes.py). So inserting one comment
 above one terminal moves its key, the join misses, and the dashboard's `_cover_state` maps
 the miss to "dark". Re-measuring is the only fix today and it costs a full serial suite run
-under coverage: MEASURED at 202s (2314 passed / 102 skipped, 2026-07-31), roughly 7x the
-28s parallel fast tier. That is long enough that people stop running it, which is how a
-stale overlay ends up being read as a real regression.
+under coverage — measured at roughly 7x the parallel fast tier. That is long enough that
+people stop running it, which is how a stale overlay ends up being read as a real
+regression.
 
 The measured shape of the problem says a re-key is enough. Across the last three commits,
 104/104, 56/62 and 138/165 key changes were the SAME terminal moving lines. And pairing

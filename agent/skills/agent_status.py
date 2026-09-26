@@ -43,16 +43,15 @@ def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
     that hasn't been discarded yet (a sealed draft persists — seal doesn't pop it — so
     `state` may read 'sealed').
 
-    Goes through `all_drafts()`, which re-reads from disk. It used to read the
-    `_drafts` map directly and therefore reported whatever the server saw at STARTUP:
-    after a `freeze(background=True)`, the child wrote `frozen_as` and exited while this
-    panel went on showing `env_built` forever. Reaching past the API into the cache is
-    exactly what does not get the re-read."""
+    Goes through `all_drafts()`, which re-reads from disk — never the in-memory
+    `_drafts` map, which holds only what the server saw at STARTUP: a background
+    freeze child writes `frozen_as` and exits, and only a re-read sees it. Reaching
+    past the API into the cache is exactly what does not get the re-read."""
     from agent.skills.pipeline_state import current_state, state_checks
     try:
         out: list[dict] = []
         # ONE lifecycle answer per draft, re-earned from the artifacts — replaces
-        # the dead env_status/pipeline_status nominal stamps (Phase-3 Piece B).
+        # the dead env_status/pipeline_status nominal stamps.
         checks = state_checks(env_cache, reports_dir)
         drafts = pipeline_state.all_drafts() or {}
         drafts_dir = getattr(pipeline_state, "drafts_dir", None)

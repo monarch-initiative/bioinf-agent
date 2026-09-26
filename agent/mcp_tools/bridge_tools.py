@@ -54,14 +54,11 @@ from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 
 
 def _resolve_access_path() -> str | None:
-    """Return the path to projects_access.yaml as a string, preferring the
-    repo-root convention used in this codebase (the user's live file lives
-    alongside the source tree), falling back to ~/.bioinf/. Returns None if
-    neither exists — the primitive then surfaces a clean FileNotFoundError.
+    """Return the path to projects_access.yaml as a string, or None when the
+    file does not exist — the primitive then surfaces a clean FileNotFoundError.
 
-    One resolution, in `compute_access.default_access_path` — this used to
-    re-derive a repo-root candidate first, which is a second answer to where the
-    file lives."""
+    ONE resolution, in `compute_access.default_access_path` — deriving another
+    candidate here would be a second answer to where the file lives."""
     from agent.skills import compute_access as _ca
     p = _ca.default_access_path()
     return str(p) if p.exists() else None
@@ -398,9 +395,7 @@ def submit_workflow_job(project_name: str,
       nextflow_module    Lmod token, e.g. "nextflow/25.04.7".
       slurm              the per-job REQUEST — closed-key, typos refused.
                          `time` + `mem` required; `cpus` / `ntasks` / `gpus`
-                         / `partition` / `qos` / `account` optional. (This
-                         line used to advertise a `queue` key, which the
-                         closed-key check has never accepted.)
+                         / `partition` / `qos` / `account` optional.
 
     GPU placement is a STATE, not a requirement
     -------------------------------------------
@@ -416,11 +411,11 @@ def submit_workflow_job(project_name: str,
       partially_declared  one resolved
       undeclared          a GPU job with neither — the scheduler chooses
 
-    `undeclared` used to be a hard refusal. It is a legitimate submission on
-    a cluster that routes gres requests itself (naming a partition there
-    only narrows the search and slows placement), and a bad one where GPU
-    nodes sit in a dedicated partition — which is why it is stated in the
-    record and noted in the rendered launcher rather than guessed at. Run
+    `undeclared` is a legitimate submission on a cluster that routes gres
+    requests itself (naming a partition there only narrows the search and
+    slows placement), and a bad one where GPU nodes sit in a dedicated
+    partition — which is why it is stated in the record and noted in the
+    rendered launcher rather than refused or guessed at. Run
     `cluster_partitions` when you want to name a real pair.
 
     Returns on success:

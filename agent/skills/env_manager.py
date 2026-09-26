@@ -155,10 +155,10 @@ def parse_conda_spec(spec: str) -> dict:
 class EnvManager:
     def __init__(self, config: dict):
         self.config = config
-        # NO `project_root` attribute. It used to mean three unrelated things —
-        # where the code is, where artifacts go, and the default cwd for a
-        # subprocess — and a name with three meanings is a name that cannot be
-        # moved. Each is now asked for by the thing it actually is.
+        # NO `project_root` attribute — that name means three unrelated things
+        # (where the code is, where artifacts go, the default cwd for a
+        # subprocess), and a name with three meanings is a name that cannot be
+        # moved. Each is asked for by the thing it actually is.
         self.envs_dir = workspace.conda_envs_dir()
         self._conda_exe = self._detect_conda()
 
@@ -311,9 +311,9 @@ class EnvManager:
         Groups packages by channel to minimise solver calls, but always
         runs a single solve across all channels for best dependency resolution.
 
-        Auto-creates the env if it doesn't exist — install_conda_packages used to fail
-        with EnvironmentLocationNotFound when an agent forgot to call create()
-        first. Now: missing env → create with default python version → install.
+        Auto-creates the env if it doesn't exist, so install_conda_packages never
+        fails with EnvironmentLocationNotFound when an agent skips create():
+        missing env → create with default python version → install.
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
@@ -1308,11 +1308,11 @@ class EnvManager:
                                   "(an artifact you already downloaded — the licence-gated route)."))
         # A `file://` URL is the SAME REQUEST as `local_path`, spelled in a way that
         # makes it look fetchable. It is refused rather than rewritten, because every
-        # downstream reader treats a URL as re-fetchable: measured 2026-08-04, a
-        # `file://` install sailed through the whole tier and earned
-        # `assurance: authenticated / verified: True` — the top tier — for a file in a
-        # scratch dir, "verified" by hashing it twice, before the build died on
-        # `curl file:///Users/...` inside a container. Name the route you mean.
+        # downstream reader treats a URL as re-fetchable: a `file://` install would
+        # sail through the whole tier and earn `assurance: authenticated /
+        # verified: True` — the top tier — for a file in a scratch dir, "verified" by
+        # hashing it twice, before the build dies on `curl file:///...` inside a
+        # container. Name the route you mean.
         if url.strip().lower().startswith("file://"):
             return refused("env_manager.binary_url_is_local_file", success=False,
                            error=("`url` points at this machine's filesystem "
@@ -1960,7 +1960,7 @@ class EnvManager:
         `20-repeat/`) are preserved with their full path — the prior basename-
         only output dropped subdir info and broke pipeline lineage.
 
-        N7 fix (batch-3): when `watch_dir` is a system-shared location like
+        When `watch_dir` is a system-shared location like
         /tmp, the snapshot may pick up files belonging to OTHER processes
         (or symlinks that resolve outside the project tree — e.g. the Claude
         harness's subagent transcript dir under ~/.claude/projects/). Those
@@ -2061,9 +2061,8 @@ class EnvManager:
     ) -> dict:
         # Delegates to the shared runner (see _proc); keeps this class's
         # never-fatal posture — an unexpected exception becomes rc -1 rather
-        # than crashing an install flow. Timeout/missing-binary now report the
-        # conventional 124/127 (was -1 for everything; nothing branched on -1,
-        # measured 2026-09-14 before the change).
+        # than crashing an install flow. Timeout/missing-binary report the
+        # conventional 124/127.
         run_env = env if env is not None else os.environ.copy()
         try:
             return _proc.run_argv(cmd, timeout,

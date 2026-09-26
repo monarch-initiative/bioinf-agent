@@ -1,8 +1,8 @@
 """
 typed_nouns — the ONE declaration of which record nouns are construction-typed, and how far.
 
-WHY THIS EXISTS. The 2026-08 architecture review named the structural debt in one
-sentence: records are hand-built dicts merged into a draft, and correctness is enforced
+WHY THIS EXISTS. The structural debt, in one sentence: records are hand-built dicts
+merged into a draft, and correctness is enforced
 by five compensating mechanisms instead of one property — records that cannot be
 constructed wrong. The fix is a per-noun program, not a rewrite: the runtime constructs
 the typed model at the write funnel, and the walk clauses the type absorbs are DELETED,

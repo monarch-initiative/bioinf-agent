@@ -20,21 +20,14 @@ docker) or independent-party tamper-evidence — those are this SAME rebuild run
 (CI, a colleague) + signing. The recipe ENABLES them; this verifies the necessary local
 conditions. Pure assembly here; the rebuild's I/O is injected for testing.
 
-AND IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. Those three lines used to end "the conda
-layer is RE-SOLVED (not cheated from a cached lock), so a match means the solve converged —
-the strongest same-machine signal for 'two runs → same result'". Measured 2026-08-07: the
-replay passes `conda_lock_files=recipe["conda_lock"]` (line ~132 below), every one of the
-12 container-native recipes in the corpus carries a 19–61 KB pixi.lock, `env_build` takes
-the `declare_locked` branch on a prebaked lock, and that runs `pixi install --locked` —
-whose own docstring reads "NO solve". Instrumenting a real verify run confirmed it:
-`declare_locked` fired, `declare` (the solve path) was never called.
-
-Replaying a lock is the RIGHT design — it is what makes the rebuild immune to bioconda
-drift. The defect was claiming credit for the opposite property. The conda package set is
-pinned BY CONSTRUCTION, so its agreement is not evidence of anything; naming it as the
-strongest signal pointed the reader at the one layer that was never re-derived. And the
-sentence was not confined to a docstring: `proves` (line ~141) ships it in the tool's
-return value, so the overclaim reached the reader at runtime.
+AND IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. The replay passes
+`conda_lock_files=recipe["conda_lock"]`, and on a prebaked lock `env_build` takes the
+`declare_locked` branch — `pixi install --locked`, NO solve. Replaying the lock is the
+RIGHT design (it is what makes the rebuild immune to bioconda drift), but it means the
+conda package set is pinned BY CONSTRUCTION, so its agreement is not evidence of
+anything. Never name the lock layer as a convergence signal: `proves` ships this
+module's claims in the tool's return value, so an overclaim here reaches the reader at
+runtime.
 """
 
 from __future__ import annotations
@@ -104,22 +97,17 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
         # exact string it exec'd, engine wrapper and all, and emit_dockerfile bakes that
         # same string as `RUN <command>`).
         #
-        # WHY IT IS RECORDED RATHER THAN RE-DERIVED. The human recipe used to re-author
-        # these lines from `install_method` in a per-tier renderer — a SECOND author of a
-        # string `install_commands` had already written. The two disagreed in production:
-        # the build ran `cargo install nanoq --version 0.10.0` while the recipe handed the
-        # reader `cargo install nanoq@0.10.0 --root $PREFIX` ($PREFIX undefined, different
-        # flag spelling), and for a Bioconductor package the reader was given
-        # `install.packages("BiocGenerics")` — a CRAN call that fails, with the working
-        # BiocManager line demoted to a trailing comment. Nobody had ever run the lines
-        # the human was told to run.
-        #
-        # So the producer captures and the reader does not scrape (the standing rule that
-        # also produced ShippedBinary). Recording beats recomputing for a second reason:
-        # replaying `_map_install` at render time answers "what would we run TODAY",
-        # which is a different question from "what built THIS image" whenever a generator
-        # has changed since. Absent (adopt / authors-dockerfile / a pre-2026-08 recipe) is
-        # a real state the renderer must state rather than paper over with a paraphrase.
+        # WHY IT IS RECORDED RATHER THAN RE-DERIVED. Re-authoring these lines from
+        # `install_method` in a per-tier renderer makes a SECOND author of a string
+        # `install_commands` already wrote, and the two drift — handing the reader
+        # flag spellings and wrapper lines nobody ever ran. The producer captures and
+        # the reader does not scrape (the standing rule that also produced
+        # ShippedBinary). Recording beats recomputing for a second reason: replaying
+        # `_map_install` at render time answers "what would we run TODAY", which is a
+        # different question from "what built THIS image" whenever a generator has
+        # changed since. Absent (adopt / authors-dockerfile / a recipe without the
+        # field) is a real state the renderer must state rather than paper over with
+        # a paraphrase.
         "built_commands": [
             {k: v for k, v in s.items() if k in ("tool", "purpose", "command", "evidence")}
             for s in (built_commands or []) if isinstance(s, dict) and s.get("command")

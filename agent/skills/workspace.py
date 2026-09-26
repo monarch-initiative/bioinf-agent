@@ -1,7 +1,7 @@
 """Where things live: the SYSTEM (the repo) and the ARTIFACTS (outside it).
 
-The paradigm (settled in review, 2026-09-21): tools/system in one place, the
-data and artifacts they produce in another. Concretely:
+The paradigm: tools/system in one place, the data and artifacts they produce
+in another. Concretely:
 
 ``code_root()`` — THE SYSTEM
     The git checkout, self-contained: code, the per-clone conda + runtime
@@ -38,8 +38,8 @@ from pathlib import Path
 #: The artifact root's directory name under $HOME. A default CONVENTION, not a
 #: requirement — the config menu offers the same name as the local compute
 #: env's zone defaults, and $BIOINF_WORKSPACE relocates it wholesale.
-# "bioinf_agent" until 2026-09-18: colliding with the repo's own directory
-# name made the split read as a leak rather than a design.
+# Deliberately NOT "bioinf_agent": colliding with the repo's own directory
+# name makes the split read as a leak rather than a design.
 DEFAULT_WORKSPACE_NAME = "bioinf_workspace"
 
 
@@ -161,7 +161,7 @@ def projects_access_path() -> Path:
     """The operator's command-and-control file.
 
     A FIXED machine-level home — ``~/.bioinf_agent/projects_access.yaml`` —
-    the ``~/.ssh``/``~/.aws`` pattern (menu review, 2026-09-18): the file
+    the ``~/.ssh``/``~/.aws`` pattern: the file
     describes a compute world (clusters, accounts, directory grants) that
     belongs to the MACHINE, not to any clone and not to wherever the
     working-directory default happens to point, and it holds real hostnames

@@ -70,8 +70,8 @@ NOT_ATTEMPTED = "not_attempted"
 
 
 # The one hashing implementation lives beside the anchor model it serves
-# (core_data.sha256_file); this module keeps only the tolerant-spelling alias
-# it has always exposed. Was one of five copies of the same loop (2026-09-14).
+# (core_data.sha256_file); this module keeps only a tolerant-spelling alias —
+# an alias, never a copy of the loop.
 _sha256_file = _sha256_file_or_none
 
 
@@ -92,12 +92,11 @@ def sealed_anchors(spec: Mapping) -> dict[str, dict]:
                      "sha256": sha256 or "", "size_bytes": size_bytes,
                      "locus": locus or ""}
 
-    # test_data. Read through `core_data.test_data_paths` + `resolve_data_path` — this
-    # loop used to take any value STARTING WITH "/", and `select_test_data` builds its
-    # paths from the manifest's `core_dir`, which is relative in the shipped config. On
-    # both sealed specs that carry test_data it therefore matched nothing: the check
-    # reported 17 anchors over a workflow whose actual sequencing inputs it could not
-    # see. The anchors written at selection are what makes these comparable at all.
+    # test_data. Read through `core_data.test_data_paths` + `resolve_data_path`, never
+    # a "starts with /" scan: `select_test_data` builds its paths from the manifest's
+    # `core_dir`, which is relative in the shipped config, so a leading-slash filter
+    # sees none of the actual sequencing inputs. The anchors written at selection are
+    # what makes these comparable at all.
     td = spec.get("test_data")
     anchors = _core_data.test_data_anchors(td)
     for key, raw in _core_data.test_data_paths(td).items():

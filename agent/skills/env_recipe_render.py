@@ -155,14 +155,12 @@ def render_step_commands(step: dict) -> list[str]:
     if t == "binary":
         sha = (im.get("asset_sha256") or "").strip()
         # AN ARTIFACT ONLY THE OPERATOR CAN OBTAIN GETS AN INSTRUCTION, NOT A COMMAND.
-        # This branch used to render `curl -fL -o x.tar '<binary_url>'` unconditionally,
-        # and for an operator-supplied install that URL was the path on the agent's own
-        # laptop (`file:///private/tmp/.../scratchpad/...`) — a copy-pasteable line that
-        # cannot work anywhere else, in a scratch dir that no longer exists. The same
-        # doctrine already stated forty lines down for an unpinned source checkout
-        # applies verbatim here: an instruction you can paste is worse than none,
-        # because it looks like one. (The lesson existed in this file and had been
-        # applied at exactly one site — the propagation defect, again.)
+        # Rendering `curl -fL -o x.tar '<binary_url>'` unconditionally hands an
+        # operator-supplied install a URL that is a path on the agent's own laptop
+        # (`file:///...scratch...`) — a copy-pasteable line that cannot work anywhere
+        # else, in a scratch dir that no longer exists. The same doctrine stated below
+        # for an unpinned source checkout applies verbatim here: an instruction you
+        # can paste is worse than none, because it looks like one.
         if im.get("artifact_source") == "operator_supplied":
             art = im.get("artifact_name") or f"{name}-artifact"
             out = [f"# {name}: installed from an artifact THE OPERATOR SUPPLIED.",
@@ -366,16 +364,15 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
                        '# or the absolute path of the env you just created'])
     # RENDER THE VIEW THE BUILDER REPLAYS, not a second view of the same steps.
     # `render_step_commands` reads `install_method` off the record handed to it, and
-    # this loop used to hand it the RAW install_step — where no producer writes that
-    # key. Every release-binary/jar/source install lands under
-    # `install_steps[].installed_packages[].install_method`, so the reader saw `{}`,
-    # returned [], and the step was dropped from its own rebuild instructions with no
-    # sign anything was missing. Found 2026-08-04: the operator-supplied-artifact step
-    # — the ONE step a human MUST be told about, because only they can obtain it —
-    # rendered as nothing at all, under a heading that says "install the non-conda
-    # tools". `non_conda_installs` is the accessor freeze itself uses to decide what to
-    # replay, so rendering from it makes this function's docstring claim ("the SAME
-    # install_method fields env_freeze._map_install replays") true instead of aspirational.
+    # the RAW install_step carries no such key — every release-binary/jar/source
+    # install lands under `install_steps[].installed_packages[].install_method`, so a
+    # loop over raw steps sees `{}`, returns [], and drops the step from its own
+    # rebuild instructions with no sign anything is missing (including the
+    # operator-supplied-artifact step — the ONE step a human MUST be told about,
+    # because only they can obtain it). `non_conda_installs` is the accessor freeze
+    # itself uses to decide what to replay, so rendering from it makes this function's
+    # docstring claim ("the SAME install_method fields env_freeze._map_install
+    # replays") true instead of aspirational.
     longtail = [p for p in _freeze.non_conda_installs(recipe) if render_step_commands(p)]
     if built:
         # THE TRANSCRIPT WINS. These are the exact strings this image was built from —
@@ -400,7 +397,7 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
         # reconstructed one, because only the first is evidence of how these bytes
         # came to exist.
         #
-        # TWO routes land here, and the old text asserted the wrong one (CS63): it
+        # TWO routes land here, and the old text asserted the wrong one: it
         # said the env "was frozen before the build transcript was captured" and
         # prescribed a re-freeze — on an artifact a cold-start reader had frozen four
         # minutes earlier, for whom the remedy costs a rebuild and reproduces this
@@ -500,10 +497,10 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
            "pieces a conda/pip reconstruction silently drops.", ""]
 
     # A RECIPE THAT CANNOT BE FOLLOWED MUST SAY SO, NOT RENDER A PLACEHOLDER AS A COMMAND.
-    # This used to emit `git clone <repo_url> src` / `git checkout <ref>` — copy-pasteable,
-    # confidently wrong — and gate its "Source pin" note on `if commit and tag_ref`, so the
-    # warning appeared only when the data was already there and vanished exactly when the
-    # reader needed it. An unpinned source is the ONE fact that voids the whole document.
+    # Emitting `git clone <repo_url> src` / `git checkout <ref>` is copy-pasteable and
+    # confidently wrong, and a "Source pin" warning gated on the pin being PRESENT
+    # vanishes exactly when the reader needs it. An unpinned source is the ONE fact
+    # that voids the whole document.
     missing = [n for n, v in (("repo", repo), ("commit", commit)) if not v]
     if missing:
         # As in _section_adopt: state the gap, never demonstrate it. A placeholder shown as
@@ -546,7 +543,7 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
 def _installed_versions_table(recipe: dict, record: dict) -> list[str]:
     """A requested-vs-OBSERVED-installed row per primary tool, ⚠ on divergence — the
     same at-a-glance honesty the ENV report carries, so the recipe never implies the
-    REQUESTED version is what shipped (audit 2026-07-19, W4).
+    REQUESTED version is what shipped.
 
     Reads through the shared `_resolved_version` / `version_divergences` (Rule 4), so
     this table and the ENV report cite the same numbers. The observed SBOM comes from
@@ -605,9 +602,9 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     name = recipe.get("name") or record.get("name") or "env"
     # `ver` is the REQUESTED version arg (extract_recipe/freeze pass it straight through;
     # no path populates it from the SBOM). It must NOT lead the H1 as if it were the env's
-    # version — the sibling ENV report deliberately titles with no version for exactly this
-    # reason, and the observed-installed table below carries the real number (audit
-    # 2026-07-20 hunt). Kept only as an explicitly-labelled "Requested version" metadata row.
+    # version — the sibling ENV report deliberately titles with no version for exactly
+    # this reason, and the observed-installed table below carries the real number. Kept
+    # only as an explicitly-labelled "Requested version" metadata row.
     ver = recipe.get("version") or record.get("version") or ""
     platform = recipe.get("platform") or record.get("platform") or "linux/amd64"
     method = (recipe.get("build_method") or record.get("build_method")
@@ -674,10 +671,9 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
         _vidx = _verif_index(record.get("verifications") or [])
         _shipped = record.get("shipped_binaries") or recipe.get("shipped_binaries") or []
         for b in sb:
-            # `command` used to be read here as if it were the tool name, but the
-            # freeze_tools producer wrote the literal shell line into that key — so
-            # this rendered a whole `git clone …` command where a tool name belongs.
-            # `tool` is now the tool; `install_command` is the command.
+            # `tool` is the tool; `install_command` is the command. Reading a command
+            # key as if it were the name renders a whole `git clone …` line where a
+            # tool name belongs.
             ver = (_resolved_version(b.tool, _pidx.get(b.tool.lower()),
                                      _vidx.get(b.tool.lower()), _shipped) or "").strip()
             L += [f"- `{b.tool}` "
@@ -692,7 +688,7 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
               "`*.attestation.json` / `_env_cache_entry.json` (also carried in this "
               "recipe's `resolved_packages`).", ""]
 
-    # IDENTITY DISCLOSURE (audit #8) — the tool's OWN words, self-described + UNVERIFIED.
+    # IDENTITY DISCLOSURE — the tool's OWN words, self-described + UNVERIFIED.
     # Prefer the recipe's copy (travels with the reproduction bytes); fall back to the record.
     idents = _tool_identities(recipe) or _tool_identities(record)
     described = [i for i in idents if i.self_description]
@@ -713,26 +709,21 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
 def _verify_section(method: str, content_digest: str, recipe: dict) -> list[str]:
     """"Verify what you rebuilt" — SAYING WHAT verify_env_recipe WILL ACTUALLY DO TO THIS ENV.
 
-    This section used to be unconditional, and it told every reader that
-    `verify_env_recipe` "rebuilds the image and checks it converges to the recorded content
-    digest". Measured 2026-08-07 by rendering one recipe of each method and grepping the
-    output: all four carried the sentence, and for two of the three methods it is false.
+    One unconditional sentence here ("rebuilds the image and checks it converges to the
+    recorded content digest") is false for two of the three methods:
 
       * **authors-dockerfile** — `verify_env_recipe` runs NOTHING. It returns
         `refused / freeze.recipe_verify_unavailable`, `success: false`, "no check was run",
         because a Dockerfile build is not bit-reproducible so digest convergence would fail
         for a CORRECT recipe. Declining to check is the right call; telling the reader to
-        run a check that will decline is not. The rendered document contained no caveat of
-        any kind — a scan for "refus", "not verifiable", "cannot be verified", "no check"
-        and "does not apply" found none of them.
+        run a check that will decline is not.
       * **adopt** — the branch does run, but it `docker pull`s and compares a registry
         manifest digest. It does not rebuild anything. The branch's own return string says
         so: "Not a from-source rebuild."
 
     The build recipe is one of the three artifacts that ARE this project's acceptance
-    criterion — a human must be able to rebuild from it. A recipe that instructs its reader
-    to run a verification which will refuse is a recipe that lies to them, and it shipped:
-    the sentence is on disk in `talos_authors.recipe.md:72` and `multiqc.recipe.md:61`.
+    criterion — a human must be able to rebuild from it, and a recipe that instructs its
+    reader to run a verification which will refuse is a recipe that lies to them.
 
     So the bullet is selected off `method`, right where every other method-specific choice
     in this file is made. The wording tracks the refusal that `verify_env_recipe` itself

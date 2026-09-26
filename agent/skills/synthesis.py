@@ -82,16 +82,12 @@ class BuildSource(NamedTuple):
 # dependency manifest states what must be present without saying how; prose (README) is
 # the last resort and the only one that forces authoring.
 #
-# `install_notes` and `dep_manifest` were MISSING until 2026-08-07, and their absence was
-# a reachability hole with a docstring over it: this function's own contract promised
-# "the build sources PLUS the files where install URLs/instructions live", and there was
-# no PLUS. Measured on a real academic repo (S4a): the README says *"install the relevant
-# packages provided in the packageInstallCommands.txt file"*, that file holds every conda
-# line the tool needs, and the corpus synth_fetch returned was ONE file — the README.
-# `synth_build` then refuses the real install commands, correctly and unfixably: an
-# `extracted` command must be anchored to a file in `files[]`, and the only file that
-# holds them was never fetched. Fails safe, but the whole long tail this tier exists for
-# — academic repos whose install steps live in a plain text file — was unreachable.
+# `install_notes` and `dep_manifest` are load-bearing, not completism: an `extracted`
+# command must be anchored to a file in `files[]`, so a repo whose README says "install
+# the packages listed in packageInstallCommands.txt" is solvable only if that file is
+# FETCHED. Otherwise `synth_build` refuses the real install commands, correctly and
+# unfixably, and the long tail this tier exists for — academic repos whose install
+# steps live in a plain text file — is unreachable.
 BUILD_SOURCES: list[BuildSource] = [
     BuildSource("dockerfile",
                 lambda n: n == "dockerfile" or n.endswith((".dockerfile", "/dockerfile")),
@@ -264,10 +260,10 @@ def validate_submission(fetch: dict, commands: list[dict]) -> dict[str, Any]:
                 # REFUSE, DO NOT RAISE — and this is the shape our OWN tool hands back.
                 # `synth_fetch` returns ranked_sources as [{category, path}], and both synth
                 # docstrings say to "pass its path as origin_file". An agent that passes the
-                # ELEMENT rather than its `path` used to get `TypeError: unhashable type:
-                # 'dict'` out of the line below, which reads as a bug in the runtime rather
-                # than a mistake it can correct. A refusal that names the fix is the whole
-                # difference.
+                # ELEMENT rather than its `path` would otherwise hit `TypeError:
+                # unhashable type: 'dict'` on the line below, which reads as a bug in the
+                # runtime rather than a mistake it can correct. A refusal that names the
+                # fix is the whole difference.
                 violations.append({
                     "command": cmd,
                     "reason": (f"origin_file must be the file's PATH (a string); got "

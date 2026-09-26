@@ -1,16 +1,13 @@
 """
 The ONE argv subprocess runner.
 
-Measured 2026-09-14: seven generic runners existed across agent/, in THREE error
-dialects — {rc:124/127} (local_sif, freeze_from_image, container_build),
-{-1 for everything} (locus, docker_builder, env_manager), and a semantic
-tool_found flag (output_validator) — with local_sif._run and freeze_from_image._sh
-byte-identical. A missing daemon surfaced differently depending on which module
-happened to make the call (mcp_server._check_docker_available documents exactly
-this). This module is the consolidation: one subprocess invocation, one timeout
-discipline (rc 124 with partial-output salvage), one missing-binary discipline
-(rc 127), errors="replace" everywhere (a tool's banner can emit non-UTF-8 —
-pigz writes gzip magic to stdout — and strict decoding crashed the whole build).
+Per-module private runners drift into divergent error dialects, so the same
+failure (a missing daemon, a timeout) surfaces differently depending on which
+module happened to make the call. This module is the consolidation: one
+subprocess invocation, one timeout discipline (rc 124 with partial-output
+salvage), one missing-binary discipline (rc 127), errors="replace" everywhere
+(a tool's banner can emit non-UTF-8 — pigz writes gzip magic to stdout — and
+strict decoding would crash the whole build).
 
 DELIBERATELY NOT CONSOLIDATED — each is a documented contract, not a duplicate:
   * locus._sh          — never-fatal by design; every failure is rc -1 because a

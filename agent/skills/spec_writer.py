@@ -132,9 +132,8 @@ def derive_pipeline_status(steps: list) -> str:
     Literal (core_data.py). ONE definition — seal STORES it on the WorkflowSpec
     and the renderer READS the stored value, so there is no forked derivation.
 
-    Replaces the fabricated `pipeline_status = "in_progress"` default that seal
-    used to stamp into every spec regardless of the run (the draft's dead nominal
-    stamp propagated straight through). Now the producer STATES the truth:
+    The producer STATES the truth — never a nominal default stamped regardless
+    of the run:
         failed              — any step exited non-zero
         fully_validated     — every step's outputs passed validate_output
         partially_validated — some validated, some ran-but-unvalidated
@@ -317,12 +316,9 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
       Each per-trial result has: name, ok, command_run, substitutions,
       produced_files, scratch_dir, [reason, missing_outputs, stderr_tail].
     """
-    # THREE-STATE, not a bool. `ok: False` used to mean two utterly different things —
-    # "the how-to was tested and it FAILED" and "the how-to was never tested at all" —
-    # and seal recorded both as usage_verified=False, which the dashboard then rendered as
-    # a verdict. Since seal REFUSES on a genuine failure, every usage_verified=False that
-    # reached disk provably meant "never attempted": a fabricated verdict, absence of data
-    # rendering as data (audit 2026-07-16). `status` says which:
+    # THREE-STATE, not a bool. A bare `ok: False` cannot distinguish "the how-to was
+    # tested and it FAILED" from "the how-to was never tested at all", and rendering the
+    # two as one verdict turns absence of data into data. `status` says which:
     #   verified      — every declared trial ran and produced validated outputs
     #   failed        — a trial ran and did not (seal refuses; never reaches disk)
     #   not_attempted — we had no way to run it; `reason` says why. NOT a judgement of the
@@ -361,11 +357,9 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     # what silently disabled I4 for every container-native env.
     env_name = spec.get("conda_env")
     if env_manager is None:
-        # Say only what is KNOWN here: the seal was handed no runner. The old
-        # sentence asserted two probes ("neither a frozen env image nor a host
-        # conda env could execute") that this function cannot see and that were
-        # not both taken — sea-trial F19 hit it with the image present by digest
-        # and a working host env on disk. Causes are named as candidates.
+        # Say only what is KNOWN here: the seal was handed no runner. Never
+        # assert probes ("neither image nor host env could execute") that this
+        # function cannot see. Causes are named as candidates.
         return _not_attempted("no runner available — the seal could not build an in-image "
                               "runner (the pinned image did not resolve in the local "
                               "daemon, or a trial input exists only at another locus) and "
@@ -443,7 +437,7 @@ def _is_output_slot(slot: str) -> bool:
     where the scan looks. A placeholder is an output slot when its name is
     {OUTPUT_DIR}/{OUT_DIR} or contains 'output'. Any other slot keeps the trial's
     declared value; an output written through an UNRECOGNIZED slot lands outside
-    the scratch dir and is invisible to the scan (the sea-trial `{OUT_TSV}` trap).
+    the scratch dir and is invisible to the scan (the `{OUT_TSV}` trap).
     Referenced by the I4 failure hint so the refusal explains this convention."""
     s = slot.lower()
     return "output" in s or "out_dir" in s
@@ -601,7 +595,7 @@ def _run_one_trial(
                 matched_files.setdefault(pat, []).extend((m, declared_type) for m in matches)
 
     if missing_outputs:
-        # Legibility (sea-trial finding): the raw "produced_files: []" gives an
+        # Legibility: the raw "produced_files: []" gives an
         # unattended agent no way to see WHY nothing landed. The usual cause is an
         # output written through a placeholder the self-test didn't recognize as an
         # output slot (so it kept the agent's own absolute path instead of the
@@ -762,10 +756,8 @@ def check_invariants(spec: dict) -> list[dict]:
             continue
         validation = s.get("validation") or {}
         # Coverage is asked PER OUTPUT PATH, through the one reader that knows how a
-        # validation record is keyed. It used to compare `Path(o).name` against the key
-        # set, which meant `/out/a/result.bam` counted as validated because a DIFFERENT
-        # file called `result.bam` had a record — the read side of the same basename
-        # collision that let the write side erase a failure.
+        # validation record is keyed. Never match on basename: a record for a DIFFERENT
+        # file that happens to share the name is not coverage of this one.
         unvalidated = [o for o in outs if not _validation_covers(validation, o)]
         # An explicit mark_step_validated=passed substitutes for per-file
         # validate_output records (use case: outputs aren't validate_output-able
@@ -781,17 +773,16 @@ def check_invariants(spec: dict) -> list[dict]:
                 "unvalidated_files": [Path(o).name for o in unvalidated[:5]],
             })
 
-        # I3 amendment (C1): a validate_output record existing is NOT the same
-        # as it PASSING. The runtime records passed:False for a malformed BAM /
-        # empty VCF / bad JSON — but seal used to accept any record. That let a
-        # spec claim "outputs checked" over a step whose outputs demonstrably
-        # failed their type-aware check.
+        # A validate_output record EXISTING is not the same as it PASSING. The
+        # runtime records passed:False for a malformed BAM / empty VCF / bad
+        # JSON; a spec must not claim "outputs checked" over a step whose
+        # outputs failed their type-aware check.
         #
-        # THIS CLAUSE IS NOT OVERRIDABLE (audit 2026-07-16, re-audit). It used to honour
-        # `mark_step_validated=passed`, which made the agent's assertion outrank the
-        # runtime's own measurement — the exact thing CLAUDE.md's opening promise rules
-        # out ("nothing is taken on faith from the agent"). The other I3 clauses are about
-        # ABSENT evidence, where an agent saying "I checked it another way" adds
+        # THIS CLAUSE IS NOT OVERRIDABLE by `mark_step_validated=passed` — that
+        # would let the agent's assertion outrank the runtime's own measurement,
+        # the exact thing CLAUDE.md's opening promise rules out ("nothing is
+        # taken on faith from the agent"). The other I3 clauses are about ABSENT
+        # evidence, where an agent saying "I checked it another way" adds
         # information. This one is about evidence that EXISTS and says FAILED; an
         # assertion cannot un-fail a measurement, it can only hide it. If the validator is
         # wrong, fix the validator or re-run the step — don't let the spec outrank the run.
@@ -811,17 +802,16 @@ def check_invariants(spec: dict) -> list[dict]:
                 "failed_files": failed_validations[:5],
             })
 
-        # NO refusal on expected_type="any" (I3.declared_output_type, DELETED
-        # 2026-09-16, user ruling). Existence + non-empty is a legitimate PRIMARY
-        # validation — snapshot, exit code and non-empty carry the run's evidence;
-        # the 18 type-aware checkers are a bonus where the format is known, never a
-        # requirement. The old refusal was worse than no gate: the identical
-        # exists-nonzero check sealed GREEN under any unknown type string ("pod5",
-        # "h5ad", a typo) and was REFUSED only when honestly declared "any" — so it
-        # punished stating the truth and rewarded inventing a format name. The
-        # record states what actually ran (`validation_method`: "tool" vs
-        # "exists_nonzero") and the RUN dashboard renders it; a reader sees the
-        # depth, nothing rounds it up.
+        # DELIBERATELY no refusal on expected_type="any". Existence + non-empty
+        # is a legitimate PRIMARY validation — snapshot, exit code and non-empty
+        # carry the run's evidence; the 18 type-aware checkers are a bonus where
+        # the format is known, never a requirement. A refusal here would be worse
+        # than no gate: the identical exists-nonzero check seals GREEN under any
+        # unknown type string ("pod5", "h5ad", a typo), so refusing only the
+        # honest "any" punishes stating the truth and rewards inventing a format
+        # name. The record states what actually ran (`validation_method`: "tool"
+        # vs "exists_nonzero") and the RUN dashboard renders it; a reader sees
+        # the depth, nothing rounds it up.
 
     # ------------------------------------------------------------------
     # I6.absolute_paths was RETIRED here (typed-records Seam A): step-path
@@ -906,9 +896,9 @@ def check_invariants(spec: dict) -> list[dict]:
         elif (float(ru.get("peak_rss_mb") or 0) <= 0
               and float(ru.get("wall_seconds") or 0) <= 0):
             # DELIBERATELY `and` — an ALL-zeros record is the "monitor captured nothing"
-            # shape. It is tempting to reject either-zero (the audit-2026-07-16 draft did,
-            # since this rule's message says a real process has nonzero RSS *and* wall),
-            # but a value-level check CANNOT tell fabrication from a sampling limit:
+            # shape. It is tempting to reject either-zero (the refusal message itself
+            # says a real process has nonzero RSS *and* wall), but a value-level check
+            # CANNOT tell fabrication from a sampling limit:
             #   - host locus: _run_monitored polls the process tree every 0.3s, so any step
             #     faster than that (`samtools --version` → rc=0, wall=0.01, peak_rss_mb=0.0)
             #     legitimately reports zero RSS. Rejecting it would refuse a real, green run.
@@ -997,10 +987,9 @@ def check_invariants(spec: dict) -> list[dict]:
 # so only the RUN-side invariants apply — the env-build ones are Layer 1's, verified IN
 # the shipped image by env_honesty.check_build.
 #
-# DERIVED FROM THE REGISTRY, never typed out. The literal set that used to live here
-# said seven ids while this module's own docstring said five, four lines apart, and
-# CLAUDE.md's table said six — a different six. Reading it from `invariants` means a new
-# clause is registered once and every consumer follows.
+# DERIVED FROM THE REGISTRY, never typed out — a literal copy here is one more roster
+# for the others to drift from. Reading it from `invariants` means a new clause is
+# registered once and every consumer follows.
 _WORKFLOW_INVARIANT_TIERS = frozenset(
     i.id for i in _invariants.active(_invariants.LAYER_WORKFLOW)
     if i.enforced_by.endswith("check_workflow_invariants"))
@@ -1008,8 +997,8 @@ _WORKFLOW_INVARIANT_TIERS = frozenset(
 
 def check_workflow_invariants(spec: dict) -> list[dict]:
     """Run only the workflow-relevant invariants — see `agent/skills/invariants.py` for
-    the roster and each one's statement (deliberately NOT restated here; this docstring
-    used to name five of the seven).
+    the roster and each one's statement (deliberately NOT restated here; a restated
+    roster is one more copy to drift).
 
     Pass the FULL draft so I8 sees the complete universe of prior outputs + external
     sources, but only the run-side violations are returned."""
@@ -1550,9 +1539,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
 
     external_paths: set[str] = set()
 
-    # THE one reading of "which test_data values are paths" — this used to be a fixed
-    # key tuple here and a "starts with /" scan in data_pins, and they disagreed on both
-    # axes. See core_data.test_data_paths.
+    # THE one reading of "which test_data values are paths" is
+    # core_data.test_data_paths — never re-derive it at a call site.
     for _path in _core_data.test_data_paths(spec.get("test_data")).values():
         _add_external(_path)
 
@@ -1665,8 +1653,7 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                 # make its input honest, and pipeline_steps are runtime-recorded and
                 # unpatchable BY DESIGN: the only exit is discard_pipeline_draft, then
                 # redrive the good steps into a fresh draft (re-stage artifacts, re-patch
-                # usage, re-run). A falsifier drive hit exactly this and had to derive
-                # the redrive from first principles at the refusal (FD6).
+                # usage, re-run).
                 "remedy":    "if this input is a legitimate external file, anchor it "
                              "(stage_authored_artifact / select_test_data / "
                              "download_reference_database) and re-seal; if the STEP is "

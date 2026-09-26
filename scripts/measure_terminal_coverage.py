@@ -72,11 +72,10 @@ NO_XDIST = ("-n0",)
 def refuse_reason_for_pytest_rc(rc: int) -> str:
     """Empty string = proceed. Non-empty = the refusal message; do not write anything.
 
-    A FUNCTION, not an inline `if`, and the reason is worth stating: the three tests
-    covering this gate used to read this file's source and regex for
-    `if r.returncode not in (0, 1):`. Pulling the tuple out into a named constant — a
-    strictly better spelling of identical logic — broke two of them. A test that fails
-    when the code improves teaches people to not improve the code.
+    A FUNCTION, not an inline `if`, so the tests covering this gate can CALL it
+    rather than regex this file's source for the literal condition — a source regex
+    pins the spelling, not the behaviour, and a test that fails when the code
+    improves teaches people to not improve the code.
 
     The behaviour under test is "which exit codes may publish numbers", so that is what
     a test should be able to call. Nothing here needs a 4-minute suite run to check.
@@ -97,24 +96,21 @@ def _run_suite_under_coverage() -> dict:
                    f"--data-file={datafile}", "--source=agent",
                    "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
                    *NO_XDIST, "--deselect", _DESELECT]
-        # ~3.5 min, MEASURED (2026-07-31, 2314 passed / 102 skipped in 202s wall) — not
-        # the "~1 min" this line claimed for months. Coverage tracing plus the forced -n0
-        # is ~7x the 28s parallel fast tier. Understating the cost of a measurement, on
-        # the tooling whose whole job is honest measurement, is the same species of defect
-        # as everything else this dashboard exists to catch.
+        # ~3.5 min, measured: coverage tracing plus the forced -n0 is ~7x the parallel
+        # fast tier. Keep the estimate honest — understating the cost of a measurement,
+        # on the tooling whose whole job is honest measurement, is the same species of
+        # defect as everything else this dashboard exists to catch.
         print("  running suite under coverage (this takes ~3.5 min)…")
         r = subprocess.run(env_run, cwd=str(ROOT), capture_output=True, text=True)
         tail = "\n".join(r.stdout.strip().splitlines()[-2:])
         print(f"    pytest: {tail or r.stderr.strip()[-200:]}")
 
-        # THE SUITE MUST ACTUALLY HAVE RUN. The datafile check below this used to be the
-        # ONLY guard, and it cannot see the failure that matters: `coverage run` creates
-        # the datafile as soon as the process starts, so a conftest that fails to import
-        # gives rc=4 WITH a datafile present — measured, not reasoned. The script then
-        # computed coverage over a run where ZERO tests executed and wrote
-        # docs/terminal_coverage.json (committed) plus the locally rendered dashboard.
-        # A sweeping "everything went dark" regression would have looked like a
-        # measurement rather than a broken run.
+        # THE SUITE MUST ACTUALLY HAVE RUN, and the datafile check below cannot see the
+        # failure that matters: `coverage run` creates the datafile as soon as the
+        # process starts, so a conftest that fails to import gives rc=4 WITH a datafile
+        # present. Computing coverage over a run where ZERO tests executed would write
+        # docs/terminal_coverage.json (committed) plus the locally rendered dashboard —
+        # a sweeping "everything went dark" regression dressed as a measurement.
         refusal = refuse_reason_for_pytest_rc(r.returncode)
         if refusal:
             print(f"  ! {refusal}", file=sys.stderr)

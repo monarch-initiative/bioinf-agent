@@ -41,11 +41,11 @@ sys.path.insert(0, str(ROOT))
 # The observable, ASSERTABLE facts. Deliberately NOT `latest`, star counts, or description
 # text: a corpus that goes red because a maintainer cut a release is a corpus people learn
 # to ignore, and an ignored corpus protects nothing. See tests/live/test_intent_corpus.py.
-# `identity_confirmed` was retired 2026-07-17 (reverse-theme-park Phase 2): the resolver no
-# longer emits a verdict, it surfaces identity FACTS and the LLM ride judges — so there is
-# no confirm/flag boolean to observe. `install_call_poisoned` survives and now means ONLY
-# routing-disclosure poisoning (gate_error / unchecked_tiers / not_assessed / prefer_ignored);
-# identity no longer poisons the install_call.
+# NO `identity_confirmed` field: the resolver emits no identity verdict — it surfaces
+# identity FACTS and the LLM ride judges — so there is no confirm/flag boolean to
+# observe. `install_call_poisoned` means ONLY routing-disclosure poisoning
+# (gate_error / unchecked_tiers / not_assessed / prefer_ignored); identity does not
+# poison the install_call.
 _OBSERVED = ("chosen", "ambiguous", "install_call_poisoned", "refusal_reason")
 
 
@@ -88,13 +88,11 @@ def _authors_gate(d: dict) -> str:
     registry state — so it obeys the corpus's stability rule (a row must never go red
     because a maintainer edited a recipe).
 
-    This closes the corpus's declared blind spot #2 ("the report gap is VISIBLE but not
-    MEASURABLE"). The 2026-07-17 repo-provenance fix stopped the author tiers — which
-    outrank conda — from probing squatters' repos (`Mucephie/DORADO` for dorado,
-    `ethereum/trinity` for trinity). Not one row moved, because every assertion the grid
-    could make was about `chosen`/`ambiguous`, and neither changed. The grid was
-    right to stay flat and right to have declared that it could not see this; the answer
-    is to give it eyes, not to trust the fix on faith.
+    This closes a declared blind spot: the author tiers — which outrank conda — must
+    probe a repo something VOUCHED for, never a squatter's (`Mucephie/DORADO` for
+    dorado, `ethereum/trinity` for trinity), and an assertion about
+    `chosen`/`ambiguous` alone cannot see the difference. The grid needs its own eyes
+    on the gate rather than trusting the routing on faith.
 
       assessed     — the gate RAN, against a repo something vouched for
       not_assessed — a repo candidate existed but nothing anchored it to this tool, so we
@@ -191,8 +189,7 @@ def main() -> int:
         # `investigation_incomplete` — indistinguishable from the resolver having genuinely
         # stopped finding the repo — and one unconfirmed write turns that into a permanent
         # red row that the NEXT run then reads as the baseline, so the transient never
-        # surfaces as a transient. (Measured: exactly one such false regression in the
-        # 2026-08-06 re-probe, caught only because it was double-probed by hand.)
+        # surfaces as a transient.
         # Re-probing costs one call on the handful of rows that flipped; a laundered red
         # costs the reader their trust in every other row on the page.
         if was_correct is True and correct is False:
@@ -240,8 +237,8 @@ def main() -> int:
     # behaviour change arrived as a whole-file diff and the reviewer could not see what
     # actually moved. A meter whose updates are unreviewable is a meter nobody checks.
     CORPUS.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + "\n")
-    # Three counts, never two. `len(rows) - ok` used to be printed as "do not", which silently
-    # charged every ungraded row to the failure column — the same rounding the loop above now
+    # Three counts, never two: printing `len(rows) - ok` as "do not" silently charges
+    # every ungraded row to the failure column — the same rounding the loop above
     # refuses. A row with is_correct_today None is neither.
     ok = sum(1 for r in rows if r.get("is_correct_today") is True)
     bad = sum(1 for r in rows if r.get("is_correct_today") is False)

@@ -10,7 +10,7 @@ WHAT THIS MEASURES, AND HOW IT RELATES TO tests/test_intent_gate.py.
         deterministic because gate_plan is pure code over a typed record — no network,
         no LLM. It is Layer-2's I8 lifted to authoring time.
 
-Every row is docs/design_reverse_theme_park.md §6/§7 made executable. The design's
+Every row is one scenario of the plan-gate acceptance catalog. The design's
 "worst case" (scenario 15) is the headline row; it must gate GREEN as a 5-node DAG
 (3× INSTALL_ENV → RUN_STEP → SEAL — install_env ⊕ run_step + the seal terminal).
 

@@ -190,18 +190,18 @@ def resolve_tool(
     if you genuinely cannot tell even after investigating, ASK.
 
     `identity_corroboration` is the SECOND opinion on that same question, and it runs on a
-    HIT — a github name search asking who ELSE owns this name exactly. It used to run only
-    at a dead end, which meant the investigation was switched off precisely when a squatter
-    existed, i.e. on the two most contested names in the measured set (`cellranger` → a
-    CRAN spreadsheet-range parser, `dorado` → a PyPI astronomy package, both a clean
-    confident install_call for the wrong software). `diverges` names each competing repo
+    HIT — a github name search asking who ELSE owns this name exactly. A HIT, not a dead
+    end, is where it matters: a squatted name resolves cleanly (`cellranger` → a CRAN
+    spreadsheet-range parser, `dorado` → a PyPI astronomy package — a clean, confident
+    install_call for the wrong software), so an investigation run only at dead ends is
+    switched off precisely when a squatter exists. `diverges` names each competing repo
     and quotes its OWN description; the pick is unchanged and the judgment is still yours.
     `unobserved` means the search did not answer (github search is 10 req/min) — nothing
     there says the name is uncontested.
 
     LICENCE — `license_evidence` says which of five silences you are in, because "we read a
-    licence and could not place it" and "nobody published one" are different facts and used
-    to share a value. `published` is the only one that yields a `license_disposition`; the
+    licence and could not place it" and "nobody published one" are different facts and must
+    never share a value. `published` is the only one that yields a `license_disposition`; the
     rest yield `unobserved`. `no_channel` is the one to read carefully: the pick is a repo
     or a release asset, so nothing published a licence for these bytes AND nothing
     downstream will ask again (I13 arms on a licence observed in the shipped image's
@@ -222,8 +222,8 @@ def resolve_tool(
     `degenerate_stub` — a registry hit with no summary, homepage, project URL or repo — is a
     name reservation rather than a rival project, so it neither makes a name ambiguous nor
     wins the ranking. When one is disqualified it is named in `degenerate_stubs` and the
-    rationale, never dropped silently. (PyPI's blank `seurat` 0.0.2 used to beat CRAN's
-    `Seurat` 5.5.1 two different ways at once.)
+    rationale, never dropped silently. (A blank PyPI `seurat` stub must not beat CRAN's
+    `Seurat`, on either axis.)
 
     `version_lineage` — THE NAME IS A LINEAGE, and this field is a fact, not a warning.
     Bioinformatics versions tools by RENAMING the package: bioconda's `gatk` is 3.8 and
@@ -1157,8 +1157,8 @@ def install_r_package(
     smoke `install_release_binary`/`install_git_repo` already carry. Example (GAPIT):
     `m<-matrix(sample(0:2,600,TRUE),60); ... myGAPIT<-GAPIT(...); if(is.null(myGAPIT))stop('GAPIT produced no result')`.
 
-    Encapsulates everything the CLAUDE.md "R tools" section used to require
-    the agent to remember:
+    Encapsulates the R-install category knowledge so the agent never has to
+    carry it in prose:
       - Library isolation via $CONDA_PREFIX/lib/R/library (R_LIBS_USER hazard)
       - Auto-installed BiocManager bootstrap if missing
       - Post-install requireNamespace() load-or-die check baked into the
@@ -1529,19 +1529,15 @@ def run_install_command(
         [{name: 'GAPIT', version: '4.1.0', channel: 'github', source: '...'}, ...]
     These power the side-by-side "command → packages" rendering in the report.
 
-    THEY DO NOT CARRY AN `install_method`, AND THAT HAS CONSEQUENCES. This docstring
-    used to promise the entries were "appended to draft.packages as a PackageRecord
-    (with an install_method derived from `channel`)". That dual-write was removed
-    (see the comment at the merge below); the sentence describing it was not, so the
-    docstring advertised the mechanism that would have made this tool safe for years
-    after it was deleted. Measured consequences, both real:
+    THEY DO NOT CARRY AN `install_method`, AND THAT HAS CONSEQUENCES — two, both
+    real:
 
       * freeze's adopt-vs-build gate reads `install_method.type` and defaults a
-        missing one to "conda", so a `pip install` recorded here USED TO leave the
-        env looking pure-conda and freeze adopted a BioContainer without the package.
-        `freeze.unaccounted_install_steps` now catches that by reading the COMMAND,
-        so the env correctly container-native-builds — but it builds because a gate
-        caught you, not because the record was right.
+        missing one to "conda", so a `pip install` recorded here leaves the env
+        LOOKING pure-conda — the shape that adopts a BioContainer without the
+        package. `freeze.unaccounted_install_steps` catches that by reading the
+        COMMAND, so the env correctly container-native-builds — but it builds
+        because a gate caught you, not because the record was right.
       * freeze's version slot is filled from `installed_packages`
         (`_resolve_versions_from_install_record`). With no version recorded here, a
         request_key degrades from `busco=6.0.0|linux/amd64|none` to

@@ -3,32 +3,24 @@
 WHY THIS EXISTS. The design premise of this codebase is stated in CLAUDE.md as
 "Primitives — the only tools the agent needs … The agent picks the right primitive; the
 primitive enforces its category's invariants internally." That premise has a load-bearing
-precondition nobody was checking: **the agent has to be able to SEE the menu.**
+precondition: **the agent has to be able to SEE the menu.** A tool that is live, callable
+and fully described to the model by its own docstring, yet absent from the one map the
+agent plans against, makes the wrong pick reasonable. (Read the current position split
+off `positioned()`, never off prose.)
 
-Measured 2026-08-07, BEFORE this module existed: the server registered **67** tools. The
-routing table named **34**. Nine more were named elsewhere in CLAUDE.md (the numbered
-protocol, the async pattern). **Twenty-four were named nowhere at all** — live, callable,
-fully described to the model by their own docstrings, and absent from the one map the
-agent plans against.
-
-(Today: 66 registered — `download_resource` was deleted, its documented branch having
-raised AttributeError since April — positioned 47 PRIMITIVE / 8 PROTOCOL / 11 LOW_LEVEL.
-Read the split off `positioned()`, never off this paragraph.)
-
-That is not a documentation defect. It is the same class of defect as a stale invariant
-roster, and it has already cost real trust:
+An unpositioned tool is not a documentation defect. It is the same class of defect as a
+stale invariant roster, and the stakes are concrete:
 
   * `run_install_command` mutates a conda prefix and appends a HAND-TYPED install_step.
     Every install primitive instead writes a typed `installed_packages[].install_method`,
     and `freeze.non_conda_installs` reads exactly that field to decide whether it may
     ADOPT a prebuilt BioContainer or must build the env itself. An install routed through
-    `run_install_command` is INVISIBLE to that decision — so freeze adopted a container
-    that did not contain the tool, and the honesty contract passed it, because every
-    clause it checks was true of the container it adopted.
-  * The tool's own docstring promised the opposite: that `installed_packages` become
-    records "with an install_method derived from `channel`". The dual-write that did that
-    was deleted; the sentence was not. A conscientious caller was bypassed exactly like a
-    careless one.
+    `run_install_command` is INVISIBLE to that decision — freeze adopts a container that
+    does not contain the tool, and the honesty contract passes it, because every clause
+    it checks is true of the container it adopted.
+  * A routing note kept only in a tool's hand-written docstring drifts the moment the
+    behaviour it describes changes — and a stale promise bypasses a conscientious caller
+    exactly like a careless one.
 
 The fix for a bad menu is not more prose. **A tool that must not be reached for casually
 has to say so IN THE DESCRIPTION THE MODEL ACTUALLY READS** — the docstring is loaded on
@@ -39,7 +31,7 @@ So this module is DATA, and `agent/skills/tool_surface.py` is its only home:
   * `REGISTRY` positions every registered tool as PRIMITIVE / PROTOCOL / LOW_LEVEL.
   * `guardrail()` COMPOSES the routing sentence for a LOW_LEVEL tool from short factual
     fields. The prose is generated. Nobody hand-writes a paragraph per tool, because
-    hand-written prose is what lied in both cases above.
+    hand-written prose is exactly what drifts.
   * `apply_to(app)` appends that generated guardrail to the tool's SERVED description at
     import time. There is no second copy on disk to drift — the docstring stays about
     what the tool DOES, and the routing note is composed onto it.
@@ -149,11 +141,10 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="run_production_pipeline", position=PRIMITIVE),
     _t(tool="run_step_on_cluster", position=PRIMITIVE),
 
-    # ---- PRIMITIVE — promoted 2026-08-07 -------------------------------------------
-    # Each was live, callable and named NOWHERE in CLAUDE.md. Promoted rather than
-    # guard-railed because each is either query-only (so it cannot bypass a gate — pure
-    # navigation, and cheap to make visible) or is the ONLY tool for its job, which makes
-    # a "prefer X instead" note impossible to write truthfully.
+    # ---- PRIMITIVE rather than guard-railed ----------------------------------------
+    # Each is either query-only (so it cannot bypass a gate — pure navigation, and
+    # cheap to make visible) or is the ONLY tool for its job, which makes a "prefer X
+    # instead" note impossible to write truthfully.
     _t(tool="agent_status", position=PRIMITIVE,
        note="query-only. Reads drafts, EnvCache, env_reports, data manifests, "
             "projects_access.yaml, ssh ControlMaster sockets and JobManager status, plus "

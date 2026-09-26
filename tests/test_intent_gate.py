@@ -26,8 +26,7 @@ DISCIPLINE (inherited from the intent corpus, each rule bought with a real defec
     what it can measure reads as "this is everything," which is a lie.
   - PRINT THE METER. `test_the_meter_is_visible` states N/N rather than burying it.
 
-Every row below is one row of docs/design_reverse_theme_park.md §7 (the acceptance
-surface). The design is only real if every row routes as the table says.
+Every row below is one row of the intent-gate acceptance catalog. The design is only real if every row routes as the table says.
 """
 
 from __future__ import annotations
