@@ -196,7 +196,7 @@ answer. (`projects_access.yaml` lives in NEITHER — its home is fixed at
 | `reports/` | workspace | `reports_dir()` | **the record** — ENV/RUN pages, attestations, recipes, sealed specs, the EnvCache, transfer + submission manifests | **never** — this IS the deliverable |
 | `scratch/` | workspace | `scratch_dir(…)` | job state, drafts, render staging | freely |
 
-Core test data lives at `<resources>/core_test_data_hg38/` (8 read datasets + ACTB phenopacket + chr22 reference). Read `manifest.yaml` to enumerate. Pipeline-specific test data goes in `<resources>/{pipeline_name}_test_data/`.
+Core test data lives at `<resources>/core_test_data_hg38/` (8 read datasets + ACTB phenopacket + chr22 reference). Read `manifest.yaml` to enumerate. Pipeline-specific test data goes in `<resources>/{pipeline_name}_test_data/`. Every dataset's licence and credit is in [docs/data_sources.md](docs/data_sources.md) and on its entry in `config/core_datasets.yaml` (`license` / `citation`, lint-enforced); the pod5 seed is the one dataset committed to the repo, derived from CC0 HPRC data by `scripts/derive_pod5_seed.py` because every Oxford Nanopore-published pod5 is non-commercial.
 
 Generated artifacts:
 - `<checkout>/envs/bioinf_{name}/` — the host conda env (pre-freeze iteration)

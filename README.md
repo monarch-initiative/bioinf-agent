@@ -393,6 +393,7 @@ pytest lives in the runtime env, so run it on that interpreter:
 
 - [CLAUDE.md](CLAUDE.md) — the full honesty contract, every primitive, and the protocol.
 - [docs/](docs/) — architecture, the HPC bridge, and the outcomes/intent dashboards.
+- [docs/data_sources.md](docs/data_sources.md) — every dataset setup fetches, its licence, and who to credit.
 
 ## License
 

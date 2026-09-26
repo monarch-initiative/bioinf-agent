@@ -1,0 +1,46 @@
+seed: HG002_PAM69552_R1041_5reads.pod5
+derived_on: '2026-09-23'
+derived_by: scripts/derive_pod5_seed.py (see module docstring for the derivation)
+tool: 'Pod5 version: 0.3.48'
+source:
+  bucket: human-pangenomics
+  bucket_license: CC0-1.0
+  bucket_registry: https://registry.opendata.aws/hpgp-data/
+  url: https://s3-us-west-2.amazonaws.com/human-pangenomics/submissions/3b9be4f8-a269-4f89-ab9c-a0a0b0a10af6--UCSC_HG002_R1041_nanopore/HG002_Sheared_R1041/10_4_22_R1041_HG002_1B_StandardSpeed.fast5.tar
+  member: PAM69552_009474b2_72.fast5
+  member_size: 316321328
+  member_sha256: f8c21b3e3c620f5e5677a39c91f576dc82dc0f34577c6180a8a95ab4070fe256
+  sample: HG002 (NA24385, GIAB Ashkenazim son; Personal Genome Project consent)
+  run:
+    flow_cell_id: PAM69552
+    flow_cell_product_code: FLO-PRO114M
+    sequencing_kit: SQK-LSK114
+    sample_rate_hz: 4000
+    translocation_speed_bps: 400
+    protocol_run_id: b2e111a3-c323-4f42-9e1b-55c589f20302
+    acquisition_id: 009474b226a8c0821dfedd708a320779a88dc0aa
+    acquisition_start_time: '2022-10-04T19:21:18+00:00'
+    device: PromethION (PRO-PRC048)
+selection:
+  rule: five lowest read_id UUIDs among reads with 20000–60000 signal samples
+  read_ids_file: HG002_PAM69552_R1041_5reads.read_ids.txt
+derived:
+  size_bytes: 187216
+  sha256: 41afaffdda4b12cb527f102716726aeaf8cffd96d929d205c74b468225999cf4
+  content_sha256: bb7b006a0d721c973205dd75757b8ffa7191c5d14d01965c16a76fcb17e19561
+  reads:
+  - read_id: 0032ecf0-42e7-4044-a14d-7e35be36869c
+    num_samples: 37368
+    channel: 1672
+  - read_id: 0071f606-b6e8-4f6d-9b69-8ed91fed2710
+    num_samples: 57759
+    channel: 548
+  - read_id: 01410b0a-f68a-4b0f-831b-5a051472facd
+    num_samples: 30177
+    channel: 845
+  - read_id: 0141b500-d34e-40d6-818e-1dc0d262a47f
+    num_samples: 48495
+    channel: 48
+  - read_id: 02ac3820-5641-4e23-bf0b-a9e666100933
+    num_samples: 20322
+    channel: 1441
