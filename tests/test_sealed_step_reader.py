@@ -1,8 +1,7 @@
 """RUN_STEP-of-a-sealed-workflow — the typed read-back seam (Phase 5, scenario 5).
 
 WHAT THIS MEASURES. Re-running one recorded step of an existing SEALED pipeline
-(docs/design_reverse_theme_park.md §7 scenario 5: "just generate step 2 of my
-existing pipeline") has to source the command we are about to EXECUTE in a shipped
+("just generate step 2 of my existing pipeline") has to source the command we are about to EXECUTE in a shipped
 image from a VALIDATED record — never a scraped dict. This file proves the two seam
 functions and the advisory tool built for it:
 

@@ -1,6 +1,6 @@
 """The front gate — typed intake + the completeness gate.
 
-WHAT THIS IS. The one entrance to the park (docs/design_reverse_theme_park.md §2-3).
+WHAT THIS IS. The typed front door.
 A raw prompt is turned into a VALIDATED `RequestIntent` — the LLM's reading of what
 the user wants, as a typed record — and then the completeness gate routes it to exactly
 one of four outcomes: DECLINE / ASK / INVESTIGATE / PROCEED, plus the rail it belongs to.

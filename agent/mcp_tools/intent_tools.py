@@ -1,7 +1,7 @@
 """intent_tools — the typed front door.
 
 ONE tool: `interpret_request`. It is the MCP surface of `agent/skills/intent.py`
-(docs/design_reverse_theme_park.md §2-3) — you pass your structured reading of the
+— you pass your structured reading of the
 user's request as JSON, it validates that reading against the `RequestIntent` schema
 and returns the completeness gate's verdict (decline / ask / investigate / proceed)
 plus the rail the request belongs to.

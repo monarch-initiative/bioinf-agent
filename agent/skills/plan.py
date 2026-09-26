@@ -1,4 +1,4 @@
-"""Composition — the itinerary through the park (docs/design_reverse_theme_park.md §6).
+"""Composition — the typed multi-step plan.
 
 WHAT THIS IS. Most real requests are not one rail. `intent.py` types ONE user
 request as ONE `RequestIntent` (single-rail by construction). This module types the

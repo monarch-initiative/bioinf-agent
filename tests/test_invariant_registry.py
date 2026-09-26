@@ -33,17 +33,10 @@ from agent.skills import invariants as reg
 ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_MD = ROOT / "CLAUDE.md"
 
-#: Prose the agent is steered by, wherever it lives. `docs/primitives.md` is the
-#: long-form primitive reference that was lifted OUT of CLAUDE.md on 2026-07-31 to stop
-#: paying 8,806 tokens for it every session.
-#:
-#: It is listed here because moving governed text out of a linted file is the quietest
-#: way to lose a lint. Every "is this claim still true" check below reads CLAUDE.md; had
-#: the relocation not brought the new file with it, a stale "I5 is retired" sentence
-#: could ride along in docs/primitives.md and the suite would stay green having stopped
-#: looking. That is the vacuous-pass shape this repo keeps rediscovering — a check that
-#: silently narrows its own scope reads exactly like a check that passes.
-STEERING_DOCS = (CLAUDE_MD, ROOT / "docs" / "primitives.md")
+#: Prose the agent is steered by, wherever it lives. If governed text is ever moved
+#: out of CLAUDE.md into another doc, list that doc here — moving text out of a linted
+#: file is the quietest way to lose a lint.
+STEERING_DOCS = (CLAUDE_MD,)
 
 
 def _steering_text() -> str:
@@ -328,13 +321,8 @@ def test_install_pipeline_brief_roster_matches_the_registry():
 
 @pytest.mark.parametrize("live_id", ["I5", "I10"])
 def test_claude_md_does_not_call_a_live_invariant_retired(live_id):
-    """The specific rot this workstream found: the prose asserted twice that I5 and I10
-    were 'retired'/'subsumed' — the two live clauses its own table had dropped.
-
-    Reads every steering doc, not just CLAUDE.md. When the long-form primitive reference
-    was lifted into docs/primitives.md, a false 'retired' sentence riding along in the
-    moved text would have escaped this check entirely — and the suite would have gone
-    green on the strength of having stopped looking.
+    """A live invariant must never be described as 'retired' or 'subsumed' in any
+    steering doc — prose saying a gate is dead reads exactly like a gate being dead.
     """
     text = _steering_text()
     for m in re.finditer(r"[^.\n]*\b(retired|subsumed)\b[^.\n]*", text, re.I):

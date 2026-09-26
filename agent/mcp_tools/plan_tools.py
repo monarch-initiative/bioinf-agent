@@ -1,7 +1,7 @@
 """plan_tools — the composition front door.
 
 ONE tool: `plan_request`. It is the MCP surface of `agent/skills/plan.py`
-(docs/design_reverse_theme_park.md §6) — you pass your decomposition of a multi-rail
+— you pass your decomposition of a multi-rail
 goal as a JSON `ExecutionPlan`, it validates that decomposition against the schema and
 returns the plan gate's verdict (I8 lifted to authoring time) plus the topological walk
 order and where to start.

@@ -1,8 +1,7 @@
 """sealed_tools — RUN_STEP-of-a-sealed-workflow, the typed reader.
 
 ONE tool: `describe_sealed_step`. It is the MCP surface for re-running a single
-recorded step of an existing SEALED pipeline (docs/design_reverse_theme_park.md §7
-scenario 5: "just generate step 2 of my existing pipeline").
+recorded step of an existing SEALED pipeline ("just generate step 2 of my existing pipeline").
 
 WHY ITS OWN MODULE (not workflow_tools). This is the third member of the
 reverse-theme-park ADVISORY-READER family — `interpret_request` (intent_tools, the
@@ -37,8 +36,7 @@ from agent.skills import workspace as _workspace
 @mcp.tool()
 def describe_sealed_step(workflow_name: str, step: int) -> dict:
     """RUN_STEP-of-a-sealed-workflow — the typed reader for re-running ONE recorded
-    step of an existing SEALED pipeline (docs/design_reverse_theme_park.md §7
-    scenario 5: "just generate step 2 of my existing pipeline").
+    step of an existing SEALED pipeline ("just generate step 2 of my existing pipeline").
 
     Reads ``env_reports/{workflow_name}.workflow.yaml`` through the TYPED seam
     (``spec_writer.load_workflow_spec`` → a validated ``WorkflowSpec``, NEVER a
