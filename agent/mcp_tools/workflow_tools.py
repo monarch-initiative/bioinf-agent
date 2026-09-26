@@ -48,13 +48,13 @@ def _refresh_reference_databases(rdbs: list) -> list:
     WorkflowSpec pins each DB by CONTENT, not merely by name+URL. Missing
     sidecar ⇒ sha256 stays absent (honest: we never fabricate a hash).
 
-    FILL-ONLY, NEVER OVERWRITE (2026-07-31). `available` and `size_bytes` are
-    observations and are refreshed every time; `sha256` is an ANCHOR — a claim about
-    what the bytes were when the run was validated — and re-deriving it from today's
-    sidecar erases the only value the I5 comparison could be against. This refresh runs
-    while building the artifact and the artifact is re-validated immediately after, so
-    an overwrite made that check compare a value with itself. See the same fix in
-    acquire_data.refresh_cluster_reference_db, where it was total rather than partial."""
+    FILL-ONLY, NEVER OVERWRITE. `available` and `size_bytes` are observations and are
+    refreshed every time; `sha256` is an ANCHOR — a claim about what the bytes were
+    when the run was validated — and re-deriving it from today's sidecar erases the
+    only value the I5 comparison could be against. This refresh runs while building
+    the artifact and the artifact is re-validated immediately after, so an overwrite
+    would make that check compare a value with itself. The same rule holds in
+    acquire_data.refresh_cluster_reference_db."""
     out: list = []
     for e in rdbs or []:
         if not isinstance(e, dict):
@@ -126,7 +126,7 @@ def _local_trial_mounts(draft: dict):
     host env) could execute the how-to.
 
     Extracted from `_image_usage_runner` because the host-env fallback made the same
-    decision without asking the same question (falsifier drive-2 open question): the
+    decision without asking the same question: the
     image runner declined a cluster-only trial gracefully → not_attempted, but when the
     draft also named a conda_env the fallback fired unconditionally, ran the trial
     against paths that exist only on the cluster, failed it, and turned the honest
@@ -214,7 +214,7 @@ def _image_usage_runner(fr: dict, draft: dict):
         resolved = None
     if not resolved:
         # A daemon TAG can rot while the pinned bytes remain: in the S7 sea
-        # trial (F19), containerd GC dropped `s2_align:latest`'s tag mapping —
+        # trial, containerd GC dropped `s2_align:latest`'s tag mapping —
         # `docker images` listed it, inspect-by-tag said "No such image" — and
         # this probe concluded no runner existed while the digest resolved the
         # whole time. The record carries that digest in the field beside the
@@ -255,14 +255,12 @@ def _proven_trial_records(usage_detail: dict) -> list[dict]:
     Read back through `core_data.usage_proven_trials` /
     `core_data.usage_output_validations`.
 
-    `validation_results` was dropped here until 2026-08-07 (F6). `_run_one_trial`
-    resolves an expected type for every matched output — the author's declared type
-    if there is one, otherwise inferred from the basename — and runs the type-aware
-    validator against it. All of that was computed, gated on, and then discarded at
-    the seal, so the how-to panel's `Type` column had nothing to read but the
-    AUTHORED `usage.outputs[*].type`, which is empty on every spec in the corpus.
-    A declared column rendering blank looks cosmetic; it was the artifact throwing
-    away the observation and printing the field someone forgot to fill in.
+    `validation_results` is load-bearing: `_run_one_trial` resolves an expected type
+    for every matched output — the author's declared type if there is one, otherwise
+    inferred from the basename — and runs the type-aware validator against it.
+    Dropping it at the seal would leave the how-to panel's `Type` column nothing to
+    read but the AUTHORED `usage.outputs[*].type` — the observation thrown away, and
+    the field someone forgot to fill in printed instead.
 
     Deliberately NOT carried: `scratch_dir` (a temp path deleted before the report is
     read — printing it would hand a reader a command pointing at nothing) and
@@ -321,16 +319,10 @@ def _derive_step_dependencies(pipeline_steps: list) -> list:
     """Materialize each step's `depends_on` (prior step numbers it consumes an
     output of) into the sealed spec.
 
-    The StepInput/PipelineStep model documents depends_on as 'derived at finalize
-    from input/output overlap if absent' — but finalize_pipeline was retired in
-    the respine and seal never picked the derivation up, so depends_on was ALWAYS
-    empty. The multi-step chaining probe surfaced it: a 2-step pipeline sealed with
-    step2 recording depends_on=[] even though its BAM input IS step1's output. The
-    seal already re-computes this exact edge to CHECK I8 (composition-coherence /
-    lineage), but never wrote it back — so the self-verifying WorkflowSpec was not
-    self-DOCUMENTING: a reader couldn't tell step2's input came from step1 vs an
-    external source without re-deriving it. This closes that gap by stamping the
-    edge the seal already knows.
+    The seal re-computes this exact edge to CHECK I8 (lineage); stamping it into
+    the spec makes the WorkflowSpec self-DOCUMENTING too — a reader can tell a
+    step's input came from a prior step vs an external source without re-deriving
+    the overlap.
 
     Derivation is exact-path input↔output overlap (the byte-identical lineage
     edge), last-writer-wins in step order (matches _check_lineage_integrity). Only
@@ -434,18 +426,16 @@ def _next_superseded_path(out_dir: Path, wname: str) -> Path:
 
 
 def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[bool, Optional[dict]]:
-    """Phase-3 Piece A — the seal write-guard.
+    """The seal write-guard.
 
-    THE HOLE (audit 2026-07-17): write_workflow_spec overwrites
-    {name}.workflow.yaml with NO exists-check, so re-sealing over an existing
-    sealed spec silently DESTROYS a digest-pinned provenance artifact. The
-    honesty contract already re-validates the NEW spec standalone, so the new
-    file is never a lie — but the SILENT REPLACEMENT of the old one is. The fix
-    is a guard at the terminal WRITE, not a lock on the draft: the 15-site
-    draft-lock the design sketch first proposed would have broken locus
-    accretion, one-env-many-workflows, and every ad-hoc pipeline_id="" call, AND
-    a LEGAL_TRANSITIONS table would have been a second, drifting definition of
-    ordering — the codebase's signature disease.
+    write_workflow_spec overwrites {name}.workflow.yaml with NO exists-check, so
+    an unguarded re-seal over an existing sealed spec silently DESTROYS a
+    digest-pinned provenance artifact. The honesty contract already re-validates
+    the NEW spec standalone, so the new file is never a lie — but the SILENT
+    REPLACEMENT of the old one is. The guard belongs at the terminal WRITE, not
+    on the draft: a draft lock would break locus accretion,
+    one-env-many-workflows, and every ad-hoc pipeline_id="" call, and a
+    LEGAL_TRANSITIONS table would be a second, drifting definition of ordering.
 
       - no existing spec           -> write (first seal)
       - same env identity, no
@@ -523,7 +513,7 @@ def seal_workflow(
     artifact and is not touched here).
 
     A sealed {workflow_name}.workflow.yaml is a digest-pinned provenance artifact,
-    so re-sealing over an EXISTING one is guarded (Phase-3 Piece A): re-sealing
+    so re-sealing over an EXISTING one is guarded: re-sealing
     the SAME env with more/updated validated evidence writes through (locus
     accretion), but sealing a DIFFERENT env (or dropping evidence) over it
     REFUSES `seal.would_clobber_sealed_spec` unless `supersede=True` — which
@@ -650,44 +640,38 @@ def seal_workflow(
     # persist the field (it's derived only at validate/finalize). A verified
     # template is what the guide shows as the runnable form.
     #
-    # I4 GATES THE SEAL (fix H2): if the draft declares a usage block, its
+    # I4 GATES THE SEAL: if the draft declares a usage block, its
     # command_template MUST self-test green against every declared trial —
     # otherwise the guide would publish a runnable form that doesn't actually
-    # run. Previously `usage_verified` was computed then rendered cosmetically
-    # while the seal proceeded regardless; that let a broken usage template
-    # ship with a "verified" badge.
+    # run. A `usage_verified` that is computed but not gated on is cosmetic:
+    # it lets a broken usage template ship with a "verified" badge.
     #
-    # THE LOCUS FIX (audit 2026-07-16): this gate used to read
-    # `if draft.get("usage") and draft.get("conda_env")`. self_test_usage needs a runner,
-    # and the only runner it knew was a HOST conda env — but the architecture moved
-    # container-native, so the primary path has no host env and the gate SILENTLY SKIPPED.
-    # Every one of the 4 sealed workflows on disk has conda_env=None; 3 carry
-    # usage_verified=False that means "never attempted" while rendering as a verdict.
-    # We now prefer the FROZEN IMAGE as the runner (validated == shipped: the how-to is
-    # tested against the exact bytes the user runs), fall back to the host env for the
-    # pre-freeze path, and when neither can run it we record not_attempted + WHY rather
-    # than fabricating a False.
+    # THE RUNNER IS LOCUS-AWARE. self_test_usage needs a runner, and gating on a
+    # HOST conda env would silently skip the gate on every container-native env
+    # (the primary path has no host env). Prefer the FROZEN IMAGE as the runner
+    # (validated == shipped: the how-to is tested against the exact bytes the
+    # user runs), fall back to the host env for the pre-freeze path, and when
+    # neither can run it record not_attempted + WHY rather than fabricating a
+    # False.
     #
-    # AND THE PRODUCER ALWAYS STATES THE OUTCOME (2026-07-31). This gate used to skip the
-    # whole block when no `usage` block was authored, leaving `usage_detail = None` — which
-    # made `usage_verification` None, which `to_yaml(exclude_none=True)` then DROPPED. So the
-    # sealed spec carried no I4 record at all and every reader fell back to the bare
-    # `usage_verified: False`: the two-states-in-one-bool defect the three-state field was
-    # added to kill, reintroduced by the field being absent instead of wrong. Measured on
-    # disk: talos_cluster_pytest is exactly that artifact — no usage block, a green seal,
-    # and nothing proven about how to run it. Absence must never render as a verdict.
+    # AND THE PRODUCER ALWAYS STATES THE OUTCOME, even when no `usage` block was
+    # authored: `usage_detail` is always a stated dict. A None here would make
+    # `usage_verification` None, which `to_yaml(exclude_none=True)` DROPS — the
+    # sealed spec would carry no I4 record at all and every reader would fall
+    # back to the bare `usage_verified: False`, two states in one bool again,
+    # by absence instead of by value. Absence must never render as a verdict.
     usage_ok = False
     usage_detail: dict
     if not draft.get("usage"):
         usage_detail = {
             "ok": False, "status": "not_attempted",
             # TWO REASONS, because they are two different facts about the artifact and a
-            # reader acts differently on each. Without a usage block both used to read
-            # "add one and re-seal" — advice that is right for a single-image run and
-            # WRONG for a chain across images, where authoring only the phase that happens
-            # to run in the pinned image earns a green self-test for a command that does
-            # half the work. That is the failure this contract exists to prevent, so the
-            # honest landing there is to author nothing and say why.
+            # reader acts differently on each. "Add a usage block and re-seal" is right
+            # for a single-image run and WRONG for a chain across images, where
+            # authoring only the phase that happens to run in the pinned image earns a
+            # green self-test for a command that does half the work. That is the
+            # failure this contract exists to prevent, so the honest landing there is
+            # to author nothing and say why.
             "reason": (
                 (f"this run spans {len(seen_dig)} shipped images, and every command in "
                  f"usage.command_template executes inside the ONE image pinned by "
@@ -706,7 +690,7 @@ def seal_workflow(
         # The host env substitutes for a missing IMAGE, never for inputs that live at
         # another locus — a fallback that skipped the locus precondition ran cluster-only
         # trials on this host, failed them, and turned the honest not_attempted into a
-        # hard seal refusal (falsifier drive-2 open question, now closed). Same
+        # hard seal refusal. Same
         # precondition as the image runner, one implementation: _local_trial_mounts.
         runner = _image_usage_runner(fr, draft)
         if runner is None and draft.get("conda_env") and _local_trial_mounts(draft) is not None:
@@ -765,15 +749,15 @@ def seal_workflow(
         "pipeline_status":    derive_pipeline_status(draft.get("pipeline_steps", [])),
         "usage_verified":     usage_ok,
         # The three-state truth behind the bool. `usage_verified: False` alone cannot
-        # distinguish "tested and broken" from "never tested", and since seal refuses the
-        # former, False on disk ALWAYS meant the latter — a verdict nobody reached.
-        # Renderers must read this, not the bool, before saying anything about the how-to.
+        # distinguish "tested and broken" from "never tested", and since seal refuses
+        # the former, False on disk can only mean the latter — a verdict nobody
+        # reached. Renderers must read this, not the bool, before saying anything
+        # about the how-to.
         #
-        # UNCONDITIONAL. This used to end `if usage_detail else None`, and that fallback
-        # was not defensive — it was the live path for every draft with no usage block,
-        # and exclude_none then deleted the field. `usage_detail` is now always a stated
-        # dict (see above), so there is no None to guard against and no way for the
-        # record to go missing instead of saying "not_attempted".
+        # UNCONDITIONAL — never `if usage_detail else None`. `usage_detail` is always
+        # a stated dict (see above), so there is no None to guard against; a
+        # conditional here would let the record go missing (exclude_none deletes a
+        # None field) instead of saying "not_attempted".
         "usage_verification": {"status": usage_detail.get("status", "not_attempted"),
                                "reason": usage_detail.get("reason", ""),
                                "locus":  usage_detail.get("locus", ""),
@@ -794,7 +778,7 @@ def seal_workflow(
         "usage":              draft.get("usage"),
         # Stamp each step's depends_on (input↔prior-output overlap) — the edge the
         # seal already computes to CHECK I8 — so the sealed spec is self-documenting,
-        # not just self-verifying (finalize used to derive this; it was retired).
+        # not just self-verifying.
         "pipeline_steps":     _derive_step_dependencies(draft.get("pipeline_steps", [])),
         # External sources carried so the artifact self-verifies (I8 standalone).
         "test_data":            draft.get("test_data"),
@@ -828,17 +812,17 @@ def seal_workflow(
     #
     # A sealed spec makes two claims: this run happened and was validated (the steps), and
     # this is how to re-run it (the usage block, proven by I4). Seal refuses outright when
-    # I4 FAILS, so the only remaining gap is "I4 never ran" — and that used to return the
-    # same unconditional `proven("seal.sealed")` as a fully-proven workflow. 3 of the 5
-    # specs on disk are that tag: green, over a how-to nobody executed.
+    # I4 FAILS, so the only remaining gap is "I4 never ran" — and that must not return
+    # the same unconditional `proven("seal.sealed")` as a fully-proven workflow: a green
+    # tag over a how-to nobody executed.
     #
     # Two literal terminals with DISTINCT codes, mirroring freeze's
     # built / built_unobserved pair. Never re-tag `seal.sealed` itself: it is a published
     # code that other readers (and tests/test_outcome_tags.py) join on, and flipping a
-    # code's meaning under a stable name is the drift this repo keeps paying for. Both
+    # code's meaning under a stable name is drift. Both
     # branches carry the same fields and success=True — the artifact IS written either
     # way, because a validated run with no how-to is a real, useful record. It is just
-    # not the same record as one whose how-to was executed, and the tag now says which.
+    # not the same record as one whose how-to was executed, and the tag says which.
     _seal_fields = dict(
         success=True, workflow_name=wname,
         env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
@@ -858,7 +842,7 @@ def seal_workflow(
         )
     if write:
         out_dir = _workspace.reports_dir()
-        # Phase-3 Piece A: refuse to silently clobber a prior sealed spec that
+        # refuse to silently clobber a prior sealed spec that
         # pins a DIFFERENT env (locus accretion writes through). See
         # _guard_spec_overwrite — this is the terminal-WRITE gate, and it fires
         # BEFORE write_workflow_spec so no digest-pinned provenance is destroyed.
@@ -871,7 +855,7 @@ def seal_workflow(
         if out.get("error"):
             return broke("seal.spec_write_failed", success=False, **out)
         result.update(out)
-        # Orientation pointer (Phase-3 Piece B): record that this pipeline sealed
+        # Orientation pointer: record that this pipeline sealed
         # `wname`, so current_state can RE-EARN SEALED. Best-effort — a pointer
         # hiccup must never fail a verified seal.
         try:
@@ -1160,7 +1144,7 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
         ]
         # ONE lifecycle answer, re-earned from the artifacts — replaces the dead
         # env_status/pipeline_status nominal stamps that were never transitioned
-        # (Phase-3 Piece B). state_checks binds the re-earned frozen/sealed checks.
+        #. state_checks binds the re-earned frozen/sealed checks.
         from agent.skills.pipeline_state import current_state, state_checks
         _reports_dir = _workspace.reports_dir()
         _state = current_state(draft, **state_checks(_ms._env_cache, _reports_dir))

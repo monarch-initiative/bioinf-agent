@@ -1,17 +1,10 @@
 """
 invariants — the ONE declaration of what each numbered invariant is and where it lives.
 
-WHY THIS EXISTS. The invariant roster was an un-generated, un-linted second copy of
-itself, and it drifted in every copy at once. Measured 2026-07-31:
-
-  * `check_workflow_invariants` refuses on I0, I3, I5, I6, I7, I8, I10.
-  * CLAUDE.md's Layer-2 table listed I0, I3, I4, I6, I7, I8 — missing I5 and I10
-    ENTIRELY, and listing I4, which that function does not emit (I4 is real, but it
-    is enforced by the usage self-test, one seam over).
-  * CLAUDE.md's prose asserted, twice, that I5 and I10 had been "retired" and
-    "subsumed" — of the two live clauses it forgot to list.
-  * spec_writer's own module docstring said I0/I3/I6/I7/I8 in four places while the
-    constant six lines below it said seven ids.
+WHY THIS EXISTS. A hand-written invariant roster is an un-generated, un-linted second
+copy of itself, and it drifts in every copy at once: the enforcing walk, CLAUDE.md's
+Layer-2 table, CLAUDE.md's prose and the enforcer's own module docstring can each
+carry a different id set while the suite stays green.
 
 CLAUDE.md IS THE AGENT'S PROMPT. A stale roster there is not a documentation defect,
 it is a runtime one: the agent plans against invariants that do not exist, omits

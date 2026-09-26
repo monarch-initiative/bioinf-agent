@@ -216,10 +216,8 @@ class ReferenceDatabase(BaseModel):
 
     THE GENOME FASTA GOES IN `test_data`, and `select_test_data` puts it there —
     `reference_fasta` + `fai`, anchored, so I8 traces an aligner's reference input.
-    This disclaimer used to be a dead end: the slot existed in TEST_DATA_PATH_KEYS,
-    `test_data` is not patchable, no producer wrote it, and this model said "not here"
-    — so an alignment workflow had no correct field for its reference and every one of
-    them cost a refused seal plus a hand-authored entry into this class. Use this for
+    (That producer is what keeps this disclaimer from being a dead end: "not here"
+    only works because something actually writes the slot it points at.) Use this for
     what the sentence above says: data BEYOND the genome FASTA. A reference this system
     did not bootstrap (another build, another species) still belongs here or in
     `authored_artifacts`, because `select_test_data` only knows the core manifests.
@@ -1008,10 +1006,10 @@ def shipped_binaries(record: dict) -> list[ShippedBinary]:
     """THE reader for `record["shipped_binaries"]`. Every consumer goes through here.
 
     Rule 4 ("one truth, one definition, read at every use") in its mechanical form.
-    Four readers used to `.get()` keys straight off the raw dicts and each invented its
-    own dialect — `name or purpose`, `platform`, `sha256` — so each one degraded
-    silently and differently against the same record. Attribute access on a validated
-    model turns every one of those into an error at the seam instead of a `None` in a
+    Readers that `.get()` keys straight off the raw dicts each invent their own
+    dialect — `name or purpose`, `platform`, `sha256` — and each degrades silently
+    and differently against the same record. Attribute access on a validated model
+    turns every one of those into an error at the seam instead of a `None` in a
     shipped deliverable.
 
     STRICT BY DESIGN: raises `pydantic.ValidationError` on any record whose shape does
@@ -1086,25 +1084,24 @@ def record_is_gated(record: dict) -> bool:
     """THE reader for "is this EnvCache record a license-gated artifact?" (I13).
 
     Reads the canonical `license_gated`, falling back to the legacy `gated` key that
-    records written before the 2026-07-16 unification carry on disk. Every consumer of
-    "is this gated" goes through here so the two names can never drift apart again —
-    drifting apart is exactly how I13 stopped firing on the authors'-image path.
+    older records carry on disk. Every consumer of "is this gated" goes through here
+    so the two names can never drift apart — drifting apart is exactly how I13 stops
+    firing on the authors'-image path.
 
     LIVES HERE, beside the other record readers, and not in `freeze` — because the
     consumer that matters most is the CONTRACT (`env_honesty._clause_license`), and
-    `env_honesty` cannot import `freeze` (freeze imports it). While the canonical reader
-    sat behind that cycle the contract kept its own one-key copy, so a record carrying
-    only the legacy `gated` key passed I13 by default: the deduplication had reached the
-    four rendering callers and stopped one import short of the gate it was written for.
-    A shared fact belongs in a leaf, or it is not actually shared."""
+    `env_honesty` cannot import `freeze` (freeze imports it). A canonical reader
+    parked behind that cycle leaves the contract with its own one-key copy, and a
+    record carrying only the legacy `gated` key then passes I13 by default. A shared
+    fact belongs in a leaf, or it is not actually shared."""
     if "license_gated" in record:
         return bool(record.get("license_gated"))
     return bool(record.get("gated", False))
 
 
 #: Licence text that POSITIVELY ASSERTS a restriction. Deliberately short: every entry is a
-#: phrase a packager wrote to warn you, not a guess about one they didn't. Measured against
-#: 43 real bioconda licence strings (2026-08-04) — these matched exactly `novoalign`
+#: phrase a packager wrote to warn you, not a guess about one they didn't. Calibrated
+#: against real bioconda licence strings — these match exactly `novoalign`
 #: ("Commercial (requires license for use)") and `sentieon` ("…; redistribution allowed"),
 #: and nothing else.
 _LICENSE_RESTRICTED = (
@@ -1226,13 +1223,12 @@ def staged_sif_steps(spec: Any) -> list:
     """THE one reading of "is this workflow's container already delivered to the
     cluster": every pipeline_step that records a cluster-staged .sif fingerprint.
 
-    Exists because two renderers answer it (sea-trial F21): a step-recorded
-    staged .sif must OUTRANK a freeze record's stored `get_image` advice — the
-    stored text on pre-fix records tells the reader to build on the head node,
-    which is both forbidden and moot once the artifact is on the cluster. The
-    RUN dashboard got the rule first and the user guide kept printing the advice
-    (measured 2026-09-14: the two pages contradicted each other on the exact
-    fact F21 was about), which is what a second hand-spelling always does."""
+    Exists because two renderers answer it: a step-recorded staged .sif must
+    OUTRANK a freeze record's stored `get_image` advice — stored text on older
+    records tells the reader to build on the head node, which is both forbidden
+    and moot once the artifact is on the cluster. A rule wired into one renderer
+    while the other keeps its own hand-spelling is how two pages come to
+    contradict each other about one fact."""
     steps = (spec or {}).get("pipeline_steps") or []
     return [st for st in steps if isinstance(st, dict) and st.get("cluster_sif_sha256")]
 
@@ -1240,11 +1236,9 @@ def staged_sif_steps(spec: Any) -> list:
 def sha256_file(path: Any) -> str:
     """THE streaming file hash — 1 MiB chunks, raises on an unreadable path.
 
-    Measured 2026-09-14: five named copies of this loop existed (data_pins,
-    env_manager, core_test_data, transfer, and anchor_for_path's inline body)
-    plus inline sites in evidence and spec_writer — differing only in whether
-    an OSError raised or became None, which is caller POLICY, not hashing.
-    This is the one implementation; `sha256_file_or_none` is the tolerant
+    The ONE implementation — never a per-module copy of the loop: copies come
+    to differ only in whether an OSError raises or becomes None, which is
+    caller POLICY, not hashing. `sha256_file_or_none` is the tolerant
     spelling. Cap policy stays with the CALLER (see ANCHOR_HASH_CAP_BYTES
     above — a cap inside the hasher would let two checks disagree merely
     because one gave up sooner)."""
@@ -1555,7 +1549,7 @@ class PipelineStep(BaseModel):
     validation_status: Optional[Literal["passed", "failed"]] = None
     # REQUIRED: every producer observes an exit code (env_manager returns -1
     # even when the spawn itself failed; the cluster failure recorder states -1
-    # explicitly). An absent rc used to fall through to the "validated" status
+    # explicitly). An optional rc would fall through to the "validated" status
     # default — a fabricating default for the one field that decides whether
     # I3/I7 examine the step at all.
     returncode:        int
@@ -1761,11 +1755,11 @@ class UsageTemplate(BaseModel):
 
     command_template is a str OR a list[str] — one entry per command, run IN
     ORDER, sharing one working directory (so step 2 consumes step 1's output).
-    It was `str` alone, which made a real multi-phase pipeline INEXPRESSIBLE:
+    A str-only field makes a real multi-phase pipeline INEXPRESSIBLE:
     `pipeline_steps` is a list and I8 lineage already holds across a chain, but
     the how-to contract — the thing a user actually reads and runs, and the thing
-    the guides will render — could only ever say one command. No amount of later
-    guide design can fix data that cannot say what you mean (audit 2026-07-16).
+    the guides render — could only ever say one command. No amount of later
+    guide design can fix data that cannot say what you mean.
 
     A bare str is still valid and means exactly what it always did; read either
     shape through `usage_commands()`, never by branching on the type at the call
@@ -1789,7 +1783,7 @@ class UsageTemplate(BaseModel):
 
 #: Shell words that set the stage without naming the work — a step whose command
 #: begins `mkdir -p out && samtools flagstat …` is a samtools step, and titling it
-#: "mkdir" names the least important token on the line (CS22). Shell vocabulary,
+#: "mkdir" names the least important token on the line. Shell vocabulary,
 #: not tool vocabulary: adding a bioinformatics tool name here would be the
 #: tool-specific-code rule violation, and none is needed. Two classes because they
 #: skip differently: a WRAPPER's argument IS the real command (`time -v tool run`),
@@ -1958,15 +1952,14 @@ USAGE_FAILED = "failed"
 USAGE_NOT_ATTEMPTED = "not_attempted"
 #: FOUR states, because "nobody tried" and "we have no record of whether anybody tried"
 #: are different facts and only one of them is a finding. A spec sealed before the
-#: producer was required to state its I4 outcome (pre-2026-07-31) carries no
-#: `usage_verification` block at all, and `usage_verified: False` on it has never meant
-#: anything — seal refuses a real failure, so the bool could only ever be a default.
-#: Rendering that as "not attempted" is the meter's own sin one layer down: absence
-#: rounded up into a verdict, printed in the artifact the user reads to decide whether to
-#: trust the how-to. Measured on disk 2026-08-06: 4 of 7 sealed specs are in this state,
-#: and one of the four (`rnaseq_deseq2_chr22_cluster`) is a MULTI-ENV chain whose how-to
-#: is structurally unprovable — the honest `degraded(seal.sealed_howto_unproven)` landing —
-#: which a reader could not tell apart from a workflow where nobody bothered.
+#: producer was required to state its I4 outcome carries no `usage_verification` block
+#: at all, and `usage_verified: False` on it has never meant anything — seal refuses a
+#: real failure, so the bool could only ever be a default. Rendering that as "not
+#: attempted" is the meter's own sin one layer down: absence rounded up into a verdict,
+#: printed in the artifact the user reads to decide whether to trust the how-to — and it
+#: makes a MULTI-ENV chain whose how-to is structurally unprovable (the honest
+#: `degraded(seal.sealed_howto_unproven)` landing) indistinguishable from a workflow
+#: where nobody bothered.
 USAGE_UNRECORDED = "unrecorded"
 
 
@@ -2033,8 +2026,8 @@ def usage_proven_trials(spec: Any) -> list[dict]:
     WHAT" — and it is a separate fact, because the panel a human reads to decide
     whether to run a pipeline on real data shows `hisat2 -x {OUTPUT_DIR}/idx -1 {R1}`
     and nothing about which genome, which GTF, which reads. The self-test resolved
-    every one of those slots to a concrete path and ran the result; seal used to keep
-    only the count of trials that passed and drop the rest on the floor.
+    every one of those slots to a concrete path and ran the result; a seal that keeps
+    only the count of trials that passed drops exactly the answer that panel needs.
 
     This is an OBSERVATION carried through, never a re-derivation. A renderer could in
     principle re-substitute `usage.trials[*].substitutions` into `command_template`

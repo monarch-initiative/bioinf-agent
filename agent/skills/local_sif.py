@@ -28,9 +28,8 @@ from agent.skills.outcomes import proven, refused, broke
 APPTAINER_BUILDER_IMAGE = "kaczmarj/apptainer:1.4.4"
 
 
-# The {rc, out, err} runner this module reads. Was a private copy, byte-identical
-# to freeze_from_image._sh (measured 2026-09-14); both now alias the shared
-# implementation, which is the one property a copy can't have: it cannot drift.
+# The {rc, out, err} runner this module reads — an alias of the shared
+# implementation, never a private copy: an alias cannot drift.
 _run = _proc.run_argv_rc
 
 

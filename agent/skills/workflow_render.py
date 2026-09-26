@@ -271,17 +271,17 @@ def _check_slurm(slurm: Mapping) -> dict:
 
 
 # ── GPU placement — a STATE, not a gate ────────────────────────────────────
-# A GPU job used to be REFUSED unless both a partition and a qos resolved, on the
-# reasoning that a bare `--gres=gpu:N` can land on a CPU partition and never see a
-# device. That reasoning is true on SOME clusters and false on others: a site whose
-# scheduler routes gres requests on its own is slowed down by being handed a
-# partition, so naming one is the wrong default there. A cluster-shaped judgement
-# cannot be a hard requirement in the renderer.
+# Refusing a GPU job unless both a partition and a qos resolve reasons that a bare
+# `--gres=gpu:N` can land on a CPU partition and never see a device. That reasoning
+# is true on SOME clusters and false on others: a site whose scheduler routes gres
+# requests on its own is slowed down by being handed a partition, so naming one is
+# the wrong default there. A cluster-shaped judgement cannot be a hard requirement
+# in the renderer.
 #
-# So the requirement became an OBSERVATION, in the same posture every other
-# unfilled field in this codebase takes: say which of the states you are in, and
-# never round absence up to a pass. `cluster_partitions` is how a caller DISCOVERS
-# a real partition/qos pair when it wants one; nothing forces it to.
+# So the requirement is an OBSERVATION, in the same posture every other unfilled
+# field in this codebase takes: say which of the states you are in, and never
+# round absence up to a pass. `cluster_partitions` is how a caller DISCOVERS a
+# real partition/qos pair when it wants one; nothing forces it to.
 _GPU_PLACEMENT_STATES = ("not_applicable", "declared", "partially_declared",
                          "undeclared")
 

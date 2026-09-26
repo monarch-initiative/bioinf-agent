@@ -55,14 +55,11 @@ _ARCH_TOKENS = {
 def target_arch(platform: str) -> str:
     """linux/amd64 -> amd64 ; linux-aarch64 -> arm64. The Go/Docker arch token.
 
-    Reads BOTH the conda-subdir and docker-platform spellings (see `_ARCH_TOKENS`).
-    It used to be `platform.split("/")[-1]`, which silently handled only the docker
-    form: "linux-aarch64" has no slash, so it parsed to ITSELF and compared unequal
-    to every real architecture — fine while the only consumer was
-    `detect_locus`-vs-daemon on amd64, and wrong the moment anything compared this
-    to an arch read off an image.
+    Reads BOTH the conda-subdir and docker-platform spellings (see `_ARCH_TOKENS`) —
+    a slash-split would handle only the docker form: "linux-aarch64" has no slash,
+    so it would parse to ITSELF and compare unequal to every real architecture.
 
-    An unrecognized spelling returns "" — NOT the old "amd64" default. A caller
+    An unrecognized spelling returns "" — never an "amd64" default. A caller
     comparing architectures must be able to tell "this is amd64" from "I do not know
     what this string means", and defaulting the unknown case to the commonest answer
     is how a mismatch check silently passes.

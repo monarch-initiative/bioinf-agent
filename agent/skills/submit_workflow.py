@@ -84,11 +84,11 @@ _JOB_ID_RE = re.compile(r"^\d{1,12}$")
 # job_submissions/<project>/<workflow_name>_<job_id>.submission.json per
 # successful submission so the user can find the job later by name or id.
 #
-# Anchored to the REPO ROOT (via transfer._repo_root, the same anchor the transfer
-# manifests use), not to the process CWD. A CWD-relative root meant the manifest —
-# the production-side deliverable whose whole job is to be findable later — landed
-# wherever the agent happened to be invoked from, and it let an un-chdir'd test write
-# a `fake.example.edu` submission into the user's live audit trail (audit 2026-07-16).
+# Anchored via transfer._record_root (the same anchor the transfer manifests use),
+# never the process CWD. A CWD-relative root lands the manifest — the production-side
+# deliverable whose whole job is to be findable later — wherever the agent happened to
+# be invoked from, and lets an un-chdir'd test write a fake-host submission into the
+# user's live audit trail.
 # One anchor for both manifest kinds also means test isolation patches one function.
 _MANIFEST_ROOT = "job_submissions"
 
@@ -175,12 +175,12 @@ def resolve_gpu_placement(per_job_slurm: Mapping, env: Mapping) -> dict:
       env_convention  env.slurm.gpu.{partition,qos} — this HPC's standing rule,
                       filling any slot the job left open.
 
-    Neither is required. A GPU request used to be REFUSED when the env declared
-    no `slurm.gpu` block, which made the env key a de-facto requirement for GPU
-    work and — because the env also OVERRODE the job's own values — left a caller
-    who had discovered a real partition with no way to use it. Both halves are
-    gone: every slot is fillable from either side or from neither, and what
-    actually resolved is reported rather than demanded.
+    Neither is required. Refusing a GPU request when the env declares no
+    `slurm.gpu` block would make the env key a de-facto requirement for GPU
+    work, and letting the env override the job's own values would leave a
+    caller who discovered a real partition with no way to use it. Every slot
+    is fillable from either side or from neither, and what actually resolved
+    is reported rather than demanded.
     """
     sl = compute_access.get_slurm_config(env) or {}
     gpu = sl.get("gpu") or {}
@@ -213,10 +213,10 @@ def _resolve_slurm_and_email(per_job_slurm: Mapping,
       - GPU (gpus>0): partition + qos per `resolve_gpu_placement` — job first,
         then the env convention, then neither. Never a refusal.
       - CPU (gpus==0): default partition from env.slurm.partition if the job set
-        none; a job-supplied qos is HONOURED (it used to be dropped as "GPU-only",
-        which is this codebase's convention and not SLURM's — plenty of sites
-        attach a qos to CPU work, and silently discarding one the caller typed is
-        the accept-a-knob-and-ignore-it shape we delete elsewhere).
+        none; a job-supplied qos is HONOURED — "qos is GPU-only" is this
+        codebase's convention, not SLURM's; plenty of sites attach a qos to CPU
+        work, and silently discarding one the caller typed is the
+        accept-a-knob-and-ignore-it shape we delete elsewhere.
       - account: from env.slurm.account unless the job set one explicitly.
     Returns (merged_slurm, email, gpu_placement)."""
     sl = compute_access.get_slurm_config(env) or {}

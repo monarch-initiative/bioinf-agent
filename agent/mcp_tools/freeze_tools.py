@@ -47,26 +47,23 @@ def _validate_tools_in_image(image: str, platform: str, tools: list,
     """Run each tool's evidence INSIDE `image` and return the verification rows
     env_honesty.check_build consumes: [{label, tool, check, rc, passed, out}].
 
-    Extracted for the ADOPT path, which previously validated nothing at all. It generates
-    the SAME probe the build path uses (env_freeze._conda_presence_check) and runs it in
-    the SAME way — so "adopted" and "built" are held to one contract rather than two, and
-    an adopted image proves it carries the tool instead of being taken on the registry's
-    word.
+    Serves the ADOPT path with the SAME probe the build path uses
+    (env_freeze._conda_presence_check), run in the SAME way — so "adopted" and "built"
+    are held to one contract rather than two, and an adopted image proves it carries
+    the tool instead of being taken on the registry's word.
 
     Extracted rather than routed through freeze_from_image on purpose: that function
     computes its own request_key from tools[0] (dropping the policy facets this key folds
-    in), writes no hpc_delivery, and records no validation_locus — reusing it would have
-    quietly regressed the adopt record's shape to buy code-sharing.
+    in), writes no hpc_delivery, and records no validation_locus — reusing it would
+    quietly regress the adopt record's shape to buy code-sharing.
 
-    `evidence` — F4. The synthesized probe is a conda-metadata presence check: it proves
-    the package is IN the image and says nothing about whether it runs. Until 2026-08-07
-    that was the ONLY evidence this path could ever produce, because `freeze` had no
-    parameter through which a caller could author a better one — so "presence-only" was
-    a property of the ROUTE, not a choice, and the ENV report's own remedy ("re-freeze to
-    earn it") named an action that could not change the outcome.
+    `evidence` — a caller-authored command per tool. The synthesized probe is a
+    conda-metadata presence check: it proves the package is IN the image and says
+    nothing about whether it runs; authored evidence is how a caller earns more than
+    presence.
 
-    Caller-authored evidence is held to BOTH guards the agent-authored path uses, because
-    this is now agent-authored text: the cheap shape rule, and — load-bearing — the
+    Caller-authored evidence is held to BOTH guards the agent-authored path uses,
+    because it is agent-authored text: the cheap shape rule, and — load-bearing — the
     control-image experiment. A string rule cannot police a string author; `true ||
     samtools` walks through the shape rule and is caught by neither reading the string
     nor trusting it, but by running it somewhere the tool does not exist.
@@ -101,8 +98,8 @@ def _validate_tools_in_image(image: str, platform: str, tools: list,
 
 def _shipped_binary_entry(step: dict) -> dict:
     """One `shipped_binaries[]` record from a baked long-tail step, as the declared
-    `ShippedBinary` shape. The baked command IS this tier's provenance; C5 surfaces
-    the per-tool SHIP assurance (verified/assurance/tier) whenever the tier disclosed
+    `ShippedBinary` shape. The baked command IS this tier's provenance; the per-tool
+    SHIP assurance (verified/assurance/tier) is surfaced whenever the tier disclosed
     one — so the ENV report states HOW each shipped tool is anchored across ALL tiers,
     not just binary.
 
@@ -111,15 +108,14 @@ def _shipped_binary_entry(step: dict) -> dict:
     was run in the SHIPPED image (`captured_version`), and stays None when no probe
     was declared or the probe came back empty. None means "we did not capture it" —
     a reader must render it as absence, never scrape a number out of a banner to fill
-    the hole. The probe is what un-entangled the version from the evidence command:
-    an R package's version used to ride along in whatever the evidence happened to
-    print, so passing a stronger `functional_check` silently cost you the version.
+    the hole. The dedicated probe keeps the version un-entangled from the evidence
+    command: a version scraped from whatever the evidence happens to print means a
+    stronger `functional_check` silently costs the version.
 
     `tool` (the PATH command) and `install_command` (the literal baked shell line)
-    used to share one `command` key with opposite meanings across the two producers,
-    which is what rendered `bcftools` inside a <pre> shell block under the label
-    "tool". `purpose` stays as the human label; `step["tool"]` is now carried from the
-    generator that computed it (audit 2026-07-16)."""
+    are DISTINCT keys with distinct meanings — one shared key renders a shell line
+    under the label "tool". `purpose` is the human label; `step["tool"]` is carried
+    from the generator that computed it."""
     prov = step.get("provenance") or {}
     return _ShippedBinary(
         tool=step.get("tool") or "",
@@ -198,7 +194,7 @@ def freeze(
     window, and the deliverables (ENV.html / attestation / recipe) are written by
     the detached run exactly as they would be in-process.
     """
-    # A1 failsafe (Apollo3 stress, batch-2): disk pre-check. 4 parallel freezes
+    # Disk-space failsafe: pre-check before building. Parallel freezes
     # piled buildkit intermediates to 80 GB / 92% capacity → infinite retry loop.
     # Refuse here with a diagnostic that names the cleanup command, BEFORE any
     # cache lookup or docker work. The threshold IS the concurrency safety:
@@ -259,14 +255,11 @@ def freeze(
     draft = _draft_for_merge
     _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
     effective_accel = _ms._synth_accelerator_from_request(accel, cuda_version, _draft_accel)
-    # B7 fix (verification-driven, 2026-05-27): fill version slots from the
-    # install record BEFORE computing the cache key. Pre-fix, parsed=[(busco,None)]
-    # fed request_key (yielding `busco|linux/amd64|none`) but the adopt lookup
-    # used the install-record-filled version separately. Two distinct envs
-    # (busco==6.0.0 vs busco==5.8.3) collided on ONE cache key, so the second
-    # freeze returned the FIRST's image — a wrong-version trust violation
-    # isomorphic to the original B1, surfaced at a higher layer. Filling here
-    # makes the cache key reflect what we'll actually adopt/build.
+    # Fill version slots from the install record BEFORE computing the cache key,
+    # so the key reflects what we'll actually adopt/build. An unfilled slot
+    # (parsed=[(busco,None)] → `busco|linux/amd64|none`) lets two distinct envs
+    # (busco==6.0.0 vs busco==5.8.3) collide on ONE cache key, and the second
+    # freeze would return the FIRST's image — a wrong-version trust violation.
     parsed_filled = _ms._resolve_versions_from_install_record(parsed, draft)
     # D5 + D6 fix: request_key now folds in gated, accelerator-policy hash, and
     # the licenses set hash so policy-distinct artifacts don't collide on the cache
@@ -279,11 +272,10 @@ def freeze(
 
     # Re-anchor the cache against reality: a hit is a CLAIM until we confirm the
     # image is still present in the docker daemon. An evicted image (or one a user
-    # `docker rmi`'d) was treated as a hit before — handing back a stale record,
-    # no rebuild, no report re-render. lookup_anchored turns that into a MISS so
+    # `docker rmi`'d) must not count as a hit — that hands back a stale record with
+    # no rebuild and no report re-render. lookup_anchored turns it into a MISS so
     # the build path runs, materializes a fresh image, and re-renders every
-    # deliverable. (The container-native analog of the I8/I11 anchoring the host
-    # path used to do for binaries / source clones.)
+    # deliverable.
     def _docker_image_present(ref: str) -> bool:
         r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
                            capture_output=True, text=True)
@@ -329,7 +321,7 @@ def freeze(
                        "report states the version actually shipped."),
         }}
     if cached:
-        # Orientation pointer (Phase-3 Piece B) on the REUSE-BY-HASH branch too —
+        # Orientation pointer on the REUSE-BY-HASH branch too —
         # a cache hit is still a freeze, so current_state must read ENV_FROZEN for
         # it. Best-effort; a pointer hiccup never fails a freeze.
         if pipeline_id:
@@ -423,20 +415,16 @@ def freeze(
         # ADOPT — pure-conda env with a published biocontainer. The biocontainer
         # IS the artifact (provenance = its digest), so no conda-lock of our env.
         mode, image, image_digest, tarball = "adopt", adopt["image_by_digest"], adopt["digest"], None
-        # ONE CONTRACT, not two (audit 2026-07-16 Tier 2). This branch used to call
-        # `check_adopt`, a mode-aware variant that asserted BUILT + POLICY_CLEAN and
-        # deliberately skipped VALIDATED_IN_IMAGE — "the biocontainer's bytes are trusted
-        # by their published digest". That answered the wrong question. The risk was never
-        # that bioconda lies about its own bytes; it is that WE bound the wrong image, and
-        # only running the tool catches that. Adopt is also the DEFAULT for pure-conda, i.e.
-        # the commonest env this system produces, so the one unvalidated path was also the
-        # busiest one: `samtools=1.21` shipped with `verifications: []` and two sealed
-        # workflows rest on it.
+        # ONE CONTRACT, not two. Adopt must NOT skip VALIDATED_IN_IMAGE on the theory
+        # that the biocontainer's bytes are trusted by their published digest — that
+        # answers the wrong question. The risk is never that bioconda lies about its
+        # own bytes; it is that WE bound the wrong image, and only running the tool
+        # catches that. Adopt is also the DEFAULT for pure-conda, i.e. the commonest
+        # env this system produces, so it least of all can be the unvalidated path.
         #
         # Evidence is generated + run against the adopted image further down (where the
         # image has already been pulled for the SBOM), and check_build — the SAME contract
-        # the build path answers to — is applied to the completed record. check_adopt is
-        # deleted; its I13 clause was dead anyway, since `can_adopt` requires `not gated`.
+        # the build path answers to — is applied to the completed record.
         hpc = _ms._freeze.apptainer_delivery(mode="adopt", sif_name=sif,
                                          image_by_digest=adopt["image_by_digest"])
         # stays "unknown" until the in-image evidence has actually run (below), at which
@@ -475,7 +463,7 @@ def freeze(
             # source, or any honesty-contract violation (incl. I13: a gated build needs
             # licenses[]). Surface it verbatim.
             #
-            # A2 failsafe (Apollo3 stress, batch-2): when the failure happened INSIDE
+            # Failure-path failsafe: when the failure happened INSIDE
             # docker (stages: start/declare/install/freeze — pre-docker refusals like
             # resolve/route/map_install leave no layers), it may have parked
             # intermediate buildkit layers that compound across freezes. Best-effort
@@ -549,19 +537,15 @@ def freeze(
     # platform. `resolved: False` (image somehow not inspectable) records nothing
     # rather than guessing, and the clause reads that absence as UNOBSERVED.
     _arch = _ms._locus.image_arch(image)
-    # And the same for the GPU claim — UNCONDITIONALLY, since F17.
-    #
-    # This used to probe only when a claim was made, reasoning that
-    # POLICY_CLEAN.accelerator_observed reads a `none` claim as NOT_APPLICABLE so the
-    # observation had nothing to serve. The reasoning assumed the comparison clause is
-    # the observation's only consumer. It is not: the ENV report is, and a reader
-    # opens it to decide whether to request a GPU node. Measured on a real
-    # `ontresearch/dorado` adopt — no claim, so no probe, so the page said "the
-    # artifact claims no GPU capability" while its own package list carried the whole
-    # CUDA 12.8 runtime.
+    # And the same for the GPU claim — UNCONDITIONALLY, never only when a claim is
+    # made. The comparison clause (POLICY_CLEAN.accelerator_observed reads a `none`
+    # claim as NOT_APPLICABLE) is not the observation's only consumer: the ENV report
+    # is, and a reader opens it to decide whether to request a GPU node. Skipping the
+    # probe on a no-claim image lets the page say "the artifact claims no GPU
+    # capability" over an image whose own package list carries a whole CUDA runtime.
     #
     # One `docker run` per freeze against a build that already takes minutes. Cheap
-    # for a fact the artifact currently cannot state at all.
+    # for a fact the artifact could not otherwise state at all.
     _accel = _ms._locus.image_accelerator(image)
     record = _ms._freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
@@ -640,18 +624,16 @@ def freeze(
             record["resolved_packages"] = record.get("resolved_packages", [])
             record["system_packages"] = record.get("system_packages", [])
 
-        # VALIDATED_IN_IMAGE for the ADOPT path (audit 2026-07-16 Tier 2). Adopt was the
-        # ONE path that shipped an env nobody had ever run a tool in: check_adopt
-        # deliberately skipped validation and `samtools=1.21` registered with
-        # `verifications: []` — while the ENV report and the attestation carried it as a
-        # solved component, and two sealed workflows depend on it. "The biocontainer's
-        # bytes are trusted by their published digest" answers the wrong question: the risk
-        # was never that bioconda lies, it is that WE adopted the wrong image (a mulled tag
-        # resolving to a package set that doesn't contain the tool). Running the evidence
-        # is what catches that, and it is the same probe the build path uses.
+        # VALIDATED_IN_IMAGE for the ADOPT path. An adopted env must not ship with
+        # `verifications: []` — a tool nobody has ever run in it. "The biocontainer's
+        # bytes are trusted by their published digest" answers the wrong question: the
+        # risk is never that bioconda lies, it is that WE adopted the wrong image (a
+        # mulled tag resolving to a package set that doesn't contain the tool). Running
+        # the evidence is what catches that, and it is the same probe the build path
+        # uses.
         #
         # Affordable: the pull is already paid for by the SBOM reads above, and the
-        # marginal cost is ~0.25s per tool (measured). The fast path stays fast.
+        # marginal cost is ~0.25s per tool. The fast path stays fast.
         record["verifications"] = _validate_tools_in_image(
             image, _adopt_platform, [n for n, _ in parsed], evidence=evidence)
         # REFUSE, never degrade, on caller-authored evidence that proves nothing —
@@ -682,7 +664,7 @@ def freeze(
         # authoritative), so it takes the same value the build path records.
         record["validation_locus"] = _ms._locus.detect_locus(_adopt_platform)["locus"]
 
-    # IDENTITY DISCLOSURE (audit #8): what each requested tool says it IS, read from the
+    # IDENTITY DISCLOSURE: what each requested tool says it IS, read from the
     # registry the shipped package actually came from (matched via the in-image SBOM).
     # Agent-asserted, best-effort — a probe miss yields self_description=None and NEVER
     # fails a freeze; the record's ToolIdentity shape is enforced at register.
@@ -704,10 +686,10 @@ def freeze(
         env_recipe_dict["tool_identities"] = record["tool_identities"]
         # Carry the OBSERVED SBOM (what actually shipped) beside conda_deps (the rebuild
         # INPUTS) so the machine recipe is self-describing about its installed contents,
-        # not only how to reconstruct them (audit 2026-07-19, W4). Named `resolved_packages`
-        # to match the EnvCache record's OBSERVED-closure key — NOT `installed_packages`,
-        # which would collide with `install_steps[].installed_packages` (the parsed REQUEST
-        # pin), the exact ambiguity the 2026-07-20 hunt flagged. Descriptive; rebuild ignores.
+        # not only how to reconstruct them. Named `resolved_packages` to match the
+        # EnvCache record's OBSERVED-closure key — NOT `installed_packages`, which would
+        # collide with `install_steps[].installed_packages` (the parsed REQUEST pin).
+        # Descriptive; rebuild ignores.
         env_recipe_dict["resolved_packages"] = record.get("resolved_packages") or []
         env_recipe_dict["system_packages"] = record.get("system_packages") or []
 
@@ -743,7 +725,7 @@ def freeze(
                        violation_count=len(contract.violations),
                        verifications=record.get("verifications"))
     _ms._env_cache.register(rkey, record)
-    # Orientation pointer (Phase-3 Piece B): tie this frozen env back to its draft
+    # Orientation pointer: tie this frozen env back to its draft
     # so current_state re-earns ENV_FROZEN. Best-effort; never fails a freeze.
     if pipeline_id:
         try:
@@ -755,9 +737,8 @@ def freeze(
     # the human env report (HTML headline + Markdown for diff/parse) + a standard
     # in-toto/SLSA provenance attestation. Views — never block a good freeze on a
     # render error.
-    # The .md renderer was retired in batch-3 (the .html is the canonical Layer-1
-    # deliverable; .md was a redundant view that only existed during the AUDIT#2
-    # phase to ease grep-based diff). Two artifacts now: ENV.html + attestation.json.
+    # Two view artifacts: ENV.html (the canonical Layer-1 deliverable) +
+    # attestation.json.
     report_html_path = attestation_path = None
     reports_dir = _workspace.reports_dir()
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -851,13 +832,10 @@ def verify_env_recipe(recipe_path: str) -> dict:
       • LOCAL DETERMINISM / CONVERGENCE — every layer that is actually re-executed yields
         the same content_digest.
     IT DOES NOT PROVE THE CONDA SOLVE CONVERGED. When the recipe carries a `conda_lock`
-    (all 12 container-native recipes in the corpus do, at 19–61 KB apiece) the replay runs
-    `pixi install --locked` — no solve, no channel consultation — so that layer is
-    identical BY CONSTRUCTION. This docstring used to claim the opposite in as many words
-    ("the conda layer is RE-SOLVED (not cheated from a cached lock), so a match means the
-    solve converged"), which pointed the reader at the one layer that was never re-derived.
-    Replaying the lock is the right design — it is what makes the rebuild immune to
-    bioconda drift — but it is not evidence.
+    the replay runs `pixi install --locked` — no solve, no channel consultation — so that
+    layer is identical BY CONSTRUCTION. Replaying the lock is the right design — it is
+    what makes the rebuild immune to bioconda drift — but it is not evidence that the
+    solve converges.
 
     It also does NOT prove cross-machine reproducibility (different base cache / network /
     docker) or independent-party tamper-evidence — those are this SAME rebuild run
@@ -890,12 +868,10 @@ def verify_env_recipe(recipe_path: str) -> dict:
         pull = subprocess.run(["docker", "pull", img], capture_output=True, text=True, timeout=1800)
         # The REGISTRY MANIFEST digest — the thing `expected` actually is (an adopt's
         # content_digest is the biocontainer's published manifest digest, visible right
-        # there in `adopt_image: repo@sha256:…`). This read `{{index .Id}}`, the daemon's
-        # LOCAL content id, and matched only because this project's dev Mac runs the
-        # containerd snapshotter, where the two coincide. On a classic overlay2 daemon
-        # `.Id` is the config blob digest, so this branch reported "recipe not reproduced"
-        # for EVERY adopt recipe, for every normal user — a verification tool that passed
-        # by accident of one machine's docker config (audit 2026-07-16 Tier 6).
+        # there in `adopt_image: repo@sha256:…`). NEVER the daemon's LOCAL `{{.Id}}`:
+        # under the containerd snapshotter the two coincide, but on a classic overlay2
+        # daemon `.Id` is the config blob digest — a comparison against it passes or
+        # fails by accident of one machine's docker config.
         got = _ms._container_build.registry_manifest_digest(img)
         match = bool(expected) and got == expected
         rf = dict(success=pull.returncode == 0, content_digest_match=match,
@@ -1000,8 +976,7 @@ def generate_user_guide(
     )
     if write:
         # A SEALED spec carries workflow_name, not pipeline_name — reading only
-        # the latter wrote every sealed guide to the literal "pipeline.GUIDE.md"
-        # (measured 2026-09-14).
+        # the latter writes every sealed guide to the literal "pipeline.GUIDE.md".
         stem = s.get("workflow_name") or s.get("pipeline_name") or "pipeline"
         out = _workspace.reports_dir() / f"{stem}.GUIDE.md"
         out.parent.mkdir(parents=True, exist_ok=True)

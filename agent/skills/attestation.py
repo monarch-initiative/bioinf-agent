@@ -90,23 +90,22 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
     # this artifact actually earned — comes from `evaluate_build`, the same evaluation that
     # gated the freeze.
     #
-    # This used to be a literal list on the build branch (`["BUILT", "VALIDATED_IN_IMAGE",
-    # "POLICY_CLEAN"]`) and a hand-written re-derivation on the adopt branch ("append
-    # VALIDATED_IN_IMAGE if there is any evidence"). Two problems, and the second is the
-    # one that matters: the adopt branch was a SECOND implementation of "did this clause
-    # examine anything", so the document a downstream verifier consumes decided honesty by
-    # its own rules rather than by the contract's. A hardcoded guarantee is a claim nothing
-    # can falsify — the strongest form of a report that cannot lie being a report that
-    # never looked. Now a clause appears here only if it was CHECKED, and `not_applicable`
+    # Never a literal list per branch, and never a hand-written re-derivation ("append
+    # VALIDATED_IN_IMAGE if there is any evidence"): that is a SECOND implementation of
+    # "did this clause examine anything", and it lets the document a downstream verifier
+    # consumes decide honesty by its own rules rather than by the contract's. A hardcoded
+    # guarantee is a claim nothing can falsify — the strongest form of a report that
+    # cannot lie being a report that never looked. A clause appears here only if it was
+    # CHECKED, and `not_applicable`
     # / `unobserved` clauses are carried explicitly beside it rather than dropped, because
     # a verifier that sees only the earned list cannot tell a short list from a full one.
     # A clause earns a place in `honesty_contract` only if it (a) establishes ASSURANCE
     # — WELL_FORMED records what shipped, it guarantees nothing, so it belongs in the
     # coverage block, not the guarantee list; (b) reached a VERDICT — `not_applicable`
     # counts (no accelerator claimed IS the policy answer), `unobserved` never does; and
-    # (c) emitted NO violation. (c) is not hypothetical: `CHECKED` means the clause
-    # LOOKED, not that it liked what it saw, and a first cut of this derivation listed a
-    # record's malformed `shipped_binaries` as a guarantee it had just failed.
+    # (c) emitted NO violation. (c) is load-bearing: `CHECKED` means the clause LOOKED,
+    # not that it liked what it saw — without (c), a record's malformed
+    # `shipped_binaries` lists as a guarantee it has just failed.
     from agent.skills.env_honesty import (ASSURANCE, CHECKED, NOT_APPLICABLE, UNOBSERVED,
                                           evaluate_build)
     _contract = evaluate_build(r)
@@ -135,12 +134,12 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
         "failed": sorted(_failed),
     }
 
-    # WHAT WAS THIS BUILT FROM? For the two authors' paths the answer used to be nowhere in
-    # the document: externalParameters carried {requested_tools, platform, conda_specs}, and
-    # an authors-dockerfile env has NO conda specs — so the provenance said "build_method:
+    # WHAT WAS THIS BUILT FROM? For the two authors' paths the answer must be IN the
+    # document: an authors-dockerfile env has NO conda specs, so without the
+    # repo/commit/recipe/build-args the provenance would say "build_method:
     # authors-dockerfile" without saying WHOSE Dockerfile, at which commit. SLSA's
-    # externalParameters is exactly the slot for inputs the requester controlled, and the
-    # repo/commit/recipe/build-args are precisely that. Emitted only when present: a key
+    # externalParameters is exactly the slot for inputs the requester controlled, and
+    # these are precisely that. Emitted only when present: a key
     # whose value is a fabricated blank is worse than an absent key (the ShippedBinary rule).
     ds = r.get("dockerfile_source") or {}
     source: dict = {}
@@ -189,13 +188,13 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # …and what the shipped image ACTUALLY carries, read off the image at
                 # freeze. The pair is the point: `accelerator` is the submitter's
                 # claim and travels as one, while this is the observation the
-                # contract checked it against. A verifier that saw only the claim
-                # could not tell a GPU env from a record that says it is one — which
-                # is exactly what a cuda claim over a CPU-only image used to be.
+                # contract checked it against. A verifier that sees only the claim
+                # cannot tell a GPU env from a record that merely says it is one —
+                # a cuda claim over a CPU-only image.
                 # Absent when nothing looked, never blanked to {} (see freeze_record).
                 **({"image_accelerator": r["image_accelerator"]}
                    if r.get("image_accelerator") is not None else {}),
-                # IDENTITY DISCLOSURE (audit #8): each requested tool's OWN self-
+                # IDENTITY DISCLOSURE: each requested tool's OWN self-
                 # description, read at freeze from the registry the shipped package
                 # came from. AGENT-ASSERTED, not a verified capability — it lives in
                 # internalParameters beside the other declared (license/accelerator)
@@ -203,7 +202,7 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 # downstream verifier reads it to catch a wrong-domain adoption; it
                 # gates nothing. Pass-through: register validated the ToolIdentity shape.
                 "tool_identities": r.get("tool_identities") or [],
-                # VERSION DIVERGENCE (audit 2026-07-19, W5): requested ≠ OBSERVED
+                # VERSION DIVERGENCE: requested ≠ OBSERVED
                 # installed, per tool. Derived from resolvedDependencies vs the request
                 # via the ONE shared divergence check the ENV report + list_installed
                 # also read, so a downstream verifier sees the same mismatch the human
@@ -222,9 +221,8 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "startedOn": r.get("created_at", ""),
             },
             "byproducts": [b for b in [
-                # The Layer-1 deliverable is the HTML env report. The .md sibling
-                # was retired in batch-3 (redundant view of the same pure-over-
-                # record content); .html stays as the canonical human surface.
+                # The Layer-1 deliverable is the HTML env report — the canonical
+                # human surface.
                 {"name": "env-report", "mediaType": "text/html",
                  "uri": f"env_reports/{r.get('name','env')}.ENV.html"},
                 {"name": "conda-lock", "uri": r.get("conda_lock")} if r.get("conda_lock") else None,

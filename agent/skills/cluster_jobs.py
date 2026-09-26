@@ -97,11 +97,10 @@ def classify_sacct_row(row: dict) -> tuple[str, str]:
     """(verdict, human reason) for one sacct row: RUNNING / SUCCEEDED / DIED.
 
     THE STATE DECIDES, NOT THE EXIT CODE. This is the whole point of the
-    function, and it is a fix, not a preference. The poller used to read State
-    only to test terminality and then take `int(ExitCode.split(':')[0]) == 0` as
-    the verdict — but SLURM reports a signal death as `0:<signal>`, so the rc is
-    ZERO for every job the scheduler itself killed. Measured against these very
-    parsers, six of eight death shapes took the success path:
+    function, not a preference: SLURM reports a signal death as `0:<signal>`,
+    so the rc is ZERO for every job the scheduler itself killed, and a verdict
+    taken from `int(ExitCode.split(':')[0]) == 0` sends six of these eight
+    death shapes down the success path:
 
         FAILED        0:9     SIGKILL (a cgroup OOM on a cluster that does not
                               account OUT_OF_MEMORY) — the sharpest case
@@ -111,8 +110,8 @@ def classify_sacct_row(row: dict) -> tuple[str, str]:
         NODE_FAIL     0:0     the node died under it
         PREEMPTED     0:0     preempted
 
-    Only `FAILED 1:0` — a job whose TOOL exited non-zero — was caught, because
-    that is the one death that happens to route through the rc.
+    Only `FAILED 1:0` — a job whose TOOL exited non-zero — is the one death
+    that happens to route through the rc.
 
     A killed job is not harmless just because nothing downstream noticed. It
     dies mid-write, so its outputs are TRUNCATED rather than absent: a TIMEOUT
@@ -270,9 +269,9 @@ def cluster_job_status(project_name: str,
         # Each row STATES its verdict. This is the only window a PRODUCTION run
         # has — submit_workflow_job is submit-and-document, so nobody polls on
         # the caller's behalf and nobody classifies for them. Handing back a raw
-        # `TIMEOUT | 0:0` row invites exactly the reading the poller used to
-        # make: rc is zero, so the job must be fine. Additive (the raw columns
-        # are untouched), so every existing consumer is unaffected.
+        # `TIMEOUT | 0:0` row invites the wrong reading — rc is zero, so the job
+        # must be fine. Additive (the raw columns are untouched), so consumers
+        # of the raw shape are unaffected.
         for row in jobs:
             verdict, why = classify_sacct_row(row)
             row["verdict"] = verdict
@@ -398,18 +397,17 @@ def _parse_max_rss_mb(rss: str) -> Optional[float]:
     """Parse SLURM's MaxRSS (`123456K` / `1.5G`) into MB, or None when sacct accounted
     NOTHING (empty / any spelling of zero / unparseable).
 
-    None vs 0.0 is the honesty distinction (audit 2026-07-16): every "we don't know" case
-    used to collapse to 0.0, which is indistinguishable from a real observation of zero —
-    and no process that actually ran has a zero peak RSS. On a cluster without cgroup
-    memory accounting that fabricated a 0.0 that I7 then sealed as honest cost data.
+    None vs 0.0 is the honesty distinction: collapsing "we don't know" to 0.0 makes
+    it indistinguishable from a real observation of zero — and no process that
+    actually ran has a zero peak RSS, so on a cluster without cgroup memory
+    accounting that fabricates a 0.0 that I7 then seals as honest cost data.
     Callers must translate None into an explicit `sacct_error`, never into a number.
 
     The zero test is NUMERIC and happens after the parse, because a cluster with no
-    memory accounting writes `0K` / `0M` / `0.00M`, not `0`. The first cut of this fix
-    compared string literals (`"" | "0"`), so `0K` — the shape a real SLURM actually
-    emits — still parsed to 0.0 with no error marker and sealed straight through I7:
-    the very defect this function exists to close, surviving in its own fix. Compare
-    the value, never its spelling."""
+    memory accounting writes `0K` / `0M` / `0.00M`, not `0`. A string-literal
+    comparison (`"" | "0"`) accepts `0K` — the shape a real SLURM actually emits —
+    and parses it to 0.0 with no error marker, sealing straight through I7 the very
+    defect this function exists to close. Compare the value, never its spelling."""
     if not isinstance(rss, str) or not rss.strip():
         return None
     rss = rss.strip()
@@ -511,11 +509,11 @@ def cluster_job_resources(project_name: str,
         # last row carrying a REAL MaxRSS; if none, fall back to the
         # job-summary row's Elapsed-only evidence.
         #
-        # "Real" is decided by the parser, not by string equality: this used to read
-        # `!= "0"`, which accepted `0K` — the spelling a cluster with no cgroup memory
-        # accounting actually emits — and promoted that row to authoritative, handing
-        # I7 a fabricated zero. One definition of "did sacct measure this?", and it
-        # lives in _parse_max_rss_mb.
+        # "Real" is decided by the parser, not by string equality: `!= "0"` accepts
+        # `0K` — the spelling a cluster with no cgroup memory accounting actually
+        # emits — and promotes that row to authoritative, handing I7 a fabricated
+        # zero. One definition of "did sacct measure this?", and it lives in
+        # _parse_max_rss_mb.
         batch = next((r for r in reversed(rows)
                       if _parse_max_rss_mb(r["max_rss"]) is not None), rows[-1])
         summary = rows[0]

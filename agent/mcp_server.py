@@ -31,8 +31,7 @@ from pydantic import BeforeValidator
 # MCP wire coercion — some MCP clients wire-encode array arguments as JSON
 # strings (e.g. pip_flags arrives as '["--no-binary", ":all:"]' instead of
 # ["--no-binary", ":all:"]). FastMCP's Pydantic validator refuses
-# string-when-list-expected, dropping the call. The Batch-2 stress campaign
-# hit this on `pip_flags` and `licenses`. We coerce at the parameter boundary
+# string-when-list-expected, dropping the call. We coerce at the parameter boundary
 # so the primitive's contract stays list[str] regardless of transport quirks.
 # (Symmetric with how Pydantic ships BeforeValidator for boundary coercion.)
 # ---------------------------------------------------------------------------
@@ -122,20 +121,17 @@ _env_cache      = _freeze.EnvCache(workspace.reports_dir() / "_env_cache.json")
 # Reap stale PID files from prior agent sessions whose owning process has
 # already exited. Living services owned by other processes are left alone.
 #
-# N5 fix (batch-3): the reaper used to run at MODULE-IMPORT time, which meant
-# the W1 job_runner subprocess (which imports the tool it was asked to run)
-# also ran it on startup — and `start_service` writes the PID of the
-# nohup-backgrounded `bash` wrapper (via `echo $!`), NOT the daemon PID that
-# the wrapper spawned. By the time the freeze subprocess imports this module,
-# the wrapper bash has often exited (mongod --fork returned, bash unwound),
-# so `os.kill(wrapper_pid, 0)` raises ProcessLookupError and the reaper
-# deletes the PID file out from under the still-running daemon. Then the
-# parent's stop_service() finds no PID file and orphans the real daemon.
-#
-# Fix: only reap in the actual MCP-server process (the __main__ entrypoint).
-# Any other importer (a detached job_runner, tests, ad-hoc tooling) keeps its
-# hands off the parent's service registry. The reaper still runs once at
-# server startup — just not in every subprocess that imports this module.
+# ONLY the actual MCP-server process (the __main__ entrypoint) reaps — never
+# module import. `start_service` writes the PID of the nohup-backgrounded
+# `bash` wrapper (via `echo $!`), NOT the daemon PID the wrapper spawned, and
+# the wrapper often exits while the daemon lives (mongod --fork returns, bash
+# unwinds). A reaper running in every importer — e.g. a detached job_runner
+# subprocess, which imports the tool it was asked to run — hits
+# ProcessLookupError on the wrapper PID, deletes the PID file out from under
+# the still-running daemon, and leaves the parent's stop_service() nothing to
+# find: the real daemon is orphaned. Any importer other than the server
+# (job_runner, tests, ad-hoc tooling) keeps its hands off the parent's service
+# registry; the reaper runs once at server startup.
 def _reap_orphan_service_pids() -> None:
     r = EnvManager.cleanup_orphan_service_pids()
     if r.get("removed"):
@@ -338,12 +334,12 @@ def _synth_accelerator_from_request(accel: str, cuda_version: str,
 
 
 # ---------------------------------------------------------------------------
-# Disk failsafe — Apollo3 stress (2026-05-27) cascade mitigation.
+# Disk failsafe.
 #
-# Apollo3 stress: 4 parallel subagent freezes → docker buildkit's intermediate
-# layers piled up to 80 GB → host disk at 92% → builds entered an infinite
-# retry loop on 'no space left on device', wedging the orchestrator. Two
-# defensive layers below:
+# Parallel freezes pile up docker buildkit's intermediate layers (tens of GB),
+# and once the host disk nears full, builds enter an infinite retry loop on
+# 'no space left on device' and wedge the orchestrator. Two defensive layers
+# below:
 #
 #   A1 disk pre-check (_check_disk_failsafe): refuse fast at freeze() entry
 #       when free disk is below a configurable threshold. Names the cleanup
@@ -599,10 +595,8 @@ def _watch_and_exit_on_change():
 # RELOAD CORRECTNESS: importlib.reload(mcp_server) creates a fresh `mcp`
 # above; without cascading the reload into mcp_tools, the cached submodules'
 # decorators stay attached to the OLD mcp and the new mcp ships with zero
-# tools. test_invariants.py::test_orphan_service_pid_reaper_not_at_import
-# (N5) is the call site that surfaced this. Loop below: if the package is
-# already loaded, reload each submodule so its @mcp.tool() decorators
-# re-fire on the new `mcp`.
+# tools. Loop below: if the package is already loaded, reload each submodule
+# so its @mcp.tool() decorators re-fire on the new `mcp`.
 # ---------------------------------------------------------------------------
 if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
@@ -618,12 +612,10 @@ from agent import mcp_tools  # noqa: E402,F401  (must be after all module-level 
 #
 # The reload cascade above re-registers every tool from its docstring, producing FRESH
 # tool objects with fresh descriptions. `from agent import mcp_tools` on the line above
-# does not re-execute that package's __init__ when it is already in sys.modules, so the
-# guardrails were composed exactly once, at first import, and silently disappeared on
-# every reload — which is the default in this repo (BIOINF_MCP_AUTO_RELOAD=1). Caught by
-# tests/test_tool_surface.py, which reads descriptions back through the public
-# `list_tools()`: two of the eleven were missing under the full suite and none were
-# missing when the file ran alone.
+# does not re-execute that package's __init__ when it is already in sys.modules, so
+# guardrails composed only at first import silently disappear on every reload — and
+# reload is the default here (BIOINF_MCP_AUTO_RELOAD=1). tests/test_tool_surface.py
+# reads descriptions back through the public `list_tools()` to pin this.
 #
 # apply_to is idempotent (it skips a description that already carries the marker), so
 # calling it from both places costs nothing and means neither entry point can lose them.

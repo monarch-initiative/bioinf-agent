@@ -336,14 +336,14 @@ def requested_conda_specs(spec: dict) -> list[str]:
     dependency closure (the engine resolves that; the in-image lock content-addresses
     what was actually got).
 
-    R6 fix (batch-2 stress, 2026-05-27): filter rc!=0 install_steps AND apply
-    move-to-end dedup by package name — mirroring installed_packages's semantics
-    (the canonical inventory view used everywhere else). Pre-fix a failed-then-
-    retried conda install surfaced both entries (potentially with different
-    versions), so the engine got asked to install both — at best a name conflict,
-    at worst the engine picking the failed version. The retry pattern (smart-
-    replace step after a missing-dep fix) is the load-bearing case the R/GAPIT
-    stress hit. install_steps with rc=None pass through (a 'create' step has no
+    Filters rc!=0 install_steps AND applies move-to-end dedup by package name —
+    mirroring installed_packages's semantics (the canonical inventory view used
+    everywhere else). Without both, a failed-then-retried conda install surfaces
+    both entries (potentially with different versions), so the engine gets asked
+    to install both — at best a name conflict, at worst the engine picking the
+    failed version. The retry pattern (smart-replace step after a missing-dep
+    fix) is the load-bearing case. install_steps with rc=None pass through (a
+    'create' step has no
     rc field but also no installed_packages of interest, so this is a no-op for
     them; the conditional explicitly only iterates `tool==conda subcommand==install`)."""
     out: dict[str, str] = {}   # name → 'name=version' / 'name' (move-to-end by name)
@@ -505,12 +505,12 @@ def freeze_record(
         "image_digest":    image_digest,
         "platform":        platform,
         # CANONICAL NAME: `license_gated` — the same key env_honesty._check_license reads
-        # and the same field name on the pydantic model (core_data.PipelineSpec). This used
-        # to be emitted as `gated`, which silently disabled I13 on the ONE path that hands
-        # the cache record straight to check_build (freeze_from_image / the authors' path):
-        # the contract read `license_gated`, the record only had `gated`, so a gated
-        # artifact with no licenses[] registered clean (audit 2026-07-16). One concept,
-        # one name. Records written before this carry `gated` — read via record_is_gated().
+        # and the same field name on the pydantic model (core_data.PipelineSpec). Emitting
+        # it under another spelling (`gated`) silently disables I13 on the ONE path that
+        # hands the cache record straight to check_build (freeze_from_image / the authors'
+        # path): the contract reads `license_gated`, so a gated artifact with no
+        # licenses[] registers clean. One concept, one name. Legacy records carry
+        # `gated` — read via record_is_gated().
         "license_gated":   gated,
         "redistributable": not gated,
         "lock":            lock_path,
@@ -629,12 +629,11 @@ class EnvCache:
         caller rebuilds rather than serving a claim it can no longer support.
 
         The cache spans events (unlike EnvBuild.run(), which verifies on live calls
-        in one pass), so a hit is a claim until re-checked. This used to re-check
-        only image PRESENCE, which made the contract retroactively unenforceable:
-        `samtools=1.21` was registered pre-Tier-2 with `verifications: []`, fails
-        `check_build` today, and was still served as `proven` on every hit — the
-        adopt-path validation gate was live in the code and absent in effect for
-        every env that already existed (audit 2026-07-16).
+        in one pass), so a hit is a claim until re-checked. Re-checking only image
+        PRESENCE would make the contract retroactively unenforceable: a record
+        registered before a gate existed fails `check_build` today yet would be
+        served as `proven` on every hit — a gate live in the code and absent in
+        effect for every env that already exists.
 
         Re-anchoring the FULL contract is what makes a strengthened gate apply to
         artifacts frozen before it existed: a record that can no longer earn its
@@ -668,9 +667,9 @@ class EnvCache:
         """Write a freeze record to the cache — and the ONE place Layer 1 asserts the
         record's SHAPE, the analog of `spec_writer.py`'s `model_validate` for Layer 2.
 
-        This used to be a pure passthrough (`data[key] = record; self._save(data)`),
-        and that is precisely how three producers came to write three key-dialects of
-        `shipped_binaries` that four readers each mis-read differently. Every write
+        Never a pure passthrough (`data[key] = record; self._save(data)`): an
+        unasserted seam is how N producers come to write N key-dialects of
+        `shipped_binaries` that M readers each mis-read differently. Every write
         path — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe` —
         converges here, so a declaration here binds all of them at once.
 
@@ -707,7 +706,7 @@ class EnvCache:
         # Docker daemon), independent of this cache. So Layer 1 needs no analog of
         # the seal write-guard here; Layer-2 provenance is protected at the seal
         # WRITE (workflow_tools._guard_spec_overwrite), where re-sealing over a
-        # DIFFERENT-digest env is the real silent-replacement risk (Phase-3 Piece A).
+        # DIFFERENT-digest env is the real silent-replacement risk.
         data[key] = record
         self._save(data)
         return record
@@ -720,7 +719,7 @@ class EnvCache:
         `register`; patching `register` patches out the contract itself."""
         from agent.models.core_data import shipped_binaries, tool_identities
         shipped_binaries(record)   # raises ValidationError on an undeclared dialect
-        tool_identities(record)    # identity disclosure (audit #8) — same forbid-extras seam
+        tool_identities(record)    # identity disclosure — same forbid-extras seam
 
     def all(self) -> dict:
         return self._load()

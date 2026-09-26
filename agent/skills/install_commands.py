@@ -4,9 +4,9 @@ Install-command generators — per-tier "how to install" knowledge in ONE place.
 The container-native model replaces the freeze-time `_emit_*` translators: each
 generator returns the SHELL COMMAND that installs a long-tail tool IN the build
 container. `ContainerBuild.run()` executes it + proves it; freeze bakes it
-VERBATIM (no translation, no per-tier freeze branch). The knowledge that used to
-live in three places (install primitive + install_method record + _emit_/dispatch)
-now lives here, once.
+VERBATIM (no translation, no per-tier freeze branch). The knowledge lives here,
+once — never split across an install primitive, an install_method record and a
+freeze-side dispatch.
 
 SELF-CONTAINED tiers (here): release binaries, git-source built with the apt C
 toolchain, and the MANUAL tier (the agent records its own ad-hoc commands via
@@ -44,11 +44,10 @@ gone. Names are filtered through `container_build._SAFE_APT_PKG` before reaching
 Dockerfile — the apt line is bare-interpolated into a RUN.
 
 THE JRE VERSION IS SELECTABLE — `jar(java_version=...)`, and the request is OBSERVED,
-not just honoured. Apt's default on the `debian:bookworm-slim` base (container_build.py
-:144 — NOT the ubuntu:22.04 in config/agent_config.yaml, which nothing in the build
-path reads) is Java 17, and Exomiser needs 21. Measured 2026-08-03 in real containers
-on both arches: openjdk-21 has no candidate in bookworm main, security OR backports,
-so no apt package name fixes this. A requested version therefore comes from conda-forge
+not just honoured. Apt's default on the `debian:bookworm-slim` base
+(container_build.BASE_IMAGE) is Java 17, and Exomiser needs 21; openjdk-21 has no
+candidate in bookworm main, security OR backports — on either arch — so no apt
+package name fixes this. A requested version therefore comes from conda-forge
 (`jar_conda_specs` → `openjdk={v}`, solved into pixi.lock), and it is VERIFIED as its
 own in-image row against the openjdk package (`java_version_check`, wired by
 env_freeze) rather than on the jar tool's evidence — which an authored functional
@@ -314,7 +313,7 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
               f"test -f {src}/{binp}",
               f"install -m 0755 {src}/{binp} /usr/local/bin/{wrap}"]
     cmd = "set -eux; " + "; ".join(parts)
-    # N3 (batch-3): wrapper-smoke evidence — INVOKE the binary to prove it
+    # N3: wrapper-smoke evidence — INVOKE the binary to prove it
     # runs, not just that the file exists. A C source build CAN produce a
     # binary that runs into shared-lib failures at exec time; `command -v`
     # passed those cases silently. Chain mirrors release_binary's default.
@@ -338,7 +337,7 @@ def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
         src = f"--git {shlex.quote(git_url)}"
     else:
         src = shlex.quote(crate or name) + (f" --version {shlex.quote(version)}" if version else "")
-    # N3 (batch-3): smoke-test evidence — INVOKE the binary, don't just check
+    # N3: smoke-test evidence — INVOKE the binary, don't just check
     # that the file exists. Cargo's --root produces a binary in /usr/local/bin
     # that's self-contained AT BUILD TIME, but a botched build or a binary
     # with missing dynamic deps would silently pass `command -v`.
@@ -358,7 +357,7 @@ def go(name: str, package: str, *, version: str = "latest", binary_name: str = "
     binp = binary_name or package.rstrip("/").split("/")[-1]
     spec = f"{package}@{version}" if version else package
     return {"command": f"GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}",
-            # N3 (batch-3): same smoke-test treatment as cargo/source/script_repo.
+            # N3: same smoke-test treatment as cargo/source/script_repo.
             "evidence": evidence or (
                 f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
                 f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
@@ -502,9 +501,9 @@ def pip_install_with_flags(name: str, *, version: str = "",
     flag_str = " ".join(shlex.quote(f) for f in flags)
     # `python -m pip install` (not bare `pip install`) because pixi/uv envs
     # don't always put a `pip` binary on PATH — engine pip uses uv. The module
-    # form (P4 fix, verification-driven 2026-05-27) works whenever both python
-    # AND the pip module are in the env (env_freeze.ensure_python_for_pip
-    # declares both when pip_with_flags is non-empty).
+    # form works whenever both python AND the pip module are in the env
+    # (env_freeze.ensure_python_for_pip declares both when pip_with_flags is
+    # non-empty).
     cmd = f"python -m pip install {flag_str} {shlex.quote(spec)}".strip()
     # collapse the double-space when flag_str is empty (defensive — caller
     # should not pass empty flags, but we don't want a malformed command if so)
@@ -559,7 +558,7 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
       1. PURE RUN-BY-PATH (academic norm): a Python/Perl script collection,
          no packaging. Clone → chmod the entry script → /usr/local/bin
          wrapper that execs it (optionally via `interpreter`). No build.
-      2. BUILD + SCRIPT-ENTRY (N2, batch-3): a project that builds compiled
+      2. BUILD + SCRIPT-ENTRY: a project that builds compiled
          assets but is invoked through a script entrypoint (yarn-PnP Node:
          `yarn install && yarn build` then `node dist/main.js`; pip-editable
          + module: `pip install -e .` then `python -m foo`). Pass
@@ -573,9 +572,8 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     Default evidence is wrapper-smoke: `{wrap} --help || {wrap} --version
     || {wrap} -h || command -v {wrap}`. The plain `command -v` fallback used
     to be the ONLY evidence; it passed when the wrapper file existed even
-    if executing it crashed (N3, batch-3 Apollo3: wrapper existed, but
-    `dist/main.js` had never been built, so any actual invocation crashed
-    with MODULE_NOT_FOUND — VALIDATED_IN_IMAGE said pass anyway). Try the
+    if executing it crashed (an unbuilt `dist/main.js` crashes every real
+    invocation with MODULE_NOT_FOUND while `command -v` still passes). Try the
     real invocation first; fall back to `command -v` only when none of the
     standard help/version flags exist (the truly-no-args-no-help case)."""
     clone = f"{_TOOLS}/{name}"
@@ -586,7 +584,7 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
              f"cd {clone}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
-    # OPTIONAL build (N2): runs at the clone dir before the wrapper is written,
+    # OPTIONAL build: runs at the clone dir before the wrapper is written,
     # so the wrapper points at assets the build actually produced.
     if build_command:
         parts.append(build_command)
@@ -595,7 +593,7 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     parts.append(f"printf '#!/bin/sh\\nexec {runline} \"$@\"\\n' > /usr/local/bin/{wrap}")
     parts.append(f"chmod +x /usr/local/bin/{wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    # N3 (batch-3): wrapper-smoke evidence — actually INVOKE the wrapper to
+    # N3: wrapper-smoke evidence — actually INVOKE the wrapper to
     # prove it runs, not just that the file exists. Mirrors release_binary's
     # default. Multiple flag tries so we handle CLIs that use --help vs -h vs
     # --version, and CLIs that exit non-zero on `--help` (some do; the >/dev/
@@ -612,7 +610,7 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     # entry` — same). Without this the build dies `pip: command not found`. The
     # coupling is applied by container_build.run() (wraps in `pixi run bash -c`),
     # correct in the build container AND when the longtail step is baked. node/
-    # yarn (Apollo3) and make/gcc (C tools via the `source` gen) are system
+    # yarn and make/gcc (C tools via the `source` gen) are system
     # toolchains → stay UNcoupled (still on PATH inside/outside pixi run anyway).
     engine_coupled = interpreter in {"python", "python3", "Rscript", "perl"}
     spec = {"command": cmd, "evidence": ev, "tool": wrap,
@@ -620,27 +618,20 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
             "runtime_packages": list(runtime_packages or []),
             "engine_coupled": engine_coupled}
     if evidence:
-        # F10. A caller-supplied `verify_command` runs on the HOST from the clone dir
-        # — `env_manager.py:889` passes `working_dir=share_dir`, and the docstring at
-        # `:771` promises exactly that. The same string arrives here as the IN-IMAGE
-        # evidence and used to execute from the container's default cwd, so one
-        # command was resolved against two roots. For a run-by-path repo the cwd IS
-        # part of how the tool is invoked.
-        #
-        # The cost was not a false green: freeze correctly refused. It was the
-        # DIAGNOSIS. A verify doing `sys.path.insert(0,'HIC_ASSEMBLER'); import
-        # scaffoldToChromosomes` failed on the host with the true cause
-        # (`No module named 'matplotlib'`) and in-image with a path artifact
-        # (`No module named 'scaffoldToChromosomes'`), sending the reader after a
-        # packaging bug in someone else's repo while the real fix — `conda install
-        # matplotlib` — had already been named by the host run and thrown away.
+        # A caller-supplied `verify_command` runs on the HOST from the clone dir
+        # (`env_manager` passes `working_dir=share_dir`, as its docstring promises).
+        # The same string arrives here as the IN-IMAGE evidence and must resolve
+        # against the SAME root: for a run-by-path repo the cwd IS part of how the
+        # tool is invoked, and one command resolved against two roots fails in-image
+        # with a path artifact (`No module named '<tool>'`) that buries the true
+        # cause the host run already named.
         #
         # A WORKDIR, NOT A `cd` PREFIX ON THE STRING. Wrapping the evidence as
-        # `cd /opt/tools/{name} && (…)` was tried first and is a trap: the clone path
-        # CONTAINS THE TOOL NAME, so it satisfies `evidence_shape_violation`'s
-        # word-boundary token rule all by itself. Measured — `python -c "import foo"`
-        # is correctly refused for never naming the tool, and the same string under
-        # that prefix passes. The anti-echo-cheat rule must keep seeing the author's
-        # raw command, so the cwd travels as execution metadata instead.
+        # `cd /opt/tools/{name} && (…)` is a trap: the clone path CONTAINS THE TOOL
+        # NAME, so it satisfies `evidence_shape_violation`'s word-boundary token rule
+        # all by itself — `python -c "import foo"` is correctly refused for never
+        # naming the tool, and the same string under that prefix passes. The
+        # anti-echo-cheat rule must keep seeing the author's raw command, so the cwd
+        # travels as execution metadata instead.
         spec["evidence_workdir"] = clone
     return spec

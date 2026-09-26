@@ -276,17 +276,10 @@ class EnvBuild:
             licenses=self.licenses,
         )
 
-    # `to_cache_record` + `build_or_cached` lived here: a SECOND EnvCache record builder
-    # and a second solve-once entry point, both with zero production callers (only tests).
-    # Deleted (audit 2026-07-16) rather than repaired, because they were actively harmful
-    # to keep:
-    #   - `to_cache_record` OMITTED `verifications`, so it minted precisely the shape that
-    #     fails today's contract — the `samtools` defect, encoded as a constructor. Any
-    #     future path wired to it would have reintroduced the hole structurally.
-    #   - it was the only producer of a third `mode` vocabulary ("container-native", vs
-    #     freeze_record's "adopt"|"build"), which the audit flagged as a latent landmine
-    #     across 5 consumers. The landmine's only producer was dead code; deleting it
-    #     removes the divergence outright instead of "unifying" two spellings.
+    # DELIBERATELY no EnvCache record builder or solve-once entry point here: a second
+    # record builder can mint a shape that skips the contract (e.g. one that omits
+    # `verifications`), and a second `mode` vocabulary alongside freeze_record's
+    # "adopt"|"build" is a landmine for every consumer that branches on it.
     # The live path is freeze() → env_freeze.build_env_image → EnvBuild.run(), which
     # assembles its record in freeze_tools and gates it on check_build there.
 

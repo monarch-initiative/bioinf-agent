@@ -432,26 +432,17 @@ def select_test_data(
     # SOME CRITERIA SAY *WHAT KIND OF DATA*; OTHERS SAY *WHICH INSTANCE*. Only the
     # second kind are preferences.
     #
-    # Every criterion used to be additive with no requirement, and the ONLY refusal was
-    # `score == 0` — which `genome_build`, defaulting to "hg38" and worth 32 points, made
-    # unreachable in practice. Measured 2026-08-07 against the core data on disk:
-    #
-    #   select_test_data(assay_type="nonexistent_zzz")  -> exome / HG00096
-    #   select_test_data(assay_type="chipseq")          -> exome / HG00096
-    #
-    # The second is the one that matters: chipseq is a REAL assay that simply is not on
-    # this disk, and the answer was unrelated exome reads with no indication anything was
-    # substituted. This function is the sole producer of `test_data.content_anchors`, so
-    # the wrong dataset gets sha256-anchored, I8 re-verifies those anchors happily at
-    # seal, and the spec records a green ChIP-seq run performed on exome data. Every gate
-    # downstream is satisfied, because each is true of the data that was actually used.
-    #
     # The split below is by what the caller MEANS. `genome_build` / `assay_type` /
     # `file_format` / `accession` describe the KIND of data a step can consume at all —
     # a pod5 basecaller cannot run on FASTQ, an aligner cannot use the wrong build. Those
-    # are requirements when stated, and a miss is a refusal. `end_type`, `sample` and
-    # `subset` name WHICH of several equivalent datasets to prefer; substituting there is
-    # the useful best-effort behaviour this function was built for, and it is kept.
+    # are requirements when stated, and a miss is a REFUSAL, never a silent substitute:
+    # this function is the sole producer of `test_data.content_anchors`, so a
+    # substituted dataset gets sha256-anchored, I8 re-verifies those anchors happily at
+    # seal, and the spec records a green run performed on unrelated data — every gate
+    # downstream satisfied, because each is true of the data that was actually used.
+    # `end_type`, `sample` and `subset` name WHICH of several equivalent datasets to
+    # prefer; substituting there is the useful best-effort behaviour this function was
+    # built for, and it is kept.
     _REQUIRED = (("genome_build", genome_build), ("assay_type", assay_type),
                  ("file_format", file_format), ("accession", accession))
 

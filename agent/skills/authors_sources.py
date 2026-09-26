@@ -236,20 +236,17 @@ def _default_probe_ghcr_image(owner: str, repo: str, *, tag: str = "latest",
 
     Returns {ref, source} | None, or {"error": ...} when the probe itself failed.
 
-    ASK THE REGISTRY, NOT GITHUB'S INDEX. This used to hit
-    `api.github.com/orgs/{owner}/packages`, which returns **401 for every org on
-    earth** — public ones included — because that REST API requires authentication,
-    period. No token was ever plumbed, and the 401 was swallowed two layers down in
-    `_default_get_text`, so the gate reported "the authors ship no image" when the
-    truth was "we were denied". The top-ranked tier of the reliability gate was 100%
-    dead for every tool, and said so in the voice of a finding (audit 2026-07-16).
+    ASK THE REGISTRY, NOT GITHUB'S INDEX. `api.github.com/orgs/{owner}/packages`
+    returns **401 for every org on earth** — public ones included — because that
+    REST API requires authentication, period; a probe built on it (with the 401
+    swallowed by a fetch helper) reports "the authors ship no image" when the truth
+    is "we were denied".
 
-    It was also the wrong QUESTION. "Is a package listed under this org?" needs auth,
+    It is also the wrong QUESTION. "Is a package listed under this org?" needs auth,
     excludes user-owned repos (`/orgs/` only), and doesn't answer what we need. "Can I
     pull this image?" is answered by the registry's own anonymous token flow, needs no
     credentials for public images — and a private image is one we could never adopt
-    anyway, so a negative there is a true negative. Verified live: `astral-sh/uv` → 200
-    with no token; `api.github.com/orgs/astral-sh/packages` → 401.
+    anyway, so a negative there is a true negative.
     """
     import json
     if not owner or not repo:
@@ -385,8 +382,8 @@ def assess_tool_sources(
     get_text/get_json default to None (not to the functions themselves) so the fallback is
     resolved from module globals at CALL time: that keeps `_default_get_*` monkeypatchable,
     which is what lets a test drive the REAL resolve→assess call path with stubbed I/O
-    instead of replacing this function with a double. Replacing the function is how the
-    call-signature drift of audit 2026-07-16 stayed invisible behind 9 green tests.
+    instead of replacing this function with a double. Replacing the function is how a
+    call-signature drift stays invisible behind green tests.
 
     Returns:
       {
@@ -485,22 +482,22 @@ def assess_tool_sources(
         rec_txt = ("no recipe in the repo, and no image on ghcr.io — route by the registry "
                    "tiers (conda/pip/...) as usual")
     if not author_image and not image_error:
-        # R2 on the SUCCESS path. The probe checks ghcr.io and nothing else
-        # (_default_probe_ghcr_image), yet this verdict used to read "no authoring
-        # image/recipe found" — a claim about every registry on earth, drawn from one. The
-        # error path immediately below has always said this correctly; the clean-negative
-        # path, which is the COMMON one, did not. And the blind spot is not incidental:
-        # bioinformatics publishes on Docker Hub and quay (biocontainers), so the registries
-        # we skip are precisely the ones our tools live on. The gate is green in its own
-        # test case (uv, a Rust tool on ghcr) and blind across the actual domain.
+        # SCOPE THE NEGATIVE TO WHAT WAS PROBED — on the clean-negative path as much
+        # as the error path. The probe checks ghcr.io and nothing else
+        # (_default_probe_ghcr_image), so this verdict must never read "no authoring
+        # image found": that is a claim about every registry on earth, drawn from one.
+        # The blind spot is not incidental: bioinformatics publishes on Docker Hub and
+        # quay (biocontainers), so the registries we skip are precisely the ones our
+        # tools live on.
         rec_txt += (" [NB: the author-image probe covers ghcr.io ONLY — Docker Hub and "
                     "quay.io were NOT checked, and bio tools commonly publish there. 'The "
                     "authors ship no image' is UNCHECKED for those registries, not a "
                     "negative finding]")
     if image_error:
-        # R2 again, at the verdict layer: "we couldn't check" must never be delivered as
-        # "there is nothing there". Every sentence above assumes author_image is a real
-        # observation; when the probe broke, say so in the same breath.
+        # The same rule at the verdict layer: "we couldn't check" must never be
+        # delivered as "there is nothing there". Every sentence above assumes
+        # author_image is a real observation; when the probe broke, say so in the
+        # same breath.
         rec_txt += (f" [NB: the author-image probe FAILED ({image_error}) — 'no author "
                     f"image' here is UNCHECKED, not a negative finding]")
 
@@ -558,20 +555,17 @@ def workflow_gate(repo_url: str, *, ref: str = "", tool: str = "",
         is GitHub-only, and reporting an unrun check as a clean bill of health is the
         absence-rounded-up-into-a-verdict shape this codebase refuses everywhere else.
 
-    WHY THIS FUNCTION EXISTS. `workflow_only` had exactly two readers, both in the router
-    (`resolver.resolve`), which withholds the `synthesis` and `source` tiers entirely and
-    refuses with `artifact_is_a_workflow`. The two MCP tools that IMPLEMENT the synthesis
-    tier — `synth_fetch` / `synth_build` — sit directly behind that router and an agent can
-    call them without passing through it. Measured 2026-08-07 against the live repo:
-
-        synth_fetch("https://github.com/nf-core/rnaseq")
-          -> outcome: proven, 19 files, 66,816 chars
-          -> top-ranked "most authoritative recipe": .devcontainer/setup.sh
-          -> main.nf in the corpus: False;  nextflow.config in the corpus: False
-
-    while `assess_tool_sources` on the SAME repo in the SAME session returned
-    `workflow_only: True` with a manifest naming the engine, both paths, and the
-    pipeline's own name and version. The verdict existed and nothing read it.
+    WHY THIS FUNCTION EXISTS. The router (`resolver.resolve`) reads `workflow_only`,
+    withholds the `synthesis` and `source` tiers entirely and refuses with
+    `artifact_is_a_workflow` — but the two MCP tools that IMPLEMENT the synthesis
+    tier, `synth_fetch` / `synth_build`, sit directly behind that router and an agent
+    can call them without passing through it. Without this check at the tools
+    themselves, `synth_fetch` on a live pipeline repo (nf-core/rnaseq) returns proven
+    — tens of files, ~66 KB — with `.devcontainer/setup.sh` top-ranked as the "most
+    authoritative recipe" and neither main.nf nor nextflow.config in the corpus,
+    while `assess_tool_sources` on the SAME repo returns `workflow_only: True` with a
+    manifest naming the engine, both paths, and the pipeline's own name and version:
+    a verdict that exists with nothing reading it.
 
     The corpus makes it quiet rather than loud. `synthesis.BUILD_SOURCES` has no pattern
     for `main.nf` / `nextflow.config` / `Snakefile`, so `is_build_relevant` filters the
@@ -589,7 +583,7 @@ def workflow_gate(repo_url: str, *, ref: str = "", tool: str = "",
     this the right thing".** So a dev-container shell-prompt tweak gets recorded as the
     install method for an RNA-seq pipeline, signed.
 
-    The verdict is one HTTP walk away and was never taken. This takes it.
+    The verdict is one HTTP walk away. This takes it.
     """
     parsed = parse_owner_repo(repo_url)
     if parsed is None:

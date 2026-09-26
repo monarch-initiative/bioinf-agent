@@ -32,10 +32,10 @@ def _version_of(pkg: dict) -> str:
     in the release tag of `binary_url` — the asset actually downloaded, an install
     fact, so it stays.
 
-    It must NOT scrape the `conda_spec` / `pip_spec` string (audit 2026-07-19, W3):
-    that string is the REQUESTED constraint (`samtools=1.21`, or even `>=1.10`), not
-    what resolved — when conda actually installs it, the resolved version lands in
-    `version`. Returning the spec here printed the requested number as installed on
+    It must NOT scrape the `conda_spec` / `pip_spec` string: that string is the
+    REQUESTED constraint (`samtools=1.21`, or even `>=1.10`), not what resolved —
+    when conda actually installs it, the resolved version lands in `version`.
+    Returning the spec here would print the requested number as installed on
     exactly the tiers that don't capture a version. Absence returns '?' (unknown),
     which the title filters out and the key-packages line shows as unknown — never a
     borrowed request."""
@@ -73,7 +73,7 @@ def _observed_versions(freeze_record: dict) -> dict[str, str]:
     its version only in an in-image banner). THE definition the ENV report uses, so the
     guide cites the same numbers.
 
-    Covers dependencies, not just requested tools (audit 2026-07-20): the guide's
+    Covers dependencies, not just requested tools: the guide's
     key-packages line shows dependency versions too, and those come from a REQUEST-
     derived install-step record (`install_conda_packages` writes the parsed spec pin,
     not conda's resolved output). When the image is available its SBOM is the truth, so
@@ -281,7 +281,7 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
     name = spec.get("pipeline_name") or spec.get("workflow_name") or "pipeline"
     kpkgs = key_packages(spec)
     # When a frozen env is pinned, EVERY version this guide cites must be OBSERVED in the
-    # shipped image, not the requested spec (audit 2026-07-19 W3 / 2026-07-20 hunt): the
+    # shipped image, not the requested spec: the
     # draft's install-step `installed_packages[].version` is the parsed REQUEST pin
     # (install_conda_packages writes the spec, not conda's resolved output), so the title,
     # key-packages line, AND dependency rows would otherwise show the request. The image
@@ -444,9 +444,9 @@ def render_user_guide(spec: dict, freeze_record: Optional[dict] = None,
         L.append(f"- conda env: `{spec['conda_env']}`")
     # `python_version` on the spec is the env-CREATION request (or a config default),
     # never re-observed. When the shipped image is pinned, its SBOM carries the real
-    # python — show THAT (audit 2026-07-20 hunt: the guide printed the requested 3.11
-    # while the image shipped 3.10.14). Without an image there is nothing to contradict
-    # the created python, so the draft value stands.
+    # python — show THAT, never the request (a requested 3.11 can ship as 3.10.x).
+    # Without an image there is nothing to contradict the created python, so the
+    # draft value stands.
     py = obs.get("python") or spec.get("python_version")
     if py:
         L.append(f"- python: {py}")

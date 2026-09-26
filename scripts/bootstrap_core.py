@@ -212,7 +212,7 @@ def install_core_tools(config: dict) -> dict[str, Any]:
     state.pop_for_finalize(pid)
     state.delete_draft_file(pid)
     # The tally states what was OBSERVED — a ✗ above and "N verified" here used
-    # to coexist because this line counted packages, not probe outcomes (CS3).
+    # to coexist because this line counted packages, not probe outcomes.
     probes = (f"{n_ok}/{n_probed} tool probes passed" if n_ok == n_probed
               else f"only {n_ok}/{n_probed} tool probes passed — see ✗ above")
     log(f"core_tools env ready at {env_path} ({n_pkgs} packages installed; {probes})")

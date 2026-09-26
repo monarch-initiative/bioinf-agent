@@ -134,12 +134,10 @@ def absolutize_download_dir(download_local_dir: str) -> Path:
     `resolve()` is lexical for a directory that does not exist yet, which is the normal
     case here: the caller mkdirs it immediately after.
 
-    Public and named rather than inline because the test for it used to read this
-    module's source and assert the literal string
-    `Path(download_local_dir).expanduser().resolve()` appeared somewhere in it. That
-    passes if the expression sits in a comment and fails if someone splits the line —
-    it pins the spelling, not the behaviour. Callable, it can be asked the question
-    that actually matters.
+    Public and named rather than inline so its test can CALL it and assert the
+    behaviour — a source-grep for the literal expression pins the spelling, not the
+    behaviour (it passes if the expression sits in a comment and fails if someone
+    splits the line).
     """
     return Path(download_local_dir).expanduser().resolve()
 
@@ -602,16 +600,14 @@ def run_step_on_cluster(
             "sacct_job_id":    job_id,
             "sacct_rows":      resources.get("sacct_rows", []),
             # sacct measured THIS job on the node that ran it — native by
-            # construction. This was the one producer not stamping authority
-            # (sea-trial F20), so the corpus's only genuinely budgetable
-            # numbers rendered under "unknown authority" with a
-            # recorded-before-capture explanation that was false for them.
+            # construction — and the producer stamps that authority so the
+            # corpus's genuinely budgetable numbers never render as unknown.
             "i7_authoritative": True,
         }
         # A successful sacct QUERY can still carry no MaxRSS (cluster without cgroup
         # memory accounting). cluster_job_resources marks that with a sacct_error;
-        # propagate it so I7 sees it — dropping it here would have let the placeholder
-        # zero seal as an observation (audit 2026-07-16).
+        # propagate it so I7 sees it — dropping it here would let the placeholder
+        # zero seal as an observation.
         if resources.get("sacct_error"):
             resource_usage["sacct_error"] = resources["sacct_error"]
 
@@ -768,8 +764,7 @@ def run_step_on_cluster(
     # Same disclosure as run_pipeline_step's: a key that bound to nothing is a
     # typo, a wrong extension, or a file the job never produced — and silently
     # dropping the caller's stated intent is how a wrong fallback takes over
-    # unannounced (sea-trial F18: a placeholder-keyed dict was ignored without
-    # a word while the joined-suffix fallback failed a valid BAM as text).
+    # unannounced.
     unmatched = sorted(set(output_types) - output_types_used)
 
     return proven(
@@ -799,6 +794,5 @@ def run_step_on_cluster(
 
 
 # Filename → type inference is agent.validators.output_validator.infer_validator_type,
-# imported at the top. A second copy lived here ("the same idea" as run_tools's, per its
-# own docstring) and drifted from it on the joined-vs-last suffix reading — sea-trial
-# F18, a valid `x.sorted.bam` failed as text on the cluster path only. One reading now.
+# imported at the top — ONE reading. A hand-copied version drifts on the
+# joined-vs-last suffix convention and fails valid BAMs as text.

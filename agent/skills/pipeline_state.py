@@ -109,7 +109,7 @@ class PipelineState:
             # No env_status/pipeline_status stamp: they were written 'in_progress' here
             # and NEVER transitioned, so they answered nothing while LOOKING like a
             # state machine. `current_state()` derives the real lifecycle position from
-            # the artifacts on every read instead (Phase-3 Piece B).
+            # the artifacts on every read instead.
             draft = {
                 "pipeline_name":   pipeline_name,
                 "description":     description,
@@ -148,21 +148,17 @@ class PipelineState:
     def get_draft(self, pipeline_id: str) -> Optional[dict]:
         """The draft AS IT IS ON DISK, under a shared (read) lock.
 
-        THE RETURNED DICT IS A COPY. Mutating it changes nothing — go through a mutator.
-        This method used to hand back a live reference into `self._drafts`, so
-        `d = get_draft(pid); d[k] = v` appeared to work and two of this repo's own tests
-        built their fixtures that way. It now re-reads per call, which means such a write
-        is silently discarded. Verified at the time of the change: all 11 production
-        callers are read-only.
+        THE RETURNED DICT IS A COPY. Mutating it changes nothing — the write is
+        silently discarded; go through a mutator.
 
-        THIS USED TO RETURN `self._drafts.get(...)` — a map populated once at
-        `__init__` and never re-read. In one process that is merely a cache; with two
-        it is a LIE, and there are two whenever a primitive runs in a detached child.
-        The measured failure: a background install writes its `install_step` to disk
-        and exits; the long-lived server's map still holds the pre-install draft; and
-        `seal_workflow` reads the draft through THIS method (`workflow_tools.py:399`),
-        so the step is not merely fragile — it is INVISIBLE to the seal. A workflow
-        silently seals without the step that did the work.
+        RE-READ FROM DISK PER CALL, never `self._drafts.get(...)`: a map populated
+        once at `__init__` is merely a cache in one process, and with two processes
+        it is a LIE — and there are two whenever a primitive runs in a detached
+        child. A background install writes its `install_step` to disk and exits; a
+        long-lived server's map would still hold the pre-install draft, and since
+        `seal_workflow` reads the draft through THIS method, that step would be
+        INVISIBLE to the seal — a workflow silently sealed without the step that did
+        the work.
 
         Re-reading also refreshes the cache, so the in-memory copy converges on disk
         instead of drifting further from it with every call.
@@ -393,11 +389,9 @@ class PipelineState:
           - all other cases: the new entry lands at slot N (edit in place).
             Agent is e.g. bumping a version on an already-successful step.
 
-        Either way the prior entry at N is DELETED. N4 (batch-3 Apollo3 fix):
-        pre-fix the smart-append-on-failed path APPENDED without removing the
-        prior entry, leaving both rc=1 and rc=0 records in install_steps —
-        which then surfaced as duplicate installs in the freeze replay and
-        required hand-editing the draft yaml to remove.
+        Either way the prior entry at N is DELETED — appending without removal
+        leaves both the rc=1 and rc=0 records in install_steps and surfaces as
+        duplicate installs in the freeze replay.
         """
         def _apply(draft):
             nonlocal step_data
@@ -408,9 +402,6 @@ class PipelineState:
                 new_rc = step_data.get("returncode")
                 # ALWAYS remove the prior entry at this slot first — the user's
                 # contract: 'replace_step=N means throw away whatever was at N'.
-                # (N4 fix: this previously only happened in the edit-in-place
-                # branch; the smart-replace path appended without removing,
-                # leaving the failed entry behind.)
                 del steps[replace_step - 1]
                 if existing_rc not in (0, None) and new_rc == 0:
                     # Smart-replace: previous attempt failed, new succeeded → new
@@ -473,23 +464,21 @@ class PipelineState:
     ) -> bool:
         """File one output's validation result under the step.
 
-        The key is normalized HERE, by `validation_key`, and not by the caller. Five call
-        sites used to compute it themselves and all five chose `Path(path).name` — so two
-        outputs of one step that share a basename (`/out/a/result.bam` and
-        `/out/b/result.bam`, the ordinary shape of a per-sample fan-out) collided on one
-        key and the SECOND write silently destroyed the first.
+        The key is normalized HERE, by `validation_key`, and not by the caller. A
+        caller-chosen key like `Path(path).name` makes two outputs of one step that
+        share a basename (`/out/a/result.bam` and `/out/b/result.bam`, the ordinary
+        shape of a per-sample fan-out) collide on one key, and the SECOND write
+        silently destroys the first.
 
-        That is not a cosmetic loss. I3's non-overridable clause refuses a seal when any
-        validation record says `passed: False` — and the erased record was the failing one
-        whenever the failure came first. Reproduced: one step, two same-named outputs, the
-        first truncated; the runtime recorded a single `{"passed": true}` and
-        `check_workflow_invariants` returned no I3 violation at all. Evidence that exists
-        and says FAILED cannot be un-failed by an assertion — but it could be overwritten
-        by an unrelated file that happened to share a name.
+        That is not a cosmetic loss. I3's non-overridable clause refuses a seal when
+        any validation record says `passed: False` — and the erased record is the
+        failing one whenever the failure comes first. Evidence that exists and says
+        FAILED cannot be un-failed by an assertion — but it could be overwritten by
+        an unrelated file that happened to share a name.
 
-        A key rule enforced at five call sites is a key rule with five chances to differ;
-        the store owns it now, so passing a bare basename simply files it under that
-        basename and a path files it under the path."""
+        A key rule enforced at every call site is a key rule with N chances to
+        differ; the store owns it, so passing a bare basename simply files it under
+        that basename and a path files it under the path."""
         def _apply(draft):
             steps = draft.get("pipeline_steps", [])
             if step < 1 or step > len(steps):
@@ -757,7 +746,7 @@ def _merge_step_keyed_list(target: list, source: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rail lifecycle — the ONE answer to "where is this pipeline?" (Phase-3 Piece B)
+# Rail lifecycle — the ONE answer to "where is this pipeline?"
 # ---------------------------------------------------------------------------
 #
 # Before this, the answer was SCATTERED across four unlinked places (draft

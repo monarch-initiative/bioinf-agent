@@ -9,8 +9,8 @@ and a `| head -n <cap>`. The path and glob are the only string variables;
 both are `shlex.quote`'d before remote (SSH) invocation, the cap is a
 validated int, and local invocation uses NO subprocess at all.
 
-Two modes (the `file_name_only` contract, revised in menu review 2026-09-18)
-----------------------------------------------------------------------------
+Two modes (the `file_name_only` contract)
+-----------------------------------------
 OVERVIEW (no `path` argument): every authorized dir at ONE level — the
 root + its immediate children, subdirs by name only. This is the cheap
 orientation call and its shape is unchanged.
@@ -20,11 +20,12 @@ subtree, optionally filtered by `name_glob`, capped at `max_entries` per
 call. The cap is a transport bound, not a visibility bound: it is
 caller-raisable without ceiling, and a truncated result SAYS so
 (`truncated: true` + a note naming the remedy) — never silently short.
-Rationale for the revision: on a dir that also grants `exec`, a job
-could emit a recursive listing anyway, so the old declare-every-subdir
-rule bounded the polite path while bounding nothing real; what actually
-needs bounding is a single call hanging a network filesystem or
-returning an unbounded blob, which the cap + glob handle honestly.
+Why the cap, not a declare-every-subdir rule: on a dir that also grants
+`exec`, a job could emit a recursive listing anyway, so per-subdir
+declarations would bound the polite path while bounding nothing real;
+what actually needs bounding is a single call hanging a network
+filesystem or returning an unbounded blob, which the cap + glob handle
+honestly.
 The grant itself is still the boundary: a `path` outside every granted
 directory raises PermissionDenied before any subprocess.
 

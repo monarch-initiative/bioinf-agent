@@ -116,10 +116,9 @@ def _is_unassertable(row: dict) -> bool:
     assertion reads, or one that is a function of an invisible global (the github 60/hr
     quota), or one that contradicts a sibling on an identical call.
 
-    These were folded into `wrong` until 2026-08-06 — 12 of the 16 red rows were rows nobody
-    had ever graded, and nine of the twelve carried an `unassertable_reason` saying in their
-    own words that the DECISION is already correct. The page showed "12 unassertable" as its
-    own figure AND counted all 12 as failures a few pixels away."""
+    Never fold these into `wrong`: a row nobody can grade is not a row the resolver got
+    wrong, and counting one as a failure while also printing it as its own figure makes
+    the page contradict itself a few pixels apart."""
     return not row.get("expect", {}).get("assertable", True)
 
 
@@ -177,17 +176,16 @@ def _chain(row: dict) -> str:
 def render(corpus: dict) -> str:
     rows = [r for r in corpus.get("rows", []) if isinstance(r, dict)]
     total = len(rows)
-    # THREE states, not two (Decision 1, 2026-07-18). The domain-decoy rows are graded by the
-    # LLM identity eval, not the resolve-probe — resolve cannot OBJECTIVELY refuse a valid,
+    # THREE states, not two (Decision 1). The domain-decoy rows are graded by the LLM
+    # identity eval, not the resolve-probe — resolve cannot OBJECTIVELY refuse a valid,
     # repo-real, wrong-domain package, so those rows are neither a resolve success nor a
     # resolve failure. They come out of BOTH ok and wrong; the meter's % is over what the
-    # resolve-probe can actually grade. Counting them as red claimed resolve failed a job
-    # that was never resolve's — the exact dishonesty this re-scope removes.
-    # FOUR states, not three (2026-08-06). `wrong` was every gradeable row without a True
-    # verdict, which swept in the 12 unassertable rows the builder never grades — the page
-    # then printed them a second time as their own figure. A row the harness cannot check is
-    # not a row the resolver got wrong; it is a row nobody measured, and the whole value of
-    # this page is that it does not round absence up into a verdict.
+    # resolve-probe can actually grade. Counting them as red claims resolve failed a job
+    # that was never resolve's — the exact dishonesty this scoping removes.
+    # FOUR states, not three. Defining `wrong` as every gradeable row without a True
+    # verdict sweeps in the unassertable rows the builder never grades. A row the harness
+    # cannot check is not a row the resolver got wrong; it is a row nobody measured, and
+    # the whole value of this page is that it does not round absence up into a verdict.
     deferred = [r for r in rows if _is_deferred(r)]
     unassertable = [r for r in rows if _is_unassertable(r) and not _is_deferred(r)]
     graded = [r for r in rows if not _is_deferred(r) and not _is_unassertable(r)]

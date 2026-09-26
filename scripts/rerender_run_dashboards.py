@@ -8,13 +8,9 @@ rendered purely from the record, and a view has no provenance to preserve. So wh
 renderer is corrected, every dashboard already on disk keeps showing the old, wrong thing
 and no code path will ever fix it.
 
-Measured 2026-07-31, which is what prompted this: `run_dashboard_html._usage_status` was
-taught the three states (verified / failed / not_attempted) precisely so a page would stop
-printing a bare `False` for "never tested". The fix shipped, the tests passed — and 4 of the
-5 dashboards on disk still read `Usage self-tested: False`, because each had been rendered
-before it landed. A renderer fix that reaches zero artifacts has not fixed anything a reader
-can see, and "the report says False, the record says not_attempted" is the two-answers-to-one-
-question defect in the artifact the user actually opens.
+A renderer fix that reaches zero artifacts has not fixed anything a reader can see, and
+a page that disagrees with its own record is the two-answers-to-one-question defect in
+the artifact the user actually opens.
 
 SAFE BY CONSTRUCTION. This only ever rewrites `.RUN.html`. It reads the sealed spec through
 the typed `spec_writer.load_workflow_spec` seam, so a malformed artifact fails loudly here

@@ -163,8 +163,8 @@ BASE_IMAGE = ("debian:bookworm-slim@sha256:"
 # makes that survive an exception. Neither survives the process being KILLED —
 # the ~600 s stream-watchdog, or BIOINF_MCP_AUTO_RELOAD reloading the server
 # mid-freeze. There is no Python that runs after SIGKILL, so the container is
-# still there holding its whole install layer: ten of them (4.485 GB, the oldest
-# two weeks old) were found during the 2026-08-07 disk cleanup.
+# still there holding its whole install layer — leaked build containers
+# accumulate by the gigabyte.
 #
 # `--rm` would fix only the future; the sweep below also reaps the leaks that
 # already happened. The OWNER PID is what makes the sweep safe under concurrent
@@ -293,14 +293,12 @@ def registry_manifest_digest(ref: str) -> str:
     `sha256:…` as it appears in `<repo>@sha256:…`. "" when the image isn't local or
     carries no repo digest (e.g. it was built here, never pushed).
 
-    THIS IS NOT `.Id`, and the difference is a real bug we shipped. `.Id` is the
-    daemon's local content id; under the classic overlay2 store it is the image's
-    *config blob* digest, which is NOT what anyone can `docker pull`. It happens to
-    equal the manifest digest under the containerd snapshotter — which is what this
-    project's dev Mac runs, so `verify_env_recipe`'s adopt branch compared `.Id`
-    against a recorded manifest digest and PASSED, locally, by luck. On a normal
-    overlay2 daemon (most Linux, most CI, most users) it reported "recipe not
-    reproduced" for every adopt recipe ever written (audit 2026-07-16 §14/Tier 6).
+    THIS IS NOT `.Id`. `.Id` is the daemon's local content id; under the classic
+    overlay2 store it is the image's *config blob* digest, which is NOT what anyone
+    can `docker pull`. It happens to equal the manifest digest under the containerd
+    snapshotter, so comparing `.Id` against a recorded manifest digest passes on one
+    machine by luck and reports "recipe not reproduced" on a normal overlay2 daemon
+    (most Linux, most CI, most users).
 
     So `image_digest` and this are not two copies of one concept to be unified —
     they answer two different questions and both are needed:
@@ -539,15 +537,15 @@ def emit_dockerfile(
     VERBATIM (the exact commands that ran + validated in the build container)."""
     build_apt = _BUILD_APT + (f" {apt_extra}" if apt_extra.strip() else "")
     runtime_apt = _RUNTIME_APT
-    # What the SHIPPED stage needs is DECLARED by each generator as data. This used to
-    # read `purpose.endswith("(java jar)")` — a human-facing prose string, rendered two
-    # lines down as a Dockerfile comment — which meant only the jar tier could ever
-    # earn a JRE. A java tool delivered by synthesized / script_repo / release_binary
-    # (an snpEff or Trimmomatic zip is exactly that shape) apt-installed its JRE into
-    # the BUILDER, and the runtime stage COPYs only /usr/local + /opt/tools, so
-    # /usr/bin/java never shipped. VALIDATED_IN_IMAGE did not catch it: those tiers'
-    # default evidence ends in `command -v {wrap}`, which passes on a wrapper script
-    # whose interpreter is missing.
+    # What the SHIPPED stage needs is DECLARED by each generator as data — never
+    # sniffed from `purpose`, a human-facing prose string. A prose sniff lets only
+    # the tier that happens to match earn a JRE, while a java tool delivered by
+    # synthesized / script_repo / release_binary (an snpEff or Trimmomatic zip is
+    # exactly that shape) apt-installs its JRE into the BUILDER, and the runtime
+    # stage COPYs only /usr/local + /opt/tools, so /usr/bin/java never ships.
+    # VALIDATED_IN_IMAGE does not catch it: those tiers' default evidence ends in
+    # `command -v {wrap}`, which passes on a wrapper script whose interpreter is
+    # missing.
     extra_runtime = sorted({
         pkg for s in longtail_steps for pkg in (s.get("runtime_packages") or [])
         if _SAFE_APT_PKG.match(str(pkg))
@@ -843,12 +841,11 @@ class ContainerBuild:
         baking; `evidence` is re-run in the built image at freeze.
 
         `tool` is the command this step puts on PATH (`seqtk`) — DISTINCT from
-        `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every one of
-        the ten install_commands generators already computes it; it used to be dropped
-        right here, one line before it would have been recorded, after which
-        `_install_anchor` tried to scrape it back out of the prose. That round trip is
-        why the ENV report labelled four binaries "tool" and cited htslib's version for
-        bcftools. The producer knows the name — record it (audit 2026-07-16, Rule 1).
+        `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every
+        install_commands generator computes it, and it is RECORDED here rather than
+        dropped and scraped back out of the prose downstream — the scrape is how an
+        ENV report labels a binary "tool" and cites a dependency's version under the
+        tool's name. The producer knows the name — record it.
 
         engine_coupled: the command (and evidence) need the engine env active — the
         BUILD uses an engine-provided toolchain (rust/go/perl) or the artifact lives
@@ -938,8 +935,8 @@ class ContainerBuild:
         that installs a spec gets it (the propagation rule: a lesson wired at one of
         several call sites is a lesson half-applied).
 
-        `spec["tool"]` is emitted by ALL TEN generators and was dropped here until the
-        2026-07-16 audit — see `run()`'s docstring for what that cost downstream."""
+        `spec["tool"]` is emitted by every generator and is passed through — see
+        `run()`'s docstring for what dropping it costs downstream."""
         if spec.get("stage_artifact"):
             st = self.stage_artifact(spec["stage_artifact"])
             if not st.get("success"):
@@ -1030,7 +1027,7 @@ class ContainerBuild:
         own `banners` field, separate from the evidence-check `out` (the renderer
         prefers banners for version extraction; the evidence `out` is from a
         check-command that CAN be agent-supplied via install primitives)."""
-        # `workdirs` (F10): the cwd a specific check must run from, keyed by the check
+        # `workdirs`: the cwd a specific check must run from, keyed by the check
         # string. A run-by-path script repo's caller-supplied verify uses relative
         # imports and is run on the HOST from the clone dir; without this it ran here
         # from `/work` and failed for a DIFFERENT reason than it did on the host, so
@@ -1062,7 +1059,8 @@ class ContainerBuild:
                 # Bail out BEFORE invoking when the token isn't on PATH. `2>&1 || true`
                 # captures the shell's own `bash: line 1: X: command not found` as the
                 # banner text, and the renderer reads banners as VERSION material — so
-                # an absent token used to render as a tool's self-reported version. Not
+                # without this guard an absent token renders as a tool's self-reported
+                # version. Not
                 # every verification is labelled on a binary (an `openjdk` row is
                 # verified by invoking `java`), and this is a version field: it must be
                 # empty when there is nothing to report, never a shell error.

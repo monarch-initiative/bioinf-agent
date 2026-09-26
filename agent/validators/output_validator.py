@@ -29,13 +29,9 @@ def infer_validator_type(filename: str) -> str:
     """Filename → validator type: the ONE reading, shared by every step runner.
 
     Last-extension based, because dotted infixes are the normal bioinformatics
-    naming convention (`x.sorted.bam`, `x.filtered.vcf`, `x.markdup.bam`). This
-    used to exist twice — `run_tools._infer_validator_type` (last suffix, right)
-    and `run_cluster_step._infer_etype` (ALL suffixes joined, exact-map lookup) —
-    and the copies disagreed on exactly that convention: the cluster runner sent
-    `HG00096_chr22_10K.sorted.bam` to the txt probe, which failed on binary
-    bytes and recorded `passed: False` over a valid BAM the local runner
-    validated green (sea-trial F18).
+    naming convention (`x.sorted.bam`, `x.filtered.vcf`, `x.markdup.bam`) — an
+    all-suffixes reading sends a sorted BAM to the text probe and fails a valid
+    file. Import this; a hand-copied mapping in a runner drifts.
 
     Unknown extensions return "any" — the validator's existence/non-empty check
     — never a guessed concrete type: a fabricated expectation manufactures a

@@ -490,8 +490,7 @@ def _record_root() -> Path:
 
     The reports zone: these are the durable record of what moved where and which
     job it fed, which is the thing you go looking for months later. NOT the
-    checkout — it used to be, under the name `_repo_root`, and that name is gone
-    rather than repointed so nothing can keep reading it as "where the code is".
+    checkout — the record must outlive any clone.
     """
     return workspace.reports_dir()
 

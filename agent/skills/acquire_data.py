@@ -685,19 +685,17 @@ def refresh_cluster_reference_db(rdb: dict, *,
     out["available"] = bool(probe.get("exists"))
     if probe.get("size_bytes") is not None:
         out["size_bytes"] = probe["size_bytes"]
-    # FILL AN ABSENT ANCHOR; NEVER OVERWRITE A RECORDED ONE (2026-07-31).
+    # FILL AN ABSENT ANCHOR; NEVER OVERWRITE A RECORDED ONE.
     #
-    # This used to assign unconditionally, and that is not enrichment — it is laundering.
     # Seal calls this refresh (workflow_tools._refresh_reference_databases) to build the
-    # artifact's reference_databases and then immediately re-validates the artifact, so an
-    # overwrite replaced the RECORDED anchor with the JUST-OBSERVED value and the check
-    # that follows compared a value against itself. A DB whose bytes had genuinely changed
-    # produced perfect agreement.
+    # artifact's reference_databases and then immediately re-validates the artifact, so
+    # an overwrite would replace the RECORDED anchor with the JUST-OBSERVED value and
+    # the check that follows would compare a value against itself — laundering, not
+    # enrichment: a DB whose bytes had genuinely changed would produce perfect agreement.
     #
     # An anchor is a claim made at record time about what the bytes WERE. An observation
     # is what they are NOW. A producer that overwrites the first with the second destroys
-    # the only thing the comparison could have been between — the same reader-scrapes
-    # failure the typed-record seam exists to prevent, in its most damaging direction.
+    # the only thing the comparison could have been between.
     if probe.get("sha256") and not out.get("sha256"):
         out["sha256"] = probe["sha256"]
     return out
@@ -710,15 +708,13 @@ def check_cluster_reference_db(rdb: dict, *,
     locus' posture as the C2 .sif round-trip. A cluster DB that isn't there — or can't
     be verified because the env is unreachable — fails the seal. Returns violation dicts.
 
-    THE CONTENT COMPARISON WAS MISSING (added 2026-07-31). This returned [] after
-    exists + non-empty and never touched `probe["sha256"]`, even though
-    `_probe_cluster_path` already reads the `<path>.source.sha256` sidecar on the same
-    hop and hands it back. So the registry's I5 statement, CLAUDE.md's I5 row and this
-    function's own docstring all advertised a hash check that no code performed, and
-    every cluster DB in the corpus sealed on existence alone — including four recorded
-    with `sha256: None` and one whose recorded hash was never once compared.
+    THE CONTENT COMPARISON IS LOAD-BEARING: exists + non-empty alone is not I5.
+    Skipping `probe["sha256"]` would leave every advertised hash check unperformed
+    and seal every cluster DB on existence alone.
 
-    NO NEW SSH. The probe is unchanged; only its already-returned field is now read.
+    NO NEW SSH. `_probe_cluster_path` already reads the `<path>.source.sha256`
+    sidecar on the same hop and hands it back; only that already-returned field is
+    read here.
 
     WHEN THERE IS NO ANCHOR TO COMPARE (no recorded sha256, or no sidecar on the
     cluster) this emits nothing, and it deliberately does NOT invent a second way of

@@ -4,18 +4,16 @@ is mediated by this module — every primitive that touches a compute env's
 filesystem MUST go through one of its TWO gates before any subprocess runs:
 `check_permission()` for project-declared `directories[]` paths, and
 `check_env_target_capability()` for the env-level agent zones (scratch /
-common_data / container_upload). This docstring used to name only the first
-gate and claim it was the single chokepoint; five of the eight compute-env
-primitives correctly use the second, and a sentence asserting a chokepoint
-that does not exist is how the next agent picks the wrong gate.
+common_data / container_upload). BOTH gates are load-bearing — most of the
+compute-env primitives use the second, and a sentence asserting a single
+chokepoint that does not exist is how the next agent picks the wrong gate.
 
 The trust model
 ---------------
 The agent has a fixed, small set of operations — read them off
-`OPERATION_REQUIRES` below, never off this sentence (an earlier version said
-"today: snapshot; later: upload, download" long after six operations had
-shipped). Each operation requires a specific permission on the target
-directory. Permissions are declared by the user in `projects_access.yaml` —
+`OPERATION_REQUIRES` below, never off this sentence (a prose list of
+operations goes stale the moment one ships). Each operation requires a
+specific permission on the target directory. Permissions are declared by the user in `projects_access.yaml` —
 project-level `directories[]` grants, plus the env-level zone targets. Any
 directory not explicitly granted has permission `none` — fail-closed.
 
@@ -129,9 +127,7 @@ OPERATION_REQUIRES: dict[str, str] = {
 #   slurm — an sbatch launcher submitted via `sbatch`, polled via `sacct`. The one
 #           implemented path (the bridge hardcodes sbatch/sacct).
 # A second scheduler (bash/local, pbs, lsf, …) gets added here TOGETHER with its
-# submit/poll wiring. `bash` was listed here but never had an execution path — it was
-# removed 2026-07-20 to honor the rule above (the field itself stays, defaulting to
-# slurm; only the un-implemented value is gone).
+# submit/poll wiring — never as a listed value with no execution path behind it.
 VALID_JOB_MANAGERS: tuple[str, ...] = ("slurm",)
 
 class PermissionDenied(Exception):
@@ -162,9 +158,9 @@ def default_access_path() -> Path:
     ``workspace.projects_access_path``). Returned whether or not the file
     exists, so a caller always has a deterministic path to name in its
     FileNotFoundError — and so the path the menu WRITES is the path every
-    reader LOOKS AT. There used to be two candidates, checkout-then-homedir,
-    and the config menu wrote to the second while the doctor read the first:
-    three surfaces reported a valid configuration the agent could not see.
+    reader LOOKS AT. Two candidate locations is how a menu writes to one
+    while the doctor reads the other, reporting a valid configuration the
+    agent cannot see.
 
     Callers may override with an explicit ``access_path=`` kwarg.
     """
@@ -512,23 +508,21 @@ def _validate_dir_block(block: object, where: str, path: Path,
 #   partition    (str)  → default --partition for CPU jobs (omit ⇒ scheduler default)
 #   gpu          (map)  → this HPC's standing GPU convention {partition, qos},
 #                         filling either slot a `gpus>0` job left open. FILLABLE,
-#                         NOT REQUIRED: a GPU request used to be REFUSED without
-#                         it, which made the key a prerequisite for GPU work and
-#                         was wrong on a cluster whose scheduler places gres
+#                         NOT REQUIRED: refusing a GPU request without it would
+#                         make the key a prerequisite for GPU work, which is
+#                         wrong on a cluster whose scheduler places gres
 #                         requests itself (naming a partition there only narrows
 #                         the search). A job may name its own — discovered with
 #                         `cluster_partitions` — and the job wins its slot. What
 #                         resolved is reported as `gpu_placement`, in one of four
 #                         states, rather than demanded up front.
 #
-# REMOVED 2026-07-20: `max_cores_per_job` / `max_mem_gb_per_job` / `max_time_hours_per_job`
-# and `module_loads`. All four were accepted + validated here but NEVER consumed — the
-# caps were never compared against any job (three comments/docs falsely claimed "every
-# submit validates against them"; there is no such enforcement), and module_loads was
-# never emitted into a launcher. Accepting a knob that does nothing is the exact
-# "gate present, absent in effect" anti-pattern. Real ENFORCED per-env resource caps are
-# a production guardrail deferred to the scale phase (they belong wired into
-# _resolve_slurm_and_email, not merely accepted here); see the roadmap.
+# DELIBERATELY ABSENT: `max_cores_per_job` / `max_mem_gb_per_job` /
+# `max_time_hours_per_job` / `module_loads`. Accepting a knob nothing consumes is the
+# exact "gate present, absent in effect" anti-pattern, so the closed set rejects them.
+# Real ENFORCED per-env resource caps are a production guardrail deferred to the scale
+# phase (they belong wired into _resolve_slurm_and_email, not merely accepted here);
+# see the roadmap.
 _SLURM_ALLOWED_KEYS: frozenset[str] = frozenset({
     "account", "partition", "gpu",
 })

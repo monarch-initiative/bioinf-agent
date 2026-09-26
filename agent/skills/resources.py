@@ -260,21 +260,19 @@ def _semantic_versions(record: dict) -> list[dict]:
         ENV report also uses), or None = unrecorded.
       - `requested` is what the user asked for (or None if unpinned).
       - `version` == `installed`, kept for back-compat with readers of the old shape.
-      - `diverges` flags requested ≠ installed (the shared divergence check, W5).
+      - `diverges` flags requested ≠ installed (the shared divergence check).
 
-    This function originally forked `_resolved_version` and read only its first rung
-    (the SBOM), so `list_installed_pipelines` reported `bcftools: null` for the
-    authors'-image env while the ENV report claimed `1.23.1` — one fact, two readings,
-    disagreeing. The SBOM cannot see a tool installed outside the package manager (a
-    source-compiled binary carries no metadata anywhere), so a SBOM-only read is
-    structurally blind on exactly the long-tail tiers this project prefers. Rule 4:
-    one definition, read at every use.
+    Never fork `_resolved_version` or read only its first rung (the SBOM): the SBOM
+    cannot see a tool installed outside the package manager (a source-compiled binary
+    carries no metadata anywhere), so a SBOM-only read is structurally blind on exactly
+    the long-tail tiers this project prefers — one fact, two readings, disagreeing.
+    Rule 4: one definition, read at every use.
 
-    `installed` must NEVER fall back to the requested/pinned version (audit 2026-07-19,
-    W6): the old `resolved or pinned or None` printed the REQUESTED version under the
-    key a reader treats as installed — the same silent lie the ENV report carried. When
-    nothing observed the real thing, `installed` is None; absence is a fact about our
-    record, not a version to fabricate. The requested value lives in its OWN key.
+    `installed` must NEVER fall back to the requested/pinned version: a
+    `resolved or pinned or None` chain prints the REQUESTED version under the key a
+    reader treats as installed. When nothing observed the real thing, `installed` is
+    None; absence is a fact about our record, not a version to fabricate. The
+    requested value lives in its OWN key.
     """
     from agent.skills.env_report_helpers import (
         _pkg_index, _resolved_version, _verif_index, requested_versions,
@@ -525,35 +523,32 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
                 # THE THREE-STATE READ, because the bool above cannot answer the
                 # question anyone actually has. `usage_verified: false` conflates
                 # "tested and broken" with "never tested" — and since seal REFUSES the
-                # former, false on disk always meant the latter, a verdict nobody
+                # former, false on disk can only mean the latter, a verdict nobody
                 # reached. Consult this, not the bool.
                 #
                 # A missing key means the artifact predates the field, so the honest read
-                # is `unrecorded` — never a fabricated False, and (since 2026-08-06) never
-                # `not_attempted` either. Both would be this row inventing the verdict the
-                # producer declined to make; the second just wore likelier clothes, and it
-                # made a structurally-unprovable multi-ENV how-to indistinguishable from one
+                # is `unrecorded` — never a fabricated False, and never `not_attempted`
+                # either. Both would be this row inventing the verdict the producer
+                # declined to make; the second just wears likelier clothes, and it makes
+                # a structurally-unprovable multi-ENV how-to indistinguishable from one
                 # nobody bothered to author. (Unlike the envs[] half above, which
                 # RE-EARNS contract_ok at read time, this is disclosure of a stored
                 # claim: Layer 2 cannot re-anchor here, because
                 # check_workflow_invariants dials out over ssh on a locus:cluster I5
                 # and an inventory listing must not open cluster connections.)
-                # Read through core_data.usage_status, not re-derived here. Spelling it
-                # out locally made this row a THIRD reading of one field, and it drifted
-                # immediately: for a spec sealed before `usage_verification` existed the
-                # local version fell to "not_attempted" while `usage_verified: true` was
-                # printed directly above it, so one row contradicted itself about one
-                # workflow. samtools_cluster_rung3 is that artifact on disk.
+                # Read through core_data.usage_status, never re-derived here: a local
+                # spelling is one more reading of the field, and for a spec sealed
+                # before `usage_verification` existed it falls to "not_attempted" while
+                # `usage_verified: true` prints directly above it — one row
+                # contradicting itself about one workflow.
                 "usage_verification_status": usage_status(d),
                 "usage_verification_reason": (
                     (d.get("usage_verification") or {}).get("reason") or ""),
                 "steps_total":     len(steps),
-                # core_data.step_is_validated — BOTH the per-file `validation` records and
-                # the `mark_step_validated` override. This line used to keep only the
-                # override, making it the one drifted copy of a predicate written out
-                # seven times, and it reported `steps_validated: 0` for every workflow
-                # ever sealed — including a five-step run with a full set of passing
-                # records. Plausible, advertised in the tool description, untested.
+                # core_data.step_is_validated — BOTH the per-file `validation` records
+                # and the `mark_step_validated` override. Keeping only one half here
+                # would be a drifted copy of the predicate, reporting
+                # `steps_validated: 0` over a run with a full set of passing records.
                 "steps_validated": sum(1 for s in steps if step_is_validated(s)),
                 "test_data_status": _test_data_status(d),
                 "path": str(spec_file),

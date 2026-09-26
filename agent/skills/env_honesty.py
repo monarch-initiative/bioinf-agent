@@ -95,18 +95,18 @@ _SHORT_CIRCUITED = re.compile(rf"^\s*{_TRUE_WORD}\s*\|\|", re.I)
 #: PIPED — a TOP-LEVEL `|` (never `||`). A shell pipeline exits with its LAST stage's
 #: status, so anything piped into `head`/`grep`/`tail` reports THAT command's rc and
 #: discards the tool's. Unlike the three shapes above this is not a cheat anyone writes
-#: on purpose, which is exactly why it got through: it is what you write to keep the
-#: output short. Measured 2026-08-02: `exomiser --help 2>&1 | head -20` exits 0 in a
-#: stock debian that has no exomiser, and a freeze registered `proven` on it.
+#: on purpose, which is exactly why it is dangerous: it is what you write to keep the
+#: output short, and `exomiser --help 2>&1 | head -20` exits 0 in a stock debian that
+#: has no exomiser at all.
 #:
-#: TOP-LEVEL is the whole difficulty, and the first version of this rule got it wrong.
-#: A pipe inside `$( )`, backticks, quotes or a `( )` subshell does NOT launder the
-#: outer status — and this codebase's OWN generated conda probe contains three of them
-#: (`$(sed -nE 's|...|\1|p' "$f" | sort -u)`). Blanket-matching `|` refused the system's
-#: own honest evidence, which is a neat demonstration of the module docstring's thesis:
-#: a string rule cannot win this game. So this stays deliberately narrow — strip every
-#: nested span first, then look at what is left — and the load-bearing check remains
-#: the control-image experiment, which needs to parse nothing.
+#: TOP-LEVEL is the whole difficulty. A pipe inside `$( )`, backticks, quotes or a
+#: `( )` subshell does NOT launder the outer status — and this codebase's OWN generated
+#: conda probe contains three of them (`$(sed -nE 's|...|\1|p' "$f" | sort -u)`), so
+#: blanket-matching `|` refuses the system's own honest evidence — a neat demonstration
+#: of the module docstring's thesis: a string rule cannot win this game. So this stays
+#: deliberately narrow — strip every nested span first, then look at what is left — and
+#: the load-bearing check remains the control-image experiment, which needs to parse
+#: nothing.
 _PIPED = re.compile(r"(?<!\|)\|(?!\|)")
 #: Spans whose contents are not top-level: quoted strings, command substitutions,
 #: backticks, and parenthesised subshells. Innermost-first, applied repeatedly.
@@ -184,7 +184,7 @@ def _bare_invocation(ev: str, tool: str) -> bool:
     redirects and their capture files. A bare invocation answers with its
     banner/usage (or exits non-zero), which proves exactly what `--help` proves;
     the redirect that captures that banner is plumbing, not work, and must not
-    promote the probe to 'functional' (CS19).
+    promote the probe to 'functional'.
 
     The command word of each `;`/`|`/`&` segment comes from
     `core_data.default_step_tool` — the SAME reading the run primitives use to
@@ -216,27 +216,24 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
     """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
 
     NOTHING GATES ON THIS, and nothing should. A string cannot tell you what a command
-    does at runtime; this reads structure and is wrong often enough that gating on it was
-    measured (audit 2026-07-16 Tier 2) to refuse the CORRECT artifact and the known-broken
-    one identically — `talos_authors` (which really does carry the bcftools fork) is
-    [help, version, version] and the broken `talos_v11` reconstruction is [import]: all
-    shallow, zero discriminating power on the very war story depth was proposed to catch.
-    Its job is to make a report honest, not to refuse a build.
+    does at runtime; this reads structure and is wrong often enough that gating on it
+    refuses the correct artifact and the known-broken one identically — a genuine
+    authors' build and a broken reconstruction can both read all-shallow, zero
+    discriminating power exactly where a depth gate would be asked to help. Its job is
+    to make a report honest, not to refuse a build.
 
     Returns one of EVIDENCE_DEPTHS, or 'unknown' when the shape is not recognizable —
-    guessing 'smoke' for anything unparsed was itself a small lie.
+    guessing 'smoke' for anything unparsed would itself be a small lie.
 
-    Three defects this rule set fixes, each of which made the DISCLOSURE wrong:
-      - `command -v samtools` read as 'version' (the regex matched the `-v` of `command -v`)
-        when it is the weakest evidence there is: a PATH lookup that never runs the tool.
-        It now has its own, honest name: 'presence'.
-      - `_conda_presence_check(...)` — freeze's own auto-generated probe, and therefore the
-        evidence on nearly every real record — read as 'functional' because the path
-        `/opt/conda/envs/*/conda-meta/pigz-*.json` matched "reads a file". A presence probe
-        was reporting as the strongest possible proof.
-      - `samtools --version | head -1` read as 'functional': one pipe outranked the thing
-        being piped. Plumbing is stripped first, and version/help are decided before the
-        reads-a-path rule rather than after it.
+    Three rules that keep the DISCLOSURE honest:
+      - `command -v samtools` is 'presence', never 'version': a PATH lookup that never
+        runs the tool is the weakest evidence there is, whatever its `-v` looks like.
+      - `_conda_presence_check(...)` — freeze's own auto-generated probe, and therefore
+        the evidence on nearly every real record — is 'presence': a conda-meta path
+        operand must not read as "reads a file", the strongest possible proof.
+      - `samtools --version | head -1` is 'version': one pipe must not outrank the
+        thing being piped. Plumbing is stripped first, and version/help are decided
+        before the reads-a-path rule rather than after it.
     """
     raw = (evidence or "").strip()
     if not raw:
@@ -258,39 +255,29 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
     if re.search(r"(--help|\s-h\b|\busage\b)", ev):
         return "help"
     # -- import / load-only: the module loads. Proves more than presence, still not a run.
-    # `-m\w*\s*[a-z]` used to sit at the end of this alternation, meaning to catch
-    # `python -m module`. It caught ordinary CLI flags instead, and this branch runs BEFORE
-    # the functional check below, so it DEMOTED commands that plainly move data:
+    # The python arm matches only an actual module invocation (`python -m mod`), never a
+    # loose `-m`-ish pattern: this branch runs BEFORE the functional check below, so a
+    # pattern that catches ordinary CLI flags DEMOTES commands that plainly move data —
     #
     #     bwa mem -M ref.fa                    -> import   (a file operand!)
     #     bcftools call -mv -Oz -o out.vcf.gz  -> import   (an -o operand!)
-    #     kraken2 --memory-mapping             -> import
-    #     /opt/tool-manager/bin/run --check    -> import   (a hyphenated PATH segment)
     #
-    # Narrowed to an actual python module invocation. Measured across the 35 real evidence
-    # commands in the corpus: ZERO classifications change, so this removes a trap without
-    # touching a single shipped artifact.
-    #
-    # Worth stating precisely, because it was reported as worse than it is: the misfire was
-    # LATENT (no record on disk was affected) and its direction was SAFE — `import` is in
-    # _SHALLOW_DEPTHS, so a misfire always rendered the ⚠ "presence only" badge. It could
-    # only under-claim, never dress a shallow proof as a functional run. `samtools view -m 4`
-    # was never affected at all: the trailing `[a-z]` cannot match a digit.
+    # A misfire here can only under-claim (`import` is in _SHALLOW_DEPTHS, so it renders
+    # the ⚠ badge), never dress a shallow proof as a functional run — but a wrong
+    # disclosure is still a wrong disclosure.
     if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m"
                  r"|\bpython[\d.]*\s+-m\s", low):
-        # A LOAD FOLLOWED BY SELF-CHECKING WORK IS NOT LOAD-ONLY. This branch used to
-        # stop at the first load shape, so `Rscript -e 'library(DESeq2); dds <-
+        # A LOAD FOLLOWED BY SELF-CHECKING WORK IS NOT LOAD-ONLY. Stopping at the
+        # first load shape discloses `Rscript -e 'library(DESeq2); dds <-
         # DESeq(...); stopifnot(...)'` — authored evidence that RUNS the tool's main
-        # entrypoint on an inline dataset and asserts on the result — was disclosed as
-        # [import] on a real freeze (falsifier FD2, pre-registered as K1). Strip the
-        # load-family calls; when what remains BOTH calls functions AND asserts on their
-        # results, the command fails unless the tool's output is right — a stronger
-        # claim than any path operand, so it earns 'functional'. Anything less keeps
-        # the old 'import': a load followed by unasserted calls may run nothing of the
-        # tool (`library(x); print(1)`), and a misfire there can only WEAKEN disclosure
-        # — so the promotion needs the assertion, and only this branch can promote (a
-        # bare `tool --assert-mode` never reaches it). Measured on the corpus: exactly
-        # one classification changes, the FD2 command itself.
+        # entrypoint on an inline dataset and asserts on the result — as [import].
+        # Strip the load-family calls; when what remains BOTH calls functions AND
+        # asserts on their results, the command fails unless the tool's output is
+        # right — a stronger claim than any path operand, so it earns 'functional'.
+        # Anything less keeps 'import': a load followed by unasserted calls may run
+        # nothing of the tool (`library(x); print(1)`), and a misfire there can only
+        # WEAKEN disclosure — so the promotion needs the assertion, and only this
+        # branch can promote (a bare `tool --assert-mode` never reaches it).
         residue = re.sub(
             r"\b(?:suppress(?:package(?:startup)?)?messages|library|require(?:namespace)?)"
             r"\s*\([^)]*\)", " ", low)
@@ -303,14 +290,13 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
     # -- a BARE invocation: the tool runs at a command position with NO operands beyond
     #    redirects/capture files. It can only answer with its banner/usage — exactly as
     #    weak as `--help` — so it must not fall through to 'functional' on the strength
-    #    of its own capture plumbing. Measured on a real freeze (CS19):
-    #    `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q 'Program: bwa' /tmp/…`
-    #    graded 'functional' — the `>` and the /tmp path are the CAPTURE, not work —
-    #    while the samtools row beside it was correctly ⚠ 'version'. The page admits it
-    #    under-reports; this was the over-report, the direction that inflates an
-    #    assurance claim. Decided BEFORE the functional rule, only when the tool token
-    #    is known, and only when an invocation is actually visible at a command
-    #    position — anything else falls through unchanged.
+    #    of its own capture plumbing: in
+    #    `bwa > /tmp/bwa_help.txt 2>&1; grep -q 'Program: bwa' /tmp/…`
+    #    the `>` and the /tmp path are the CAPTURE, not work, and 'functional' there
+    #    is an over-report — the direction that inflates an assurance claim on a page
+    #    that already admits it under-reports. Decided BEFORE the functional rule,
+    #    only when the tool token is known, and only when an invocation is actually
+    #    visible at a command position — anything else falls through unchanged.
     if tool and _bare_invocation(ev, tool):
         return "help"
     # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
@@ -369,22 +355,21 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
     if _PIPED.search(_top_level(ex)) and "pipefail" not in ex:
         # The FOURTH laundering shape, and the one a careful agent reaches for by
         # accident: a shell pipeline exits with its LAST stage's status, so
-        # `exomiser --help | head -20` is rc=0 even when exomiser is not installed
-        # at all. Measured 2026-08-02 in a stock debian image: piped rc=0,
-        # unpiped rc=127 — and a freeze had already registered `proven` on it.
-        # Trimming output is a completely reasonable thing to want; `head` is not
-        # a cheat, it is a convenience that silently disables the check. So name
-        # the honest ways to keep it — and name the ACTUAL last stage, not a
-        # hardcoded `head`/`grep` templated from someone else's command (CS16).
+        # `exomiser --help | head -20` is rc=0 even in an image with no exomiser
+        # at all (unpiped it is rc=127). Trimming output is a completely
+        # reasonable thing to want; `head` is not a cheat, it is a convenience
+        # that silently disables the check. So name the honest ways to keep it —
+        # and name the ACTUAL last stage, never a hardcoded `head`/`grep`
+        # templated from someone else's command.
         #
-        # The remedy matters as much as the ruling: this used to suggest
-        # "redirect instead: `... > /dev/null`", which is a trap for the exact
-        # class of tool this repo installs — most bioinformatics CLIs print
-        # their banner/usage to STDERR and exit non-zero when bare, so the
-        # advice produced a second failure whose message then blamed the image.
-        # The capture-to-file idiom is the one that survives both: the redirect
-        # order `> file 2>&1` is load-bearing (`2>&1 > file` duplicates stderr
-        # to the terminal FIRST and leaves the file empty).
+        # The remedy matters as much as the ruling: "redirect instead:
+        # `... > /dev/null`" is a trap for the exact class of tool this repo
+        # installs — most bioinformatics CLIs print their banner/usage to STDERR
+        # and exit non-zero when bare, so that advice produces a second failure
+        # whose message then blames the image. The capture-to-file idiom is the
+        # one that survives both: the redirect order `> file 2>&1` is
+        # load-bearing (`2>&1 > file` duplicates stderr to the terminal FIRST
+        # and leaves the file empty).
         _last_stage = (_top_level(ex).rsplit("|", 1)[-1].strip().split() or ["?"])[0]
         return (f"evidence {ev!r} pipes into another command, and a pipeline exits with "
                 f"its LAST stage's status — so the recorded `passed` reports "
@@ -413,12 +398,11 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
 #
 # A gate answers a binary question (violations or none) over a domain with THREE
 # states: checked-and-good, checked-and-bad, and NOTHING TO CHECK. With no way to
-# say the third, every clause whose subject was absent returned "no violations" —
-# so absence read as compliance, and a green badge could rest on clauses that never
-# looked at anything (audit 2026-07-30, the whole-system finding: `outcomes.degraded`
-# had zero call sites in 33k LOC because there was nothing to attach it to).
+# say the third, every clause whose subject is absent returns "no violations" —
+# absence reads as compliance, and a green badge can rest on clauses that never
+# looked at anything.
 #
-# So every clause now reports WHAT IT SAW alongside whether it objected:
+# So every clause reports WHAT IT SAW alongside whether it objected:
 #
 #   CHECKED         the clause examined >= 1 real observation. Its silence is evidence.
 #   NOT_APPLICABLE  the precondition is genuinely absent and that absence is ITSELF a
@@ -428,8 +412,8 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
 #   UNOBSERVED      the clause found nothing to look at but its subject SHOULD exist.
 #                   The honesty hole: silence here is NOT evidence.
 #
-# This GATES NOTHING. It changes no build's pass/fail — a record that passed before
-# passes now. What it changes is what a passing record is allowed to imply: freeze
+# This GATES NOTHING. It changes no build's pass/fail.
+# What it changes is what a passing record is allowed to imply: freeze
 # returns `degraded` instead of `proven` when the green rests on unobserved clauses,
 # and ENV.html prints the coverage line under "How this was verified". The distinction
 # between NOT_APPLICABLE and UNOBSERVED is the entire point; collapsing them back into
@@ -546,10 +530,10 @@ def coverage_disclosure(contract: BuildContract) -> dict:
     THE DEGRADE RULE (`contract.unobserved`) IS STRUCTURAL, NOT HEURISTIC, deliberately.
     It fires on "this clause had nothing to look at" — a fact about the record. It does
     NOT fire on shallow evidence depth, even though shallow evidence is the commonest
-    real weakness: `evidence_depth` is a string reader MEASURED (audit 2026-07-16 Tier 2)
-    to classify the correct artifact and the known-broken one identically, so driving the
-    primary outcome tag off it would put a known-unreliable signal in the load-bearing
-    position. Depth stays an advisory and a line in the coverage detail."""
+    real weakness: `evidence_depth` is a string reader that classifies the correct
+    artifact and the known-broken one identically, so driving the primary outcome tag
+    off it would put a known-unreliable signal in the load-bearing position. Depth
+    stays an advisory and a line in the coverage detail."""
     if contract.violations:
         raise AssertionError(
             "coverage_disclosure called on a contract with violations — the caller must "
@@ -557,11 +541,10 @@ def coverage_disclosure(contract: BuildContract) -> dict:
     payload = {"contract_coverage": contract.as_dict()}
     if contract.unobserved:
         # SPLIT BY WHAT THE GAP COSTS. `establishes` already distinguishes the two, and
-        # collapsing them read every degrade as a possible problem: the commonest one by
-        # far is the adopt path's DISCLOSURE-only gap (a biocontainer's record says
-        # nothing about shipped_binaries), and a first-time user met `degraded` on the
-        # route the docs tell them to PREFER with nothing saying it was expected
-        # (cold-start finding CS9).
+        # collapsing them reads every degrade as a possible problem: the commonest one
+        # by far is the adopt path's DISCLOSURE-only gap (a biocontainer's record says
+        # nothing about shipped_binaries), and a first-time user meets `degraded` on
+        # the route the docs tell them to PREFER — it has to say that is expected.
         assurance = [c for c in contract.unobserved if c.establishes == ASSURANCE]
         disclosure = [c for c in contract.unobserved if c.establishes != ASSURANCE]
         lines = [f"the honesty contract PASSED and the env is registered and shippable. "
@@ -621,8 +604,8 @@ def _clause_accelerator(acc: Any) -> tuple[ClauseCoverage, list[dict]]:
 
     Everything this clause reads is written by the same agent that writes the claim,
     so it cannot tell a true block from a well-typed false one. That is not a flaw in
-    it — a structural check is worth having — but it is the whole check I12 used to be.
-    `_clause_accelerator_observed` is the half that opens the image."""
+    it — a structural check is worth having — but alone it compares a record against
+    itself. `_clause_accelerator_observed` is the half that opens the image."""
     v: list[dict] = []
     if not isinstance(acc, dict) or (acc.get("type") or "none") == "none":
         return (ClauseCoverage("POLICY_CLEAN.accelerator", _ACCEL_STRUCTURAL_COVERS, NOT_APPLICABLE, 0,
@@ -741,14 +724,14 @@ def _clause_accelerator_observed(acc: Any, observed: Any) -> tuple[ClauseCoverag
     claimed_type = (claimed_type or "none").strip().lower()
 
     if claimed_type in ("", "none"):
-        # F17. "No claim to compare" is true of the COMPARISON and was allowed to
-        # stand in for "nothing to say about this image", which is a different
-        # sentence. Measured on the real `ontresearch/dorado` adopt: the clause read
-        # NOT_APPLICABLE, `image_accelerator` was never captured, the ENV report said
-        # "the artifact claims no GPU capability" — and the apt SBOM on the same page
-        # listed `cuda-libraries-12-8`. NOT_APPLICABLE means "the precondition is
-        # genuinely absent AND that absence is itself a fact"; here the absence was a
-        # fact about our INPUTS, and the page rendered it as one about the artifact.
+        # "No claim to compare" is true of the COMPARISON and must not stand in for
+        # "nothing to say about this image", which is a different sentence: an image
+        # whose package list carries a whole CUDA runtime can sit under a record
+        # that claims no accelerator. NOT_APPLICABLE means "the precondition is
+        # genuinely absent AND that absence is itself a fact"; an uncaptured
+        # `image_accelerator` is a fact about our INPUTS, and rendering it as one
+        # about the artifact ("claims no GPU capability") misleads the reader who
+        # opens the page to decide whether to request a GPU node.
         #
         # Under-claiming is NOT a violation and must never become one — the harmful
         # direction is claiming a GPU you do not have, which is what the allocation is
@@ -916,16 +899,14 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
     records on disk carry the legacy `gated` key, and a one-key read let those pass I13
     unexamined.
 
-    TWO WAYS TO BE GATED, and only one of them used to exist. `license_gated` is the
-    agent's DECLARATION, and `redistributable` is derived from it (`not gated`,
-    freeze_tools.py) — so an agent that simply never mentions a licence gets
-    `redistributable: true` and this clause early-returned NOT_APPLICABLE without looking
-    at anything. It did that on 13 of 13 registered envs: I13 had never once been CHECKED
-    on a real record. Self-certification arming its own firewall is the same shape as
-    `asset_authenticated = bool(sha256)` (2026-08-04, the operator hand-off) — a claim
+    TWO WAYS TO BE GATED, and both arm the clause. `license_gated` is the agent's
+    DECLARATION, and `redistributable` is derived from it (`not gated`,
+    freeze_tools.py) — so if the declaration alone armed this clause, an agent that
+    simply never mentions a licence would get `redistributable: true` and an
+    unexamined NOT_APPLICABLE: self-certification arming its own firewall, a claim
     standing in for an observation.
 
-    The second way is OBSERVED: the SBOM now carries the licence read out of each
+    The second way is OBSERVED: the SBOM carries the licence read out of each
     package's `conda-meta/*.json` IN THE SHIPPED IMAGE, and a package whose licence
     asserts a restriction makes the artifact gated as a matter of fact, whatever the
     record declares. bioconda ships `novoalign` ("Commercial (requires license for use)")
@@ -1045,32 +1026,24 @@ LAYER1_GUARANTEES: tuple[tuple[str, str], ...] = (
      "(check_build), because a gate only at the producer grandfathers in everything "
      "frozen before it existed"),
 )
-#: PROVENANCE_CLEAN is the entry this roster was worth writing for. It refuses on three
-#: violations (synthesized_empty / untagged_command / extraction_unanchored) and, on
-#: 2026-08-07, was named in ZERO steering documents — not CLAUDE.md's honesty-contract
-#: table, not `install_pipeline_brief`, not docs/. Nobody had removed it; it was simply
-#: never written down, and every hand-written summary of "the Layer-1 contract" therefore
-#: described four guarantees where the code enforces five. That is the I5/I10 rot exactly,
-#: and the lint above it now makes the same omission impossible to repeat.
+#: This roster exists so no guarantee can refuse while being written down nowhere: a
+#: clause that is enforced but named in no steering document leaves every hand-written
+#: summary of the Layer-1 contract wrong (the I5/I10 rot, at Layer 1), and the registry
+#: lint makes that omission impossible.
 
 
 # --- What a guarantee is worth over ONE record ------------------------------
 # The roster above says what each guarantee MEANS. That is a property of the
 # contract, identical for every env. This says what it came to over a PARTICULAR
-# record, which is the only thing a reader actually wants to know, and the two
-# were never joined until 2026-08-07.
+# record, which is the only thing a reader actually wants to know.
 #
-# Before that join the ENV report carried a hand-written paragraph per build
-# method, emitted unconditionally, asserting "every requested tool re-ran green"
-# and "POLICY_CLEAN — I12 and I13 passed". Directly beneath it the generated
-# coverage table marked those same clauses `unobserved` or `n/a`. Three records
-# on disk shipped that contradiction, and the prose is the half a human reads
-# first. Rounding an absent observation up into "passed" is the one thing this
-# module exists to prevent, so a page doing it under the heading "How this was
-# verified" was the defect at its most expensive.
-#
-# The fix is not better prose. It is that there IS no prose: a renderer asks
-# here, and the answer comes off the same walk the gate ran.
+# No renderer writes its own prose for this: a hand-written per-build-method
+# paragraph, emitted unconditionally, asserts "every requested tool re-ran green"
+# whatever the record holds, and can sit directly above a generated coverage
+# table marking those same clauses `unobserved` or `n/a` — and the prose is the
+# half a human reads first. Rounding an absent observation up into "passed" is
+# the one thing this module exists to prevent, so a renderer asks here, and the
+# answer comes off the same walk the gate ran.
 ESTABLISHED = "established"                  # every contributing clause checked, none failed
 PARTLY_ESTABLISHED = "partly_established"    # some checked, some had nothing to look at
 NOT_ESTABLISHED = "not_established"          # nothing was observed — silence, not evidence
@@ -1335,30 +1308,20 @@ def evaluate_build(result: dict) -> BuildContract:
         # evidences are PATH lookups — the commonest real shape in this repo's records.
         depths = [evidence_depth(v.get("check", ""), v.get("tool", "")) for v in verifications]
         deep = sum(1 for d in depths if d not in _SHALLOW_DEPTHS and d != "unknown")
-        # STATE WHAT THE HEURISTIC SAW, NOT WHAT IS TRUE. This read
-        # "{deep} of them RUN the tool (the rest are presence/version/help probes)" — an
-        # assertion of fact about the commands, sourced from a classifier whose own
-        # docstring says "a string cannot tell you what a command does at runtime; this
-        # reads structure and is wrong often enough that gating on it was measured to
-        # refuse the CORRECT artifact".
-        #
-        # Measured 2026-08-07 over the 35 real evidence commands in the corpus: 7 classify
-        # as `import`, and 5 of those 7 demonstrably run the tool —
-        #   `perl -MStatistics::Descriptive … $s->add_data(1,2,3,4,100); die unless …`
-        #   `Rscript -e "library(BiocGenerics); x <- BiocGenerics::union(c(1,2,3), c(3,4)) …"`
-        #   `Rscript -e 'library(DESeq2); … DESeq(dds); res <- results(dds); stopifnot(nrow(res)==200)'`
-        # — because the load pattern (`library(`, `perl -M`, `import`) is tested BEFORE
-        # the functional signals and claims the command first. So `rnaseq_deseq2`'s page
-        # said "0 of them RUN the tool" about a command that runs DESeq() and asserts on
-        # its result. A flat falsehood, stated with the confidence of a measurement.
-        #
-        # Correctly SEPARATING those five from the two real imports
-        # (`python -c 'import pyfaidx; assert pyfaidx.Fasta is not None'`) needs a
-        # classifier that reasons about residue rather than patterns, which is a change
-        # with its own blast radius and is not made here. What is fixed is the CLAIM: the
-        # line now reports a structural reading as a structural reading. Depth is
-        # disclosure and never gates, so under-claiming costs a reader nothing; asserting
-        # it as fact cost them the truth.
+        # STATE WHAT THE HEURISTIC SAW, NOT WHAT IS TRUE. "{deep} of them RUN the
+        # tool" would be an assertion of fact about the commands, sourced from a
+        # classifier whose own docstring says a string cannot tell you what a command
+        # does at runtime. The load pattern (`library(`, `perl -M`, `import`) is
+        # tested BEFORE the functional signals and claims a command first, so
+        # authored evidence that loads a library and then RUNS it (calls the
+        # entrypoint, asserts on the result) can classify as `import` — stated as
+        # fact, "0 of them RUN the tool" over such a command is a flat falsehood
+        # delivered with the confidence of a measurement. Cleanly separating those
+        # from real load-only imports (`python -c 'import pyfaidx; assert …'`)
+        # needs a classifier that reasons about residue rather than patterns, so the
+        # CLAIM is scoped instead: the line reports a structural reading as a
+        # structural reading. Depth is disclosure and never gates, so under-claiming
+        # costs a reader nothing; asserting it as fact costs them the truth.
         coverage.append(ClauseCoverage(
             "VALIDATED_IN_IMAGE", _VII_COVERS, CHECKED, len(verifications),
             f"{len(verifications)} evidence command(s) re-run in the shipped image; "
@@ -1375,14 +1338,14 @@ def evaluate_build(result: dict) -> BuildContract:
                                "where": f"verifications[{label}]",
                                "message": f"{label}: {shape}"})
         if not ver.get("passed"):
-            # SAY WHAT THE RECORD SAYS (CS16). This message used to end at "the tool
-            # is not provably present/runnable in what we ship" unconditionally —
-            # over a verification record whose own `out` field, four keys away,
-            # held the tool's version banner. bwa RAN; the evidence command's
-            # redirect order was broken. A reader acting on the stated diagnosis
-            # re-checks the image (a dead end); the correct action was in the shell
-            # line. When the run captured output, the refusal now points at the
-            # command and quotes the disproof instead of asserting its opposite.
+            # SAY WHAT THE RECORD SAYS. "The tool is not provably present/runnable
+            # in what we ship", stated unconditionally, can sit over a verification
+            # record whose own `out` field, four keys away, holds the tool's version
+            # banner — the tool RAN and the evidence command's capture was broken,
+            # so a reader acting on that diagnosis re-checks the image (a dead end)
+            # when the correct action was in the shell line. When the run captured
+            # output, the refusal points at the command and quotes the disproof
+            # instead of asserting its opposite.
             _out = str(ver.get("out") or "").strip()
             if _out:
                 diag = (f"— but the run CAPTURED OUTPUT, so something executed and "
@@ -1414,7 +1377,7 @@ def evaluate_build(result: dict) -> BuildContract:
     #   vacuous            VIOLATION. The record states IN ITS OWN BYTES that its
     #                      evidence passes without the tool. Refusing that needs no
     #                      container, and the writer's refusal is not a reason for the
-    #                      reader to stay silent — that is the whole tier-5 lesson.
+    #                      reader to stay silent.
     #   absent/unchecked   UNOBSERVED, never a violation. "Nobody asked" is not "it
     #                      failed": refusing here would condemn correct records over
     #                      missing data, and passing silently is the defect being
@@ -1499,22 +1462,12 @@ def evaluate_build(result: dict) -> BuildContract:
     return BuildContract(violations=violations, coverage=coverage)
 
 
-# check_adopt is DELETED (audit 2026-07-16 Tier 2).
-#
-# It was the mode-aware Layer-1 contract for an adopted BioContainer: BUILT (as
-# ADOPTED_BY_DIGEST) + POLICY_CLEAN, with VALIDATED_IN_IMAGE deliberately skipped because
-# "the biocontainer's contents are trusted by their published manifest digest".
-#
-# That reasoning answered the wrong question. Nobody suspected bioconda of lying about its
-# own bytes; the real risk is that WE bind the WRONG image — a mulled tag resolving to a
-# package set that doesn't contain the tool — and only running the tool can catch it. The
-# cost of finding out was ~0.25s per tool against an image freeze had already pulled to
-# read its SBOM. Meanwhile adopt is the DEFAULT for pure-conda envs, so the single
-# unvalidated path was also the busiest: `samtools=1.21` registered with
-# `verifications: []` and two sealed workflows rest on it, while its ENV report and
-# attestation presented it as a solved component.
-#
-# freeze() now generates the same presence evidence the build path uses, runs it in the
-# adopted image, and answers `check_build` — one contract for both modes. Its I13 clause
-# was dead regardless: `can_adopt` requires `not gated`, so a gated artifact never reached
-# it. Anything that needs "is this record an adopt?" should read `record["mode"]`.
+# There is deliberately NO separate adopt-mode contract: an adopted BioContainer
+# answers the same `check_build` as a built env. Skipping VALIDATED_IN_IMAGE because
+# "the biocontainer's contents are trusted by their published manifest digest" answers
+# the wrong question — nobody suspects bioconda of lying about its own bytes; the real
+# risk is that WE bind the WRONG image (a mulled tag resolving to a package set that
+# doesn't contain the tool), and only running evidence in the image can catch that, at
+# ~0.25s per tool against an image freeze already pulled to read its SBOM. freeze()
+# generates the same presence evidence the build path uses and runs it in the adopted
+# image. Anything that needs "is this record an adopt?" should read `record["mode"]`.

@@ -190,8 +190,8 @@ def _render_cluster_context(step: dict) -> str:
             P.append(f'<details><summary><code>{_e(fn)}</code></summary>'
                      f'<pre>{_e(body)}</pre></details>')
     elif step.get("cluster_job_id"):
-        # Absence stated, never rounded up — and stated truthfully: capture
-        # landed 2026-08-31, so a cluster step without it predates that.
+        # Absence stated, never rounded up — and stated truthfully: a cluster step
+        # without the capture was recorded before the runtime captured these files.
         P.append('<p class="note">Submitted files: <b>unrecorded</b> — this step was '
                  'recorded before the runtime captured the rendered submission files. '
                  'Re-run the step to record them.</p>')
@@ -290,13 +290,10 @@ def _run_status_html(spec: dict, failed: list) -> str:
     # and it is why this cross-check is not a fork: the SAME function is used, to ask
     # whether the stored field still describes the steps beside it.
     #
-    # It has to be asked, because the field was introduced to replace "the fabricated
-    # `pipeline_status = "in_progress"` default that seal used to stamp into every spec
-    # regardless of the run" — and every spec sealed before that fix still carries the
-    # fabrication. Measured on the corpus: 4 of 7 sealed specs say `in_progress` while
-    # their steps derive `fully_validated`. Rendering the stored value verbatim would have
-    # printed "in_progress" across the top of four complete, fully-validated runs — a new
-    # falsehood introduced by the fix that was meant to end one.
+    # It has to be asked because sealed records are immutable: a spec sealed before
+    # `derive_pipeline_status` existed carries a stamped `in_progress` default rather
+    # than a finding, forever. Rendering the stored value verbatim would print
+    # "in_progress" across the top of a complete, fully-validated run.
     #
     # Picking a winner silently is the wrong move in both directions: preferring `stated`
     # ships the stale default, preferring `derived` re-computes a sealed field and hides
@@ -361,19 +358,18 @@ def _usage_status(spec: dict) -> str:
     """The I4 self-test state — "verified" | "failed" | "not_attempted" | "".
 
     THREE STATES, not a bool. `usage_verified: False` conflates "tested and it failed"
-    with "never tested" — and since seal REFUSES the former, False on disk always meant
-    the latter, while the page rendered it as a verdict. `usage_verification` carries
-    the truth + the reason; the bool is the fallback for specs sealed before it existed.
+    with "never tested" — and since seal REFUSES the former, False on disk always means
+    the latter and must never render as a verdict. `usage_verification` carries the
+    truth + the reason; the bool is the fallback for specs sealed before it existed.
 
-    One derivation, read by every panel. The head table used to re-derive it as the raw
-    bool, so the same page said "Usage self-tested: False" above the fold and
-    "not attempted — <reason>" below it. Two answers to one question is the bug this
-    whole audit is about.
+    One derivation, read by every panel — a panel that re-derives it as the raw bool
+    gives the page two answers to one question ("Usage self-tested: False" above the
+    fold, "not attempted — <reason>" below it).
 
-    ...and the derivation now lives in `core_data.usage_status`, not here. Keeping it
-    private to the renderer only shrank the disagreement rather than ending it: the
-    markdown guide went on printing the bare bool, so two ARTIFACTS about one workflow
-    still disagreed. Same fix as `usage_commands` — one field, one reading, in a leaf."""
+    ...and the derivation lives in `core_data.usage_status`, not here: a reading
+    private to this renderer would let another artifact about the same workflow (the
+    markdown guide) print the bare bool and disagree with the page. Same rule as
+    `usage_commands` — one field, one reading, in a leaf."""
     return usage_status(spec)
 
 
@@ -384,17 +380,17 @@ _USAGE_LABEL = USAGE_LABELS
 
 def _seal_outcome_html(spec: dict) -> str:
     """The seal's own outcome tag — `proven (seal.sealed)` vs
-    `degraded (seal.sealed_howto_unproven)` — derived from the sealed record (CS20).
+    `degraded (seal.sealed_howto_unproven)` — derived from the sealed record.
 
     The seal RETURNS this tag and then it evaporates with the session; the README
-    teaches a reader to look for the word `degraded`, and this page used to answer
-    with an unqualified green headline. The derivation is the seal's own rule read
-    off the spec: `usage_verification.status == "verified"` is the exact branch
-    `seal_workflow` takes between its two literal terminals, and the status comes
-    through the `core_data.usage_status` leaf. The producer's stated `reason` — the
-    sentence carrying the remedy ("add patch_pipeline(usage=…) and re-seal") — is
-    rendered beside the tag instead of being dropped at the seal, which was the
-    other half of the finding.
+    teaches a reader to look for the word `degraded`, so this page must answer in
+    that vocabulary rather than with an unqualified green headline. The derivation
+    is the seal's own rule read off the spec: `usage_verification.status ==
+    "verified"` is the exact branch `seal_workflow` takes between its two literal
+    terminals, and the status comes through the `core_data.usage_status` leaf. The
+    producer's stated `reason` — the sentence carrying the remedy ("add
+    patch_pipeline(usage=…) and re-seal") — is rendered beside the tag, never
+    dropped at the seal.
 
     `unrecorded` (sealed before the producer stated an outcome) gets NO verdict:
     absence renders as absence, the same rule as a Layer-1 UNOBSERVED clause."""
@@ -402,12 +398,10 @@ def _seal_outcome_html(spec: dict) -> str:
     uv = spec.get("usage_verification") or {}
     reason = _e(uv.get("reason") or "") if isinstance(uv, dict) else ""
     if status == "verified":
-        # Say ONLY what this derivation knows. This sentence used to add "the run
-        # is validated AND" — a claim derived from nothing here, and false on the
-        # FD3 shape this same page supports (failed iteration steps + a verified
-        # I4): the row printed "the run is validated" one line under a Run status
-        # row saying `failed`. Run validation has its own row; this one speaks
-        # for the how-to.
+        # Say ONLY what this derivation knows. Adding "the run is validated AND"
+        # would be a claim derived from nothing here, and false on a shape this
+        # same page supports (failed iteration steps + a verified I4). Run
+        # validation has its own row; this one speaks for the how-to.
         return ('<span class="pill ok">proven</span> the declared how-to executed '
                 'against every trial (I4); the run’s own verdict is the Run '
                 'status row above')
@@ -435,18 +429,17 @@ def _render_howto(spec: dict) -> str:
     elif status == "not_attempted":
         tag = '<span class="pill na">not self-tested — not attempted</span>'
     elif status == "unrecorded":
-        # NOT the same pill as not_attempted, which is what it used to get. This spec was
-        # sealed before the producer was required to state its I4 outcome, so nothing here
-        # knows whether the self-test ran. Saying "not attempted" would be a finding
-        # invented out of a missing field — and it lands on the panel a reader consults to
-        # decide whether the how-to can be trusted.
+        # NOT the same pill as not_attempted. This spec was sealed before the producer
+        # was required to state its I4 outcome, so nothing here knows whether the
+        # self-test ran. Saying "not attempted" would be a finding invented out of a
+        # missing field — and it lands on the panel a reader consults to decide
+        # whether the how-to can be trusted.
         tag = '<span class="pill na">self-test outcome UNRECORDED</span>'
     else:
         tag = '<span class="pill na">not self-tested</span>'
-    # The subtitle used to assert "self-tested against every declared input shape (I4)"
-    # UNCONDITIONALLY — on every dashboard, including one with no usage block at all, and
-    # directly above a pill reading "not self-tested". Two contradictory claims in one
-    # panel. It now describes what this page actually knows.
+    # The subtitle claims "self-tested" only when the self-test VERIFIED — asserted
+    # unconditionally it sits directly above a pill reading "not self-tested", two
+    # contradictory claims in one panel. It describes what this page actually knows.
     sub = ("the runnable command, self-tested against every declared input shape (I4)"
            if verified else
            "the runnable command as authored — see below for whether it was self-tested")
@@ -555,13 +548,12 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
     """The input shapes the how-to was tested against — and, when the record has it,
     the LITERAL invocation each one ran.
 
-    This panel used to be a bare list of trial names. That is the least useful half of
-    what the seal knows: the self-test resolves every {PLACEHOLDER} to a concrete path
-    and executes the result, so `hisat2 -x {OUTPUT_DIR}/idx -1 {R1} -2 {R2}` was
-    actually run as a fully-substituted command against a specific genome and specific
-    reads — and none of that reached the page a human reads to decide whether to run
-    the pipeline on their own data. "Which reference did you prove this against" had no
-    answer in the artifact.
+    A bare list of trial names is the least useful half of what the seal knows: the
+    self-test resolves every {PLACEHOLDER} to a concrete path and executes the result,
+    so `hisat2 -x {OUTPUT_DIR}/idx -1 {R1} -2 {R2}` really ran as a fully-substituted
+    command against a specific genome and specific reads. "Which reference did you
+    prove this against" is the first thing a human reads this page to answer before
+    running the pipeline on their own data, so the transcript is shown.
 
     THREE cases, kept apart, because the difference between them is the difference
     between evidence and a plan:
@@ -625,9 +617,9 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
         return "".join(P)
 
     if declared:
-        # Guarded by `verified`. This line used to render unconditionally, so a dashboard
-        # could say "not self-tested" and "Self-tested against 1 declared input shape(s)"
-        # in the same panel — cluster_refdata_validation did exactly that.
+        # Guarded by `verified`: rendered unconditionally, this line lets a dashboard
+        # say "not self-tested" and "Self-tested against 1 declared input shape(s)"
+        # in the same panel.
         if verified:
             lead = (f'Self-tested against {len(declared)} declared input shape(s). The '
                     f'values below are what the author DECLARED for the self-test; this '
@@ -686,7 +678,7 @@ def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
                      '<span class="note"> — the immutable Layer-1 build honesty report</span>'))
     # A staged .sif recorded by a cluster step outranks generic delivery advice:
     # the delivery already HAPPENED, and the stored get_image text on older
-    # records advised building on the head node (sea-trial F21) — instructions
+    # records advised building on the head node — instructions
     # that are both forbidden and moot once the artifact is on the cluster.
     # Read via the core_data leaf — the user guide answers the same question.
     staged = _core_data.staged_sif_steps(spec)
@@ -739,9 +731,9 @@ def _render_inputs(spec: dict) -> str:
              '<span class="note">what the validated run consumed (I8 provenance)</span></h2>')
     P.append('<div class="bx-body">')
     if td:
-        # Paths via the leaf — this list used to be a FOURTH hand-spelling of the
-        # test_data key set, and the panel showed a bare path beside reference DBs and
-        # authored artifacts that show their sha256, so unpinned data read as pinned.
+        # Paths via the leaf — a hand-spelled test_data key set drifts, and a bare
+        # path shown beside reference DBs and authored artifacts that carry their
+        # sha256 makes unpinned data read as pinned, so each row states its anchor.
         paths = _core_data.test_data_paths(td)
         if paths:
             anchors = _core_data.test_data_anchors(td)
@@ -770,11 +762,10 @@ def _render_inputs(spec: dict) -> str:
 
         def _rdb_anchor_cell(d: dict) -> str:
             # `sha256: null` IS the record's disclosure (acquire_data's ruling — no
-            # second channel), but a bare "—" told the reader nothing about what the
-            # seal DID establish (falsifier FD7: two 37 GB cluster DBs rendered as a
-            # dash beside fully-pinned artifacts). Say what the null means: a sealed
-            # spec's cluster entry passed the I5 locus check by construction, and a
-            # directory has no single-file hash to pin.
+            # second channel), but a bare "—" beside fully-pinned artifacts tells the
+            # reader nothing about what the seal DID establish. Say what the null
+            # means: a sealed spec's cluster entry passed the I5 locus check by
+            # construction, and a directory has no single-file hash to pin.
             sha = d.get("sha256")
             if sha:
                 return f'<code>{_e(sha[:19])}…</code>'
@@ -835,7 +826,7 @@ def _render_inputs(spec: dict) -> str:
             if isinstance(content, str) and content.strip():
                 P.append(f'<p class="note"><b>{_e(c.get("name",""))}</b> — recorded '
                          f'contents</p><pre>{_e(content)}</pre>')
-    # WHAT THIS TABLE DELIBERATELY DOES NOT COVER (CS21). The table is headed
+    # WHAT THIS TABLE DELIBERATELY DOES NOT COVER. The table is headed
     # "what the validated run consumed", so a reader concludes it is exhaustive —
     # and then hits a runtime error on the one family it excludes by design:
     # derived companions of a pinned input (aligner index sidecars — .bwt/.amb/…,
@@ -961,15 +952,14 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
 
     shipped = bool(s.get("validated_in_shipped_image"))
     if failed and _usage_status(s) == "verified":
-        # BOTH TRUTHS, NEITHER ERASED (falsifier FD3). A record can hold failed
-        # iteration attempts AND an I4-verified how-to: the seal executed the declared
-        # command against every trial and every output validated, which IS the verdict
-        # on what a reader would actually run. The old headline let the debris outvote
-        # it — "✗ 2 step(s) FAILED — do not run this as-is" over a workflow whose
-        # self-test panel said proven three screens down, so the page contradicted
-        # itself and a reader walked away from a proven artifact. The failed steps
-        # stay on the page (and in this headline) as history; they no longer masquerade
-        # as a judgement of the how-to.
+        # BOTH TRUTHS, NEITHER ERASED. A record can hold failed iteration attempts AND
+        # an I4-verified how-to: the seal executed the declared command against every
+        # trial and every output validated, which IS the verdict on what a reader
+        # would actually run. A headline that lets the debris outvote it ("✗ 2 step(s)
+        # FAILED — do not run this as-is" over a self-test panel saying proven)
+        # contradicts its own page and walks a reader away from a proven artifact.
+        # The failed steps stay on the page (and in this headline) as history; they
+        # do not masquerade as a judgement of the how-to.
         pill = ('<span class="pill ok">✓ declared how-to self-tested (I4)</span> '
                 f'<span class="pill bad">{len(failed)} failed iteration step(s) '
                 f'in the record</span>')
@@ -984,11 +974,11 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
                 f'do not run this as-is</span>')
     elif shipped:
         pill = '<span class="pill ok">✓ validated in shipped image</span>'
-        # THE COUNTERWEIGHT (CS20). A seal whose I4 never ran returns
-        # `degraded (seal.sealed_howto_unproven)` — and this page opened with an
-        # unqualified green badge over it, so a reader scanning the headline filed a
-        # degraded artifact as fully proven. The green is EARNED (the run really was
-        # validated in the shipped bytes); it is the absence of a qualifier that lied.
+        # THE COUNTERWEIGHT. A seal whose I4 never ran returns
+        # `degraded (seal.sealed_howto_unproven)`, and an unqualified green badge over
+        # it files a degraded artifact as fully proven for a reader scanning the
+        # headline. The green is EARNED (the run really was validated in the shipped
+        # bytes); it is the absence of a qualifier that would lie.
         # `not_attempted` is the one status the seal tags degraded on: `verified` is
         # proven, `failed` cannot seal, and `unrecorded` is absence — a spec sealed
         # before the outcome was stated gets no retroactive verdict, exactly as the
@@ -1008,7 +998,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         # `pipeline_status: failed` — and no renderer read the field. The record knew; the
         # view did not say. One line, and it is the most load-bearing byte on the page.
         ("Run status", _run_status_html(s, failed)),
-        # THE SEAL'S OWN TAG, NEXT TO THE RUN STATUS IT QUALIFIES (CS20). "Run
+        # THE SEAL'S OWN TAG, NEXT TO THE RUN STATUS IT QUALIFIES. "Run
         # status: fully_validated" answers "did the recorded steps validate";
         # this row answers the second question a sealed spec makes a claim
         # about — was the how-to proven — in the proven/degraded vocabulary the
@@ -1028,7 +1018,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     P: list[str] = []
     P.append(_open_page(f"Workflow run report — {name}"))
     P.append(_header_banner(f"Workflow run report — {_e(name)}", pill, head_rows))
-    # THE READER'S ORDER (user ruling, 2026-08-31): the environment this run is
+    # THE READER'S ORDER: the environment this run is
     # pinned to and what it consumed come FIRST, straight after the header — a
     # reviewer decides "is this the env and data I mean" before reading how it
     # ran. Evidence and the how-to follow. Services stay ahead of inputs within
@@ -1043,19 +1033,15 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         P.append(inputs)
     P.append(_render_validated_evidence(s, primary_digest))
     P.append(_render_howto(s))
-    # HONEST PROVENANCE. This used to claim "no field on this page was authored by the
-    # agent", which is false and was false when written: the description, the usage
-    # description, and the command_template are all rendered here and all sit in
-    # patch_pipeline's agent-authored allowlist (CLAUDE.md). A page that overstates its own
-    # purity is the same defect class it exists to prevent — so it now says which parts are
-    # machine-observed and which are authored, and lets the reader weigh them differently.
-    # HONEST PROVENANCE, AND THE LIST HAS TO KEEP UP WITH THE PAGE. This paragraph
-    # enumerates which side of the line each thing on the dashboard falls, so it goes
-    # stale the moment a panel is added and not accounted for — which is the same
-    # failure it was rewritten to fix (it used to claim NOTHING here was authored,
-    # while rendering three fields from patch_pipeline's allowlist). `runtime_configs`
-    # is agent-authored and now rendered; the self-test transcript and the service
-    # health probes are runtime-captured and now rendered. Both sides updated together.
+    # HONEST PROVENANCE, AND THE LIST HAS TO KEEP UP WITH THE PAGE. The footer says
+    # which parts of the page are machine-observed and which are agent-authored — the
+    # description, the usage description and the command_template all sit in
+    # patch_pipeline's agent-authored allowlist (CLAUDE.md) — so the reader can weigh
+    # them differently; a page that overstates its own purity ("no field on this page
+    # was authored by the agent") is the same defect class it exists to prevent.
+    # Because this paragraph enumerates which side of the line each thing on the
+    # dashboard falls, it goes stale the moment a panel is added and not accounted
+    # for: when a new panel lands, update both sides together.
     P.append('<p class="gen">Generated deterministically from the sealed WorkflowSpec. '
              'The <b>evidence</b> — commands run, exit codes, outputs, validations, '
              'digests, resource usage, the self-test transcript (what each trial '

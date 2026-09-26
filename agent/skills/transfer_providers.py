@@ -126,14 +126,12 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 # ScpHeadNodeProvider
 #
-# Existing logic factored into a class. The wire is scp+ssh+sha256sum
-# round-trip. Helpers (_scp_argv, _compute_local_sha256, _remote_sha256_cmd,
-# _parse_sha256sum_output live in transfer.py; _ssh_argv, _ssh_failure_hint
-# in snapshot.py) are imported here rather than copied. (This line used to
-# say scratch.py — deleted with the six zone-specific primitives.)
-# NB: the remote-target and remote-sha256 steps are written INLINE below
-# instead — the extraction duplicated them and orphaned the originals, which
-# were deleted in tier 7. Inline is the only copy; keep it that way.
+# The wire is scp+ssh+sha256sum round-trip. Helpers (_scp_argv,
+# _compute_local_sha256, _remote_sha256_cmd, _parse_sha256sum_output live in
+# transfer.py; _ssh_argv, _ssh_failure_hint in snapshot.py) are imported here
+# rather than copied.
+# NB: the remote-target and remote-sha256 steps are written INLINE below on
+# purpose — inline is the only copy; keep it that way.
 # ---------------------------------------------------------------------------
 
 class ScpHeadNodeProvider(TransferProvider):
@@ -799,12 +797,12 @@ class GlobusProvider(TransferProvider):
     # read can legitimately come back empty — and an empty history is
     # indistinguishable here from a cause we cannot decode.
     #
-    # Measured against a real cluster 2026-09-17: a download whose LOCAL
-    # destination sat outside Globus Connect Personal's Access list — the most
-    # common setup mistake there is, and one the classifier already has a
-    # bucket for (`local_path_not_allowed`) — landed as `unknown` purely
-    # because it asked too early. So the bucket existed, the hint existed, and
-    # the user got the generic fallback anyway.
+    # Without the retry, a download whose LOCAL destination sits outside
+    # Globus Connect Personal's Access list — the most common setup mistake
+    # there is, and one the classifier has a bucket for
+    # (`local_path_not_allowed`) — lands as `unknown` purely because it asked
+    # too early: the bucket and the hint exist, and the user still gets the
+    # generic fallback.
     #
     # Retrying costs nothing on the success path (first read classifies) and is
     # bounded: the task is already terminal-for-our-purposes, so there is no

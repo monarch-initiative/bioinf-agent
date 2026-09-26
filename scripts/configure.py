@@ -89,8 +89,8 @@ DIR_DEFAULT_PERMS = ["file_name_only"]
 #: The env-level zones, in the order the agent uses them. `key` is the schema
 #: key, `default_perms` the tokens the bridge needs to use the zone as intended
 #: (the menu's "defaults" reset writes exactly these), `required` whether the
-#: menu insists the zone be declared. ALL FOUR are required (menu review,
-#: 2026-09-18): scratch + common_data are what the run primitives refuse
+#: menu insists the zone be declared. ALL FOUR are required: scratch +
+#: common_data are what the run primitives refuse
 #: without, containers is where every staged .sif lands, and reports is where
 #: the record mirrors — an env missing any of them fails far from where it was
 #: typed. Same four zones the local workspace has — full parity, so a
@@ -102,7 +102,7 @@ ZONES = [
      ["file_name_only", "upload", "download", "exec"], True),
     # `download` has no consumer in the staging flow (verification is a remote
     # checksum) but is granted by default so a staged .sif can be pulled back
-    # when ever needed (user call, menu review 2026-09-18).
+    # whenever needed (user call).
     ("container_upload_target", "where .sif container images are staged",
      ["file_name_only", "upload", "download"], True),
     # No `exec`: reports are read, never run.
@@ -325,10 +325,10 @@ class Config:
         self.load_error = ""
         if not self.path.exists():
             self.data = {"compute_envs": [], "projects": []}
-            # The config home moved to ~/.bioinf_agent/ (2026-09-18). A file
-            # still sitting at the old workspace-root location would otherwise
-            # read as "nothing configured" — absence with a findable cause is
-            # stated, with the one-command fix.
+            # The config home is ~/.bioinf_agent/. A file still sitting at the
+            # LEGACY workspace-root location would otherwise read as "nothing
+            # configured" — absence with a findable cause is stated, with the
+            # one-command fix.
             legacy = workspace.workspace_root() / "projects_access.yaml"
             if self.path == default_access_path() and legacy.exists():
                 self.load_error = (
@@ -903,7 +903,7 @@ def edit_project(cfg: Config, proj: Optional[dict]) -> None:
 
 
 def projects_unlocked(cfg: Config) -> bool:
-    """D10, revised in menu review (2026-09-18): a project names the compute
+    """D10: a project names the compute
     environments its work runs on — and, on remote machines, the directory
     grants into the user's territory. With no env declared there is nothing a
     project could name, so the section unlocks once ANY compute env exists,

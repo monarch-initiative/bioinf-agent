@@ -32,11 +32,9 @@ class DockerBuilder:
     def __init__(self, config: dict):
         self.config = config
         self.envs_dir = workspace.conda_envs_dir()
-        # NO `self.output_dir`. It was read from `paths.docker_output_dir`, used only
-        # to mkdir itself, and never consulted again — while the sole producer of a
-        # freeze tarball asks `workspace.images_dir()` and `save_archive`
-        # mkdirs that parent on demand. So setting the key created an empty directory
-        # and moved nothing. Deleted with the key on 2026-08-06.
+        # NO `self.output_dir`: the sole producer of a freeze tarball asks
+        # `workspace.images_dir()`, and `save_archive` mkdirs that parent on
+        # demand — a config key here would relocate nothing.
 
     # -----------------------------------------------------------------------
     # Run a step INSIDE the env image — the validation-locus pivot.
@@ -275,9 +273,8 @@ class DockerBuilder:
     def _run(self, cmd: list[str], timeout: int = 300) -> dict:
         # Delegates to the shared runner (see _proc); keeps this class's
         # never-fatal posture — an unexpected exception becomes rc -1 rather
-        # than crashing a build teardown. Timeout/missing-binary now report the
-        # conventional 124/127 (was -1 for everything; nothing branched on -1,
-        # measured 2026-09-14 before the change).
+        # than crashing a build teardown. Timeout/missing-binary report the
+        # conventional 124/127.
         try:
             return _proc.run_argv(cmd, timeout, cwd=str(workspace.scratch_dir("run")))
         except Exception as e:

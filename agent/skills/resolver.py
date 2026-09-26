@@ -322,10 +322,10 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
         # conda-forge's maintained one — the pick already resolved that, and the list follows it).
         #
         # `license_source` NAMES WHERE THE STRING CAME FROM, and every tier that captures a
-        # licence now sets it. A licence with no stated origin cannot be told apart from a
-        # licence nobody published: both arrive as `""` and both used to read `unrecognized`,
-        # which is a claim ("we read one and could not place it") about a field we never
-        # looked at. Same discipline as `repo_field` two lines up.
+        # licence sets it. A licence with no stated origin cannot be told apart from a
+        # licence nobody published — both arrive as `""` — and rounding either to
+        # `unrecognized` claims a read ("we saw one and could not place it") of a field
+        # nobody looked at. Same discipline as `repo_field` two lines up.
         out = {"available": True, "channel": best[1], "latest": best[2], "summary": best[3],
                "versions": best[6], "license": best[7],
                "license_source": (f"the {best[1]} recipe's `license`" if best[7] else "")}
@@ -337,18 +337,11 @@ def probe_conda(name: str, timeout: int = 12) -> dict[str, Any]:
             # made against a channel that never answered is a claim about what we could
             # REACH. This function's whole reason for probing both channels is the second
             # thing — guarding against an abandoned build on one channel shadowing the
-            # maintained package on the other — and that guard used to fail SILENTLY open.
-            #
-            # Measured live 2026-08-06 while driving `seurat` end to end: with conda-forge
-            # timing out, `probe_conda('r-seurat')` returned bioconda's **3.0.2 (2019)** as a
-            # clean pick, indistinguishable from a real answer, while conda-forge carries
-            # **5.5.1**. Two calls one second apart — `language='r'` with the name spelled
-            # `seurat` vs `Seurat`, which lowercase to the SAME URL — disagreed by two major
-            # versions of the standard single-cell toolkit, and neither said why.
-            #
-            # The old comment here ("errors only matter when NOTHING was found") is right
-            # about availability and wrong about the pick, so the error is recorded either
-            # way now and `resolve` discloses it on a conda win.
+            # maintained package on the other — and that guard must not fail silently
+            # open: a one-channel answer is indistinguishable from a two-channel one
+            # unless the error rides along. "Errors only matter when NOTHING was found"
+            # is right about availability and wrong about the pick, so the error is
+            # recorded either way and `resolve` discloses it on a conda win.
             out["channel_errors"] = channel_errors
         return out
     # A hit on either channel is a fact regardless of the other's health, so errors only
@@ -523,18 +516,17 @@ def probe_package_family(tool: str, timeout: int = 12) -> dict[str, Any]:
     """SEARCH the channels for every package that shares this tool's name-family, and return
     them all. `{}` when the family has one member (the common case) — silence, not noise.
 
-    THIS IS THE RESEARCH STEP, and it exists because the system used to stop investigating
-    the moment it found ANYTHING. `resolve('gatk')` hits bioconda's `gatk`, so the dead-end
-    discovery path never fires, and the answer is `gatk=3.8` — a 2017 release — because
-    bioinformatics versions its tools by RENAMING the package and GATK4 ships as `gatk4`.
-    Every identity fact about that pick is CORRECT: right project, right channel, right
-    description, a decade stale. A registry hit is not the same as an answer, and "we found
-    one, stop looking" is how a stale one gets shipped with full confidence.
+    THIS IS THE RESEARCH STEP: a registry hit is not the same as an answer, and "we found
+    one, stop looking" is how a stale one ships with full confidence. `resolve('gatk')`
+    hits bioconda's `gatk`, so the dead-end discovery path never fires, and the answer is
+    `gatk=3.8` — a 2017 release — because bioinformatics versions its tools by RENAMING
+    the package and GATK4 ships as `gatk4`. Every identity fact about that pick is
+    CORRECT: right project, right channel, right description, a decade stale.
 
-    An earlier cut of this GUESSED one successor (`{base}{major+1}`) and probed for it. That
-    worked for gatk by arithmetic accident and could not see `macs` 1.4.3 sitting under
-    `macs2`/`macs3`. Searching returns the whole family for the same single HTTP call, and
-    stops encoding an assumption about how projects number themselves.
+    It SEARCHES rather than guessing a successor name: a guessed `{base}{major+1}` works
+    for gatk by arithmetic accident and cannot see `macs` 1.4.3 sitting under
+    `macs2`/`macs3`. Searching returns the whole family for the same single HTTP call,
+    and encodes no assumption about how projects number themselves.
 
     IT DOES NOT RANK, AND MUST NOT. The family is evidence, and reading it needs world
     knowledge the resolver has no business faking:
@@ -547,9 +539,8 @@ def probe_package_family(tool: str, timeout: int = 12) -> dict[str, Any]:
         macs2   -> macs 1.4.3 / macs2 2.2.9.1 / macs3 3.0.4, one project's whole history
 
     "Newest wins" would swap bowtie1 for bowtie2. Refusing would tax every one of these for
-    a question most callers have already answered. Both were tried on paper; what the ride
-    actually needs is the TABLE, in one call, so it can pick without a second round trip —
-    which is the whole complaint against the previous behaviour.
+    a question most callers have already answered. What the ride actually needs is the
+    TABLE, in one call, so it can pick without a second round trip.
 
     Absent is not unchecked: a failed search returns `{"probe_error": ...}` rather than an
     empty family, so "this tool has no siblings" is never inferred from a probe that did not
@@ -657,7 +648,7 @@ def probe_github(repo: str, timeout: int = 12) -> dict[str, Any]:
     """For a github 'owner/repo': does it exist (→ source tier) and does its
     latest release carry downloadable assets (→ binary tier)?
 
-    Also captures the fork lineage the response ALREADY carries but used to discard —
+    Also captures the fork lineage the response ALREADY carries —
     `is_fork` / `parent` (immediate) / `upstream` (GitHub's `source`, the fork-chain
     ROOT) / `full_name` (canonical, after the 301 a renamed/transferred repo issues) /
     `default_branch`. These feed the fork-anchor in resolve(): a user who names a
@@ -796,10 +787,10 @@ def probe_github_search(name: str, timeout: int = 12, limit: int = 5) -> dict[st
         f"&per_page={max(limit, 5)}", timeout)
     if err:
         # "I searched and found nothing" and "I could not search" are opposite facts about
-        # the tool, and this function used to return the same value for both. Search is the
-        # tightest quota on the API (10 req/min unauthenticated), so the failure is common —
-        # and it is the INVESTIGATION's own probe: a caller that refuses on an empty result
-        # would be reporting a rate limit as a finding about the world.
+        # the tool and must never share a return value. Search is the tightest quota on
+        # the API (10 req/min unauthenticated), so the failure is common — and it is the
+        # INVESTIGATION's own probe: a caller that refuses on an empty result would be
+        # reporting a rate limit as a finding about the world.
         return {"found": False, "candidates": [], "probe_error": err}
     if not isinstance(data, dict) or not data.get("items"):
         return {"found": False, "candidates": []}
@@ -1334,9 +1325,7 @@ _GH_REPO_RE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # description exists at all — and the ride (the LLM) decides PROCEED or ASK. When the
 # ride lands on a tool it is probably right, and the honesty contract downstream is
 # the net that catches a mechanical error; when it genuinely cannot tell even after
-# investigating, it ASKs. (This replaced `assess_identity` + the 86-word
-# `_DOMAIN_TERMS` list, deleted 2026-07-17 — the reverse-theme-park Phase 2: judgment
-# moves to the ride, the resolver returns facts.)
+# investigating, it ASKs.
 # ---------------------------------------------------------------------------
 
 #: Tiers whose probe READS a licence field off the entry. Membership is a fact about our
@@ -1358,9 +1347,9 @@ _REGISTRY_ENTRY_TIERS = _LICENSE_READING_TIERS + ("bioconductor",)
 def license_evidence(chosen: str, license_text: str, license_source: str) -> str:
     """WHY the chosen entry's licence reads the way it does — five states. Pure.
 
-    `""` answered five different questions with one value, and `license_disposition("")`
-    rounded all five to `unrecognized`, which is a claim about a field nobody read. See
-    `identity_facts` for the states and the measurement that forced them apart."""
+    A bare `""` answers five different questions with one value, and rounding them all
+    to `unrecognized` is a claim about a field nobody read. See `identity_facts` for
+    the states."""
     if license_text.strip():
         return "published"
     if license_source:
@@ -1411,15 +1400,13 @@ def identity_facts(tool: str, chosen: str, availability: dict,
                          property of the ARTIFACT, invisible to a question about which
                          package this is, so it needs its own fact or it has none.
       license_evidence — WHY the licence reads the way it does, in five states, because
-                         `unrecognized` was carrying two opposite meanings and only one of
-                         them is a finding. Measured 2026-08-06 across six probes: only
-                         conda ever populated `license`, so every pip / cran / binary /
-                         synthesis pick came back `unrecognized` — a claim ("we read a
-                         licence and could not place it") about a field nothing had read.
-                         And it is structural, not incidental: a tool is licence-gated
-                         BECAUSE its bytes may not be redistributed, which is exactly why
-                         it is not on bioconda, so the tier that carried the fact and the
-                         tier gated tools live on were disjoint by construction. The
+                         a lone `unrecognized` carries two opposite meanings ("we read a
+                         licence and could not place it" vs "nothing was read") and only
+                         one of them is a finding. The gap is structural, not incidental:
+                         a tool is licence-gated BECAUSE its bytes may not be
+                         redistributed, which is exactly why it is not on bioconda, so
+                         the tier that carries the licence fact and the tier gated tools
+                         live on are disjoint by construction. The
                          states — `published` · `unclassified_text` (prose, not an
                          identifier; we refuse to keyword-match a licence BODY) ·
                          `not_published` (the tier publishes the field and this entry left
@@ -1433,7 +1420,7 @@ def identity_facts(tool: str, chosen: str, availability: dict,
                          answer is that nobody said.
 
     No `confirmed` boolean, no note, no poisoning of `install_call`. The resolver
-    states what is true and gets out of the way (Phase 2, 2026-07-17)."""
+    states what is true and gets out of the way."""
     detail = availability.get(chosen) or {}
     desc = (detail.get("summary") or "").strip()
     # A DISCOVERED tool has no registry entry, so no tier has a `summary` and this — the
@@ -1483,23 +1470,14 @@ def name_corroboration(tool: str, entry_repo: str, search: dict) -> dict[str, An
     """Does anything ELSE on github own this name, and does the chosen entry point at it?
     Pure — `search` is a `probe_github_search` result, already fetched.
 
-    THE DEFECT THIS EXISTS FOR (measured 2026-08-06, five tools back to back): github
-    discovery ran ONLY at a registry dead-end, so the investigative effort was inversely
-    proportional to how wrong the answer was about to be.
-
-        annovar   no registry hit -> 5 repos investigated -> earned refusal, names the ask
-        signalp   no registry hit -> 5 repos investigated -> earned refusal
-        exomiser  no registry hit -> 5 repos investigated -> the RIGHT tool, adopted
-        cellranger  CRAN hit      -> 0 repos, none run    -> clean install_call for a
-                                                             SPREADSHEET-RANGE PARSER
-        dorado      PyPI hit      -> 0 repos, none run    -> clean install_call for an
-                                                             ASTRONOMY package
-
-    A same-name registry entry SUPPRESSED the investigation that would have surfaced the
-    real tool — and a squatter existing is the single strongest signal that a name is
-    contested. So the search runs on a hit too. Same doctrine as `probe_package_family`
-    one screen down ("a registry hit is not an answer"), on the github axis instead of the
-    channel axis.
+    THE RULE THIS ENFORCES: the search runs on a registry HIT too, never only at a
+    dead-end. Discovery that fires only when the registries come up empty makes the
+    investigative effort inversely proportional to how wrong the answer is about to be —
+    a same-name registry entry (CRAN's `cellranger` spreadsheet-range parser, PyPI's
+    astronomy `dorado`) suppresses exactly the investigation that would surface the real
+    tool, and a squatter existing is the single strongest signal that a name is
+    contested. Same doctrine as `probe_package_family` one screen down ("a registry hit
+    is not an answer"), on the github axis instead of the channel axis.
 
     NO JUDGEMENT HERE, and none is needed. The comparison is mechanical: which repos own
     the name EXACTLY, and is the chosen entry's own repo one of them?
@@ -1507,9 +1485,8 @@ def name_corroboration(tool: str, entry_repo: str, search: dict) -> dict[str, An
       corroborated       every exact-name repo on github IS the repo this entry points at.
       diverges           at least one exact-name repo is NOT this entry's — the contested
                          name. Their own descriptions ride along; reading them against the
-                         request is the ride's call (the 2026-08-06 ruling), and that
-                         ruling was about what the resolver may CONCLUDE, never about how
-                         hard it should LOOK.
+                         request is the ride's call — a rule about what the resolver may
+                         CONCLUDE, never about how hard it should LOOK.
       no_same_name_repo  the search ran and nothing on github owns the name exactly.
       unobserved         the search itself did not answer (github search is 10 req/min
                          unauthenticated). NOT a finding, and never rendered as one.
@@ -1646,12 +1623,11 @@ def repo_evidence(availability: dict, github_repo: str = "",
                 # A repo SCRAPED from pip/cran metadata is a CANDIDATE, never an anchor.
                 # It is only as trustworthy as the entry it came from, and a bare-name
                 # entry may be a different project entirely (PyPI 'dorado' is astronomy;
-                # its metadata repo is Mucephie/DORADO, not ONT's). We used to anchor it
-                # on a word-list hit in the summary; that word-list is gone (Phase 2 —
-                # identity is the ride's judgment, not a regex). So a scraped repo is
-                # surfaced for the ride to CONFIRM (the INVESTIGATE flow) and never
-                # auto-handed to the author tiers, which outrank conda. The safe anchors
-                # remain: a curated conda `dev_url` (above) and an explicit github_repo.
+                # its metadata repo is Mucephie/DORADO, not ONT's). No word-list rescues
+                # that — identity is the ride's judgment, not a regex — so a scraped repo
+                # is surfaced for the ride to CONFIRM (the INVESTIGATE flow) and never
+                # auto-handed to the author tiers, which outrank conda. The safe anchors:
+                # a curated conda `dev_url` (above) and an explicit github_repo.
                 return {"repo": f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}",
                         "source": winner, "anchored": False,
                         "detail": (f"the {winner} entry's own metadata — a candidate repo "
@@ -1670,14 +1646,12 @@ def _disclose(decision: dict, note: str, caveat: str) -> None:
     """Attach a caveat to the decision, in EVERY field a reader might stop at.
 
     `rationale` always; `install_call` when there is one to poison. That asymmetry is the
-    whole point: `install_call` is None on a refusal, and each of this function's callers
-    used to be guarded by `if ... decision.get("install_call")` — so every disclosure
-    silently vanished on the one outcome it was written for. A caller was told "no
-    registry/repo tier found" while the authors-path gate had crashed with a TypeError, and
-    the note explaining that never rendered.
+    whole point: `install_call` is None on a refusal, so a disclosure guarded by
+    `if ... decision.get("install_call")` silently vanishes on the one outcome it is
+    written for.
 
-    One function rather than four copies of the pattern, because this file has now forked a
-    disclosure rule three times and each fork drifted (audit 2026-07-16, Rule 4)."""
+    One function rather than per-caller copies of the pattern: forked disclosure rules
+    drift."""
     if not note:
         return
     decision["rationale"] = note + " || " + decision.get("rationale", "")
@@ -1783,12 +1757,12 @@ def rank_decision(availability: dict[str, dict], prefer: Optional[str] = None) -
     ordered available tiers, and the rejected alternatives.
 
     An IGNORED `prefer` is disclosed, never silent (`prefer_honored` +
-    `prefer_ignored_reason`, and the caller stamps it onto `install_call`). It
-    used to fall through without a word: `prefer='pip'` with pip unavailable
-    returned conda, and a typo'd `prefer='spak'` returned conda — same output,
-    two very different situations, and no way to tell either from "conda is
-    simply what I wanted". The caller ASKED for something and did not get it;
-    that is exactly the case where staying quiet is a lie of omission."""
+    `prefer_ignored_reason`, and the caller stamps it onto `install_call`):
+    `prefer='pip'` with pip unavailable and a typo'd `prefer='spak'` both fall
+    through to conda — same output, two very different situations — and only
+    the disclosure separates either from "conda is simply what I wanted". The
+    caller ASKED for something and did not get it; that is exactly the case
+    where staying quiet is a lie of omission."""
     available = [t for t in TIER_ORDER if availability.get(t, {}).get("available")]
     chosen = None
     prefer_ignored_reason = ""
@@ -1982,11 +1956,11 @@ def pullable_image(availability: dict[str, dict], tool: str,
     conda = availability.get("conda") or {}
     if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:
         spec = registry_name(conda, tool)
-        # AN ERROR IS NOT A NEGATIVE OBSERVATION. This except-arm used to return the same
-        # bare {"found": False} as a genuine registry miss, so a quay flake read as "no
-        # image exists" — a FACT the caller then acted on (falsifier drive FD1: the probe
-        # said false for bioconductor-deseq2=1.50.2 while freeze's identical probe, minutes
-        # later, adopted the image). `checked` says whether the registry actually answered:
+        # AN ERROR IS NOT A NEGATIVE OBSERVATION. This except-arm must not return the
+        # same bare {"found": False} as a genuine registry miss — a quay flake would
+        # read as "no image exists", a FACT the caller then acts on, while freeze's
+        # identical probe minutes later may adopt the image. `checked` says whether the
+        # registry actually answered:
         #   found:True                        — image exists, adopt it
         #   found:False, checked:True         — the registry answered: nothing to adopt
         #   found:False, checked:False        — NOBODY answered; this says NOTHING about
@@ -2270,10 +2244,9 @@ def resolve(
                 "recipe": assessment.get("authors_recipe")}
         except Exception as e:
             # Best-effort: a probe failure must not break registry routing. But it MUST
-            # NOT be silent either — a bare `except: pass` here let a call-signature
-            # TypeError disable this entire gate for every tool, invisibly, across five
-            # commits and a green test suite (audit 2026-07-16). The gate is either
-            # reported as fired or reported as errored; there is no third state.
+            # NOT be silent either — a bare `except: pass` here can disable this entire
+            # gate for every tool, invisibly, behind a green test suite. The gate is
+            # either reported as fired or reported as errored; there is no third state.
             availability["authors_gate_error"] = {
                 "available": False, "repo": eff_repo,
                 "error": f"{type(e).__name__}: {e}"}
@@ -2432,28 +2405,23 @@ def resolve(
             # claiming the name. Else present candidates for a human/agent to confirm (the
             # GAB-collision guard: a same-name repo can still be the wrong project).
             #
-            # POPULARITY IS NOT IDENTITY, AND IT NEVER BREAKS A TIE HERE. A third disjunct
-            # used to read `rec["stars"] >= 5 * cands[1]["stars"]` — adopt on star dominance
-            # when the runner-up ALSO matches the name exactly. That is the resolver settling
-            # a question about which PROJECT the user meant with a measure of how many people
-            # starred a repo, and the disclosure it then printed said so in its own words
-            # ("Stars measure popularity, not identity") while the pick rested on exactly
-            # that. Measured: `resolve('talos', language='r')` adopted siderolabs/talos, a
-            # Kubernetes Linux distribution, at 10893★ over autonomio/talos at 1636★ — 6.6:1,
-            # clearing the 5:1 bar — when the tool meant is populationgenomics/talos, a
-            # rare-disease variant-reanalysis pipeline that is this repo's own authors-recipe
-            # exemplar. Star rank in a bio-tool search is if anything ANTI-correlated with the
-            # answer: general-purpose software outstars every domain tool. Worse, adoption
-            # then re-enters resolve() with the repo as an anchor, so the author tiers grant
-            # it a free identity pass and a pure popularity guess ships as an anchored repo.
+            # POPULARITY IS NOT IDENTITY, AND IT NEVER BREAKS A TIE HERE. Adopting on
+            # star dominance when the runner-up ALSO matches the name exactly settles a
+            # question about which PROJECT the user meant with a measure of how many
+            # people starred a repo — and star rank in a bio-tool search is if anything
+            # ANTI-correlated with the answer: general-purpose software (a Kubernetes
+            # distro named `talos`) outstars every domain tool. Worse, adoption then
+            # re-enters resolve() with the repo as an anchor, so the author tiers grant
+            # it a free identity pass and a pure popularity guess ships as an anchored
+            # repo.
             #
-            # What survives is not a weaker version of the same guess: `len(cands) == 1 or not
-            # cands[1]["exact_name_match"]` means NOTHING ELSE ON GITHUB CLAIMS THIS NAME, so
-            # there is no choice being made silently. The `stars >= 10` floor stays as a
-            # liveness sniff on that sole candidate, not as a ranking. When two projects do
-            # both own the name, that is a question, and asking it is the point — the ride
-            # gets `discovered_repos` with each repo's own description and re-calls with
-            # `github_repo=`, which is where the judgment belongs.
+            # This predicate is not a weaker version of that guess: `len(cands) == 1 or
+            # not cands[1]["exact_name_match"]` means NOTHING ELSE ON GITHUB CLAIMS THIS
+            # NAME, so there is no choice being made silently. The `stars >= 10` floor is
+            # a liveness sniff on that sole candidate, not a ranking. When two projects
+            # do both own the name, that is a question, and asking it is the point — the
+            # ride gets `discovered_repos` with each repo's own description and re-calls
+            # with `github_repo=`, which is where the judgment belongs.
             auto_adoptable = bool(
                 rec["exact_name_match"] and rec["stars"] >= 10 and (
                     len(cands) == 1 or not cands[1]["exact_name_match"]))
@@ -2494,8 +2462,8 @@ def resolve(
                 # NOT "to install via synthesis". Nothing has read that repo yet — the
                 # authors' assessment only runs once a repo is ANCHORED — so naming the
                 # landing tier here promises an outcome we have not investigated. For a
-                # pipeline repo the honest landing is a refusal, and this sentence used to
-                # advertise the exact route that refusal exists to withhold.
+                # pipeline repo the honest landing is a refusal, and advertising
+                # synthesis here would name the exact route that refusal withholds.
                 f"discovered_repos) to route against that repo.")
 
     ambiguous = _is_ambiguous(availability, language)
@@ -2681,7 +2649,8 @@ def resolve(
             f"{decision.get('rationale', '')}  A pre-built BioContainer exists — adopt by "
             f"digest (PULL, no build): {pull['image_by_digest']}.").strip()
     # A probe that ERRORED is disclosed as such — `pullable_image.found: false` with a
-    # swallowed exception behind it steered a real drive away from the adopt path (FD1).
+    # swallowed exception behind it reads as "no image exists" and steers the caller
+    # away from the adopt path.
     if pull.get("probe_error"):
         decision["rationale"] = (
             f"{decision.get('rationale', '')}  NOTE: the pullable-image probe FAILED "
@@ -2690,11 +2659,10 @@ def resolve(
     # NAME-MAPPING HONESTY. When the pick came via the bioconductor→conda fold, the emitted
     # call names `bioconductor-{tool}`, not the `{tool}` the caller typed — say so up front so
     # a reader sees requested-vs-installed at a glance, never a silent substitution.
-    # This clause used to read ONLY `bioc_spec`, so the two OTHER ways a name gets rewritten
-    # went out silently: `r_spec` (`resolve('Seurat', language='r')` installed `r-Seurat` with
-    # no mention) and CRAN's `resolved_name` (crandb is case-sensitive, so the query and the
-    # package name differ). It now asks `registry_name` — the same leaf the install_call and
-    # the biocontainer lookup use — so the disclosure cannot disagree with what gets installed.
+    # The mapped name comes from `registry_name` — the same leaf the install_call and the
+    # biocontainer lookup use, and the one place that knows every way a name gets rewritten
+    # (`bioc_spec`, `r_spec`, CRAN's case-corrected `resolved_name`) — so the disclosure
+    # cannot disagree with what gets installed.
     _chosen_detail = availability.get(chosen, {}) if chosen else {}
     _mapped_name = registry_name(_chosen_detail, tool)
     if _mapped_name != tool:
@@ -2737,9 +2705,9 @@ def resolve(
         )
     # STATE the absence; never omit the key. A caller reading `decision.get("install_call")`
     # cannot tell "there is no call to make" from "this producer forgot the field", and the
-    # difference is a KeyError at best and a skipped disclosure at worst (see the gate-error
-    # block below, which used to hang its entire note off `if decision.get("install_call")`
-    # and therefore vanished on every refusal — the one outcome where it matters most).
+    # difference is a KeyError at best and a skipped disclosure at worst (a note hung off
+    # `if decision.get("install_call")` vanishes on every refusal — the one outcome where
+    # it matters most).
     decision["identity"] = None
     decision["install_call"] = None
     decision["refusal_reason"] = None
@@ -2839,18 +2807,17 @@ def resolve(
     # normalizing, it is substituting a different tool, and no amount of good intent makes
     # that safe to do silently.
     _user_word = (user_said or "").strip().lower()
-    # F1/F13. `user_said` is contracted as THE USER'S OWN WORD; a caller holding free
-    # text passes the whole sentence, because that is what they have. Before this, a
-    # sentence went straight into the family comparison, failed it (a sentence is not a
-    # package family), and produced `investigation_contradicted` — a claim that the
-    # investigation found a conflict — plus the remedy *"Resolve '<the whole sentence>'
-    # as typed and read the family"*, which cannot be done: a sentence is not a package
-    # name.
+    # `user_said` is contracted as THE USER'S OWN WORD, but a caller holding free
+    # text passes the whole sentence, because that is what they have. A sentence fed
+    # straight into the family comparison fails it (a sentence is not a package
+    # family) and yields `investigation_contradicted` — a claim that the investigation
+    # found a conflict — plus a remedy ("resolve the sentence as typed") that cannot
+    # be done.
     #
-    # F13 is what makes this more than a bad string: the guard INVERTED. Passing more
-    # truth about the user's intent produced a refusal, and passing less — omitting
-    # `user_said` entirely — produced a clean confident answer. A guard that punishes
-    # disclosure teaches callers to withhold it, which is the opposite of what it is for.
+    # Worse than the bad string, that guard INVERTS: passing more truth about the
+    # user's intent buys a refusal, while omitting `user_said` entirely buys a clean
+    # confident answer. A guard that punishes disclosure teaches callers to withhold
+    # it, which is the opposite of what it is for.
     #
     # So: free text is classified as free text. If it CONTAINS the tool as a token, it
     # corroborates rather than contradicts — nobody substituted anything, the caller
@@ -2963,22 +2930,19 @@ def resolve(
 
     # THE INVESTIGATION MUST NOT STOP THE MOMENT SOMETHING ANSWERS — the github half.
     #
-    # The block above researches the CHANNEL on a hit. This researches GITHUB on a hit, and
-    # it closes the inversion measured on 2026-08-06: the three tools with no registry entry
-    # each got a five-repo investigation and an honest answer, while the two with a same-name
-    # squatter got NO investigation and a clean, confident, wrong `install_call`. Discovery
-    # fired only at a dead end, so a registry hit ended the search by succeeding — and the
-    # two names it silenced (`cellranger`, `dorado`) are the two most contested in the set.
-    # A squatter EXISTING is the strongest available signal that a name is contested, and it
-    # was the one condition under which we stopped looking.
+    # The block above researches the CHANNEL on a hit. This researches GITHUB on a hit:
+    # discovery that fires only at a dead end lets a registry hit end the search by
+    # succeeding, so a name with a same-name squatter gets NO investigation and a clean,
+    # confident, wrong `install_call` while an unregistered name gets a full one. A
+    # squatter EXISTING is the strongest available signal that a name is contested, so
+    # it must never be the condition under which we stop looking.
     #
     # Skipped when the caller named a repo: they anchored the identity themselves, the
     # cross-namespace guard above already reconciles the registry hit against it, and the
     # auto-adopt path re-enters here WITH `github_repo=` — so this costs one search per
     # resolve, never two.
     #
-    # THE COST, stated because the old comment on `probe_github_search` promised the
-    # opposite: unauthenticated github search is 10 req/min, so this DOES put the common
+    # THE COST: unauthenticated github search is 10 req/min, so this DOES put the common
     # registry path within reach of that quota. What it may never do is let the quota become
     # a finding — a search that did not answer is `unobserved`, the pick is untouched, and
     # nothing claims the name is uncontested. (`_headers` sends GITHUB_TOKEN when there is
@@ -3003,29 +2967,19 @@ def resolve(
         if _corr["status"] == "diverges":
             # SHOW ALL OF THEM, AND NAME NONE OF THEM.
             #
-            # Two defects lived in this block, both introduced by the fix for F15 —
-            # the finding about name confusion — and both found by audit hours later:
+            # ALL: the rows must match the sentence that says how many repos own the
+            # name — a truncated list is one field with two readings, in the message
+            # whose whole job is to let a human compare candidates.
             #
-            # 1. `[:3]` printed three rows under a sentence that said how many repos
-            #    own the name. Measured on `dorado`: "4 repo(s) own the name" above a
-            #    list of three. One field, two readings, in the message whose whole job
-            #    is to let a human compare candidates.
-            # 2. The copy-pasteable remedy hard-named `divergent_repos[0]`. That list
-            #    arrives ordered by STARS (github search, top 5 by stars), so the one
-            #    repo we singled out was the star maximum — for `dorado`, a 1222-star
-            #    PowerShell Scoop bucket, recommended over the 859-star
-            #    `nanoporetech/dorado` printed directly beneath it. Star-dominance is
-            #    the exact heuristic this codebase removed from `auto_adoptable`, and
-            #    it came back inside the remedy string of the fix built to cure name
-            #    confusion.
-            #
-            # The 2026-08-06 ruling is that judging WHICH project you meant is the
-            # ride's call, because the ride is the reader with the world knowledge to
-            # make it. A resolver that picks one is doing that judging with a star
-            # count. So the remedy offers the FORM and the reader picks the repo.
-            # Every row carries its OWN copy-pasteable next call, so the message stays
-            # as actionable as it was while privileging nobody. Naming one and only one
-            # was what smuggled the star ranking in.
+            # NONE: `divergent_repos` arrives ordered by STARS (github search, top 5
+            # by stars), so a remedy that hard-names one repo singles out the star
+            # maximum — star-dominance, the exact heuristic `auto_adoptable` refuses,
+            # smuggled back in through a remedy string. Judging WHICH project you meant
+            # is the ride's call, because the ride is the reader with the world
+            # knowledge to make it; a resolver that picks one is doing that judging
+            # with a star count. So the remedy offers the FORM and the reader picks
+            # the repo. Every row carries its OWN copy-pasteable next call, so the
+            # message stays fully actionable while privileging nobody.
             _div = _corr["divergent_repos"]
             _rows = "\n".join(
                 f"#   {c['repo']} ({c['stars']}★)"
@@ -3114,11 +3068,11 @@ def resolve(
                   "no install_call is emitted for a pipeline — the engine is the tool")
 
     # A BROKEN RELIABILITY GATE MUST REACH THE CALLER, not sit in `probed`.
-    # `authors_gate_error` was recorded and then consumed by nobody: resolve() went on to
-    # return a clean, confident `chosen: conda` + install_call, with the failure buried in
-    # a sibling dict no agent reads. For a tool like Talos that is the exact reconstruction
-    # bug the gate exists to prevent, delivered with full confidence. (audit 2026-07-16
-    # Tier 6: the fix for the silent gate was itself unconsumed and untested.)
+    # An `authors_gate_error` recorded but consumed by nobody leaves resolve() returning
+    # a clean, confident `chosen: conda` + install_call with the failure buried in a
+    # sibling dict no agent reads — for a tool whose authors ship their own recipe, that
+    # is the exact reconstruction bug the gate exists to prevent, delivered with full
+    # confidence.
     not_assessed = (availability.get("authors_gate_not_assessed") or {}).get("reason")
     if not_assessed:
         _disclose(decision,
@@ -3274,14 +3228,13 @@ def resolve(
     # tiers, prefer-ignored) are about the ROUTING being incomplete — a different axis from
     # "is this the tool you meant", which no longer gets a resolver verdict.
     #
-    # NO TOOL-NAME TABLE, EITHER. A `VENDOR_GATED` dict lived here briefly (2026-08-06):
-    # seven proprietary names — cellranger, dragen, guppy, … — that turned a working
-    # install_call into chosen=None because the vendor gates the real binary, so a
-    # same-name registry hit is necessarily a different project. The fact is true; the
-    # mechanism was wrong. It made this module the one place in `agent/` where a hardcoded
-    # tool name changed behaviour, and it duplicated, in a table that can only rot, world
-    # knowledge the ride already has. The seventh name being right does not make the
-    # eighth's absence honest: a finite list silently promises completeness it cannot keep.
+    # NO TOOL-NAME TABLE, EITHER. A `VENDOR_GATED` dict of proprietary names (cellranger,
+    # dragen, guppy, …) that nulls a working install_call would state a true fact through
+    # the wrong mechanism: it makes this module the one place in `agent/` where a
+    # hardcoded tool name changes behaviour, and it duplicates, in a table that can only
+    # rot, world knowledge the ride already has. A finite list silently promises a
+    # completeness it cannot keep — the seventh name being right does not make the
+    # eighth's absence honest.
     #
     # The division of labour stands as written above. The resolver surfaces FACTS — the
     # chosen entry's own words, its repo provenance, its licence, which tiers went

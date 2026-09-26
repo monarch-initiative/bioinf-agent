@@ -188,7 +188,7 @@ margin-right:4px}
 .badge.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok)}
 .badge.bad{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad)}
 .badge.na{background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
-/* The third badge state, for a fact that is neither a pass nor a failure — F17's
+/* The third badge state, for a fact that is neither a pass nor a failure —
    "declared none, but the image carries cuda 12.8". Without its own compound rule it
    would inherit `.badge` box styling with `.warn`'s text colour and no border, which
    reads as a styling slip rather than a deliberate third state. Same lesson as the
@@ -196,7 +196,7 @@ margin-right:4px}
    to the only reader who matters. */
 .badge.warn{background:var(--surface-2);color:var(--yellow);border:1px solid var(--yellow)}
 .note{color:var(--muted);font-size:12.5px;margin:6px 0}
-/* A caveat that must not read as small print. The RUN dashboard uses it for F5's
+/* A caveat that must not read as small print. The RUN dashboard uses it for
    "these resource numbers were measured under emulation; do not size #SBATCH --mem
    from them" — a correction that has to be at least as visible as the numbers it
    corrects, or it is the same defect in a lighter shade of grey. */
@@ -264,12 +264,11 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
         try:
             from agent.skills.env_honesty import evidence_depth, is_shallow_evidence
             d = evidence_depth(check, tool)
-            # ASK the classifier; never re-derive its answer. This literal used to be
-            # ("version", "import", "help") — a stale copy of _SHALLOW_DEPTHS that omitted
-            # `presence`, so the WEAKEST evidence in the system rendered as "runs the tool"
-            # while the stronger `--version` got the ⚠. That matters most on adopted envs,
-            # whose evidence IS a presence check. `unknown` (the classifier declining to
-            # guess) also read as a functional run — an assertion built out of a shrug.
+            # ASK the classifier; never re-derive its answer — a hand-copied depth list
+            # drifts from _SHALLOW_DEPTHS, which matters most on adopted envs, whose
+            # evidence IS a presence check. `unknown` (the classifier declining to
+            # guess) counts as shallow too: rendering it as a functional run would be
+            # an assertion built out of a shrug.
             shallow = is_shallow_evidence(check, tool) or d == "unknown"
             depth = (f' <span class="note" title="evidence depth: {d} '
                      f'({"presence only — not a functional run" if shallow else "runs the tool"})">'
@@ -282,10 +281,10 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
 def _shallow_evidence_tools(r: dict) -> list[str]:
     """Which of this record's PASSING evidence commands only read as presence.
 
-    ONE reading, shared by the per-tool badge above and the header summary. They
-    were separate until F11: the table said `⚠ version` per tool and the header
-    said `1/1 validated in image` flat, so the page qualified its small print and
-    not its headline. Two spellings of one question is how that happens.
+    ONE reading, shared by the per-tool badge above and the header summary: computed
+    separately, the table can say `⚠ version` per tool while the header says
+    `1/1 validated in image` flat — a page that qualifies its small print and not
+    its headline. Two spellings of one question is how that happens.
 
     Only PASSING evidence is counted — a failed check is already refusing, and
     calling it shallow on top would answer a question nobody is asking. `unknown`
@@ -319,22 +318,20 @@ def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) ->
     """The accelerator row: what was DECLARED, beside what the image actually carries.
 
     The section this sits in is headed "submitter-declared … not a runtime-verified
-    fact", which was true of every accelerator field until freeze started reading the
-    toolkit off the shipped image. Showing only the claim would now hide the one part
-    of the row that IS an observation — and a GPU claim is precisely the thing a reader
-    cannot check for themselves before committing the allocation.
+    fact", but freeze reads the toolkit off the shipped image, so showing only the
+    claim would hide the one part of the row that IS an observation — and a GPU claim
+    is precisely the thing a reader cannot check for themselves before committing the
+    allocation.
 
     Three states, as everywhere: observed-and-agreeing, observed-and-absent (the
     contract refuses this, so it can only appear on a record from before the check), and
     nothing-looked.
 
-    A declared `none` used to return the bare word and never look at the observation.
-    That is F17, measured on the real `ontresearch/dorado` freeze: this row read
-    `Accelerator — none` and the apt SBOM two screens down listed
-    `cuda-libraries-12-8 12.8.1-1`. Under-claiming is not a contract violation — the
-    harmful direction is claiming a GPU you do not have — but it is absolutely a fact a
-    reader needs, because the question this row exists to answer is "do I request a GPU
-    node for this?", and "none" answered it wrongly for a GPU basecaller.
+    A declared `none` still looks at the observation: a row reading `Accelerator —
+    none` over an apt SBOM that lists the CUDA runtime answers this row's question —
+    "do I request a GPU node for this?" — wrongly for a GPU tool. Under-claiming is
+    not a contract violation (the harmful direction is claiming a GPU you do not
+    have), but it is absolutely a fact a reader needs.
     """
     declared = _e(accel_type)
     if accel_type in ("", "none"):
@@ -501,11 +498,10 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
 
     It must NEVER fall back to the requested version. When an author-image adopt ships
     a tool compiled from source in the authors' Dockerfile, that tool is absent from
-    the SBOM and has no biocontainer tag; the OLD code returned `req_v` here — printing
-    the REQUESTED version in the Installed column, unlabelled, on a green validated row
-    (audit 2026-07-19, W1: "says 1.21, ships 1.19"). The honest value is what the image
-    yields, or '' = unrecorded; the renderer shows absence and the requested number
-    stays in its own column."""
+    the SBOM and has no biocontainer tag; returning `req_v` there prints the REQUESTED
+    version in the Installed column, unlabelled, on a green validated row — "says
+    1.21, ships 1.19". The honest value is what the image yields, or '' = unrecorded;
+    the renderer shows absence and the requested number stays in its own column."""
     if (is_adopt and not (pkg and pkg.get("version"))
             and adopt_source and adopt_source.get("tag")):
         return adopt_source["tag"]
@@ -536,12 +532,12 @@ def render_env_report_html(record: dict) -> str:
     image_digest_raw = r.get("image_digest") or ""
     vidx, pidx = _verif_index(verifs), _pkg_index(resolved)
     req_versions = _requested_versions(r)
-    # VERSION DIVERGENCE (audit 2026-07-19, W5): the tools whose OBSERVED installed
+    # VERSION DIVERGENCE: the tools whose OBSERVED installed
     # version differs from what was requested — computed ONCE here (the shared
     # definition), flagged ⚠ in the Tools table below AND carried into the attestation
     # + list_installed so a mismatch shows up identically wherever both numbers appear.
     diverging = {d["tool"].lower(): d for d in _version_divergences(r)}
-    # IDENTITY DISCLOSURE (audit #8): the tool's OWN self-description, keyed by tool name.
+    # IDENTITY DISCLOSURE: the tool's OWN self-description, keyed by tool name.
     # Rendered as a labelled, clearly-UNVERIFIED sub-line under each tool row — the record
     # already parsed at register/check_build, but degrade gracefully rather than crash a
     # report over an optional disclosure.
@@ -557,26 +553,15 @@ def render_env_report_html(record: dict) -> str:
 
     # THE CONTRACT, COMPUTED BEFORE THE PILL — because the pill is a claim ABOUT it.
     #
-    # This page drew `_contract.coverage` (whether each clause RAN) and never once drew
-    # `_contract.violations` (whether any clause FAILED). The word "violation" did not
-    # appear in this module. The pill was `passed == total` over the verifications list,
-    # which is a different and much weaker question, and for an adopted env it did not
-    # even ask that — `is_adopt` short-circuited straight to a neutral badge.
-    #
-    # Rendered from the real corpus on 2026-08-07, two of eighteen envs FAIL the contract
-    # and neither page said so:
-    #
-    #   talos_v11  1 violation (WELL_FORMED.shipped_binaries — the record uses the old
-    #              key dialect, so its contents cannot be read without guessing)
-    #              -> rendered "✓ Validated in shipped image"
-    #   multiqc    1 violation (VALIDATED_IN_IMAGE.evidence_shape — the evidence pipes
-    #              into `head -5`, so the recorded `passed` reports HEAD's exit status;
-    #              it would pass in an image without the tool at all)
-    #              -> rendered "Adopted by digest"
-    #
-    # A green tick over a failed honesty contract is the precise failure this codebase
-    # exists to prevent, in the one artifact the user actually opens. `check_build` is the
-    # SAME function `freeze` refuses on, so the page and the gate now answer alike.
+    # The pill must rest on `_contract.violations` (did any clause FAIL), not on
+    # `_contract.coverage` alone (did each clause RUN), and not on `passed == total`
+    # over the verifications list — a different and much weaker question, and one the
+    # adopt branch never even asks. A green tick over a failed honesty contract (a
+    # WELL_FORMED record dialect that cannot be read without guessing; evidence that
+    # pipes into `head -5` and so records HEAD's exit status) is the precise failure
+    # this codebase exists to prevent, in the one artifact the user actually opens.
+    # `check_build` is the SAME function `freeze` refuses on, so the page and the
+    # gate answer alike.
     from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
                                           check_build, coverage_disclosure,
                                           evaluate_build, guarantee_verdicts)
@@ -620,11 +605,11 @@ def render_env_report_html(record: dict) -> str:
     summary_parts.append("adopted by digest" if is_adopt else f"{passed}/{total} validated in image")
     summary_parts.append(f"{len(ride)} along for the ride")
     summary_parts.append(f"{len(system)} system (apt)")
-    # F11. `N/N validated in image` is the line a reader takes away, and for the S4a
-    # specimen it was printed over an env whose tool could not import its own plotting
-    # module: the evidence was `--help`, which argparse answers before any dependency
-    # is touched. The per-tool table already badges depth (`⚠ version`); the SUMMARY
-    # did not, so the strongest sentence on the page was the least qualified one.
+    # `N/N validated in image` is the line a reader takes away, and unqualified it can
+    # sit over an env whose tool cannot import its own plotting module — `--help`
+    # evidence is answered by argparse before any dependency is touched. The per-tool
+    # table badges depth (`⚠ version`); the SUMMARY must too, or the strongest
+    # sentence on the page is the least qualified one.
     #
     # It says "reads as", not "is". `evidence_depth` is a structural reading of command
     # TEXT and this module's own comment records it under-reporting a command that runs
@@ -643,10 +628,10 @@ def render_env_report_html(record: dict) -> str:
         ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
         ("Summary", " · ".join(_e(p) for p in summary_parts)),
     ]
-    # -- THE OUTCOME TAG, IN THE README'S OWN VOCABULARY (CS14/CS62) ---------
+    # -- THE OUTCOME TAG, IN THE README'S OWN VOCABULARY ---------------------
     # freeze returns `proven` or `degraded` and that value evaporates with the session;
-    # the README teaches a reader to scan the deliverable for the word, and until this
-    # row no durable artifact printed it. Derived at render time from the SAME contract
+    # the README teaches a reader to scan the deliverable for the word, so a durable
+    # artifact must print it. Derived at render time from the SAME contract
     # walk the gate runs — `contract.unobserved` is the attribute freeze's two literal
     # terminals branch on — and the advisory sentence comes from `coverage_disclosure`,
     # the same function that writes it into the freeze return, so the page and the tag
@@ -671,7 +656,7 @@ def render_env_report_html(record: dict) -> str:
                               '<span class="pill ok">proven</span> every applicable '
                               'clause of the honesty contract was checked on this record'))
     # A loud, dedicated header line when any observed version diverges from the request —
-    # so the mismatch is unmissable before the reader even scrolls to the Tools table (W5).
+    # so the mismatch is unmissable before the reader even scrolls to the Tools table.
     if diverging:
         parts = ", ".join(f'{_e(d["tool"])} (requested {_e(d["requested"])} → '
                           f'installed {_e(d["installed"])})' for d in diverging.values())
@@ -801,9 +786,8 @@ def render_env_report_html(record: dict) -> str:
                         "(none — every resolved package was directly requested)"))
     P.append('</div></section>')
 
-    # -- INSTALL COMMANDS (own top-level section — promoted from a sub-section
-    # of Along-for-the-Ride in batch-3, per the "all reports share the same
-    # set of sections" rule the user gave; this also matches the SBOM split
+    # -- INSTALL COMMANDS (own top-level section, per the "all reports share
+    # the same set of sections" rule; this also matches the SBOM split
     # everywhere else, where "what was installed" and "how it was installed"
     # are separately enumerable). Long-tail commands are the binary/source/
     # synthesized/perl/cargo/go install bodies baked verbatim into the
@@ -841,11 +825,11 @@ def render_env_report_html(record: dict) -> str:
         P.append('<div class="bx-body">')
         # Parse ONCE, and survive a record that does not conform. `shipped` above is the
         # RAW list (used only for the count); this is the typed read, and on a legacy
-        # record it raises. It used to raise straight out of the renderer, so freeze's
-        # `except` wrote "(html report render failed: ValidationError…)" and the user got
-        # NO page at all — for the one record class that most needs explaining. The
-        # sibling identity read three sections up has always degraded gracefully; this is
-        # the same courtesy, and it says WHY rather than silently showing nothing.
+        # record it raises. Letting that raise escape the renderer costs the user the
+        # ENTIRE page ("html report render failed: ValidationError…") for the one
+        # record class that most needs explaining — so degrade gracefully, the same
+        # courtesy as the sibling identity read three sections up, and say WHY rather
+        # than silently showing nothing.
         try:
             typed_shipped, shipped_parse_error = _shipped_binaries(r), ""
         except Exception as e:
@@ -876,14 +860,13 @@ def render_env_report_html(record: dict) -> str:
                     P.append(f"<pre>{_e(s.install_command.strip())}</pre>")
             P.append("</details>")
         else:
-            # SAY WHAT THE RECORD SAYS, NOT A CATEGORY (CS61). This branch fired the
-            # literal string "pure conda env" for ANY env with zero baked RUN steps —
-            # including a pip-built one, whose own Mode row (`engine pixi`) and
-            # Install-tier column (`pip (PyPI)`) sat two screens above contradicting
-            # it. A plain pip install leaves no baked command because it rides the
-            # ENGINE's PyPI layer and is pinned by the lock, not by a RUN line — so
-            # derive the sentence from the same `packages[].kind` the tier column
-            # reads, and only claim conda-only when the record shows conda-only.
+            # SAY WHAT THE RECORD SAYS, NOT A CATEGORY. "Pure conda env" claimed for
+            # ANY env with zero baked RUN steps contradicts a pip-built record's own
+            # Mode row (`engine pixi`) and Install-tier column (`pip (PyPI)`) two
+            # screens above. A plain pip install leaves no baked command because it
+            # rides the ENGINE's PyPI layer and is pinned by the lock, not by a RUN
+            # line — so derive the sentence from the same `packages[].kind` the tier
+            # column reads, and only claim conda-only when the record shows conda-only.
             _pypi = [p.get("name", "?") for p in (r.get("packages") or [])
                      if isinstance(p, dict) and p.get("kind") == "pypi"]
             if _pypi:
@@ -925,7 +908,7 @@ def render_env_report_html(record: dict) -> str:
     # Order: identity (image + two digests) → the two PRIMARY companion artifacts
     # (recipe = rebuild instructions, attestation = signed provenance) → delivery
     # (tarball / lock / registry). This HTML IS the canonical Layer-1 view;
-    # there is no sibling .md (retired in batch-3) so we don't list one.
+    # there is no sibling .md to list.
     art_rows: list[tuple[str, str]] = [
         ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
         ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),
@@ -997,16 +980,14 @@ def render_env_report_html(record: dict) -> str:
 
     # -- HOW VERIFIED (rendered FROM the contract — never a second account) --
     #
-    # F2, and the most expensive defect the 2026-08 sea trial found. This block was
-    # a hand-written paragraph per build_method, emitted unconditionally, asserting
-    # "every requested tool re-ran green via plain exec" and "POLICY_CLEAN — I12 and
-    # I13 passed". The generated coverage table DIRECTLY BELOW IT marked those same
-    # clauses `unobserved` / `n/a` on three records shipped to disk. The prose is the
-    # half a human reads first, so the page's most prominent claim was its least
-    # true one — an absent observation rounded up into "passed", under the heading
-    # "How this was verified", in the one artifact the acceptance criterion names.
+    # No hand-written paragraph per build_method: emitted unconditionally, such prose
+    # asserts "every requested tool re-ran green" and "POLICY_CLEAN — I12 and I13
+    # passed" over records whose generated coverage table DIRECTLY BELOW IT marks
+    # those same clauses `unobserved` / `n/a` — an absent observation rounded up into
+    # "passed", under the heading "How this was verified", in the prose half a human
+    # reads first.
     #
-    # Now: one bullet per Layer-1 guarantee. The STATEMENT comes from
+    # Instead: one bullet per Layer-1 guarantee. The STATEMENT comes from
     # env_honesty.LAYER1_GUARANTEES (the roster the registry lint keeps complete);
     # the VERDICT comes from env_honesty.guarantee_verdicts over THIS record. No
     # sentence here can contradict the record, because no sentence here was written
