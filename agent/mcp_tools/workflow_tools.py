@@ -135,7 +135,14 @@ def _local_trial_mounts(draft: dict):
     Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths.
     Output slots are skipped — they are overwritten with the trial's fresh scratch dir
     and are not expected to pre-exist. An empty template returns [] (nothing to run —
-    locus is not the blocker; the caller's own template checks decide)."""
+    locus is not the blocker; the caller's own template checks decide).
+
+    A PREFIX is present when its family is. An aligner index is named by a prefix
+    (`/idx/chr22` for `chr22.1.ht2` … `chr22.8.ht2`) that is neither a file nor a
+    directory; treating it as absent disabled I4 for every how-to with an index
+    input while the whole family sat on disk. A path that does not exist but has at
+    least one sibling named `<basename>.<suffix>` is on this host, mounted at its
+    parent."""
     from pathlib import Path
     from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
     from agent.models.core_data import usage_commands
@@ -158,9 +165,12 @@ def _local_trial_mounts(draft: dict):
             if not s.startswith("/"):
                 continue                       # not a path — a scalar param
             p = Path(s)
-            if not p.exists():
+            if p.exists():
+                d = str(p.parent if p.is_file() else p)
+            elif p.parent.is_dir() and any(p.parent.glob(p.name + ".*")):
+                d = str(p.parent)              # a prefix naming an on-disk family
+            else:
                 return None                    # cluster-locus / missing input
-            d = str(p.parent if p.is_file() else p)
             if d == "/":
                 continue                       # never bind-mount the host root
             if (d, d) not in mounts:
