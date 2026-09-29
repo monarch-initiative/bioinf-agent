@@ -129,6 +129,14 @@ def reports_dir() -> Path:
     return _zone(workspace_root() / "reports")
 
 
+def pipelines_dir() -> Path:
+    """Rendered pipelines — one directory per pipeline (the typed record, the
+    stage scripts, main.nf/config when Nextflow was requested, the samplesheet
+    template, the explain page). An ARTIFACT: rendered from a sealed workflow,
+    handed over as a directory, run without the agent."""
+    return _zone(workspace_root() / "pipelines")
+
+
 def scratch_dir(*parts: str) -> Path:
     """Transient state: job status, pipeline drafts, render staging, receipts.
 
@@ -202,6 +210,7 @@ def zones() -> dict[str, str]:
         "containers":       str(root / "containers"),
         "reports":          str(root / "reports"),
         "scratch":          str(root / "scratch"),
+        "pipelines":        str(root / "pipelines"),
         # Through the resolver, never re-derived: the config home is DECOUPLED
         # from the workspace (fixed ~/.bioinf_agent), and a second spelling
         # here is exactly how the doctor once validated a file the agent

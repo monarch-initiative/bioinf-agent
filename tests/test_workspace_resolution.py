@@ -161,7 +161,7 @@ CHECKOUT_ALLOWED = {
 #: ARTIFACT (must never resolve into it). A new zone has to pick a side here,
 #: which is the point.
 SYSTEM_ZONES = {"envs", "resources"}
-ARTIFACT_ZONES = {"containers", "reports", "scratch", "projects_access"}
+ARTIFACT_ZONES = {"containers", "reports", "scratch", "pipelines", "projects_access"}
 
 
 def test_the_checkout_allowlist_is_small_and_justified():

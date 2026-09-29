@@ -197,7 +197,7 @@ def print_layout() -> None:
         mark = "*" if Path(z[key]).exists() else " "
         print(f"   {mark} {key:<10} {z[key]}")
     print(f"  artifacts   {z['workspace_root']}  (what the agent produces — outlives any clone)")
-    for key in ("containers", "reports", "scratch"):
+    for key in ("containers", "reports", "scratch", "pipelines"):
         mark = "*" if Path(z[key]).exists() else " "
         print(f"   {mark} {key:<10} {z[key]}")
     print("  (* = present; the rest are created on first write)")

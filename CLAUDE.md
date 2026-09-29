@@ -83,6 +83,7 @@ Compose these. The agent picks the right primitive; the primitive enforces its c
 | `seal_workflow` | **Layer 2 — the LAST step.** Validate the run-side invariants, self-test the how-to, pin the env by digest, write the `WorkflowSpec` + RUN dashboard |
 | `generate_user_guide` | Opt-in Markdown export of a validated run. NOT the seal deliverable |
 | `describe_sealed_step` | Typed read of ONE recorded step of a sealed workflow — its command, inputs, outputs and locus — so you can re-run it without re-deriving it from the yaml. Query-only |
+| `render_pipeline` | **The PIPELINE layer — a sealed workflow over MANY samples.** Renders a sealed how-to as a runnable directory under `<workspace>/pipelines/<name>/`: a samplesheet (one row per sample), one stage per how-to command (re-run one alone), the frozen image per stage, runners for a laptop and for SLURM, and an explain page. **Plain bash + job arrays by default; `forms=["nextflow"]` is a REQUEST.** Invents nothing — every rendered command is checked against the sealed how-to before a file is written. Executes nothing |
 | `download_reference_database` | Large external data (>100 MB). Set `compute_env` to make a compute node pull it straight onto the cluster |
 | `acquire_reference_via_recipe` | **Use the authors' OWN gather script.** Runs it on a compute node, sha256-sidecars every file it produces, and records one cluster-locus `reference_database` entry so I5 can re-verify it at seal |
 | `run_pipeline_step` | Run + auto-validate a step on the HOST env — pre-freeze iteration only |

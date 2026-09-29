@@ -140,6 +140,7 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="submit_workflow_job", position=PRIMITIVE),
     _t(tool="run_production_pipeline", position=PRIMITIVE),
     _t(tool="run_step_on_cluster", position=PRIMITIVE),
+    _t(tool="render_pipeline", position=PRIMITIVE),
 
     # ---- PRIMITIVE rather than guard-railed ----------------------------------------
     # Each is either query-only (so it cannot bypass a gate — pure navigation, and
