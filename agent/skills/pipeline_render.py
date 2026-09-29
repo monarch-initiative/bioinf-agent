@@ -1,36 +1,40 @@
 """
-pipeline_render — the pipeline DIRECTORY: every requested form of ONE record, written once.
+pipeline_render — the pipeline DIRECTORY: one record, two ways to run it, written once.
 
-`render_pipeline_files(record, forms=, env=)` is pure: it asks each form renderer for its
-files, refuses when two forms disagree about a shared file, runs the honesty lint over
-the result, adds the explain page, the record itself and a manifest, and returns
-`{relative path: text}`. `render_pipeline_dir` writes that under a directory the caller
-names — `workspace.pipelines_dir()/<name>` for the MCP primitive — and refuses to
-replace a directory whose files were edited since they were rendered.
+`render_pipeline_files(record, env=)` is pure: it renders the by-hand item
+(`commands.sh`), the Nextflow item (`main.nf`, `nextflow.config`, `params.yaml`,
+`launcher.sh`, `samples.csv`), runs the honesty lint over both, adds the explain page,
+the record itself and a manifest, and returns `{relative path: text}`.
+`render_pipeline_dir` writes that under a directory the caller names —
+`workspace.pipelines_dir()/<name>` for the MCP primitive — and refuses to replace a
+directory whose files were edited since they were rendered.
 
 The honesty lint — `check_rendered_commands`
 -------------------------------------------
 The page's footer claims the render is mechanical: every command a form carries is a
 sealed how-to command with nothing but its placeholders rebound. The lint is what makes
-that a checked claim rather than a sentence. For each form it extracts the commands the
-rendered files will actually execute (the plain stage scripts, the Nextflow process
-script blocks) and requires each to match its stage's template MODULO BINDING: the
-template is cut at every binding unit — a `{PLACEHOLDER}`, or an artifact named inside
-an output slot, `{OUT}/<name>` — and the literal text between the units must appear
-verbatim, in order, with no command added or dropped. HOW a unit is spelled in a form
-(`${GTF}`, `${params.stranded}`, `${meta.sample}.counts.tsv`, a bare `.`) is the form's
-business and its own tests' job; that the sealed text around the units survived is
-this module's. A rendered command that fails is refused, never written.
+that a checked claim rather than a sentence. It extracts the commands each item will
+actually execute (the stage blocks of `commands.sh`, the Nextflow process script
+blocks) and requires each to match its stage's template MODULO BINDING: the template is
+cut at every binding unit — a `{PLACEHOLDER}`, or an artifact named inside an output
+slot, `{OUT}/<name>` — and the literal text between the units must appear verbatim, in
+order, with no command added or dropped. HOW a unit is spelled (`${GTF}`,
+`${params.stranded}`, `${meta.sample}.counts.tsv`, a bare `.`) is the item's business
+and its own tests' job; that the sealed text around the units survived is this module's.
+A rendered command that fails is refused, never written.
 
-The directory
--------------
+The directory, LOCKED
+---------------------
+    pipeline.html       the explain page: what this is and how to run it, both ways
     pipeline.yaml       the record (the ONE input of every file beside it)
-    pipeline.html       the explain page
-    MANIFEST.sha256     `sha256sum -c`-checkable; every file but itself. A later render
-                        into the same directory compares the files on disk against it
-                        and refuses to overwrite an edit unless told to
-    <form files>        see pipeline_render_plain / pipeline_render_nextflow
-    runs/               created by the runners, never by this module, never listed
+    commands.sh         one sample by hand: the sealed commands, values at the top
+    samples.csv         one row per sample (per_row only)
+    params.yaml         the shared parameters
+    main.nf             one inline process per stage
+    nextflow.config     local (docker) and slurm (apptainer) profiles, sizing, run records
+    launcher.sh         the cluster job: `sbatch launcher.sh`
+    MANIFEST.sha256     `sha256sum -c`-checkable; every file but itself
+    results/ runs/ work/    made by a run, never by this module, never listed
 """
 from __future__ import annotations
 
@@ -39,22 +43,19 @@ import re
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
+from agent.skills.pipeline_commands import (CommandsRenderError, commands_in_script,
+                                            render_commands)
 from agent.skills.pipeline_page_html import render_pipeline_page
-from agent.skills.pipeline_record import (RECORD_FILENAME, FormT, PipelineDerivationError,
+from agent.skills.pipeline_record import (RECORD_FILENAME, PipelineDerivationError,
                                           PipelineRecord, PipelineStage, _TOKEN_CHARS,
                                           _PLACEHOLDER_RE, _collapse, record_yaml,
                                           render_samplesheet)
 from agent.skills.pipeline_render_nextflow import render_nextflow
-from agent.skills.pipeline_render_plain import _stage_base, render_plain
 
 PAGE_FILENAME = "pipeline.html"
 MANIFEST_FILENAME = "MANIFEST.sha256"
+COMMANDS_FILENAME = "commands.sh"
 SAMPLESHEET_FILENAME = "samples.csv"
-
-FORM_RENDERERS: dict[str, Callable[..., dict[str, str]]] = {
-    "plain": render_plain,
-    "nextflow": render_nextflow,
-}
 
 #: A manifest line, as `sha256sum` writes and reads it.
 _MANIFEST_LINE_RE = re.compile(r"^([0-9a-f]{64})  (.+)$")
@@ -62,16 +63,12 @@ _MANIFEST_LINE_RE = re.compile(r"^([0-9a-f]{64})  (.+)$")
 #: file name — never whitespace and never a shell operator, so a command with something
 #: appended after its last binding does not pass as "the binding spelled longer".
 _BOUND_UNIT = r"([^\s|;&<>]+?)"
-#: Stands in for the page's own hash while the page is rendered: the page lists every
-#: file's byte size, the manifest lists the page's hash, and a fixed-width stand-in is
-#: what lets both be true of the bytes finally written.
-_PENDING_HASH = "0" * 64
 
 
 class PipelineRenderError(PipelineDerivationError):
-    """A refusal at render time: the forms disagree, a rendered command drifted from
-    its sealed template, or the target directory holds edits. Same shape as a
-    derivation refusal (`code`, `error`, `remedy`) so one wrapper handles both."""
+    """A refusal at render time: a rendered command drifted from its sealed template,
+    an item cannot carry the record, or the target directory holds edits. Same shape
+    as a derivation refusal (`code`, `error`, `remedy`) so one wrapper handles both."""
 
 
 # ── the honesty lint ────────────────────────────────────────────────────────
@@ -104,15 +101,11 @@ def command_matches_template(rendered: str, template: str, out_slots: list[str])
         _collapse(rendered.strip())) is not None
 
 
-def _plain_commands(files: Mapping[str, str], stage: PipelineStage) -> Optional[list[str]]:
-    """The commands `stages/NN_<stage>.sh` executes: the script ends with them, one per
-    line, after its header and the preconditions on artifacts from earlier stages."""
-    text = files.get(f"stages/{_stage_base(stage)}.sh")
+def _commands_sh(files: Mapping[str, str], stage: PipelineStage) -> Optional[list[str]]:
+    text = files.get(COMMANDS_FILENAME)
     if text is None:
         return None
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    n = len(stage.commands)
-    return lines[-n:] if n else []
+    return commands_in_script(text, stage) or []
 
 
 def _nextflow_commands(files: Mapping[str, str], stage: PipelineStage) -> Optional[list[str]]:
@@ -142,40 +135,37 @@ def _nextflow_commands(files: Mapping[str, str], stage: PipelineStage) -> Option
 
 
 _EXTRACTORS: dict[str, Callable[[Mapping[str, str], PipelineStage], Optional[list[str]]]] = {
-    "plain": _plain_commands,
-    "nextflow": _nextflow_commands,
+    COMMANDS_FILENAME: _commands_sh,
+    "main.nf": _nextflow_commands,
 }
 
 
-def check_rendered_commands(record: PipelineRecord, files: Mapping[str, str],
-                            forms: tuple[str, ...]) -> None:
-    """Refuse unless every command each form will execute is its stage's sealed template
-    modulo binding, with none added and none dropped. `forms` names the forms whose
-    files are present; a form's files missing entirely is a refusal too — a lint that
-    finds nothing to check must not pass."""
+def check_rendered_commands(record: PipelineRecord, files: Mapping[str, str]) -> None:
+    """Refuse unless every command each item will execute is its stage's sealed template
+    modulo binding, with none added and none dropped. An item's file missing entirely is
+    a refusal too — a lint that finds nothing to check must not pass."""
     slots = list(record.output_slots)
-    for form in forms:
-        extract = _EXTRACTORS[form]
+    for item, extract in _EXTRACTORS.items():
         for stage in record.stages:
             rendered = extract(files, stage)
             if rendered is None:
                 raise PipelineRenderError(
                     "pipeline.render_drift",
-                    f"form {form!r} rendered no file carrying stage {stage.name}'s commands",
+                    f"{item} was not rendered, so stage {stage.name}'s commands cannot be checked",
                     "this is a renderer defect, not a record problem; report it")
             if len(rendered) != len(stage.commands):
                 raise PipelineRenderError(
                     "pipeline.render_drift",
-                    f"form {form!r}, stage {stage.name}: the rendered file executes "
-                    f"{len(rendered)} command(s) but the sealed how-to has "
-                    f"{len(stage.commands)} for this stage: {rendered!r}",
+                    f"{item}, stage {stage.name}: the rendered file executes {len(rendered)} "
+                    f"command(s) but the sealed how-to has {len(stage.commands)} for this stage: "
+                    f"{rendered!r}",
                     "this is a renderer defect, not a record problem; report it")
             for got, template in zip(rendered, stage.commands):
                 if not command_matches_template(got, template, slots):
                     raise PipelineRenderError(
                         "pipeline.render_drift",
-                        f"form {form!r}, stage {stage.name}: the rendered command is not "
-                        f"the sealed template with only its placeholders rebound.\n"
+                        f"{item}, stage {stage.name}: the rendered command is not the sealed "
+                        f"template with only its placeholders rebound.\n"
                         f"  sealed:   {_collapse(template.strip())}\n"
                         f"  rendered: {_collapse(got.strip())}",
                         "this is a renderer defect, not a record problem; report it")
@@ -194,15 +184,10 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _manifest(files: Mapping[str, str], *, pending: tuple[str, ...] = ()) -> str:
-    """`sha256sum` format over every file but the manifest itself, sorted by path.
-    Files named in `pending` get the stand-in hash (same width as a real one)."""
-    lines = []
-    for path in sorted(files):
-        if path == MANIFEST_FILENAME:
-            continue
-        digest = _PENDING_HASH if path in pending else _sha256_text(files[path])
-        lines.append(f"{digest}  {path}")
+def _manifest(files: Mapping[str, str]) -> str:
+    """`sha256sum` format over every file but the manifest itself, sorted by path."""
+    lines = [f"{_sha256_text(files[path])}  {path}"
+             for path in sorted(files) if path != MANIFEST_FILENAME]
     return "\n".join(lines) + "\n"
 
 
@@ -219,63 +204,42 @@ def parse_manifest(text: str) -> dict[str, str]:
     return out
 
 
-def _resolve_forms(record: PipelineRecord, forms: Optional[tuple[str, ...]]) -> tuple[str, ...]:
-    chosen = tuple(forms) if forms else tuple(record.forms)
-    if not chosen:
-        raise PipelineRenderError(
-            "pipeline.no_forms", "no form to render: the record names none and the caller chose none",
-            f"pass forms= naming one or more of {sorted(FORM_RENDERERS)}")
-    unknown = [f for f in chosen if f not in FORM_RENDERERS]
-    if unknown:
-        raise PipelineRenderError(
-            "pipeline.unknown_form", f"unknown form(s) {unknown}",
-            f"forms must be among {sorted(FORM_RENDERERS)}")
-    return tuple(dict.fromkeys(chosen))
-
-
-def render_pipeline_files(record: PipelineRecord, *, forms: Optional[tuple[str, ...]] = None,
-                          env: Optional[Mapping] = None) -> dict[str, str]:
+def render_pipeline_files(record: PipelineRecord, *, env: Optional[Mapping] = None) -> dict[str, str]:
     """Every file of the pipeline directory, `{relative path: text}`, linted. Pure.
 
-    `forms` defaults to the record's own; `env` is a compute-env block from
-    projects_access.yaml handed to each form renderer. A refusal from a form renderer
-    (a `ValueError` naming its remedy) is re-raised as `PipelineRenderError` so the
-    caller sees one exception family."""
-    chosen = _resolve_forms(record, forms)
+    `env` is a compute-env block from projects_access.yaml, handed to the Nextflow
+    renderer for the launcher's SLURM policy. A refusal from an item's renderer (a
+    `ValueError` naming its remedy) is re-raised as `PipelineRenderError` so the caller
+    sees one exception family."""
     files: dict[str, str] = {}
-    for form in chosen:
-        try:
-            rendered = FORM_RENDERERS[form](record, env=dict(env) if env is not None else None)
-        except PipelineDerivationError:
-            raise
-        except ValueError as e:
+    try:
+        files[COMMANDS_FILENAME] = render_commands(record)
+    except CommandsRenderError as e:
+        raise PipelineRenderError(
+            "pipeline.form_refused", f"commands.sh cannot carry this record: {e}",
+            "change the record or the sealed how-to as the message says") from e
+    try:
+        rendered = render_nextflow(record, env=dict(env) if env is not None else None)
+    except PipelineDerivationError:
+        raise
+    except ValueError as e:
+        raise PipelineRenderError(
+            "pipeline.form_refused", f"the Nextflow form cannot carry this record: {e}",
+            "change the record (stages=, resources=, per_sample=) as the message says") from e
+    for path, text in rendered.items():
+        if path in files:
             raise PipelineRenderError(
-                "pipeline.form_refused", f"the {form} form cannot carry this record: {e}",
-                "change the record (stages=, resources=, per_sample=) or drop this form") from e
-        for path, text in rendered.items():
-            if path in files and files[path] != text:
-                raise PipelineRenderError(
-                    "pipeline.render_drift",
-                    f"forms disagree about {path}: {form!r} renders it differently from an "
-                    f"earlier form",
-                    "this is a renderer defect, not a record problem; report it")
-            files[path] = text
+                "pipeline.render_drift", f"two items rendered {path}",
+                "this is a renderer defect, not a record problem; report it")
+        files[path] = text
     for reserved in (RECORD_FILENAME, PAGE_FILENAME, MANIFEST_FILENAME):
         if reserved in files:
             raise PipelineRenderError(
-                "pipeline.render_drift", f"a form rendered the reserved file {reserved}",
+                "pipeline.render_drift", f"an item rendered the reserved file {reserved}",
                 "this is a renderer defect, not a record problem; report it")
-    check_rendered_commands(record, files, chosen)
-
+    check_rendered_commands(record, files)
     files[RECORD_FILENAME] = record_yaml(record)
-    # The page lists every file with its size, the manifest included; the manifest
-    # lists the page's hash. Render the page over a manifest whose line for the page
-    # is a fixed-width stand-in, then write the real manifest — same byte count.
-    provisional = dict(files)
-    provisional[PAGE_FILENAME] = ""
-    provisional[MANIFEST_FILENAME] = _manifest(provisional, pending=(PAGE_FILENAME,))
-    del provisional[PAGE_FILENAME]
-    files[PAGE_FILENAME] = render_pipeline_page(record, provisional)
+    files[PAGE_FILENAME] = render_pipeline_page(record)
     files[MANIFEST_FILENAME] = _manifest(files)
     return files
 
@@ -294,19 +258,18 @@ def _edited_since_render(out_dir: Path, manifest: Mapping[str, str]) -> list[str
 
 
 def render_pipeline_dir(record: PipelineRecord, out_dir: Path, *,
-                        forms: Optional[tuple[str, ...]] = None,
                         env: Optional[Mapping] = None,
                         overwrite: bool = False) -> dict:
-    """Render every form into `out_dir` and return what was written.
+    """Render the directory into `out_dir` and return what was written.
 
     An existing, non-empty `out_dir` is replaced only when it is a previous render of
     this system (it carries a manifest) whose files are unedited; otherwise the call
-    refuses — a hand-edited samples.csv or params.env is the user's work — unless
+    refuses — a hand-edited samples.csv or params.yaml is the user's work — unless
     `overwrite=True`. Files of the previous render that this render does not produce
-    are removed; anything the manifest never listed (`runs/`, the user's own files)
-    is left alone. Every `*.sh` is made executable."""
+    are removed; anything the manifest never listed (`results/`, `runs/`, `work/`, the
+    user's own files) is left alone. Every `*.sh` is made executable."""
     out_dir = Path(out_dir)
-    files = render_pipeline_files(record, forms=forms, env=env)
+    files = render_pipeline_files(record, env=env)
 
     previous: dict[str, str] = {}
     existing = [p for p in out_dir.iterdir()] if out_dir.is_dir() else []
@@ -352,7 +315,6 @@ def render_pipeline_dir(record: PipelineRecord, out_dir: Path, *,
     return {
         "dir": str(out_dir),
         "files": sorted(files),
-        "forms": list(_resolve_forms(record, forms)),
         "page": str(out_dir / PAGE_FILENAME),
         "record": str(out_dir / RECORD_FILENAME),
         "manifest": str(out_dir / MANIFEST_FILENAME),
@@ -361,6 +323,6 @@ def render_pipeline_dir(record: PipelineRecord, out_dir: Path, *,
     }
 
 
-__all__ = ["PipelineRenderError", "FORM_RENDERERS", "PAGE_FILENAME", "MANIFEST_FILENAME",
+__all__ = ["PipelineRenderError", "PAGE_FILENAME", "MANIFEST_FILENAME", "COMMANDS_FILENAME",
            "command_matches_template", "check_rendered_commands", "parse_manifest",
            "render_pipeline_files", "render_pipeline_dir"]

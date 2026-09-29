@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from pipeline_fixtures import DIGEST, GTF, INDEX, sealed_rnaseq_spec
+from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_render_nextflow import render_nextflow
@@ -59,12 +59,11 @@ def _workflow_block(main_nf: str) -> str:
 
 
 class TestFileSet:
-    def test_a_per_row_record_renders_six_files_and_a_linear_one_five(self):
+    def test_a_per_row_record_renders_five_files_and_a_linear_one_four(self):
         assert set(render_nextflow(_record())) == {
-            "main.nf", "nextflow.config", "params.yaml", "launcher.sh", "nextflow_local.sh",
-            "samples.csv"}
+            "main.nf", "nextflow.config", "params.yaml", "launcher.sh", "samples.csv"}
         assert set(render_nextflow(_linear())) == {
-            "main.nf", "nextflow.config", "params.yaml", "launcher.sh", "nextflow_local.sh"}
+            "main.nf", "nextflow.config", "params.yaml", "launcher.sh"}
 
     def test_every_file_opens_by_naming_the_sealed_workflow_and_what_to_edit_instead(self):
         files = render_nextflow(_record(), env=ENV)
@@ -124,7 +123,7 @@ class TestMainNfPerRow:
         assert f"params.gtf = '{GTF}'" in main
         assert "params.samplesheet = 'samples.csv'" in main
         assert "params.outdir = 'results'" in main
-        assert "params.run_id = 'manual'" in main
+        assert "run_id" not in main
         # per-sample inputs are samplesheet columns, never params
         assert "params.reads" not in main and "params.sample " not in main
         assert "${meta.sample}" in main
@@ -170,16 +169,13 @@ class TestMainNfPerRow:
                 "process HISAT2 {") in main
         assert f"// stage 3 of 3 · htseq-count · image {DIGEST} · derived from sealed step(s) [4, 7, 10]" in main
 
-    def test_tag_and_publish_dir_only_where_something_is_published(self):
+    def test_tag_and_every_stage_publishes_what_it_writes_into_the_rows_directory(self):
         main = render_nextflow(_record())["main.nf"]
-        hisat2 = _process_block(main, "HISAT2")
-        assert 'tag "${meta.sample}"' in hisat2
-        assert 'publishDir "${params.outdir}/${meta.sample}", mode: \'copy\', overwrite: true' in hisat2
-        count = _process_block(main, "HTSEQ_COUNT")
-        assert 'publishDir "${params.outdir}/${meta.sample}", mode: \'copy\', overwrite: true' in count
-        samtools = _process_block(main, "SAMTOOLS")
-        assert 'tag "${meta.sample}"' in samtools
-        assert "publishDir" not in samtools               # aligned.bam.bai: nothing declared it
+        for name in ("HISAT2", "SAMTOOLS", "HTSEQ_COUNT"):
+            block = _process_block(main, name)
+            assert "tag { meta.sample }" in block
+            assert 'publishDir { "${params.outdir}/${meta.sample}" }, mode: \'copy\', overwrite: true' in block
+        assert "pattern:" not in main                     # everything a stage writes is published
         assert "stageInMode" not in main                  # no stage rewrites what it consumed
 
     def test_inputs_in_the_fixed_order_meta_tuple_then_shared_paths_then_prefix_families(self):
@@ -228,12 +224,12 @@ class TestMainNfPerRow:
         rec.stages[1].stage_in_copy = True
         assert "stageInMode 'copy'" in _process_block(render_nextflow(rec)["main.nf"], "SAMTOOLS")
 
-    def test_a_mixed_stage_publishes_only_its_declared_outputs_by_pattern(self):
+    def test_a_merged_stage_publishes_both_its_artifacts(self):
         rec = _record(stages=[[0, 1], [2]], stage_names=["ALIGN", "COUNT"])
         main = render_nextflow(rec)["main.nf"]
         align = _process_block(main, "ALIGN")
-        assert 'publishDir "${params.outdir}/${meta.sample}", mode: \'copy\', overwrite: true, pattern: \'aligned.bam\'' in align
-        assert "pattern: 'aligned.bam.bai'" not in align
+        assert 'publishDir { "${params.outdir}/${meta.sample}" }, mode: \'copy\', overwrite: true' in align
+        assert "pattern:" not in align
         assert ("    output:\n"
                 "    tuple val(meta), path('aligned.bam'), emit: aligned_bam\n"
                 "    tuple val(meta), path('aligned.bam.bai'), emit: aligned_bam_bai\n") in align
@@ -301,7 +297,7 @@ class TestMainNfLinear:
 class TestConfig:
     def test_the_two_profiles(self):
         cfg = render_nextflow(_record(), env=ENV)["nextflow.config"]
-        assert "params.run_id = 'manual'" in cfg
+        assert "run_id" not in cfg
         assert "params.sif = ''" in cfg
         assert ("profiles {\n"
                 "    local {\n"
@@ -323,11 +319,22 @@ class TestConfig:
                 "            queue = 'cpu'\n"
                 "            clusterOptions = '--account=acct'\n") in cfg
 
-    def test_trace_and_report_land_under_the_run_id_and_there_is_no_timeline(self):
+    def test_trace_and_report_land_under_a_timestamped_run_dir_and_the_trace_carries_each_command(self):
         cfg = render_nextflow(_record())["nextflow.config"]
-        assert 'trace {\n    enabled = true\n    file = "runs/${params.run_id}/trace.txt"\n}' in cfg
-        assert 'report {\n    enabled = true\n    file = "runs/${params.run_id}/report.html"\n}' in cfg
+        assert "params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')" in cfg
+        assert "def " not in cfg                           # the strict config parser allows no declarations
+        assert ('trace {\n    enabled = true\n    file = "runs/${params.run_stamp}/trace.txt"\n'
+                "    fields = 'task_id,name,status,exit,container,realtime,%cpu,peak_rss,workdir,script'\n}") in cfg
+        assert 'report {\n    enabled = true\n    file = "runs/${params.run_stamp}/report.html"\n}' in cfg
         assert "timeline" not in cfg
+
+    def test_the_sif_path_is_prefilled_when_the_render_named_a_cluster(self):
+        sif = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
+        rec = _record(sif_paths={REQUEST_KEY: sif})
+        files = render_nextflow(rec, env=ENV)
+        assert f"params.sif = '{sif}'" in files["nextflow.config"]
+        assert f"\nsif: {sif}\n" in files["params.yaml"]
+        assert "stage_apptainer_image" in files["params.yaml"]
 
     def test_without_an_env_there_is_no_module_load_no_account_no_queue(self):
         cfg = render_nextflow(_record())["nextflow.config"]
@@ -450,7 +457,7 @@ class TestLaunchers:
             "#!/usr/bin/env bash\n"
             "# rendered from sealed workflow rnaseq_counts_workflow (pipeline rnaseq_counts) — "
             "edit params.yaml / samples.csv, not this file\n"
-            "# The manager job: it submits the stages and does none of the work.\n"
+            "# The manager job: it submits one job per stage and sample, and does none of the work.\n"
             "#SBATCH --job-name=rnaseq_counts\n"
             "#SBATCH --time=2-00:00:00\n"
             "#SBATCH --mem=4G\n"
@@ -464,51 +471,42 @@ class TestLaunchers:
             "#SBATCH --mail-type=END\n"
             "#SBATCH --mail-user=someone@example.org\n")
 
-    def test_the_manager_job_body(self):
+    def test_the_manager_job_body_is_strict_mode_modules_nxf_home_and_one_nextflow_line(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
-        assert ("\nset -euo pipefail\n"
-                'cd "${SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}"\n'
-                "\n"
-                "module purge\n"
-                "module load apptainer/1.5.0 nextflow/25.04.7\n"
-                "\n"
-                'export NXF_HOME="$PWD/.nextflow_home"\n'
-                "RUN_ID=$(date +%Y%m%d_%H%M%S)\n"
-                'mkdir -p "runs/$RUN_ID"\n'
-                'cp params.yaml samples.csv "runs/$RUN_ID/"\n'
-                'nextflow run main.nf -profile slurm -params-file params.yaml --run_id "$RUN_ID" -resume "$@"\n') in sh
-        assert sh.rstrip().endswith("#   nextflow clean -f")
-        assert "never cleaned for you" in sh
+        body = sh.split("#SBATCH --mail-user=someone@example.org\n", 1)[1]
+        assert body.startswith(
+            "\nset -euo pipefail   # bash strict mode: stop at the first failing command, "
+            "an unset variable, or a failure inside a pipe\n"
+            "\n"
+            "module load apptainer/1.5.0 nextflow/25.04.7\n")
+        assert 'export NXF_HOME="$PWD/.nextflow_home"\n' in body
+        assert 'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n' in body
+        commands = [ln for ln in body.splitlines() if ln.strip() and not ln.startswith("#")]
+        assert commands == ["set -euo pipefail   # bash strict mode: stop at the first failing command, "
+                            "an unset variable, or a failure inside a pipe",
+                            "module load apptainer/1.5.0 nextflow/25.04.7",
+                            'export NXF_HOME="$PWD/.nextflow_home"',
+                            'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"']
+        assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
+        assert "nextflow clean -f" in sh and "never cleaned for you" in sh
 
     def test_without_an_env_no_modules_no_policy_lines_and_the_gap_is_stated(self):
         sh = render_nextflow(_record())["launcher.sh"]
         assert not re.search(r"^module ", sh, re.M)
         assert "--partition" not in sh and "--account" not in sh and "--mail" not in sh
-        assert "# module load: rendered without a compute env, so no modules are loaded here;" in sh
+        assert "# Rendered without a compute env: make apptainer and nextflow available before" in sh
 
     def test_an_env_missing_a_module_name_gets_no_module_lines_and_a_comment(self):
         env = {k: v for k, v in ENV.items() if k != "nextflow_module"}
         sh = render_nextflow(_record(), env=env)["launcher.sh"]
         assert not re.search(r"^module ", sh, re.M)
-        assert "# module load: the env declares no apptainer_module / nextflow_module" in sh
+        assert "# The env declares no apptainer_module / nextflow_module" in sh
         assert "#SBATCH --account=acct" in sh                 # the policy still applies
 
-    def test_the_linear_launcher_copies_only_params_yaml(self):
+    def test_the_launcher_is_the_same_for_a_linear_record(self):
         sh = render_nextflow(_linear())["launcher.sh"]
-        assert 'cp params.yaml "runs/$RUN_ID/"\n' in sh and "samples.csv" not in sh
-
-    def test_the_laptop_runner_has_no_header_no_modules_and_the_local_profile(self):
-        sh = render_nextflow(_record(), env=ENV)["nextflow_local.sh"]
-        assert sh.startswith("#!/usr/bin/env bash\n# rendered from sealed workflow rnaseq_counts_workflow")
-        assert "#SBATCH" not in sh and "module" not in sh
-        assert ("set -euo pipefail\n"
-                'cd "$(dirname "$0")"\n'
-                "\n"
-                'export NXF_HOME="$PWD/.nextflow_home"\n'
-                "RUN_ID=$(date +%Y%m%d_%H%M%S)\n"
-                'mkdir -p "runs/$RUN_ID"\n'
-                'cp params.yaml samples.csv "runs/$RUN_ID/"\n'
-                'nextflow run main.nf -profile local -params-file params.yaml --run_id "$RUN_ID" -resume "$@"\n') in sh
+        assert 'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n' in sh
+        assert "samples.csv" not in sh
 
 
 # ===========================================================================

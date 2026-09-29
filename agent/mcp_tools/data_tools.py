@@ -20,6 +20,7 @@ from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.models import core_data as _core_data
 from agent.skills import resources as _resources_skill
 from agent.skills import tool_surface as _tool_surface
+from agent.skills import workspace as _workspace
 from agent.skills.outcomes import refused
 @mcp.tool()
 def download_reference_database(
@@ -36,7 +37,8 @@ def download_reference_database(
 ) -> dict:
     """Download a reference database large enough to need watchdog-safe execution.
 
-    DEFAULT (compute_env=""): download to the LOCAL agent machine at `local_path`.
+    DEFAULT (compute_env=""): download to the LOCAL agent machine, at `local_path`
+    when given, else into the local common-data zone, `<workspace>/common_data/<name>/`.
     Uses run_in_background internally — agent doesn't have to remember to wrap
     the curl in async, doesn't have to worry about --silent / -q traps that
     killed the original Exomiser install. Auto-records a ReferenceDatabase
@@ -79,10 +81,11 @@ def download_reference_database(
             version=version, description=description,
             extract=extract, pipeline_id=pipeline_id)
 
+    # A local download lands in the local common-data zone unless the caller says
+    # where — the same place a cluster download lands on its env.
     if not (local_path or "").strip():
-        return refused("data.download_db_missing_args", success=False,
-                       error="local_path is required for a local download "
-                             "(or set compute_env to download onto a cluster)")
+        filename = url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0] or name
+        local_path = str(_workspace.common_data_dir() / name / filename)
 
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)

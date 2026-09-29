@@ -1,24 +1,25 @@
 """
 pipeline_page_html — the EXPLAIN page of a rendered pipeline: the one page a human
 reads before running it on real data, rendered PURELY from the typed
-`PipelineRecord` (agent/skills/pipeline_record.py) plus the names of the files the
-form renderers wrote beside it.
+`PipelineRecord` (agent/skills/pipeline_record.py).
 
-The page says everything the record knows. A fact the record carries and the page
-does not print leaves the reader the yaml as their only recourse, which is what this
-page exists to spare them — so every stage, param, column, artifact, default,
-provenance step and note reaches the page, and every measurement is printed WITH
-the authority the record gives it: a number without its authority may be wrong by
-two orders of magnitude and look exactly like one that is right.
+The page has one fixed shape: the header banner, the picture, the parameters and
+samples, how to run it locally, how to run it on the cluster, the stages, the footer.
+A pipeline directory offers two ways to run and no more — ONE sample by hand
+(`commands.sh`) and every sample with Nextflow — and the page shows each, at each
+locus, as three steps a person can follow without thinking: change directory, enter
+the environment, run. Every run line comes from `pipeline_commands`, the ONE
+spelling, so the page and `commands.sh` cannot disagree.
 
 Honesty guarantees, made structural:
-  • PURE — reads only the record and the file names. No clock, no disk, no network.
+  • PURE — reads only the record. No clock, no disk, no network.
   • ESCAPED — every value passes through the shared escaper, in the HTML and inside
-    the SVG; a command, a path or a note can never inject markup.
-  • ABSENCE IS STATED — a None renders as "unrecorded" / "never observed" /
-    "not requested"; it is never rounded up to a number or a "yes".
-  • DETERMINISTIC — same record + same file names → same bytes. The picture is laid
-    out arithmetically from label lengths: no layout library, no font metrics read.
+    the SVG; a command, a path or a description can never inject markup.
+  • ABSENCE IS STATED — a None renders as "unrecorded" / "never observed" / "not
+    requested" / a placeholder that says where the value will come from; it is never
+    rounded up to a number or a path.
+  • DETERMINISTIC — same record → same bytes. The picture is laid out arithmetically
+    from label lengths: no layout library, no font metrics read.
 
 Self-contained: the shared shell's CSS plus the picture's own (scoped inside the
 <svg>), one inline SVG, and a few lines of inline JS that only toggle CSS classes on
@@ -30,25 +31,16 @@ geometry, exposed so a test can measure it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
-from typing import Mapping, Optional
+from typing import Optional
 
-from agent.skills.env_report_html import (_close_page, _e, _empty, _header_banner,
-                                          _kv_table, _open_page)
+from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
+from agent.skills.pipeline_commands import enter_image, example_values, nextflow_run, sif_for
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineRecord,
                                           PipelineStage, StageResources)
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
 FOOTER = ("This page shows a pipeline derived from a sealed run; it proves the render is "
           "mechanical and traceable, never that the analysis is biologically right.")
-
-#: Which file names mean which form was rendered. Keys are matched on the basename of
-#: each entry of `files`, so a form renderer may nest its files in a subdirectory.
-_FORM_FILES: dict[str, tuple[str, ...]] = {
-    "plain": ("run_all.sh", "run_local.sh"),
-    "nextflow": ("main.nf", "launcher.sh", "nextflow_local.sh", "nextflow.config"),
-}
-_MANIFEST = "MANIFEST.sha256"
 
 #: `StageResources.measured_authority` → how it is shown. Every state the record can
 #: carry has its own rendering; a state that rendered like another state would BE that
@@ -58,23 +50,18 @@ _AUTHORITY_HTML = {
     "authoritative": '<span class="ok">authoritative</span>',
     "not_authoritative": '<span class="warn">NOT authoritative</span>',
     "unrecorded": '<span class="muted">authority unrecorded</span>',
-    "mixed": '<span class="warn">mixed authority across the sealed steps</span>',
+    "mixed": '<span class="warn">mixed authority</span>',
     "none": '<span class="muted">no sealed step measured this stage</span>',
 }
-_AUTHORITY_NOTE = {
-    "not_authoritative": (
-        "Measured under emulation: the wall time and CPU figures are wrong by roughly two "
-        "orders of magnitude and the peak RSS is not representative. Do not size a request "
-        "from them; re-run the stage on hardware matching the image's architecture."),
-    "unrecorded": (
-        "The sealed steps behind this stage did not record whether they were measured "
-        "natively or under emulation, so these numbers are of unknown authority — neither "
-        "known-good nor known-bad."),
-    "mixed": (
-        "The sealed steps behind this stage disagree on authority (native, emulated or "
-        "unrecorded), so the numbers combine trustworthy and untrustworthy measurements. "
-        "Do not size a request from them."),
-}
+#: The states under which a measurement must not be used to size a request.
+_UNTRUSTED_AUTHORITY = ("not_authoritative", "unrecorded", "mixed")
+#: A placeholder's value kind, in words.
+_VALUE_KIND = {"path": "a path", "prefix": "a prefix — a family of files named after it",
+               "value": "a value"}
+#: Where the Nextflow form records what ran.
+_WHAT_RAN = ("What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists every task's command, "
+             "<code>runs/&lt;timestamp&gt;/report.html</code> the resources, and <code>nextflow log</code> "
+             "the launch line.")
 
 # ── the picture: geometry ────────────────────────────────────────────────────
 #
@@ -114,9 +101,9 @@ def _short_digest(d: Optional[str]) -> str:
 
 
 def _results_dir(record: PipelineRecord, stage: PipelineStage) -> str:
-    """Where both forms publish this stage's outputs: one directory per row, shared by
-    every stage of that row — the layout the sealed how-to ran in. A cohort stage runs
-    once and a linear pipeline has one implicit row, so both publish flat."""
+    """Where a stage's outputs land: one directory per row, shared by every stage of
+    that row — the layout the sealed how-to ran in. A cohort stage runs once and a
+    linear pipeline has one implicit row, so both publish flat."""
     if record.shape == "per_row" and stage.scope == "per_sample":
         return "results/<sample>/"
     return "results/"
@@ -310,8 +297,6 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     outs: list[_Node] = []
     for st in record.stages:
         for o in st.outputs:
-            if not o.published:
-                continue
             d = _results_dir(record, st)
             outs.append(_Node(id=f"o:{st.name}/{o.artifact}", kind="output", name=o.artifact,
                               line1=o.artifact, line2=d,
@@ -504,16 +489,6 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
 # ── the sections ─────────────────────────────────────────────────────────────
 
 
-def _forms_in_files(files: Mapping[str, str]) -> dict[str, list[str]]:
-    names = sorted({PurePosixPath(k).name for k in files})
-    found: dict[str, list[str]] = {}
-    for form, expected in _FORM_FILES.items():
-        hits = [n for n in expected if n in names]
-        if hits:
-            found[form] = hits
-    return found
-
-
 def _section(sid: str, title: str, note: str, body: str) -> str:
     n = f' <span class="note">{_e(note)}</span>' if note else ""
     return f'<section class="bx" id="{sid}"><h2>{_e(title)}{n}</h2><div class="bx-body">{body}</div></section>'
@@ -540,7 +515,36 @@ def _digest_cell(d: Optional[str]) -> str:
     return f"<b>{_e(_short_digest(d))}</b> <code>{_e(d)}</code>"
 
 
-def _header(record: PipelineRecord, found: dict[str, list[str]]) -> str:
+def _steps(steps: list[tuple[str, list[str]]]) -> str:
+    """The three steps as a numbered list: each entry is its sentence (HTML, callers
+    escape) and the lines to type, in one <pre>; a step with nothing to type shows
+    the sentence alone."""
+    items: list[str] = []
+    for text, lines in steps:
+        typed = "\n".join(lines)
+        pre = f"<pre>{_e(typed)}</pre>" if lines else ""
+        items.append(f"<li>{text}{pre}</li>")
+    return "<ol>" + "".join(items) + "</ol>"
+
+
+def _results_html(record: PipelineRecord) -> str:
+    """Where a run's results land, as the record lays them out."""
+    if record.shape != "per_row":
+        return "Results land in <code>results/</code>."
+    cohort = [s.name for s in sorted(record.stages, key=lambda s: s.index) if s.scope == "cohort"]
+    out = "Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample"
+    if cohort:
+        out += (f" (cohort stage{'s' if len(cohort) != 1 else ''} {_e(', '.join(cohort))} "
+                "in <code>results/</code>)")
+    return out + "."
+
+
+def _nextflow_title(record: PipelineRecord) -> str:
+    return ("Every sample in <code>samples.csv</code>, with Nextflow" if record.samplesheet is not None
+            else "The one row, with Nextflow")
+
+
+def _header(record: PipelineRecord) -> str:
     if record.shape == "per_row":
         n = len(record.samplesheet.rows) if record.samplesheet else 0
         shape = f"per_row — {n} example row{'s' if n != 1 else ''} in <code>samples.csv</code>"
@@ -548,24 +552,21 @@ def _header(record: PipelineRecord, found: dict[str, list[str]]) -> str:
     else:
         shape = "linear — runs once, params only"
         pill = '<span class="pill na">linear</span>'
-    forms = ", ".join(f"<b>{_e(f)}</b> ({', '.join(f'<code>{_e(x)}</code>' for x in xs)})"
-                      for f, xs in found.items()) or "none — no form files were rendered beside this record"
-    missing = [f for f in record.forms if f not in found]
-    if missing:
-        forms += (f' <span class="warn">declared in the record but not rendered: '
-                  f'{_e(", ".join(missing))}</span>')
     path = f"<code>{_e(record.sealed_workflow_path)}</code>" if record.sealed_workflow_path else _muted("path unrecorded")
+    cluster = ""
+    if record.compute_env:
+        mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
+        cluster = f"<b>{_e(record.compute_env)}</b> — " + (f"module load {mods}" if mods else "no modules to load")
     rows = [
         ("Rendered from", f"sealed workflow <b>{_e(record.sealed_workflow)}</b> — {path}"),
         ("Sealed workflow sha256", _code(record.sealed_workflow_sha256)),
         ("Created", _e(record.created_at)),
         ("Env image digest(s)", "<br>".join(_digest_cell(d) for d in record.env_digests) or _muted("unrecorded")),
-        ("Forms rendered", forms),
         ("Shape", shape),
         ("Stages", f"{len(record.stages)} in execution order: "
                    + " → ".join(f"<code>{_e(s.name)}</code>" for s in sorted(record.stages, key=lambda s: s.index))),
         ("Output slots", " ".join(f"<code>{{{_e(s)}}}</code>" for s in record.output_slots) or _muted("none")),
-        ("Record version", _e(record.version)),
+        ("Cluster", cluster),
     ]
     return _header_banner(f"Pipeline — {_e(record.name)}", pill, rows)
 
@@ -582,232 +583,168 @@ def _picture_section(record: PipelineRecord) -> str:
                     _svg(layout, record) + _HOVER_JS + legend)
 
 
+def _what_it_is(value_kind: str, description: Optional[str], source: str) -> str:
+    bits = [_VALUE_KIND.get(value_kind, value_kind)]
+    if description:
+        bits.append(description)
+    if source.startswith("sealed_step:"):
+        bits.append(f"produced by sealed step {source.split(':', 1)[1]}")
+    return _e(" · ".join(bits))
+
+
 def _params_section(record: PipelineRecord) -> str:
-    if not record.params:
-        return _section("params", "Params", "", _empty("the how-to takes no input placeholders — output slots only"))
-    rows = []
-    for p in record.params:
-        default = _code(p.default) if p.kind == "shared" else _muted("per row")
-        rows.append([f"<code>{_e(p.name)}</code>", _e(p.kind), default, _e(p.value_kind), _e(p.source),
-                     _e(p.format) if p.format else _muted("not declared"),
-                     _e(p.description) if p.description else _muted("not declared"),
-                     ", ".join(f"<code>{_e(s)}</code>" for s in p.used_by) or _muted("no stage"),
-                     _e(p.reason)])
-    return _section("params", "Params", "every placeholder of the how-to, shared or per sample",
-                    _table(["Name", "Kind", "Default", "Value kind", "Source", "Format", "Description",
-                            "Used by", "Why this kind"], rows))
-
-
-def _samplesheet_section(record: PipelineRecord) -> str:
     sheet = record.samplesheet
-    if sheet is None:
-        return ""
-    cols = _table(["Column", "Placeholder", "Value kind", "Format", "Description"],
-                  [[f"<code>{_e(c.name)}</code>", f"<code>{{{_e(c.placeholder)}}}</code>", _e(c.value_kind),
-                    _e(c.format) if c.format else _muted("not declared"),
-                    _e(c.description) if c.description else _muted("not declared")] for c in sheet.columns])
-    names = [c.name for c in sheet.columns]
-    ex = _table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows])
-    body = ('<h3 class="sub">Columns</h3>' + cols
-            + f'<h3 class="sub">Example rows ({len(sheet.rows)})</h3>'
-            + '<p class="note"><b>The example rows are the seal\'s own trials — replace them with your '
-              'samples.</b></p>' + ex)
-    return _section("samplesheet", "Samplesheet", "samples.csv — one row per sample", body)
+    col_of = {c.placeholder: c for c in sheet.columns} if sheet is not None else {}
+    values = example_values(record)
+    rows: list[list[str]] = []
+    for p in record.params:
+        if p.kind == "shared":
+            scope = "shared"
+        elif p.name in col_of:
+            scope = f"per sample (column <code>{_e(col_of[p.name].name)}</code>)"
+        else:
+            scope = "per sample"
+        rows.append([f"<code>{_e(p.name)}</code>", scope, _code(values.get(p.name), "none"),
+                     _what_it_is(p.value_kind, p.description, p.source)])
+    named = {p.name for p in record.params}
+    for c in (sheet.columns if sheet is not None else []):
+        if c.placeholder in named:
+            continue
+        rows.append([f"<code>{_e(c.placeholder)}</code>", f"per sample (column <code>{_e(c.name)}</code>)",
+                     _code(values.get(c.placeholder), "none"), _what_it_is(c.value_kind, c.description, "")])
+    P: list[str] = []
+    if rows:
+        P.append(_table(["Placeholder", "Scope", "Example value", "What it is"], rows))
+    else:
+        P.append(_empty("the how-to takes no input placeholders — output slots only"))
+    if sheet is not None:
+        names = [c.name for c in sheet.columns]
+        P.append('<p class="note"><code>samples.csv</code> — one row per sample, columns: '
+                 + ", ".join(f"<code>{_e(n)}</code>" for n in names)
+                 + '. <b>The example rows are the seal\'s own trials — replace them with your samples.</b></p>')
+        P.append(_table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows]))
+    else:
+        P.append('<p class="note">one implicit row; the per-sample values are set at the top of '
+                 '<code>commands.sh</code> (by hand) and in <code>params.yaml</code> (Nextflow).</p>')
+    return _section("params", "Parameters and samples",
+                    "every placeholder of the how-to, with the sealed run's example value", "".join(P))
+
+
+def _menu(record: PipelineRecord, into: str, cd: str, enter: str, enter_lines: list[str],
+          nothing: str, run: str, run_lines: list[str], tail: str = "") -> str:
+    """The two items on the menu at one locus — ONE sample by hand, every sample with
+    Nextflow — each as three steps: change directory, enter the environment, run."""
+    where = _results_html(record)
+    by_hand = _steps([(into, [cd]), (enter, enter_lines),
+                      ("Edit the values at the top of <code>commands.sh</code>, then run it.", ["bash commands.sh"])])
+    nextflow = _steps([(into, [cd]), (nothing, []), (run, run_lines)])
+    return (f'<h3 class="sub">A. One sample by hand</h3>{by_hand}<p class="note">{where}</p>'
+            f'<h3 class="sub">B. {_nextflow_title(record)}</h3>{nextflow}'
+            f'<p class="note">{where} {_WHAT_RAN}{tail}</p>')
+
+
+def _run_local_section(record: PipelineRecord) -> str:
+    body = _menu(
+        record, "Change into the copy of this directory next to your data.", f"cd /path/to/{record.name}",
+        "Enter the image. Docker must see every directory your values live in — add a <code>-v</code> for each.",
+        enter_image(record, "local"),
+        "Nothing to enter: docker and nextflow on this machine.",
+        "Run. <code>-resume</code> re-runs only the stages whose inputs or parameters changed.",
+        nextflow_run(record, "local"))
+    return _section("run-local", "Run it locally", "one sample by hand, or every sample with Nextflow", body)
+
+
+def _run_hpc_section(record: PipelineRecord) -> str:
+    env, sif = record.compute_env, sif_for(record)
+    key = next((s.request_key for s in sorted(record.stages, key=lambda s: s.index) if s.request_key), None)
+    env_arg = f'"{env}"' if env else "<the cluster's env>"
+    key_arg = f'"{key}"' if key else "<the env's freeze_request_key>"
+    call = _e(f"stage_apptainer_image(project=<your project>, env={env_arg}, freeze_request_key={key_arg})")
+    step0 = f'<p class="note"><b>0.</b> The image as a <code>.sif</code>: <code>{call}</code> puts it '
+    if sif:
+        step0 += f'at <code>{_e(sif)}</code>.</p>'
+    else:
+        step0 += ('in the cluster\'s container zone. The path is filled in here when the pipeline is '
+                  'rendered with <code>env=</code> naming the cluster; until then <code>sif:</code> in '
+                  '<code>params.yaml</code> must be set by hand.</p>')
+    opening = ("" if env else
+               '<p class="warn-note">Rendered without a cluster named: no module line below, and the '
+               '<code>.sif</code> path is a placeholder.</p>')
+    body = _menu(
+        record, "Change into the copy of this directory in your project directory on the cluster.",
+        f"cd /path/in/your/project/{record.name}",
+        ("Load the modules and enter the image. " if record.modules else "Enter the image. ")
+        + "Apptainer must see every directory your values live in — add each to <code>--bind</code>.",
+        enter_image(record, "hpc"),
+        "Nothing to enter: <code>launcher.sh</code> loads the modules.",
+        "Submit.", nextflow_run(record, "hpc"),
+        tail=" Watch it with <code>squeue -u $USER</code>, or <code>sacct -j &lt;jobid&gt;</code> once it has ended.")
+    return _section("run-hpc", "Run it on the cluster", "the same two ways, through the .sif and SLURM",
+                    opening + step0 + body)
+
+
+def _image_cell(st: PipelineStage) -> str:
+    if not st.image and not st.image_digest:
+        return _muted("unrecorded")
+    tag = f"<code>{_e(st.image)}</code>" if st.image else _muted("tag unrecorded")
+    short = (f' <span class="muted" title="{_e(st.image_digest)}">{_e(_short_digest(st.image_digest))}</span>'
+             if st.image_digest else "")
+    return tag + short
 
 
 def _request_html(r: StageResources) -> str:
-    gpus = f"gpus {r.gpus}"
     if r.requested_by == "default":
         d = DEFAULT_STAGE_REQUEST
-        return ('<span class="warn">unsized — DEFAULT request; size before running on real data</span> '
-                f'<span class="muted">(until sized, the forms request time {_e(d.get("time"))} · '
-                f'mem {_e(d.get("mem"))} · cpus {_e(d.get("cpus"))} · {_e(gpus)})</span>')
+        cpus = d.get("cpus")
+        gpus = f" · {r.gpus} gpu{'s' if r.gpus != 1 else ''}" if r.gpus else ""
+        return (f'<span class="warn">unsized</span> <span class="muted">(DEFAULT {_e(d.get("time"))} · '
+                f'{_e(d.get("mem"))} · {_e(cpus)} cpu{"s" if cpus != 1 else ""}{_e(gpus)})</span>')
     parts = [f"cpus {r.cpus}" if r.cpus is not None else "cpus not requested",
              f"mem {r.mem}" if r.mem else "mem not requested",
-             f"time {r.time}" if r.time else "time not requested", gpus]
-    return "requested by the caller: " + _e(" · ".join(parts))
+             f"time {r.time}" if r.time else "time not requested", f"gpus {r.gpus}"]
+    return _e(" · ".join(parts))
 
 
 def _measured_html(r: StageResources) -> str:
     auth = _AUTHORITY_HTML.get(r.measured_authority) or f'<span class="warn">{_e(r.measured_authority)}</span>'
     if all(v is None for v in (r.measured_wall_seconds, r.measured_peak_rss_mb, r.measured_max_cpu_percent)):
-        nums = _muted("no measurement")
-    else:
-        nums = " · ".join([
-            f"wall {r.measured_wall_seconds:.1f} s" if r.measured_wall_seconds is not None else "wall unrecorded",
-            f"peak RSS {r.measured_peak_rss_mb:.0f} MB" if r.measured_peak_rss_mb is not None else "peak RSS unrecorded",
-            f"CPU {r.measured_max_cpu_percent:.0f}%" if r.measured_max_cpu_percent is not None else "CPU unrecorded"])
-        nums = _e(nums)
-    on = f"measured on {_e(r.measured_on)}" if r.measured_on else _muted("measured on: unrecorded")
-    return f"{nums} — {auth} — {on}"
-
-
-def _stage_block(record: PipelineRecord, st: PipelineStage) -> str:
-    P: list[str] = [f'<div class="run-card" id="stage-{_e(st.name)}">']
-    flags = ""
-    if st.consumes_workdir:
-        flags += (' <span class="pill na" title="a command names the output slot bare, so the stage '
-                  'receives the whole row working directory">consumes workdir</span>')
-    if st.stage_in_copy:
-        flags += (' <span class="pill na" title="the stage rewrites an artifact it consumed, so a form '
-                  'must stage in a copy rather than a link">stage-in copy</span>')
-    P.append(f'<div class="run-title">Stage {st.index + 1} — <code>{_e(st.name)}</code> '
-             f'<span class="pill na">{_e(st.scope)}</span>{flags}</div>')
-    which = ", ".join(str(t + 1) for t in st.templates)
-    P.append(f'<p class="note">how-to command{"s" if len(st.templates) != 1 else ""} {_e(which)}, run in order:</p>')
-    if len(st.commands) == 1:
-        P.append(f"<pre>{_e(st.commands[0])}</pre>")
-    else:
-        P.append("<pre>" + "\n".join(f"{i}. {_e(c)}" for i, c in enumerate(st.commands, 1)) + "</pre>")
-    P.append(_kv_table([
-        ("Tool", _e(st.tool)),
-        ("Sealed steps", ", ".join(str(n) for n in st.sealed_steps) if st.sealed_steps
-         else _muted("none — no sealed step backs this stage's command")),
-        ("Image", _code(st.image)),
-        ("Image digest", _digest_cell(st.image_digest)),
-        ("Request key", _code(st.request_key)),
-        (".sif sha256", _code(st.sif_sha256, "none recorded")),
-        ("Resources requested", _request_html(st.resources)),
-        ("Resources measured", _measured_html(st.resources)),
-    ]))
-    note = _AUTHORITY_NOTE.get(st.resources.measured_authority)
-    if note:
-        P.append(f'<p class="warn-note">{_e(note)}</p>')
-    P.append('<h3 class="sub">Inputs</h3>')
-    if st.inputs:
-        origin = {"param": "shared param", "column": "samplesheet column" if record.shape == "per_row" else "per-sample param",
-                  "stage": "artifact from a stage"}
-        P.append(_table(["Name", "Origin", "From stage", "Artifact"], [
-            [f"<code>{_e(i.name)}</code>", _e(origin.get(i.origin, i.origin)),
-             f"<code>{_e(i.from_stage)}</code>" if i.from_stage else _muted("—"),
-             f"<code>{_e(i.artifact)}</code>" if i.artifact else _muted("—")] for i in st.inputs]))
-    else:
-        P.append(_empty("no inputs — the stage names nothing but its output slot"))
-    P.append('<h3 class="sub">Outputs</h3>')
-    if st.outputs:
-        rows = []
-        for o in st.outputs:
-            pub = (f'<span class="ok">yes</span> — declared as <code>{_e(o.declared_pattern)}</code>'
-                   if o.published and o.declared_pattern else
-                   '<span class="ok">yes</span> — everything published' if o.published else
-                   '<span class="muted">no</span> — an intermediate nobody declared')
-            rows.append([f"<code>{_e(o.artifact)}</code>", pub,
-                         f"<code>{_e(o.observed)}</code>" if o.observed else _muted("never observed"),
-                         ", ".join(f"<code>{_e(c)}</code>" for c in o.consumed_by) or _muted("no later stage"),
-                         f"<code>{_e(_results_dir(record, st) + o.artifact)}</code>" if o.published else _muted("—")])
-        P.append(_table(["Artifact", "Published", "Observed in the sealed run", "Consumed by", "Published at"], rows))
-    else:
-        P.append(_empty("no outputs recorded for this stage"))
-    P.append("</div>")
-    return "".join(P)
+        return auth if r.measured_authority == "none" else f"{_muted('no measurement')} — {auth}"
+    nums = " · ".join([
+        f"wall {r.measured_wall_seconds:.1f} s" if r.measured_wall_seconds is not None else "wall unrecorded",
+        f"peak RSS {r.measured_peak_rss_mb:.0f} MB" if r.measured_peak_rss_mb is not None else "peak RSS unrecorded",
+        f"CPU {r.measured_max_cpu_percent:.0f}%" if r.measured_max_cpu_percent is not None else "CPU unrecorded"])
+    return f"{_e(nums)} — {auth}"
 
 
 def _stages_section(record: PipelineRecord) -> str:
     if not record.stages:
         return _section("stages", "Stages", "", _empty("the record holds no stages"))
-    blocks = "".join(_stage_block(record, st) for st in sorted(record.stages, key=lambda s: s.index))
-    return _section("stages", "Stages", "one block per stage, in execution order", blocks)
+    stages = sorted(record.stages, key=lambda s: s.index)
+    rows = [[f"<code>{_e(st.name)}</code>", _e(st.tool), _e(", ".join(str(t + 1) for t in st.templates)),
+             _image_cell(st), _request_html(st.resources), _measured_html(st.resources)] for st in stages]
+    body = _table(["Stage", "Tool", "How-to command", "Image", "Request", "Measured"], rows)
+    untrusted = [st.name for st in stages if st.resources.measured_authority in _UNTRUSTED_AUTHORITY]
+    if untrusted:
+        body += (f'<p class="warn-note">{_e(", ".join(untrusted))}: measured under emulation, or of unrecorded '
+                 'or mixed authority — do not size from these; size from a run on hardware matching the '
+                 'image.</p>')
+    return _section("stages", "Stages", "one row per stage, in execution order", body)
 
 
-def _defaults_section(record: PipelineRecord) -> str:
-    rows = [[f"<code>{_e(d.key)}</code>", _e(d.value), _e(d.source)] for d in record.defaults]
-    return _section("defaults", "Defaults", "every decision the render made and who made it",
-                    _table(["Key", "Value", "Source"], rows) if rows else _empty("no defaults recorded"))
-
-
-def _provenance_section(record: PipelineRecord) -> str:
-    P: list[str] = ['<h3 class="sub">How the shared inputs were made</h3>']
-    if record.provenance_steps:
-        for ps in record.provenance_steps:
-            P.append(f'<p class="note">sealed step {ps.step} — <b>{_e(ps.tool)}</b> produced '
-                     f'<code>{_e(ps.produces_param)}</code>:</p><pre>{_e(ps.command)}</pre>')
-    else:
-        P.append(_empty("no shared input was produced by a sealed step outside the how-to"))
-    P.append('<h3 class="sub">Sealed steps that are not part of the pipeline</h3>')
-    if record.unmatched_steps:
-        P.append(f'<p class="note">sealed steps {_e(", ".join(str(n) for n in record.unmatched_steps))} '
-                 'match no how-to command and produce no how-to input; they are not part of the pipeline.</p>')
-    else:
-        P.append('<p class="note">none — every successful sealed step is either a stage or the provenance of a '
-                 'shared input.</p>')
-    return _section("provenance", "Provenance", "what the sealed run did outside the how-to", "".join(P))
-
-
-def _howto_section(record: PipelineRecord, files: Mapping[str, str], found: dict[str, list[str]]) -> str:
-    names = sorted({PurePosixPath(k).name for k in files})
-    P: list[str] = []
-    if files:
-        P.append(_table(["File", "Bytes"], [[f"<code>{_e(k)}</code>", str(len(files[k].encode("utf-8")))]
-                                            for k in sorted(files)]))
-    else:
-        P.append(_empty("no form files were rendered beside this record — there is nothing to run yet"))
-    results = "results/<sample>/" if record.shape == "per_row" else "results/"
-    cohort = [s.name for s in record.stages if s.scope == "cohort"]
-    where = (f"outputs land under <code>{_e(results)}</code> — one directory per row, "
-             f"shared by every stage, as the sealed run's was")
-    if record.shape == "per_row" and cohort:
-        where += f" (cohort stages {_e(', '.join(cohort))} publish flat, under <code>results/</code>)"
-    last = sorted(record.stages, key=lambda s: s.index)[-1].name if record.stages else "STAGE"
-    if "plain" in found:
-        P.append('<h3 class="sub">Plain form — bash + SLURM</h3><div class="how">')
-        if "run_local.sh" in names:
-            P.append('<pre>./run_local.sh</pre><p class="note">runs every stage on this machine, in the frozen image</p>')
-        if "run_all.sh" in names:
-            P.append('<pre>./run_all.sh</pre><p class="note">submits the stages to the cluster (SLURM)</p>')
-        runner = "./run_all.sh" if "run_all.sh" in names else "./run_local.sh"
-        P.append(f'<pre>{_e(runner)} --stages {_e(last)}</pre>'
-                 '<p class="note">re-runs part of the pipeline — only the named stages (comma-separated)</p>')
-        P.append(f'<p class="note">{where}</p></div>')
-    if "nextflow" in found:
-        P.append('<h3 class="sub">Nextflow form</h3><div class="how">')
-        if "nextflow_local.sh" in names:
-            P.append('<pre>./nextflow_local.sh</pre><p class="note">runs the workflow on this machine</p>')
-        if "launcher.sh" in names:
-            P.append('<pre>sbatch launcher.sh</pre><p class="note">submits the workflow to the cluster (SLURM)</p>')
-        P.append('<p class="note"><b>-resume:</b> Nextflow caches each finished task by its inputs, command '
-                 'and container, and <code>-resume</code> re-runs only the tasks whose cache entry is missing '
-                 'or stale. After changing a param, re-run with <code>-resume</code>: only the stages that use '
-                 'it — and everything downstream of them — run again, which is the <code>--stages</code> '
-                 'equivalent.</p>')
-        P.append(f'<p class="note">{where}</p></div>')
-    if record.shape == "per_row" and found:
-        P.append('<p class="note">Put your samples in <code>samples.csv</code> first — the rows it ships with '
-                 'are the seal\'s trials.</p>')
-    if _MANIFEST in names:
-        P.append('<h3 class="sub">Edited since render?</h3>'
-                 f'<pre>sha256sum -c {_e(_MANIFEST)}</pre>'
-                 '<p class="note">every rendered file is listed with its sha256; a line that fails was edited '
-                 'after the render</p>')
-    return _section("howto", "How to run", "one subsection per form rendered beside this page", "".join(P))
-
-
-def _notes_section(record: PipelineRecord) -> str:
-    if not record.notes:
-        return _section("notes", "Notes", "", _empty("the record carries no notes"))
-    items = "".join(f"<li>{_e(n)}</li>" for n in record.notes)
-    return _section("notes", "Notes", "every derivation the caller did not dictate", f"<ul>{items}</ul>")
-
-
-def render_pipeline_page(record: PipelineRecord, files: Mapping[str, str]) -> str:
+def render_pipeline_page(record: PipelineRecord) -> str:
     """Render the pipeline record as a self-contained HTML page (see the module
-    docstring for the honesty contract this upholds). `files` is the {relative path:
-    content} mapping the form renderers produced beside it — only its KEYS are read,
-    to say which forms exist and how to run them."""
-    found = _forms_in_files(files)
+    docstring for the honesty contract this upholds)."""
     P: list[str] = [
         _open_page(f"Pipeline — {record.name}"),
-        _header(record, found),
+        _header(record),
         _picture_section(record),
         _params_section(record),
-        _samplesheet_section(record),
+        _run_local_section(record),
+        _run_hpc_section(record),
         _stages_section(record),
-        _defaults_section(record),
-        _provenance_section(record),
-        _howto_section(record, files, found),
-        _notes_section(record),
         _close_page(f'<p class="gen">{_e(FOOTER)}</p>'),
     ]
-    return "\n".join(p for p in P if p)
+    return "\n".join(P)
 
 
 __all__ = ["render_pipeline_page", "picture_layout", "FOOTER"]

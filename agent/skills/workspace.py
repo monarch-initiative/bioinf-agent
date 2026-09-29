@@ -87,6 +87,8 @@ def workspace_root() -> Path:
 #     scratch      delete freely             never share
 #     containers   delete, rebuild from the frozen env    share as .sif
 #     reports      NEVER delete — the record    it IS the deliverable
+#     pipelines    delete, re-render from the sealed workflow   hand over as a directory
+#     common_data  delete, refetch from the source URL the record names
 #
 # Local zones auto-create on demand. The no-auto-mkdir rule is a CLUSTER rule
 # about the user's territory; here the agent owns these directories, and a
@@ -127,6 +129,15 @@ def reports_dir() -> Path:
     supplement receives. A peer of the other zones, not a child of any.
     """
     return _zone(workspace_root() / "reports")
+
+
+def common_data_dir() -> Path:
+    """Reference data the agent downloads for a LOCAL run — genomes, annotations,
+    public databases — under ``<workspace>/common_data``, the same folder the config
+    menu offers as the local compute env's common-data zone, so a local download
+    lands where a cluster download lands on its env. Refetchable from its source URL;
+    the sealed record pins it by sha256, not by location."""
+    return _zone(workspace_root() / "common_data")
 
 
 def pipelines_dir() -> Path:
@@ -211,6 +222,7 @@ def zones() -> dict[str, str]:
         "reports":          str(root / "reports"),
         "scratch":          str(root / "scratch"),
         "pipelines":        str(root / "pipelines"),
+        "common_data":      str(root / "common_data"),
         # Through the resolver, never re-derived: the config home is DECOUPLED
         # from the workspace (fixed ~/.bioinf_agent), and a second spelling
         # here is exactly how the doctor once validated a file the agent

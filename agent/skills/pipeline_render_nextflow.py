@@ -16,8 +16,9 @@ The file set
   samples.csv        per_row only — `pipeline_record.render_samplesheet`, the ONE
                      rendering; a CSV cannot carry the leading comment the other
                      files do (splitCsv would read it as the header)
-  launcher.sh        the manager job: `sbatch launcher.sh` on the cluster
-  nextflow_local.sh  the same run on a laptop, `-profile local`
+  launcher.sh        the manager job: `sbatch launcher.sh` on the cluster. On a laptop the
+                     run is one line, `nextflow run main.nf -profile local -params-file
+                     params.yaml -resume`, which pipeline.html shows
 
 The binding table — how a how-to placeholder reaches a process script
 ---------------------------------------------------------------------
@@ -56,6 +57,7 @@ from typing import Any, Mapping, Optional
 import yaml
 
 from agent.skills import compute_access
+from agent.skills.pipeline_commands import STRICT_MODE_LINE
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
                                           NEXTFLOW_QUEUE_SIZE, PipelineParam,
                                           PipelineRecord, PipelineStage, placeholders,
@@ -209,7 +211,8 @@ class _Context:
             key = s.image_digest or s.image
             hit = next((im for im in self.images if im["key"] == key), None)
             if hit is None:
-                hit = {"key": key, "ref": s.image or s.image_digest, "digest": s.image_digest}
+                hit = {"key": key, "ref": s.image or s.image_digest, "digest": s.image_digest,
+                       "sif_path": s.sif_path}
                 self.images.append(hit)
         multi = len(self.images) > 1
         for im_i, im in enumerate(self.images, 1):
@@ -344,8 +347,6 @@ def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
                  + (", one directory per sample, shared by every stage." if ctx.per_row
                     else " — every stage publishes into it."))
     lines.append("params.outdir = 'results'")
-    lines.append("// Set by launcher.sh / nextflow_local.sh per run; names runs/<run_id>/.")
-    lines.append("params.run_id = 'manual'")
     return "\n".join(lines)
 
 
@@ -446,21 +447,18 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
 
     body: list[str] = []
     if ctx.per_row:
-        body.append('tag "${meta.sample}"')
-    published = [o for o in stage.outputs if o.published]
-    if published:
+        # Closures, not strings: a directive that names a task input must be evaluated
+        # per task, and the strict parser refuses the string form outright.
+        body.append("tag { meta.sample }")
+    if stage.outputs:
         # One results directory per row, shared by every stage — the layout the sealed
-        # how-to ran in, and the plain form's. Artifact names are unique within a row
-        # by construction (the seal wrote them all into one working directory).
-        # `overwrite: true` because Nextflow's default is false on -resume: a stage
-        # re-executed after a parameter change must replace its stale published copy.
-        base = '"${params.outdir}/${meta.sample}"' if ctx.per_row else '"${params.outdir}"'
-        if len(published) == len(stage.outputs):
-            body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
-        else:
-            for o in published:
-                glob = _PLACEHOLDER_RE.sub("*", o.artifact)
-                body.append(f"publishDir {base}, mode: 'copy', overwrite: true, pattern: '{glob}'")
+        # how-to ran in, and commands.sh's. Every artifact a stage writes is published;
+        # names are unique within a row by construction (the seal wrote them all into
+        # one working directory). `overwrite: true` because Nextflow's default is false
+        # on -resume: a stage re-executed after a parameter change must replace its
+        # stale published copy.
+        base = '{ "${params.outdir}/${meta.sample}" }' if ctx.per_row else '"${params.outdir}"'
+        body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
@@ -593,14 +591,16 @@ def _gpu_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
 
 
 def _render_config(record: PipelineRecord, ctx: _Context) -> str:
-    L: list[str] = [f"// {ctx.header}", "",
-                    "// Set per run by the launchers; declared here so the trace and report "
-                    "paths below can reference it.",
-                    "params.run_id = 'manual'"]
+    L: list[str] = [f"// {ctx.header}", ""]
     for im in ctx.images:
-        L.append(f"// The .sif built from image {im['digest'] or im['ref']}; the real path is "
-                 f"set in params.yaml.")
-        L.append(f"params.{im['param']} = ''")
+        if im.get("sif_path"):
+            L.append(f"// The .sif built from image {im['digest'] or im['ref']}, where "
+                     f"stage_apptainer_image puts it on the cluster this was rendered for; "
+                     f"params.yaml overrides.")
+        else:
+            L.append(f"// The .sif built from image {im['digest'] or im['ref']}; the real path is "
+                     f"set in params.yaml.")
+        L.append(f"params.{im['param']} = {_nf_quote(im['sif_path'] or '')}")
     L.append("")
 
     # profiles
@@ -658,10 +658,17 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         L.append(f"{_INDENT}}}")
     L += ["}", ""]
 
-    L += ["trace {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_id}}/trace.txt"', "}",
+    L += ["// One directory per run, named by its launch time: the trace lists every task's",
+          "// command, the report its resources. The launch line itself is in `nextflow log`.",
+          "// (A params entry rather than a variable: the strict config parser allows no",
+          "// declarations beside config statements.)",
+          "params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')",
+          "trace {", f"{_INDENT}enabled = true",
+          f'{_INDENT}file = "runs/${{params.run_stamp}}/trace.txt"',
+          f"{_INDENT}fields = 'task_id,name,status,exit,container,realtime,%cpu,peak_rss,workdir,script'",
+          "}",
           "report {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_id}}/report.html"', "}"]
+          f'{_INDENT}file = "runs/${{params.run_stamp}}/report.html"', "}"]
     return "\n".join(L) + "\n"
 
 
@@ -696,63 +703,48 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
     L.append("# Where published outputs land.")
     L.append(_yaml_line("outdir", "results"))
     for im in ctx.images:
-        L.append(f"# The Apptainer image built from {im['digest'] or im['ref']}; its path on the "
-                 f"cluster is not known at render time — set it before -profile slurm.")
-        L.append(_yaml_line(im["param"], ""))
+        if im.get("sif_path"):
+            L.append(f"# The Apptainer image built from {im['digest'] or im['ref']}, where "
+                     f"stage_apptainer_image puts it on the cluster this was rendered for.")
+        else:
+            L.append(f"# The Apptainer image built from {im['digest'] or im['ref']}; its path on the "
+                     f"cluster is not known at render time — set it before -profile slurm.")
+        L.append(_yaml_line(im["param"], im.get("sif_path") or ""))
     return "\n".join(L) + "\n"
 
 
 # ── the launchers ──────────────────────────────────────────────────────────
 
 
-def _run_lines(ctx: _Context, profile: str) -> list[str]:
-    copies = "params.yaml samples.csv" if ctx.per_row else "params.yaml"
-    return [
-        'export NXF_HOME="$PWD/.nextflow_home"',
-        "RUN_ID=$(date +%Y%m%d_%H%M%S)",
-        'mkdir -p "runs/$RUN_ID"',
-        f'cp {copies} "runs/$RUN_ID/"',
-        f'nextflow run main.nf -profile {profile} -params-file params.yaml --run_id "$RUN_ID" '
-        f'-resume "$@"',
-        "",
-        "# Work directories are never cleaned for you. Once the published outputs are where",
-        "# you want them:",
-        "#   nextflow clean -f",
-    ]
-
-
 def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
+    """The cluster launcher: `cd` into the pipeline directory, then `sbatch launcher.sh`.
+    SLURM starts the job in the directory sbatch was run from, so there is no `cd`."""
     L = ["#!/usr/bin/env bash",
          f"# {ctx.header}",
-         "# The manager job: it submits the stages and does none of the work.",
+         "# The manager job: it submits one job per stage and sample, and does none of the work.",
          _render_sbatch_header(record.name, ctx.manager_slurm, ctx.email).rstrip("\n"),
          "",
-         "set -euo pipefail",
-         'cd "${SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}"',
+         STRICT_MODE_LINE,
          ""]
     if ctx.apptainer_module and ctx.nextflow_module:
-        L += ["module purge", f"module load {ctx.apptainer_module} {ctx.nextflow_module}"]
+        L += [f"module load {ctx.apptainer_module} {ctx.nextflow_module}"]
     elif ctx.env:
-        L += ["# module load: the env declares no apptainer_module / nextflow_module, so no "
-              "modules are loaded here;",
-              "# make apptainer and nextflow available before `sbatch launcher.sh`."]
+        L += ["# The env declares no apptainer_module / nextflow_module: make apptainer and",
+              "# nextflow available before `sbatch launcher.sh`."]
     else:
-        L += ["# module load: rendered without a compute env, so no modules are loaded here;",
-              "# make apptainer and nextflow available before `sbatch launcher.sh`."]
-    L.append("")
-    L += _run_lines(ctx, "slurm")
-    return "\n".join(L) + "\n"
-
-
-def _render_local_runner(record: PipelineRecord, ctx: _Context) -> str:
-    L = ["#!/usr/bin/env bash",
-         f"# {ctx.header}",
-         "# The laptop run: docker, local executor.",
-         "",
-         "set -euo pipefail",
-         'cd "$(dirname "$0")"',
-         ""]
-    L += _run_lines(ctx, "local")
+        L += ["# Rendered without a compute env: make apptainer and nextflow available before",
+              "# `sbatch launcher.sh`."]
+    L += ["",
+          "# Nextflow keeps its own files under NXF_HOME, which defaults to $HOME; compute nodes",
+          "# may not be able to write there, so it lives inside this directory.",
+          'export NXF_HOME="$PWD/.nextflow_home"',
+          "",
+          "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
+          "# fresh run. Each run writes runs/<timestamp>/trace.txt and report.html.",
+          'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"',
+          "",
+          "# Work directories are never cleaned for you. Once the published outputs are where",
+          "# you want them:  nextflow clean -f"]
     return "\n".join(L) + "\n"
 
 
@@ -761,8 +753,7 @@ def _render_local_runner(record: PipelineRecord, ctx: _Context) -> str:
 
 def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> dict[str, str]:
     """Render the Nextflow form of `record`: `{relative path: content}` for main.nf,
-    nextflow.config, params.yaml, launcher.sh, nextflow_local.sh and, for a per_row
-    record, samples.csv. `env` is a compute-env block from projects_access.yaml; it
+    nextflow.config, params.yaml, launcher.sh and, for a per_row record, samples.csv. `env` is a compute-env block from projects_access.yaml; it
     supplies the SLURM policy (account, partitions, qos), the notification email and
     the Lmod module names. Without it the files render for a cluster with no policy.
     Raises ValueError, naming the remedy, on anything the form cannot carry."""
@@ -773,7 +764,6 @@ def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> di
         "nextflow.config": _render_config(record, ctx),
         "params.yaml": _render_params_yaml(record, ctx),
         "launcher.sh": _render_launcher(record, ctx),
-        "nextflow_local.sh": _render_local_runner(record, ctx),
     }
     if ctx.per_row:
         files["samples.csv"] = render_samplesheet(record)

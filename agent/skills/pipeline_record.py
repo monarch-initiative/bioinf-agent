@@ -3,8 +3,8 @@ pipeline_record — the typed PIPELINE record, derived from a sealed WorkflowSpe
 
 A pipeline is a RENDER of a sealed workflow, and it invents nothing: the stages are
 the sealed how-to's commands, the images are the sealed steps' observed digests, the
-samplesheet columns are the how-to's per-sample inputs, and what gets published is
-what the seal validated. This module derives that record — the ONE thing the two
+samplesheet columns are the how-to's per-sample inputs, and every artifact a stage
+writes into the row's directory is published, as the sealed run left it. This module derives that record — the ONE thing the two
 form renderers (plain bash/SLURM, Nextflow) and the explain page read — and refuses,
 naming the remedy, when the seal cannot support the render.
 
@@ -56,8 +56,6 @@ NEXTFLOW_QUEUE_SIZE = 50
 
 ShapeT = Literal["linear", "per_row"]
 ScopeT = Literal["per_sample", "cohort"]
-FormT = Literal["plain", "nextflow"]
-PublishT = Literal["declared", "all"]
 
 
 class PipelineDerivationError(ValueError):
@@ -97,7 +95,6 @@ class StageOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact: str                              # templated basename, or a glob when rows disagree
     observed: Optional[str]                    # basename observed in the sealed run (row 0), None if never observed
-    published: bool
     consumed_by: list[str]
     declared_pattern: Optional[str]            # the usage.outputs glob that matched, if any
 
@@ -128,7 +125,9 @@ class PipelineStage(BaseModel):
     image: Optional[str]
     image_digest: Optional[str]
     request_key: Optional[str]
+    env_name: Optional[str]                    # the frozen env's name (EnvCache), what the .sif is named after
     sif_sha256: Optional[str]
+    sif_path: Optional[str]                    # where the .sif lives on the cluster the caller named, else None
     inputs: list[StageInput]
     outputs: list[StageOutput]
     consumes_workdir: bool                     # a template names an output slot bare — the whole row workdir
@@ -179,11 +178,12 @@ class PipelineRecord(BaseModel):
     params: list[PipelineParam]
     samplesheet: Optional[Samplesheet]
     output_slots: list[str]
+    compute_env: Optional[str]                 # the compute env the cluster files were rendered for, else None
+    modules: list[str]                         # Lmod modules that env loads before apptainer/nextflow run
     stages: list[PipelineStage]
     provenance_steps: list[ProvenanceStep]
     unmatched_steps: list[int]
     defaults: list[PipelineDefault]
-    forms: list[FormT]
     notes: list[str]
 
     def stage(self, name: str) -> PipelineStage:
@@ -320,8 +320,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            per_sample: Optional[list[str]] = None,
                            shared: Optional[list[str]] = None,
                            resources: Optional[Mapping[str, Mapping[str, Any]]] = None,
-                           publish: PublishT = "declared",
-                           forms: tuple[FormT, ...] = ("plain",),
+                           env_names: Optional[Mapping[str, str]] = None,
+                           sif_paths: Optional[Mapping[str, str]] = None,
+                           compute_env: Optional[str] = None,
+                           modules: Optional[list[str]] = None,
                            shape: Optional[ShapeT] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
     PipelineDerivationError (a refusal with a remedy) when the seal cannot support
@@ -700,7 +702,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             name=nm, index=gi, scope=next(iter(scopes)), templates=list(g),
             commands=[templates[i] for i in g], tool=tool,
             sealed_steps=sorted(int(s["step"]) for s in steps_in),
-            image=image, image_digest=digest, request_key=env.get("request_key"), sif_sha256=sif,
+            image=image, image_digest=digest, request_key=env.get("request_key"),
+            env_name=(env_names or {}).get(str(env.get("request_key"))),
+            sif_sha256=sif, sif_path=(sif_paths or {}).get(str(env.get("request_key"))),
             inputs=[], outputs=[], consumes_workdir=any(template_bare[i] for i in g),
             stage_in_copy=any(rewrites[i] for i in g), resources=res))
 
@@ -769,7 +773,6 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                                    if stage_of_template[c] != st.index})
                 st.outputs.append(StageOutput(
                     artifact=art, observed=obs0,
-                    published=(publish == "all") or pattern is not None,
                     consumed_by=consumed, declared_pattern=pattern))
     _ = stage_by_name
 
@@ -799,14 +802,14 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         PipelineDefault(key="shape", value=derived_shape, source="caller" if shape else "seal"),
         PipelineDefault(key="stage_cut", value="explicit groups" if stages else "one stage per how-to command",
                         source="caller" if stages else "default"),
-        PipelineDefault(key="publish", value=publish, source="caller" if publish != "declared" else "default"),
-        PipelineDefault(key="resume", value="always on (`--fresh` to disable)", source="default"),
+        PipelineDefault(key="publish", value="every artifact a stage writes, into the row's directory", source="default"),
+        PipelineDefault(key="resume", value="on: the launch line carries -resume; drop it for a fresh run", source="default"),
         PipelineDefault(key="errors", value="terminate on first failure, no retries", source="default"),
         PipelineDefault(key="cache", value="lenient on the cluster, standard locally", source="default"),
         PipelineDefault(key="queue_size", value="50", source="default"),
-        PipelineDefault(key="run_records", value="trace + report + params copy under runs/<id>/", source="default"),
-        PipelineDefault(key="cleanup", value="never automatic; the command is printed", source="default"),
-        PipelineDefault(key="sheet_preflight", value="columns + file existence checked before submitting",
+        PipelineDefault(key="run_records", value="trace (each task's command) + report under runs/<timestamp>/; the launch line in `nextflow log`", source="default"),
+        PipelineDefault(key="cleanup", value="never automatic; `nextflow clean -f` when you are done", source="default"),
+        PipelineDefault(key="sheet_preflight", value="the samplesheet and every file column are checked as the run starts",
                         source="default"),
         PipelineDefault(key="resources", value="per-stage requests; measurements quoted, never used as the request",
                         source="caller" if resources else "default"),
@@ -819,8 +822,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         sealed_workflow_sha256=spec_sha256,
         env_digests=sorted(env_map) or [str(getattr(spec, "env_content_digest", ""))],
         shape=derived_shape, params=params, samplesheet=sheet,
-        output_slots=sorted(out_slots), stages=stage_recs, provenance_steps=provenance,
-        unmatched_steps=unmatched_steps, defaults=defaults, forms=list(forms), notes=notes)
+        output_slots=sorted(out_slots), compute_env=compute_env, modules=list(modules or []),
+        stages=stage_recs, provenance_steps=provenance,
+        unmatched_steps=unmatched_steps, defaults=defaults, notes=notes)
 
 
 # ── the samplesheet, ONE rendering ──────────────────────────────────────────

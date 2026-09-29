@@ -76,13 +76,12 @@ class TestStages:
         assert [o.artifact for o in align.outputs] == ["aligned.bam"]
         assert align.outputs[0].observed == "aligned.bam"
         assert align.outputs[0].consumed_by == ["HTSEQ_COUNT", "SAMTOOLS"]
-        assert align.outputs[0].published is True          # matches the declared glob
-        assert align.outputs[0].declared_pattern == "aligned.bam"
+        assert align.outputs[0].declared_pattern == "aligned.bam"   # matches the declared glob
         idx = rec.stage("SAMTOOLS")
         assert [i.name for i in idx.inputs] == ["aligned.bam"]
         assert idx.inputs[0].from_stage == "HISAT2"
         assert [o.artifact for o in idx.outputs] == ["aligned.bam.bai"]
-        assert idx.outputs[0].published is False          # an intermediate nobody declared
+        assert idx.outputs[0].declared_pattern is None     # observed, declared by nobody — still an output
 
     def test_the_count_stage_sees_params_columns_artifacts_and_sidecars(self):
         rec = _record()
@@ -95,7 +94,7 @@ class TestStages:
         assert by_name["aligned.bam.bai"].from_stage == "SAMTOOLS"   # the sidecar travels with its parent
         assert [o.artifact for o in count.outputs] == ["{SAMPLE}.counts.tsv"]
         assert count.outputs[0].observed == "SRR1039508.counts.tsv"
-        assert count.outputs[0].published and count.outputs[0].declared_pattern == "*.counts.tsv"
+        assert count.outputs[0].declared_pattern == "*.counts.tsv"
         assert rec.param("STRANDED").used_by == ["HTSEQ_COUNT"]
 
     def test_every_stage_names_the_image_the_seal_observed(self):
@@ -177,6 +176,19 @@ class TestRecordOnDisk:
         assert {"shape", "stage_cut", "publish", "resume", "errors", "cache", "queue_size",
                 "run_records", "cleanup", "sheet_preflight", "resources"} <= keys
         assert {d.source for d in rec.defaults} <= {"default", "caller", "seal"}
-        rec2 = _record(stages=[[0, 1, 2]], publish="all")
+        rec2 = _record(stages=[[0, 1, 2]])
         srcs = {d.key: d.source for d in rec2.defaults}
-        assert srcs["stage_cut"] == "caller" and srcs["publish"] == "caller"
+        assert srcs["stage_cut"] == "caller" and srcs["publish"] == "default"
+
+
+class TestClusterFields:
+    def test_env_name_and_sif_path_ride_on_every_stage_of_that_env(self):
+        rec = _record(env_names={REQUEST_KEY: "rnaseq_cli"},
+                      sif_paths={REQUEST_KEY: "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"})
+        for st in rec.stages:
+            assert st.env_name == "rnaseq_cli"
+            assert st.sif_path == "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
+
+    def test_without_a_cluster_the_fields_are_stated_absent(self):
+        rec = _record()
+        assert all(st.env_name is None and st.sif_path is None for st in rec.stages)

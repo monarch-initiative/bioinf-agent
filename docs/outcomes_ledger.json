@@ -2105,8 +2105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:153",
-    "end_line": 168,
+    "where": "agent/mcp_tools/pipeline_tools.py:162",
+    "end_line": 178,
     "named_in_test": true
   },
   {
@@ -3025,8 +3025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "acquire_reference_via_recipe",
-    "where": "agent/mcp_tools/data_tools.py:214",
-    "end_line": 215,
+    "where": "agent/mcp_tools/data_tools.py:217",
+    "end_line": 218,
     "named_in_test": false
   },
   {
@@ -3035,8 +3035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "select_test_data",
-    "where": "agent/mcp_tools/data_tools.py:460",
-    "end_line": 460,
+    "where": "agent/mcp_tools/data_tools.py:463",
+    "end_line": 463,
     "named_in_test": false
   },
   {
@@ -3045,8 +3045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "select_test_data",
-    "where": "agent/mcp_tools/data_tools.py:466",
-    "end_line": 483,
+    "where": "agent/mcp_tools/data_tools.py:469",
+    "end_line": 486,
     "named_in_test": true
   },
   {
@@ -3055,18 +3055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_reference_database",
-    "where": "agent/mcp_tools/data_tools.py:68",
-    "end_line": 71,
-    "named_in_test": false
-  },
-  {
-    "code": "data.download_db_missing_args",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "download_reference_database",
-    "where": "agent/mcp_tools/data_tools.py:83",
-    "end_line": 85,
+    "where": "agent/mcp_tools/data_tools.py:70",
+    "end_line": 73,
     "named_in_test": false
   },
   {
@@ -3220,23 +3210,23 @@
     "named_in_test": false
   },
   {
+    "code": "pipeline.no_sealed_workflow",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "render_pipeline",
+    "where": "agent/mcp_tools/pipeline_tools.py:111",
+    "end_line": 114,
+    "named_in_test": true
+  },
+  {
     "code": "pipeline.spec_invalid",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:105",
-    "end_line": 108,
-    "named_in_test": true
-  },
-  {
-    "code": "pipeline.unknown_form",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:113",
-    "end_line": 115,
+    "where": "agent/mcp_tools/pipeline_tools.py:118",
+    "end_line": 121,
     "named_in_test": true
   },
   {
@@ -3245,8 +3235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:124",
-    "end_line": 126,
+    "where": "agent/mcp_tools/pipeline_tools.py:130",
+    "end_line": 132,
     "named_in_test": true
   },
   {
@@ -3255,18 +3245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:133",
-    "end_line": 136,
-    "named_in_test": true
-  },
-  {
-    "code": "pipeline.no_sealed_workflow",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:98",
-    "end_line": 101,
+    "where": "agent/mcp_tools/pipeline_tools.py:141",
+    "end_line": 144,
     "named_in_test": true
   },
   {
