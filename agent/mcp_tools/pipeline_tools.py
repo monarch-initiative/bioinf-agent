@@ -28,6 +28,17 @@ from agent.skills import workspace as _workspace
 from agent.skills.outcomes import proven, refused
 
 
+def _local_runtime() -> Optional[dict]:
+    """How THIS machine provides nextflow, as the page tells the user: the checkout's
+    activation script and the runtime env's nextflow binary. Recorded only when the
+    script exists; the binary's absence is stated, never assumed."""
+    activate = _workspace.code_root() / "scripts" / "activate.sh"
+    if not activate.is_file():
+        return None
+    nf = _workspace.runtime_env_dir() / "bin" / "nextflow"
+    return {"activate": str(activate), "nextflow": str(nf) if nf.is_file() else None}
+
+
 def _cluster_hints(env_block: dict, spec: Any) -> dict:
     """What the cluster files need from the env block and the EnvCache: the module
     names, and — when the env has a container zone and the sealed env is in the cache —
@@ -105,7 +116,8 @@ def render_pipeline(sealed_workflow: str,
     ``samplesheet_columns``, the ``sif`` path when an env was named, and every
     derivation ``note``. Open ``page`` first.
     """
-    from agent.skills.pipeline_record import PipelineDerivationError, derive_pipeline_record, sha256_of
+    from agent.skills.pipeline_record import (LocalRuntime, PipelineDerivationError,
+                                              derive_pipeline_record, sha256_of)
     from agent.skills.pipeline_render import render_pipeline_dir
     from agent.skills.spec_writer import load_workflow_spec
 
@@ -151,6 +163,7 @@ def render_pipeline(sealed_workflow: str,
 
     pipeline_name = name or sealed_workflow
     out_dir = _workspace.pipelines_dir() / pipeline_name
+    runtime = _local_runtime()
     try:
         record = derive_pipeline_record(
             spec, name=pipeline_name, spec_path=str(spec_path), spec_sha256=sha256_of(spec_path),
@@ -158,7 +171,8 @@ def render_pipeline(sealed_workflow: str,
             per_sample=list(per_sample) if per_sample else None,
             shared=list(shared) if shared else None,
             resources=resources, env_names=hints["env_names"], sif_paths=hints["sif_paths"],
-            compute_env=env or None, modules=hints["modules"])
+            compute_env=env or None, modules=hints["modules"],
+            local_runtime=LocalRuntime(**runtime) if runtime else None)
         written = render_pipeline_dir(record, out_dir, env=env_block, overwrite=overwrite)
     except PipelineDerivationError as e:
         return refused(e.code, success=False, error=e.error, remedy=e.remedy,
@@ -178,6 +192,7 @@ def render_pipeline(sealed_workflow: str,
                              if record.samplesheet else []),
         example_rows=len(record.samplesheet.rows) if record.samplesheet else 0,
         compute_env=env or None, sif=sif,
+        local_runtime=runtime,
         notes=record.notes,
         replaced_previous_render=written["replaced_previous_render"],
         removed=written["removed"],

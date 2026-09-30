@@ -197,3 +197,17 @@ class TestClusterFields:
     def test_without_a_cluster_the_fields_are_stated_absent(self):
         rec = _record()
         assert all(st.env_name is None and st.sif_path is None for st in rec.stages)
+
+
+class TestLocalRuntime:
+    def test_how_this_machine_provides_nextflow_rides_on_the_record(self, tmp_path):
+        rt = pr.LocalRuntime(activate="/checkout/scripts/activate.sh", nextflow="/checkout/.conda_runtime/bin/nextflow")
+        rec = _record(local_runtime=rt)
+        assert rec.local_runtime == rt
+        back = pr.load_pipeline_record(pr.write_pipeline_record(rec, tmp_path / "p"))
+        assert back.local_runtime == rt
+
+    def test_an_absent_nextflow_is_stated_not_guessed(self):
+        rt = pr.LocalRuntime(activate="/checkout/scripts/activate.sh", nextflow=None)
+        assert _record(local_runtime=rt).local_runtime.nextflow is None
+        assert _record().local_runtime is None

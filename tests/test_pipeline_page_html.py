@@ -1,20 +1,24 @@
-"""The explain page: the header banner, the picture, the parameters and samples, how
-to run it locally, how to run it on the cluster, the stages, the footer — and nothing
-else. A pipeline directory offers ONE way to run — every row of samples.csv, with
-Nextflow — so the page shows two steps at home and three on the cluster, and never a
-by-hand item. Every run line it prints is the one `pipeline_render_nextflow` spells
-(`RUN_LOCAL` / `RUN_HPC`) and every stage command is the line main.nf runs
-(`bound_commands`), so the page and the files cannot disagree. The page speaks the
-FILES' vocabulary — `params.gtf`, the `reads` column, `<sample>.counts.tsv`,
-`results/<sample>/` — never the seal's `{PLACEHOLDER}`s; and the picture is a faithful,
-non-overlapping drawing of the record's graph in which the row key is drawn but never
-wired.
+"""The explain page: the header banner, how the files fit together, the picture, the
+parameters and samples, how to run it locally, how to run it on the cluster, the
+stages, the footer — and nothing else. A pipeline directory offers ONE way to run —
+every row of samples.csv, with Nextflow — so the page shows three steps at home
+(change directory, make nextflow available, run) and three on the cluster (change
+directory, submit, watch), and never a by-hand item. Every run line it prints is the
+one `pipeline_render_nextflow` spells (`RUN_LOCAL` / `RUN_HPC`), every stage command
+is the line main.nf runs (`bound_commands`), and the two standing params are the pair
+the renderer writes (`SAMPLESHEET_PARAM` / `OUTDIR_PARAM`), so the page and the files
+cannot disagree. The page speaks the FILES' vocabulary — `params.gtf`, the `reads`
+column, `<sample>.counts.tsv`, `results/<sample>/` — never the seal's `{PLACEHOLDER}`s;
+and both pictures are faithful, non-overlapping drawings: the files picture of the
+directory's wiring (what you copy and edit → main.nf → what a run writes, every box
+line read off the record) and the stage picture of the record's graph, in which the
+row key is drawn but never wired.
 
 Rendered from the same fixture the record tests use (`sealed_rnaseq_spec`: three rows,
-three stages, one image), its one-row, cluster-named and two-image variants, plus a
-hand-built wide record — 12 stages, 12 params, a fan-out into three side-by-side
-stages, a fan-in, two long edges — for the layout guarantees a three-stage chain
-cannot exercise.
+three stages, one image), its one-row, cluster-named, two-image and runtime-env
+variants, plus a hand-built wide record — 12 stages, 12 params, a fan-out into three
+side-by-side stages, a fan-in, two long edges — for the layout guarantees a
+three-stage chain cannot exercise.
 """
 from __future__ import annotations
 
@@ -25,15 +29,26 @@ import pytest
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, SAMPLES, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.env_report_html import _e
-from agent.skills.pipeline_page_html import FOOTER, picture_layout, render_pipeline_page
-from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, bound_commands
+from agent.skills.env_report_html import _close_page, _e, _open_page
+from agent.skills.pipeline_page_html import FOOTER, files_layout, picture_layout, render_pipeline_page
+from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_LOCAL, SAMPLESHEET_PARAM,
+                                                   bound_commands)
 
 SPEC_PATH = "/ws/reports/rnaseq_counts_workflow.workflow.yaml"
 SIF = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
 MODULES = ["apptainer/1.3.2", "nextflow/24.10.0"]
-SECTION_IDS = ["picture", "params", "run-local", "run-hpc", "stages"]
+SECTION_IDS = ["files", "picture", "params", "run-local", "run-hpc", "stages"]
 DIGEST_2 = "sha256:" + "c" * 64
+#: How this machine provides nextflow, as the render tool records it: the checkout's
+#: activate script, and the binary it puts on PATH — or None when it was not there.
+ACTIVATE = "/ck/scripts/activate.sh"
+NEXTFLOW = "/ck/.conda_runtime/bin/nextflow"
+RUNTIME = pr.LocalRuntime(activate=ACTIVATE, nextflow=NEXTFLOW)
+RUNTIME_NO_NEXTFLOW = pr.LocalRuntime(activate=ACTIVATE, nextflow=None)
+#: Why the launch directory matters, verbatim — both cd steps and the files caption carry it.
+LAUNCH_NOTE = ("Nextflow works out of the directory it is started in: <code>work/</code> (each task's "
+               "sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) and the run records "
+               "appear here, so launch from this directory every time.")
 #: The seal's placeholders for the fixture — words the page must never speak.
 PLACEHOLDERS = ["{SAMPLE}", "{READS}", "{GTF}", "{STRANDED}", "{HISAT2_INDEX}", "{OUTPUT_DIR}"]
 #: The I6 reading of a placeholder, as the seal scans it.
@@ -60,6 +75,16 @@ def _cluster(**kw) -> pr.PipelineRecord:
                    compute_env="hpc", modules=MODULES, **kw)
 
 
+def _local() -> pr.PipelineRecord:
+    """The record rendered on a machine whose runtime env was recorded, nextflow in it."""
+    return _record(local_runtime=RUNTIME)
+
+
+def _local_no_nextflow() -> pr.PipelineRecord:
+    """The record rendered on a machine whose runtime env was recorded without nextflow."""
+    return _record(local_runtime=RUNTIME_NO_NEXTFLOW)
+
+
 def _two_images(rec: pr.PipelineRecord | None = None) -> pr.PipelineRecord:
     """The record with its last stage moved onto a second image: two digests in the
     header, an Image column in the stages table, one cluster note per image."""
@@ -69,12 +94,26 @@ def _two_images(rec: pr.PipelineRecord | None = None) -> pr.PipelineRecord:
     return rec.model_copy(update={"stages": stages, "env_digests": [DIGEST, DIGEST_2]})
 
 
+def _staged_but_one() -> pr.PipelineRecord:
+    """Two images on a named cluster, the .sif staged for the first only."""
+    two = _two_images()
+    return two.model_copy(update={
+        "stages": [s.model_copy(update={"sif_path": SIF}) if s.name != "HTSEQ_COUNT" else s for s in two.stages],
+        "compute_env": "hpc", "modules": ["apptainer/1.3.2"]})
+
+
 def _page(rec: pr.PipelineRecord | None = None) -> str:
     return render_pipeline_page(rec or _record())
 
 
-def _svg(html: str) -> str:
-    return html[html.index("<svg"): html.index("</svg>") + len("</svg>")]
+def _svg(html: str, sid: str = "pipeline-picture") -> str:
+    """One of the page's two pictures, by id — the stage picture unless asked otherwise."""
+    start = html.index(f'<svg id="{sid}"')
+    return html[start: html.index("</svg>", start) + len("</svg>")]
+
+
+def _files_svg(html: str) -> str:
+    return _svg(html, "pipeline-files")
 
 
 def _section(html: str, sid: str) -> str:
@@ -100,6 +139,21 @@ def _stage_row(html: str, name: str) -> str:
 def _steps(sec: str) -> list[str]:
     """The <li> bodies of a section's one ordered list, in order."""
     return re.findall(r"<li>(.*?)</li>", sec, re.S)
+
+
+def _bullets(sec: str) -> list[str]:
+    """The <li> bodies of a section's one unordered list, in order."""
+    ul = sec[sec.index("<ul>"): sec.index("</ul>")]
+    return re.findall(r"<li>(.*?)</li>", ul, re.S)
+
+
+def _conventions(sec: str) -> list[tuple[str, str, str]]:
+    """The conventions table's rows: (convention, setting, decided by), cells verbatim."""
+    return re.findall(r"<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>", sec)
+
+
+def _fnodes(rec: pr.PipelineRecord) -> dict:
+    return {n.id: n for n in files_layout(rec).nodes}
 
 
 class _Spoken(HTMLParser):
@@ -202,13 +256,31 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
         name="wide", version="1", created_at="2026-09-29T00:00:00+00:00", sealed_workflow="wide_workflow",
         sealed_workflow_path="", sealed_workflow_sha256=None, env_digests=["sha256:" + "b" * 64],
         params=list(params.values()), samplesheet=_key_sheet("S1", "S2"), output_slots=["OUTPUT_DIR"],
-        compute_env=None, modules=[], stages=stages, provenance_steps=[], unmatched_steps=[], defaults=[],
-        notes=[])
+        compute_env=None, modules=[], local_runtime=None, stages=stages, provenance_steps=[], unmatched_steps=[],
+        defaults=[], notes=[])
 
 
 def _with_cohort(rec: pr.PipelineRecord, *names: str) -> pr.PipelineRecord:
     return rec.model_copy(update={"stages": [s.model_copy(update={"scope": "cohort"}) if s.name in names else s
                                              for s in rec.stages]})
+
+
+def _cohort() -> pr.PipelineRecord:
+    """Three stages, the middle one run once over the cohort."""
+    return _with_cohort(_wide_record(n_stages=3), "STAGE_01")
+
+
+def _no_shared() -> pr.PipelineRecord:
+    """A record whose every input is a samplesheet column: no shared params at all."""
+    rec = _wide_record(n_stages=2).model_copy(update={"params": []})
+    stages = [s.model_copy(update={"inputs": [i for i in s.inputs if i.origin == "stage"]}) for s in rec.stages]
+    return rec.model_copy(update={"stages": stages})
+
+
+def _no_outputs() -> pr.PipelineRecord:
+    """Two stages that publish nothing."""
+    rec = _wide_record(n_stages=2)
+    return rec.model_copy(update={"stages": [s.model_copy(update={"outputs": []}) for s in rec.stages]})
 
 
 # ── the header banner ──────────────────────────────────────────────────────────
@@ -228,6 +300,7 @@ class TestHeader:
         assert _banner_keys(_page()) == rows
         assert _banner_keys(_page(_one_row())) == rows
         assert _banner_keys(_page(_two_images())) == rows
+        assert _banner_keys(_page(_local())) == rows                     # the runtime env is a local step, not a fact
         assert _banner_keys(_page(_cluster())) == rows + ["Cluster"]
         assert _banner_keys(_page(_record(compute_env="hpc", modules=[]))) == rows + ["Cluster"]
 
@@ -275,6 +348,341 @@ class TestHeader:
             assert gone not in html, gone
 
 
+# ── how the files fit together ─────────────────────────────────────────────────
+
+
+#: The records the files picture is measured on: every shape it promises to draw.
+_FILES_RECORDS = {"three_rows": _record, "one_row": _one_row, "cluster": _cluster, "two_images": _two_images,
+                  "staged_but_one": _staged_but_one, "cohort": _cohort, "no_shared": _no_shared,
+                  "no_outputs": _no_outputs, "wide": _wide_record, "local": _local}
+
+
+class TestHowTheFilesFitTogether:
+    def test_the_section_is_the_files_picture_its_hover_script_the_caption_then_the_conventions(self):
+        sec = _section(_page(), "files")
+        assert ('<h2>How the files fit together <span class="note">what you copy and edit → the engine → '
+                "what a run writes</span></h2>") in sec
+        svg = _files_svg(sec)
+        assert svg.startswith('<svg id="pipeline-files" viewBox="0 0 ')
+        assert ('aria-label="pipeline rnaseq_counts: the files you copy and edit feeding main.nf, and what a '
+                'run writes"') in svg
+        script = '</svg><script>(function(){var s=document.getElementById("pipeline-files");if(!s)return;'
+        assert sec.count(script) == 1 and sec.count("<script>") == 1
+        caption = ('<p class="note">Copy the whole directory next to the data and launch from inside it. '
+                   + LAUNCH_NOTE + " Where the pipeline runs is the profile's business: <code>-profile local</code> "
+                   "runs every task in the docker image, <code>-profile slurm</code> in the <code>.sif</code> "
+                   "through apptainer, one SLURM job per task; <code>params.yaml</code> never says where. Hover a "
+                   "box to trace what it feeds.</p>")
+        assert caption in sec
+        assert sec.index("</script>") < sec.index(caption) < sec.index("Our conventions") < sec.index("<table>")
+        assert sec.count("<svg") == 1 and sec.count("<table>") == 1
+
+    def test_three_columns_titled_what_you_edit_the_engine_what_a_run_writes_left_to_right(self):
+        layout = files_layout(_record())
+        assert [t for _, t in layout.titles] == ["what you copy and edit", "the engine", "what a run writes"]
+        xs = [x for x, _ in layout.titles]
+        by = {n.id: n for n in layout.nodes}
+        left = [by[i] for i in ("f:samples.csv", "f:params.yaml", "f:nextflow.config", "f:launcher.sh")]
+        right = [by[i] for i in ("f:results", "f:runs", "f:work")]
+        assert xs == [left[0].x, by["f:main.nf"].x, right[0].x]           # each title sits over its column
+        assert xs == sorted(xs) and len(set(xs)) == 3
+        assert len({n.x for n in left}) == 1 and len({n.x for n in right}) == 1
+        assert [n.y for n in left] == sorted(n.y for n in left) and [n.y for n in right] == sorted(n.y for n in right)
+        for column in (left, right):                                    # stacked, never overlapping
+            assert all(a.y + a.h < b.y for a, b in zip(column, column[1:]))
+        svg = _files_svg(_page())
+        assert '<text class="title" x="16.0" y="16.0">what you copy and edit</text>' in svg
+        assert ">the engine</text>" in svg and ">what a run writes</text>" in svg
+
+    def test_one_box_per_file_in_this_order_the_engine_in_the_middle_and_what_a_run_writes_marked_written(self):
+        layout = files_layout(_record())
+        assert [n.id for n in layout.nodes] == ["f:samples.csv", "f:params.yaml", "f:nextflow.config", "f:launcher.sh",
+                                                "f:main.nf", "f:results", "f:runs", "f:work"]
+        assert [n.name for n in layout.nodes] == ["samples.csv", "params.yaml", "nextflow.config", "launcher.sh",
+                                                  "main.nf", "results/<sample>/", "runs/<timestamp>/", "work/"]
+        assert [n.classes for n in layout.nodes] == ["", "", "", "", "engine", "written", "written", "written"]
+        svg = _files_svg(_page())
+        assert svg.count('data-node="file"') == 8
+        assert 'class="node file" data-node="file" data-id="f:samples.csv" data-name="samples.csv"' in svg
+        assert 'class="node file engine" data-node="file" data-id="f:main.nf" data-name="main.nf"' in svg
+        assert ('class="node file written" data-node="file" data-id="f:results" '
+                'data-name="results/&lt;sample&gt;/"') in svg
+        assert 'class="node file written" data-node="file" data-id="f:work" data-name="work/"' in svg
+        for name in ("samples.csv", "params.yaml", "nextflow.config", "launcher.sh", "main.nf", "work/"):
+            assert f'<text class="l1" x="' in svg and f">{name}</text>" in svg, name
+
+    def test_samples_csv_says_its_columns_its_row_key_and_how_many_example_rows_it_holds(self):
+        n = _fnodes(_record())["f:samples.csv"]
+        assert n.lines == ["columns: sample, reads", "sample = row key", "3 example rows, the sealed run's own"]
+        assert n.tooltip == "samples.csv: one row per sample under one header line; params.samplesheet names it"
+        assert _fnodes(_one_row())["f:samples.csv"].lines[2] == "1 example row, the sealed run's own"
+        assert _fnodes(_wide_record())["f:samples.csv"].lines == ["columns: sample", "sample = row key",
+                                                                  "2 example rows, the sealed run's own"]
+        svg = _files_svg(_page())
+        assert ">columns: sample, reads</text>" in svg and ">sample = row key</text>" in svg
+        assert ">3 example rows, the sealed run&#x27;s own</text>" in svg
+
+    def test_params_yaml_lists_the_shared_params_then_the_samplesheet_and_the_output_directory(self):
+        n = _fnodes(_record())["f:params.yaml"]
+        assert n.lines == ["hisat2_index, stranded, gtf", "samplesheet: samples.csv", "outdir: results"]
+        assert n.lines[1:] == [f"{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}", f"{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}"]
+        assert n.tooltip == "params.yaml: the parameters the pipeline runs with, the samplesheet, the output directory"
+        assert _fnodes(_no_shared())["f:params.yaml"].lines == ["no shared parameters", "samplesheet: samples.csv",
+                                                                "outdir: results"]
+        wide = _fnodes(_wide_record())["f:params.yaml"].lines
+        assert " ".join(wide[:-2]).split(", ") == [f"param_{i:02d}_long" for i in range(12)]   # wrapped, nothing lost
+        assert all(len(ln) <= 34 for ln in wide) and len(wide) == 8
+        assert wide[-2:] == ["samplesheet: samples.csv", "outdir: results"]
+        svg = _files_svg(_page())
+        assert ">hisat2_index, stranded, gtf</text>" in svg and ">samplesheet: samples.csv</text>" in svg
+        assert ">outdir: results</text>" in svg
+
+    def test_nextflow_config_names_what_each_profile_runs_in_and_says_set_me_when_no_sif_is_recorded(self):
+        n = _fnodes(_record())["f:nextflow.config"]
+        assert n.lines == ["-profile local → docker", "↳ bioinf_rnaseq_cli:latest", "-profile slurm → apptainer",
+                           "↳ container = '' (SET ME)", "sizing per stage · run records"]
+        assert n.tooltip == ("nextflow.config: each profile names the executor and the image every task runs in. "
+                             ".sif: no .sif path recorded")
+        c = _fnodes(_cluster())["f:nextflow.config"]
+        assert c.lines[3] == "↳ rnaseq_cli_48ac8c5b25d2.sif on hpc"       # the box: the basename and where
+        assert c.tooltip.endswith(f".sif: {SIF}")                           # the tooltip: the full path
+        assert c.lines[:3] == n.lines[:3] and c.lines[4:] == n.lines[4:]
+        rec = _record()
+        untagged = rec.model_copy(update={"stages": [s.model_copy(update={"image": None}) for s in rec.stages]})
+        assert _fnodes(untagged)["f:nextflow.config"].lines[1] == "↳ aaaa1111aaaa"
+        assert _fnodes(_wide_record())["f:nextflow.config"].lines[1] == "↳ image unrecorded"
+        svg = _files_svg(_page(_cluster()))
+        assert f".sif: {SIF}</title>" in svg and ">↳ rnaseq_cli_48ac8c5b25d2.sif on hpc</text>" in svg
+        assert ">↳ container = &#x27;&#x27; (SET ME)</text>" in _files_svg(_page())
+        assert ">-profile local → docker</text>" in svg and ">-profile slurm → apptainer</text>" in svg
+
+    def test_with_several_images_nextflow_config_names_one_image_per_stage_under_each_profile(self):
+        n = _fnodes(_two_images())["f:nextflow.config"]
+        assert n.lines == ["-profile local → docker", "↳ HISAT2: bioinf_rnaseq_cli:latest",
+                           "↳ SAMTOOLS: bioinf_rnaseq_cli:latest", "↳ HTSEQ_COUNT: other_img:2",
+                           "-profile slurm → apptainer", "↳ HISAT2: container = '' (SET ME)",
+                           "↳ SAMTOOLS: container = '' (SET ME)", "↳ HTSEQ_COUNT: container = '' (SET ME)",
+                           "sizing per stage · run records"]
+        assert n.tooltip.endswith(".sif: HISAT2: no .sif path recorded; SAMTOOLS: no .sif path recorded; "
+                                  "HTSEQ_COUNT: no .sif path recorded")
+        s = _fnodes(_staged_but_one())["f:nextflow.config"]
+        assert s.lines[5:8] == ["↳ HISAT2: rnaseq_cli_48ac8c5b25d2.sif on hpc",
+                                "↳ SAMTOOLS: rnaseq_cli_48ac8c5b25d2.sif on hpc",
+                                "↳ HTSEQ_COUNT: container = '' (SET ME)"]
+        assert s.tooltip.endswith(f".sif: HISAT2: {SIF}; SAMTOOLS: {SIF}; HTSEQ_COUNT: no .sif path recorded")
+
+    def test_launcher_sh_says_what_it_loads_in_each_cluster_state(self):
+        head = ["sbatch: the manager job", "runs nextflow -profile slurm"]
+        assert _fnodes(_record())["f:launcher.sh"].lines == head + ["rendered without a cluster named:",
+                                                                    "loads no modules"]
+        assert _fnodes(_cluster())["f:launcher.sh"].lines == head + ["module load apptainer/1.3.2", "nextflow/24.10.0"]
+        assert _fnodes(_record(compute_env="hpc", modules=[]))["f:launcher.sh"].lines == head + [
+            "loads no modules: the env declares none"]
+        assert _fnodes(_record(compute_env="hpc", modules=["apptainer/1.3.2"]))["f:launcher.sh"].lines == head + [
+            "module load apptainer/1.3.2"]
+        assert _fnodes(_record())["f:launcher.sh"].tooltip == (
+            "launcher.sh: the SLURM manager job; it loads the modules and runs nextflow, which submits one job per task")
+        html = _page(_cluster())
+        fsvg = _files_svg(html)
+        assert ">module load apptainer/1.3.2</text>" in fsvg and ">nextflow/24.10.0</text>" in fsvg
+        assert "module load" not in _svg(html)
+
+    def test_main_nf_is_the_engine_naming_the_stages_in_order_and_how_often_each_runs(self):
+        n = _fnodes(_record())["f:main.nf"]
+        assert n.classes == "engine"
+        assert n.lines == ["HISAT2 → SAMTOOLS → HTSEQ_COUNT", "one process per stage,",
+                           "run once per samples.csv row"]
+        assert n.tooltip == "main.nf: one process per stage, the sealed command with its placeholders bound"
+        assert _fnodes(_cohort())["f:main.nf"].lines == ["STAGE_00 → STAGE_01 → STAGE_02",
+                                                         "per-sample stages: once per row;", "cohort stages: once"]
+        wide = _fnodes(_wide_record())["f:main.nf"].lines
+        assert " ".join(wide[:-2]) == " → ".join(f"STAGE_{i:02d}" for i in range(12))   # wrapped, in order
+        assert all(len(ln) <= 34 for ln in wide) and len(wide) == 6
+        none = _wide_record(n_stages=2).model_copy(update={"stages": []})
+        assert _fnodes(none)["f:main.nf"].lines[0] == "(no stages)"
+        assert ">HISAT2 → SAMTOOLS → HTSEQ_COUNT</text>" in _files_svg(_page())
+
+    def test_what_a_run_writes_is_results_per_sample_the_run_records_and_work(self):
+        by = _fnodes(_record())
+        r = by["f:results"]
+        assert (r.name, r.lines, r.classes) == ("results/<sample>/", ["aligned.bam, aligned.bam.bai,",
+                                                                      "<sample>.counts.tsv"], "written")
+        assert r.tooltip == "results/<sample>/: every file a per-sample stage writes, published by copy"
+        assert by["f:runs"].lines == ["trace.txt: every task's command", "report.html: time, memory, CPU"]
+        assert by["f:runs"].tooltip == "runs/<timestamp>/: the record of one run; the launch line is in nextflow log"
+        assert by["f:work"].lines == ["every task's sandbox", "never cleaned for you:", "nextflow clean -f"]
+        assert by["f:work"].tooltip == "work/: where tasks run and -resume finds their results"
+        assert "f:results-cohort" not in by
+        assert _fnodes(_sample_named(_record()))["f:results"].lines == ["<sample>.bam, <sample>.bam.bai,",
+                                                                        "<sample>.counts.tsv"]
+        assert _fnodes(_no_outputs())["f:results"].lines == ["(nothing published)"]
+        wide = _fnodes(_wide_record())["f:results"].lines
+        assert " ".join(wide).split(", ") == [f"artifact_{i:02d}.bam" for i in range(12)]
+        svg = _files_svg(_page())
+        assert ">aligned.bam, aligned.bam.bai,</text>" in svg and ">&lt;sample&gt;.counts.tsv</text>" in svg
+        assert ">results/&lt;sample&gt;/</text>" in svg and ">runs/&lt;timestamp&gt;/</text>" in svg
+
+    def test_a_cohort_stage_publishes_into_results_flat_a_second_written_box_drawn_only_then(self):
+        layout = files_layout(_cohort())
+        assert [n.id for n in layout.nodes] == ["f:samples.csv", "f:params.yaml", "f:nextflow.config", "f:launcher.sh",
+                                                "f:main.nf", "f:results", "f:results-cohort", "f:runs", "f:work"]
+        by = {n.id: n for n in layout.nodes}
+        assert (by["f:results-cohort"].name, by["f:results-cohort"].lines, by["f:results-cohort"].classes) == (
+            "results/", ["artifact_01.bam"], "written")
+        assert by["f:results-cohort"].tooltip == "results/: what the cohort stage(s) publish"
+        assert by["f:results"].lines == ["artifact_00.bam,", "artifact_02.bam"]      # the per-sample stages' only
+        assert [(e.src, e.dst, e.label) for e in layout.edges if e.dst.startswith("f:results")] == [
+            ("f:main.nf", "f:results", "publishDir"), ("f:main.nf", "f:results-cohort", "publishDir")]
+        svg = _files_svg(_page(_cohort()))
+        assert 'data-id="f:results-cohort" data-name="results/"' in svg and svg.count(">publishDir</text>") == 2
+        silent = _cohort()
+        silent = silent.model_copy(update={"stages": [s.model_copy(update={"outputs": []}) if s.name == "STAGE_01"
+                                                      else s for s in silent.stages]})
+        assert "f:results-cohort" not in _fnodes(silent)                      # a cohort stage publishing nothing
+        assert _fnodes(silent)["f:main.nf"].lines[1:] == ["per-sample stages: once per row;", "cohort stages: once"]
+
+    def test_one_wire_from_each_edited_file_into_main_nf_and_one_out_to_each_thing_a_run_writes(self):
+        layout = files_layout(_record())
+        wires = [("wire", "f:samples.csv", "f:main.nf", "params.samplesheet"),
+                 ("wire", "f:params.yaml", "f:main.nf", "-params-file"),
+                 ("wire", "f:nextflow.config", "f:main.nf", "-profile local | slurm"),
+                 ("wire", "f:launcher.sh", "f:main.nf", "sbatch (cluster only)"),
+                 ("wire out", "f:main.nf", "f:results", "publishDir"),
+                 ("wire out", "f:main.nf", "f:runs", "trace · report"),
+                 ("wire out", "f:main.nf", "f:work", "tasks run here")]
+        assert [(e.kind, e.src, e.dst, e.label) for e in layout.edges] == wires
+        assert layout.edges[0].label == f"params.{SAMPLESHEET_PARAM[0]}"
+        assert all(e.path.startswith("M") and " C" in e.path for e in layout.edges)
+        svg = _files_svg(_page())
+        assert svg.count('data-edge="wire"') == 7 and svg.count('class="edge wire"') == 4
+        assert svg.count('class="edge wire out"') == 3
+        for kind, src, dst, label in wires:
+            assert f'<path class="edge {kind}" data-edge="wire" data-from="{src}" data-to="{dst}" d="M' in svg
+            assert re.search(rf'<g class="lbl" data-edge="wire-label" data-from="{re.escape(src)}" '
+                             rf'data-to="{re.escape(dst)}"><rect [^>]*/><text [^>]*>{re.escape(_e(label))}</text></g>',
+                             svg), label
+        labels = re.findall(r'<g class="lbl" data-edge="wire-label"[^>]*>.*?<text[^>]*>([^<]*)</text></g>', svg)
+        assert labels == [w[3] for w in wires]
+
+    @pytest.mark.parametrize("which", sorted(_FILES_RECORDS))
+    def test_no_text_overlaps_no_label_touches_a_box_and_nothing_leaves_the_viewbox(self, which):
+        rec = _FILES_RECORDS[which]()
+        layout = files_layout(rec)
+        texts = layout.texts
+        assert len(texts) >= 40
+        for i, a in enumerate(texts):
+            for b in texts[i + 1:]:
+                clear = (a.x + a.w <= b.x or b.x + b.w <= a.x or a.y + a.h <= b.y or b.y + b.h <= a.y)
+                assert clear, f"{a.role} {a.text!r} overlaps {b.role} {b.text!r}"
+        for lbl in (t for t in texts if t.role == "label"):
+            for n in layout.nodes:
+                clear = (lbl.x + lbl.w <= n.x or n.x + n.w <= lbl.x or lbl.y + lbl.h <= n.y or n.y + n.h <= lbl.y)
+                assert clear, f"label {lbl.text!r} overlaps node {n.id}"
+        for n in layout.nodes:
+            assert 0 <= n.x and n.x + n.w <= layout.width and 0 <= n.y and n.y + n.h <= layout.height
+        for t in texts:
+            assert 0 <= t.x and t.x + t.w <= layout.width and 0 <= t.y and t.y + t.h <= layout.height
+        svg = _files_svg(render_pipeline_page(rec))
+        m = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg)
+        assert m and (int(m.group(1)), int(m.group(2))) == (round(layout.width), round(layout.height))
+        assert 'width="100%"' in svg and f"max-width:{m.group(1)}px" in svg
+
+    def test_the_fixture_picture_stays_narrow_enough_to_render_at_natural_size_because_its_lines_wrap(self):
+        layout = files_layout(_record())
+        assert layout.width < 1100
+        by = {n.id: n for n in layout.nodes}
+        for nid in ("f:params.yaml", "f:main.nf"):                       # the wrapped lists stay within budget
+            assert all(len(ln) <= 34 for ln in by[nid].lines), nid
+        assert all(len(ln) <= 30 for ln in by["f:results"].lines)
+        assert max(n.x + n.w for n in layout.nodes) < 1100
+        m = re.search(r'viewBox="0 0 (\d+) ', _files_svg(_page()))
+        assert m and int(m.group(1)) < 1100
+
+    def test_the_layout_is_computed_from_the_record_alone_and_is_the_same_every_time(self):
+        rec = _record()
+        assert files_layout(rec) == files_layout(rec)
+        assert files_layout(_record()) == files_layout(_record())      # two derivations, no clock in the geometry
+        assert files_layout(_wide_record()) == files_layout(_wide_record())
+        one, three = files_layout(_one_row()), files_layout(_record())
+        assert [n.id for n in one.nodes] == [n.id for n in three.nodes]
+        assert [(e.src, e.dst, e.label) for e in one.edges] == [(e.src, e.dst, e.label) for e in three.edges]
+        for a, b in zip(one.nodes, three.nodes):                       # only the rows line differs
+            if a.id == "f:samples.csv":
+                assert (a.lines[2], b.lines[2]) == ("1 example row, the sealed run's own",
+                                                    "3 example rows, the sealed run's own")
+                assert a.lines[:2] == b.lines[:2]
+            else:
+                assert (a.lines, a.tooltip) == (b.lines, b.tooltip)
+
+    def test_the_files_picture_speaks_the_files_words_and_no_placeholder_not_even_in_its_machine_keys(self):
+        svg = _files_svg(_page(_sample_named(_cluster())))
+        assert not _PLACEHOLDER_RE.search(svg)                            # a file id carries no record name
+        spoken = _spoken(svg)
+        assert not _PLACEHOLDER_RE.search(spoken)
+        for word in ("samples.csv", "params.yaml", "nextflow.config", "launcher.sh", "main.nf", "results/<sample>/",
+                     "runs/<timestamp>/", "work/", "params.samplesheet", "-params-file", "-profile local | slurm",
+                     "sbatch (cluster only)", "publishDir", "trace · report", "tasks run here", "<sample>.bam",
+                     "<sample>.counts.tsv", SIF, "module load apptainer/1.3.2"):
+            assert word in spoken, word
+        assert "SAMPLE" not in spoken.replace("SAMPLES", "") and "OUTPUT_DIR" not in spoken
+
+    def test_each_picture_gets_its_own_hover_script_and_nothing_else_on_the_page_is_scripted(self):
+        html = _page()
+        for sid in ("pipeline-files", "pipeline-picture"):
+            assert html.count(f'<svg id="{sid}"') == 1
+            assert html.count(f'</svg><script>(function(){{var s=document.getElementById("{sid}");if(!s)return;') == 1
+        assert html.count('getElementById("pipeline-') == 2 and html.index('id="pipeline-files"') < html.index(
+            'id="pipeline-picture"')
+        assert html.count("<script>") == (_open_page("x") + _close_page("")).count("<script>") + 2
+        assert html.count('classList.add("src")') == 2                  # one hover routine per picture
+
+
+class TestConventions:
+    def test_the_table_is_every_record_default_in_words_with_who_decided_it(self):
+        rec = _record()
+        sec = _section(_page(rec), "files")
+        assert ('<p class="note">Our conventions — the same for every pipeline this system renders, unless a row '
+                'says otherwise:</p><div class="tbl-wrap"><table><tr><th>Convention</th><th>Setting</th>'
+                "<th>Decided by</th></tr>") in sec
+        rows = _conventions(sec)
+        assert [d.key for d in rec.defaults] == ["stage_cut", "publish", "resume", "errors", "cache", "queue_size",
+                                                 "run_records", "cleanup", "sheet_preflight", "resources"]
+        assert [r[0] for r in rows] == ["Stage cut", "Publishing", "Resume", "Errors", "Cache", "Queue size",
+                                        "Run records", "Cleanup", "Samplesheet check", "Resources"]
+        assert all(d.source == "default" for d in rec.defaults) and all(r[2] == "our default" for r in rows)
+        assert rows[0] == ("Stage cut", "one stage per how-to command", "our default")
+        assert rows[5] == ("Queue size", "50", "our default")
+        assert rows[8] == ("Samplesheet check", "the samplesheet and every file column are checked as the run starts",
+                           "our default")
+        assert [r[1] for r in rows] == [_e(d.value) if "`" not in d.value else r[1] for d, r in zip(rec.defaults, rows)]
+        assert len(rows) == len(rec.defaults) == 10
+
+    def test_a_values_backticked_spans_are_code_and_everything_is_escaped(self):
+        rows = _conventions(_section(_page(), "files"))
+        assert rows[7] == ("Cleanup", "never automatic; <code>nextflow clean -f</code> when you are done", "our default")
+        assert rows[6] == ("Run records", "trace (each task&#x27;s command) + report under runs/&lt;timestamp&gt;/; "
+                           "the launch line in <code>nextflow log</code>", "our default")
+        assert "`" not in "".join("".join(r) for r in rows)
+
+    def test_who_decided_reads_as_our_default_set_when_rendered_or_from_the_seal(self):
+        assert _conventions(_section(_page(_record(stages=[[0, 1], [2]])), "files"))[0] == (
+            "Stage cut", "explicit groups", "set when rendered")
+        rec = _record().model_copy(update={"defaults": [
+            pr.PipelineDefault(key="stage_cut", value="explicit groups", source="caller"),
+            pr.PipelineDefault(key="publish", value="only what the seal declared", source="seal"),
+            pr.PipelineDefault(key="future_key", value="a `quoted` value", source="default")]})
+        assert _conventions(_section(_page(rec), "files")) == [
+            ("Stage cut", "explicit groups", "set when rendered"),
+            ("Publishing", "only what the seal declared", "from the seal"),
+            ("future_key", "a <code>quoted</code> value", "our default")]   # an unknown key is printed raw, not dropped
+
+    def test_a_record_stating_no_conventions_says_so(self):
+        sec = _section(_page(_wide_record()), "files")
+        assert '<p class="empty">the record states no conventions</p>' in sec
+        assert "<table>" not in sec and "Our conventions" not in sec
+        assert sec.endswith('<p class="empty">the record states no conventions</p></div></section>')
+
+
 # ── the picture ────────────────────────────────────────────────────────────────
 
 
@@ -291,6 +699,7 @@ class TestThePicture:
         assert svg.count('data-node="output"') == len(outputs) == 3
         for p in rec.params:
             assert f'data-name="{p.name}"' in svg
+        assert 'data-node="file"' not in svg                                # the files boxes are the other picture's
 
     def test_the_column_titles_and_the_group_headers_are_the_files_names_left_to_right(self):
         layout = picture_layout(_record())
@@ -343,8 +752,7 @@ class TestThePicture:
                                           "unsized (default request) · measured authority authoritative")
         sized = _record(resources={"HISAT2": {"cpus": 8, "mem": "32G", "time": "4:00:00"}})
         assert "request cpus 8 · mem 32G · time 4:00:00 · gpus 0" in picture_layout(sized).nodes[5].tooltip
-        cohort = _with_cohort(_wide_record(n_stages=3), "STAGE_01")
-        by = {n.id: n for n in picture_layout(cohort).nodes}
+        by = {n.id: n for n in picture_layout(_cohort()).nodes}
         assert by["s:STAGE_01"].line2 == "tool1 · cohort" and by["s:STAGE_00"].line2 == "tool0 · per sample"
         assert "runs once over the cohort" in by["s:STAGE_01"].tooltip
         assert ">hisat2 · per sample</text>" in _svg(_page())
@@ -356,8 +764,7 @@ class TestThePicture:
         assert counts.tooltip == ("results/<sample>/<sample>.counts.tsv · published by HTSEQ_COUNT · declared as "
                                   f"*.counts.tsv · observed as {SAMPLES[0]}.counts.tsv in the sealed run")
         assert (by["o:HISAT2/aligned.bam"].line1, by["o:HISAT2/aligned.bam"].line2) == ("aligned.bam", "results/<sample>/")
-        cohort = _with_cohort(_wide_record(n_stages=3), "STAGE_01")
-        by = {n.id: n for n in picture_layout(cohort).nodes}
+        by = {n.id: n for n in picture_layout(_cohort()).nodes}
         assert by["o:STAGE_01/artifact_01.bam"].line2 == "results/"
         assert by["o:STAGE_00/artifact_00.bam"].line2 == "results/<sample>/"
         assert by["o:STAGE_01/artifact_01.bam"].tooltip.endswith(" · never observed in the sealed run")
@@ -425,9 +832,7 @@ class TestThePicture:
         assert "Hover or focus a node to trace it.</p>" in sec
 
     def test_a_record_with_no_shared_params_says_none_under_params_yaml(self):
-        rec = _wide_record(n_stages=2).model_copy(update={"params": []})
-        stages = [s.model_copy(update={"inputs": [i for i in s.inputs if i.origin == "stage"]}) for s in rec.stages]
-        layout = picture_layout(rec.model_copy(update={"stages": stages}))
+        layout = picture_layout(_no_shared())
         assert [h for _, _, h in layout.headers] == ["samples.csv", "params.yaml", "(none)"]
         assert [n.id for n in layout.nodes if n.kind in ("column", "param")] == ["c:SAMPLE"]
 
@@ -493,7 +898,7 @@ class TestThePicture:
         assert "<script src=" not in html and "<link " not in html
         assert "@import" not in html and "url(http" not in html and "url(//" not in html
         assert "http://" not in html and "https://" not in html
-        assert 'getElementById("pipeline-picture")' in html
+        assert 'getElementById("pipeline-picture")' in html and 'getElementById("pipeline-files")' in html
         assert 'classList.add("hl")' in html
         assert "fetch(" not in html and "XMLHttpRequest" not in html
 
@@ -502,17 +907,44 @@ class TestThePicture:
 
 
 class TestParametersAndSamples:
+    def test_the_section_opens_with_two_bullets_what_params_yaml_is_then_what_samples_csv_is(self):
+        sec = _section(_page(), "params")
+        assert ('<h2>Parameters and samples <span class="note">what params.yaml and samples.csv hold, with the '
+                "sealed run&#x27;s example values</span></h2>") in sec
+        assert sec.count("<ul>") == 1 and sec.count("<li>") == 2
+        one, two = _bullets(sec)
+        assert one == ("<code>params.yaml</code> defines the parameters the pipeline runs with. It also names the "
+                       "samplesheet to use (<code>samples.csv</code>) and the output directory (<code>results</code>). "
+                       "Every value below is what the sealed run was validated with.")
+        assert two == ("<code>samples.csv</code> holds one row per sample under a single header line naming the "
+                       "columns (<code>sample</code>, <code>reads</code>); <code>sample</code> is the row key. "
+                       "<b>The example rows are the sealed run's own trials — replace them with your samples.</b>")
+        assert f"(<code>{SAMPLESHEET_PARAM[1]}</code>)" in one and f"(<code>{OUTDIR_PARAM[1]}</code>)" in one
+        assert (sec.index("<ul>") < sec.index("</ul>") < sec.index("<th>params.yaml</th>")
+                < sec.index("<tr><th>sample</th>"))
+        assert sec.count('<p class="note">') == 0 and "<p>" not in sec     # the bullets are the section's only prose
+
     def test_the_shared_params_are_a_table_keyed_as_params_yaml_names_them_with_the_sealed_example_value(self):
         sec = _section(_page(), "params")
         assert "<tr><th>params.yaml</th><th>Example value</th><th>What it is</th></tr>" in sec
         assert f"<tr><td><code>params.hisat2_index</code></td><td><code>{INDEX}</code></td>" in sec
         assert "<tr><td><code>params.stranded</code></td><td><code>reverse</code></td>" in sec
         assert f"<tr><td><code>params.gtf</code></td><td><code>{GTF}</code></td>" in sec
-        assert sec.count("<tr><td><code>params.") == 3                 # the shared params, and only those
+        assert sec.count("<tr><td><code>params.") == 3 + 2             # the shared params, then the two standing rows
         assert sec.index("params.hisat2_index") < sec.index("params.stranded") < sec.index("params.gtf")
         for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "SAMPLE"):
             assert f"<code>{ph}</code>" not in sec, ph
         assert "<td>shared</td>" not in sec and "<td>per sample" not in sec   # kind is the table you are in
+
+    def test_two_standing_rows_the_samplesheet_and_the_output_directory_follow_the_shared_params(self):
+        sec = _section(_page(), "params")
+        rows = re.findall(r"<tr><td><code>(params\.\w+)</code></td><td>(.*?)</td><td>(.*?)</td></tr>", sec)
+        assert [r[0] for r in rows] == ["params.hisat2_index", "params.stranded", "params.gtf",
+                                        f"params.{SAMPLESHEET_PARAM[0]}", f"params.{OUTDIR_PARAM[0]}"]
+        assert rows[-2:] == [("params.samplesheet", "<code>samples.csv</code>", "the samplesheet: one row per sample"),
+                             ("params.outdir", "<code>results</code>",
+                              "where published outputs land, one directory per sample")]
+        assert rows[-2][1] == f"<code>{SAMPLESHEET_PARAM[1]}</code>" and rows[-1][1] == f"<code>{OUTDIR_PARAM[1]}</code>"
 
     def test_what_it_is_carries_the_value_kind_the_description_and_the_producing_sealed_step(self):
         sec = _section(_page(), "params")
@@ -526,25 +958,15 @@ class TestParametersAndSamples:
         sec = _section(_page(rec.model_copy(update={"params": params})), "params")
         assert '<tr><td><code>params.stranded</code></td><td><span class="muted">none</span></td>' in sec
 
-    def test_params_yaml_is_said_to_also_name_the_samplesheet_and_the_output_directory(self):
+    def test_the_example_rows_follow_the_params_table_directly_one_row_per_trial(self):
         sec = _section(_page(), "params")
-        assert ('<p class="note"><code>params.yaml</code> also names the samplesheet (<code>samples.csv</code>) '
-                "and the output directory (<code>results</code>). Every value is what the sealed run was "
-                "validated with.</p>") in sec
-
-    def test_the_samplesheet_note_names_the_columns_and_the_row_key_and_the_example_rows_follow(self):
-        sec = _section(_page(), "params")
-        note = ("<code>samples.csv</code> — one row per sample, columns: <code>sample</code>, <code>reads</code>. "
-                "<code>sample</code> is the row key. <b>The example rows are the sealed run's own trials — "
-                "replace them with your samples.</b>")
-        assert note in sec
-        assert "<tr><th>sample</th><th>reads</th></tr>" in sec
+        assert ('</table></div><div class="tbl-wrap"><table><tr><th>sample</th><th>reads</th></tr>'
+                f"<tr><td>{SAMPLES[0]}</td>") in sec                        # nothing between the two tables
         for s in SAMPLES:
             assert f"<tr><td>{s}</td><td>/data/reads/{s}_10K_R1.fastq.gz</td></tr>" in sec
         assert sec.count("<tr><td>SRR") == len(SAMPLES)
-        assert sec.index("<th>params.yaml</th>") < sec.index("also names the samplesheet") < sec.index(note) \
-            < sec.index("<tr><th>sample</th>")
         assert sec.count("<table>") == 2
+        assert sec.endswith("</tr></table></div></div></section>")
 
     def test_a_one_row_seal_renders_a_one_row_sheet_and_otherwise_the_same_section(self):
         three, one = _section(_page(), "params"), _section(_page(_one_row()), "params")
@@ -560,55 +982,92 @@ class TestParametersAndSamples:
         rec = pr.derive_pipeline_record(sealed_rnaseq_spec(templates=TEMPLATES[:2]), name="two")
         assert "SAMPLE" not in {p.name for p in rec.params}
         sec = _section(_page(rec), "params")
-        assert sec.count("<tr><td><code>params.") == 1 and "<code>params.hisat2_index</code>" in sec
-        assert ("columns: <code>sample</code>, <code>reads</code>. <code>sample</code> is the row key.") in sec
+        assert sec.count("<tr><td><code>params.") == 1 + 2 and "<code>params.hisat2_index</code>" in sec
+        assert ("naming the columns (<code>sample</code>, <code>reads</code>); <code>sample</code> is the row "
+                "key.") in sec
         assert "<tr><th>sample</th><th>reads</th></tr>" in sec
         layout = picture_layout(rec)
         assert [n.id for n in layout.nodes if n.kind == "column"] == ["c:SAMPLE", "c:READS"]
         assert not [e for e in layout.edges if e.src == "c:SAMPLE"]
 
-    def test_a_record_with_no_shared_params_says_so_and_still_shows_the_samplesheet(self):
-        rec = _wide_record(n_stages=2).model_copy(update={"params": []})
-        stages = [s.model_copy(update={"inputs": [i for i in s.inputs if i.origin == "stage"]}) for s in rec.stages]
-        sec = _section(_page(rec.model_copy(update={"stages": stages})), "params")
-        assert ('<p class="empty">params.yaml carries no shared parameters — every input is a samplesheet '
-                "column</p>") in sec
-        assert "<th>params.yaml</th>" not in sec and sec.count("<table>") == 1
-        assert "columns: <code>sample</code>. <code>sample</code> is the row key." in sec
+    def test_a_record_with_no_shared_params_keeps_the_two_standing_rows_and_the_samplesheet(self):
+        sec = _section(_page(_no_shared()), "params")
+        rows = re.findall(r"<tr><td><code>(params\.\w+)</code></td>", sec)
+        assert rows == ["params.samplesheet", "params.outdir"]           # what params.yaml still holds
+        assert sec.count("<table>") == 2
+        assert "naming the columns (<code>sample</code>); <code>sample</code> is the row key." in sec
         assert "<tr><th>sample</th></tr><tr><td>S1</td></tr><tr><td>S2</td></tr>" in sec
+        assert _fnodes(_no_shared())["f:params.yaml"].lines[0] == "no shared parameters"
 
 
 # ── run it locally ─────────────────────────────────────────────────────────────
 
 
 class TestRunLocally:
-    def test_it_is_two_steps_change_directory_then_run_with_the_one_spelling_of_the_run_line(self):
+    def test_it_is_three_steps_change_directory_make_nextflow_available_run_with_the_one_run_line(self):
         html = _page()
         sec = _section(html, "run-local")
         assert ('<h2>Run it locally <span class="note">every row of samples.csv, with Nextflow through '
                 "docker</span></h2>") in sec
-        assert sec.count("<ol>") == 1 and sec.count("<li>") == 2
-        cd, run = _steps(sec)
-        assert cd.startswith("Copy this directory next to your data and change into it. ")
-        assert "Put your samples in <code>samples.csv</code> and your paths in <code>params.yaml</code>." in cd
-        assert cd.endswith("<pre>cd /path/to/rnaseq_counts</pre>")
-        assert run.startswith("Run. ")
-        assert "docker must be running with <code>bioinf_rnaseq_cli:latest</code> present" in run
-        assert "<code>nextflow</code> must be on your PATH" in run
-        assert "<code>-resume</code> re-runs only the stages whose inputs or parameters changed." in run
-        assert run.endswith(f"<pre>{RUN_LOCAL}</pre>")
+        assert sec.count("<ol>") == 1 and sec.count("<li>") == 3
+        cd, make, run = _steps(sec)
+        assert cd == ("Copy this directory next to your data and change into it. Put your samples in "
+                      "<code>samples.csv</code> and your paths in <code>params.yaml</code>. " + LAUNCH_NOTE
+                      + "<pre>cd /path/to/rnaseq_counts</pre>")
+        assert make.startswith("Make <code>nextflow</code> available")
+        assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
+                       f"re-runs only the stages whose inputs or parameters changed.<pre>{RUN_LOCAL}</pre>")
         assert RUN_LOCAL == "nextflow run main.nf -profile local -params-file params.yaml -resume"
         assert html.count("nextflow run main.nf") == 1                  # one spelling on the whole page
 
-    def test_the_image_that_must_be_present_is_named_from_the_record_or_its_absence_stated(self):
-        two = _section(_page(_two_images()), "run-local")
-        assert ("docker must be running with every frozen image present (<code>nextflow.config</code> "
-                "names them), and") in two
+    def test_with_the_runtime_env_recorded_step_two_is_source_its_activate_script(self):
+        html = _page(_local())
+        sec = _section(html, "run-local")
+        _, make, _ = _steps(sec)
+        assert make == ("Make <code>nextflow</code> available. This checkout's runtime env carries it with its own "
+                        "Java; sourcing the line below puts both on your PATH for this shell. Docker must be running "
+                        f"with <code>bioinf_rnaseq_cli:latest</code> present.<pre>source {ACTIVATE}</pre>")
+        assert 'class="warn"' not in sec and sec.count("<pre>") == 3
+        assert html.count(f"source {ACTIVATE}") == 1 and NEXTFLOW not in html   # the binary's path is not a step
+        assert "was not recorded" not in sec
+
+    def test_when_nextflow_was_missing_from_the_runtime_env_the_step_warns_and_still_sources(self):
+        sec = _section(_page(_local_no_nextflow()), "run-local")
+        _, make, _ = _steps(sec)
+        assert make.startswith("Make <code>nextflow</code> available. This checkout's runtime env carries it with its "
+                               "own Java; sourcing the line below puts both on your PATH for this shell. Docker must "
+                               "be running with <code>bioinf_rnaseq_cli:latest</code> present.")
+        assert make.endswith(' <span class="warn">nextflow was not in the runtime env when this page was rendered: '
+                             f'run <code>./scripts/setup.sh</code> first.</span><pre>source {ACTIVATE}</pre>')
+        assert sec.count('class="warn"') == 1
+
+    def test_with_no_runtime_env_recorded_the_step_says_so_and_types_nothing(self):
+        sec = _section(_page(), "run-local")
+        _, make, _ = _steps(sec)
+        assert make == ("Make <code>nextflow</code> available on your PATH — this machine's runtime env was not "
+                        "recorded when the page was rendered. Docker must be running with "
+                        "<code>bioinf_rnaseq_cli:latest</code> present.")
+        assert "<pre>" not in make and "source " not in sec and "activate" not in sec
+        assert sec.count("<pre>") == 2 and 'class="warn"' not in sec
+
+    def test_the_image_that_must_be_present_is_named_from_the_record_or_its_absence_stated_in_step_two(self):
+        for rec in (_two_images(), _two_images(_local())):
+            _, make, _ = _steps(_section(_page(rec), "run-local"))
+            assert make.split("<pre>")[0].endswith("Docker must be running with every frozen image present "
+                                                   "(<code>nextflow.config</code> names them).")
         rec = _record()
         untagged = rec.model_copy(update={"stages": [s.model_copy(update={"image": None}) for s in rec.stages]})
         sec = _section(_page(untagged), "run-local")
-        assert "docker must be running with the frozen image present, and" in sec
+        cd, make, run = _steps(sec)
+        assert make.endswith("Docker must be running with the frozen image present.")
         assert "bioinf_rnaseq_cli" not in sec
+        assert "Docker" not in cd and "Docker" not in run                 # the requirement lives in step two only
+
+    def test_the_first_step_carries_the_launch_directory_note(self):
+        for rec in (_record(), _local(), _cluster(), _one_row()):
+            cd = _steps(_section(_page(rec), "run-local"))[0]
+            assert LAUNCH_NOTE + "<pre>cd /path/to/" in cd
+            assert "<code>work/</code>" in cd and "<code>.nextflow/</code>" in cd and "<code>-resume</code>" in cd
 
     def test_the_note_says_where_results_land_and_where_the_run_records_what_ran(self):
         sec = _section(_page(), "run-local")
@@ -620,14 +1079,14 @@ class TestRunLocally:
         assert _section(_page(_one_row()), "run-local").count("Results land in") == 1
 
     def test_a_cohort_stage_publishes_flat_and_the_note_says_which(self):
-        one = _section(_page(_with_cohort(_wide_record(n_stages=3), "STAGE_01")), "run-local")
+        one = _section(_page(_cohort()), "run-local")
         assert ("Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample (cohort stage "
                 "STAGE_01 in <code>results/</code>).") in one
         two = _section(_page(_with_cohort(_wide_record(n_stages=3), "STAGE_01", "STAGE_02")), "run-local")
         assert "(cohort stages STAGE_01, STAGE_02 in <code>results/</code>)." in two
 
     def test_there_is_no_by_hand_item_and_no_docker_line_anywhere_on_the_page(self):
-        for make in (_record, _one_row, _cluster, _two_images, _wide_record):
+        for make in (_record, _one_row, _cluster, _two_images, _wide_record, _local, _local_no_nextflow):
             html = _page(make())
             for gone in ("docker run", "commands.sh", "One sample by hand", "B. Every sample", "B. The one row",
                          "enter the image", "Enter the image", "Nothing to enter", "apptainer shell",
@@ -637,13 +1096,21 @@ class TestRunLocally:
             assert _section(html, "run-local").count("<ol>") == 1
 
     def test_the_local_section_never_mentions_the_cluster_and_the_cluster_section_never_docker(self):
-        html = _page(_cluster())
-        local, hpc = _section(html, "run-local"), _section(html, "run-hpc")
-        assert "sbatch" not in local and "apptainer" not in local and "module load" not in local
-        assert "docker" not in hpc
+        for rec in (_cluster(), _cluster(local_runtime=RUNTIME)):
+            html = _page(rec)
+            local, hpc = _section(html, "run-local"), _section(html, "run-hpc")
+            assert "sbatch" not in local and "apptainer" not in local and "module load" not in local
+            assert "docker" not in hpc and "source " not in hpc and ACTIVATE not in hpc
 
 
 # ── run it on the cluster ──────────────────────────────────────────────────────
+
+
+#: The cluster's first step, verbatim: change directory, and why that directory.
+_HPC_CD = ("Copy this directory into your project directory on the cluster and change into it. "
+           "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths. SLURM starts the "
+           "manager job here and " + LAUNCH_NOTE[0].lower() + LAUNCH_NOTE[1:]
+           + " The launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.")
 
 
 class TestRunOnTheCluster:
@@ -658,9 +1125,12 @@ class TestRunOnTheCluster:
         assert sec.count('class="note">The <code>slurm</code>') == 1 and 'class="warn-note"' not in sec
         assert sec.index("</p>") < sec.index("<ol>")                    # the note comes first
         assert ("Submit. <code>launcher.sh</code> loads <code>apptainer/1.3.2</code> <code>nextflow/24.10.0</code> "
-                "and runs Nextflow as a small manager job; every stage of every sample is its own SLURM job.") in sec
+                "and runs Nextflow as a small manager job; every stage of every sample is its own SLURM job. "
+                f"Nothing to activate by hand.<pre>{RUN_HPC}</pre>") in sec
         assert "stage_apptainer_image(" not in sec                      # nothing to stage: the .sif is there
-        assert html.count("module load") == 1                           # the header row; the launcher does the loading
+        assert "module load" not in sec                                 # the launcher does the loading
+        assert _banner(html).count("module load") == 1 and _files_svg(html).count("module load") == 1
+        assert html.count("module load") == 2
 
     def test_without_a_cluster_named_a_warning_says_the_container_is_empty_and_how_to_set_it(self):
         html = _page()
@@ -676,26 +1146,24 @@ class TestRunOnTheCluster:
         assert SIF not in html and "module load" not in html
         assert ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer and "
                 "nextflow available first, it was rendered without a cluster named and loads no modules; every "
-                "stage of every sample is its own SLURM job.") in sec
+                f"stage of every sample is its own SLURM job.<pre>{RUN_HPC}</pre>") in sec
+        assert "Nothing to activate by hand." not in sec
 
     def test_an_env_named_without_a_sif_names_that_env_in_the_call_and_loads_no_modules(self):
         sec = _section(_page(_record(compute_env="hpc", modules=[])), "run-hpc")
         assert 'class="warn-note"' in sec
         assert f'env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
         assert ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer and "
-                "nextflow available first; every stage of every sample is its own SLURM job.") in sec
+                f"nextflow available first; every stage of every sample is its own SLURM job.<pre>{RUN_HPC}</pre>") in sec
         assert "rendered without a cluster named" not in sec and "module load" not in sec
+        assert "Nothing to activate by hand." not in sec
 
     def test_a_record_without_a_request_key_states_the_slot_instead_of_inventing_one(self):
         sec = _section(_page(_wide_record(n_stages=2)), "run-hpc")
         assert "freeze_request_key=&lt;the env&#x27;s freeze_request_key&gt;)</code> reports." in sec
 
     def test_one_note_per_image_each_naming_its_image_when_there_are_several(self):
-        two = _two_images()
-        staged = two.model_copy(update={
-            "stages": [s.model_copy(update={"sif_path": SIF}) if s.name != "HTSEQ_COUNT" else s for s in two.stages],
-            "compute_env": "hpc", "modules": ["apptainer/1.3.2"]})
-        sec = _section(_page(staged), "run-hpc")
+        sec = _section(_page(_staged_but_one()), "run-hpc")
         assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
                 f"<code>.sif</code> for image <code>aaaa1111aaaa</code> at <code>{SIF}</code> — where "
                 "<code>stage_apptainer_image</code> put it on <b>hpc</b>.</p>") in sec
@@ -705,23 +1173,30 @@ class TestRunOnTheCluster:
         assert sec.count('class="note">The <code>slurm</code>') == 1 and sec.count('class="warn-note"') == 1
         assert sec.index("for image <code>aaaa1111aaaa</code>") < sec.index("for image <code>cccccccccccc</code>")
         assert "Submit. <code>launcher.sh</code> loads <code>apptainer/1.3.2</code> and runs Nextflow" in sec
-        bare = _section(_page(two), "run-hpc")
+        bare = _section(_page(_two_images()), "run-hpc")
         assert bare.count('class="warn-note"') == 2 and 'class="note">The <code>slurm</code>' not in bare
 
     def test_it_is_three_steps_copy_submit_watch_with_the_one_spelling_of_the_submit_line(self):
-        for make in (_record, _cluster, _two_images):
+        for make in (_record, _cluster, _two_images, _local):
             html = _page(make())
             sec = _section(html, "run-hpc")
             assert sec.count("<ol>") == 1 and sec.count("<li>") == 3, make.__name__
             cd, submit, watch = _steps(sec)
-            assert cd == ("Copy this directory into your project directory on the cluster and change into it. "
-                          "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths."
-                          "<pre>cd /path/in/your/project/rnaseq_counts</pre>")
+            assert cd == _HPC_CD + "<pre>cd /path/in/your/project/rnaseq_counts</pre>", make.__name__
             assert submit.startswith("Submit. <code>launcher.sh</code> ")
             assert submit.endswith(f"<pre>{RUN_HPC}</pre>")
             assert RUN_HPC == "sbatch launcher.sh"
             assert watch == "Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.<pre>squeue -u $USER</pre>"
             assert html.count("sbatch launcher.sh") == 1 and "apptainer shell" not in html
+
+    def test_the_first_step_says_why_the_launch_directory_matters_and_where_the_launcher_keeps_nextflows_files(self):
+        cd = _steps(_section(_page(_cluster()), "run-hpc"))[0]
+        assert ("SLURM starts the manager job here and nextflow works out of the directory it is started in: "
+                "<code>work/</code> (each task's sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) "
+                "and the run records appear here, so launch from this directory every time. The launcher keeps "
+                "Nextflow's own files under <code>.nextflow_home</code> inside it.<pre>cd /path/in/your/project/"
+                "rnaseq_counts</pre>") in cd
+        assert "Nextflow works out of" not in cd                         # one sentence, joined mid-way
 
     def test_the_note_after_the_steps_is_the_results_and_what_ran_sentence_the_local_section_ends_with(self):
         html = _page(_cluster())
@@ -914,7 +1389,8 @@ class _Balance(HTMLParser):
 
 
 _RECORDS = {"three_rows": _record, "one_row": _one_row, "wide": _wide_record, "cluster": _cluster,
-            "two_images": _two_images}
+            "two_images": _two_images, "local": _local, "local_no_nextflow": _local_no_nextflow,
+            "cohort": _cohort}
 
 
 class TestPageShape:
@@ -932,7 +1408,7 @@ class TestPageShape:
         b.close()
         assert not b.errors, b.errors[:5]
         assert not b.stack, b.stack
-        for tag in ("table", "svg", "section", "div", "g", "pre", "tr", "td", "ol", "li"):
+        for tag in ("table", "svg", "section", "div", "g", "pre", "tr", "td", "ol", "ul", "li", "script"):
             assert html.count(f"<{tag}") == html.count(f"</{tag}>"), tag
 
     @pytest.mark.parametrize("which", sorted(_RECORDS))
@@ -940,6 +1416,7 @@ class TestPageShape:
         html = _page(_RECORDS[which]())
         assert re.findall(r'<section class="bx" id="([^"]+)"', html) == SECTION_IDS
         assert html.index('id="stages"') < html.index(f'<p class="gen">{FOOTER}')
+        assert html.count("<svg") == 2 and html.index('id="pipeline-files"') < html.index('id="pipeline-picture"')
 
     @pytest.mark.parametrize("which", sorted(_RECORDS))
     def test_the_page_speaks_the_files_vocabulary_and_never_the_seals_placeholders(self, which):
@@ -957,7 +1434,8 @@ class TestPageShape:
     def test_the_fixture_page_says_params_gtf_the_reads_column_and_sample_counts_tsv(self):
         spoken = _spoken(_page())
         for word in ("params.gtf", "params.stranded", "params.hisat2_index", "reads", "<sample>.counts.tsv",
-                     "results/<sample>/", "${params.stranded}", "${gtf}", "${reads}", "${meta.sample}.counts.tsv"):
+                     "results/<sample>/", "${params.stranded}", "${gtf}", "${reads}", "${meta.sample}.counts.tsv",
+                     "params.samplesheet", "samplesheet: samples.csv", "outdir: results"):
             assert word in spoken, word
         for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "OUTPUT_DIR"):
             assert ph not in spoken, ph
@@ -971,7 +1449,9 @@ class TestPageShape:
                      "--stages", "every derivation the caller did not dictate", "Inputs</h3>", "Outputs</h3>",
                      "A. One sample by hand", "B. Every sample", "B. The one row", "commands.sh", "docker run",
                      "apptainer shell", "Enter the image", "Nothing to enter", "Output slots", "How-to command",
-                     "<td>shared</td>", "params only", "implicit row", "{OUTPUT_DIR}"):
+                     "<td>shared</td>", "params only", "implicit row", "{OUTPUT_DIR}",
+                     '<p class="note"><code>params.yaml</code> also names', "one row per sample, columns:",
+                     "must be on your PATH", "carries no shared parameters"):
             assert gone not in html, gone
 
     def test_the_same_record_renders_the_same_bytes(self):
@@ -980,11 +1460,11 @@ class TestPageShape:
             assert render_pipeline_page(rec) == render_pipeline_page(rec)
 
     def test_the_page_renders_from_a_record_that_round_tripped_through_yaml(self, tmp_path):
-        rec = _cluster()
-        back = pr.load_pipeline_record(pr.write_pipeline_record(rec, tmp_path / "p"))
-        assert render_pipeline_page(back) == render_pipeline_page(rec)
+        for rec in (_cluster(), _local_no_nextflow()):
+            back = pr.load_pipeline_record(pr.write_pipeline_record(rec, tmp_path / rec.name))
+            assert render_pipeline_page(back) == render_pipeline_page(rec)
 
-    def test_a_hostile_value_is_escaped_everywhere_including_inside_the_svg_and_the_command_cell(self):
+    def test_a_hostile_value_is_escaped_everywhere_including_inside_both_svgs_and_the_command_cell(self):
         rec = _record()
         params = [p.model_copy(update={"description": "<script>alert(1)</script>"}) if p.name == "GTF" else p
                   for p in rec.params]
@@ -995,14 +1475,17 @@ class TestPageShape:
             if s.name == "SAMTOOLS":
                 s = s.model_copy(update={"tool": 'x"><script>y</script>'})
             if s.name == "HISAT2":
-                s = s.model_copy(update={"sif_path": "/sif/<script>s</script>.sif", "commands": [
+                s = s.model_copy(update={"sif_path": "/sif/<script>s.sif", "commands": [
                     "hisat2 -x {HISAT2_INDEX} -U {READS} <script>q</script> > {OUTPUT_DIR}/aligned.bam"]})
             stages.append(s)
-        html = _page(rec.model_copy(update={"name": "<script>z</script>", "params": params, "samplesheet": sheet,
-                                            "stages": stages, "compute_env": "<script>e</script>",
-                                            "modules": ["<script>m</script>"]}))
+        html = _page(rec.model_copy(update={
+            "name": "<script>z</script>", "params": params, "samplesheet": sheet, "stages": stages,
+            "compute_env": "<script>e</script>", "modules": ["<script>m</script>"],
+            "local_runtime": pr.LocalRuntime(activate="/ck/<script>a</script>/activate.sh", nextflow=None),
+            "defaults": [pr.PipelineDefault(key="<script>k</script>", value="<script>d</script> `x<y`", source="seal")]}))
         for raw in ("<script>alert(1)</script>", "<script>x</script>", "<script>y</script>", "<script>z</script>",
-                    "<script>q</script>", "<script>s</script>", "<script>e</script>", "<script>m</script>"):
+                    "<script>q</script>", "<script>s.sif", "<script>e</script>", "<script>m</script>",
+                    "<script>a</script>", "<script>k</script>", "<script>d</script>", "x<y"):
             assert raw not in html, raw
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in _section(html, "params")
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in _svg(html)                    # the param's tooltip
@@ -1012,15 +1495,24 @@ class TestPageShape:
         assert "<pre>cd /path/in/your/project/&lt;script&gt;z&lt;/script&gt;</pre>" in html
         assert "&lt;script&gt;q&lt;/script&gt; &gt; aligned.bam</pre>" in _section(html, "stages")
         hpc = _section(html, "run-hpc")
-        assert "<code>/sif/&lt;script&gt;s&lt;/script&gt;.sif</code>" in hpc
+        assert "<code>/sif/&lt;script&gt;s.sif</code>" in hpc
         assert "put it on <b>&lt;script&gt;e&lt;/script&gt;</b>" in hpc
         assert "loads <code>&lt;script&gt;m&lt;/script&gt;</code> and runs" in hpc
         assert "<b>&lt;script&gt;e&lt;/script&gt;</b> — module load <code>&lt;script&gt;m&lt;/script&gt;</code>" in _banner(html)
-        assert html.count("<script>") == _page().count("<script>")                      # the shell's own JS only
+        local = _section(html, "run-local")
+        assert "<pre>source /ck/&lt;script&gt;a&lt;/script&gt;/activate.sh</pre>" in local
+        files = _section(html, "files")
+        assert ("<tr><td>&lt;script&gt;k&lt;/script&gt;</td><td>&lt;script&gt;d&lt;/script&gt; <code>x&lt;y</code></td>"
+                "<td>from the seal</td></tr>") in files
+        fsvg = _files_svg(html)
+        assert 'aria-label="pipeline &lt;script&gt;z&lt;/script&gt;: the files you copy' in fsvg
+        assert ">↳ &lt;script&gt;s.sif on &lt;script&gt;e&lt;/script&gt;</text>" in fsvg
+        assert ".sif: /sif/&lt;script&gt;s.sif</title>" in fsvg
+        assert ">module load &lt;script&gt;m&lt;/script&gt;</text>" in fsvg
+        assert html.count("<script>") == _page().count("<script>")          # the shell's and the hover JS only
 
     def test_a_record_with_no_outputs_still_renders(self):
-        rec = _wide_record(n_stages=2)
-        stages = [s.model_copy(update={"outputs": []}) for s in rec.stages]
-        html = _page(rec.model_copy(update={"stages": stages}))
-        assert "(nothing published)" in html
+        html = _page(_no_outputs())
+        assert _svg(html).count("(nothing published)") == 1                 # both pictures say so, once each
+        assert _files_svg(html).count(">(nothing published)</text>") == 1
         assert re.findall(r'<section class="bx" id="([^"]+)"', html) == SECTION_IDS

@@ -165,6 +165,14 @@ class ProvenanceStep(BaseModel):
     produces_param: str
 
 
+class LocalRuntime(BaseModel):
+    """How nextflow is made available on the machine that rendered the pipeline: the
+    checkout's own runtime env, entered by sourcing one script."""
+    model_config = ConfigDict(extra="forbid")
+    activate: str                              # `source` this: the runtime env's nextflow and its Java on PATH
+    nextflow: Optional[str]                    # the nextflow binary it puts on PATH; None when absent at render time
+
+
 class PipelineRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -179,6 +187,7 @@ class PipelineRecord(BaseModel):
     output_slots: list[str]
     compute_env: Optional[str]                 # the compute env the cluster files were rendered for, else None
     modules: list[str]                         # Lmod modules that env loads before apptainer/nextflow run
+    local_runtime: Optional[LocalRuntime]      # how this machine provides nextflow, else None
     stages: list[PipelineStage]
     provenance_steps: list[ProvenanceStep]
     unmatched_steps: list[int]
@@ -322,7 +331,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            env_names: Optional[Mapping[str, str]] = None,
                            sif_paths: Optional[Mapping[str, str]] = None,
                            compute_env: Optional[str] = None,
-                           modules: Optional[list[str]] = None) -> PipelineRecord:
+                           modules: Optional[list[str]] = None,
+                           local_runtime: Optional[LocalRuntime] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
     PipelineDerivationError (a refusal with a remedy) when the seal cannot support
     the render; every derivation the caller did not dictate is stated in `notes`."""
@@ -808,6 +818,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         env_digests=sorted(env_map) or [str(getattr(spec, "env_content_digest", ""))],
         params=params, samplesheet=sheet,
         output_slots=sorted(out_slots), compute_env=compute_env, modules=list(modules or []),
+        local_runtime=local_runtime,
         stages=stage_recs, provenance_steps=provenance,
         unmatched_steps=unmatched_steps, defaults=defaults, notes=notes)
 
@@ -864,7 +875,7 @@ def sha256_of(path: Path) -> Optional[str]:
 
 __all__ = [
     "PipelineDerivationError", "PipelineRecord", "PipelineStage", "PipelineParam",
-    "StageInput", "StageOutput", "StageResources", "Samplesheet", "SamplesheetColumn",
+    "StageInput", "StageOutput", "StageResources", "Samplesheet", "SamplesheetColumn", "LocalRuntime",
     "PipelineDefault", "ProvenanceStep", "derive_pipeline_record", "write_pipeline_record",
     "record_yaml", "load_pipeline_record", "placeholders", "artifact_tokens", "RECORD_FILENAME",
     "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "render_samplesheet",

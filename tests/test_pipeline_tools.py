@@ -65,6 +65,19 @@ class TestProven:
         assert {p["name"]: p["default"] for p in out["params"]}["STRANDED"] == "reverse"
         assert out["replaced_previous_render"] is False
 
+    def test_the_render_records_how_this_machine_provides_nextflow(self, sealed):
+        """The page's local step sources the checkout's activation script; the record
+        carries its path and whether the runtime env's nextflow was present."""
+        out = _tool(sealed_workflow=sealed)
+        rt = out["local_runtime"]
+        assert rt["activate"] == str(workspace.code_root() / "scripts" / "activate.sh")
+        assert Path(rt["activate"]).is_file()
+        nf = workspace.runtime_env_dir() / "bin" / "nextflow"
+        assert rt["nextflow"] == (str(nf) if nf.is_file() else None)
+        rec = load_pipeline_record(Path(out["record"]))
+        assert rec.local_runtime is not None and rec.local_runtime.activate == rt["activate"]
+        assert f"source {rt['activate']}" in (Path(out["dir"]) / "pipeline.html").read_text()
+
     def test_name_picks_the_directory_and_the_record_name(self, sealed):
         out = _tool(sealed_workflow=sealed, name="rnaseq_v2")
         assert Path(out["dir"]) == workspace.pipelines_dir() / "rnaseq_v2"

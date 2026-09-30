@@ -361,3 +361,12 @@ def test_agent_status_reports_the_zones():
             for k in n.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
     assert "workspace" in keys, \
         "agent_status() no longer reports the resolved workspace zones"
+
+
+
+def test_the_runtime_env_is_the_checkouts_conda_runtime():
+    """setup.sh builds it there and scripts/activate.sh puts it on PATH; the pipeline
+    tool records both for the page's local step."""
+    from agent.skills import workspace
+    assert workspace.runtime_env_dir() == workspace.code_root() / ".conda_runtime"
+    assert (workspace.code_root() / "scripts" / "activate.sh").is_file()

@@ -48,6 +48,13 @@ def code_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def runtime_env_dir() -> Path:
+    """The runtime env setup.sh builds in the checkout (``.conda_runtime``): the
+    interpreter the agent runs on, and nextflow with its own Java for running a
+    rendered pipeline on this machine. ``scripts/activate.sh`` puts it on PATH."""
+    return code_root() / ".conda_runtime"
+
+
 def workspace_source() -> str:
     """WHICH of the two answers resolution used: ``env`` · ``default``.
     Reported by the doctor and by ``agent_status``, so a surprising path can

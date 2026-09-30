@@ -3,11 +3,14 @@ pipeline_page_html — the EXPLAIN page of a rendered pipeline: the one page a h
 reads before running it on real data, rendered PURELY from the typed
 `PipelineRecord` (agent/skills/pipeline_record.py).
 
-The page has one fixed shape: the header banner, the picture, the parameters and
-samples, how to run it locally, how to run it on the cluster, the stages, the footer.
-A pipeline directory offers ONE way to run — every row of samples.csv, with Nextflow —
-and the page shows it at each locus as the steps a person follows without thinking:
-change directory, run (on the cluster the launcher loads the modules). It speaks the
+The page has one fixed shape: the header banner, how the files fit together (the
+directory's wiring, with our conventions), the picture (what runs, per sample), the
+parameters and samples, how to run it locally, how to run it on the cluster, the
+stages, the footer. A pipeline directory offers ONE way to run — every row of
+samples.csv, with Nextflow — and the page shows it at each locus as the steps a person
+follows without thinking: change directory, make nextflow available (locally: source
+the checkout's runtime env; on the cluster: the launcher loads the modules), run. It
+speaks the
 files' own vocabulary — `params.gtf`, the `reads` column, `results/<sample>/` — never
 the seal's `{PLACEHOLDER}`s, and the command it shows per stage is the line main.nf
 runs, bound by the Nextflow renderer itself (`bound_commands`), so the page and the
@@ -38,7 +41,8 @@ from typing import Optional
 from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources, _PLACEHOLDER_RE)
-from agent.skills.pipeline_render_nextflow import bound_commands, run_lines
+from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, SAMPLESHEET_PARAM, bound_commands,
+                                                   run_lines)
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
 FOOTER = ("This page shows a pipeline derived from a sealed run; it proves the render is "
@@ -67,6 +71,17 @@ _WHAT_RAN = ("What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists ever
 _TITLE_LEFT = "samples.csv & params.yaml"
 _TITLE_MID = "stages, in execution order"
 _TITLE_RIGHT = "published to results/"
+#: The files picture's column titles.
+_F_TITLES = ("what you copy and edit", "the engine", "what a run writes")
+#: The record's `defaults` keys, in words, and who decided each.
+_CONVENTION = {"stage_cut": "Stage cut", "publish": "Publishing", "resume": "Resume", "errors": "Errors",
+               "cache": "Cache", "queue_size": "Queue size", "run_records": "Run records",
+               "cleanup": "Cleanup", "sheet_preflight": "Samplesheet check", "resources": "Resources"}
+_DECIDED_BY = {"default": "our default", "caller": "set when rendered", "seal": "from the seal"}
+#: Why the launch directory matters — Nextflow works out of the directory it starts in.
+_LAUNCH_NOTE = ("Nextflow works out of the directory it is started in: <code>work/</code> (each task's "
+                "sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) and the run records "
+                "appear here, so launch from this directory every time.")
 
 # ── the picture: geometry ────────────────────────────────────────────────────
 #
@@ -201,10 +216,19 @@ def _node_w(n: _Node, pt1: float = _NAME_PT) -> float:
     return max(_tw(n.line1, pt1), _tw(n.line2, _SUB_PT)) + 2 * _PAD_X
 
 
+def _label_left(x: float, w: float, anchor: str) -> float:
+    """Where a label's box starts for its text anchor; the drawn rect pads 4px each side."""
+    if anchor == "middle":
+        return x - w / 2
+    if anchor == "end":
+        return x - w + 4
+    return x - 4
+
+
 def _place_label(x: float, y: float, w: float, anchor: str, obstacles: list[_Box]) -> tuple[float, float, _Box]:
     """The first of a few vertical nudges at which a label box clears every obstacle
     (nodes and labels already placed). Best effort past the last nudge."""
-    left = x - w / 2 if anchor == "middle" else x - 4       # the drawn rect pads 4px each side
+    left = _label_left(x, w, anchor)
     chosen = None
     for dy in (0.0, 16.0, -16.0, 32.0, -32.0, 48.0, -48.0):
         box = _Box(left, y + dy - _LABEL_PT - 2, w, _LABEL_H)
@@ -438,6 +462,12 @@ def picture_layout(record: PipelineRecord) -> _Layout:
 _SVG_CSS = """
 .node rect{fill:var(--surface);stroke:var(--border);stroke-width:1}
 .node.column.key rect{stroke:var(--cyan)}
+.node.file rect{stroke:var(--border);stroke-width:1.2}
+.node.file.engine rect{stroke:var(--cyan);stroke-width:1.4}
+.node.file.written rect{stroke:var(--yellow)}
+.node.file text.l1{font:700 12.5px var(--mono)}
+.edge.wire{stroke:var(--muted);stroke-width:1.2;marker-end:url(#arr-input)}
+.edge.wire.out{stroke:var(--yellow);marker-end:url(#arr-publish)}
 .node.column.key text.l1{font-weight:700}
 .node.stage rect{stroke:var(--cyan);stroke-width:1.4}
 .node.stage.unsized rect{stroke-dasharray:5 3}
@@ -462,8 +492,7 @@ svg.active .edge:not(.hl){opacity:.2}
 svg.active .lbl:not(.hl){opacity:.3}
 """
 
-_HOVER_JS = (
-    '<script>(function(){var s=document.getElementById("pipeline-picture");if(!s)return;'
+_HOVER_JS_BODY = (
     'var N=s.querySelectorAll("[data-id]"),E=s.querySelectorAll("[data-edge]");'
     'function off(){s.classList.remove("active");N.forEach(function(n){n.classList.remove("hl","src")});'
     'E.forEach(function(e){e.classList.remove("hl")})}'
@@ -475,6 +504,11 @@ _HOVER_JS = (
     'n.addEventListener("focus",function(){on(n)});n.addEventListener("mouseleave",off);'
     'n.addEventListener("blur",off)})})()</script>'
 )
+
+
+def _hover_js(svg_id: str) -> str:
+    """The hover script bound to one picture: it only toggles CSS classes."""
+    return '<script>(function(){var s=document.getElementById("' + svg_id + '");if(!s)return;' + _HOVER_JS_BODY
 
 
 def _marker(mid: str, cls: str) -> str:
@@ -504,7 +538,7 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
         if not e.label:
             continue
         lw = _tw(e.label, _LABEL_PT) + 8
-        left = e.lx - lw / 2 if e.anchor == "middle" else e.lx - 4
+        left = _label_left(e.lx, lw, e.anchor)
         P.append(f'<g class="lbl" data-edge="{e.kind}-label" data-from="{_e(e.src)}" data-to="{_e(e.dst)}">'
                  f'<rect x="{left:.1f}" y="{e.ly - _LABEL_PT - 2:.1f}" width="{lw:.1f}" height="{_LABEL_H:.1f}" rx="2"/>'
                  f'<text x="{e.lx:.1f}" y="{e.ly:.1f}" text-anchor="{e.anchor}">{_e(e.label)}</text></g>')
@@ -516,6 +550,264 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
                  f'<rect x="{n.x:.1f}" y="{n.y:.1f}" width="{n.w:.1f}" height="{n.h:.1f}" rx="3"/>'
                  f'<text class="l1" x="{n.x + _PAD_X:.1f}" y="{n.y + n.h / 2 - 2:.1f}">{_e(n.line1)}</text>'
                  f'<text class="sub" x="{n.x + _PAD_X:.1f}" y="{n.y + n.h / 2 + 11:.1f}">{_e(n.line2)}</text></g>')
+    P.append("</svg>")
+    return "".join(P)
+
+
+
+# ── the files picture: how the directory fits together ──────────────────────
+#
+# Fixed topology, computed geometry: the files a person copies (left) feed the engine
+# (main.nf, middle), and a run writes three things (right). Every line inside a box is
+# read off the record — the columns, the params, the image each profile names, the
+# modules the launcher loads, the artifacts a run publishes — so a deviation the record
+# can express (several images, a cohort stage, no cluster named) is drawn, and one it
+# cannot express was refused before this page existed.
+
+_F_NAME_PT = 12.5
+_F_LINE_PT = 10.0
+_F_PAD_X = 12.0
+_F_PAD_Y = 8.0
+_F_LINE_H = 13.0
+_F_GAP = 16.0
+_F_COL_GAP = 150.0
+_F_TOP = 34.0
+#: A box line's budget, in characters: the picture stays narrow enough to render at
+#: its natural size beside the page's text.
+_F_WRAP = 34
+
+
+@dataclass
+class _FNode:
+    id: str                      # data-id: f:<file>
+    name: str                    # line 1: the file
+    lines: list[str]             # what it holds, read off the record
+    tooltip: str
+    classes: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 0.0
+    h: float = 0.0
+
+
+@dataclass
+class _FilesLayout:
+    width: float
+    height: float
+    nodes: list[_FNode]
+    edges: list[_Edge]
+    texts: list[_Text]
+    titles: list[tuple[float, str]]
+
+
+def _wrap(items: list[str], width: int = _F_WRAP, sep: str = ", ") -> list[str]:
+    """`items` joined into lines of at most `width` characters (an item longer than
+    that gets its own line), the separator kept at the end of a wrapped line."""
+    lines: list[str] = []
+    cur = ""
+    for it in items:
+        cand = it if not cur else cur + sep + it
+        if cur and len(cand) > width:
+            lines.append(cur + sep.rstrip())
+            cur = it
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _fnode_size(n: _FNode) -> tuple[float, float]:
+    w = max([_tw(n.name, _F_NAME_PT)] + [_tw(ln, _F_LINE_PT) for ln in n.lines]) + 2 * _F_PAD_X
+    h = 2 * _F_PAD_Y + _F_NAME_PT + 4 + len(n.lines) * _F_LINE_H
+    return w, h
+
+
+def _profile_lines(record: PipelineRecord) -> tuple[list[str], str]:
+    """What each profile runs in, per the record — one image → its name under the
+    profile; several → one `STAGE: image` line per stage — and the tooltip carrying
+    the full .sif path(s)."""
+    imgs = _images(record)
+    where = f" on {record.compute_env}" if record.compute_env else ""
+
+    def sif_word(st: PipelineStage) -> str:
+        return (st.sif_path.rsplit("/", 1)[-1] + where) if st.sif_path else "container = '' (SET ME)"
+
+    def tag_word(st: PipelineStage) -> str:
+        return st.image or _short_digest(st.image_digest) or "image unrecorded"
+
+    if len(imgs) == 1:
+        lines = ["-profile local → docker", f"↳ {tag_word(imgs[0])}",
+                 "-profile slurm → apptainer", f"↳ {sif_word(imgs[0])}"]
+        full = imgs[0].sif_path or "no .sif path recorded"
+    else:
+        stages = _ordered(record)
+        lines = (["-profile local → docker"] + [f"↳ {s.name}: {tag_word(s)}" for s in stages]
+                 + ["-profile slurm → apptainer"] + [f"↳ {s.name}: {sif_word(s)}" for s in stages])
+        full = "; ".join(f"{s.name}: {s.sif_path or 'no .sif path recorded'}" for s in stages)
+    return lines, full
+
+
+def files_layout(record: PipelineRecord) -> _FilesLayout:
+    """The files picture's geometry, computed from the record alone."""
+    sheet = record.samplesheet
+    names = [c.name for c in sheet.columns]
+    n_rows = len(sheet.rows)
+    shared = [p for p in record.params if p.kind == "shared"]
+    profile_lines, full_sif = _profile_lines(record)
+    if record.modules:
+        mods = _wrap(["module load " + record.modules[0]] + record.modules[1:], sep=" ")
+    elif record.compute_env:
+        mods = ["loads no modules: the env declares none"]
+    else:
+        mods = ["rendered without a cluster named:", "loads no modules"]
+    stages = _ordered(record)
+    cohort = [s for s in stages if s.scope == "cohort"]
+    per_sample_arts = [_display(record, o.artifact) for s in stages if s.scope == "per_sample" for o in s.outputs]
+    cohort_arts = [_display(record, o.artifact) for s in cohort for o in s.outputs]
+
+    left = [
+        _FNode("f:samples.csv", "samples.csv",
+               _wrap(["columns: " + ", ".join(names)]) + [f"{names[0]} = row key",
+                f"{n_rows} example row{'s' if n_rows != 1 else ''}, the sealed run's own"],
+               "samples.csv: one row per sample under one header line; params.samplesheet names it"),
+        _FNode("f:params.yaml", "params.yaml",
+               (_wrap([p.name.lower() for p in shared]) or ["no shared parameters"])
+               + [f"{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}", f"{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}"],
+               "params.yaml: the parameters the pipeline runs with, the samplesheet, the output directory"),
+        _FNode("f:nextflow.config", "nextflow.config", profile_lines + ["sizing per stage · run records"],
+               f"nextflow.config: each profile names the executor and the image every task runs in. "
+               f".sif: {full_sif}"),
+        _FNode("f:launcher.sh", "launcher.sh",
+               ["sbatch: the manager job", "runs nextflow -profile slurm"] + mods,
+               "launcher.sh: the SLURM manager job; it loads the modules and runs nextflow, which "
+               "submits one job per task"),
+    ]
+    engine = _FNode("f:main.nf", "main.nf",
+                    (_wrap([s.name for s in stages], sep=" → ") or ["(no stages)"])
+                    + (["one process per stage,", "run once per samples.csv row"] if not cohort
+                       else ["per-sample stages: once per row;", "cohort stages: once"]),
+                    "main.nf: one process per stage, the sealed command with its placeholders bound",
+                    classes="engine")
+    right = [
+        _FNode("f:results", "results/<sample>/", _wrap(per_sample_arts, 30) or ["(nothing published)"],
+               "results/<sample>/: every file a per-sample stage writes, published by copy", classes="written"),
+    ]
+    if cohort_arts:
+        right.append(_FNode("f:results-cohort", "results/", _wrap(cohort_arts, 30),
+                            "results/: what the cohort stage(s) publish", classes="written"))
+    right += [
+        _FNode("f:runs", "runs/<timestamp>/",
+               ["trace.txt: every task's command", "report.html: time, memory, CPU"],
+               "runs/<timestamp>/: the record of one run; the launch line is in nextflow log",
+               classes="written"),
+        _FNode("f:work", "work/", ["every task's sandbox", "never cleaned for you:", "nextflow clean -f"],
+               "work/: where tasks run and -resume finds their results", classes="written"),
+    ]
+    for n in left + [engine] + right:
+        n.w, n.h = _fnode_size(n)
+
+    left_w = max(n.w for n in left)
+    right_w = max(n.w for n in right)
+    stack_l = sum(n.h for n in left) + _F_GAP * (len(left) - 1)
+    stack_r = sum(n.h for n in right) + _F_GAP * (len(right) - 1)
+    H = max(stack_l, stack_r, engine.h)
+    top = _F_TOP + 16
+    y = top + (H - stack_l) / 2
+    for n in left:
+        n.x, n.y = _MARGIN, y
+        n.w = left_w
+        y += n.h + _F_GAP
+    engine.x = _MARGIN + left_w + _F_COL_GAP
+    engine.y = top + (H - engine.h) / 2
+    right_x = engine.x + engine.w + _F_COL_GAP
+    y = top + (H - stack_r) / 2
+    for n in right:
+        n.x, n.y = right_x, y
+        n.w = right_w
+        y += n.h + _F_GAP
+    nodes = left + [engine] + right
+
+    texts: list[_Text] = []
+    for n in nodes:
+        texts.append(_Text(n.x + _F_PAD_X, n.y + _F_PAD_Y, _tw(n.name, _F_NAME_PT), _F_NAME_PT + 2, n.name, "file"))
+        for k, ln in enumerate(n.lines):
+            texts.append(_Text(n.x + _F_PAD_X, n.y + _F_PAD_Y + _F_NAME_PT + 4 + k * _F_LINE_H,
+                               _tw(ln, _F_LINE_PT), _F_LINE_H, ln, "file"))
+    titles = [(_MARGIN, _F_TITLES[0]), (engine.x, _F_TITLES[1]), (right_x, _F_TITLES[2])]
+    for tx, tt in titles:
+        texts.append(_Text(tx, _TITLE_Y - _TITLE_PT, _tw(tt, _TITLE_PT), _TITLE_PT + 2, tt, "title"))
+    obstacles = [_Box(n.x, n.y, n.w, n.h) for n in nodes]
+
+    edges: list[_Edge] = []
+    in_labels = {"f:samples.csv": f"params.{SAMPLESHEET_PARAM[0]}", "f:params.yaml": "-params-file",
+                 "f:nextflow.config": "-profile local | slurm", "f:launcher.sh": "sbatch (cluster only)"}
+    for k, n in enumerate(left):
+        x0, y0 = n.x + n.w, n.y + n.h / 2
+        x1, y1 = engine.x, engine.y + engine.h * (k + 1) / (len(left) + 1)
+        dx = (x1 - x0) / 2
+        path = f"M{x0:.1f} {y0:.1f} C{x0 + dx:.1f} {y0:.1f}, {x1 - dx:.1f} {y1:.1f}, {x1:.1f} {y1:.1f}"
+        # The label sits just outside the box it leaves, above its wire: every wire
+        # into main.nf converges there, so a mid-wire label would land on another's.
+        label = in_labels[n.id]
+        lw = _tw(label, _LABEL_PT) + 8
+        lx, ly, box = _place_label(x0 + 10, y0 - 6, lw, "start", obstacles)
+        obstacles.append(box)
+        texts.append(_Text(box.x, box.y, box.w, box.h, label, "label"))
+        edges.append(_Edge(kind="wire", src=n.id, dst=engine.id, path=path, label=label, lx=lx, ly=ly,
+                           anchor="start"))
+    out_labels = {"f:results": "publishDir", "f:results-cohort": "publishDir", "f:runs": "trace · report",
+                  "f:work": "tasks run here"}
+    for k, n in enumerate(right):
+        x0, y0 = engine.x + engine.w, engine.y + engine.h * (k + 1) / (len(right) + 1)
+        x1, y1 = n.x, n.y + n.h / 2
+        dx = (x1 - x0) / 2
+        path = f"M{x0:.1f} {y0:.1f} C{x0 + dx:.1f} {y0:.1f}, {x1 - dx:.1f} {y1:.1f}, {x1:.1f} {y1:.1f}"
+        label = out_labels[n.id]
+        lw = _tw(label, _LABEL_PT) + 8
+        lx, ly, box = _place_label(x1 - 10, y1 - 6, lw, "end", obstacles)
+        obstacles.append(box)
+        texts.append(_Text(box.x, box.y, box.w, box.h, label, "label"))
+        edges.append(_Edge(kind="wire out", src=engine.id, dst=n.id, path=path, label=label, lx=lx, ly=ly,
+                           anchor="end"))
+
+    width = right_x + right_w + _MARGIN
+    height = top + H + _MARGIN
+    return _FilesLayout(width=width, height=height, nodes=nodes, edges=edges, texts=texts, titles=titles)
+
+
+def _files_svg(layout: _FilesLayout, record: PipelineRecord) -> str:
+    W, H = layout.width, layout.height
+    P: list[str] = []
+    P.append(f'<svg id="pipeline-files" viewBox="0 0 {W:.0f} {H:.0f}" width="100%" '
+             f'style="max-width:{W:.0f}px;height:auto;display:block" role="img" '
+             f'aria-label="pipeline {_e(record.name)}: the files you copy and edit feeding main.nf, '
+             f'and what a run writes">')
+    P.append(f"<style>{_SVG_CSS}</style>")
+    P.append("<defs>" + _marker("arr-input", "arr-input") + _marker("arr-publish", "arr-publish")
+             + _marker("arr-hl", "arr-hl") + "</defs>")
+    for tx, tt in layout.titles:
+        P.append(f'<text class="title" x="{tx:.1f}" y="{_TITLE_Y:.1f}">{_e(tt)}</text>')
+    for e in layout.edges:
+        P.append(f'<path class="edge {e.kind}" data-edge="wire" data-from="{_e(e.src)}" '
+                 f'data-to="{_e(e.dst)}" d="{e.path}"/>')
+    for e in layout.edges:
+        lw = _tw(e.label, _LABEL_PT) + 8
+        P.append(f'<g class="lbl" data-edge="wire-label" data-from="{_e(e.src)}" data-to="{_e(e.dst)}">'
+                 f'<rect x="{_label_left(e.lx, lw, e.anchor):.1f}" y="{e.ly - _LABEL_PT - 2:.1f}" '
+                 f'width="{lw:.1f}" height="{_LABEL_H:.1f}" rx="2"/>'
+                 f'<text x="{e.lx:.1f}" y="{e.ly:.1f}" text-anchor="{e.anchor}">{_e(e.label)}</text></g>')
+    for n in layout.nodes:
+        cls = "node file" + (f" {n.classes}" if n.classes else "")
+        lines = "".join(
+            f'<text class="sub" x="{n.x + _F_PAD_X:.1f}" '
+            f'y="{n.y + _F_PAD_Y + _F_NAME_PT + 4 + (k + 1) * _F_LINE_H - 3:.1f}">{_e(ln)}</text>'
+            for k, ln in enumerate(n.lines))
+        P.append(f'<g class="{cls}" data-node="file" data-id="{_e(n.id)}" data-name="{_e(n.name)}" '
+                 f'tabindex="0"><title>{_e(n.tooltip)}</title>'
+                 f'<rect x="{n.x:.1f}" y="{n.y:.1f}" width="{n.w:.1f}" height="{n.h:.1f}" rx="3"/>'
+                 f'<text class="l1" x="{n.x + _F_PAD_X:.1f}" y="{n.y + _F_PAD_Y + _F_NAME_PT:.1f}">{_e(n.name)}</text>'
+                 f'{lines}</g>')
     P.append("</svg>")
     return "".join(P)
 
@@ -620,6 +912,33 @@ def _header(record: PipelineRecord) -> str:
     return _header_banner(f"Pipeline — {_e(record.name)}", pill, rows)
 
 
+def _ticks_to_code(text: str) -> str:
+    """A record value's `command` spans as <code>, everything escaped."""
+    parts = text.split("`")
+    return "".join(f"<code>{_e(s)}</code>" if i % 2 else _e(s) for i, s in enumerate(parts))
+
+
+def _conventions(record: PipelineRecord) -> str:
+    rows = [[_e(_CONVENTION.get(d.key, d.key)), _ticks_to_code(d.value), _e(_DECIDED_BY.get(d.source, d.source))]
+            for d in record.defaults]
+    if not rows:
+        return _empty("the record states no conventions")
+    return ('<p class="note">Our conventions — the same for every pipeline this system renders, unless '
+            'a row says otherwise:</p>' + _table(["Convention", "Setting", "Decided by"], rows))
+
+
+def _files_section(record: PipelineRecord) -> str:
+    layout = files_layout(record)
+    caption = ('<p class="note">Copy the whole directory next to the data and launch from inside it. '
+               + _LAUNCH_NOTE + ' Where the pipeline runs is the profile\'s business: '
+               '<code>-profile local</code> runs every task in the docker image, <code>-profile slurm</code> '
+               'in the <code>.sif</code> through apptainer, one SLURM job per task; <code>params.yaml</code> '
+               'never says where. Hover a box to trace what it feeds.</p>')
+    return _section("files", "How the files fit together",
+                    "what you copy and edit → the engine → what a run writes",
+                    _files_svg(layout, record) + _hover_js("pipeline-files") + caption + _conventions(record))
+
+
 def _picture_section(record: PipelineRecord) -> str:
     layout = picture_layout(record)
     legend = ('<p class="note">Every stage runs once per row of <code>samples.csv</code>; '
@@ -631,7 +950,7 @@ def _picture_section(record: PipelineRecord) -> str:
               'may run side by side. Hover or focus a node to trace it.</p>')
     return _section("picture", "The picture",
                     "samples.csv and params.yaml → stages in execution order → published outputs",
-                    _svg(layout, record) + _HOVER_JS + legend)
+                    _svg(layout, record) + _hover_js("pipeline-picture") + legend)
 
 
 def _what_it_is(p: PipelineParam) -> str:
@@ -645,23 +964,24 @@ def _what_it_is(p: PipelineParam) -> str:
 
 def _params_section(record: PipelineRecord) -> str:
     shared = [p for p in record.params if p.kind == "shared"]
-    P: list[str] = []
-    if shared:
-        P.append(_table(["params.yaml", "Example value", "What it is"],
-                        [[f"<code>{_e(_key(p))}</code>", _code(p.default, "none"), _what_it_is(p)]
-                         for p in shared]))
-    else:
-        P.append(_empty("params.yaml carries no shared parameters — every input is a samplesheet column"))
-    P.append('<p class="note"><code>params.yaml</code> also names the samplesheet (<code>samples.csv</code>) '
-             'and the output directory (<code>results</code>). Every value is what the sealed run was '
-             'validated with.</p>')
     sheet = record.samplesheet
     names = [c.name for c in sheet.columns]
-    P.append('<p class="note"><code>samples.csv</code> — one row per sample, columns: '
-             + ", ".join(f"<code>{_e(n)}</code>" for n in names)
-             + f'. <code>{_e(names[0])}</code> is the row key. <b>The example rows are the sealed '
-               'run\'s own trials — replace them with your samples.</b></p>')
-    P.append(_table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows]))
+    cols = ", ".join(f"<code>{_e(n)}</code>" for n in names)
+    bullets = (
+        f'<ul><li><code>params.yaml</code> defines the parameters the pipeline runs with. It also names '
+        f'the samplesheet to use (<code>{_e(SAMPLESHEET_PARAM[1])}</code>) and the output directory '
+        f'(<code>{_e(OUTDIR_PARAM[1])}</code>). Every value below is what the sealed run was validated '
+        f'with.</li>'
+        f'<li><code>samples.csv</code> holds one row per sample under a single header line naming the '
+        f'columns ({cols}); <code>{_e(names[0])}</code> is the row key. <b>The example rows are the '
+        f'sealed run\'s own trials — replace them with your samples.</b></li></ul>')
+    rows = [[f"<code>{_e(_key(p))}</code>", _code(p.default, "none"), _what_it_is(p)] for p in shared]
+    rows.append([f"<code>params.{_e(SAMPLESHEET_PARAM[0])}</code>", f"<code>{_e(SAMPLESHEET_PARAM[1])}</code>",
+                 _e("the samplesheet: one row per sample")])
+    rows.append([f"<code>params.{_e(OUTDIR_PARAM[0])}</code>", f"<code>{_e(OUTDIR_PARAM[1])}</code>",
+                 _e("where published outputs land, one directory per sample")])
+    P = [bullets, _table(["params.yaml", "Example value", "What it is"], rows),
+         _table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows])]
     return _section("params", "Parameters and samples",
                     "what params.yaml and samples.csv hold, with the sealed run's example values",
                     "".join(P))
@@ -670,19 +990,31 @@ def _params_section(record: PipelineRecord) -> str:
 def _run_local_section(record: PipelineRecord) -> str:
     imgs = _images(record)
     if len(imgs) == 1 and imgs[0].image:
-        present = f"docker must be running with <code>{_e(imgs[0].image)}</code> present"
+        present = f"Docker must be running with <code>{_e(imgs[0].image)}</code> present"
     elif len(imgs) == 1:
-        present = "docker must be running with the frozen image present"
+        present = "Docker must be running with the frozen image present"
     else:
-        present = ("docker must be running with every frozen image present "
+        present = ("Docker must be running with every frozen image present "
                    "(<code>nextflow.config</code> names them)")
+    rt = record.local_runtime
+    if rt is not None:
+        make = ("Make <code>nextflow</code> available. This checkout's runtime env carries it with its own "
+                "Java; sourcing the line below puts both on your PATH for this shell. " + present + ".")
+        if rt.nextflow is None:
+            make += (' <span class="warn">nextflow was not in the runtime env when this page was rendered: '
+                     'run <code>./scripts/setup.sh</code> first.</span>')
+        make_lines = [f"source {rt.activate}"]
+    else:
+        make = ("Make <code>nextflow</code> available on your PATH — this machine's runtime env was not "
+                "recorded when the page was rendered. " + present + ".")
+        make_lines = []
     steps = _steps([
         ("Copy this directory next to your data and change into it. Put your samples in "
-         "<code>samples.csv</code> and your paths in <code>params.yaml</code>.",
+         "<code>samples.csv</code> and your paths in <code>params.yaml</code>. " + _LAUNCH_NOTE,
          [f"cd /path/to/{record.name}"]),
-        (f"Run. Nextflow starts every stage inside the frozen image through docker, so {present}, "
-         "and <code>nextflow</code> must be on your PATH. <code>-resume</code> re-runs only the "
-         "stages whose inputs or parameters changed.",
+        (make, make_lines),
+        ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
+         "re-runs only the stages whose inputs or parameters changed.",
          run_lines(record, "local")),
     ])
     return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker",
@@ -712,7 +1044,7 @@ def _run_hpc_section(record: PipelineRecord) -> str:
     if record.modules:
         mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
         submit = (f"Submit. <code>launcher.sh</code> loads {mods} and runs Nextflow as a small manager "
-                  "job; every stage of every sample is its own SLURM job.")
+                  "job; every stage of every sample is its own SLURM job. Nothing to activate by hand.")
     else:
         submit = ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer "
                   "and nextflow available first"
@@ -720,7 +1052,9 @@ def _run_hpc_section(record: PipelineRecord) -> str:
                   + "; every stage of every sample is its own SLURM job.")
     steps = _steps([
         ("Copy this directory into your project directory on the cluster and change into it. "
-         "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths.",
+         "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths. SLURM starts the "
+         "manager job here and " + _LAUNCH_NOTE[0].lower() + _LAUNCH_NOTE[1:]
+         + " The launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.",
          [f"cd /path/in/your/project/{record.name}"]),
         (submit, run_lines(record, "hpc")),
         ("Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.", ["squeue -u $USER"]),
@@ -793,6 +1127,7 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     P: list[str] = [
         _open_page(f"Pipeline — {record.name}"),
         _header(record),
+        _files_section(record),
         _picture_section(record),
         _params_section(record),
         _run_local_section(record),
@@ -803,4 +1138,4 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     return "\n".join(P)
 
 
-__all__ = ["render_pipeline_page", "picture_layout", "FOOTER"]
+__all__ = ["render_pipeline_page", "picture_layout", "files_layout", "FOOTER"]

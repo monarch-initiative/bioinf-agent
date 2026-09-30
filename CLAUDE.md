@@ -5,6 +5,7 @@ Installs bioinformatics tools into isolated conda envs, validates them against t
 ```bash
 ./scripts/setup.sh          # one-time, one mode: private miniforge + runtime env (./.conda_runtime) + editable install + core_tools env + the full test-data corpus (chr22, 8 read datasets, ACTB phenopacket)
 ./scripts/setup.sh --check  # systems check (scripts/doctor.py) — every FAIL names its fix
+source scripts/activate.sh  # this shell: the runtime env's nextflow (+ its own Java) on PATH, to run a rendered pipeline by hand
 ```
 
 Then drive via Claude Code MCP, or any agent that speaks our tool surface.

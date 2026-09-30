@@ -86,6 +86,10 @@ _RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -r
 #: How a run starts at each locus — the ONE spelling the launcher and the page share.
 RUN_LOCAL = _RUN_LINE.format(profile="local")
 RUN_HPC = "sbatch launcher.sh"
+#: The two params every pipeline carries beside its own: (key, value) as params.yaml
+#: and main.nf spell them. The page reads the same pair.
+SAMPLESHEET_PARAM = ("samplesheet", "samples.csv")
+OUTDIR_PARAM = ("outdir", "results")
 
 
 # ── refusals ────────────────────────────────────────────────────────────────
@@ -336,9 +340,9 @@ def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
         lines.append(f"params.{p.name.lower()} = {_param_default_expr(p)}")
     cols = ", ".join(c.name for c in record.samplesheet.columns)
     lines.append(f"// The samplesheet: one row per sample, columns {cols}.")
-    lines.append("params.samplesheet = 'samples.csv'")
+    lines.append(f"params.{SAMPLESHEET_PARAM[0]} = {_nf_quote(SAMPLESHEET_PARAM[1])}")
     lines.append("// Where published outputs land, one directory per sample, shared by every stage.")
-    lines.append("params.outdir = 'results'")
+    lines.append(f"params.{OUTDIR_PARAM[0]} = {_nf_quote(OUTDIR_PARAM[1])}")
     return "\n".join(lines)
 
 
@@ -684,9 +688,9 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
             L.append(_yaml_line(p.name.lower(), p.default or ""))
     cols = ", ".join(c.name for c in record.samplesheet.columns)
     L.append(f"# The samplesheet: one row per sample, columns {cols}.")
-    L.append(_yaml_line("samplesheet", "samples.csv"))
+    L.append(_yaml_line(*SAMPLESHEET_PARAM))
     L.append("# Where published outputs land.")
-    L.append(_yaml_line("outdir", "results"))
+    L.append(_yaml_line(*OUTDIR_PARAM))
     return "\n".join(L) + "\n"
 
 
@@ -763,4 +767,4 @@ def run_lines(record: PipelineRecord, locus: str) -> list[str]:
 
 
 __all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC",
-           "STRICT_MODE_LINE"]
+           "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM"]
