@@ -5,18 +5,20 @@ reads before running it on real data, rendered PURELY from the typed
 
 The page has one fixed shape: the header banner, the picture, the parameters and
 samples, how to run it locally, how to run it on the cluster, the stages, the footer.
-A pipeline directory offers two ways to run and no more — ONE sample by hand
-(`commands.sh`) and every sample with Nextflow — and the page shows each, at each
-locus, as three steps a person can follow without thinking: change directory, enter
-the environment, run. Every run line comes from `pipeline_commands`, the ONE
-spelling, so the page and `commands.sh` cannot disagree.
+A pipeline directory offers ONE way to run — every row of samples.csv, with Nextflow —
+and the page shows it at each locus as the steps a person follows without thinking:
+change directory, run (on the cluster the launcher loads the modules). It speaks the
+files' own vocabulary — `params.gtf`, the `reads` column, `results/<sample>/` — never
+the seal's `{PLACEHOLDER}`s, and the command it shows per stage is the line main.nf
+runs, bound by the Nextflow renderer itself (`bound_commands`), so the page and the
+files cannot disagree.
 
 Honesty guarantees, made structural:
   • PURE — reads only the record. No clock, no disk, no network.
   • ESCAPED — every value passes through the shared escaper, in the HTML and inside
     the SVG; a command, a path or a description can never inject markup.
   • ABSENCE IS STATED — a None renders as "unrecorded" / "never observed" / "not
-    requested" / a placeholder that says where the value will come from; it is never
+    requested" / a note that says where the value will come from; it is never
     rounded up to a number or a path.
   • DETERMINISTIC — same record → same bytes. The picture is laid out arithmetically
     from label lengths: no layout library, no font metrics read.
@@ -34,9 +36,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
-from agent.skills.pipeline_commands import enter_image, example_values, nextflow_run, sif_for
-from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineRecord,
-                                          PipelineStage, StageResources)
+from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
+                                          PipelineStage, StageResources, _PLACEHOLDER_RE)
+from agent.skills.pipeline_render_nextflow import bound_commands, run_lines
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
 FOOTER = ("This page shows a pipeline derived from a sealed run; it proves the render is "
@@ -55,17 +57,20 @@ _AUTHORITY_HTML = {
 }
 #: The states under which a measurement must not be used to size a request.
 _UNTRUSTED_AUTHORITY = ("not_authoritative", "unrecorded", "mixed")
-#: A placeholder's value kind, in words.
+#: A value's kind, in words.
 _VALUE_KIND = {"path": "a path", "prefix": "a prefix — a family of files named after it",
                "value": "a value"}
-#: Where the Nextflow form records what ran.
+#: Where a run records what ran.
 _WHAT_RAN = ("What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists every task's command, "
              "<code>runs/&lt;timestamp&gt;/report.html</code> the resources, and <code>nextflow log</code> "
              "the launch line.")
+_TITLE_LEFT = "samples.csv & params.yaml"
+_TITLE_MID = "stages, in execution order"
+_TITLE_RIGHT = "published to results/"
 
 # ── the picture: geometry ────────────────────────────────────────────────────
 #
-# Three columns. LEFT: the samplesheet columns and the shared params, as small nodes.
+# Three columns. LEFT: the samplesheet's columns and the shared params, as small nodes.
 # MIDDLE: the stages, one row per rank (rank = longest path from a source stage over
 # the stage→stage edges), stages of one rank side by side. RIGHT: the published
 # outputs. Every width is computed from the labels it must hold, so the text never
@@ -100,13 +105,31 @@ def _short_digest(d: Optional[str]) -> str:
     return body[:12]
 
 
-def _results_dir(record: PipelineRecord, stage: PipelineStage) -> str:
+def _key(p: PipelineParam) -> str:
+    """A shared parameter as params.yaml and main.nf name it."""
+    return f"params.{p.name.lower()}"
+
+
+def _display(record: PipelineRecord, artifact: str) -> str:
+    """An artifact as the files name it: a placeholder becomes the samplesheet column
+    it binds to (`{SAMPLE}.counts.tsv` → `<sample>.counts.tsv`) or the params key."""
+    col_of = {c.placeholder: c.name for c in record.samplesheet.columns}
+
+    def sub(m) -> str:
+        ph = m.group(1)
+        return f"<{col_of[ph]}>" if ph in col_of else f"<params.{ph.lower()}>"
+    return _PLACEHOLDER_RE.sub(sub, artifact)
+
+
+def _results_dir(stage: PipelineStage) -> str:
     """Where a stage's outputs land: one directory per row, shared by every stage of
-    that row — the layout the sealed how-to ran in. A cohort stage runs once and a
-    linear pipeline has one implicit row, so both publish flat."""
-    if record.shape == "per_row" and stage.scope == "per_sample":
-        return "results/<sample>/"
-    return "results/"
+    that row — the layout the sealed how-to ran in. A cohort stage runs once, so it
+    publishes flat."""
+    return "results/<sample>/" if stage.scope == "per_sample" else "results/"
+
+
+def _scope_words(stage: PipelineStage) -> str:
+    return "per sample" if stage.scope == "per_sample" else "cohort"
 
 
 @dataclass
@@ -198,38 +221,41 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     edges: list[_Edge] = []
     headers: list[tuple[float, float, str]] = []
 
-    # ── left column: samplesheet columns, then shared params ─────────────
-    groups: list[tuple[str, list[_Node]]] = []
-    col_by_ph: dict[str, _Node] = {}
-    if record.samplesheet is not None:
-        cols: list[_Node] = []
-        for c in record.samplesheet.columns:
-            n = _Node(id=f"c:{c.placeholder}", kind="column", name=c.placeholder,
-                      line1=c.name, line2=f"{{{c.placeholder}}} · {c.value_kind}",
-                      tooltip=f"samples.csv column {c.name} → {{{c.placeholder}}} · {c.value_kind}"
+    # ── left column: the samplesheet's columns, then the shared params ───
+    # The row key is drawn as a column but never as an edge: it is not data a stage
+    # reads, it is what every task is tagged by and every results directory named
+    # after — the legend says so.
+    sheet = record.samplesheet
+    key = sheet.columns[0]
+    cols: list[_Node] = []
+    for c in sheet.columns:
+        if c is key:
+            n = _Node(id=f"c:{c.placeholder}", kind="column", name=c.placeholder, line1=c.name,
+                      line2="row key", classes="key",
+                      tooltip=f"samples.csv column {c.name} — the row key: it tags every task and "
+                              f"names results/<{c.name}>/")
+        else:
+            n = _Node(id=f"c:{c.placeholder}", kind="column", name=c.placeholder, line1=c.name,
+                      line2=f"column · {c.value_kind}",
+                      tooltip=f"samples.csv column {c.name} · {c.value_kind}"
                               + (f" · {c.format}" if c.format else "")
                               + (f" — {c.description}" if c.description else ""))
-            col_by_ph[c.placeholder] = n
-            cols.append(n)
-        groups.append(("samples.csv", cols))
+        cols.append(n)
     params: list[_Node] = []
     for p in record.params:
-        tip = (f"{p.name} · {p.kind} · {p.value_kind} · source {p.source}"
-               + (f" · default {p.default}" if p.default is not None else "")
-               + f" — {p.reason}")
-        if p.name in col_by_ph:
-            col_by_ph[p.name].extra["data-param"] = p.name
-            col_by_ph[p.name].tooltip += f" — {p.reason}"
-            continue
-        params.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=p.name,
-                            line2=f"{p.kind} · {p.value_kind}", tooltip=tip))
-    if params or not groups:
-        groups.append(("params", params))
+        if p.kind == "per_sample":
+            continue                      # a samplesheet column (or the row key), drawn above
+        tip = (f"{_key(p)} · {_VALUE_KIND.get(p.value_kind, p.value_kind)}"
+               + (f" · example {p.default}" if p.default is not None else "")
+               + (f" — {p.description}" if p.description else ""))
+        params.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=_key(p),
+                            line2=p.value_kind, tooltip=tip))
+    groups: list[tuple[str, list[_Node]]] = [("samples.csv", cols), ("params.yaml", params)]
     left_nodes = [n for _, ns in groups for n in ns]
     left_by_name = {n.name: n for n in left_nodes}
     left_w = max([_node_w(n) for n in left_nodes]
                  + [_tw(g, _SUB_PT) for g, _ in groups]
-                 + [_tw("params & samplesheet", _TITLE_PT)])
+                 + [_tw(_TITLE_LEFT, _TITLE_PT)])
     y = _TOP
     for title, ns in groups:
         headers.append((_MARGIN, y + 10, title))
@@ -263,19 +289,20 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     stage_node: dict[str, _Node] = {}
     for st in record.stages:
         n = _Node(id=f"s:{st.name}", kind="stage", name=st.name, line1=st.name,
-                  line2=f"{st.tool} · {st.scope}",
+                  line2=f"{st.tool} · {_scope_words(st)}",
                   classes="unsized" if st.resources.requested_by == "default" else "",
                   extra={"data-index": str(st.index), "data-rank": str(rank[st.name])})
         r = st.resources
         req = ("unsized (default request)" if r.requested_by == "default"
                else f"request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}")
-        n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · {st.scope} · "
+        runs = "once per sample" if st.scope == "per_sample" else "once over the cohort"
+        n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · runs {runs} · "
                      f"image {_short_digest(st.image_digest) or 'unrecorded'} · {req} · "
                      f"measured authority {r.measured_authority}")
         n.w, n.h = _node_w(n, 12.5), _STAGE_H
         stage_node[st.name] = n
     row_w = [sum(stage_node[s.name].w for s in row) + _STAGE_HGAP * (len(row) - 1) for row in rows]
-    mid_w = max(row_w + [_tw("stages, in execution order", _TITLE_PT)])
+    mid_w = max(row_w + [_tw(_TITLE_MID, _TITLE_PT)])
     mid_x0 = _MARGIN + left_w + _COL_GAP_LM
     col_of: dict[str, int] = {}
     for ri, row in enumerate(rows):
@@ -290,21 +317,26 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     nodes.extend(stage_node[s.name] for s in record.stages)
 
     # ── right column: published outputs ──────────────────────────────────
+    # Edge labels speak the files' vocabulary, as the output boxes do: one file, one name.
+    def edge_label(pair: tuple[str, str]) -> str:
+        return ", ".join(_display(record, a) for a in pair_artifacts[pair])
     long_pairs = [(f, t) for (f, t) in pair_artifacts if rank[t] - rank[f] >= 2]
-    long_label_w = max([_tw(", ".join(pair_artifacts[p]), _LABEL_PT) for p in long_pairs] + [0.0])
+    long_label_w = max([_tw(edge_label(p), _LABEL_PT) for p in long_pairs] + [0.0])
     bow_room = (22 + _BOW_STEP * (len(long_pairs) - 1) + long_label_w + 24) if long_pairs else 0.0
     gap_mr = max(_COL_GAP_MR, bow_room + 30)
     outs: list[_Node] = []
     for st in record.stages:
         for o in st.outputs:
-            d = _results_dir(record, st)
+            d = _results_dir(st)
+            shown = _display(record, o.artifact)
             outs.append(_Node(id=f"o:{st.name}/{o.artifact}", kind="output", name=o.artifact,
-                              line1=o.artifact, line2=d,
-                              tooltip=f"{d}{o.artifact} · published by {st.name}"
+                              line1=shown, line2=d,
+                              tooltip=f"{d}{shown} · published by {st.name}"
                                       + (f" · declared as {o.declared_pattern}" if o.declared_pattern else "")
-                                      + (f" · observed as {o.observed}" if o.observed else " · never observed"),
+                                      + (f" · observed as {o.observed} in the sealed run" if o.observed
+                                         else " · never observed in the sealed run"),
                               extra={"data-stage": st.name}))
-    right_w = max([_node_w(n) for n in outs] + [_tw("published outputs", _TITLE_PT),
+    right_w = max([_node_w(n) for n in outs] + [_tw(_TITLE_RIGHT, _TITLE_PT),
                                                 _tw("(nothing published)", _SUB_PT)])
     right_x = mid_x0 + mid_w + gap_mr
     last_bottom = _TOP + 16 - _OUT_GAP
@@ -325,16 +357,16 @@ def picture_layout(record: PipelineRecord) -> _Layout:
         texts.append(_Text(n.x + _PAD_X, n.y + n.h / 2 - 2 - pt1, _tw(n.line1, pt1), pt1 + 2, n.line1, n.kind))
         texts.append(_Text(n.x + _PAD_X, n.y + n.h / 2 + 11 - _SUB_PT, _tw(n.line2, _SUB_PT), _SUB_PT + 2,
                            n.line2, n.kind))
-    titles = [(_MARGIN, "params & samplesheet"), (mid_x0, "stages, in execution order"),
-              (right_x, "published outputs")]
+    titles = [(_MARGIN, _TITLE_LEFT), (mid_x0, _TITLE_MID), (right_x, _TITLE_RIGHT)]
     for tx, t in titles:
         texts.append(_Text(tx, _TITLE_Y - _TITLE_PT, _tw(t, _TITLE_PT), _TITLE_PT + 2, t, "title"))
     obstacles = [_Box(n.x, n.y, n.w, n.h) for n in nodes]
 
-    # ── edges: param/column → stage ──────────────────────────────────────
+    # ── edges: column / param → stage (never the row key) ────────────────
     for st in record.stages:
         s = stage_node[st.name]
-        ins = [i for i in st.inputs if i.origin in ("param", "column") and i.name in left_by_name]
+        ins = [i for i in st.inputs if i.origin in ("param", "column")
+               and i.name in left_by_name and i.name != key.placeholder]
         step = min(8.0, (0.4 * s.w - 10) / max(1, len(ins) - 1))
         bus_y = s.y - 10 - 2 * col_of[st.name]
         xb = mid_x0 - 12
@@ -363,7 +395,7 @@ def picture_layout(record: PipelineRecord) -> _Layout:
         y0 = src.y + src.h
         x1 = dst.x + dst.w * 0.62 + (k - (n_in - 1) / 2) * 10
         y1 = dst.y
-        label = ", ".join(pair_artifacts[(f, t)])
+        label = edge_label((f, t))
         lw = _tw(label, _LABEL_PT) + 8
         if rank[t] - rank[f] <= 1:
             ym = (y0 + y1) / 2
@@ -405,6 +437,8 @@ def picture_layout(record: PipelineRecord) -> _Layout:
 
 _SVG_CSS = """
 .node rect{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.node.column.key rect{stroke:var(--cyan)}
+.node.column.key text.l1{font-weight:700}
 .node.stage rect{stroke:var(--cyan);stroke-width:1.4}
 .node.stage.unsized rect{stroke-dasharray:5 3}
 .node.output rect{stroke:var(--yellow)}
@@ -453,7 +487,7 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
     P: list[str] = []
     P.append(f'<svg id="pipeline-picture" viewBox="0 0 {W:.0f} {H:.0f}" width="100%" '
              f'style="max-width:{W:.0f}px;height:auto;display:block" role="img" '
-             f'aria-label="pipeline {_e(record.name)}: params and samplesheet columns feeding stages '
+             f'aria-label="pipeline {_e(record.name)}: samplesheet columns and params feeding stages '
              f'in execution order, and the published outputs">')
     P.append(f"<style>{_SVG_CSS}</style>")
     P.append("<defs>" + _marker("arr-input", "arr-input") + _marker("arr-stage", "arr-stage")
@@ -516,9 +550,8 @@ def _digest_cell(d: Optional[str]) -> str:
 
 
 def _steps(steps: list[tuple[str, list[str]]]) -> str:
-    """The three steps as a numbered list: each entry is its sentence (HTML, callers
-    escape) and the lines to type, in one <pre>; a step with nothing to type shows
-    the sentence alone."""
+    """Numbered steps: each entry is its sentence (HTML, callers escape) and the lines
+    to type, in one <pre>; a step with nothing to type shows the sentence alone."""
     items: list[str] = []
     for text, lines in steps:
         typed = "\n".join(lines)
@@ -527,160 +560,30 @@ def _steps(steps: list[tuple[str, list[str]]]) -> str:
     return "<ol>" + "".join(items) + "</ol>"
 
 
+def _ordered(record: PipelineRecord) -> list[PipelineStage]:
+    return sorted(record.stages, key=lambda s: s.index)
+
+
+def _images(record: PipelineRecord) -> list[PipelineStage]:
+    """One stage per distinct image, in stage order — each image's first appearance."""
+    seen: set[tuple[Optional[str], Optional[str]]] = set()
+    out: list[PipelineStage] = []
+    for st in _ordered(record):
+        k = (st.image, st.image_digest)
+        if k not in seen:
+            seen.add(k)
+            out.append(st)
+    return out
+
+
 def _results_html(record: PipelineRecord) -> str:
     """Where a run's results land, as the record lays them out."""
-    if record.shape != "per_row":
-        return "Results land in <code>results/</code>."
-    cohort = [s.name for s in sorted(record.stages, key=lambda s: s.index) if s.scope == "cohort"]
+    cohort = [s.name for s in _ordered(record) if s.scope == "cohort"]
     out = "Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample"
     if cohort:
         out += (f" (cohort stage{'s' if len(cohort) != 1 else ''} {_e(', '.join(cohort))} "
                 "in <code>results/</code>)")
     return out + "."
-
-
-def _nextflow_title(record: PipelineRecord) -> str:
-    return ("Every sample in <code>samples.csv</code>, with Nextflow" if record.samplesheet is not None
-            else "The one row, with Nextflow")
-
-
-def _header(record: PipelineRecord) -> str:
-    if record.shape == "per_row":
-        n = len(record.samplesheet.rows) if record.samplesheet else 0
-        shape = f"per_row — {n} example row{'s' if n != 1 else ''} in <code>samples.csv</code>"
-        pill = f'<span class="pill na">per_row · {n} rows</span>'
-    else:
-        shape = "linear — runs once, params only"
-        pill = '<span class="pill na">linear</span>'
-    path = f"<code>{_e(record.sealed_workflow_path)}</code>" if record.sealed_workflow_path else _muted("path unrecorded")
-    cluster = ""
-    if record.compute_env:
-        mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
-        cluster = f"<b>{_e(record.compute_env)}</b> — " + (f"module load {mods}" if mods else "no modules to load")
-    rows = [
-        ("Rendered from", f"sealed workflow <b>{_e(record.sealed_workflow)}</b> — {path}"),
-        ("Sealed workflow sha256", _code(record.sealed_workflow_sha256)),
-        ("Created", _e(record.created_at)),
-        ("Env image digest(s)", "<br>".join(_digest_cell(d) for d in record.env_digests) or _muted("unrecorded")),
-        ("Shape", shape),
-        ("Stages", f"{len(record.stages)} in execution order: "
-                   + " → ".join(f"<code>{_e(s.name)}</code>" for s in sorted(record.stages, key=lambda s: s.index))),
-        ("Output slots", " ".join(f"<code>{{{_e(s)}}}</code>" for s in record.output_slots) or _muted("none")),
-        ("Cluster", cluster),
-    ]
-    return _header_banner(f"Pipeline — {_e(record.name)}", pill, rows)
-
-
-def _picture_section(record: PipelineRecord) -> str:
-    layout = picture_layout(record)
-    legend = ('<p class="note">Thin grey lines: a param or samplesheet column feeding a stage. Cyan lines: '
-              'an artifact flowing from the stage that writes it to a stage that reads it, labelled with '
-              'its name. Yellow lines: what a stage publishes. A dashed stage box is <b>unsized</b> (default '
-              'request). Stages on one row have no edge between them and may run side by side; a row is '
-              'one rank (longest path from a source stage). Hover or focus a node to trace it.</p>')
-    return _section("picture", "The picture",
-                    "params and samplesheet columns → stages in execution order → published outputs",
-                    _svg(layout, record) + _HOVER_JS + legend)
-
-
-def _what_it_is(value_kind: str, description: Optional[str], source: str) -> str:
-    bits = [_VALUE_KIND.get(value_kind, value_kind)]
-    if description:
-        bits.append(description)
-    if source.startswith("sealed_step:"):
-        bits.append(f"produced by sealed step {source.split(':', 1)[1]}")
-    return _e(" · ".join(bits))
-
-
-def _params_section(record: PipelineRecord) -> str:
-    sheet = record.samplesheet
-    col_of = {c.placeholder: c for c in sheet.columns} if sheet is not None else {}
-    values = example_values(record)
-    rows: list[list[str]] = []
-    for p in record.params:
-        if p.kind == "shared":
-            scope = "shared"
-        elif p.name in col_of:
-            scope = f"per sample (column <code>{_e(col_of[p.name].name)}</code>)"
-        else:
-            scope = "per sample"
-        rows.append([f"<code>{_e(p.name)}</code>", scope, _code(values.get(p.name), "none"),
-                     _what_it_is(p.value_kind, p.description, p.source)])
-    named = {p.name for p in record.params}
-    for c in (sheet.columns if sheet is not None else []):
-        if c.placeholder in named:
-            continue
-        rows.append([f"<code>{_e(c.placeholder)}</code>", f"per sample (column <code>{_e(c.name)}</code>)",
-                     _code(values.get(c.placeholder), "none"), _what_it_is(c.value_kind, c.description, "")])
-    P: list[str] = []
-    if rows:
-        P.append(_table(["Placeholder", "Scope", "Example value", "What it is"], rows))
-    else:
-        P.append(_empty("the how-to takes no input placeholders — output slots only"))
-    if sheet is not None:
-        names = [c.name for c in sheet.columns]
-        P.append('<p class="note"><code>samples.csv</code> — one row per sample, columns: '
-                 + ", ".join(f"<code>{_e(n)}</code>" for n in names)
-                 + '. <b>The example rows are the seal\'s own trials — replace them with your samples.</b></p>')
-        P.append(_table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows]))
-    else:
-        P.append('<p class="note">one implicit row; the per-sample values are set at the top of '
-                 '<code>commands.sh</code> (by hand) and in <code>params.yaml</code> (Nextflow).</p>')
-    return _section("params", "Parameters and samples",
-                    "every placeholder of the how-to, with the sealed run's example value", "".join(P))
-
-
-def _menu(record: PipelineRecord, into: str, cd: str, enter: str, enter_lines: list[str],
-          nothing: str, run: str, run_lines: list[str], tail: str = "") -> str:
-    """The two items on the menu at one locus — ONE sample by hand, every sample with
-    Nextflow — each as three steps: change directory, enter the environment, run."""
-    where = _results_html(record)
-    by_hand = _steps([(into, [cd]), (enter, enter_lines),
-                      ("Edit the values at the top of <code>commands.sh</code>, then run it.", ["bash commands.sh"])])
-    nextflow = _steps([(into, [cd]), (nothing, []), (run, run_lines)])
-    return (f'<h3 class="sub">A. One sample by hand</h3>{by_hand}<p class="note">{where}</p>'
-            f'<h3 class="sub">B. {_nextflow_title(record)}</h3>{nextflow}'
-            f'<p class="note">{where} {_WHAT_RAN}{tail}</p>')
-
-
-def _run_local_section(record: PipelineRecord) -> str:
-    body = _menu(
-        record, "Change into the copy of this directory next to your data.", f"cd /path/to/{record.name}",
-        "Enter the image. Docker must see every directory your values live in — add a <code>-v</code> for each.",
-        enter_image(record, "local"),
-        "Nothing to enter: docker and nextflow on this machine.",
-        "Run. <code>-resume</code> re-runs only the stages whose inputs or parameters changed.",
-        nextflow_run(record, "local"))
-    return _section("run-local", "Run it locally", "one sample by hand, or every sample with Nextflow", body)
-
-
-def _run_hpc_section(record: PipelineRecord) -> str:
-    env, sif = record.compute_env, sif_for(record)
-    key = next((s.request_key for s in sorted(record.stages, key=lambda s: s.index) if s.request_key), None)
-    env_arg = f'"{env}"' if env else "<the cluster's env>"
-    key_arg = f'"{key}"' if key else "<the env's freeze_request_key>"
-    call = _e(f"stage_apptainer_image(project=<your project>, env={env_arg}, freeze_request_key={key_arg})")
-    step0 = f'<p class="note"><b>0.</b> The image as a <code>.sif</code>: <code>{call}</code> puts it '
-    if sif:
-        step0 += f'at <code>{_e(sif)}</code>.</p>'
-    else:
-        step0 += ('in the cluster\'s container zone. The path is filled in here when the pipeline is '
-                  'rendered with <code>env=</code> naming the cluster; until then <code>sif:</code> in '
-                  '<code>params.yaml</code> must be set by hand.</p>')
-    opening = ("" if env else
-               '<p class="warn-note">Rendered without a cluster named: no module line below, and the '
-               '<code>.sif</code> path is a placeholder.</p>')
-    body = _menu(
-        record, "Change into the copy of this directory in your project directory on the cluster.",
-        f"cd /path/in/your/project/{record.name}",
-        ("Load the modules and enter the image. " if record.modules else "Enter the image. ")
-        + "Apptainer must see every directory your values live in — add each to <code>--bind</code>.",
-        enter_image(record, "hpc"),
-        "Nothing to enter: <code>launcher.sh</code> loads the modules.",
-        "Submit.", nextflow_run(record, "hpc"),
-        tail=" Watch it with <code>squeue -u $USER</code>, or <code>sacct -j &lt;jobid&gt;</code> once it has ended.")
-    return _section("run-hpc", "Run it on the cluster", "the same two ways, through the .sif and SLURM",
-                    opening + step0 + body)
 
 
 def _image_cell(st: PipelineStage) -> str:
@@ -690,6 +593,140 @@ def _image_cell(st: PipelineStage) -> str:
     short = (f' <span class="muted" title="{_e(st.image_digest)}">{_e(_short_digest(st.image_digest))}</span>'
              if st.image_digest else "")
     return tag + short
+
+
+def _header(record: PipelineRecord) -> str:
+    n = len(record.samplesheet.rows)
+    rows_word = f"{n} example row{'s' if n != 1 else ''}"
+    n_st = len(record.stages)
+    pill = f'<span class="pill na">{rows_word} · {n_st} stage{"s" if n_st != 1 else ""}</span>'
+    path = f"<code>{_e(record.sealed_workflow_path)}</code>" if record.sealed_workflow_path else _muted("path unrecorded")
+    digests = "<br>".join(_digest_cell(d) for d in record.env_digests) or _muted("unrecorded")
+    if len(record.env_digests) == 1:
+        digests += ' <span class="muted">— every stage runs inside it</span>'
+    rows = [
+        ("Rendered from", f"sealed workflow <b>{_e(record.sealed_workflow)}</b> — {path}"),
+        ("Sealed workflow sha256", _code(record.sealed_workflow_sha256)),
+        ("Created", _e(record.created_at)),
+        ("Image", digests),
+        ("Stages", f"{n_st} in execution order: "
+                   + " → ".join(f"<code>{_e(s.name)}</code>" for s in _ordered(record))),
+        ("Samples", f"{rows_word} in <code>samples.csv</code> — the sealed run's own; replace them with yours"),
+    ]
+    if record.compute_env:
+        mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
+        rows.append(("Cluster", f"<b>{_e(record.compute_env)}</b> — "
+                                + (f"module load {mods}" if mods else "no modules to load")))
+    return _header_banner(f"Pipeline — {_e(record.name)}", pill, rows)
+
+
+def _picture_section(record: PipelineRecord) -> str:
+    layout = picture_layout(record)
+    legend = ('<p class="note">Every stage runs once per row of <code>samples.csv</code>; '
+              '<code>sample</code> is the row key — it tags each task and names '
+              '<code>results/&lt;sample&gt;/</code>. Thin grey lines: a column or <code>params.*</code> '
+              'value a stage reads. Cyan lines: a file flowing from the stage that writes it to a stage '
+              'that reads it, labelled with its name. Yellow lines: what a stage publishes. A dashed stage '
+              'box is <b>unsized</b> (default request). Stages on one row have no edge between them and '
+              'may run side by side. Hover or focus a node to trace it.</p>')
+    return _section("picture", "The picture",
+                    "samples.csv and params.yaml → stages in execution order → published outputs",
+                    _svg(layout, record) + _HOVER_JS + legend)
+
+
+def _what_it_is(p: PipelineParam) -> str:
+    bits = [_VALUE_KIND.get(p.value_kind, p.value_kind)]
+    if p.description:
+        bits.append(p.description)
+    if p.source.startswith("sealed_step:"):
+        bits.append(f"produced by sealed step {p.source.split(':', 1)[1]}")
+    return _e(" · ".join(bits))
+
+
+def _params_section(record: PipelineRecord) -> str:
+    shared = [p for p in record.params if p.kind == "shared"]
+    P: list[str] = []
+    if shared:
+        P.append(_table(["params.yaml", "Example value", "What it is"],
+                        [[f"<code>{_e(_key(p))}</code>", _code(p.default, "none"), _what_it_is(p)]
+                         for p in shared]))
+    else:
+        P.append(_empty("params.yaml carries no shared parameters — every input is a samplesheet column"))
+    P.append('<p class="note"><code>params.yaml</code> also names the samplesheet (<code>samples.csv</code>) '
+             'and the output directory (<code>results</code>). Every value is what the sealed run was '
+             'validated with.</p>')
+    sheet = record.samplesheet
+    names = [c.name for c in sheet.columns]
+    P.append('<p class="note"><code>samples.csv</code> — one row per sample, columns: '
+             + ", ".join(f"<code>{_e(n)}</code>" for n in names)
+             + f'. <code>{_e(names[0])}</code> is the row key. <b>The example rows are the sealed '
+               'run\'s own trials — replace them with your samples.</b></p>')
+    P.append(_table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows]))
+    return _section("params", "Parameters and samples",
+                    "what params.yaml and samples.csv hold, with the sealed run's example values",
+                    "".join(P))
+
+
+def _run_local_section(record: PipelineRecord) -> str:
+    imgs = _images(record)
+    if len(imgs) == 1 and imgs[0].image:
+        present = f"docker must be running with <code>{_e(imgs[0].image)}</code> present"
+    elif len(imgs) == 1:
+        present = "docker must be running with the frozen image present"
+    else:
+        present = ("docker must be running with every frozen image present "
+                   "(<code>nextflow.config</code> names them)")
+    steps = _steps([
+        ("Copy this directory next to your data and change into it. Put your samples in "
+         "<code>samples.csv</code> and your paths in <code>params.yaml</code>.",
+         [f"cd /path/to/{record.name}"]),
+        (f"Run. Nextflow starts every stage inside the frozen image through docker, so {present}, "
+         "and <code>nextflow</code> must be on your PATH. <code>-resume</code> re-runs only the "
+         "stages whose inputs or parameters changed.",
+         run_lines(record, "local")),
+    ])
+    return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker",
+                    steps + f'<p class="note">{_results_html(record)} {_WHAT_RAN}</p>')
+
+
+def _run_hpc_section(record: PipelineRecord) -> str:
+    env = record.compute_env
+    imgs = _images(record)
+    key = next((s.request_key for s in _ordered(record) if s.request_key), None)
+    env_arg = f'"{env}"' if env else "<the cluster's env>"
+    key_arg = f'"{key}"' if key else "<the env's freeze_request_key>"
+    call = _e(f"stage_apptainer_image(project=<your project>, env={env_arg}, freeze_request_key={key_arg})")
+    notes: list[str] = []
+    for st in imgs:
+        label = _short_digest(st.image_digest) or st.image or ""
+        which = f" for image <code>{_e(label)}</code>" if len(imgs) > 1 else ""
+        if st.sif_path:
+            notes.append(f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs '
+                         f'the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code> — where '
+                         f'<code>stage_apptainer_image</code> put it on <b>{_e(env or "the cluster")}</b>.</p>')
+        else:
+            notes.append(f'<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
+                         f'<code>nextflow.config</code> is empty{which}: re-render with <code>env=</code> naming '
+                         f'the cluster, or set it to the <code>.sif</code> that <code>{call}</code> reports. '
+                         f'The workflow refuses to start until it is set.</p>')
+    if record.modules:
+        mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
+        submit = (f"Submit. <code>launcher.sh</code> loads {mods} and runs Nextflow as a small manager "
+                  "job; every stage of every sample is its own SLURM job.")
+    else:
+        submit = ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer "
+                  "and nextflow available first"
+                  + ("" if env else ", it was rendered without a cluster named and loads no modules")
+                  + "; every stage of every sample is its own SLURM job.")
+    steps = _steps([
+        ("Copy this directory into your project directory on the cluster and change into it. "
+         "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths.",
+         [f"cd /path/in/your/project/{record.name}"]),
+        (submit, run_lines(record, "hpc")),
+        ("Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.", ["squeue -u $USER"]),
+    ])
+    return _section("run-hpc", "Run it on the cluster", "the same files, through the .sif and SLURM",
+                    "".join(notes) + steps + f'<p class="note">{_results_html(record)} {_WHAT_RAN}</p>')
 
 
 def _request_html(r: StageResources) -> str:
@@ -716,13 +753,32 @@ def _measured_html(r: StageResources) -> str:
     return f"{_e(nums)} — {auth}"
 
 
+def _command_cell(record: PipelineRecord, st: PipelineStage) -> str:
+    """The line(s) main.nf runs for the stage — bound by the renderer, never retyped."""
+    try:
+        lines = bound_commands(record, st)
+    except ValueError as e:
+        return f'<span class="warn">{_e(f"cannot be bound: {e}")}</span>'
+    return "<pre>" + _e("\n".join(lines)) + "</pre>"
+
+
 def _stages_section(record: PipelineRecord) -> str:
     if not record.stages:
         return _section("stages", "Stages", "", _empty("the record holds no stages"))
-    stages = sorted(record.stages, key=lambda s: s.index)
-    rows = [[f"<code>{_e(st.name)}</code>", _e(st.tool), _e(", ".join(str(t + 1) for t in st.templates)),
-             _image_cell(st), _request_html(st.resources), _measured_html(st.resources)] for st in stages]
-    body = _table(["Stage", "Tool", "How-to command", "Image", "Request", "Measured"], rows)
+    stages = _ordered(record)
+    imgs = _images(record)
+    single = len(imgs) == 1
+    headers = (["Stage", "Tool", "Command, as main.nf runs it"] + ([] if single else ["Image"])
+               + ["Request", "Measured"])
+    rows: list[list[str]] = []
+    for st in stages:
+        row = [f"<code>{_e(st.name)}</code>", _e(st.tool), _command_cell(record, st)]
+        if not single:
+            row.append(_image_cell(st))
+        row += [_request_html(st.resources), _measured_html(st.resources)]
+        rows.append(row)
+    body = (f'<p class="note">Every stage runs inside {_image_cell(imgs[0])}.</p>' if single else "")
+    body += _table(headers, rows)
     untrusted = [st.name for st in stages if st.resources.measured_authority in _UNTRUSTED_AUTHORITY]
     if untrusted:
         body += (f'<p class="warn-note">{_e(", ".join(untrusted))}: measured under emulation, or of unrecorded '

@@ -3,7 +3,8 @@
 ONE tool, `render_pipeline`. A sealed workflow proves that ONE run of the how-to works;
 a pipeline is that how-to over MANY samples, as a directory a person runs without the
 agent: a samplesheet (one row per sample), one stage per how-to command so a stage can
-be re-run alone, the frozen image per stage, and an explain page. The tool reads the
+be re-run alone, the frozen image per stage, and an explain page — run with Nextflow,
+locally through docker or on a cluster through apptainer and SLURM. The tool reads the
 sealed spec through the typed seam, derives the record (`pipeline_record`), renders the
 directory (`pipeline_render`) and returns where it landed. It EXECUTES NOTHING.
 
@@ -61,43 +62,48 @@ def render_pipeline(sealed_workflow: str,
                     overwrite: bool = False) -> dict:
     """**The PIPELINE layer.** Render a SEALED workflow as a runnable pipeline directory
     under ``<workspace>/pipelines/<name>/``. Executes nothing. The directory is a
-    TEMPLATE: copy it next to the data and run it there.
+    TEMPLATE: copy it next to the data, put the samples in ``samples.csv`` and the
+    paths in ``params.yaml``, and run it there.
 
-    **Two ways to run it, and no more.** ``commands.sh`` runs ONE sample by hand — the
-    sealed commands with the example values at the top, inside the frozen image.
-    ``samples.csv`` + ``params.yaml`` + ``main.nf`` + ``nextflow.config`` run every
-    sample with Nextflow: ``nextflow run main.nf -profile local -params-file params.yaml
-    -resume`` on a laptop, ``sbatch launcher.sh`` on a cluster. ``pipeline.html`` shows
-    both, at both loci, as change directory → enter the environment → run. Every run
-    writes ``runs/<timestamp>/trace.txt`` (each task's command) and ``report.html``.
+    **One way to run it.** ``main.nf`` + ``nextflow.config`` + ``params.yaml`` +
+    ``samples.csv`` run every row of the samplesheet with Nextflow, one stage per
+    how-to command, ``-resume`` re-running only what changed: ``nextflow run main.nf
+    -profile local -params-file params.yaml -resume`` on a laptop (docker),
+    ``sbatch launcher.sh`` on a cluster (apptainer + SLURM; the launcher loads the
+    modules). WHERE it runs is ``nextflow.config``'s business — the ``local`` profile
+    names the docker image, the ``slurm`` profile the ``.sif`` — and ``params.yaml``
+    holds only the pipeline's parameters. ``pipeline.html`` shows all of it in the
+    files' own vocabulary, with the command main.nf runs per stage. Every run writes
+    ``runs/<timestamp>/trace.txt`` (each task's command) and ``report.html``.
 
-    **What is derived from the seal and what you choose.** Rows come from the seal's own
-    I4 trials (the worked example the user replaces); a how-to proven on 2+ trials
-    renders ``per_row`` (a samplesheet), on 1 trial ``linear`` (params only). A
-    placeholder whose value differs across trials is a samplesheet COLUMN; one that is
-    the same everywhere is a shared PARAM with the sealed value as its default. Override
-    with ``per_sample=`` / ``shared=`` (placeholder names). ``stages=`` groups how-to
-    commands into stages by their 1-based numbers, e.g. ``[[1, 2], [3]]`` runs commands
-    1 and 2 as one job; default is one stage per command so a stage can be re-run alone.
-    ``stage_names=`` names them. ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a
-    stage; an unsized stage carries a DEFAULT request that every file labels as unsized,
-    with the sealed run's measurement beside it to size from. ``env=`` names a compute
-    env in projects_access.yaml: the launcher then carries its SLURM policy and module
-    names, and ``params.sif`` is prefilled with the path ``stage_apptainer_image`` writes
-    in that env's container zone.
+    **What is derived from the seal and what you choose.** The samplesheet's example
+    rows are the seal's own I4 trials — one or more; a one-trial seal renders a
+    one-row sheet — and ``sample`` is the row key. A placeholder whose value differs
+    across trials is a samplesheet COLUMN; one that is the same everywhere is a
+    shared PARAM with the sealed value as its default (with one trial: the sample id
+    and read inputs are per-sample, everything else shared). Override with
+    ``per_sample=`` / ``shared=`` (placeholder names). ``stages=`` groups how-to
+    commands into stages by their 1-based numbers, e.g. ``[[1, 2], [3]]`` runs
+    commands 1 and 2 as one job; default is one stage per command so a stage can be
+    re-run alone. ``stage_names=`` names them. ``resources={STAGE: {cpus, mem, time,
+    gpus}}`` sizes a stage; an unsized stage carries a DEFAULT request that every
+    file labels as unsized, with the sealed run's measurement beside it to size from.
+    ``env=`` names a compute env in projects_access.yaml: the launcher then carries
+    its SLURM policy and module names, and the ``slurm`` profile's ``container`` is
+    the path ``stage_apptainer_image`` writes in that env's container zone.
 
     **Refuses** (``refused``, with a remedy) when the seal cannot support the render — no
     how-to, no proven trial, a placeholder no trial binds, an artifact no sealed step was
-    observed writing, a stage cut that mixes images — and when the target directory holds
-    files edited since they were rendered (``pipeline.dir_edited``; pass
+    observed writing, a stage cut that mixes images, a cohort stage — and when the target
+    directory holds files edited since they were rendered (``pipeline.dir_edited``; pass
     ``overwrite=True`` to replace them, or a new ``name``). **Every rendered command is
     checked against the sealed how-to before any file is written** — a drift is a
     refusal, never a file.
 
-    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, ``shape``,
-    the ``stages`` (name, scope, commands, image digest, sized?), the ``params`` and
-    ``samplesheet_columns``, the ``sif`` path when an env was named, and every derivation
-    ``note``. Open ``page`` first.
+    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the
+    ``stages`` (name, scope, commands, image digest, sized?), the ``params`` and
+    ``samplesheet_columns``, the ``sif`` path when an env was named, and every
+    derivation ``note``. Open ``page`` first.
     """
     from agent.skills.pipeline_record import PipelineDerivationError, derive_pipeline_record, sha256_of
     from agent.skills.pipeline_render import render_pipeline_dir
@@ -163,7 +169,7 @@ def render_pipeline(sealed_workflow: str,
         "pipeline.rendered", success=True,
         pipeline=pipeline_name, sealed_workflow=sealed_workflow,
         dir=written["dir"], page=written["page"], record=written["record"],
-        files=written["files"], shape=record.shape,
+        files=written["files"],
         stages=[{"name": s.name, "scope": s.scope, "commands": s.commands,
                  "image_digest": s.image_digest, "sized": s.resources.requested_by == "caller"}
                 for s in record.stages],

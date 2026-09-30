@@ -4,9 +4,9 @@ pipeline_record — the typed PIPELINE record, derived from a sealed WorkflowSpe
 A pipeline is a RENDER of a sealed workflow, and it invents nothing: the stages are
 the sealed how-to's commands, the images are the sealed steps' observed digests, the
 samplesheet columns are the how-to's per-sample inputs, and every artifact a stage
-writes into the row's directory is published, as the sealed run left it. This module derives that record — the ONE thing the two
-form renderers (plain bash/SLURM, Nextflow) and the explain page read — and refuses,
-naming the remedy, when the seal cannot support the render.
+writes into the row's directory is published, as the sealed run left it. This module
+derives that record — the ONE thing the Nextflow renderer and the explain page read —
+and refuses, naming the remedy, when the seal cannot support the render.
 
 Vocabulary
 ----------
@@ -17,8 +17,9 @@ Vocabulary
   artifact   a file the how-to names inside an output slot, `{OUTPUT_DIR}/<name>`;
              produced by the earliest template the sealed run OBSERVED writing it,
              consumed by every later template that names it
-  shape      `per_row` when the seal proved more than one trial (a samplesheet), else
-             `linear` (params only, one implicit row)
+  samplesheet  always: `sample` (the row key) first, then one column per per-sample
+             input, one row per trial the seal proved — the worked example a user
+             replaces with their own samples. A one-trial seal is a one-row sheet
 """
 from __future__ import annotations
 
@@ -54,7 +55,6 @@ MANAGER_JOB_REQUEST: dict[str, Any] = {"time": "2-00:00:00", "mem": "4G", "cpus"
 #: Nextflow executor defaults the record's `defaults` table states.
 NEXTFLOW_QUEUE_SIZE = 50
 
-ShapeT = Literal["linear", "per_row"]
 ScopeT = Literal["per_sample", "cohort"]
 
 
@@ -75,7 +75,7 @@ class PipelineParam(BaseModel):
     name: str                                  # placeholder, e.g. STRANDED
     kind: Literal["shared", "per_sample"]
     value_kind: Literal["path", "prefix", "value"]   # prefix: names a FAMILY of files (an aligner index)
-    default: Optional[str]                     # the sealed trial's value — shared always; per_sample only in a one-row (linear) pipeline, where the seal's single trial is the worked example
+    default: Optional[str]                     # the sealed trial's value for a shared param; None for a per-sample one, whose values are the samplesheet's rows
     source: str                                # usage_input | literal | test_data:<key> | reference_database:<name> | sealed_step:<n>
     format: Optional[str]
     description: Optional[str]
@@ -174,9 +174,8 @@ class PipelineRecord(BaseModel):
     sealed_workflow_path: str
     sealed_workflow_sha256: Optional[str]
     env_digests: list[str]
-    shape: ShapeT
     params: list[PipelineParam]
-    samplesheet: Optional[Samplesheet]
+    samplesheet: Samplesheet                   # always; `sample` first, the seal's trials as the example rows
     output_slots: list[str]
     compute_env: Optional[str]                 # the compute env the cluster files were rendered for, else None
     modules: list[str]                         # Lmod modules that env loads before apptainer/nextflow run
@@ -323,8 +322,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            env_names: Optional[Mapping[str, str]] = None,
                            sif_paths: Optional[Mapping[str, str]] = None,
                            compute_env: Optional[str] = None,
-                           modules: Optional[list[str]] = None,
-                           shape: Optional[ShapeT] = None) -> PipelineRecord:
+                           modules: Optional[list[str]] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
     PipelineDerivationError (a refusal with a remedy) when the seal cannot support
     the render; every derivation the caller did not dictate is stated in `notes`."""
@@ -374,14 +372,6 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 "pipeline.trial_missing_placeholder",
                 f"trial {r.get('name')!r} binds no value for {missing}",
                 "every trial must bind every non-output placeholder the how-to uses")
-
-    # ── shape ──────────────────────────────────────────────────────────────
-    derived_shape: ShapeT = "per_row" if len(rows) > 1 else "linear"
-    if shape and shape != derived_shape:
-        notes.append(f"shape {shape!r} set by caller (derived {derived_shape!r})")
-        derived_shape = shape
-    else:
-        notes.append(f"shape {derived_shape!r}: derived from the number of proven trials")
 
     # ── params: shared vs per-sample ───────────────────────────────────────
     per_sample_set = set(per_sample or [])
@@ -442,10 +432,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         di = declared_inputs.get(ph) or {}
         params.append(PipelineParam(
             name=ph, kind=kind, value_kind=value_kind,
-            # A one-row pipeline has no samplesheet to carry the worked example, so
-            # its per-sample values ride here — the seal's own trial, as the sheet's
-            # rows are in a per_row pipeline. Replace them the same way.
-            default=v0 if (kind == "shared" or derived_shape == "linear") else None,
+            default=v0 if kind == "shared" else None,     # a per-sample value is a samplesheet cell
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why))
         notes.append(f"{ph}: {kind} ({why})")
@@ -615,7 +602,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         notes.append("stage cut: one stage per how-to command (default)")
 
     # scope per template: per_sample if it binds a per-sample placeholder or consumes a
-    # per-sample artifact / the row workdir; else cohort (per_row shape only)
+    # per-sample artifact; else cohort (it runs once, over every row's work)
     template_scope: list[ScopeT] = []
     for ti, tmpl in enumerate(templates):
         phs = placeholders(tmpl)
@@ -626,10 +613,6 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 if src is not None and src < ti and template_scope[src] == "per_sample":
                     is_ps = True
                     break
-        if not is_ps and template_bare[ti] and any(sc == "per_sample" for sc in template_scope):
-            is_ps = "cohort" not in template_scope and derived_shape == "linear"
-        if derived_shape == "linear":
-            is_ps = True
         template_scope.append("per_sample" if is_ps else "cohort")
 
     stage_of_template: dict[int, int] = {}
@@ -776,30 +759,32 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                     consumed_by=consumed, declared_pattern=pattern))
     _ = stage_by_name
 
-    # ── samplesheet ────────────────────────────────────────────────────────
-    sheet: Optional[Samplesheet] = None
-    if derived_shape == "per_row":
-        cols = [SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value",
-                                  format=None, description="row identifier")]
-        for p in params:
-            if p.kind != "per_sample" or p.name in _SAMPLE_NAMES:
-                continue
-            cols.append(SamplesheetColumn(name=p.name.lower(), placeholder=p.name,
-                                          value_kind=p.value_kind, format=p.format,
-                                          description=p.description))
-        srows: list[dict[str, str]] = []
-        id_ph = next((p.name for p in params if p.kind == "per_sample" and p.name in _SAMPLE_NAMES), None)
-        for r in rows:
-            subs = r.get("substitutions") or {}
-            row = {"sample": str(subs.get(id_ph)) if id_ph and subs.get(id_ph) else str(r.get("name"))}
-            for c in cols[1:]:
-                row[c.name] = str(subs.get(c.placeholder, ""))
-            srows.append(row)
-        sheet = Samplesheet(columns=cols, rows=srows)
+    # ── samplesheet: always — `sample` (the row key) first, one row per trial ──
+    # The key's placeholder is the how-to's own sample identifier when it has one, so
+    # the renderer binds that placeholder to the `sample` column; a how-to with no
+    # identifier still gets the column (the trial's name), because every task is
+    # tagged by it and every result directory named after it.
+    id_ph = next((p.name for p in params if p.kind == "per_sample" and p.name in _SAMPLE_NAMES), None)
+    cols = [SamplesheetColumn(name="sample", placeholder=id_ph or "SAMPLE", value_kind="value",
+                              format=None,
+                              description="the row key: it tags every task and names results/<sample>/")]
+    for p in params:
+        if p.kind != "per_sample" or p.name in _SAMPLE_NAMES:
+            continue
+        cols.append(SamplesheetColumn(name=p.name.lower(), placeholder=p.name,
+                                      value_kind=p.value_kind, format=p.format,
+                                      description=p.description))
+    srows: list[dict[str, str]] = []
+    for r in rows:
+        subs = r.get("substitutions") or {}
+        row = {"sample": str(subs.get(id_ph)) if id_ph and subs.get(id_ph) else str(r.get("name"))}
+        for c in cols[1:]:
+            row[c.name] = str(subs.get(c.placeholder, ""))
+        srows.append(row)
+    sheet = Samplesheet(columns=cols, rows=srows)
 
     # ── the defaults table ─────────────────────────────────────────────────
     defaults = [
-        PipelineDefault(key="shape", value=derived_shape, source="caller" if shape else "seal"),
         PipelineDefault(key="stage_cut", value="explicit groups" if stages else "one stage per how-to command",
                         source="caller" if stages else "default"),
         PipelineDefault(key="publish", value="every artifact a stage writes, into the row's directory", source="default"),
@@ -821,7 +806,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         sealed_workflow=str(spec.workflow_name), sealed_workflow_path=spec_path,
         sealed_workflow_sha256=spec_sha256,
         env_digests=sorted(env_map) or [str(getattr(spec, "env_content_digest", ""))],
-        shape=derived_shape, params=params, samplesheet=sheet,
+        params=params, samplesheet=sheet,
         output_slots=sorted(out_slots), compute_env=compute_env, modules=list(modules or []),
         stages=stage_recs, provenance_steps=provenance,
         unmatched_steps=unmatched_steps, defaults=defaults, notes=notes)
@@ -832,10 +817,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
 
 def render_samplesheet(record: PipelineRecord) -> str:
     """`samples.csv`: the record's columns as the header, the seal's trials as the
-    worked-example rows. Empty for a linear pipeline. Every form ships this file
-    and none renders its own."""
-    if record.samplesheet is None:
-        return ""
+    worked-example rows. The Nextflow renderer ships this text and the lint compares
+    against it — ONE rendering."""
     cols = [c.name for c in record.samplesheet.columns]
     lines = [",".join(cols)]
     for row in record.samplesheet.rows:

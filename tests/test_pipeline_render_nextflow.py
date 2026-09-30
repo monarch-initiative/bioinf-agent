@@ -1,14 +1,28 @@
 """The Nextflow form is rendered from the pipeline record and nothing else: every
-file is pinned here as the literal text a human reads, copies and re-runs."""
+file is pinned here as the literal text a human reads, copies and re-runs.
+
+The directory offers ONE way to run — Nextflow over samples.csv — so there is no
+second, by-hand form to keep in step with it. A one-trial seal is a one-row
+samplesheet rendered exactly like a three-row one; per-sample inputs are columns,
+never params. params.yaml holds the pipeline's parameters and nothing about WHERE it
+runs: each profile in nextflow.config names its own image — the docker tag locally,
+the .sif on the cluster — and main.nf refuses to start a cluster run whose container
+is still empty. The last class runs the rendered directory through the runtime env's
+real nextflow binary, so the files are known to parse and the guard is known to
+fire, not merely to read well."""
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from pathlib import Path
 
 import pytest
-from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, sealed_rnaseq_spec
+from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.pipeline_render_nextflow import render_nextflow
+from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, STRICT_MODE_LINE,
+                                                   bound_commands, render_nextflow, run_lines)
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
 #: notification email, the Lmod names the launcher loads. Names nothing real.
@@ -25,19 +39,63 @@ ALL_SIZED = {"HISAT2": {"cpus": 8, "mem": "32G", "time": "1-12:30:00"},
              "SAMTOOLS": {"cpus": 1, "mem": "12000M", "time": "0:20:00"},
              "HTSEQ_COUNT": {"cpus": 2, "mem": "4G", "time": "0:00:45"}}
 
+#: The one file set, whatever the record: no shape has a fourth or a sixth file.
+FILES = {"main.nf", "nextflow.config", "params.yaml", "samples.csv", "launcher.sh"}
+#: Where stage_apptainer_image put the fixture's image on a cluster.
+SIF = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
+#: A second image, for the multi-env chain: the fixture's last stage moved into it.
+OTHER = "sha256:bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+OTHER_IMAGE = "bioinf_counts:latest"
+
 ALIGN_LINE = ("hisat2 -p 4 -x ${file(params.hisat2_index).name} -U ${reads} "
               "| samtools sort -o aligned.bam")
 INDEX_LINE = "samtools index aligned.bam"
 COUNT_LINE = ("htseq-count -s ${params.stranded} -f bam aligned.bam ${gtf} "
               "> ${meta.sample}.counts.tsv")
 
+#: The fail-fast guard that opens every workflow block: one image reads the resolved
+#: container as a string; several read it as a map that holds ONLY the processes whose
+#: container is set, so every stage is looked up by name.
+GUARD_ONE = "    if (workflow.profile.tokenize(',').contains('slurm') && !workflow.container)\n"
+GUARD_MANY = ("    if (workflow.profile.tokenize(',').contains('slurm') && "
+              "!(workflow.container instanceof Map ? ['HISAT2', 'SAMTOOLS', 'HTSEQ_COUNT'].every "
+              "{ workflow.container[it] } : workflow.container))\n")
+
+
+def _guard_error(*digests: str) -> str:
+    return ('        error "nextflow.config, profile slurm: process.container is empty; set it to '
+            f'the .sif built from image {", ".join(digests)}"\n')
+
+
+def _set_me(digest: str, indent: int) -> str:
+    """The slurm profile's container lines for an image whose .sif is not known."""
+    pad = " " * indent
+    return (f"{pad}// SET ME: the .sif built from image {digest}. Render with env= naming the cluster,\n"
+            f"{pad}// or paste the path stage_apptainer_image reports.\n"
+            f"{pad}container = ''\n")
+
+
+def _sif_set(digest: str, sif: str, indent: int, where: str = "") -> str:
+    """The slurm profile's container lines for an image whose .sif the record carries."""
+    pad = " " * indent
+    return (f"{pad}// the .sif built from image {digest}, where stage_apptainer_image put it{where}\n"
+            f"{pad}container = '{sif}'\n")
+
 
 def _record(**kw):
     return pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts", **kw)
 
 
-def _linear(**kw):
+def _one_row(**kw):
+    """A seal that proved ONE trial: a one-row samplesheet, not a different pipeline."""
     return pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one", **kw)
+
+
+def _two_images(rec):
+    """The fixture's chain with its last stage in a second image — the shape a
+    how-to that spans two frozen envs renders as."""
+    rec.stages[2].image, rec.stages[2].image_digest = OTHER_IMAGE, OTHER
+    return rec
 
 
 def _process_block(main_nf: str, name: str) -> str:
@@ -47,10 +105,33 @@ def _process_block(main_nf: str, name: str) -> str:
     return m.group(1)
 
 
+def _script_lines(main_nf: str, name: str) -> list[str]:
+    """The lines inside a process's script block, their indent stripped: what the
+    compute node runs."""
+    m = re.search(r'    script:\n    """\n(.*?)    """', _process_block(main_nf, name), re.S)
+    assert m, f"no script block in process {name}"
+    return [ln[4:] for ln in m.group(1).splitlines()]
+
+
 def _workflow_block(main_nf: str) -> str:
     m = re.search(r"^workflow \{\n(.*?)^\}", main_nf, re.S | re.M)
     assert m, "no workflow block in main.nf"
     return m.group(1)
+
+
+def _profile(cfg: str, name: str) -> str:
+    """The text of ONE profile of nextflow.config, `    local {` through the closing
+    brace at its own indent."""
+    m = re.search(rf"^    {name} \{{\n(.*?)^    \}}", cfg, re.S | re.M)
+    assert m, f"no profile {name} in nextflow.config"
+    return m.group(1)
+
+
+def _without_stage_comments(main_nf: str) -> str:
+    """main.nf minus the two comment lines above each process that quote what the
+    seal observed — which steps back the stage and what they measured."""
+    return "\n".join(ln for ln in main_nf.splitlines()
+                     if not ln.startswith("// stage ") and not ln.startswith("// measured"))
 
 
 # ===========================================================================
@@ -59,11 +140,13 @@ def _workflow_block(main_nf: str) -> str:
 
 
 class TestFileSet:
-    def test_a_per_row_record_renders_five_files_and_a_linear_one_four(self):
-        assert set(render_nextflow(_record())) == {
-            "main.nf", "nextflow.config", "params.yaml", "launcher.sh", "samples.csv"}
-        assert set(render_nextflow(_linear())) == {
-            "main.nf", "nextflow.config", "params.yaml", "launcher.sh"}
+    @pytest.mark.parametrize("rows", ["three", "one"])
+    @pytest.mark.parametrize("with_env", [True, False])
+    def test_the_render_is_always_the_same_five_files(self, rows, with_env):
+        """One way to run, one file set. A one-trial seal renders exactly the files a
+        three-trial one does — there is no by-hand form and no four-file shape."""
+        rec = _record() if rows == "three" else _one_row()
+        assert set(render_nextflow(rec, env=ENV if with_env else None)) == FILES
 
     def test_every_file_opens_by_naming_the_sealed_workflow_and_what_to_edit_instead(self):
         files = render_nextflow(_record(), env=ENV)
@@ -76,26 +159,34 @@ class TestFileSet:
                 assert "edit this file and samples.csv, not main.nf" in first
             else:
                 assert "edit params.yaml / samples.csv, not this file" in first, name
-        lin = render_nextflow(_linear())
-        assert "edit params.yaml, not this file" in lin["main.nf"].splitlines()[0]
-        assert "samples.csv" not in lin["main.nf"].splitlines()[0]
 
-    def test_samples_csv_is_the_records_one_samplesheet_rendering(self):
+    def test_samples_csv_is_the_records_one_samplesheet_rendering_keyed_by_sample(self):
+        """`sample` is the row key: the how-to's own {SAMPLE} placeholder is bound to
+        that column, so the row's name tags its tasks and names its outputs."""
         rec = _record()
-        assert render_nextflow(rec)["samples.csv"] == pr.render_samplesheet(rec)
-        assert render_nextflow(rec)["samples.csv"].splitlines()[0] == "sample,reads"
+        files = render_nextflow(rec)
+        assert files["samples.csv"] == pr.render_samplesheet(rec)
+        assert files["samples.csv"].splitlines() == [
+            "sample,reads",
+            "SRR1039508,/data/reads/SRR1039508_10K_R1.fastq.gz",
+            "SRR1039509,/data/reads/SRR1039509_10K_R1.fastq.gz",
+            "SRR1039512,/data/reads/SRR1039512_10K_R1.fastq.gz"]
+        key = rec.samplesheet.columns[0]
+        assert (key.name, key.placeholder) == ("sample", "SAMPLE")
+        assert "row key" in key.description
+        assert "${meta.sample}.counts.tsv" in files["main.nf"]
 
-    @pytest.mark.parametrize("shape", ["per_row", "linear"])
+    @pytest.mark.parametrize("rows", ["three", "one"])
     @pytest.mark.parametrize("with_env", [True, False])
-    def test_no_placeholder_survives_in_any_rendered_file(self, shape, with_env):
-        rec = _record(resources=GPU) if shape == "per_row" else _linear(resources=GPU)
+    def test_no_placeholder_survives_in_any_rendered_file(self, rows, with_env):
+        rec = _record(resources=GPU) if rows == "three" else _one_row(resources=GPU)
         files = render_nextflow(rec, env=ENV if with_env else None)
         for name, text in files.items():
             assert pr.placeholders(text) == [], f"{name} still carries a placeholder"
 
-    @pytest.mark.parametrize("shape", ["per_row", "linear"])
-    def test_every_stage_name_appears_exactly_once_as_a_process(self, shape):
-        rec = _record() if shape == "per_row" else _linear()
+    @pytest.mark.parametrize("rows", ["three", "one"])
+    def test_every_stage_name_appears_exactly_once_as_a_process(self, rows):
+        rec = _record() if rows == "three" else _one_row()
         main = render_nextflow(rec)["main.nf"]
         assert re.findall(r"^process (\w+) \{$", main, re.M) == ["HISAT2", "SAMTOOLS", "HTSEQ_COUNT"]
         assert [s.name for s in rec.stages] == ["HISAT2", "SAMTOOLS", "HTSEQ_COUNT"]
@@ -110,11 +201,55 @@ class TestFileSet:
 
 
 # ===========================================================================
-# main.nf — per_row
+# A one-trial seal is a one-row samplesheet
 # ===========================================================================
 
 
-class TestMainNfPerRow:
+class TestOneRow:
+    """`sealed_rnaseq_spec(["SRR1039508"])` proved ONE trial. That is a one-row
+    samplesheet, not a different pipeline: the same processes over the same meta
+    tuple, the same config, params and launcher, and per-sample inputs that stay
+    columns with no default — the seal's one row IS the worked example."""
+
+    def test_a_one_trial_seal_renders_like_a_three_trial_one_but_for_the_rows(self):
+        three = render_nextflow(_record())
+        one = render_nextflow(pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]),
+                                                        name="rnaseq_counts"))
+        assert one["samples.csv"].splitlines() == three["samples.csv"].splitlines()[:2]
+        for name in ("nextflow.config", "params.yaml", "launcher.sh"):
+            assert one[name] == three[name], name
+        # main.nf differs only in what the seal observed: which steps back each stage
+        # and what they measured
+        assert _without_stage_comments(one["main.nf"]) == _without_stage_comments(three["main.nf"])
+        assert "derived from sealed step(s) [2]\n" in one["main.nf"]
+        assert "measured on 1 sealed step on the workflow's test data" in one["main.nf"]
+
+    def test_per_sample_inputs_are_columns_with_no_default_never_params(self):
+        rec = _one_row()
+        assert {p.name: p.default for p in rec.params if p.kind == "per_sample"} == {
+            "READS": None, "SAMPLE": None}
+        main = render_nextflow(rec)["main.nf"]
+        assert "params.reads" not in main and not re.search(r"params\.sample\b", main)
+        assert "REQUIRED" not in main and "= null" not in main
+        assert "tuple val(meta), path(reads)" in _process_block(main, "HISAT2")
+        assert "tag { meta.sample }" in main and ".splitCsv(header: true)" in main
+        assert "params.samplesheet = 'samples.csv'" in main
+
+
+# ===========================================================================
+# main.nf
+# ===========================================================================
+
+
+class TestMainNf:
+    def test_the_header_counts_stages_and_commands_run_once_per_row(self):
+        main = render_nextflow(_record())["main.nf"]
+        assert main.splitlines()[1] == (
+            "// 3 stage(s) over 3 how-to command(s), each stage run once per samples.csv row; every "
+            "process runs its sealed command(s) with the placeholders bound.")
+        merged = render_nextflow(_record(stages=[[0, 1], [2]], stage_names=["ALIGN", "COUNT"]))["main.nf"]
+        assert merged.splitlines()[1].startswith("// 2 stage(s) over 3 how-to command(s), ")
+
     def test_dsl2_and_the_shared_params_with_their_sealed_defaults(self):
         main = render_nextflow(_record())["main.nf"]
         assert "nextflow.enable.dsl = 2" in main
@@ -123,7 +258,7 @@ class TestMainNfPerRow:
         assert f"params.gtf = '{GTF}'" in main
         assert "params.samplesheet = 'samples.csv'" in main
         assert "params.outdir = 'results'" in main
-        assert "run_id" not in main
+        assert "run_id" not in main and "params.sif" not in main
         # per-sample inputs are samplesheet columns, never params
         assert "params.reads" not in main and "params.sample " not in main
         assert "${meta.sample}" in main
@@ -168,6 +303,9 @@ class TestMainNfPerRow:
                 "1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
                 "process HISAT2 {") in main
         assert f"// stage 3 of 3 · htseq-count · image {DIGEST} · derived from sealed step(s) [4, 7, 10]" in main
+        # a stage in a second image names ITS image, not the chain's first
+        main = render_nextflow(_two_images(_record()))["main.nf"]
+        assert f"// stage 3 of 3 · htseq-count · image {OTHER} · derived from sealed step(s) [4, 7, 10]" in main
 
     def test_tag_and_every_stage_publishes_what_it_writes_into_the_rows_directory(self):
         main = render_nextflow(_record())["main.nf"]
@@ -206,7 +344,9 @@ class TestMainNfPerRow:
                 "        .splitCsv(header: true)\n"
                 "        .map { r -> tuple([sample: r.sample], file(r.reads, checkIfExists: true)) }"
                 "   // one (meta, reads) per samples.csv row\n") in wf
-        assert '    HISAT2(rows, file("${params.hisat2_index}*"))\n' in wf
+        # files(), not file(): a glob that matches a family of files is a collection, and
+        # Nextflow warns on file() for one
+        assert '    HISAT2(rows, files("${params.hisat2_index}*"))\n' in wf
         assert "    SAMTOOLS(HISAT2.out.aligned_bam)\n" in wf
         assert ("    HTSEQ_COUNT(HISAT2.out.aligned_bam.join(SAMTOOLS.out.aligned_bam_bai), file(params.gtf))"
                 "   // .join() on meta: (meta, aligned.bam) + (meta, aligned.bam.bai) "
@@ -214,10 +354,20 @@ class TestMainNfPerRow:
         order = [wf.index(f"    {n}(") for n in ("HISAT2", "SAMTOOLS", "HTSEQ_COUNT")]
         assert order == sorted(order)
 
-    def test_the_workflow_refuses_to_start_on_the_cluster_without_a_sif(self):
-        wf = _workflow_block(render_nextflow(_record())["main.nf"])
-        assert ("    if (workflow.profile.tokenize(',').contains('slurm') && !params.sif)\n"
-                f'        error "params.sif is empty: set it in params.yaml to the .sif built from image {DIGEST}"\n') in wf
+    def test_the_workflow_refuses_to_start_on_the_cluster_without_a_container(self):
+        """The guard reads the container Nextflow resolved from nextflow.config — never
+        a params entry — so the one place a .sif is named is the one place it is
+        checked. It opens the workflow block, before any channel exists."""
+        main = render_nextflow(_record())["main.nf"]
+        wf = _workflow_block(main)
+        assert wf.startswith(GUARD_ONE + _guard_error(DIGEST))
+        assert "params.sif" not in main
+
+    def test_with_several_images_the_guard_checks_every_stages_container_and_names_every_digest(self):
+        main = render_nextflow(_two_images(_record()))["main.nf"]
+        wf = _workflow_block(main)
+        assert wf.startswith(GUARD_MANY + _guard_error(DIGEST, OTHER))
+        assert "params.sif" not in main
 
     def test_a_stage_that_rewrites_what_it_consumed_stages_a_copy(self):
         rec = _record()
@@ -238,72 +388,20 @@ class TestMainNfPerRow:
 
 
 # ===========================================================================
-# main.nf — linear
-# ===========================================================================
-
-
-class TestMainNfLinear:
-    def test_no_samplesheet_no_meta_no_tag(self):
-        main = render_nextflow(_linear())["main.nf"]
-        assert "splitCsv" not in main and "meta" not in main and "tag " not in main
-        assert "params.samplesheet" not in main
-
-    def test_per_sample_inputs_become_params_carrying_the_seals_worked_example(self):
-        """A one-row pipeline has no samplesheet, so the seal's single trial rides in
-        params.* — the worked example, as the sheet's rows are in a per_row pipeline."""
-        main = render_nextflow(_linear())["main.nf"]
-        assert "params.reads = '/data/reads/SRR1039508_10K_R1.fastq.gz'\n" in main
-        assert "params.sample = 'SRR1039508'\n" in main
-        assert "REQUIRED" not in main and "is required" not in _workflow_block(main)
-
-    def test_a_per_sample_input_with_no_default_is_required_and_the_workflow_checks_it(self):
-        rec = _linear()
-        rec = rec.model_copy(update={"params": [
-            p.model_copy(update={"default": None}) if p.kind == "per_sample" else p
-            for p in rec.params]})
-        main = render_nextflow(rec)["main.nf"]
-        assert ("// REQUIRED: the sealed record carries no default for a per-sample input of a "
-                "one-row pipeline — set it in params.yaml.\nparams.reads = null\n") in main
-        assert "params.sample = null" in main
-        wf = _workflow_block(main)
-        assert ("    if (!params.reads)\n"
-                '        error "params.reads is required (the sealed record carries no default for it): '
-                'set it in params.yaml"\n') in wf
-
-    def test_plain_inputs_outputs_and_calls(self):
-        main = render_nextflow(_linear())["main.nf"]
-        assert ("    input:\n    path reads\n    path hisat2_index_files\n") in _process_block(main, "HISAT2")
-        assert "    path 'aligned.bam', emit: aligned_bam\n" in _process_block(main, "HISAT2")
-        assert ('    path "${params.sample}.counts.tsv", emit: counts_tsv\n') in _process_block(main, "HTSEQ_COUNT")
-        assert 'publishDir "${params.outdir}", mode: \'copy\', overwrite: true' in _process_block(main, "HISAT2")
-        wf = _workflow_block(main)
-        assert '    HISAT2(file(params.reads), file("${params.hisat2_index}*"))\n' in wf
-        assert "    HTSEQ_COUNT(HISAT2.out.aligned_bam, SAMTOOLS.out.aligned_bam_bai, file(params.gtf))\n" in wf
-        assert ".join(" not in wf
-
-    def test_the_script_lines_are_the_same_commands_with_params_where_meta_was(self):
-        main = render_nextflow(_linear())["main.nf"]
-        assert f"    {ALIGN_LINE}\n" in _process_block(main, "HISAT2")
-        assert f"    {INDEX_LINE}\n" in _process_block(main, "SAMTOOLS")
-        assert f"    {COUNT_LINE.replace('${meta.sample}', '${params.sample}')}\n" \
-            in _process_block(main, "HTSEQ_COUNT")
-
-
-# ===========================================================================
-# nextflow.config
+# nextflow.config — each profile names the image it runs
 # ===========================================================================
 
 
 class TestConfig:
     def test_the_two_profiles(self):
         cfg = render_nextflow(_record(), env=ENV)["nextflow.config"]
-        assert "run_id" not in cfg
-        assert "params.sif = ''" in cfg
+        assert "run_id" not in cfg and "params.sif" not in cfg
         assert ("profiles {\n"
                 "    local {\n"
                 "        docker.enabled = true\n"
                 "        process {\n"
                 "            executor = 'local'\n"
+                f"            // the frozen image {DIGEST}, as docker names it here\n"
                 "            container = 'bioinf_rnaseq_cli:latest'\n"
                 "        }\n"
                 "    }\n"
@@ -313,11 +411,38 @@ class TestConfig:
                 "        apptainer.runOptions = '--cleanenv'") in cfg
         assert "        executor.queueSize = 50\n" in cfg
         assert ("            executor = 'slurm'\n"
-                "            container = params.sif\n"
+                + _set_me(DIGEST, 12) +
                 "            cache = 'lenient'\n"
                 "            beforeScript = 'module load apptainer/1.5.0'\n"
                 "            queue = 'cpu'\n"
                 "            clusterOptions = '--account=acct'\n") in cfg
+
+    def test_without_a_sif_the_slurm_container_is_empty_and_says_set_me(self):
+        """An empty container is stated, with the digest the .sif must be built from and
+        the two ways to fill it; nothing else in the directory carries a sif slot."""
+        files = render_nextflow(_record())
+        cfg = files["nextflow.config"]
+        assert _set_me(DIGEST, 12) in _profile(cfg, "slurm")
+        assert "container = ''" not in _profile(cfg, "local")
+        assert not any("params.sif" in text or "sif_1" in text for text in files.values())
+
+    def test_the_slurm_container_is_the_sif_when_the_record_carries_one(self):
+        rec = _record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster")
+        files = render_nextflow(rec, env=ENV)
+        cfg = files["nextflow.config"]
+        assert ("            executor = 'slurm'\n"
+                + _sif_set(DIGEST, SIF, 12, " on cluster") +
+                "            cache = 'lenient'\n") in _profile(cfg, "slurm")
+        assert "SET ME" not in cfg and "container = ''" not in cfg
+        # the local profile still runs the docker tag; the .sif reaches no other file
+        local = _profile(cfg, "local")
+        assert "container = 'bioinf_rnaseq_cli:latest'" in local and SIF not in local
+        assert SIF not in files["params.yaml"] and SIF not in files["main.nf"]
+
+    def test_the_sif_comment_stops_at_where_it_was_put_when_no_compute_env_is_named(self):
+        cfg = render_nextflow(_record(sif_paths={REQUEST_KEY: SIF}))["nextflow.config"]
+        assert _sif_set(DIGEST, SIF, 12) in _profile(cfg, "slurm")
+        assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-1]
 
     def test_trace_and_report_land_under_a_timestamped_run_dir_and_the_trace_carries_each_command(self):
         cfg = render_nextflow(_record())["nextflow.config"]
@@ -327,14 +452,6 @@ class TestConfig:
                 "    fields = 'task_id,name,status,exit,container,realtime,%cpu,peak_rss,workdir,script'\n}") in cfg
         assert 'report {\n    enabled = true\n    file = "runs/${params.run_stamp}/report.html"\n}' in cfg
         assert "timeline" not in cfg
-
-    def test_the_sif_path_is_prefilled_when_the_render_named_a_cluster(self):
-        sif = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
-        rec = _record(sif_paths={REQUEST_KEY: sif})
-        files = render_nextflow(rec, env=ENV)
-        assert f"params.sif = '{sif}'" in files["nextflow.config"]
-        assert f"\nsif: {sif}\n" in files["params.yaml"]
-        assert "stage_apptainer_image" in files["params.yaml"]
 
     def test_without_an_env_there_is_no_module_load_no_account_no_queue(self):
         cfg = render_nextflow(_record())["nextflow.config"]
@@ -376,7 +493,7 @@ class TestConfig:
                 "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
                 "                containerOptions = '--nv'\n"
                 "            }\n") in cfg
-        local = cfg[cfg.index("    local {"):cfg.index("    slurm {")]
+        local = _profile(cfg, "local")
         assert "--nv" not in local and "gres" not in local
 
     def test_a_gpu_stage_with_no_placement_states_that_the_scheduler_chooses(self):
@@ -386,26 +503,65 @@ class TestConfig:
         assert "// GPU placement: --gres only, no --partition/--qos — the scheduler chooses." in cfg
         assert "--account" not in cfg and "queue =" not in cfg
 
-    def test_two_images_mean_one_sif_param_per_digest_and_a_container_per_stage(self):
-        rec = _record()
-        other = "sha256:bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
-        rec.stages[2].image, rec.stages[2].image_digest = "bioinf_counts:latest", other
-        files = render_nextflow(rec)
+    def test_several_images_name_a_container_per_stage_in_both_profiles(self):
+        """Two frozen envs in one chain: neither profile has a profile-wide container to
+        fall back on — every stage names its own, the docker tag locally and the .sif
+        slot (empty, with its digest) on the cluster."""
+        files = render_nextflow(_two_images(_record()))
         cfg = files["nextflow.config"]
-        assert "params.sif_1 = ''" in cfg and "params.sif_2 = ''" in cfg and "params.sif =" not in cfg
-        assert "            withName: 'HISAT2' { container = 'bioinf_rnaseq_cli:latest' }" in cfg
-        assert "            withName: 'HTSEQ_COUNT' { container = 'bioinf_counts:latest' }" in cfg
-        assert "                container = params.sif_1\n" in cfg
-        assert ("            withName: 'HTSEQ_COUNT' {\n"
-                "                container = params.sif_2\n") in cfg
-        assert "container = params.sif\n" not in cfg
-        assert "sif_1: ''" in files["params.yaml"] and "sif_2: ''" in files["params.yaml"]
-        assert f"built from {other}" in files["params.yaml"]
-        assert "!params.sif_1" in files["main.nf"] and "!params.sif_2" in files["main.nf"]
+        local, slurm = _profile(cfg, "local"), _profile(cfg, "slurm")
+        assert ("        process {\n"
+                "            executor = 'local'\n"
+                "            withName: 'HISAT2' { container = 'bioinf_rnaseq_cli:latest' }\n"
+                "            withName: 'SAMTOOLS' { container = 'bioinf_rnaseq_cli:latest' }\n"
+                "            withName: 'HTSEQ_COUNT' { container = 'bioinf_counts:latest' }\n"
+                "        }\n") in local
+        assert "\n            container =" not in local
+        assert ("            executor = 'slurm'\n"
+                "            cache = 'lenient'\n"
+                "            withName: 'HISAT2' {\n"
+                + _set_me(DIGEST, 16) +
+                "            }\n"
+                "            withName: 'SAMTOOLS' {\n"
+                + _set_me(DIGEST, 16) +
+                "            }\n"
+                "            withName: 'HTSEQ_COUNT' {\n"
+                + _set_me(OTHER, 16) +
+                "            }\n") in slurm
+        assert "\n            container =" not in slurm
+        assert not any("params.sif" in text or "sif_1" in text or "sif_2" in text
+                       for text in files.values())
+
+    def test_several_images_with_sifs_put_each_stages_sif_inside_its_with_name_block(self):
+        rec = _two_images(_record(compute_env="cluster"))
+        for st in rec.stages:                # one .sif per IMAGE: stages sharing a digest share it
+            st.sif_path = "/cluster/containers/a.sif" if st.image_digest == DIGEST else "/cluster/containers/b.sif"
+        cfg = render_nextflow(rec, env=ENV)["nextflow.config"]
+        slurm = _profile(cfg, "slurm")
+        assert ("            withName: 'HISAT2' {\n"
+                + _sif_set(DIGEST, "/cluster/containers/a.sif", 16, " on cluster") +
+                "            }\n"
+                "            withName: 'SAMTOOLS' {\n"
+                + _sif_set(DIGEST, "/cluster/containers/a.sif", 16, " on cluster") +
+                "            }\n"
+                "            withName: 'HTSEQ_COUNT' {\n"
+                + _sif_set(OTHER, "/cluster/containers/b.sif", 16, " on cluster") +
+                "            }\n") in slurm
+        assert "SET ME" not in cfg and "container = ''" not in cfg
+
+    def test_a_gpu_stage_in_a_multi_image_chain_keeps_its_container_and_placement_in_one_block(self):
+        slurm = _profile(render_nextflow(_two_images(_record(resources=GPU)), env=ENV)["nextflow.config"],
+                         "slurm")
+        assert ("            withName: 'HISAT2' {\n"
+                + _set_me(DIGEST, 16) +
+                "                queue = 'gpu'\n"
+                "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
+                "                containerOptions = '--nv'\n"
+                "            }\n") in slurm
 
 
 # ===========================================================================
-# params.yaml
+# params.yaml — the pipeline's parameters, nothing about where it runs
 # ===========================================================================
 
 
@@ -423,34 +579,34 @@ class TestParamsYaml:
         assert "\noutdir: results\n" in y
         assert "reads:" not in y and "sample:" not in y
 
-    def test_the_sif_slot_is_empty_and_names_the_digest_it_must_be_built_from(self):
-        y = render_nextflow(_record())["params.yaml"]
-        assert (f"# The Apptainer image built from {DIGEST}; its path on the cluster is not known at "
-                "render time — set it before -profile slurm.\nsif: ''\n") in y
-
-    def test_the_linear_form_lists_the_per_sample_inputs_with_the_seals_values(self):
-        y = render_nextflow(_linear())["params.yaml"]
-        assert "\nreads: /data/reads/SRR1039508_10K_R1.fastq.gz\n" in y
-        assert "\nsample: SRR1039508\n" in y
-        assert "samplesheet" not in y and "REQUIRED" not in y
-
-    def test_the_linear_form_lists_a_per_sample_input_with_no_default_empty_and_required(self):
-        rec = _linear()
-        rec = rec.model_copy(update={"params": [
-            p.model_copy(update={"default": None}) if p.kind == "per_sample" else p
-            for p in rec.params]})
-        y = render_nextflow(rec)["params.yaml"]
-        assert ("# REQUIRED: the sealed record carries no default for a per-sample input of a one-row "
-                "pipeline.\nreads: ''\n") in y
-        assert "\nsample: ''\n" in y
+    @pytest.mark.parametrize("shape", ["no_env", "env_and_sif", "two_images"])
+    def test_it_carries_only_pipeline_params_and_never_says_where_the_pipeline_runs(self, shape):
+        """The header says where the pipeline runs is nextflow.config's business, and the
+        body proves it: the shared params, the samplesheet and the output directory —
+        no sif slot, no digest, no image name, whatever the record carries."""
+        rec, env = {
+            "no_env": (_record(), None),
+            "env_and_sif": (_record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster"), ENV),
+            "two_images": (_two_images(_record()), None),
+        }[shape]
+        y = render_nextflow(rec, env=env)["params.yaml"]
+        header = " ".join(y.splitlines()[1:3])
+        assert header.startswith("# Every value is what the sealed run was validated with.")
+        assert "WHERE the pipeline runs" in header and "nextflow.config's business" in header
+        keys = [ln.split(":", 1)[0] for ln in y.splitlines() if ln and not ln.startswith("#")]
+        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir"]
+        assert "sif" not in y.lower()
+        assert DIGEST not in y and OTHER not in y and SIF not in y
+        assert "bioinf_rnaseq_cli" not in y and OTHER_IMAGE not in y
+        assert "REQUIRED" not in y
 
 
 # ===========================================================================
-# launcher.sh and nextflow_local.sh
+# launcher.sh — the manager job
 # ===========================================================================
 
 
-class TestLaunchers:
+class TestLauncher:
     def test_the_manager_job_header_follows_the_env_policy(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert sh.startswith(
@@ -475,20 +631,30 @@ class TestLaunchers:
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         body = sh.split("#SBATCH --mail-user=someone@example.org\n", 1)[1]
         assert body.startswith(
-            "\nset -euo pipefail   # bash strict mode: stop at the first failing command, "
-            "an unset variable, or a failure inside a pipe\n"
+            f"\n{STRICT_MODE_LINE}\n"
             "\n"
             "module load apptainer/1.5.0 nextflow/25.04.7\n")
         assert 'export NXF_HOME="$PWD/.nextflow_home"\n' in body
-        assert 'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n' in body
         commands = [ln for ln in body.splitlines() if ln.strip() and not ln.startswith("#")]
-        assert commands == ["set -euo pipefail   # bash strict mode: stop at the first failing command, "
-                            "an unset variable, or a failure inside a pipe",
+        assert commands == [STRICT_MODE_LINE,
                             "module load apptainer/1.5.0 nextflow/25.04.7",
                             'export NXF_HOME="$PWD/.nextflow_home"',
                             'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"']
         assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
         assert "nextflow clean -f" in sh and "never cleaned for you" in sh
+
+    def test_the_nextflow_line_is_run_local_on_the_slurm_profile_with_the_callers_arguments(self):
+        """The launcher runs the ONE launch line the page shows for a laptop, with the
+        cluster profile in place of the local one and the caller's arguments passed
+        through — one spelling, two profiles."""
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert RUN_LOCAL.replace("local", "slurm") + ' "$@"\n' in sh
+        assert RUN_LOCAL not in sh
+        assert sh.count("nextflow run") == 1
+
+    def test_the_strict_mode_line_is_bash_strict_mode_with_its_reason(self):
+        assert STRICT_MODE_LINE.startswith("set -euo pipefail")
+        assert "# bash strict mode" in STRICT_MODE_LINE
 
     def test_without_an_env_no_modules_no_policy_lines_and_the_gap_is_stated(self):
         sh = render_nextflow(_record())["launcher.sh"]
@@ -503,10 +669,53 @@ class TestLaunchers:
         assert "# The env declares no apptainer_module / nextflow_module" in sh
         assert "#SBATCH --account=acct" in sh                 # the policy still applies
 
-    def test_the_launcher_is_the_same_for_a_linear_record(self):
-        sh = render_nextflow(_linear())["launcher.sh"]
-        assert 'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n' in sh
-        assert "samples.csv" not in sh
+
+# ===========================================================================
+# run_lines / bound_commands — what the page reads
+# ===========================================================================
+
+
+class TestPublicHelpers:
+    """`run_lines` and `bound_commands` are what pipeline.html reads, so the page shows
+    the line that starts a run and the lines main.nf runs — never a paraphrase of
+    either. Both are pinned against the rendered files themselves."""
+
+    def test_run_local_and_run_hpc_are_the_one_spelling_of_how_a_run_starts(self):
+        assert RUN_LOCAL == "nextflow run main.nf -profile local -params-file params.yaml -resume"
+        assert RUN_HPC == "sbatch launcher.sh"
+        rec = _record()
+        assert run_lines(rec, "local") == [RUN_LOCAL]
+        assert run_lines(rec, "hpc") == [RUN_HPC]
+
+    def test_a_locus_that_is_neither_local_nor_hpc_is_refused(self):
+        with pytest.raises(ValueError) as e:
+            run_lines(_record(), "mars")
+        assert "mars" in str(e.value) and "'local'" in str(e.value) and "'hpc'" in str(e.value)
+
+    def test_bound_commands_are_exactly_the_script_lines_main_nf_runs(self):
+        rec = _record()
+        main = render_nextflow(rec)["main.nf"]
+        assert bound_commands(rec, rec.stage("HTSEQ_COUNT")) == [COUNT_LINE]
+        for st in rec.stages:
+            assert bound_commands(rec, st) == _script_lines(main, st.name), st.name
+        one = _one_row()
+        main = render_nextflow(one)["main.nf"]
+        for st in one.stages:
+            assert bound_commands(one, st) == _script_lines(main, st.name), st.name
+
+    def test_a_merged_stage_binds_each_of_its_commands_in_order(self):
+        rec = _record(stages=[[0, 1], [2]], stage_names=["ALIGN", "COUNT"])
+        main = render_nextflow(rec)["main.nf"]
+        assert bound_commands(rec, rec.stage("ALIGN")) == [ALIGN_LINE, INDEX_LINE]
+        assert _script_lines(main, "ALIGN") == [ALIGN_LINE, INDEX_LINE]
+
+    def test_bound_commands_refuse_a_placeholder_the_record_does_not_know(self):
+        rec = _record()
+        rec.stages[0].commands = ["hisat2 -x {NOPE} -U {READS} | samtools sort -o {OUTPUT_DIR}/aligned.bam"]
+        with pytest.raises(ValueError) as e:
+            bound_commands(rec, rec.stages[0])
+        assert "stage HISAT2" in str(e.value) and "{NOPE}" in str(e.value)
+        assert "re-derive the record" in str(e.value)
 
 
 # ===========================================================================
@@ -521,12 +730,17 @@ class TestRefusals:
         ('echo """x""" > {OUTPUT_DIR}/aligned.bam', 'a `"""`'),
     ])
     def test_a_sealed_command_the_script_block_would_rewrite_is_refused(self, command, what):
+        """The script block is a Groovy triple-quoted string: `$` interpolates, a
+        backslash escapes, `\"\"\"` ends it. Each would reach the compute node as a
+        different command from the sealed one, so the render refuses and names the
+        only remedy — a how-to free of it."""
         rec = _record()
         rec.stages[0].commands = [command]
         with pytest.raises(ValueError) as e:
             render_nextflow(rec)
-        assert "stage HISAT2" in str(e.value) and what in str(e.value)
-        assert "not expressible in the Nextflow form; render the plain form" in str(e.value)
+        assert str(e.value) == (
+            f"stage HISAT2: the sealed command {command!r} contains {what}, which a Nextflow "
+            f"script block rewrites in transit; re-seal the how-to with a command free of it")
 
     def test_a_single_quote_is_fine_now_that_the_script_block_is_a_bash_script(self):
         rec = _record()
@@ -534,17 +748,21 @@ class TestRefusals:
         assert "    echo 'quoted' > aligned.bam\n" in render_nextflow(rec)["main.nf"]
 
     def test_a_cohort_stage_is_refused(self):
-        spec = sealed_rnaseq_spec(templates=[*pr.derive_pipeline_record(sealed_rnaseq_spec(), name="t")
-                                             .stages[0].commands] + [
-            "samtools index {OUTPUT_DIR}/aligned.bam",
-            "htseq-count -s {STRANDED} -f bam {OUTPUT_DIR}/aligned.bam {GTF} > {OUTPUT_DIR}/{SAMPLE}.counts.tsv",
-            "multiqc {OUTPUT_DIR}"])
+        spec = sealed_rnaseq_spec(templates=[*TEMPLATES, "multiqc {OUTPUT_DIR}"])
         rec = pr.derive_pipeline_record(spec, name="with_cohort")
         assert rec.stage("MULTIQC").scope == "cohort"
         with pytest.raises(ValueError) as e:
             render_nextflow(rec)
-        assert "cohort stages are not supported yet in the Nextflow form" in str(e.value)
-        assert "render the plain form" in str(e.value)
+        assert str(e.value) == ("stage MULTIQC: cohort stages are not supported yet; cut the how-to so "
+                                "every command runs per sample")
+
+    def test_a_stage_that_names_no_image_is_refused(self):
+        rec = _record()
+        rec.stages[0].image, rec.stages[0].image_digest = None, None
+        with pytest.raises(ValueError) as e:
+            render_nextflow(rec)
+        assert "stage HISAT2 names no image" in str(e.value)
+        assert "ran in a container" in str(e.value)
 
     def test_a_stage_name_that_is_not_a_groovy_identifier_is_refused_naming_stage_names(self):
         rec = _record(stages=[[0, 1], [2]], stage_names=["ALIGN-1", "COUNT"])
@@ -570,3 +788,129 @@ class TestRefusals:
         with pytest.raises(ValueError) as e:
             render_nextflow(rec)
         assert "sub/aligned.bam" in str(e.value) and "bare filename" in str(e.value)
+
+    def test_an_artifact_naming_a_placeholder_the_record_lacks_is_refused(self):
+        rec = _record()
+        rec.stages[2].outputs[0].artifact = "{NOPE}.counts.tsv"
+        with pytest.raises(ValueError) as e:
+            render_nextflow(rec)
+        assert "['NOPE']" in str(e.value) and "not parameters of the record" in str(e.value)
+
+
+# ===========================================================================
+# The real thing — the rendered directory under the runtime env's nextflow
+# ===========================================================================
+
+_RUNTIME = Path(__file__).resolve().parents[1] / ".conda_runtime"
+_NEXTFLOW = _RUNTIME / "bin" / "nextflow"
+_JVM = _RUNTIME / "lib" / "jvm"
+needs_nextflow = pytest.mark.skipif(
+    not (_NEXTFLOW.is_file() and os.access(_NEXTFLOW, os.X_OK) and (_JVM / "bin" / "java").is_file()),
+    reason="the runtime env carries no nextflow binary (./scripts/setup.sh installs it)")
+
+
+def _nextflow(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run the runtime env's nextflow in `cwd`, offline, with NXF_HOME inside the
+    pipeline directory (as launcher.sh does) so nothing touches ~/.nextflow. The
+    launcher honours JAVA_HOME / JAVA_CMD over the JDK beside it, so both name the
+    bundled JVM."""
+    env = dict(os.environ, JAVA_HOME=str(_JVM), JAVA_CMD=str(_JVM / "bin" / "java"),
+               NXF_HOME=str(cwd / ".nextflow_home"), NXF_OFFLINE="true", NXF_ANSI_LOG="false")
+    return subprocess.run([str(_NEXTFLOW), *args], cwd=cwd, env=env,
+                          capture_output=True, text=True, timeout=300)
+
+
+def _write(files: dict, d: Path) -> Path:
+    d.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (d / name).write_text(text)
+    return d
+
+
+def _point_at_real_files(rec, data: Path):
+    """The fixture's paths are absolute and nowhere; give the shared params and every
+    samplesheet row a file that exists, so the channels can be built."""
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "chr22.gtf").write_text("x\n")
+    for i in range(1, 9):
+        (data / f"chr22.{i}.ht2").write_text("x")
+    rec.param("GTF").default = str(data / "chr22.gtf")
+    rec.param("HISAT2_INDEX").default = str(data / "chr22")
+    for row in rec.samplesheet.rows:
+        reads = data / f"{row['sample']}.fastq.gz"
+        reads.write_text("x")
+        row["reads"] = str(reads)
+    return rec
+
+
+@needs_nextflow
+class TestRealNextflow:
+    """The rendered directory, parsed and previewed by the real binary: the config
+    resolves under both profiles to the containers the contract names, the guard stops
+    a cluster run whose container is empty before any job exists, and a run whose
+    .sif is named gets past it. `-preview` evaluates the script and builds the
+    channels without executing a process, so no image, docker or SLURM is needed."""
+
+    def test_the_config_resolves_under_each_profile_to_the_container_it_names(self, tmp_path):
+        rec = _record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster")
+        d = _write(render_nextflow(rec, env=ENV), tmp_path / "pipe")
+        local = _nextflow(d, "config", "-flat", "-profile", "local")
+        assert local.returncode == 0, local.stdout + local.stderr
+        assert "process.executor = 'local'\n" in local.stdout
+        assert "process.container = 'bioinf_rnaseq_cli:latest'\n" in local.stdout
+        assert "docker.enabled = true\n" in local.stdout
+        slurm = _nextflow(d, "config", "-flat", "-profile", "slurm")
+        assert slurm.returncode == 0, slurm.stdout + slurm.stderr
+        assert "process.executor = 'slurm'\n" in slurm.stdout
+        assert f"process.container = '{SIF}'\n" in slurm.stdout
+        assert "process.cache = 'lenient'\n" in slurm.stdout
+        assert "process.beforeScript = 'module load apptainer/1.5.0'\n" in slurm.stdout
+        assert "process.queue = 'cpu'\n" in slurm.stdout
+        assert "process.clusterOptions = '--account=acct'\n" in slurm.stdout
+        assert "apptainer.enabled = true\n" in slurm.stdout
+        for out in (local.stdout, slurm.stdout):
+            assert "params.sif" not in out and "params.samplesheet" not in out   # params.yaml's, not the config's
+
+    def test_on_the_cluster_profile_an_empty_container_stops_the_run_before_any_job(self, tmp_path):
+        d = _write(render_nextflow(_record()), tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
+        assert run.returncode != 0
+        assert ("nextflow.config, profile slurm: process.container is empty; set it to the .sif "
+                f"built from image {DIGEST}") in run.stdout + run.stderr
+
+    def test_with_the_sif_named_the_run_passes_the_guard_under_both_profiles(self, tmp_path):
+        rec = _point_at_real_files(
+            _record(sif_paths={REQUEST_KEY: str(tmp_path / "data" / "img.sif")}, compute_env="cluster"),
+            tmp_path / "data")
+        d = _write(render_nextflow(rec, env=ENV), tmp_path / "pipe")
+        for profile in ("slurm", "local"):
+            run = _nextflow(d, "run", "main.nf", "-profile", profile, "-params-file", "params.yaml", "-preview")
+            assert run.returncode == 0, profile + "\n" + run.stdout + run.stderr
+            assert "process.container is empty" not in run.stdout + run.stderr
+
+    def test_several_images_stop_the_run_when_no_stage_names_a_sif_and_pass_when_every_stage_does(self, tmp_path):
+        empty = _write(render_nextflow(_two_images(_record())), tmp_path / "empty")
+        run = _nextflow(empty, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
+        assert run.returncode != 0
+        assert f"set it to the .sif built from image {DIGEST}, {OTHER}" in run.stdout + run.stderr
+        rec = _point_at_real_files(_two_images(_record(compute_env="cluster")), tmp_path / "data")
+        for st in rec.stages:
+            st.sif_path = str(tmp_path / "data" / f"{st.image_digest[-4:]}.sif")
+        filled = _write(render_nextflow(rec, env=ENV), tmp_path / "filled")
+        run = _nextflow(filled, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert "process.container is empty" not in run.stdout + run.stderr
+
+    def test_several_images_stop_the_run_while_any_stage_still_lacks_its_sif(self, tmp_path):
+        """The guard exists so a cluster run with an unfilled container fails once, up
+        front, instead of submitting the stages that ARE configured and failing the
+        one that is not on the bare node. With two images and one .sif still empty
+        it must therefore refuse, exactly as it does when every .sif is empty."""
+        rec = _point_at_real_files(_two_images(_record(compute_env="cluster")), tmp_path / "data")
+        for st in rec.stages:
+            st.sif_path = str(tmp_path / "data" / "a.sif") if st.image_digest == DIGEST else None
+        d = _write(render_nextflow(rec, env=ENV), tmp_path / "pipe")
+        assert _set_me(OTHER, 16) in (d / "nextflow.config").read_text()    # the last stage is unfilled
+        run = _nextflow(d, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
+        assert run.returncode != 0, run.stdout + run.stderr
+        assert "process.container is empty" in run.stdout + run.stderr

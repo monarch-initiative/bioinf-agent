@@ -5,7 +5,7 @@ the record, renders into `<workspace>/pipelines/<name>/` and reports where. Thes
 drive the tool function directly against a spec written the way seal writes it, in the
 per-test sandbox workspace the conftest provides, and pin: the proven return and the
 directory it names (the locked file set), the 1-based stage grouping at the surface,
-the cluster hints an env adds (launcher policy, modules, the prefilled .sif path), the
+the cluster hints an env adds (launcher policy, modules, the .sif in the slurm profile), the
 refusals (no such workflow with the roster, bad stage numbers, unknown env, an edited
 directory) and that a derivation refusal reaches the caller with its own code and remedy.
 """
@@ -29,8 +29,8 @@ ENV = {"name": "cluster", "type": "ssh", "host": "h", "user": "u",
                                    "permissions": ["file_name_only", "upload", "download"]}}
 CACHED_ENV = {"name": "rnaseq_cli", "content_digest": "sha256:48ac8c5b25d2b66beb9e2b61cccab60c43e3072301ca6728b8a746e1751b131b"}
 #: The directory, locked.
-PER_ROW_FILES = ["MANIFEST.sha256", "commands.sh", "launcher.sh", "main.nf", "nextflow.config",
-                 "params.yaml", "pipeline.html", "pipeline.yaml", "samples.csv"]
+FILES = [".pipeline/MANIFEST.sha256", ".pipeline/pipeline.yaml", "launcher.sh", "main.nf",
+         "nextflow.config", "params.yaml", "pipeline.html", "samples.csv"]
 
 
 @pytest.fixture
@@ -52,12 +52,13 @@ class TestProven:
         assert out["outcome"] == "proven" and out["code"] == "pipeline.rendered", out
         d = Path(out["dir"])
         assert d == workspace.pipelines_dir() / sealed
-        assert out["files"] == PER_ROW_FILES
-        for rel in PER_ROW_FILES:
+        assert out["files"] == FILES
+        for rel in FILES:
             assert (d / rel).is_file(), rel
         assert Path(out["page"]) == d / "pipeline.html"
+        assert Path(out["record"]) == d / ".pipeline" / "pipeline.yaml"
         assert out["compute_env"] is None and out["sif"] is None
-        assert out["shape"] == "per_row"
+        assert "shape" not in out
         assert [s["name"] for s in out["stages"]] == ["HISAT2", "SAMTOOLS", "HTSEQ_COUNT"]
         assert all(s["sized"] is False for s in out["stages"])
         assert out["samplesheet_columns"] == ["sample", "reads"] and out["example_rows"] == 3
@@ -81,10 +82,11 @@ class TestProven:
         sized = {s["name"]: s["sized"] for s in out["stages"]}
         assert sized == {"HISAT2": True, "SAMTOOLS": False, "HTSEQ_COUNT": False}
 
-    def test_env_reaches_the_launcher_and_prefills_the_sif(self, sealed, monkeypatch):
+    def test_env_reaches_the_launcher_and_the_slurm_profiles_container(self, sealed, monkeypatch):
         """With a cluster named, the launcher carries its policy and modules, and the
-        .sif path is the one stage_apptainer_image writes: the env's container zone,
-        the cached env's name, the first 12 hex of its content digest."""
+        slurm profile's container is the .sif stage_apptainer_image writes: the env's
+        container zone, the cached env's name, the first 12 hex of its content digest.
+        params.yaml never says where the pipeline runs."""
         from agent import mcp_server as ms
         monkeypatch.setattr(compute_access, "load_access", lambda path=None: {"compute_envs": [ENV]})
         monkeypatch.setattr(compute_access, "get_compute_env", lambda name, access: ENV)
@@ -97,8 +99,9 @@ class TestProven:
         launcher = (d / "launcher.sh").read_text()
         assert "#SBATCH --account=acct_demo" in launcher
         assert "module load apptainer/1.4.1 nextflow/25.04.7" in launcher
-        assert f"params.sif = '{sif}'" in (d / "nextflow.config").read_text()
-        assert f"sif: {sif}" in (d / "params.yaml").read_text()
+        config = (d / "nextflow.config").read_text()
+        assert f"container = '{sif}'" in config and "container = 'bioinf_rnaseq_cli:latest'" in config
+        assert "sif" not in (d / "params.yaml").read_text()
         assert sif in (d / "pipeline.html").read_text()
 
     def test_env_without_the_cached_env_leaves_the_sif_absent_not_guessed(self, sealed, monkeypatch):
@@ -108,7 +111,8 @@ class TestProven:
         monkeypatch.setattr(ms._env_cache, "lookup", lambda key: None)
         out = _tool(sealed_workflow=sealed, env="cluster")
         assert out["outcome"] == "proven" and out["sif"] is None
-        assert "params.sif = ''" in (Path(out["dir"]) / "nextflow.config").read_text()
+        config = (Path(out["dir"]) / "nextflow.config").read_text()
+        assert "container = ''" in config and "SET ME" in config
 
     def test_re_render_of_an_unedited_directory_replaces_it(self, sealed):
         _tool(sealed_workflow=sealed)

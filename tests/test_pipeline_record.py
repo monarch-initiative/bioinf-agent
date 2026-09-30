@@ -13,13 +13,15 @@ def _record(**kw):
 
 
 class TestShapeAndParams:
-    def test_three_rows_make_a_per_row_pipeline_with_a_samplesheet(self):
+    def test_three_trials_make_a_three_row_samplesheet(self):
         rec = _record()
-        assert rec.shape == "per_row"
-        assert rec.samplesheet is not None
         assert [c.name for c in rec.samplesheet.columns] == ["sample", "reads"]
+        assert rec.samplesheet.columns[0].placeholder == "SAMPLE"      # the how-to's own identifier
+        assert "row key" in rec.samplesheet.columns[0].description
         assert [r["sample"] for r in rec.samplesheet.rows] == SAMPLES
         assert rec.samplesheet.rows[0]["reads"].endswith("SRR1039508_10K_R1.fastq.gz")
+        # a per-sample value is a samplesheet cell, never a param default
+        assert rec.param("READS").default is None and rec.param("SAMPLE").default is None
 
     def test_per_sample_vs_shared_is_read_off_the_trials(self):
         rec = _record()
@@ -43,13 +45,15 @@ class TestShapeAndParams:
         assert [p.produces_param for p in rec.provenance_steps] == ["HISAT2_INDEX"]
         assert rec.unmatched_steps == []
 
-    def test_one_row_is_linear_and_reads_are_per_sample_by_format(self):
+    def test_one_trial_makes_a_one_row_samplesheet_and_reads_are_per_sample_by_format(self):
         rec = pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one")
-        assert rec.shape == "linear"
-        assert rec.samplesheet is None
+        assert [c.name for c in rec.samplesheet.columns] == ["sample", "reads"]
+        assert rec.samplesheet.rows == [{"sample": "SRR1039508",
+                                         "reads": "/data/reads/SRR1039508_10K_R1.fastq.gz"}]
         assert rec.param("READS").kind == "per_sample"
         assert "fastq" in rec.param("READS").reason
         assert rec.param("STRANDED").kind == "shared"
+        assert all(s.scope == "per_sample" for s in rec.stages)
 
     def test_caller_overrides_are_honoured_and_stated(self):
         rec = _record(shared=["READS"])
@@ -148,7 +152,7 @@ class TestRefusals:
 
     def test_declared_trials_are_the_fallback_when_nothing_was_proven(self):
         rec = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="x")
-        assert rec.shape == "per_row" and "declared trials" in rec.notes[0]
+        assert len(rec.samplesheet.rows) == 3 and "declared trials" in rec.notes[0]
 
 
 class TestSamplesheet:
@@ -159,7 +163,8 @@ class TestSamplesheet:
         assert lines[0] == "sample,reads"
         assert lines[1] == "SRR1039508,/data/reads/SRR1039508_10K_R1.fastq.gz"
         assert len(lines) == 4
-        assert pr.render_samplesheet(pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one")) == ""
+        one = pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one")
+        assert pr.render_samplesheet(one) == "sample,reads\nSRR1039508,/data/reads/SRR1039508_10K_R1.fastq.gz\n"
 
 
 class TestRecordOnDisk:
@@ -173,7 +178,7 @@ class TestRecordOnDisk:
     def test_the_defaults_table_states_every_unsaid_thing_with_its_source(self):
         rec = _record()
         keys = {d.key for d in rec.defaults}
-        assert {"shape", "stage_cut", "publish", "resume", "errors", "cache", "queue_size",
+        assert {"stage_cut", "publish", "resume", "errors", "cache", "queue_size",
                 "run_records", "cleanup", "sheet_preflight", "resources"} <= keys
         assert {d.source for d in rec.defaults} <= {"default", "caller", "seal"}
         rec2 = _record(stages=[[0, 1, 2]])

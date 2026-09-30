@@ -10,15 +10,17 @@ The file set
 ------------
   main.nf            one INLINE process per stage, in stage order, wired in `workflow {}`
   nextflow.config    `local` (docker, local executor) and `slurm` (apptainer, SLURM
-                     executor) profiles, per-stage resources, trace + report under
-                     runs/<run_id>/
-  params.yaml        the shared parameters with the sealed run's defaults
-  samples.csv        per_row only — `pipeline_record.render_samplesheet`, the ONE
-                     rendering; a CSV cannot carry the leading comment the other
-                     files do (splitCsv would read it as the header)
+                     executor) profiles, each naming the image it runs — the docker tag
+                     locally, the .sif on the cluster; per-stage resources; trace +
+                     report under runs/<stamp>/
+  params.yaml        the shared parameters with the sealed run's defaults, the
+                     samplesheet and the output directory — nothing about WHERE the
+                     pipeline runs; that is nextflow.config's
+  samples.csv        `pipeline_record.render_samplesheet`, the ONE rendering; a CSV
+                     cannot carry the leading comment the other files do (splitCsv
+                     would read it as the header)
   launcher.sh        the manager job: `sbatch launcher.sh` on the cluster. On a laptop the
-                     run is one line, `nextflow run main.nf -profile local -params-file
-                     params.yaml -resume`, which pipeline.html shows
+                     run is one line, `RUN_LOCAL`, which pipeline.html shows
 
 The binding table — how a how-to placeholder reaches a process script
 ---------------------------------------------------------------------
@@ -26,17 +28,16 @@ The binding table — how a how-to placeholder reaches a process script
   shared path param          {GTF}           ->  ${gtf}          staged: `path gtf` <- file(params.gtf)
   shared prefix param        {HISAT2_INDEX}  ->  ${file(params.hisat2_index).name}
                                                  staged: `path hisat2_index_files`
-                                                         <- file("${params.hisat2_index}*")
+                                                         <- files("${params.hisat2_index}*")
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
   per-sample value column    {SAMPLE}        ->  ${meta.sample}
   artifact in an output slot {OUT}/x.bam     ->  x.bam           (placeholders inside bind as above)
   bare output slot           {OUT}           ->  .
-  linear shape: no meta. Per-sample params become `params.*` (value -> ${params.sample};
-  path -> ${reads}, staged from file(params.reads)) and are REQUIRED — the record
-  carries no default for them — so `workflow {}` refuses to start without them.
+  `bound_commands` is that table applied to a stage — the page's command column, so
+  the page shows the line main.nf runs and never a paraphrase of it.
 
-Channels (per_row)
-------------------
+Channels
+--------
 `rows` emits one `tuple(meta, <path columns>...)` per samples.csv row (bare `meta`
 when the sheet has no path column); `meta` holds `sample` plus every value column. A
 stage consuming artifacts from prior stages receives their `tuple(meta, path)` output
@@ -45,9 +46,9 @@ channels `.join()`ed on meta; one that also consumes a path column joins `rows` 
 consuming only the row identity takes `val(meta)`.
 
 What is refused: a `$`, a backslash or a `\"\"\"` in a sealed command (the script
-block is a Groovy triple-quoted string, which rewrites all three in transit — render
-the plain form); a cohort stage; a stage, param or artifact name that is not a safe
-token; a per_row record without a samplesheet; a stage that names no image.
+block is a Groovy triple-quoted string, which rewrites all three in transit); a cohort
+stage; a stage, param or artifact name that is not a safe token; a stage that names no
+image.
 """
 from __future__ import annotations
 
@@ -57,7 +58,6 @@ from typing import Any, Mapping, Optional
 import yaml
 
 from agent.skills import compute_access
-from agent.skills.pipeline_commands import STRICT_MODE_LINE
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
                                           NEXTFLOW_QUEUE_SIZE, PipelineParam,
                                           PipelineRecord, PipelineStage, placeholders,
@@ -76,8 +76,16 @@ _ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_.\-*?{}]+$")
 #: loses its trailing zeros through YAML.
 _INT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
-_NOT_EXPRESSIBLE = "not expressible in the Nextflow form; render the plain form"
+_NOT_EXPRESSIBLE = ("which a Nextflow script block rewrites in transit; re-seal the how-to with "
+                    "a command free of it")
 _INDENT = "    "
+
+STRICT_MODE_LINE = ("set -euo pipefail   # bash strict mode: stop at the first failing command, "
+                    "an unset variable, or a failure inside a pipe")
+_RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -resume"
+#: How a run starts at each locus — the ONE spelling the launcher and the page share.
+RUN_LOCAL = _RUN_LINE.format(profile="local")
+RUN_HPC = "sbatch launcher.sh"
 
 
 # ── refusals ────────────────────────────────────────────────────────────────
@@ -119,9 +127,6 @@ def _check_record(record: PipelineRecord) -> None:
     if len(record.name) > 64:
         raise ValueError(f"record.name length {len(record.name)} > 64 (it is the SLURM "
                          f"job name); derive the record with a shorter name=")
-    if record.shape == "per_row" and record.samplesheet is None:
-        raise ValueError("a per_row record carries no samplesheet; re-derive the record "
-                         "(derive_pipeline_record builds it for every per_row shape)")
     if not record.stages:
         raise ValueError("the record has no stages; re-derive it from a sealed workflow "
                          "whose how-to has at least one command")
@@ -142,8 +147,8 @@ def _check_record(record: PipelineRecord) -> None:
                           "pass stage_names= to derive_pipeline_record")
         if s.scope == "cohort":
             raise ValueError(
-                f"stage {s.name}: cohort stages are not supported yet in the Nextflow form; "
-                f"render the plain form, or cut the how-to so every command runs per sample")
+                f"stage {s.name}: cohort stages are not supported yet; cut the how-to so every "
+                f"command runs per sample")
         if not (s.image or s.image_digest):
             raise ValueError(
                 f"stage {s.name} names no image; re-derive the record from a sealed workflow "
@@ -194,19 +199,18 @@ def _nf_time(t: str) -> str:
 
 
 class _Context:
-    """Everything the five files share: the images and their `params.sif*` keys, the
-    env's SLURM policy merged for the manager job, the module names, the emit slugs."""
+    """Everything the five files share: the images (docker tag and .sif, per stage),
+    the env's SLURM policy merged for the manager job, the module names, the emit
+    slugs."""
 
     def __init__(self, record: PipelineRecord, env: Mapping):
         self.record = record
         self.env = dict(env)
-        self.per_row = record.shape == "per_row"
-        self.editable = "params.yaml / samples.csv" if self.per_row else "params.yaml"
         self.header = f"rendered from sealed workflow {record.sealed_workflow} " \
-                      f"(pipeline {record.name}) — edit {self.editable}, not this file"
+                      f"(pipeline {record.name}) — edit params.yaml / samples.csv, not this file"
         # images, first-appearance order, keyed by digest (falling back to the ref)
         self.images: list[dict] = []
-        self.sif_key: dict[str, str] = {}          # stage name -> params key
+        self.image_of: dict[str, dict] = {}        # stage name -> its image
         for s in record.stages:
             key = s.image_digest or s.image
             hit = next((im for im in self.images if im["key"] == key), None)
@@ -214,12 +218,7 @@ class _Context:
                 hit = {"key": key, "ref": s.image or s.image_digest, "digest": s.image_digest,
                        "sif_path": s.sif_path}
                 self.images.append(hit)
-        multi = len(self.images) > 1
-        for im_i, im in enumerate(self.images, 1):
-            im["param"] = f"sif_{im_i}" if multi else "sif"
-        for s in record.stages:
-            key = s.image_digest or s.image
-            self.sif_key[s.name] = next(im["param"] for im in self.images if im["key"] == key)
+            self.image_of[s.name] = hit
         # the env's SLURM policy, merged the way every job header is
         merged, email, _ = _resolve_slurm_and_email(dict(MANAGER_JOB_REQUEST), self.env)
         self.manager_slurm = _check_slurm(merged)
@@ -243,7 +242,7 @@ class _Context:
                 seen.add(slug)
                 self.slugs[(s.name, o.artifact)] = slug
         # the samplesheet's columns by placeholder
-        cols = record.samplesheet.columns if record.samplesheet else []
+        cols = record.samplesheet.columns
         self.col_of = {c.placeholder: c.name for c in cols}
         self.path_cols = [c for c in cols if c.value_kind in ("path", "prefix")]
         self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"]
@@ -257,7 +256,7 @@ class _Context:
         """The Groovy expression a placeholder becomes inside a script block."""
         p = self.param(ph)
         low = p.name.lower()
-        if self.per_row and p.kind == "per_sample":
+        if p.kind == "per_sample":
             if p.value_kind == "value":
                 return "${meta." + self.col_of.get(ph, "sample") + "}"
             return "${" + self.col_of.get(ph, low) + "}"
@@ -330,22 +329,15 @@ def _param_default_expr(p: PipelineParam) -> str:
 def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
     lines: list[str] = []
     for p in record.params:
-        if ctx.per_row and p.kind == "per_sample":
+        if p.kind == "per_sample":
             continue                                  # a samplesheet column, not a param
         lines.append(f"// {_param_comment(record, p)}.")
-        if p.default is None:
-            lines.append(f"// REQUIRED: the sealed record carries no default for a per-sample "
-                         f"input of a one-row pipeline — set it in params.yaml.")
-        else:
-            lines.append("// The default is what the sealed run was validated with.")
+        lines.append("// The default is what the sealed run was validated with.")
         lines.append(f"params.{p.name.lower()} = {_param_default_expr(p)}")
-    if ctx.per_row:
-        cols = ", ".join(c.name for c in record.samplesheet.columns)
-        lines.append(f"// The samplesheet: one row per sample, columns {cols}.")
-        lines.append("params.samplesheet = 'samples.csv'")
-    lines.append("// Where published outputs land"
-                 + (", one directory per sample, shared by every stage." if ctx.per_row
-                    else " — every stage publishes into it."))
+    cols = ", ".join(c.name for c in record.samplesheet.columns)
+    lines.append(f"// The samplesheet: one row per sample, columns {cols}.")
+    lines.append("params.samplesheet = 'samples.csv'")
+    lines.append("// Where published outputs land, one directory per sample, shared by every stage.")
     lines.append("params.outdir = 'results'")
     return "\n".join(lines)
 
@@ -371,14 +363,9 @@ def _stage_inputs(stage: PipelineStage, ctx: _Context) -> dict[str, list]:
     arts = [i for i in stage.inputs if i.origin == "stage"]
     names = {i.name for i in stage.inputs if i.origin != "stage"}
     params = [ctx.param(n) for n in [i.name for i in stage.inputs if i.origin != "stage"]]
-    if ctx.per_row:
-        shared_paths = [p for p in params if p.kind == "shared" and p.value_kind == "path"]
-        prefixes = [p for p in params if p.kind == "shared" and p.value_kind == "prefix"]
-        path_cols = [c for c in ctx.path_cols if c.placeholder in names]
-    else:
-        shared_paths = [p for p in params if p.value_kind == "path"]
-        prefixes = [p for p in params if p.value_kind == "prefix"]
-        path_cols = []
+    shared_paths = [p for p in params if p.kind == "shared" and p.value_kind == "path"]
+    prefixes = [p for p in params if p.kind == "shared" and p.value_kind == "prefix"]
+    path_cols = [c for c in ctx.path_cols if c.placeholder in names]
     return {"artifacts": arts, "shared_paths": shared_paths, "prefixes": prefixes,
             "path_cols": path_cols}
 
@@ -408,27 +395,24 @@ def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]
     io = _stage_inputs(stage, ctx)
     args: list[str] = []
     comment = None
-    if ctx.per_row:
-        chans = [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
-        items = [[i.artifact or i.name] for i in io["artifacts"]]
-        if io["path_cols"]:
-            chans.append(_rows_expr(io["path_cols"], ctx))
-            items.append([c.name for c in io["path_cols"]])
-        if chans:
-            primary = chans[0] + "".join(f".join({c})" for c in chans[1:])
-            if len(chans) > 1:
-                shapes = ["(meta, " + ", ".join(it) + ")" for it in items]
-                joined = ", ".join(x for it in items for x in it)
-                comment = ".join() on meta: " + " + ".join(shapes) + f" -> (meta, {joined})"
-        elif ctx.path_cols:
-            primary = "rows.map { it[0] }"
-        else:
-            primary = "rows"
-        args.append(primary)
+    chans = [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
+    items = [[i.artifact or i.name] for i in io["artifacts"]]
+    if io["path_cols"]:
+        chans.append(_rows_expr(io["path_cols"], ctx))
+        items.append([c.name for c in io["path_cols"]])
+    if chans:
+        primary = chans[0] + "".join(f".join({c})" for c in chans[1:])
+        if len(chans) > 1:
+            shapes = ["(meta, " + ", ".join(it) + ")" for it in items]
+            joined = ", ".join(x for it in items for x in it)
+            comment = ".join() on meta: " + " + ".join(shapes) + f" -> (meta, {joined})"
+    elif ctx.path_cols:
+        primary = "rows.map { it[0] }"
     else:
-        args += [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
+        primary = "rows"
+    args.append(primary)
     args += [f"file(params.{p.name.lower()})" for p in io["shared_paths"]]
-    args += ['file("${params.' + p.name.lower() + '}*")' for p in io["prefixes"]]
+    args += ['files("${params.' + p.name.lower() + '}*")' for p in io["prefixes"]]
     return f"{stage.name}({', '.join(args)})", comment
 
 
@@ -446,31 +430,27 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
                     "artifacts declared as its inputs are staged into its work dir.")
 
     body: list[str] = []
-    if ctx.per_row:
-        # Closures, not strings: a directive that names a task input must be evaluated
-        # per task, and the strict parser refuses the string form outright.
-        body.append("tag { meta.sample }")
+    # Closures, not strings: a directive that names a task input must be evaluated
+    # per task, and the strict parser refuses the string form outright.
+    body.append("tag { meta.sample }")
     if stage.outputs:
         # One results directory per row, shared by every stage — the layout the sealed
-        # how-to ran in, and commands.sh's. Every artifact a stage writes is published;
-        # names are unique within a row by construction (the seal wrote them all into
-        # one working directory). `overwrite: true` because Nextflow's default is false
-        # on -resume: a stage re-executed after a parameter change must replace its
-        # stale published copy.
-        base = '{ "${params.outdir}/${meta.sample}" }' if ctx.per_row else '"${params.outdir}"'
+        # how-to ran in. Every artifact a stage writes is published; names are unique
+        # within a row by construction (the seal wrote them all into one working
+        # directory). `overwrite: true` because Nextflow's default is false on -resume:
+        # a stage re-executed after a parameter change must replace its stale
+        # published copy.
+        base = '{ "${params.outdir}/${meta.sample}" }'
         body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
     # inputs
     ins: list[str] = []
-    if ctx.per_row:
-        parts = ["val(meta)"]
-        parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
-        parts += [f"path({c.name})" for c in io["path_cols"]]
-        ins.append("tuple " + ", ".join(parts))
-    else:
-        ins += [f"path {ctx.artifact_expr(stage, i.artifact or i.name)}" for i in io["artifacts"]]
+    parts = ["val(meta)"]
+    parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
+    parts += [f"path({c.name})" for c in io["path_cols"]]
+    ins.append("tuple " + ", ".join(parts))
     ins += [f"path {p.name.lower()}" for p in io["shared_paths"]]
     ins += [f"path {p.name.lower()}_files" for p in io["prefixes"]]
 
@@ -479,8 +459,7 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     for o in stage.outputs:
         slug = ctx.slugs[(stage.name, o.artifact)]
         expr = ctx.artifact_expr(stage, o.artifact)
-        outs.append(f"tuple val(meta), path({expr}), emit: {slug}" if ctx.per_row
-                    else f"path {expr}, emit: {slug}")
+        outs.append(f"tuple val(meta), path({expr}), emit: {slug}")
 
     script = [ctx.bind(stage, c) for c in stage.commands]
 
@@ -499,29 +478,33 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
 
 def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     lines = ["workflow {"]
-    for im in ctx.images:
-        lines.append(
-            f"{_INDENT}if (workflow.profile.tokenize(',').contains('slurm') && !params.{im['param']})"
-            f"\n{_INDENT * 2}error \"params.{im['param']} is empty: set it in params.yaml to the "
-            f".sif built from image {im['digest'] or im['ref']}\"")
-    if not ctx.per_row:
-        for p in record.params:
-            if p.default is None:
-                lines.append(
-                    f"{_INDENT}if (!params.{p.name.lower()})"
-                    f"\n{_INDENT * 2}error \"params.{p.name.lower()} is required (the sealed "
-                    f"record carries no default for it): set it in params.yaml\"")
-    if ctx.per_row:
-        meta = ", ".join(["sample: r.sample"] + [f"{c.name}: r.{c.name}" for c in ctx.value_cols])
-        files = [f"file(r.{c.name}, checkIfExists: true)" for c in ctx.path_cols]
-        item = f"tuple([{meta}], " + ", ".join(files) + ")" if files else f"[{meta}]"
-        shape = "(meta, " + ", ".join(c.name for c in ctx.path_cols) + ")" if files else "meta"
-        lines += [
-            f"{_INDENT}rows = Channel.fromPath(params.samplesheet, checkIfExists: true)",
-            f"{_INDENT * 2}.splitCsv(header: true)",
-            f"{_INDENT * 2}.map {{ r -> {item} }}   // one {shape} per samples.csv row",
-            "",
-        ]
+    # Refuse before any job is submitted when the slurm profile names no .sif: an empty
+    # process.container would run every tool on the bare compute node instead, failing
+    # one job at a time. Nextflow exposes the resolved container as workflow.container —
+    # a string for one image, empty (falsy) when unset; with several images a map that
+    # holds ONLY the processes whose container is set, so every stage is looked up by
+    # name rather than the map's values scanned.
+    digests = ", ".join(im["digest"] or im["ref"] for im in ctx.images)
+    if len(ctx.images) == 1:
+        empty = "!workflow.container"
+    else:
+        names = ", ".join(f"'{s.name}'" for s in record.stages)
+        empty = (f"!(workflow.container instanceof Map ? [{names}].every {{ workflow.container[it] }} "
+                 f": workflow.container)")
+    lines.append(
+        f"{_INDENT}if (workflow.profile.tokenize(',').contains('slurm') && {empty})"
+        f"\n{_INDENT * 2}error \"nextflow.config, profile slurm: process.container is empty; set it "
+        f"to the .sif built from image {digests}\"")
+    meta = ", ".join(["sample: r.sample"] + [f"{c.name}: r.{c.name}" for c in ctx.value_cols])
+    files = [f"file(r.{c.name}, checkIfExists: true)" for c in ctx.path_cols]
+    item = f"tuple([{meta}], " + ", ".join(files) + ")" if files else f"[{meta}]"
+    shape = "(meta, " + ", ".join(c.name for c in ctx.path_cols) + ")" if files else "meta"
+    lines += [
+        f"{_INDENT}rows = Channel.fromPath(params.samplesheet, checkIfExists: true)",
+        f"{_INDENT * 2}.splitCsv(header: true)",
+        f"{_INDENT * 2}.map {{ r -> {item} }}   // one {shape} per samples.csv row",
+        "",
+    ]
     for s in record.stages:
         call, comment = _stage_call(s, ctx)
         lines.append(_INDENT + call + (f"   // {comment}" if comment else ""))
@@ -532,8 +515,9 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     parts = [
         f"// {ctx.header}",
-        f"// {len(record.stages)} stage(s), shape {record.shape}; every process runs the "
-        f"sealed how-to's command with its placeholders bound.",
+        f"// {len(record.stages)} stage(s) over {sum(len(s.commands) for s in record.stages)} how-to "
+        f"command(s), each stage run once per samples.csv row; every process runs its sealed "
+        f"command(s) with the placeholders bound.",
         "",
         "nextflow.enable.dsl = 2",
         "",
@@ -590,28 +574,33 @@ def _gpu_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
     return out
 
 
+def _sif_lines(im: dict, ctx: _Context) -> list[str]:
+    """The slurm profile's container for one image: the .sif `stage_apptainer_image`
+    put in the named cluster's container zone, or an empty value that says so — the
+    workflow refuses to start on it rather than running the tools on the bare node."""
+    digest = im["digest"] or im["ref"]
+    if im.get("sif_path"):
+        where = f" on {ctx.record.compute_env}" if ctx.record.compute_env else ""
+        return [f"// the .sif built from image {digest}, where stage_apptainer_image put it{where}",
+                f"container = {_nf_quote(im['sif_path'])}"]
+    return [f"// SET ME: the .sif built from image {digest}. Render with env= naming the cluster,",
+            "// or paste the path stage_apptainer_image reports.",
+            "container = ''"]
+
+
 def _render_config(record: PipelineRecord, ctx: _Context) -> str:
     L: list[str] = [f"// {ctx.header}", ""]
-    for im in ctx.images:
-        if im.get("sif_path"):
-            L.append(f"// The .sif built from image {im['digest'] or im['ref']}, where "
-                     f"stage_apptainer_image puts it on the cluster this was rendered for; "
-                     f"params.yaml overrides.")
-        else:
-            L.append(f"// The .sif built from image {im['digest'] or im['ref']}; the real path is "
-                     f"set in params.yaml.")
-        L.append(f"params.{im['param']} = {_nf_quote(im['sif_path'] or '')}")
-    L.append("")
-
-    # profiles
+    # Each profile names the image it runs, so params.yaml carries nothing about WHERE.
     L += ["profiles {", f"{_INDENT}local {{", f"{_INDENT * 2}docker.enabled = true",
           f"{_INDENT * 2}process {{", f"{_INDENT * 3}executor = 'local'"]
     if len(ctx.images) == 1:
-        L.append(f"{_INDENT * 3}container = {_nf_quote(ctx.images[0]['ref'])}")
+        im = ctx.images[0]
+        L.append(f"{_INDENT * 3}// the frozen image {im['digest'] or im['ref']}, as docker names it here")
+        L.append(f"{_INDENT * 3}container = {_nf_quote(im['ref'])}")
     else:
         for s in record.stages:
-            ref = next(im["ref"] for im in ctx.images if im["param"] == ctx.sif_key[s.name])
-            L.append(f"{_INDENT * 3}withName: '{s.name}' {{ container = {_nf_quote(ref)} }}")
+            L.append(f"{_INDENT * 3}withName: '{s.name}' {{ container = "
+                     f"{_nf_quote(ctx.image_of[s.name]['ref'])} }}")
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", f"{_INDENT}slurm {{",
           f"{_INDENT * 2}apptainer.enabled = true",
           f"{_INDENT * 2}apptainer.autoMounts = true",
@@ -620,7 +609,7 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
           f"{_INDENT * 2}executor.queueSize = {NEXTFLOW_QUEUE_SIZE}",
           f"{_INDENT * 2}process {{", f"{_INDENT * 3}executor = 'slurm'"]
     if len(ctx.images) == 1:
-        L.append(f"{_INDENT * 3}container = params.sif")
+        L += [f"{_INDENT * 3}{c}" for c in _sif_lines(ctx.images[0], ctx)]
     L.append(f"{_INDENT * 3}cache = 'lenient'")
     if ctx.apptainer_module:
         L.append(f"{_INDENT * 3}beforeScript = 'module load {ctx.apptainer_module}'")
@@ -631,7 +620,7 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
     for s in record.stages:
         block: list[str] = []
         if len(ctx.images) > 1:
-            block.append(f"container = params.{ctx.sif_key[s.name]}")
+            block += _sif_lines(ctx.image_of[s.name], ctx)
         if s.resources.gpus > 0:
             block += _gpu_lines(s, ctx)
         if block:
@@ -682,34 +671,22 @@ def _yaml_line(key: str, value: Any) -> str:
 
 def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
     L = [f"# rendered from sealed workflow {record.sealed_workflow} (pipeline {record.name}) — "
-         f"edit this file{' and samples.csv' if ctx.per_row else ''}, not main.nf",
-         "# Every value is what the sealed run was validated with."]
+         f"edit this file and samples.csv, not main.nf",
+         "# Every value is what the sealed run was validated with. WHERE the pipeline runs — which",
+         "# image, on which machine — is nextflow.config's business, never this file's."]
     for p in record.params:
-        if ctx.per_row and p.kind == "per_sample":
+        if p.kind == "per_sample":
             continue
         L.append(f"# {_param_comment(record, p)}")
-        if p.default is None:
-            L.append("# REQUIRED: the sealed record carries no default for a per-sample input "
-                     "of a one-row pipeline.")
-            L.append(_yaml_line(p.name.lower(), ""))
-        elif _INT_RE.match(p.default):
+        if p.default is not None and _INT_RE.match(p.default):
             L.append(_yaml_line(p.name.lower(), int(p.default)))
         else:
-            L.append(_yaml_line(p.name.lower(), p.default))
-    if ctx.per_row:
-        cols = ", ".join(c.name for c in record.samplesheet.columns)
-        L.append(f"# The samplesheet: one row per sample, columns {cols}.")
-        L.append(_yaml_line("samplesheet", "samples.csv"))
+            L.append(_yaml_line(p.name.lower(), p.default or ""))
+    cols = ", ".join(c.name for c in record.samplesheet.columns)
+    L.append(f"# The samplesheet: one row per sample, columns {cols}.")
+    L.append(_yaml_line("samplesheet", "samples.csv"))
     L.append("# Where published outputs land.")
     L.append(_yaml_line("outdir", "results"))
-    for im in ctx.images:
-        if im.get("sif_path"):
-            L.append(f"# The Apptainer image built from {im['digest'] or im['ref']}, where "
-                     f"stage_apptainer_image puts it on the cluster this was rendered for.")
-        else:
-            L.append(f"# The Apptainer image built from {im['digest'] or im['ref']}; its path on the "
-                     f"cluster is not known at render time — set it before -profile slurm.")
-        L.append(_yaml_line(im["param"], im.get("sif_path") or ""))
     return "\n".join(L) + "\n"
 
 
@@ -741,7 +718,7 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "",
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
           "# fresh run. Each run writes runs/<timestamp>/trace.txt and report.html.",
-          'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"',
+          _RUN_LINE.format(profile="slurm") + ' "$@"',
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",
           "# you want them:  nextflow clean -f"]
@@ -752,22 +729,38 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
 
 
 def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> dict[str, str]:
-    """Render the Nextflow form of `record`: `{relative path: content}` for main.nf,
-    nextflow.config, params.yaml, launcher.sh and, for a per_row record, samples.csv. `env` is a compute-env block from projects_access.yaml; it
-    supplies the SLURM policy (account, partitions, qos), the notification email and
-    the Lmod module names. Without it the files render for a cluster with no policy.
-    Raises ValueError, naming the remedy, on anything the form cannot carry."""
+    """Render the Nextflow files of `record`: `{relative path: content}` for main.nf,
+    nextflow.config, params.yaml, samples.csv and launcher.sh. `env` is a compute-env
+    block from projects_access.yaml; it supplies the SLURM policy (account, partitions,
+    qos), the notification email and the Lmod module names. Without it the files
+    render for a cluster with no policy. Raises ValueError, naming the remedy, on
+    anything the files cannot carry."""
     _check_record(record)
     ctx = _Context(record, env or {})
-    files = {
+    return {
         "main.nf": _render_main(record, ctx),
         "nextflow.config": _render_config(record, ctx),
         "params.yaml": _render_params_yaml(record, ctx),
+        "samples.csv": render_samplesheet(record),
         "launcher.sh": _render_launcher(record, ctx),
     }
-    if ctx.per_row:
-        files["samples.csv"] = render_samplesheet(record)
-    return files
 
 
-__all__ = ["render_nextflow"]
+def bound_commands(record: PipelineRecord, stage: PipelineStage) -> list[str]:
+    """The script lines main.nf runs for `stage`: the sealed commands through the
+    binding table. What the page's command column shows, so it can never paraphrase."""
+    ctx = _Context(record, {})
+    return [ctx.bind(stage, c) for c in stage.commands]
+
+
+def run_lines(record: PipelineRecord, locus: str) -> list[str]:
+    """How a run starts at a locus: `RUN_LOCAL` on a laptop, `RUN_HPC` on the cluster."""
+    if locus == "local":
+        return [RUN_LOCAL]
+    if locus == "hpc":
+        return [RUN_HPC]
+    raise ValueError(f"locus must be 'local' or 'hpc', got {locus!r}")
+
+
+__all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC",
+           "STRICT_MODE_LINE"]
