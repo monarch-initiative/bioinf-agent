@@ -3,10 +3,11 @@ pipeline_page_html — the EXPLAIN page of a rendered pipeline: the one page a h
 reads before running it on real data, rendered PURELY from the typed
 `PipelineRecord` (agent/skills/pipeline_record.py).
 
-The page has one fixed shape: the header banner, how the files fit together (the
-directory's wiring, with our conventions), the picture (what runs, per sample), the
-parameters and samples, how to run it locally, how to run it on the cluster, the
-stages, the footer. A pipeline directory offers ONE way to run — every row of
+The page has one fixed shape: the header banner, the picture (what runs, per
+sample), how the files fit together (the one launch line, then the directory as a
+listing — what each file is for, how the run pulls it in, what it holds — and our
+conventions), the parameters and samples, how to run it locally, how to run it on
+the cluster, the stages, the footer. A pipeline directory offers ONE way to run — every row of
 samples.csv, with Nextflow — and the page shows it at each locus as the steps a person
 follows without thinking: change directory, make nextflow available (locally: source
 the checkout's runtime env; on the cluster: the launcher loads the modules), run. It
@@ -31,7 +32,8 @@ Self-contained: the shared shell's CSS plus the picture's own (scoped inside the
 hover — with JS off the page reads the same, minus the highlighting. Same shell,
 banner and palette as the ENV report and the RUN dashboard, so the three pages are
 one family. One public fn: render_pipeline_page; `picture_layout` is the picture's
-geometry, exposed so a test can measure it.
+geometry and `files_tree` the directory listing's rows, exposed so a test can
+measure them.
 """
 from __future__ import annotations
 
@@ -41,8 +43,8 @@ from typing import Optional
 from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources, _PLACEHOLDER_RE)
-from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, SAMPLESHEET_PARAM, bound_commands,
-                                                   run_lines)
+from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_LOCAL, SAMPLESHEET_PARAM,
+                                                   bound_commands, run_lines)
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
 FOOTER = ("This page shows a pipeline derived from a sealed run; it proves the render is "
@@ -71,8 +73,6 @@ _WHAT_RAN = ("What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists ever
 _TITLE_LEFT = "samples.csv & params.yaml"
 _TITLE_MID = "stages, in execution order"
 _TITLE_RIGHT = "published to results/"
-#: The files picture's column titles.
-_F_TITLES = ("what you copy and edit", "the engine", "what a run writes")
 #: The record's `defaults` keys, in words, and who decided each.
 _CONVENTION = {"stage_cut": "Stage cut", "publish": "Publishing", "resume": "Resume", "errors": "Errors",
                "cache": "Cache", "queue_size": "Queue size", "run_records": "Run records",
@@ -82,6 +82,19 @@ _DECIDED_BY = {"default": "our default", "caller": "set when rendered", "seal": 
 _LAUNCH_NOTE = ("Nextflow works out of the directory it is started in: <code>work/</code> (each task's "
                 "sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) and the run records "
                 "appear here, so launch from this directory every time.")
+#: The directory listing's two groups, in order, and its column titles.
+_FILES_GROUPS = (("edit", "in the directory you launch from"), ("written", "written by a run"))
+_FILES_HEADERS = ("File", "How it is used", "What it holds")
+#: The listing's own two rules, scoped to the section: a file name never breaks mid-word
+#: and a command span never breaks mid-token.
+_FILES_STYLE = "<style>#files td:first-child{white-space:nowrap}#files code{white-space:nowrap}</style>"
+#: The files a run directory is made of, as the renderer names them: what a person
+#: copies for a local run, the launcher on top for the cluster, and the record.
+_COPY_FILES = ("main.nf", "nextflow.config", "params.yaml")
+_LAUNCHER = "launcher.sh"
+_PAGE, _RECORD_DIR, _RECORD, _MANIFEST = "pipeline.html", ".pipeline/", "pipeline.yaml", "MANIFEST.sha256"
+#: How the override example is spelled per value kind.
+_SLOT = {"path": "<path>", "prefix": "<prefix>", "value": "<value>"}
 
 # ── the picture: geometry ────────────────────────────────────────────────────
 #
@@ -557,259 +570,143 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
 
 # ── the files picture: how the directory fits together ──────────────────────
 #
-# Fixed topology, computed geometry: the files a person copies (left) feed the engine
-# (main.nf, middle), and a run writes three things (right). Every line inside a box is
-# read off the record — the columns, the params, the image each profile names, the
-# modules the launcher loads, the artifacts a run publishes — so a deviation the record
-# can express (several images, a cohort stage, no cluster named) is drawn, and one it
-# cannot express was refused before this page existed.
-
-_F_NAME_PT = 12.5
-_F_LINE_PT = 10.0
-_F_PAD_X = 12.0
-_F_PAD_Y = 8.0
-_F_LINE_H = 13.0
-_F_GAP = 16.0
-_F_COL_GAP = 150.0
-_F_TOP = 34.0
-#: A box line's budget, in characters: the picture stays narrow enough to render at
-#: its natural size beside the page's text.
-_F_WRAP = 34
+# ── how the files fit together: the launch line and the directory listing ──────
+#
+# No wiring diagram: the one line that runs every Nextflow pipeline, then the
+# directory as a listing — the files a person copies, the one they write, the record,
+# and what a run adds — each row saying how the run pulls the file in and what it
+# holds, read off the record. A deviation the record can express (several images, a
+# cohort stage, no cluster named) changes a cell; one it cannot express was refused
+# before this page existed.
 
 
-@dataclass
-class _FNode:
-    id: str                      # data-id: f:<file>
-    name: str                    # line 1: the file
-    lines: list[str]             # what it holds, read off the record
-    tooltip: str
-    classes: str = ""
-    x: float = 0.0
-    y: float = 0.0
-    w: float = 0.0
-    h: float = 0.0
+@dataclass(frozen=True)
+class FileRow:
+    """One row of the directory listing. `group` is "edit" (what you copy, edit or
+    write, and the record) or "written" (what a run adds); `role` is the verdict beside
+    the name — copy · copy, then edit · write your own · copy, cluster only · this page ·
+    the record — empty for what a run writes; `how` and `holds` are read off the
+    record, with `command` spans in backticks."""
+    group: str
+    name: str
+    role: str
+    how: str
+    holds: str
 
 
-@dataclass
-class _FilesLayout:
-    width: float
-    height: float
-    nodes: list[_FNode]
-    edges: list[_Edge]
-    texts: list[_Text]
-    titles: list[tuple[float, str]]
-
-
-def _wrap(items: list[str], width: int = _F_WRAP, sep: str = ", ") -> list[str]:
-    """`items` joined into lines of at most `width` characters (an item longer than
-    that gets its own line), the separator kept at the end of a wrapped line."""
-    lines: list[str] = []
-    cur = ""
-    for it in items:
-        cand = it if not cur else cur + sep + it
-        if cur and len(cand) > width:
-            lines.append(cur + sep.rstrip())
-            cur = it
-        else:
-            cur = cand
-    if cur:
-        lines.append(cur)
-    return lines
-
-
-def _fnode_size(n: _FNode) -> tuple[float, float]:
-    w = max([_tw(n.name, _F_NAME_PT)] + [_tw(ln, _F_LINE_PT) for ln in n.lines]) + 2 * _F_PAD_X
-    h = 2 * _F_PAD_Y + _F_NAME_PT + 4 + len(n.lines) * _F_LINE_H
-    return w, h
-
-
-def _profile_lines(record: PipelineRecord) -> tuple[list[str], str]:
-    """What each profile runs in, per the record — one image → its name under the
-    profile; several → one `STAGE: image` line per stage — and the tooltip carrying
-    the full .sif path(s)."""
+def _image_words(record: PipelineRecord) -> tuple[str, str]:
+    """What each profile runs in, per the record: the docker tag and the .sif — one
+    image → one word each; several → one `STAGE word` per stage."""
     imgs = _images(record)
     where = f" on {record.compute_env}" if record.compute_env else ""
 
     def sif_word(st: PipelineStage) -> str:
-        return (st.sif_path.rsplit("/", 1)[-1] + where) if st.sif_path else "container = '' (SET ME)"
+        return f"`{st.sif_path.rsplit('/', 1)[-1]}`{where}" if st.sif_path else "`container = ''` (SET ME)"
 
     def tag_word(st: PipelineStage) -> str:
-        return st.image or _short_digest(st.image_digest) or "image unrecorded"
+        if st.image:
+            return f"`{st.image}`"
+        return f"`{_short_digest(st.image_digest)}`" if st.image_digest else "image unrecorded"
 
     if len(imgs) == 1:
-        lines = ["-profile local → docker", f"↳ {tag_word(imgs[0])}",
-                 "-profile slurm → apptainer", f"↳ {sif_word(imgs[0])}"]
-        full = imgs[0].sif_path or "no .sif path recorded"
-    else:
-        stages = _ordered(record)
-        lines = (["-profile local → docker"] + [f"↳ {s.name}: {tag_word(s)}" for s in stages]
-                 + ["-profile slurm → apptainer"] + [f"↳ {s.name}: {sif_word(s)}" for s in stages])
-        full = "; ".join(f"{s.name}: {s.sif_path or 'no .sif path recorded'}" for s in stages)
-    return lines, full
+        return tag_word(imgs[0]), sif_word(imgs[0])
+    stages = _ordered(record)
+    return (", ".join(f"{s.name} {tag_word(s)}" for s in stages),
+            ", ".join(f"{s.name} {sif_word(s)}" for s in stages))
 
 
-def files_layout(record: PipelineRecord) -> _FilesLayout:
-    """The files picture's geometry, computed from the record alone."""
+def _loads_words(record: PipelineRecord) -> str:
+    """What the launcher loads before it runs the line, in each cluster state."""
+    if record.modules:
+        return f"`module load {' '.join(record.modules)}`, then"
+    if record.compute_env:
+        return "loads no modules (the env declares none), then"
+    return "rendered without a cluster named, so it loads no modules; then"
+
+
+def files_tree(record: PipelineRecord) -> list[FileRow]:
+    """The directory listing, read off the record alone: what you copy, edit or write
+    and the record, then what a run adds."""
     sheet = record.samplesheet
     names = [c.name for c in sheet.columns]
     n_rows = len(sheet.rows)
-    shared = [p for p in record.params if p.kind == "shared"]
-    profile_lines, full_sif = _profile_lines(record)
-    if record.modules:
-        mods = _wrap(["module load " + record.modules[0]] + record.modules[1:], sep=" ")
-    elif record.compute_env:
-        mods = ["loads no modules: the env declares none"]
-    else:
-        mods = ["rendered without a cluster named:", "loads no modules"]
     stages = _ordered(record)
     cohort = [s for s in stages if s.scope == "cohort"]
+    shared = [p.name.lower() for p in record.params if p.kind == "shared"]
+    tag, sif = _image_words(record)
+    chain = " → ".join(s.name for s in stages) or "(no stages)"
+    often = ("one process per stage, run once per samples.csv row" if not cohort
+             else "one process per stage; a per-sample stage runs once per samples.csv row, a cohort stage once")
     per_sample_arts = [_display(record, o.artifact) for s in stages if s.scope == "per_sample" for o in s.outputs]
     cohort_arts = [_display(record, o.artifact) for s in cohort for o in s.outputs]
-
-    left = [
-        _FNode("f:samples.csv", "samples.csv",
-               _wrap(["columns: " + ", ".join(names)]) + [f"{names[0]} = row key",
-                f"{n_rows} example row{'s' if n_rows != 1 else ''}, the sealed run's own"],
-               "samples.csv: one row per sample under one header line; params.samplesheet names it"),
-        _FNode("f:params.yaml", "params.yaml",
-               (_wrap([p.name.lower() for p in shared]) or ["no shared parameters"])
-               + [f"{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}", f"{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}"],
-               "params.yaml: the parameters the pipeline runs with, the samplesheet, the output directory"),
-        _FNode("f:nextflow.config", "nextflow.config", profile_lines + ["sizing per stage · run records"],
-               f"nextflow.config: each profile names the executor and the image every task runs in. "
-               f".sif: {full_sif}"),
-        _FNode("f:launcher.sh", "launcher.sh",
-               ["sbatch: the manager job", "runs nextflow -profile slurm"] + mods,
-               "launcher.sh: the SLURM manager job; it loads the modules and runs nextflow, which "
-               "submits one job per task"),
-    ]
-    engine = _FNode("f:main.nf", "main.nf",
-                    (_wrap([s.name for s in stages], sep=" → ") or ["(no stages)"])
-                    + (["one process per stage,", "run once per samples.csv row"] if not cohort
-                       else ["per-sample stages: once per row;", "cohort stages: once"]),
-                    "main.nf: one process per stage, the sealed command with its placeholders bound",
-                    classes="engine")
-    right = [
-        _FNode("f:results", "results/<sample>/", _wrap(per_sample_arts, 30) or ["(nothing published)"],
-               "results/<sample>/: every file a per-sample stage writes, published by copy", classes="written"),
+    rows_word = f"{n_rows} example row{'s' if n_rows != 1 else ''}, the sealed run's own"
+    cols = ", ".join(f"`{n}`" for n in names)
+    rows = [
+        FileRow("edit", _COPY_FILES[0], "copy", f"`nextflow run {_COPY_FILES[0]}`",
+                f"the stages {chain}: {often}; the sealed command of each, with its placeholders bound"),
+        FileRow("edit", _COPY_FILES[1], "copy", "`-profile local` on this machine · `-profile slurm` on the cluster",
+                f"local: docker, {tag} · slurm: apptainer, {sif}, one SLURM job per task · sizing per stage · "
+                "run records"),
+        FileRow("edit", _COPY_FILES[2], "copy, then edit", f"`-params-file {_COPY_FILES[2]}`",
+                f"{', '.join(shared) or 'no shared parameters'} · `{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}` · "
+                f"`{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}`"),
+        FileRow("edit", SAMPLESHEET_PARAM[1], "write your own",
+                f"`params.{SAMPLESHEET_PARAM[0]}`, set in {_COPY_FILES[2]}",
+                f"one row per sample under one header line, columns {cols}; `{names[0]}` is the row key · {rows_word}"),
+        FileRow("edit", _LAUNCHER, "copy, cluster only", f"`{RUN_HPC}`",
+                f"the manager job: {_loads_words(record)} the launch line with `-profile slurm`; flags after its "
+                "name go through to Nextflow"),
+        FileRow("edit", _PAGE, "this page", "", "what you are reading, rendered from the record"),
+        FileRow("edit", _RECORD_DIR, "the record", "",
+                f"`{_RECORD}`: what every file here was rendered from · `{_MANIFEST}`: "
+                f"`shasum -a 256 -c {_RECORD_DIR}{_MANIFEST}` tells which files differ from the render"),
+        FileRow("written", "results/<sample>/", "", "`publishDir`: copied by Nextflow itself, never inside the container",
+                ", ".join(per_sample_arts) or "(nothing published)"),
     ]
     if cohort_arts:
-        right.append(_FNode("f:results-cohort", "results/", _wrap(cohort_arts, 30),
-                            "results/: what the cohort stage(s) publish", classes="written"))
-    right += [
-        _FNode("f:runs", "runs/<timestamp>/",
-               ["trace.txt: every task's command", "report.html: time, memory, CPU"],
-               "runs/<timestamp>/: the record of one run; the launch line is in nextflow log",
-               classes="written"),
-        _FNode("f:work", "work/", ["every task's sandbox", "never cleaned for you:", "nextflow clean -f"],
-               "work/: where tasks run and -resume finds their results", classes="written"),
+        rows.append(FileRow("written", "results/", "", "`publishDir`, the cohort stages' outputs", ", ".join(cohort_arts)))
+    rows += [
+        FileRow("written", "runs/<timestamp>/", "", "trace · report, one directory per run",
+                "`trace.txt`: every task's command · `report.html`: time, memory, CPU · the launch line itself: "
+                "`nextflow log`"),
+        FileRow("written", "work/", "", "every task's sandbox",
+                "where tasks run and `-resume` finds their results · never cleaned for you: `nextflow clean -f`"),
+        FileRow("written", ".nextflow/", "", "`-resume` reads it",
+                "the cache and history of every run launched from here; `.nextflow.log` beside it is the latest "
+                "run's log · on the cluster the launcher keeps Nextflow's own files in `.nextflow_home/`"),
     ]
-    for n in left + [engine] + right:
-        n.w, n.h = _fnode_size(n)
-
-    left_w = max(n.w for n in left)
-    right_w = max(n.w for n in right)
-    stack_l = sum(n.h for n in left) + _F_GAP * (len(left) - 1)
-    stack_r = sum(n.h for n in right) + _F_GAP * (len(right) - 1)
-    H = max(stack_l, stack_r, engine.h)
-    top = _F_TOP + 16
-    y = top + (H - stack_l) / 2
-    for n in left:
-        n.x, n.y = _MARGIN, y
-        n.w = left_w
-        y += n.h + _F_GAP
-    engine.x = _MARGIN + left_w + _F_COL_GAP
-    engine.y = top + (H - engine.h) / 2
-    right_x = engine.x + engine.w + _F_COL_GAP
-    y = top + (H - stack_r) / 2
-    for n in right:
-        n.x, n.y = right_x, y
-        n.w = right_w
-        y += n.h + _F_GAP
-    nodes = left + [engine] + right
-
-    texts: list[_Text] = []
-    for n in nodes:
-        texts.append(_Text(n.x + _F_PAD_X, n.y + _F_PAD_Y, _tw(n.name, _F_NAME_PT), _F_NAME_PT + 2, n.name, "file"))
-        for k, ln in enumerate(n.lines):
-            texts.append(_Text(n.x + _F_PAD_X, n.y + _F_PAD_Y + _F_NAME_PT + 4 + k * _F_LINE_H,
-                               _tw(ln, _F_LINE_PT), _F_LINE_H, ln, "file"))
-    titles = [(_MARGIN, _F_TITLES[0]), (engine.x, _F_TITLES[1]), (right_x, _F_TITLES[2])]
-    for tx, tt in titles:
-        texts.append(_Text(tx, _TITLE_Y - _TITLE_PT, _tw(tt, _TITLE_PT), _TITLE_PT + 2, tt, "title"))
-    obstacles = [_Box(n.x, n.y, n.w, n.h) for n in nodes]
-
-    edges: list[_Edge] = []
-    in_labels = {"f:samples.csv": f"params.{SAMPLESHEET_PARAM[0]}", "f:params.yaml": "-params-file",
-                 "f:nextflow.config": "-profile local | slurm", "f:launcher.sh": "sbatch (cluster only)"}
-    for k, n in enumerate(left):
-        x0, y0 = n.x + n.w, n.y + n.h / 2
-        x1, y1 = engine.x, engine.y + engine.h * (k + 1) / (len(left) + 1)
-        dx = (x1 - x0) / 2
-        path = f"M{x0:.1f} {y0:.1f} C{x0 + dx:.1f} {y0:.1f}, {x1 - dx:.1f} {y1:.1f}, {x1:.1f} {y1:.1f}"
-        # The label sits just outside the box it leaves, above its wire: every wire
-        # into main.nf converges there, so a mid-wire label would land on another's.
-        label = in_labels[n.id]
-        lw = _tw(label, _LABEL_PT) + 8
-        lx, ly, box = _place_label(x0 + 10, y0 - 6, lw, "start", obstacles)
-        obstacles.append(box)
-        texts.append(_Text(box.x, box.y, box.w, box.h, label, "label"))
-        edges.append(_Edge(kind="wire", src=n.id, dst=engine.id, path=path, label=label, lx=lx, ly=ly,
-                           anchor="start"))
-    out_labels = {"f:results": "publishDir", "f:results-cohort": "publishDir", "f:runs": "trace · report",
-                  "f:work": "tasks run here"}
-    for k, n in enumerate(right):
-        x0, y0 = engine.x + engine.w, engine.y + engine.h * (k + 1) / (len(right) + 1)
-        x1, y1 = n.x, n.y + n.h / 2
-        dx = (x1 - x0) / 2
-        path = f"M{x0:.1f} {y0:.1f} C{x0 + dx:.1f} {y0:.1f}, {x1 - dx:.1f} {y1:.1f}, {x1:.1f} {y1:.1f}"
-        label = out_labels[n.id]
-        lw = _tw(label, _LABEL_PT) + 8
-        lx, ly, box = _place_label(x1 - 10, y1 - 6, lw, "end", obstacles)
-        obstacles.append(box)
-        texts.append(_Text(box.x, box.y, box.w, box.h, label, "label"))
-        edges.append(_Edge(kind="wire out", src=engine.id, dst=n.id, path=path, label=label, lx=lx, ly=ly,
-                           anchor="end"))
-
-    width = right_x + right_w + _MARGIN
-    height = top + H + _MARGIN
-    return _FilesLayout(width=width, height=height, nodes=nodes, edges=edges, texts=texts, titles=titles)
+    return rows
 
 
-def _files_svg(layout: _FilesLayout, record: PipelineRecord) -> str:
-    W, H = layout.width, layout.height
-    P: list[str] = []
-    P.append(f'<svg id="pipeline-files" viewBox="0 0 {W:.0f} {H:.0f}" width="100%" '
-             f'style="max-width:{W:.0f}px;height:auto;display:block" role="img" '
-             f'aria-label="pipeline {_e(record.name)}: the files you copy and edit feeding main.nf, '
-             f'and what a run writes">')
-    P.append(f"<style>{_SVG_CSS}</style>")
-    P.append("<defs>" + _marker("arr-input", "arr-input") + _marker("arr-publish", "arr-publish")
-             + _marker("arr-hl", "arr-hl") + "</defs>")
-    for tx, tt in layout.titles:
-        P.append(f'<text class="title" x="{tx:.1f}" y="{_TITLE_Y:.1f}">{_e(tt)}</text>')
-    for e in layout.edges:
-        P.append(f'<path class="edge {e.kind}" data-edge="wire" data-from="{_e(e.src)}" '
-                 f'data-to="{_e(e.dst)}" d="{e.path}"/>')
-    for e in layout.edges:
-        lw = _tw(e.label, _LABEL_PT) + 8
-        P.append(f'<g class="lbl" data-edge="wire-label" data-from="{_e(e.src)}" data-to="{_e(e.dst)}">'
-                 f'<rect x="{_label_left(e.lx, lw, e.anchor):.1f}" y="{e.ly - _LABEL_PT - 2:.1f}" '
-                 f'width="{lw:.1f}" height="{_LABEL_H:.1f}" rx="2"/>'
-                 f'<text x="{e.lx:.1f}" y="{e.ly:.1f}" text-anchor="{e.anchor}">{_e(e.label)}</text></g>')
-    for n in layout.nodes:
-        cls = "node file" + (f" {n.classes}" if n.classes else "")
-        lines = "".join(
-            f'<text class="sub" x="{n.x + _F_PAD_X:.1f}" '
-            f'y="{n.y + _F_PAD_Y + _F_NAME_PT + 4 + (k + 1) * _F_LINE_H - 3:.1f}">{_e(ln)}</text>'
-            for k, ln in enumerate(n.lines))
-        P.append(f'<g class="{cls}" data-node="file" data-id="{_e(n.id)}" data-name="{_e(n.name)}" '
-                 f'tabindex="0"><title>{_e(n.tooltip)}</title>'
-                 f'<rect x="{n.x:.1f}" y="{n.y:.1f}" width="{n.w:.1f}" height="{n.h:.1f}" rx="3"/>'
-                 f'<text class="l1" x="{n.x + _F_PAD_X:.1f}" y="{n.y + _F_PAD_Y + _F_NAME_PT:.1f}">{_e(n.name)}</text>'
-                 f'{lines}</g>')
-    P.append("</svg>")
-    return "".join(P)
+def _files_table(rows: list[FileRow]) -> str:
+    out = ['<div class="tbl-wrap"><table><tr>' + "".join(f"<th>{_e(h)}</th>" for h in _FILES_HEADERS) + "</tr>"]
+    for group, title in _FILES_GROUPS:
+        grp = [r for r in rows if r.group == group]
+        out.append(f'<tr><th colspan="3">{_e(title)}</th></tr>')
+        for k, r in enumerate(grp):
+            glyph = "└─" if k == len(grp) - 1 else "├─"
+            role = f'<br><span class="muted">{_e(r.role)}</span>' if r.role else ""
+            how = _ticks_to_code(r.how) if r.how else _muted("—")
+            out.append(f'<tr><td><span class="muted">{glyph}</span> <code>{_e(r.name)}</code>{role}</td>'
+                       f"<td>{how}</td><td>{_ticks_to_code(r.holds)}</td></tr>")
+    out.append("</table></div>")
+    return "".join(out)
+
+
+def _override_example(record: PipelineRecord) -> str:
+    """One value overridden on the command line, spelled with this pipeline's own key:
+    a literal-valued shared param reads best, then any shared param, then outdir."""
+    shared = [p for p in record.params if p.kind == "shared"]
+    pick = next((p for p in shared if p.value_kind == "value"), shared[0] if shared else None)
+    if pick is None:
+        return f"--{OUTDIR_PARAM[0]} <directory>"
+    return f"--{pick.name.lower()} {_SLOT.get(pick.value_kind, '<value>')}"
+
+
+def _copy_list(cluster: bool) -> str:
+    files = list(_COPY_FILES) + ([_LAUNCHER] if cluster else [])
+    codes = [f"<code>{f}</code>" for f in files]
+    return ", ".join(codes[:-1]) + " and " + codes[-1]
 
 
 # ── the sections ─────────────────────────────────────────────────────────────
@@ -928,15 +825,19 @@ def _conventions(record: PipelineRecord) -> str:
 
 
 def _files_section(record: PipelineRecord) -> str:
-    layout = files_layout(record)
-    caption = ('<p class="note">Copy the whole directory next to the data and launch from inside it. '
-               + _LAUNCH_NOTE + ' Where the pipeline runs is the profile\'s business: '
-               '<code>-profile local</code> runs every task in the docker image, <code>-profile slurm</code> '
-               'in the <code>.sif</code> through apptainer, one SLURM job per task; <code>params.yaml</code> '
-               'never says where. Hover a box to trace what it feeds.</p>')
-    return _section("files", "How the files fit together",
-                    "what you copy and edit → the engine → what a run writes",
-                    _files_svg(layout, record) + _hover_js("pipeline-files") + caption + _conventions(record))
+    launch = ('<p class="note">Every Nextflow pipeline is run by one line. Its flags name the files you copy; a run '
+              'adds the rest beside them.</p>'
+              f"<pre>{_e(RUN_LOCAL)}</pre>"
+              f'<p class="note">On the cluster, <code>{_e(RUN_HPC)}</code> runs the same line with '
+              '<code>-profile slurm</code> under an <code>#SBATCH</code> header. A value for this run only goes '
+              f'on the line after the file, and the command line wins over <code>params.yaml</code>: '
+              f"<code>{_e(_override_example(record))}</code>.</p>")
+    copy = ('<p class="note">To run it on your own data: make a new directory where the run should live, copy '
+            + _copy_list(cluster=True) + " into it, write a new <code>samples.csv</code> there — one row per "
+            "sample, naming it and the file each stage needs — and set in <code>params.yaml</code> whatever "
+            "differs from the sealed values. Launch from inside that directory. " + _LAUNCH_NOTE + "</p>")
+    return _section("files", "How the files fit together", "one launch line, one directory",
+                    _FILES_STYLE + launch + _files_table(files_tree(record)) + copy + _conventions(record))
 
 
 def _picture_section(record: PipelineRecord) -> str:
@@ -1009,12 +910,14 @@ def _run_local_section(record: PipelineRecord) -> str:
                 "recorded when the page was rendered. " + present + ".")
         make_lines = []
     steps = _steps([
-        ("Copy this directory next to your data and change into it. Put your samples in "
-         "<code>samples.csv</code> and your paths in <code>params.yaml</code>. " + _LAUNCH_NOTE,
+        ("Make a directory for the run and change into it: copy " + _copy_list(cluster=False) + " there, write "
+         "your <code>samples.csv</code>, and set in <code>params.yaml</code> whatever differs from the sealed "
+         "values. " + _LAUNCH_NOTE,
          [f"cd /path/to/{record.name}"]),
         (make, make_lines),
         ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
-         "re-runs only the stages whose inputs or parameters changed.",
+         "re-runs only the stages whose inputs or parameters changed. A value for this run only goes after the "
+         f"line — <code>{_e(_override_example(record))}</code> — and wins over <code>params.yaml</code>.",
          run_lines(record, "local")),
     ])
     return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker",
@@ -1050,13 +953,16 @@ def _run_hpc_section(record: PipelineRecord) -> str:
                   "and nextflow available first"
                   + ("" if env else ", it was rendered without a cluster named and loads no modules")
                   + "; every stage of every sample is its own SLURM job.")
+    passthrough = (f" Flags after <code>{_LAUNCHER}</code> go through to Nextflow: "
+                   f"<code>{_e(_override_example(record))}</code> overrides <code>params.yaml</code> for this run.")
     steps = _steps([
-        ("Copy this directory into your project directory on the cluster and change into it. "
-         "<code>samples.csv</code> and <code>params.yaml</code> must name cluster paths. SLURM starts the "
-         "manager job here and " + _LAUNCH_NOTE[0].lower() + _LAUNCH_NOTE[1:]
+        ("Make a directory for the run inside your project directory on the cluster and change into it: copy "
+         + _copy_list(cluster=True) + " there, write your <code>samples.csv</code>, and set in "
+         "<code>params.yaml</code> whatever differs — every path in both must be a cluster path. SLURM starts "
+         "the manager job here and " + _LAUNCH_NOTE[0].lower() + _LAUNCH_NOTE[1:]
          + " The launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.",
          [f"cd /path/in/your/project/{record.name}"]),
-        (submit, run_lines(record, "hpc")),
+        (submit + passthrough, run_lines(record, "hpc")),
         ("Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.", ["squeue -u $USER"]),
     ])
     return _section("run-hpc", "Run it on the cluster", "the same files, through the .sif and SLURM",
@@ -1127,8 +1033,8 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     P: list[str] = [
         _open_page(f"Pipeline — {record.name}"),
         _header(record),
-        _files_section(record),
         _picture_section(record),
+        _files_section(record),
         _params_section(record),
         _run_local_section(record),
         _run_hpc_section(record),
@@ -1138,4 +1044,4 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     return "\n".join(P)
 
 
-__all__ = ["render_pipeline_page", "picture_layout", "files_layout", "FOOTER"]
+__all__ = ["render_pipeline_page", "picture_layout", "files_tree", "FileRow", "FOOTER"]
