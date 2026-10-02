@@ -141,10 +141,19 @@ border-top:3px solid var(--cyan)}
 :root[data-theme="light"] .head .cr{display:none}
 /* SECTION PANELS — each remaining section is a bordered card (no yellow accents) */
 section.bx{border:1px solid var(--border);margin:22px 0;background:transparent}
-section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:none}
-section.bx > .bx-body{padding:14px 22px 18px}
-section.bx > .bx-body > *:first-child{margin-top:0}
-section.bx > .bx-body > *:last-child{margin-bottom:0}
+section.bx h2{margin:0;padding:14px 22px 11px;border-bottom:none}
+section.bx .bx-body{padding:14px 22px 18px}
+section.bx .bx-body > *:first-child{margin-top:0}
+section.bx .bx-body > *:last-child{margin-bottom:0}
+/* FOLDING SECTION — the heading is the disclosure; one arrow, on the heading. */
+section.bx > details.fold{margin:0;border:none;background:transparent;padding:0}
+section.bx > details.fold > summary{display:block;padding:0;font:inherit;color:inherit;
+list-style:none}
+section.bx > details.fold > summary::before{content:none}
+section.bx > details.fold > summary > h2::before{content:"▸";display:inline-block;width:16px;
+color:var(--cyan);font-size:12px}
+section.bx > details.fold[open] > summary > h2::before{content:"▾"}
+section.bx > details.fold > summary:hover > h2{color:var(--ink)}
 /* sub-heading inside a section (e.g. "Install commands" under Along for the ride) */
 h3.sub{font-size:11.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);
 margin:22px 0 8px;font-weight:600}
@@ -169,7 +178,7 @@ font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
 details{margin:6px 0;border:1px solid var(--border);border-left:3px solid var(--cyan);
 background:var(--surface)}
 details>summary{cursor:pointer;padding:8px 12px;font:12.5px/1.4 var(--mono);
-color:var(--cyan);list-style:revert}
+color:var(--cyan);list-style:none}
 details>pre{margin:0;border:none;border-top:1px solid var(--border)}
 .tbl-wrap{overflow-x:auto;margin:4px 0}
 table{width:100%;border-collapse:collapse;background:var(--surface);
@@ -917,10 +926,10 @@ def render_env_report_html(record: dict) -> str:
     P.append('</div></section>')
 
     # -- ALONG FOR THE RIDE + INSTALL COMMANDS (same bordered panel) --------
-    P.append('<section class="bx">')
+    P.append('<section class="bx"><details class="fold"><summary>')
     P.append(f'<h2>Along for the ride <span class="note">'
              f'({len(ride)} transitive dependencies)</span></h2>')
-    P.append('<div class="bx-body">')
+    P.append('</summary><div class="bx-body">')
     if ride:
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Package</th><th>Version</th><th>Kind</th></tr>")
@@ -932,7 +941,7 @@ def render_env_report_html(record: dict) -> str:
         P.append(_empty("(closure not captured in-locus — an adopted image is trusted "
                         "by its published digest, not introspected here)" if is_adopt else
                         "(none — every resolved package was directly requested)"))
-    P.append('</div></section>')
+    P.append('</div></details></section>')
 
     # -- INSTALL COMMANDS (own top-level section, per the "all reports share
     # the same set of sections" rule; this also matches the SBOM split
@@ -940,7 +949,7 @@ def render_env_report_html(record: dict) -> str:
     # are separately enumerable). Long-tail commands are the binary/source/
     # synthesized/perl/cargo/go install bodies baked verbatim into the
     # shipped image — the command IS the provenance.
-    P.append('<section class="bx">')
+    P.append('<section class="bx"><details class="fold"><summary>')
     if is_adopt:
         # For an ADOPT, the install command IS the apptainer/docker pull-by-digest
         # against the published biocontainer. The bytes WE shipped == the bytes
@@ -952,7 +961,7 @@ def render_env_report_html(record: dict) -> str:
         P.append('<h2>Install commands '
                  '<span class="note">(adopt — pull the published biocontainer '
                  'by manifest digest; the digest IS the provenance)</span></h2>')
-        P.append('<div class="bx-body">')
+        P.append('</summary><div class="bx-body">')
         if adopt_source and adopt_source.get("tag"):
             P.append('<p style="margin:10px 0 2px"><b>'
                      f'{_e(adopt_source.get("repo") or "biocontainer")} '
@@ -965,12 +974,12 @@ def render_env_report_html(record: dict) -> str:
             P.append(f'<pre>{_e(pull_cmd)}</pre>')
         else:
             P.append(_empty("(no image ref recorded — cannot reconstruct command)"))
-        P.append('</div></section>')
+        P.append('</div></details></section>')
     else:
         P.append(f'<h2>Install commands <span class="note">({len(shipped)} long-tail '
                  'step(s) baked verbatim into the shipped image — the command IS '
                  'the provenance)</span></h2>')
-        P.append('<div class="bx-body">')
+        P.append('</summary><div class="bx-body">')
         # Parse ONCE, and survive a record that does not conform. `shipped` above is the
         # RAW list (used only for the count); this is the typed read, and on a legacy
         # record it raises. Letting that raise escape the renderer costs the user the
@@ -989,7 +998,6 @@ def render_env_report_html(record: dict) -> str:
                 f"their fields. This record predates the schema — re-freeze it. "
                 f"See the contract-coverage table below: {shipped_parse_error[:200]})"))
         elif typed_shipped:
-            P.append('<details open><summary>Verbatim long-tail commands</summary>')
             for s in typed_shipped:
                 # `name or purpose or "tool"` read keys the authors'-image producer
                 # never wrote, so every one of its binaries fell through to the literal
@@ -1006,7 +1014,6 @@ def render_env_report_html(record: dict) -> str:
                          f'{_assurance_badge(s.model_dump())}{prov}</p>')
                 if s.install_command:
                     P.append(f"<pre>{_e(s.install_command.strip())}</pre>")
-            P.append("</details>")
         else:
             # SAY WHAT THE RECORD SAYS, NOT A CATEGORY. "Pure conda env" claimed for
             # ANY env with zero baked RUN steps contradicts a pip-built record's own
@@ -1027,26 +1034,25 @@ def render_env_report_html(record: dict) -> str:
             else:
                 P.append(_empty("(no long-tail steps — every install came through "
                                 "the conda layer)"))
-        P.append('</div></section>')
+        P.append('</div></details></section>')
 
     # -- SYSTEM (apt) PACKAGES (always shown; foldable when present) --------
-    P.append('<section class="bx">')
+    P.append('<section class="bx"><details class="fold"><summary>')
     P.append(f'<h2>System packages (apt) <span class="note">'
              f'({len(system)} captured — OS layer; SBOM only, NOT pinned in the content digest)</span></h2>')
-    P.append('<div class="bx-body">')
+    P.append('</summary><div class="bx-body">')
     if system:
-        P.append('<details><summary>System (apt) packages</summary>')
         P.append('<div class="tbl-wrap"><table>')
         P.append("<tr><th>Package</th><th>Version</th></tr>")
         for p in system:
             if isinstance(p, dict) and p.get("name"):
                 P.append(f"<tr><td>{_e(p['name'])}</td><td>{_e(p.get('version',''))}</td></tr>")
-        P.append("</table></div></details>")
+        P.append("</table></div>")
     else:
         P.append(_empty("(no apt SBOM captured — adopted image; the apt layer was not "
                         "introspected in-locus)" if is_adopt else
                         "(no system packages recorded)"))
-    P.append('</div></section>')
+    P.append('</div></details></section>')
 
     # -- ARTIFACTS (one table — image · digests · files · delivery) ---------
     P.append('<section class="bx">')
