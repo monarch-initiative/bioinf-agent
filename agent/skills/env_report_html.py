@@ -652,6 +652,25 @@ def _plain_gap(c) -> str:
     return _PLAIN_GAP.get(c.clause) or (c.detail or c.clause)
 
 
+def _push_line(push: str) -> str:
+    """`push_status` in words. The producer writes one of four shapes (freeze_tools):
+    `not-configured` · `pushed: <ref>` · `push-failed: <ref> (tarball fallback)` ·
+    `skipped: …`. Anything else is printed as recorded."""
+    if push == "not-configured":
+        return ('no <span class="note">— no registry is configured; the image is '
+                'delivered as the archive above</span>')
+    kind, _, rest = push.partition(":")
+    rest = rest.strip()
+    if kind == "pushed":
+        return f'yes <span class="note">— <code>{_e(rest)}</code></span>'
+    if kind == "push-failed":
+        return (f'<span class="warn">no — the push failed</span> <span class="note">'
+                f'({_e(rest)}); the archive above is the delivery</span>')
+    if kind == "skipped":
+        return f'no <span class="note">— {_e(rest)}</span>'
+    return _e(push)
+
+
 def _status_line(contract) -> str:
     """The header's Status row for a PASSING contract: a Passed pill, a plain
     account of any guarantee that could not be examined, and the coverage tag."""
@@ -1057,59 +1076,66 @@ def render_env_report_html(record: dict) -> str:
     # -- ARTIFACTS (one table — image · digests · files · delivery) ---------
     P.append('<section class="bx">')
     P.append('<h2>Artifacts <span class="note">'
-             'companion files link relative to env_reports/; tarball/lock are absolute file://</span></h2>')
+             'the files that travel with this environment</span></h2>')
     P.append('<div class="bx-body">')
-    # Order: identity (image + two digests) → the two PRIMARY companion artifacts
-    # (recipe = rebuild instructions, attestation = signed provenance) → delivery
-    # (tarball / lock / registry). This HTML IS the canonical Layer-1 view;
-    # there is no sibling .md to list.
+    # Order: identity (image + two checksums) → the two PRIMARY companion artifacts
+    # (recipe = rebuild instructions, attestation = provenance) → delivery
+    # (archive / lock / registry). This HTML IS the canonical Layer-1 view;
+    # there is no sibling .md to list. The HPC delivery hints on the record are
+    # NOT repeated here — the RUN dashboard and the rebuild instructions carry them.
     art_rows: list[tuple[str, str]] = [
-        ("Image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
-        ("Image digest", f'<code>{_e(r.get("image_digest","—"))}</code>' if r.get("image_digest") else "—"),
-        ("Content digest",
+        ("Docker image", f'<code>{_e(r.get("image","—"))}</code>' if r.get("image") else "—"),
+        ("Image checksum",
+         f'<code>{_e(r.get("image_digest","—"))}</code>'
+         '<span class="note"> — the exact bytes that ship; the HPC image is built from these</span>'
+         if r.get("image_digest") else "—"),
+        ("Build inputs checksum",
          f'<code>{_e(r.get("content_digest","—"))}</code>'
-         '<span class="note"> — reproducible anchor: lock + long-tail + platform + engine + base image</span>'
+         '<span class="note"> — what went into the build (package lock, install commands, '
+         'platform, base image); a rebuild from the recipe must reproduce it</span>'
          if r.get("content_digest") else "—"),
     ]
     # The build recipe ALWAYS exists, in BOTH forms, for every install path — a frozen
     # env is only a solved component if anyone can reproduce it. For adopt mode the
     # recipe is "pull the biocontainer by digest"; for a build it is the self-contained
     # replayable recipe verify_env_recipe rebuilds and digest-checks.
-    _verify_note = ('<span class="muted"> — adopt: pull the biocontainer by digest '
-                    '(the manifest digest IS the contract)</span>' if is_adopt else
-                    '<span class="note"> — verify rebuild with <code>verify_env_recipe</code></span>')
-    art_rows.append(("Build recipe (machine)",
+    _verify_note = ('<span class="note"> — for an adopted image the recipe is to pull the '
+                    'published container by its checksum</span>' if is_adopt else
+                    '<span class="note"> — the agent can rebuild from this file alone and '
+                    'confirm the build inputs checksum matches</span>')
+    art_rows.append(("Rebuild recipe (machine-readable)",
                      f'<a href="{_e(name)}.recipe.yaml"><code>{_e(name)}.recipe.yaml</code></a>'
                      + _verify_note))
-    art_rows.append(("Build recipe (human)",
+    art_rows.append(("Rebuild instructions",
                      f'<a href="{_e(name)}.recipe.md"><code>{_e(name)}.recipe.md</code></a>'
-                     '<span class="note"> — the runnable command sequence for a hand rebuild</span>'))
-    art_rows.append(("In-toto / SLSA attestation",
+                     '<span class="note"> — the command sequence for a rebuild by hand</span>'))
+    art_rows.append(("Provenance statement",
                      f'<a href="{_e(name)}.attestation.json"><code>{_e(name)}.attestation.json</code></a>'
-                     '<span class="note"> — sign with <code>cosign attest</code></span>'))
+                     '<span class="note"> — which image was built from which inputs, in the '
+                     'in-toto/SLSA format third-party signing tools verify. Unsigned as written.</span>'))
     if r.get("tarball"):
         tb = r["tarball"]
-        art_rows.append(("docker-save tarball",
-                         f'<a href="file://{_e(tb)}"><code>{_e(tb)}</code></a>'))
+        art_rows.append(("Image archive (.tar)",
+                         f'<a href="file://{_e(tb)}"><code>{_e(tb)}</code></a>'
+                         '<span class="note"> — the exported image the HPC image is built from</span>'))
     else:
-        art_rows.append(("docker-save tarball",
-                         '<span class="muted">— not produced for this mode</span>' if is_adopt else
-                         '<span class="muted">— not produced (registry-only delivery, or build skipped tarball)</span>'))
+        art_rows.append(("Image archive (.tar)",
+                         '<span class="muted">not produced for an adopted image</span>' if is_adopt else
+                         '<span class="muted">not produced (delivered through a registry, or the '
+                         'build skipped it)</span>'))
+    engine = r.get("engine") if r.get("engine") not in (None, "", "none") else ""
+    _lock_note = f'<span class="note"> — the exact package solve, by {_e(engine)}</span>' if engine \
+        else '<span class="note"> — the exact package solve</span>'
     if r.get("conda_lock"):
         cl = r["conda_lock"]
-        art_rows.append(("Conda lock",
-                         f'<a href="file://{_e(cl)}"><code>{_e(cl)}</code></a>'))
+        art_rows.append(("Conda lock file",
+                         f'<a href="file://{_e(cl)}"><code>{_e(cl)}</code></a>' + _lock_note))
     else:
-        art_rows.append(("Conda lock",
-                         '<span class="muted">— not produced for this env</span>'))
-    hpc = r.get("hpc_delivery") or {}
-    if hpc.get("get_image"):
-        art_rows.append(("Apptainer pull (HPC)", f"<pre>{_e(hpc['get_image'])}</pre>"))
-    if hpc.get("run_example"):
-        art_rows.append(("Run example", f"<pre>{_e(hpc['run_example'])}</pre>"))
+        art_rows.append(("Conda lock file",
+                         '<span class="muted">not produced for this environment</span>'))
     push = r.get("push_status", "")
     if push:
-        art_rows.append(("Registry status", _e(push)))
+        art_rows.append(("Pushed to a registry", _push_line(push)))
     P.append(_kv_table(art_rows))
     P.append('</div></section>')
 
