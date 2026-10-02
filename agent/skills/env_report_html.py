@@ -160,6 +160,14 @@ details.sub>summary h3::before{content:"▸";display:inline-block;width:16px;col
 details.sub[open]>summary h3::before{content:"▾"}
 details.sub>summary h3 .note{font-weight:400}
 table.cov td:first-child code{white-space:nowrap}
+/* folded trial / output-list disclosures inside run cards */
+details.sub.trial,details.sub.outs{margin:0}
+details.sub>summary>.run-title::before,details.sub.outs>summary::before{content:"▸";
+display:inline-block;width:16px;color:var(--cyan);font-size:12px}
+details.sub[open]>summary>.run-title::before,details.sub.outs[open]>summary::before{content:"▾"}
+details.sub.outs>summary{padding:4px 0;cursor:pointer}
+details.sub>summary>.run-title{cursor:pointer;margin:2px 0}
+.run-title .locus{font-weight:700}
 /* FOLDING SECTION — the heading is the disclosure; one arrow, on the heading. */
 section.bx > details.fold{margin:0;border:none;background:transparent;padding:0}
 section.bx > details.fold > summary{display:block;padding:0;font:inherit;color:inherit;

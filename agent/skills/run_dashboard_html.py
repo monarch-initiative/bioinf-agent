@@ -54,7 +54,7 @@ from agent.models.core_data import (RESOURCES_AUTHORITATIVE as _RES_AUTHORITATIV
                                     usage_commands, usage_output_type,
                                     usage_status)
 from agent.skills.env_report_html import (
-    _badge, _close_page, _e, _empty, _header_banner, _kv_table, _open_page,
+    _badge, _close_page, _created_line, _e, _empty, _header_banner, _kv_table, _open_page,
 )
 
 #: How the three resource states are shown. EXHAUSTIVE over the three
@@ -84,6 +84,24 @@ _RESOURCE_AUTHORITY_NOTE = {
 }
 
 
+#: The same two caveats, phrased for a whole locus group (every measured step in
+#: it shares the state), so the paragraph is printed once instead of per step.
+_RESOURCE_AUTHORITY_GROUP_NOTE = {
+    _RES_EMULATED: (
+        "ran under CPU emulation (the image's architecture differs from the host's), so "
+        "their wall time and CPU figures are wrong by roughly two orders of magnitude and "
+        "the peak memory is not representative. <b>Do not size <code>#SBATCH --mem</code> "
+        "or <code>--time</code> from them.</b> Re-run on hardware matching the image's "
+        "architecture to get numbers you can budget from."
+    ),
+    _RES_UNRECORDED: (
+        "were recorded before the runtime captured whether their resource measurements "
+        "were taken natively or under emulation. Their numbers are therefore of unknown "
+        "authority — not known-good, and not known-bad."
+    ),
+}
+
+
 # ---------------------------------------------------------------------------
 # Locus classification — where a step's evidence came from.
 # ---------------------------------------------------------------------------
@@ -99,6 +117,47 @@ def _run_locus(step: dict) -> str:
 
 # Ordered so the strongest evidence (native cluster) leads the page.
 _LOCUS_ORDER = ["cluster", "local container", "host"]
+
+#: Where a step ran, in a reader's words. The raw locus name stays on the page as the
+#: identifier (tests and the recipe use it); this is the sentence beside it.
+_LOCUS_WORDS = {
+    "cluster":         "on the cluster",
+    "local container": "on this machine, inside the shipped image",
+    "host":            "on this machine, outside the image",
+}
+
+#: How an output was checked, in a reader's words — keyed by the validator's own
+#: `validation_method`. An unlisted method falls back to its name.
+_METHOD_WORDS = {
+    "exists_nonzero": "exists and is not empty",
+    "empty_allowed":  "exists (empty allowed)",
+    "any":            "exists and is not empty",
+    "tool":           "opened by the tool itself",
+    "magic_bytes":    "file signature",
+    "text_fallback":  "parsed as text",
+    "txt_probe":      "parsed as text",
+    "tsv_parse":      "parsed as TSV",
+    "json_parse":     "parsed as JSON",
+    "jsonl_parse":    "parsed as JSON lines",
+    "html_header":    "HTML header present",
+}
+
+
+def _method_words(method: str) -> str:
+    return _METHOD_WORDS.get(method or "", method or "")
+
+
+def _fmt_bytes(n) -> str:
+    """33706193 → `33.7 MB`; anything unparseable is printed as recorded."""
+    try:
+        v = float(n)
+    except (TypeError, ValueError):
+        return _e(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if v < 1024 or unit == "TB":
+            return f"{v:.0f} {unit}" if unit == "B" else f"{v:.1f} {unit}"
+        v /= 1024
+    return _e(n)
 
 
 def _step_digest(step: dict) -> Optional[str]:
@@ -198,7 +257,10 @@ def _render_cluster_context(step: dict) -> str:
     return "".join(P)
 
 
-def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
+def _render_run_step(step: dict, primary_digest: Optional[str],
+                     note_authority: bool = True) -> str:
+    """One step. `note_authority=False` when the enclosing locus group has already
+    printed the resource-authority caveat once for every step in it."""
     P: list[str] = []
     is_current, stale_note = _digest_state(step, primary_digest)
     title = f"Step {_e(step.get('step', '?'))}"
@@ -235,10 +297,23 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
             head, _, tail = _e(fn).rpartition("/")
             name_cell = (f'<span class="muted">{head}/</span>{tail}' if head else tail)
             rows.append(f"<tr><td>{name_cell}</td><td>{_badge(passed)}</td>"
-                        f"<td>{_e(method)}</td></tr>")
-        P.append('<div class="tbl-wrap"><table>'
+                        f"<td>{_e(_method_words(method))}</td></tr>")
+        table = ('<div class="tbl-wrap"><table>'
                  '<tr><th>Output</th><th>Validated</th><th>Check</th></tr>'
                  + "".join(rows) + "</table></div>")
+        n_out = len(rows)
+        n_bad = sum(1 for v in val.values()
+                    if isinstance(v, dict) and v.get("passed") is False)
+        if n_out > 4:
+            # A long output list (an aligner index is eight files) folds behind its
+            # count; a failure keeps it open, because that is the row to read.
+            verdict = (f"{n_bad} of {n_out} FAILED" if n_bad
+                       else f"all {n_out} passed their check")
+            P.append(f'<details class="sub outs"{" open" if n_bad else ""}>'
+                     f'<summary><span class="note">{n_out} outputs · {_e(verdict)}'
+                     f'</span></summary>{table}</details>')
+        else:
+            P.append(table)
     ru = step.get("resource_usage") or {}
     if isinstance(ru, dict) and ru:
         # F5. These three numbers are what a reader sizes `#SBATCH --mem` and
@@ -247,12 +322,15 @@ def _render_run_step(step: dict, primary_digest: Optional[str]) -> str:
         # emulation the timings are wrong by ~two orders of magnitude and the page
         # presented them flat. The correction was in the same file as the numbers.
         authority = _resource_usage_authority(step)
-        P.append('<p class="note">resources: '
-                 f'wall {_e(ru.get("wall_seconds"))}s · '
-                 f'peak RSS {_e(ru.get("peak_rss_mb"))} MB · '
-                 f'CPU {_e(ru.get("max_cpu_percent"))}% · '
-                 f'locus {_e(ru.get("locus", "?"))} · {_RESOURCE_AUTHORITY_BADGE[authority]}</p>')
-        if authority != _RES_AUTHORITATIVE:
+        where = {"emulated": "measured under emulation", "native": "measured natively",
+                 "cluster": "measured on the cluster"}.get(
+                     str(ru.get("locus", "")), f'locus {_e(ru.get("locus", "?"))}')
+        P.append('<p class="note">Resources: '
+                 f'{_e(ru.get("wall_seconds"))} s wall · '
+                 f'{_e(ru.get("peak_rss_mb"))} MB peak memory · '
+                 f'{_e(ru.get("max_cpu_percent"))}% CPU · '
+                 f'{_e(where)} · {_RESOURCE_AUTHORITY_BADGE[authority]}</p>')
+        if authority != _RES_AUTHORITATIVE and note_authority:
             P.append(f'<p class="warn-note">{_RESOURCE_AUTHORITY_NOTE[authority]}</p>')
     if _run_locus(step) == "cluster":
         P.append(_render_cluster_context(step))
@@ -281,7 +359,7 @@ def _run_status_html(spec: dict, failed: list) -> str:
         return '<span class="note">unrecorded — this spec predates the field</span>'
     if stated == derived:
         cls = "bad" if stated == "failed" else "ok"
-        return f'<span class="pill {cls}">{_e(stated)}</span>'
+        return f'<span class="pill {cls}">{_e(stated.replace("_", " "))}</span>'
 
     # THEY DISAGREE — SHOW BOTH, AND THIS IS NOT HYPOTHETICAL.
     #
@@ -299,11 +377,11 @@ def _run_status_html(spec: dict, failed: list) -> str:
     # ships the stale default, preferring `derived` re-computes a sealed field and hides
     # that the artifact is internally inconsistent. So both are shown and named.
     cls = "bad" if derived == "failed" else "na"
-    return (f'<span class="pill {cls}">{_e(derived)}</span> '
+    return (f'<span class="pill {cls}">{_e(derived.replace("_", " "))}</span> '
             f'<span class="note">— derived from the steps on this page. The sealed record '
-            f'says <code>{_e(stated)}</code>, which does not match. A spec sealed before '
-            f'`derive_pipeline_status` landed carries a stamped default rather than a '
-            f'finding; re-seal to settle it.</span>')
+            f'says <code>{_e(stated)}</code>, which does not match: a workflow sealed '
+            f'before the status was derived carries a stamped default rather than a '
+            f'finding. Re-seal to settle it.</span>')
 
 
 def _render_locus_group(locus: str, steps: list[dict], primary_digest: Optional[str]) -> str:
@@ -317,10 +395,23 @@ def _render_locus_group(locus: str, steps: list[dict], primary_digest: Optional[
         badge = '<span class="pill na">stale — env rebuilt since</span>'
     else:
         badge = '<span class="pill ok">✓ validated here</span>'
-    P.append(f'<div class="run-title">{_e(locus)} {badge}'
-             f'<span class="note" style="margin-left:auto">{len(steps)} step(s)</span></div>')
+    words = _LOCUS_WORDS.get(locus, "")
+    P.append(f'<div class="run-title"><span class="locus">{_e(locus)}</span> {badge}'
+             + (f'<span class="note">{_e(words)}</span>' if words else "")
+             + f'<span class="note" style="margin-left:auto">{len(steps)} step'
+               f'{"s" if len(steps) != 1 else ""}</span></div>')
+    # The resource-authority caveat ONCE per group when every measured step in it
+    # shares the same non-authoritative state — five copies of the same paragraph
+    # bury the steps they qualify. Mixed groups keep the caveat on each step.
+    measured = [_resource_usage_authority(s) for s in steps
+                if isinstance(s.get("resource_usage"), dict) and s.get("resource_usage")]
+    shared = set(measured)
+    once = len(measured) > 1 and len(shared) == 1 and measured[0] != _RES_AUTHORITATIVE
+    if once:
+        P.append(f'<p class="warn-note"><b>All {len(measured)} steps below</b> '
+                 f'{_RESOURCE_AUTHORITY_GROUP_NOTE[measured[0]]}</p>')
     for s in steps:
-        P.append(_render_run_step(s, primary_digest))
+        P.append(_render_run_step(s, primary_digest, note_authority=not once))
     P.append("</div>")
     return "".join(P)
 
@@ -331,20 +422,18 @@ def _render_validated_evidence(spec: dict, primary_digest: Optional[str]) -> str
     for s in steps:
         by_locus.setdefault(_run_locus(s), []).append(s)
     P = ['<section class="bx">']
-    P.append('<h2>Does it run? — validated evidence '
-             '<span class="note">every command below was executed and its outputs '
-             'type-validated; grouped by the compute resource it ran on</span></h2>')
+    P.append('<h2>Does it run? '
+             '<span class="note">every command below was run and each output file it '
+             'produced was checked, grouped by where it ran</span></h2>')
     P.append('<div class="bx-body">')
     if not steps:
         P.append(_empty("(no validated steps recorded)"))
     else:
         for locus in _LOCUS_ORDER:
             if locus in by_locus:
-                P.append(f'<h3 class="sub">{_e(locus)}</h3>')
                 P.append(_render_locus_group(locus, by_locus[locus], primary_digest))
         # any locus not in the known order (future-proof)
         for locus in sorted(set(by_locus) - set(_LOCUS_ORDER)):
-            P.append(f'<h3 class="sub">{_e(locus)}</h3>')
             P.append(_render_locus_group(locus, by_locus[locus], primary_digest))
     P.append("</div></section>")
     return "".join(P)
@@ -402,17 +491,17 @@ def _seal_outcome_html(spec: dict) -> str:
         # would be a claim derived from nothing here, and false on a shape this
         # same page supports (failed iteration steps + a verified I4). Run
         # validation has its own row; this one speaks for the how-to.
-        return ('<span class="pill ok">proven</span> the declared how-to executed '
-                'against every trial (I4); the run’s own verdict is the Run '
-                'status row above')
+        return ('<span class="pill ok">proven</span> the how-to command below ran '
+                'against every declared input shape and every output passed its check. '
+                'Whether the recorded steps themselves passed is the Run status row above.')
     if status == "failed":
         # Unreachable on a spec sealed at HEAD (seal refuses an I4 failure) — but a
         # record that carries it must not be softened by this renderer.
         return ('<span class="pill bad">how-to FAILED</span> ' + reason)
     if status == "not_attempted":
         return ('<span class="pill na">degraded — how-to unproven</span> '
-                + (reason or 'the I4 self-test did not run; no reason was recorded'))
-    return ('<span class="pill na">unrecorded</span> sealed before the seal stated '
+                + (reason or 'the self-test of the command did not run; no reason was recorded'))
+    return ('<span class="pill na">unrecorded</span> sealed before the seal had to state '
             'an outcome — absence, not a verdict')
 
 
@@ -440,9 +529,9 @@ def _render_howto(spec: dict) -> str:
     # The subtitle claims "self-tested" only when the self-test VERIFIED — asserted
     # unconditionally it sits directly above a pill reading "not self-tested", two
     # contradictory claims in one panel. It describes what this page actually knows.
-    sub = ("the runnable command, self-tested against every declared input shape (I4)"
+    sub = ("the command to run, tested against every declared input shape"
            if verified else
-           "the runnable command as authored — see below for whether it was self-tested")
+           "the command as authored — see below for whether it was tested")
     P.append(f'<h2>How to run it <span class="note">{_e(sub)}</span></h2>')
     P.append('<div class="bx-body">')
     # ONE reading of command_template (str or list[str]) — core_data.usage_commands.
@@ -577,9 +666,10 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
 
     if proven:
         n_ok = sum(1 for t in proven if t.get("ok"))
-        lead = (f'Self-tested against {len(proven)} input shape(s), '
+        n = len(proven)
+        lead = (f'Tested against {n} input shape{"s" if n != 1 else ""}, '
                 f'{n_ok} passing. Each command below is the LITERAL text that was '
-                f'executed, with every placeholder resolved — not the template above.')
+                f'executed, with every placeholder filled in — open a trial to read it.')
         P = [f'<p class="note">{_e(lead)}</p>']
         for t in proven:
             ok = bool(t.get("ok"))
@@ -588,11 +678,13 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
             # `run-card`, not `how`: these are nested INSIDE the how-to panel, and a
             # `how` inside a `how` doubles the cyan border and the gradient wash into
             # a muddy box-in-a-box. run-card is the neutral nested card the locus
-            # groups already use.
-            P.append(f'<div class="run-card"><div class="run-title">'
-                     f'{_e(t.get("name", "trial"))} {badge}</div>')
-            if t.get("description"):
-                P.append(f'<p class="note">{_e(t["description"])}</p>')
+            # groups already use. The transcript folds under the title; a failed
+            # trial stays open because its transcript is the thing to read.
+            desc = (f'<span class="note">{_e(t["description"])}</span>'
+                    if t.get("description") else "")
+            P.append(f'<div class="run-card"><details class="sub trial"{"" if ok else " open"}>'
+                     f'<summary><div class="run-title">'
+                     f'{_e(t.get("name", "trial"))} {badge}{desc}</div></summary>')
             cmds = [c for c in (t.get("commands_run") or []) if isinstance(c, str)]
             if cmds:
                 P.append('<p class="note"><b>Ran</b></p>')
@@ -609,11 +701,11 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
             prod = [p for p in (t.get("produced_files") or []) if isinstance(p, str)]
             if prod:
                 P.append('<p class="note"><b>Produced</b> '
-                         '<span class="note">(relative to the scratch dir; each was '
-                         'type-validated)</span></p><ul class="foot">')
-                P.extend(f"<li><code>{_e(p)}</code></li>" for p in prod)
+                         '<span class="note">(in the scratch directory; each file '
+                         'passed its check)</span></p><ul class="foot">')
+                P.extend(f"<li><code>{_e(p)}</code></li>" for p in sorted(prod))
                 P.append("</ul>")
-            P.append("</div>")
+            P.append("</details></div>")
         return "".join(P)
 
     if declared:
@@ -656,26 +748,46 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
 # Environment panel — what this workflow is pinned to, + a link to its ENV.html.
 # ---------------------------------------------------------------------------
 
+def _request_words(key: str) -> str:
+    """The env request key — `hisat2=2.2.3,samtools=1.24|linux/amd64|none` — as the
+    sentence it encodes, with the key itself beside it. A key that does not split the
+    expected way is printed as recorded."""
+    if not key:
+        return "—"
+    parts = key.split("|")
+    spec, platform = parts[0], (parts[1] if len(parts) > 1 else "")
+    tools = []
+    for tok in spec.split(","):
+        n, _, v = tok.replace("==", "=").partition("=")
+        if not n.strip():
+            continue
+        tools.append(f"{n.strip()} {v.strip()}" if v.strip() else n.strip())
+    if not tools:
+        return f'<code>{_e(key)}</code>'
+    words = ", ".join(_e(t) for t in tools) + (f" on {_e(platform)}" if platform else "")
+    return f'{words} <span class="note">— request key <code>{_e(key)}</code></span>'
+
+
 def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
     P = ['<section class="bx">']
     P.append('<h2>Environment '
-             '<span class="note">pinned by digest — the Layer-1 solved component '
-             'this workflow consumes</span></h2>')
+             '<span class="note">the frozen environment this workflow runs in, pinned '
+             'by checksum</span></h2>')
     P.append('<div class="bx-body">')
     env_name = (env_record or {}).get("name") or ""
     rows: list[tuple[str, str]] = [
-        ("Image", f'<code>{_e(spec.get("env_image","—"))}</code>' if spec.get("env_image") else "—"),
-        ("Content digest",
+        ("Docker image", f'<code>{_e(spec.get("env_image","—"))}</code>' if spec.get("env_image") else "—"),
+        ("Build inputs checksum",
          f'<code>{_e(spec.get("env_content_digest","—"))}</code>'
+         '<span class="note"> — what went into the environment build; the same value is '
+         'on its report</span>'
          if spec.get("env_content_digest") else "—"),
-        ("Request key",
-         f'<code>{_e(spec.get("env_request_key","—"))}</code>'
-         if spec.get("env_request_key") else "—"),
+        ("Requested", _request_words(spec.get("env_request_key") or "")),
     ]
     if env_name:
-        rows.append(("Env report",
+        rows.append(("Environment report",
                      f'<a href="{_e(env_name)}.ENV.html"><code>{_e(env_name)}.ENV.html</code></a>'
-                     '<span class="note"> — the immutable Layer-1 build honesty report</span>'))
+                     '<span class="note"> — how the environment was built and checked</span>'))
     # A staged .sif recorded by a cluster step outranks generic delivery advice:
     # the delivery already HAPPENED, and the stored get_image text on older
     # records advised building on the head node — instructions
@@ -728,7 +840,8 @@ def _render_inputs(spec: dict) -> str:
         return ""
     P = ['<section class="bx">']
     P.append('<h2>Inputs &amp; external sources '
-             '<span class="note">what the validated run consumed (I8 provenance)</span></h2>')
+             '<span class="note">the data the validated run read, each pinned by '
+             'checksum where one exists</span></h2>')
     P.append('<div class="bx-body">')
     if td:
         # Paths via the leaf — a hand-spelled test_data key set drifts, and a bare
@@ -739,7 +852,7 @@ def _render_inputs(spec: dict) -> str:
             anchors = _core_data.test_data_anchors(td)
             status = ((spec.get("test_data_integrity") or {}).get("status")
                       if isinstance(spec.get("test_data_integrity"), dict) else None)
-            note = {"verified": "re-verified at seal against the bytes selected",
+            note = {"verified": "re-checked at seal against the files originally selected",
                     "unanchored": "NOT content-anchored — these paths were recorded "
                                   "before anchoring existed, so only their presence is proven",
                     "diverged": "CONTENT DIVERGED from what was selected"}.get(status or "", "")
@@ -755,7 +868,7 @@ def _render_inputs(spec: dict) -> str:
                 rows.append(f'<tr><td>{_e(k)}</td><td><code>{_e(raw)}</code></td>'
                             f'<td>{pin}</td></tr>')
             P.append('<div class="tbl-wrap"><table>'
-                     '<tr><th>Slot</th><th>Path</th><th>sha256</th></tr>'
+                     '<tr><th>Slot</th><th>Path</th><th>Checksum</th></tr>'
                      + "".join(rows) + "</table></div>")
     if rdbs:
         P.append('<h3 class="sub">Reference databases</h3>')
@@ -778,16 +891,17 @@ def _render_inputs(spec: dict) -> str:
         rows = "".join(
             f'<tr><td>{_e(d.get("name",""))}</td>'
             f'<td>{_rdb_anchor_cell(d)}</td>'
-            f'<td>{_e(d.get("size_bytes",""))}</td></tr>' for d in rdbs)
+            f'<td title="{_e(d.get("size_bytes",""))} bytes">{_fmt_bytes(d.get("size_bytes",""))}</td></tr>'
+            for d in rdbs)
         P.append('<div class="tbl-wrap"><table>'
-                 '<tr><th>Name</th><th>sha256</th><th>Bytes</th></tr>' + rows + '</table></div>')
+                 '<tr><th>Name</th><th>Checksum</th><th>Size</th></tr>' + rows + '</table></div>')
     if arts:
         P.append('<h3 class="sub">Authored artifacts</h3>')
         rows = "".join(
             f'<tr><td>{_e(a.get("role",""))}</td><td><code>{_e(a.get("path",""))}</code></td>'
             f'<td><code>{_e((a.get("sha256") or "")[:19])}…</code></td></tr>' for a in arts)
         P.append('<div class="tbl-wrap"><table>'
-                 '<tr><th>Role</th><th>Path</th><th>sha256</th></tr>' + rows + '</table></div>')
+                 '<tr><th>Role</th><th>Path</th><th>Checksum</th></tr>' + rows + '</table></div>')
     if cfgs:
         # THE COLUMN SAYS WHAT IT IS. Every other sha256 on this page was verified by a
         # seal-side gate — authored_artifacts are re-hashed by I8, reference_databases by
@@ -798,10 +912,9 @@ def _render_inputs(spec: dict) -> str:
         # meaning. These entries are also agent-authored (patch_pipeline's allowlist), so
         # the whole row is a claim until that later check runs.
         P.append('<h3 class="sub">Runtime configuration '
-                 '<span class="note">files the tools read at run time — part of the '
-                 'I8 traceable universe, so a step may legitimately consume one. '
-                 'Agent-authored; the hashes below are NOT verified at seal (unlike '
-                 'authored artifacts and reference DBs above) — they are anchors '
+                 '<span class="note">files the tools read at run time. Written by the '
+                 'agent; their checksums are NOT verified at seal (unlike the authored '
+                 'artifacts and reference databases above) — they are anchors '
                  'run_production_pipeline re-checks before a production run</span>'
                  '</h3>')
         rows = []
@@ -816,7 +929,7 @@ def _render_inputs(spec: dict) -> str:
                         f'<td><code>{_e(c.get("path",""))}</code></td>'
                         f'<td>{pin}</td></tr>')
         P.append('<div class="tbl-wrap"><table>'
-                 '<tr><th>Name</th><th>Format</th><th>Path</th><th>sha256</th></tr>'
+                 '<tr><th>Name</th><th>Format</th><th>Path</th><th>Checksum</th></tr>'
                  + "".join(rows) + "</table></div>")
         # The inline snapshot, when the producer took one. A reader reviewing parameters
         # before committing an allocation should not have to go find the file — and on a
@@ -835,11 +948,11 @@ def _render_inputs(spec: dict) -> str:
     # mutation of its own inputs at seal. The how-to may name them as a hard
     # prerequisite; this line is the disclosure that their absence from these rows
     # is a design choice, not missing provenance.
-    P.append('<p class="note">Derived companions of a pinned input (e.g. aligner '
-             'index sidecars, <code>.fai</code>/<code>.dict</code>) are deliberately '
-             'not content-pinned here: a run that regenerates them would otherwise '
-             'read as mutating its own inputs. If the how-to names them, rebuild '
-             'them from the pinned file when absent.</p>')
+    P.append('<p class="note">Index files derived from a pinned input (aligner indexes, '
+             '<code>.fai</code>, <code>.dict</code>) are deliberately not content-pinned '
+             'here: a run that regenerates them would otherwise look like it changed its '
+             'own inputs. If the commands need them, rebuild them from the pinned '
+             'file.</p>')
     P.append("</div></section>")
     return "".join(P)
 
@@ -991,8 +1104,9 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         pill = '<span class="pill na">no runs recorded</span>'
 
     head_rows = [
-        ("Sealed", _e(s.get("created_at", "—"))),
-        ("Validated on", ", ".join(_e(x) for x in loci) if loci else "—"),
+        ("Sealed", _e(_created_line(s.get("created_at", "")))),
+        ("Validated on",
+         "; ".join(_e(_LOCUS_WORDS.get(x, x)) for x in loci) if loci else "—"),
         # STATED BY THE SEAL, NEVER RENDERED. `derive_pipeline_status` computes this
         # correctly and writes it into the spec — a spec containing a failed step carries
         # `pipeline_status: failed` — and no renderer read the field. The record knew; the
@@ -1007,9 +1121,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         ("Steps validated", f"{len(validated)}/{len(steps)}"
                             + (f' <span class="pill bad">{len(failed)} FAILED</span>'
                                if failed else "")),
-        ("Env image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
-        ("Env content digest",
-         f'<code>{_e(s.get("env_content_digest","—"))}</code>' if s.get("env_content_digest") else "—"),
+        ("Docker image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
         ("Usage self-tested", _e(_USAGE_LABEL.get(_usage_status(s), _usage_status(s)))),
     ]
     if s.get("description"):
@@ -1042,15 +1154,15 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
     # Because this paragraph enumerates which side of the line each thing on the
     # dashboard falls, it goes stale the moment a panel is added and not accounted
     # for: when a new panel lands, update both sides together.
-    P.append('<p class="gen">Generated deterministically from the sealed WorkflowSpec. '
-             'The <b>evidence</b> — commands run, exit codes, outputs, validations, '
-             'digests, resource usage, the self-test transcript (what each trial '
+    P.append('<p class="gen">Generated from the sealed workflow record, with nothing added. '
+             'The <b>evidence</b> — commands run, exit codes, outputs and their checks, '
+             'checksums, resource usage, the self-test transcript (what each trial '
              'actually executed, and with which files), and the service health probes — '
-             'is machine-observed and cannot be authored by the agent. The '
+             'was observed by the machine and cannot be authored by the agent. The '
              '<b>agent-authored</b> parts — this workflow\'s description, the how-to '
              'description, the command template itself, and the runtime configuration '
-             'entries — are in patch_pipeline\'s allowlist; the how-to\'s self-test '
-             'status above says whether that command was actually executed. The env '
-             'report (Layer 1) is a separate, immutable page.</p>')
+             'entries — are the fields the agent may write; the self-test status above '
+             'says whether that command was actually executed. The environment report '
+             'is a separate page.</p>')
     P.append(_close_page())
     return "\n".join(P)
