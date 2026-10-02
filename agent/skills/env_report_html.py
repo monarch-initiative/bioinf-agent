@@ -3,7 +3,7 @@ env_report_html — the Layer-1 env report as a self-contained HTML page, render
 PURELY from the verified freeze record.
 
 Clean tables, no decorative tiles. SAME sections + SAME columns for every install
-(adopt and build), so two reports compare cell-for-cell. Cyberpunk-inspired dark
+(adopt and build), so two reports compare cell-for-cell. Cyber dark
 palette (black, cyan, yellow) — meant to give each section visual weight without
 adding any unverifiable content.
 
@@ -66,7 +66,7 @@ _VERDICT_BADGE = {
 
 _CSS = """
 /* PALETTE — two themes, one structure. EVERY colour flows through these variables;
-   all geometry/layout below is theme-agnostic. Cyberpunk is the default AND the
+   all geometry/layout below is theme-agnostic. Cyber is the default AND the
    no-JS fallback (:root); the in-page toggle sets :root[data-theme] and the light/
    professional palette overrides the same names. Rule for edits: keep NO raw hex
    below the :root blocks — a stray literal is a colour that silently won't switch. */
@@ -375,7 +375,7 @@ def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) ->
 
 # --- Shared page shell + theme toggle -------------------------------------
 # The two reports (Layer-1 env report, Layer-2 run dashboard) open/close through
-# these so the theme machinery lives in ONE place. Cyberpunk is the default; the
+# these so the theme machinery lives in ONE place. Cyber is the default; the
 # toggle flips :root[data-theme] to "light" (professional/print) and persists the
 # choice. Pure presentation — it authors no content field, so the reports' "no
 # field authored by the agent" claim is untouched.
@@ -385,10 +385,10 @@ _THEME_INIT = (  # runs in <head> before paint → no theme flash
     'catch(e){document.documentElement.setAttribute("data-theme","cyber")}</script>'
 )
 _THEME_TOGGLE = ('<button id="__tt" class="theme-toggle" onclick="__toggleTheme()" '
-                 'title="Switch cyberpunk / light theme"></button>')
+                 'title="Switch cyber / light theme"></button>')
 _THEME_JS = (  # sets the toggle label to the OTHER theme; flips + persists on click
     '<script>(function(){'
-    'function lbl(t){return t==="light"?"◐ Cyberpunk":"◑ Light"}'
+    'function lbl(t){return t==="light"?"◐ Cyber":"◑ Light"}'
     'window.__toggleTheme=function(){'
     'var c=document.documentElement.getAttribute("data-theme")||"cyber";'
     'var n=c==="light"?"cyber":"light";'

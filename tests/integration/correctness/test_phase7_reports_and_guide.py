@@ -3,7 +3,7 @@
 Two deliverables, two honesty contracts:
 
   THEME (env_report_html / run_dashboard_html). The two reports share ONE stylesheet
-  and now carry TWO palettes (cyberpunk default + a professional/light theme) switched
+  and now carry TWO palettes (cyber default + a professional/light theme) switched
   by an in-page toggle. The tidy discipline that makes the toggle WORK is testable: no
   raw hex may live below the :root palette blocks, because a stray literal is a colour
   that silently won't switch. That guard is the whole point of the refactor.
@@ -94,7 +94,7 @@ def _both_reports() -> tuple[str, str]:
 @pytest.mark.integration
 def test_both_reports_carry_the_toggle_and_two_palettes():
     for html in _both_reports():
-        assert ':root[data-theme="cyber"]' in html   # cyberpunk (default)
+        assert ':root[data-theme="cyber"]' in html   # cyber (default)
         assert ':root[data-theme="light"]' in html   # professional
         assert 'class="theme-toggle"' in html         # the control
         assert "__toggleTheme" in html                # the flip
