@@ -74,22 +74,28 @@ _CSS = """
   --bg:#0a0c14;--surface:#13151f;--surface-2:#1a1d29;--border:#262a3a;
   --cyan:#22e3ee;--cyan-soft:rgba(34,227,238,.16);--accent-wash:rgba(34,227,238,.05);
   --yellow:#fff200;--yellow-soft:rgba(255,242,0,.18);
+  --title:#fff200;--link:#fff200;--warn:#fff200;
   --ink:#e6e9f0;--muted:#8e98ad;
   --ok:#3ce086;--ok-bg:rgba(60,224,134,.14);
   --bad:#ff4b6e;--bad-bg:rgba(255,75,110,.14);
   --code-bg:#0e1019;--pre-bg:#0c0e16;--on-accent:#000;--on-bad:#fff;
+  --head-bg:linear-gradient(180deg,var(--accent-wash),transparent 80%);--head-shadow:none;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 :root[data-theme="light"]{
-  /* professional / print-friendly — calm blue primary, muted amber for the
-     yellow-accent role (headings, links, list markers). Same structure, quiet skin. */
-  --bg:#ffffff;--surface:#f7f9fc;--surface-2:#eef2f7;--border:#d7dee8;
-  --cyan:#0b6bcb;--cyan-soft:rgba(11,107,203,.10);--accent-wash:rgba(11,107,203,.05);
-  --yellow:#a86a00;--yellow-soft:rgba(168,106,0,.12);
+  /* professional / print-friendly — one blue primary, deep navy for the
+     secondary-accent role (list markers, the adopt pill, picture highlights),
+     ink-coloured titles, standard blue links. Amber is reserved for the WARN
+     role so a caveat still reads as a caveat. Same structure, quiet skin. */
+  --bg:#f4f6f9;--surface:#ffffff;--surface-2:#eef2f7;--border:#d5dce6;
+  --cyan:#0b5fb4;--cyan-soft:rgba(11,95,180,.10);--accent-wash:rgba(11,95,180,.05);
+  --yellow:#1f3a5f;--yellow-soft:rgba(31,58,95,.10);
+  --title:#14213d;--link:#0b5fb4;--warn:#9a6700;
   --ink:#1a2233;--muted:#5b6675;
   --ok:#1a7f4b;--ok-bg:rgba(26,127,75,.12);
   --bad:#c0304a;--bad-bg:rgba(192,48,74,.10);
   --code-bg:#eef2f7;--pre-bg:#f4f7fb;--on-accent:#ffffff;--on-bad:#ffffff;
+  --head-bg:var(--surface);--head-shadow:0 1px 2px rgba(20,33,61,.06),0 8px 24px -12px rgba(20,33,61,.18);
 }
 /* THEME TOGGLE — presentation only (authors no content); hidden in print. */
 .theme-toggle{position:fixed;top:14px;right:16px;z-index:10;background:var(--surface-2);
@@ -101,38 +107,38 @@ letter-spacing:.10em;text-transform:uppercase;padding:8px 12px;cursor:pointer;bo
 body{margin:0;background:var(--bg);color:var(--ink);
 font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1080px;margin:0 auto;padding:30px 22px 64px;background:transparent}
-/* HEADER BANNER — the INNER CYAN frame is the ONLY continuous border (visible
-   all the way around). At the TL and BR corners (only), a solid yellow L-block
-   sits OUTSIDE the cyan with a small gap, extending ~half the panel along both
-   edges. At the FAR end of each arm, a diagonal cut spans the L's thickness —
-   so the L tapers off cleanly and there's no continuous yellow line past it.
-   Small parallelogram-shaped gaps punched in the cyan directly opposite each
-   yellow diagonal (top cyan for TL, bottom cyan for BR), with edges sloped to
-   match the yellow's diagonal — // matching ends instead of vertical || ends. */
-.head{position:relative;border:2px solid var(--cyan);padding:22px 26px 6px;margin:24px 24px 44px;
-background:linear-gradient(180deg,var(--accent-wash),transparent 80%)}
+/* HEADER BANNER. The cyan frame is a 2px ring drawn by ::before, and the two
+   gaps in it are part of the ring's own clip-path — a notch cut down from the
+   top edge under the TL yellow diagonal and up from the bottom edge under the
+   BR one, each 30px wide at the edge with sides sloped to the yellow's own
+   slope (dx/dy = 30/14). The notch is cut 8px deep into a 2px ring: the extra
+   depth only removes transparent interior, so no device-pixel rounding at any
+   zoom can leave a hairline across the gap (a page-coloured mask laid over the
+   border could, and did). At the TL and BR corners (only), a solid yellow
+   L-block sits OUTSIDE the cyan with a 6px gap, extending half the panel along
+   both edges and tapering off on a diagonal at the far end of each arm. */
+.head{position:relative;padding:24px 28px 8px;margin:24px 24px 44px;
+background:var(--head-bg);box-shadow:var(--head-shadow)}
+.head::before{content:"";position:absolute;inset:0;border:2px solid var(--cyan);pointer-events:none;
+clip-path:polygon(0 0,calc(50% - 30px) 0,calc(50% - 47px) 8px,calc(50% - 17px) 8px,50% 0,100% 0,
+100% 100%,calc(50% + 30px) 100%,calc(50% + 47px) calc(100% - 8px),calc(50% + 17px) calc(100% - 8px),50% 100%,0 100%)}
 .head .cr{position:absolute;background:var(--yellow);pointer-events:none;z-index:2}
-/* TL: block at top:-22 left:-22 → L's outer edge is 22px outside the cyan;
-   arm thickness 14px (block y=0..14); 6px gap between L's inner edge (y=14)
-   and the 2px cyan border (which sits at y=20..22 in block coords). 50% extent
-   along each edge. */
-.head .cr-tl{top:-22px;left:-22px;
-width:calc(50% + 22px);height:calc(50% + 22px);
+/* TL: block at top:-20 left:-20 → L's outer edge is 20px outside the cyan's
+   outer edge; arm thickness 14px, so a 6px gap between the L and the cyan.
+   50% extent along each edge. */
+.head .cr-tl{top:-20px;left:-20px;
+width:calc(50% + 20px);height:calc(50% + 20px);
 clip-path:polygon(0 0,100% 0,calc(100% - 30px) 14px,14px 14px,14px calc(100% - 30px),0 100%)}
 /* BR: mirror of TL (rotate 180°). */
-.head .cr-br{bottom:-22px;right:-22px;
-width:calc(50% + 22px);height:calc(50% + 22px);
+.head .cr-br{bottom:-20px;right:-20px;
+width:calc(50% + 20px);height:calc(50% + 20px);
 clip-path:polygon(100% 0,100% 100%,0 100%,30px calc(100% - 14px),calc(100% - 14px) calc(100% - 14px),calc(100% - 14px) 30px)}
-/* page-bg-colored masks that PUNCH a parallelogram-shaped gap through the 2px
-   cyan border. 30px wide (= horizontal projection of the yellow diagonal), with
-   each side sloped by 4px over 2px height to match the yellow diagonal's slope
-   (dx/dy ≈ -30/14). One on the TOP cyan under TL's diagonal, one on the BOTTOM
-   cyan under BR's diagonal. */
-.head .gap{position:absolute;background:var(--bg);z-index:1;pointer-events:none;
-width:34px;height:2px;
-clip-path:polygon(4px 0,34px 0,30px 100%,0 100%)}
-.head .gap-tl{top:-2px;left:calc(50% - 34px)}
-.head .gap-br{bottom:-2px;right:calc(50% - 34px)}
+/* LIGHT: a plain card. No corner blocks, no notches — a 1px border with a
+   3px primary bar along the top, on a white surface with a soft shadow. */
+:root[data-theme="light"] .head{margin:12px 0 36px}
+:root[data-theme="light"] .head::before{clip-path:none;border:1px solid var(--border);
+border-top:3px solid var(--cyan)}
+:root[data-theme="light"] .head .cr{display:none}
 /* SECTION PANELS — each remaining section is a bordered card (no yellow accents) */
 section.bx{border:1px solid var(--border);margin:22px 0;background:transparent}
 section.bx > h2{margin:0;padding:14px 22px 11px;border-bottom:none}
@@ -142,7 +148,7 @@ section.bx > .bx-body > *:last-child{margin-bottom:0}
 /* sub-heading inside a section (e.g. "Install commands" under Along for the ride) */
 h3.sub{font-size:11.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);
 margin:22px 0 8px;font-weight:600}
-.head h1{font-size:24px;font-weight:800;color:var(--yellow);margin:0 0 14px;letter-spacing:.01em}
+.head h1{font-size:24px;font-weight:800;color:var(--title);margin:0 0 14px;letter-spacing:.01em}
 table.head-kv{width:100%;border:none;background:transparent;font-size:12.5px;
 border-collapse:collapse}
 table.head-kv td{padding:6px 0;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
@@ -153,8 +159,8 @@ font-weight:500;padding-right:18px}
 h2{font-size:12.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
 color:var(--cyan);margin:34px 0 12px;padding:0 0 9px 0;border-bottom:1px solid var(--cyan)}
 h2 .note{color:var(--muted);font-weight:400;letter-spacing:0;text-transform:none;font-size:12px;margin-left:8px}
-a{color:var(--yellow);text-decoration:none;border-bottom:1px dashed transparent}
-a:hover{border-bottom-color:var(--yellow)}
+a{color:var(--link);text-decoration:none;border-bottom:1px dashed transparent}
+a:hover{border-bottom-color:var(--link)}
 code{background:var(--code-bg);color:var(--cyan);padding:1px 6px;border:1px solid var(--border);
 border-radius:2px;font:12.5px/1.4 var(--mono);word-break:break-all}
 pre{background:var(--pre-bg);color:var(--ink);padding:10px 12px;margin:4px 0;border:1px solid var(--border);
@@ -194,14 +200,14 @@ margin-right:4px}
    reads as a styling slip rather than a deliberate third state. Same lesson as the
    coverage-state note below: a state that renders like another state IS that state,
    to the only reader who matters. */
-.badge.warn{background:var(--surface-2);color:var(--yellow);border:1px solid var(--yellow)}
+.badge.warn{background:var(--surface-2);color:var(--warn);border:1px solid var(--warn)}
 .note{color:var(--muted);font-size:12.5px;margin:6px 0}
 /* A caveat that must not read as small print. The RUN dashboard uses it for
    "these resource numbers were measured under emulation; do not size #SBATCH --mem
    from them" — a correction that has to be at least as visible as the numbers it
    corrects, or it is the same defect in a lighter shade of grey. */
-.warn-note{color:var(--yellow);font-size:12.5px;margin:6px 0;padding:8px 12px;
-background:var(--surface-2);border-left:3px solid var(--yellow)}
+.warn-note{color:var(--warn);font-size:12.5px;margin:6px 0;padding:8px 12px;
+background:var(--surface-2);border-left:3px solid var(--warn)}
 .muted{color:var(--muted)}
 /* THE CONTRACT-COVERAGE STATES. `.ok` and `.warn` are emitted as BARE spans by the
    coverage table (`<span class="ok">checked</span>` / `<span class="warn">unobserved</span>`)
@@ -212,7 +218,7 @@ background:var(--surface-2);border-left:3px solid var(--yellow)}
    unobserved rows, visually indistinguishable. Collapsing UNOBSERVED into CHECKED is
    absence rounded up into a verdict, in pixels. */
 .ok{color:var(--ok);font-weight:700}
-.warn{color:var(--yellow);font-weight:700}
+.warn{color:var(--warn);font-weight:700}
 .empty{background:var(--surface);border:1px dashed var(--border);padding:13px 16px;
 color:var(--muted);font-size:13px;font-style:italic;margin:4px 0}
 details{margin:6px 0;background:var(--surface);border:1px solid var(--border);
@@ -240,7 +246,7 @@ display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .run-card details{margin:10px 0 2px}
 /* stale marker — a locus whose evidence ran against a DIFFERENT env digest than
    the one this workflow is headlined by (accretion is honest only per-digest). */
-.stale{color:var(--yellow);font-weight:600}
+.stale{color:var(--warn);font-weight:600}
 .how{border:1px solid var(--cyan);border-left:3px solid var(--cyan);
 background:linear-gradient(180deg,var(--accent-wash),transparent 70%);
 padding:14px 18px 16px;margin:12px 0}
@@ -417,16 +423,16 @@ def _close_page(gen_note_html: str = "") -> str:
 
 
 def _header_banner(title_html: str, pill_html: str, rows: list[tuple[str, str]]) -> str:
-    """The cyberpunk header banner — the ONE shared page-header used by BOTH the
-    Layer-1 env report and the Layer-2 run dashboard, so the two artifacts read as
-    one family. `title_html` and every row VALUE are inserted verbatim (callers
+    """The header banner — the ONE shared page-header used by BOTH the Layer-1
+    env report and the Layer-2 run dashboard, so the two artifacts read as one
+    family. The corner blocks are decoration the light theme hides; the frame
+    itself is `.head::before`. `title_html` and every row VALUE are inserted verbatim (callers
     escape); row KEYS are escaped here. Empty-value rows are dropped."""
     body = "".join(f'<tr><td class="k">{_e(k)}</td><td>{v}</td></tr>'
                    for k, v in rows if v != "" and v is not None)
     return (
         '<div class="head">'
         '<span class="cr cr-tl"></span><span class="cr cr-br"></span>'
-        '<span class="gap gap-tl"></span><span class="gap gap-br"></span>'
         f'<h1>{title_html}{pill_html}</h1>'
         f'<table class="head-kv">{body}</table>'
         '</div>'
@@ -663,7 +669,7 @@ def render_env_report_html(record: dict) -> str:
         head_rows.append(("Version check",
                           f'<span class="pill bad">⚠ {len(diverging)} '
                           f'requested ≠ installed</span> {parts}'))
-    # Shared header banner (the TL+BR corner-accent cyberpunk frame) — same
+    # Shared header banner — same
     # helper the Layer-2 run dashboard uses, so the two reports are one family.
     P.append(_header_banner(f"Bioinfo install report — {_e(name)}", pill, head_rows))
 
