@@ -1309,7 +1309,8 @@ def render_env_report_html(record: dict) -> str:
              UNOBSERVED: ('<span class="warn">unobserved</span>', "")}
     _n_cov = len(_contract.coverage)
     _cov_bits = [f"{_n_cov} clause{'s' if _n_cov != 1 else ''} total",
-                 f"{len(_contract.checked)} examined"]
+                 f"{len(_contract.checked)} examined across {_contract.observations} "
+                 f"item{'s' if _contract.observations != 1 else ''}"]
     if _contract.not_applicable:
         _cov_bits.append(f"{len(_contract.not_applicable)} not applicable")
     if _contract.unobserved:
