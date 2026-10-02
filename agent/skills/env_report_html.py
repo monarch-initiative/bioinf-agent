@@ -514,6 +514,105 @@ def _installed_version(t: str, is_adopt: bool, pkg: Optional[dict], v: Optional[
     return _resolved_version(t, pkg, v, shipped)
 
 
+def _created_line(iso: str) -> str:
+    """`2026-09-29T07:19:42.203990+00:00` → `2026-09-29 07:19 UTC`. Anything that is
+    not an ISO timestamp is printed as recorded — never reformatted into a guess."""
+    if not iso:
+        return "—"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return str(iso)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _tools_line(requested: int, passed: int, total: int, is_adopt: bool, shallow: int) -> str:
+    """The header's one sentence about the requested tools, qualified by evidence depth."""
+    if requested == 0:
+        return "none requested"
+    s = f"{requested} requested"
+    if is_adopt and not total:
+        return s + ", adopted by published digest (no check was re-run here)"
+    if not total:
+        return s + ", no check was run in the shipped image"
+    if passed == total:
+        if total == 1:
+            s += ". It ran and passed its check inside the shipped image"
+        else:
+            s += f". All {total} ran and passed their check inside the shipped image"
+    else:
+        s += f". {passed} of {total} passed their check inside the shipped image"
+    if shallow:
+        if total == 1:
+            who = "it"
+        elif shallow >= total:
+            who = "all of them"
+        else:
+            who = f"{shallow} of them"
+        s += (f". For {who} the check only confirmed the tool is present and reports "
+              f"a version; it did not exercise it")
+    return s + "."
+
+
+# What an UNOBSERVED clause means to a reader, keyed by the clause's own id. The
+# fallback is the clause's recorded `detail`, so a new clause is never silently
+# dropped from the sentence — it just arrives in the contract's words until it is
+# given plain ones here.
+_PLAIN_GAP = {
+    "WELL_FORMED.shipped_binaries":
+        "a pre-built biocontainer carries no list of the binaries it shipped, so that "
+        "part of the record is empty",
+    "WELL_FORMED.tool_identities":
+        "the record does not say what each tool calls itself, so the page cannot "
+        "describe the tools' own identities",
+    "BUILT.platform":
+        "the shipped image's architecture was not read, so it is not confirmed to be "
+        "the one the record claims",
+    "VALIDATED_IN_IMAGE":
+        "no check was run inside the shipped image, so nothing here shows the tools work",
+    "VALIDATED_IN_IMAGE.discriminates":
+        "the checks were not re-run in a control image without the tool, so a pass is "
+        "not shown to be about this image",
+    "POLICY_CLEAN.accelerator_observed":
+        "the shipped image was not opened to read its GPU toolkit, so the accelerator "
+        "claim is not confirmed against it",
+}
+
+
+def _plain_gap(c) -> str:
+    return _PLAIN_GAP.get(c.clause) or (c.detail or c.clause)
+
+
+def _status_line(contract) -> str:
+    """The header's Status row for a PASSING contract: a Passed pill, a plain
+    account of any guarantee that could not be examined, and the coverage tag."""
+    from agent.skills.env_honesty import ASSURANCE
+    gaps = contract.unobserved
+    if not gaps:
+        # "applicable" is load-bearing: NOT_APPLICABLE clauses (accelerator/license/
+        # provenance on an ordinary env) examined nothing by design, and the
+        # guarantee table below renders them n/a.
+        return ('<span class="pill ok">Passed</span> registered and shippable; every '
+                'applicable guarantee was checked on this record. '
+                'Coverage tag: <code>proven</code>.')
+    n = len(gaps)
+    parts = [f'<span class="pill ok">Passed</span> registered and shippable. '
+             f'{n} guarantee{"s" if n != 1 else ""} could not be examined: '
+             + "; ".join(_e(_plain_gap(c)) for c in gaps) + "."]
+    if any(c.establishes == ASSURANCE for c in gaps):
+        parts.append("This limits what was proved. Re-freeze with "
+                     "<code>evidence={tool: &lt;command that runs the tool&gt;}</code> to close it.")
+    if any(c.establishes != ASSURANCE for c in gaps):
+        parts.append("This is expected on this install path and limits what the report "
+                     "describes, not what it proved.")
+    parts.append('Coverage tag: <code>degraded</code>.')
+    return " ".join(parts)
+
+
 def render_env_report_html(record: dict) -> str:
     """Render the freeze record as a self-contained HTML page (see module docstring
     for the honesty contract this upholds).
@@ -569,7 +668,7 @@ def render_env_report_html(record: dict) -> str:
     # `check_build` is the SAME function `freeze` refuses on, so the page and the
     # gate answer alike.
     from agent.skills.env_honesty import (CHECKED, NOT_APPLICABLE, UNOBSERVED,
-                                          check_build, coverage_disclosure,
+                                          check_build,
                                           evaluate_build, guarantee_verdicts)
     try:
         _contract = evaluate_build(r)
@@ -607,60 +706,44 @@ def render_env_report_html(record: dict) -> str:
         mode_desc += f" · {r['build_method']}"
     if r.get("engine") and r.get("engine") != "none":
         mode_desc += f" · engine {r['engine']}"
-    summary_parts = [f"{len(requested)} requested"]
-    summary_parts.append("adopted by digest" if is_adopt else f"{passed}/{total} validated in image")
-    summary_parts.append(f"{len(ride)} along for the ride")
-    summary_parts.append(f"{len(system)} system (apt)")
-    # `N/N validated in image` is the line a reader takes away, and unqualified it can
-    # sit over an env whose tool cannot import its own plotting module — `--help`
-    # evidence is answered by argparse before any dependency is touched. The per-tool
-    # table badges depth (`⚠ version`); the SUMMARY must too, or the strongest
-    # sentence on the page is the least qualified one.
-    #
-    # It says "reads as", not "is". `evidence_depth` is a structural reading of command
-    # TEXT and this module's own comment records it under-reporting a command that runs
-    # `DESeq()` and asserts on the result. Under-claiming a disclosure costs a reader
-    # nothing; the thing that cost them something was a bare count implying more.
+    # -- THE TOOLS LINE. The count a reader takes away, and unqualified it can sit
+    # over an env whose tool cannot import its own plotting module — `--help`
+    # evidence is answered by argparse before any dependency is touched. The
+    # per-tool table badges depth (`⚠ version`); the headline must too, or the
+    # strongest sentence on the page is the least qualified one. The qualifier
+    # says what the check confirmed, not what the tool is: `evidence_depth` is a
+    # structural reading of command TEXT and under-reports a command that loads a
+    # library and then uses it. Under-claiming costs a reader nothing.
     _shallow_tools = _shallow_evidence_tools(r)
-    if _shallow_tools and total:
-        summary_parts.append(
-            f"{len(_shallow_tools)} of those command(s) read as a presence/version "
-            f"probe rather than a functional run")
+    tools_line = _tools_line(len(requested), passed, total, is_adopt, len(_shallow_tools))
+    also = []
+    if ride:
+        also.append(f"{len(ride)} conda package{'s' if len(ride) != 1 else ''}")
+    if system:
+        also.append(f"{len(system)} system package{'s' if len(system) != 1 else ''} (apt)")
     head_rows = [
         ("Image", f'<code>{_e(r.get("image",""))}</code>' if r.get("image") else "—"),
-        ("Created", _e(r.get("created_at", "—"))),
+        ("Created", _e(_created_line(r.get("created_at", "")))),
         ("Platform", _e(r.get("platform", "—"))),
         ("Mode", _e(mode_desc) or "—"),
-        ("Validation locus", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
-        ("Summary", " · ".join(_e(p) for p in summary_parts)),
+        ("Validated on", _e(_locus_line(r.get("validation_locus", ""))) or "—"),
+        ("Tools", _e(tools_line)),
+        ("Also in the image", " · ".join(_e(a) for a in also)),
     ]
-    # -- THE OUTCOME TAG, IN THE README'S OWN VOCABULARY ---------------------
-    # freeze returns `proven` or `degraded` and that value evaporates with the session;
-    # the README teaches a reader to scan the deliverable for the word, so a durable
-    # artifact must print it. Derived at render time from the SAME contract
-    # walk the gate runs — `contract.unobserved` is the attribute freeze's two literal
-    # terminals branch on — and the advisory sentence comes from `coverage_disclosure`,
-    # the same function that writes it into the freeze return, so the page and the tag
-    # cannot drift apart. When the contract FAILS, the ⛔ section outranks any outcome
-    # tag and this row renders nothing: proven/degraded is a vocabulary for REGISTERED
-    # envs, and printing either over a violation would soften it.
+    # -- THE STATUS ROW. freeze returns `proven` or `degraded` and that value
+    # evaporates with the session; the README teaches a reader to look for the word,
+    # so the page prints it — as a tag at the end of a plain sentence, not as the
+    # headline. Derived at render time from the SAME contract walk the gate runs
+    # (`contract.unobserved` is what freeze's two literal terminals branch on), so
+    # the page and the tag cannot drift apart. The sentence is written for the
+    # reader from the unobserved clauses themselves (`_plain_gap`); the agent-facing
+    # advisory `coverage_disclosure` writes into the freeze return is the same facts
+    # in the contract's vocabulary, and the coverage table below carries the ids.
+    # When the contract FAILS, the ⛔ section outranks any status and this row
+    # renders nothing: proven/degraded is a vocabulary for REGISTERED envs, and
+    # printing either over a violation would soften it.
     if _contract is not None and not _violations and not _contract_error:
-        if _contract.unobserved:
-            try:
-                _advisory = coverage_disclosure(_contract).get("coverage_advisory", "")
-            except Exception:
-                _advisory = ""
-            head_rows.append(("Outcome",
-                              '<span class="pill na">degraded</span> ' + _e(_advisory)))
-        else:
-            # "APPLICABLE" is load-bearing: the proven branch means no clause was
-            # UNOBSERVED, but NOT_APPLICABLE clauses (accelerator/license/provenance
-            # on an ordinary env) examined nothing by design, and the guarantee
-            # table below renders them n/a. "Every clause examined something" would
-            # be disproved by the table beside it.
-            head_rows.append(("Outcome",
-                              '<span class="pill ok">proven</span> every applicable '
-                              'clause of the honesty contract was checked on this record'))
+        head_rows.append(("Status", _status_line(_contract)))
     # A loud, dedicated header line when any observed version diverges from the request —
     # so the mismatch is unmissable before the reader even scrolls to the Tools table.
     if diverging:

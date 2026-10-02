@@ -235,15 +235,16 @@ _FUNCTIONAL = {**_GOOD,
 
 def test_a_presence_only_env_does_not_get_an_unqualified_validated_headline():
     html = render_env_report_html(_PRESENCE_ONLY)
-    assert "1/1 validated in image" in html, "the count itself is still true and stays"
-    assert "presence/version probe rather than a functional run" in html
+    assert "ran and passed its check inside the shipped image" in html, \
+        "the count itself is still true and stays"
+    assert "only confirmed the tool is present and reports a version" in html
 
 
 def test_an_env_whose_evidence_runs_the_tool_is_not_qualified():
     """The negative case, so the qualifier cannot be a constant."""
     html = render_env_report_html(_FUNCTIONAL)
-    assert "1/1 validated in image" in html
-    assert "presence/version probe rather than a functional run" not in html
+    assert "ran and passed its check inside the shipped image" in html
+    assert "only confirmed the tool is present and reports a version" not in html
 
 
 def test_the_headline_and_the_per_tool_badge_read_depth_the_same_way():
