@@ -634,7 +634,10 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", "}", ""]
 
     # resources
-    L += ["process {", f"{_INDENT}errorStrategy = 'terminate'"]
+    L += ["process {",
+          f"{_INDENT}// One failing sample stops nothing already running: in-flight tasks complete, nothing",
+          f"{_INDENT}// new is submitted, and -resume re-runs the failed tasks and what follows them.",
+          f"{_INDENT}errorStrategy = 'finish'"]
     if not all(_fully_sized(s) for s in record.stages):
         d = DEFAULT_STAGE_REQUEST
         L += [f"{_INDENT}// DEFAULT request — not sized for your data",

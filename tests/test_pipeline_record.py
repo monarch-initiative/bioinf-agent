@@ -181,6 +181,10 @@ class TestRecordOnDisk:
         assert {"stage_cut", "publish", "resume", "errors", "cache", "queue_size",
                 "run_records", "cleanup", "sheet_preflight", "resources"} <= keys
         assert {d.source for d in rec.defaults} <= {"default", "caller", "seal"}
+        # a failing sample must not kill the other samples' in-flight work
+        assert {d.key: d.value for d in rec.defaults}["errors"] == (
+            "finish: a failure submits nothing new and in-flight tasks complete; `-resume` re-runs what failed; "
+            "no retries")
         rec2 = _record(stages=[[0, 1, 2]])
         srcs = {d.key: d.source for d in rec2.defaults}
         assert srcs["stage_cut"] == "caller" and srcs["publish"] == "default"

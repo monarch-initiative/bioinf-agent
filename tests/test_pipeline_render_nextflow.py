@@ -461,7 +461,9 @@ class TestConfig:
     def test_unsized_stages_share_the_default_request_and_say_so(self):
         cfg = render_nextflow(_record())["nextflow.config"]
         assert ("process {\n"
-                "    errorStrategy = 'terminate'\n"
+                "    // One failing sample stops nothing already running: in-flight tasks complete, nothing\n"
+                "    // new is submitted, and -resume re-runs the failed tasks and what follows them.\n"
+                "    errorStrategy = 'finish'\n"
                 "    // DEFAULT request — not sized for your data\n"
                 "    cpus = 1\n"
                 "    memory = '8 GB'\n"
