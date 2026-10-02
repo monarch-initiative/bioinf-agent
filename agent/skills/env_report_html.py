@@ -687,8 +687,9 @@ _PLAIN_GUARANTEE = {
         "agent-authored. Not applicable when every install came from a package registry."),
     "WELL_FORMED": (
         "The record is well-formed",
-        "Every structured part of this record parses against its declared schema, so "
-        "nothing on this page was read out of a field that could mean something else."),
+        "The structured parts of this record (the list of shipped binaries, what each tool "
+        "calls itself) have exactly the fields they are supposed to, so the values on this "
+        "page are read from the record as written, never guessed from a loosely shaped one."),
 }
 
 # What a coverage clause establishes when it passes, in a reader's words.
@@ -1306,14 +1307,15 @@ def render_env_report_html(record: dict) -> str:
     _mark = {CHECKED: ('<span class="ok">checked</span>', ""),
              NOT_APPLICABLE: ('<span class="muted">n/a</span>', ""),
              UNOBSERVED: ('<span class="warn">unobserved</span>', "")}
-    _cov_bits = [f"{len(_contract.checked)} clause{'s' if len(_contract.checked) != 1 else ''} "
-                 f"examined {_contract.observations} thing{'s' if _contract.observations != 1 else ''}"]
+    _n_cov = len(_contract.coverage)
+    _cov_bits = [f"{_n_cov} clause{'s' if _n_cov != 1 else ''} total",
+                 f"{len(_contract.checked)} examined"]
     if _contract.not_applicable:
         _cov_bits.append(f"{len(_contract.not_applicable)} not applicable")
     if _contract.unobserved:
-        _cov_bits.append(f"{len(_contract.unobserved)} had nothing to examine")
+        _cov_bits.append(f"{len(_contract.unobserved)} nothing to examine")
     P.append('<details class="sub"><summary>'
-             f'<h3>Contract coverage <span class="note">clause by clause · '
+             f'<h3>Contract coverage <span class="note">'
              f'{_e(" · ".join(_cov_bits))}</span></h3></summary>')
     P.append('<div class="tbl-wrap"><table class="cov"><thead><tr><th>Clause</th><th>Looked?</th>'
              '<th>Kind</th><th>What it examined</th></tr></thead><tbody>')
