@@ -8,11 +8,14 @@ nothing run. A refusal is a `ValueError` that names the remedy.
 
 The file set
 ------------
-  main.nf            one INLINE process per stage, in stage order, wired in `workflow {}`
+  main.nf            one INLINE process per stage, in stage order, wired in `workflow {}`;
+                     `record_launch()` writes runs/<stamp>/run.json (the launch line, every
+                     param as resolved, the pipeline's provenance) and copies the
+                     samplesheet beside it before any task runs
   nextflow.config    `local` (docker, local executor) and `slurm` (apptainer, SLURM
                      executor) profiles, each naming the image it runs — the docker tag
-                     locally, the .sif on the cluster; per-stage resources; trace +
-                     report under runs/<stamp>/
+                     locally, the .sif on the cluster; per-stage resources; trace, report
+                     and timeline under runs/<stamp>/, one directory per run
   params.yaml        the shared parameters with the sealed run's defaults, the
                      samplesheet and the output directory — nothing about WHERE the
                      pipeline runs; that is nextflow.config's
@@ -31,6 +34,8 @@ The binding table — how a how-to placeholder reaches a process script
                                                          <- files("${params.hisat2_index}*")
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
   per-sample value column    {SAMPLE}        ->  ${meta.sample}
+  thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
+                                                 (format: threads; the sealed count unless sized)
   artifact in an output slot {OUT}/x.bam     ->  x.bam           (placeholders inside bind as above)
   bare output slot           {OUT}           ->  .
   `bound_commands` is that table applied to a stage — the page's command column, so
@@ -86,6 +91,12 @@ _RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -r
 #: How a run starts at each locus — the ONE spelling the launcher and the page share.
 RUN_LOCAL = _RUN_LINE.format(profile="local")
 RUN_HPC = "sbatch launcher.sh"
+#: What a run leaves under runs/<stamp>/ — the launch record and the page name the same five.
+RUN_RECORD_FILES = ("run.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
+#: The trace's columns: which task, which SLURM job, how it ended, when, how long, what it
+#: cost, where it ran, and the command it ran.
+TRACE_FIELDS = ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
+                "container,workdir,script")
 #: The two params every pipeline carries beside its own: (key, value) as params.yaml
 #: and main.nf spell them. The page reads the same pair.
 SAMPLESHEET_PARAM = ("samplesheet", "samples.csv")
@@ -260,6 +271,8 @@ class _Context:
         """The Groovy expression a placeholder becomes inside a script block."""
         p = self.param(ph)
         low = p.name.lower()
+        if p.kind == "cpus":
+            return "${task.cpus}"
         if p.kind == "per_sample":
             if p.value_kind == "value":
                 return "${meta." + self.col_of.get(ph, "sample") + "}"
@@ -333,8 +346,8 @@ def _param_default_expr(p: PipelineParam) -> str:
 def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
     lines: list[str] = []
     for p in record.params:
-        if p.kind == "per_sample":
-            continue                                  # a samplesheet column, not a param
+        if p.kind != "shared":
+            continue                                  # a samplesheet column or a thread slot, not a param
         lines.append(f"// {_param_comment(record, p)}.")
         lines.append("// The default is what the sealed run was validated with.")
         lines.append(f"params.{p.name.lower()} = {_param_default_expr(p)}")
@@ -365,8 +378,8 @@ def _measured_comment(stage: PipelineStage) -> Optional[str]:
 def _stage_inputs(stage: PipelineStage, ctx: _Context) -> dict[str, list]:
     """The stage's inputs sorted into the four plumbing classes, record order kept."""
     arts = [i for i in stage.inputs if i.origin == "stage"]
-    names = {i.name for i in stage.inputs if i.origin != "stage"}
-    params = [ctx.param(n) for n in [i.name for i in stage.inputs if i.origin != "stage"]]
+    names = {i.name for i in stage.inputs if i.origin in ("param", "column")}
+    params = [ctx.param(i.name) for i in stage.inputs if i.origin in ("param", "column")]
     shared_paths = [p for p in params if p.kind == "shared" and p.value_kind == "path"]
     prefixes = [p for p in params if p.kind == "shared" and p.value_kind == "prefix"]
     path_cols = [c for c in ctx.path_cols if c.placeholder in names]
@@ -499,6 +512,7 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
         f"{_INDENT}if (workflow.profile.tokenize(',').contains('slurm') && {empty})"
         f"\n{_INDENT * 2}error \"nextflow.config, profile slurm: process.container is empty; set it "
         f"to the .sif built from image {digests}\"")
+    lines.append(f"{_INDENT}record_launch()   // runs/<stamp>/run.json and samples.csv, before any task")
     meta = ", ".join(["sample: r.sample"] + [f"{c.name}: r.{c.name}" for c in ctx.value_cols])
     files = [f"file(r.{c.name}, checkIfExists: true)" for c in ctx.path_cols]
     item = f"tuple([{meta}], " + ", ".join(files) + ")" if files else f"[{meta}]"
@@ -516,6 +530,54 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     return "\n".join(lines)
 
 
+def _groovy_literal(v: Any) -> str:
+    """A string, None or a list of strings as a Groovy literal."""
+    if v is None:
+        return "null"
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_groovy_literal(x) for x in v) + "]"
+    return _nf_quote(str(v))
+
+
+def _render_record_launch(record: PipelineRecord, ctx: _Context) -> str:
+    """`record_launch()`: what only the script can see at launch, written before any
+    task runs so a killed run still has it. The strict syntax is the default now, so
+    the JSON writer is named in full rather than imported."""
+    prov = [("name", record.name), ("version", record.version), ("rendered", record.created_at),
+            ("sealed_workflow", record.sealed_workflow),
+            ("sealed_workflow_sha256", record.sealed_workflow_sha256),
+            ("images", [im["digest"] or im["ref"] for im in ctx.images])]
+    return "\n".join([
+        "// The launch record, runs/<stamp>/run.json, written before any task runs: the launch line,",
+        "// every param as resolved (a command-line value shows as overridden), the SLURM job id",
+        "// under sbatch, and the pipeline's provenance; samples.csv is copied beside it as read.",
+        "// nextflow.config writes the rest of the directory: trace.txt, report.html, timeline.html.",
+        "def record_launch() {",
+        f'{_INDENT}def run_dir = file("runs/${{params.run_stamp}}")',
+        f"{_INDENT}run_dir.mkdirs()",
+        f"{_INDENT}file(params.samplesheet, checkIfExists: true).copyTo(run_dir.resolve('samples.csv'))",
+        f"{_INDENT}run_dir.resolve('run.json').text = groovy.json.JsonOutput.prettyPrint("
+        f"groovy.json.JsonOutput.toJson([",
+        f"{_INDENT * 2}command: workflow.commandLine,",
+        f"{_INDENT * 2}run_name: workflow.runName,",
+        f"{_INDENT * 2}session_id: workflow.sessionId.toString(),",
+        f"{_INDENT * 2}started: workflow.start.toString(),",
+        f"{_INDENT * 2}profile: workflow.profile,",
+        f"{_INDENT * 2}launch_dir: workflow.launchDir.toString(),",
+        f"{_INDENT * 2}nextflow: nextflow.version.toString(),",
+        f"{_INDENT * 2}container_engine: workflow.containerEngine,",
+        f"{_INDENT * 2}slurm_job_id: System.getenv('SLURM_JOB_ID'),",
+        f"{_INDENT * 2}pipeline: [",
+        *[f"{_INDENT * 3}{k}: {_groovy_literal(v)}," for k, v in prov],
+        f"{_INDENT * 2}],",
+        f"{_INDENT * 2}params: params,",
+        f"{_INDENT}]))",
+        # the trailing newline: without it Nextflow's own first banner line joins this one
+        f'{_INDENT}log.info "run records: runs/${{params.run_stamp}}/\\n"',
+        "}",
+    ])
+
+
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     parts = [
         f"// {ctx.header}",
@@ -530,7 +592,7 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     ]
     for s in record.stages:
         parts += [_render_process(record, s, ctx), ""]
-    parts.append(_render_workflow_block(record, ctx))
+    parts += [_render_workflow_block(record, ctx), "", _render_record_launch(record, ctx)]
     return "\n".join(parts) + "\n"
 
 
@@ -546,7 +608,11 @@ def _sizing_lines(stage: PipelineStage) -> list[str]:
     r = stage.resources
     out = []
     if r.cpus is not None:
-        out.append(f"cpus = {int(r.cpus)}")
+        line = f"cpus = {int(r.cpus)}"
+        if r.threads_slot:
+            line += ("   // the thread count the command runs with, through task.cpus"
+                     + (f"; the sealed run used {int(r.cpus)}" if r.requested_by == "seal" else ""))
+        out.append(line)
     if r.mem is not None:
         out.append(f"memory = {_nf_memory(r.mem)}")
     if r.time is not None:
@@ -654,17 +720,21 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         L.append(f"{_INDENT}}}")
     L += ["}", ""]
 
-    L += ["// One directory per run, named by its launch time: the trace lists every task's",
-          "// command, the report its resources. The launch line itself is in `nextflow log`.",
+    L += ["// One directory per run, runs/<stamp>/, named by its launch time and never overwritten:",
+          "// trace.txt (every task: status, when, how long, resources, work dir, command), then",
+          "// report.html and timeline.html at the end; main.nf adds run.json and the samplesheet",
+          "// as read, before any task runs.",
           "// (A params entry rather than a variable: the strict config parser allows no",
           "// declarations beside config statements.)",
           "params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')",
           "trace {", f"{_INDENT}enabled = true",
           f'{_INDENT}file = "runs/${{params.run_stamp}}/trace.txt"',
-          f"{_INDENT}fields = 'task_id,name,status,exit,container,realtime,%cpu,peak_rss,workdir,script'",
+          f"{_INDENT}fields = '{TRACE_FIELDS}'",
           "}",
           "report {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_stamp}}/report.html"', "}"]
+          f'{_INDENT}file = "runs/${{params.run_stamp}}/report.html"', "}",
+          "timeline {", f"{_INDENT}enabled = true",
+          f'{_INDENT}file = "runs/${{params.run_stamp}}/timeline.html"', "}"]
     return "\n".join(L) + "\n"
 
 
@@ -682,8 +752,8 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
          "# Every value is what the sealed run was validated with. WHERE the pipeline runs — which",
          "# image, on which machine — is nextflow.config's business, never this file's."]
     for p in record.params:
-        if p.kind == "per_sample":
-            continue
+        if p.kind != "shared":
+            continue                                  # a samplesheet column or a thread slot
         L.append(f"# {_param_comment(record, p)}")
         if p.default is not None and _INT_RE.match(p.default):
             L.append(_yaml_line(p.name.lower(), int(p.default)))
@@ -724,7 +794,8 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           'export NXF_HOME="$PWD/.nextflow_home"',
           "",
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
-          "# fresh run. Each run writes runs/<timestamp>/trace.txt and report.html.",
+          "# fresh run. Each run leaves its own runs/<timestamp>/ (run.json, samples.csv, trace.txt,",
+          "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.",
           _RUN_LINE.format(profile="slurm") + ' "$@"',
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",

@@ -4,18 +4,18 @@ reads before running it on real data, rendered PURELY from the typed
 `PipelineRecord` (agent/skills/pipeline_record.py).
 
 The page has one fixed shape: the header banner, the picture (what runs, per
-sample), how the files fit together (the one launch line, then the directory as a
-listing — what each file is for, how the run pulls it in, what it holds — and our
-conventions), the parameters and samples, how to run it locally, how to run it on
-the cluster, the stages, the footer. A pipeline directory offers ONE way to run — every row of
-samples.csv, with Nextflow — and the page shows it at each locus as the steps a person
-follows without thinking: change directory, make nextflow available (locally: source
-the checkout's runtime env; on the cluster: the launcher loads the modules), run. It
-speaks the
-files' own vocabulary — `params.gtf`, the `reads` column, `results/<sample>/` — never
-the seal's `{PLACEHOLDER}`s, and the command it shows per stage is the line main.nf
-runs, bound by the Nextflow renderer itself (`bound_commands`), so the page and the
-files cannot disagree.
+sample), the directory (the files you copy in on the left, what a run adds on the
+right, each with what it holds and where it is set), an example samples.csv, how to
+run it locally, how to run it on the cluster, the stages, the footer. A pipeline
+directory offers ONE way to run — every row of samples.csv, with Nextflow — and the
+page shows it at each locus as the steps a person follows without thinking: change
+directory, make nextflow available (locally: source the checkout's runtime env; on the
+cluster: the launcher loads the modules), run. It speaks the files' own vocabulary —
+`params.gtf`, the `reads` column, `results/<sample>/` — never the seal's
+`{PLACEHOLDER}`s, and the command it shows per stage is the line main.nf runs, bound
+by the Nextflow renderer itself (`bound_commands`), so the page and the files cannot
+disagree. What params.yaml holds is read in params.yaml itself (every value carries
+its comment there), so the page names its keys and does not repeat them.
 
 Honesty guarantees, made structural:
   • PURE — reads only the record. No clock, no disk, no network.
@@ -32,8 +32,8 @@ Self-contained: the shared shell's CSS plus the picture's own (scoped inside the
 hover — with JS off the page reads the same, minus the highlighting. Same shell,
 banner and palette as the ENV report and the RUN dashboard, so the three pages are
 one family. One public fn: render_pipeline_page; `picture_layout` is the picture's
-geometry and `files_tree` the directory listing's rows, exposed so a test can
-measure them.
+geometry and `directory_tree` the directory's entries, exposed so a test can measure
+them.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ from typing import Optional
 from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources, _PLACEHOLDER_RE)
-from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_LOCAL, SAMPLESHEET_PARAM,
+from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_RECORD_FILES, SAMPLESHEET_PARAM,
                                                    bound_commands, run_lines)
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
@@ -66,33 +66,30 @@ _UNTRUSTED_AUTHORITY = ("not_authoritative", "unrecorded", "mixed")
 #: A value's kind, in words.
 _VALUE_KIND = {"path": "a path", "prefix": "a prefix — a family of files named after it",
                "value": "a value"}
-#: Where a run records what ran.
-_WHAT_RAN = ("What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists every task's command, "
-             "<code>runs/&lt;timestamp&gt;/report.html</code> the resources, and <code>nextflow log</code> "
-             "the launch line.")
 _TITLE_LEFT = "samples.csv & params.yaml"
 _TITLE_MID = "stages, in execution order"
 _TITLE_RIGHT = "published to results/"
-#: The record's `defaults` keys, in words, and who decided each.
-_CONVENTION = {"stage_cut": "Stage cut", "publish": "Publishing", "resume": "Resume", "errors": "Errors",
-               "cache": "Cache", "queue_size": "Queue size", "run_records": "Run records",
-               "cleanup": "Cleanup", "sheet_preflight": "Samplesheet check", "resources": "Resources"}
-_DECIDED_BY = {"default": "our default", "caller": "set when rendered", "seal": "from the seal"}
-#: Why the launch directory matters — Nextflow works out of the directory it starts in.
-_LAUNCH_NOTE = ("Nextflow works out of the directory it is started in: <code>work/</code> (each task's "
-                "sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) and the run records "
-                "appear here, so launch from this directory every time.")
-#: The directory listing's two groups, in order, and its column titles.
-_FILES_GROUPS = (("edit", "in the directory you launch from"), ("written", "written by a run"))
-_FILES_HEADERS = ("File", "How it is used", "What it holds")
-#: The listing's own two rules, scoped to the section: a file name never breaks mid-word
-#: and a command span never breaks mid-token.
-_FILES_STYLE = "<style>#files td:first-child{white-space:nowrap}#files code{white-space:nowrap}</style>"
 #: The files a run directory is made of, as the renderer names them: what a person
-#: copies for a local run, the launcher on top for the cluster, and the record.
+#: copies, the launcher on top for the cluster, and what stays with the template.
 _COPY_FILES = ("main.nf", "nextflow.config", "params.yaml")
 _LAUNCHER = "launcher.sh"
-_PAGE, _RECORD_DIR, _RECORD, _MANIFEST = "pipeline.html", ".pipeline/", "pipeline.yaml", "MANIFEST.sha256"
+_PAGE, _RECORD_DIR = "pipeline.html", ".pipeline/"
+#: The directory's two columns, in order: what you put there, what a run adds.
+_DIR_GROUPS = (("files", "you put here"), ("written", "a run adds"))
+#: The directory box's own rules, scoped to the section: two columns that stack on a
+#: narrow screen, and a file name that never breaks mid-word.
+_DIR_STYLE = (
+    "<style>#directory .dir{display:grid;grid-template-columns:minmax(240px,2fr) minmax(280px,3fr);"
+    "border:1px solid var(--border);background:var(--surface);margin:8px 0}"
+    "#directory .dir .path{grid-column:1/-1;padding:8px 16px;border-bottom:1px solid var(--border);"
+    "font-family:var(--mono);font-size:12.5px;color:var(--muted)}"
+    "#directory .dir .col{padding:12px 16px}#directory .dir .col+.col{border-left:1px solid var(--border)}"
+    "#directory .dir .col-title{margin:0 0 10px;font-size:10.5px;font-weight:700;letter-spacing:.08em;"
+    "text-transform:uppercase;color:var(--cyan)}"
+    "#directory .dir ul{margin:0;padding:0;list-style:none}#directory .dir li{margin:0 0 10px;line-height:1.5}"
+    "#directory .dir code{white-space:nowrap}#directory .dir .what{font-size:12.5px;color:var(--muted)}"
+    "@media(max-width:720px){#directory .dir{grid-template-columns:1fr}"
+    "#directory .dir .col+.col{border-left:none;border-top:1px solid var(--border)}}</style>")
 #: How the override example is spelled per value kind.
 _SLOT = {"path": "<path>", "prefix": "<prefix>", "value": "<value>"}
 
@@ -280,8 +277,8 @@ def picture_layout(record: PipelineRecord) -> _Layout:
         cols.append(n)
     params: list[_Node] = []
     for p in record.params:
-        if p.kind == "per_sample":
-            continue                      # a samplesheet column (or the row key), drawn above
+        if p.kind != "shared":
+            continue                      # a samplesheet column (drawn above) or a thread slot (the stage's own cpus)
         tip = (f"{_key(p)} · {_VALUE_KIND.get(p.value_kind, p.value_kind)}"
                + (f" · example {p.default}" if p.default is not None else "")
                + (f" — {p.description}" if p.description else ""))
@@ -330,8 +327,12 @@ def picture_layout(record: PipelineRecord) -> _Layout:
                   classes="unsized" if st.resources.requested_by == "default" else "",
                   extra={"data-index": str(st.index), "data-rank": str(rank[st.name])})
         r = st.resources
-        req = ("unsized (default request)" if r.requested_by == "default"
-               else f"request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}")
+        if r.requested_by == "default":
+            req = "unsized (default request)"
+        elif r.requested_by == "seal":
+            req = f"request cpus {r.cpus}, the sealed thread count · mem and time default · gpus {r.gpus}"
+        else:
+            req = f"request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
         runs = "once per sample" if st.scope == "per_sample" else "once over the cohort"
         n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · runs {runs} · "
                      f"image {_short_digest(st.image_digest) or 'unrecorded'} · {req} · "
@@ -581,17 +582,16 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
 
 
 @dataclass(frozen=True)
-class FileRow:
-    """One row of the directory listing. `group` is "edit" (what you copy, edit or
-    write, and the record) or "written" (what a run adds); `role` is the verdict beside
-    the name — copy · copy, then edit · write your own · copy, cluster only · this page ·
-    the record — empty for what a run writes; `how` and `holds` are read off the
-    record, with `command` spans in backticks."""
+class DirEntry:
+    """One entry of the directory box. `group` is "files" (what you put there) or
+    "written" (what a run adds); `role` is the verdict beside a file's name — copy ·
+    copy, then edit · write your own · copy, cluster only — and empty for what a run
+    writes; `what` is one line read off the record — what it holds and where it is
+    set — with `command` spans in backticks."""
     group: str
     name: str
     role: str
-    how: str
-    holds: str
+    what: str
 
 
 def _image_words(record: PipelineRecord) -> tuple[str, str]:
@@ -624,72 +624,71 @@ def _loads_words(record: PipelineRecord) -> str:
     return "rendered without a cluster named, so it loads no modules; then"
 
 
-def files_tree(record: PipelineRecord) -> list[FileRow]:
-    """The directory listing, read off the record alone: what you copy, edit or write
-    and the record, then what a run adds."""
+def _threads_words(record: PipelineRecord) -> str:
+    """The stages whose command's thread count is their cpus request, if any."""
+    sized = [f"{s.name} {s.resources.cpus}" for s in _ordered(record) if s.resources.threads_slot]
+    return f" · threads = cpus ({', '.join(sized)})" if sized else ""
+
+
+def directory_tree(record: PipelineRecord) -> list[DirEntry]:
+    """The directory box, read off the record alone: the files you put there, then
+    what a run adds — each in one line that says what it holds and where it is set."""
     sheet = record.samplesheet
     names = [c.name for c in sheet.columns]
-    n_rows = len(sheet.rows)
     stages = _ordered(record)
     cohort = [s for s in stages if s.scope == "cohort"]
     shared = [p.name.lower() for p in record.params if p.kind == "shared"]
     tag, sif = _image_words(record)
     chain = " → ".join(s.name for s in stages) or "(no stages)"
-    often = ("one process per stage, run once per samples.csv row" if not cohort
-             else "one process per stage; a per-sample stage runs once per samples.csv row, a cohort stage once")
+    often = ("one process each, run once per samples.csv row" if not cohort
+             else "one process each; a per-sample stage runs once per samples.csv row, a cohort stage once")
     per_sample_arts = [_display(record, o.artifact) for s in stages if s.scope == "per_sample" for o in s.outputs]
     cohort_arts = [_display(record, o.artifact) for s in cohort for o in s.outputs]
-    rows_word = f"{n_rows} example row{'s' if n_rows != 1 else ''}, the sealed run's own"
     cols = ", ".join(f"`{n}`" for n in names)
+    rec = ", ".join(f"`{f}`" for f in RUN_RECORD_FILES)
     rows = [
-        FileRow("edit", _COPY_FILES[0], "copy", f"`nextflow run {_COPY_FILES[0]}`",
-                f"the stages {chain}: {often}; the sealed command of each, with its placeholders bound"),
-        FileRow("edit", _COPY_FILES[1], "copy", "`-profile local` on this machine · `-profile slurm` on the cluster",
-                f"local: docker, {tag} · slurm: apptainer, {sif}, one SLURM job per task · sizing per stage · "
-                "run records"),
-        FileRow("edit", _COPY_FILES[2], "copy, then edit", f"`-params-file {_COPY_FILES[2]}`",
-                f"{', '.join(shared) or 'no shared parameters'} · `{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}` · "
-                f"`{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}`"),
-        FileRow("edit", SAMPLESHEET_PARAM[1], "write your own",
-                f"`params.{SAMPLESHEET_PARAM[0]}`, set in {_COPY_FILES[2]}",
-                f"one row per sample under one header line, columns {cols}; `{names[0]}` is the row key · {rows_word}"),
-        FileRow("edit", _LAUNCHER, "copy, cluster only", f"`{RUN_HPC}`",
-                f"the manager job: {_loads_words(record)} the launch line with `-profile slurm`; flags after its "
-                "name go through to Nextflow"),
-        FileRow("edit", _PAGE, "this page", "", "what you are reading, rendered from the record"),
-        FileRow("edit", _RECORD_DIR, "the record", "",
-                f"`{_RECORD}`: what every file here was rendered from · `{_MANIFEST}`: "
-                f"`shasum -a 256 -c {_RECORD_DIR}{_MANIFEST}` tells which files differ from the render"),
-        FileRow("written", "results/<sample>/", "", "`publishDir`: copied by Nextflow itself, never inside the container",
-                ", ".join(per_sample_arts) or "(nothing published)"),
+        DirEntry("files", _COPY_FILES[0], "copy", f"the stages {chain}, {often}"),
+        DirEntry("files", _COPY_FILES[1], "copy",
+                 f"where it runs — `-profile local`: docker, {tag} · `-profile slurm`: apptainer, {sif} — "
+                 f"each stage's request{_threads_words(record)} · what a run records"),
+        DirEntry("files", _COPY_FILES[2], "copy, then edit",
+                 f"{', '.join(shared) or 'no shared parameters'} · `{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}` · "
+                 f"`{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}`"),
+        DirEntry("files", SAMPLESHEET_PARAM[1], "write your own",
+                 f"one row per sample, columns {cols}; `{names[0]}` is the row key — example below"),
+        DirEntry("files", _LAUNCHER, "copy, cluster only",
+                 f"`{RUN_HPC}`: the manager job — {_loads_words(record)} the launch line with `-profile slurm`; "
+                 "flags after its name go through to Nextflow"),
+        DirEntry("written", "results/<sample>/", "",
+                 f"{', '.join(per_sample_arts) or '(nothing published)'} — copied there by Nextflow as each "
+                 f"stage finishes (`publishDir` in main.nf, under `{OUTDIR_PARAM[0]}` from params.yaml); "
+                 "always the latest run's"),
     ]
     if cohort_arts:
-        rows.append(FileRow("written", "results/", "", "`publishDir`, the cohort stages' outputs", ", ".join(cohort_arts)))
+        rows.append(DirEntry("written", "results/", "",
+                             f"{', '.join(cohort_arts)} — the cohort stages' outputs, published the same way"))
     rows += [
-        FileRow("written", "runs/<timestamp>/", "", "trace · report, one directory per run",
-                "`trace.txt`: every task's command · `report.html`: time, memory, CPU · the launch line itself: "
-                "`nextflow log`"),
-        FileRow("written", "work/", "", "every task's sandbox",
-                "where tasks run and `-resume` finds their results · never cleaned for you: `nextflow clean -f`"),
-        FileRow("written", ".nextflow/", "", "`-resume` reads it",
-                "the cache and history of every run launched from here; `.nextflow.log` beside it is the latest "
-                "run's log · on the cluster the launcher keeps Nextflow's own files in `.nextflow_home/`"),
+        DirEntry("written", "runs/<timestamp>/", "",
+                 f"one directory per run, never overwritten: {rec} — `run.json` (the launch line, every "
+                 "param as resolved, the pipeline's provenance) and the samplesheet as read are written by "
+                 "main.nf at launch; the trace (every task: status, when, how long, resources, work dir, "
+                 "command), report and timeline are set in nextflow.config"),
+        DirEntry("written", "work/", "",
+                 "each task's sandbox and what `-resume` reads, with `.nextflow/`; never cleaned for you — "
+                 "`nextflow clean -f` once the results are where you want them"),
     ]
     return rows
 
 
-def _files_table(rows: list[FileRow]) -> str:
-    out = ['<div class="tbl-wrap"><table><tr>' + "".join(f"<th>{_e(h)}</th>" for h in _FILES_HEADERS) + "</tr>"]
-    for group, title in _FILES_GROUPS:
-        grp = [r for r in rows if r.group == group]
-        out.append(f'<tr><th colspan="3">{_e(title)}</th></tr>')
-        for k, r in enumerate(grp):
-            glyph = "└─" if k == len(grp) - 1 else "├─"
-            role = f'<br><span class="muted">{_e(r.role)}</span>' if r.role else ""
-            how = _ticks_to_code(r.how) if r.how else _muted("—")
-            out.append(f'<tr><td><span class="muted">{glyph}</span> <code>{_e(r.name)}</code>{role}</td>'
-                       f"<td>{how}</td><td>{_ticks_to_code(r.holds)}</td></tr>")
-    out.append("</table></div>")
+def _directory_box(rows: list[DirEntry]) -> str:
+    out = ['<div class="dir"><div class="path">path/to/your/project/</div>']
+    for group, title in _DIR_GROUPS:
+        out.append(f'<div class="col"><div class="col-title">{_e(title)}</div><ul>')
+        for r in (r for r in rows if r.group == group):
+            role = f' <span class="muted">· {_e(r.role)}</span>' if r.role else ""
+            out.append(f"<li><code>{_e(r.name)}</code>{role}<div class=\"what\">{_ticks_to_code(r.what)}</div></li>")
+        out.append("</ul></div>")
+    out.append("</div>")
     return "".join(out)
 
 
@@ -701,12 +700,6 @@ def _override_example(record: PipelineRecord) -> str:
     if pick is None:
         return f"--{OUTDIR_PARAM[0]} <directory>"
     return f"--{pick.name.lower()} {_SLOT.get(pick.value_kind, '<value>')}"
-
-
-def _copy_list(cluster: bool) -> str:
-    files = list(_COPY_FILES) + ([_LAUNCHER] if cluster else [])
-    codes = [f"<code>{f}</code>" for f in files]
-    return ", ".join(codes[:-1]) + " and " + codes[-1]
 
 
 # ── the sections ─────────────────────────────────────────────────────────────
@@ -765,16 +758,6 @@ def _images(record: PipelineRecord) -> list[PipelineStage]:
     return out
 
 
-def _results_html(record: PipelineRecord) -> str:
-    """Where a run's results land, as the record lays them out."""
-    cohort = [s.name for s in _ordered(record) if s.scope == "cohort"]
-    out = "Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample"
-    if cohort:
-        out += (f" (cohort stage{'s' if len(cohort) != 1 else ''} {_e(', '.join(cohort))} "
-                "in <code>results/</code>)")
-    return out + "."
-
-
 def _image_cell(st: PipelineStage) -> str:
     if not st.image and not st.image_digest:
         return _muted("unrecorded")
@@ -815,29 +798,31 @@ def _ticks_to_code(text: str) -> str:
     return "".join(f"<code>{_e(s)}</code>" if i % 2 else _e(s) for i, s in enumerate(parts))
 
 
-def _conventions(record: PipelineRecord) -> str:
-    rows = [[_e(_CONVENTION.get(d.key, d.key)), _ticks_to_code(d.value), _e(_DECIDED_BY.get(d.source, d.source))]
-            for d in record.defaults]
-    if not rows:
-        return _empty("the record states no conventions")
-    return ('<p class="note">Our conventions — the same for every pipeline this system renders, unless '
-            'a row says otherwise:</p>' + _table(["Convention", "Setting", "Decided by"], rows))
+def _directory_section(record: PipelineRecord) -> str:
+    intro = ('<p class="note">Copy these files into the directory where you want to run Nextflow, and write '
+             'your <code>samples.csv</code> there. Launch from inside it: Nextflow works out of the directory '
+             'it is started in.</p>')
+    stays = (f'<p class="note"><code>{_PAGE}</code> (this page) and <code>{_RECORD_DIR}</code> (the record it '
+             'was rendered from) stay with the template.</p>')
+    return _section("directory", "The directory", "what you put there, what a run adds",
+                    _DIR_STYLE + intro + _directory_box(directory_tree(record)) + stays)
 
 
-def _files_section(record: PipelineRecord) -> str:
-    launch = ('<p class="note">Every Nextflow pipeline is run by one line. Its flags name the files you copy; a run '
-              'adds the rest beside them.</p>'
-              f"<pre>{_e(RUN_LOCAL)}</pre>"
-              f'<p class="note">On the cluster, <code>{_e(RUN_HPC)}</code> runs the same line with '
-              '<code>-profile slurm</code> under an <code>#SBATCH</code> header. A value for this run only goes '
-              f'on the line after the file, and the command line wins over <code>params.yaml</code>: '
-              f"<code>{_e(_override_example(record))}</code>.</p>")
-    copy = ('<p class="note">To run it on your own data: make a new directory where the run should live, copy '
-            + _copy_list(cluster=True) + " into it, write a new <code>samples.csv</code> there — one row per "
-            "sample, naming it and the file each stage needs — and set in <code>params.yaml</code> whatever "
-            "differs from the sealed values. Launch from inside that directory. " + _LAUNCH_NOTE + "</p>")
-    return _section("files", "How the files fit together", "one launch line, one directory",
-                    _FILES_STYLE + launch + _files_table(files_tree(record)) + copy + _conventions(record))
+def _samplesheet_section(record: PipelineRecord) -> str:
+    sheet = record.samplesheet
+    cols = [c.name for c in sheet.columns]
+    lines = [",".join(cols)]
+    if sheet.rows:
+        lines.append(",".join(str(sheet.rows[0].get(c, "")) for c in cols))
+    words = []
+    for c in sheet.columns:
+        bits = [c.description or _VALUE_KIND.get(c.value_kind, c.value_kind)]
+        if c.format:
+            bits.append(c.format)
+        words.append(f"<code>{_e(c.name)}</code> — {_e(' · '.join(bits))}")
+    note = '<p class="note">' + "; ".join(words) + ". One row per sample, paths absolute.</p>"
+    return _section("samplesheet", "Example samples.csv", "one sample: the header and the sealed run's first row",
+                    f"<pre>{_e(chr(10).join(lines))}</pre>" + note)
 
 
 def _picture_section(record: PipelineRecord) -> str:
@@ -852,40 +837,6 @@ def _picture_section(record: PipelineRecord) -> str:
     return _section("picture", "The picture",
                     "samples.csv and params.yaml → stages in execution order → published outputs",
                     _svg(layout, record) + _hover_js("pipeline-picture") + legend)
-
-
-def _what_it_is(p: PipelineParam) -> str:
-    bits = [_VALUE_KIND.get(p.value_kind, p.value_kind)]
-    if p.description:
-        bits.append(p.description)
-    if p.source.startswith("sealed_step:"):
-        bits.append(f"produced by sealed step {p.source.split(':', 1)[1]}")
-    return _e(" · ".join(bits))
-
-
-def _params_section(record: PipelineRecord) -> str:
-    shared = [p for p in record.params if p.kind == "shared"]
-    sheet = record.samplesheet
-    names = [c.name for c in sheet.columns]
-    cols = ", ".join(f"<code>{_e(n)}</code>" for n in names)
-    bullets = (
-        f'<ul><li><code>params.yaml</code> defines the parameters the pipeline runs with. It also names '
-        f'the samplesheet to use (<code>{_e(SAMPLESHEET_PARAM[1])}</code>) and the output directory '
-        f'(<code>{_e(OUTDIR_PARAM[1])}</code>). Every value below is what the sealed run was validated '
-        f'with.</li>'
-        f'<li><code>samples.csv</code> holds one row per sample under a single header line naming the '
-        f'columns ({cols}); <code>{_e(names[0])}</code> is the row key. <b>The example rows are the '
-        f'sealed run\'s own trials — replace them with your samples.</b></li></ul>')
-    rows = [[f"<code>{_e(_key(p))}</code>", _code(p.default, "none"), _what_it_is(p)] for p in shared]
-    rows.append([f"<code>params.{_e(SAMPLESHEET_PARAM[0])}</code>", f"<code>{_e(SAMPLESHEET_PARAM[1])}</code>",
-                 _e("the samplesheet: one row per sample")])
-    rows.append([f"<code>params.{_e(OUTDIR_PARAM[0])}</code>", f"<code>{_e(OUTDIR_PARAM[1])}</code>",
-                 _e("where published outputs land, one directory per sample")])
-    P = [bullets, _table(["params.yaml", "Example value", "What it is"], rows),
-         _table(names, [[_e(r.get(c, "")) for c in names] for r in sheet.rows])]
-    return _section("params", "Parameters and samples",
-                    "what params.yaml and samples.csv hold, with the sealed run's example values",
-                    "".join(P))
 
 
 def _run_local_section(record: PipelineRecord) -> str:
@@ -910,9 +861,8 @@ def _run_local_section(record: PipelineRecord) -> str:
                 "recorded when the page was rendered. " + present + ".")
         make_lines = []
     steps = _steps([
-        ("Make a directory for the run and change into it: copy " + _copy_list(cluster=False) + " there, write "
-         "your <code>samples.csv</code>, and set in <code>params.yaml</code> whatever differs from the sealed "
-         "values. " + _LAUNCH_NOTE,
+        ("Change into the run directory: the files above, with your <code>samples.csv</code> beside them and "
+         "<code>params.yaml</code> edited where your data differs.",
          [f"cd /path/to/{record.name}"]),
         (make, make_lines),
         ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
@@ -920,8 +870,7 @@ def _run_local_section(record: PipelineRecord) -> str:
          f"line — <code>{_e(_override_example(record))}</code> — and wins over <code>params.yaml</code>.",
          run_lines(record, "local")),
     ])
-    return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker",
-                    steps + f'<p class="note">{_results_html(record)} {_WHAT_RAN}</p>')
+    return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker", steps)
 
 
 def _run_hpc_section(record: PipelineRecord) -> str:
@@ -956,28 +905,31 @@ def _run_hpc_section(record: PipelineRecord) -> str:
     passthrough = (f" Flags after <code>{_LAUNCHER}</code> go through to Nextflow: "
                    f"<code>{_e(_override_example(record))}</code> overrides <code>params.yaml</code> for this run.")
     steps = _steps([
-        ("Make a directory for the run inside your project directory on the cluster and change into it: copy "
-         + _copy_list(cluster=True) + " there, write your <code>samples.csv</code>, and set in "
-         "<code>params.yaml</code> whatever differs — every path in both must be a cluster path. SLURM starts "
-         "the manager job here and " + _LAUNCH_NOTE[0].lower() + _LAUNCH_NOTE[1:]
-         + " The launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.",
+        ("Change into the run directory on the cluster: the files above, with your <code>samples.csv</code> "
+         "beside them, every path in it and in <code>params.yaml</code> a cluster path. SLURM starts the "
+         "manager job here; the launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.",
          [f"cd /path/in/your/project/{record.name}"]),
         (submit + passthrough, run_lines(record, "hpc")),
         ("Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.", ["squeue -u $USER"]),
     ])
     return _section("run-hpc", "Run it on the cluster", "the same files, through the .sif and SLURM",
-                    "".join(notes) + steps + f'<p class="note">{_results_html(record)} {_WHAT_RAN}</p>')
+                    "".join(notes) + steps)
 
 
 def _request_html(r: StageResources) -> str:
+    d = DEFAULT_STAGE_REQUEST
+    gpus = f" · {r.gpus} gpu{'s' if r.gpus != 1 else ''}" if r.gpus else ""
     if r.requested_by == "default":
-        d = DEFAULT_STAGE_REQUEST
         cpus = d.get("cpus")
-        gpus = f" · {r.gpus} gpu{'s' if r.gpus != 1 else ''}" if r.gpus else ""
         return (f'<span class="warn">unsized</span> <span class="muted">(DEFAULT {_e(d.get("time"))} · '
                 f'{_e(d.get("mem"))} · {_e(cpus)} cpu{"s" if cpus != 1 else ""}{_e(gpus)})</span>')
-    parts = [f"cpus {r.cpus}" if r.cpus is not None else "cpus not requested",
-             f"mem {r.mem}" if r.mem else "mem not requested",
+    if r.requested_by == "seal":
+        words = (f"— the command's thread count, as the sealed run used it; mem and time DEFAULT "
+                 f"{d.get('mem')} · {d.get('time')}{gpus}")
+        return f'cpus {_e(r.cpus)} <span class="muted">{_e(words)}</span>'
+    cpus = (f"cpus {r.cpus}" + (" (the command's thread count)" if r.threads_slot else "")
+            if r.cpus is not None else "cpus not requested")
+    parts = [cpus, f"mem {r.mem}" if r.mem else "mem not requested",
              f"time {r.time}" if r.time else "time not requested", f"gpus {r.gpus}"]
     return _e(" · ".join(parts))
 
@@ -1034,8 +986,8 @@ def render_pipeline_page(record: PipelineRecord) -> str:
         _open_page(f"Pipeline — {record.name}"),
         _header(record),
         _picture_section(record),
-        _files_section(record),
-        _params_section(record),
+        _directory_section(record),
+        _samplesheet_section(record),
         _run_local_section(record),
         _run_hpc_section(record),
         _stages_section(record),
@@ -1044,4 +996,4 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     return "\n".join(P)
 
 
-__all__ = ["render_pipeline_page", "picture_layout", "files_tree", "FileRow", "FOOTER"]
+__all__ = ["render_pipeline_page", "picture_layout", "directory_tree", "DirEntry", "FOOTER"]

@@ -21,7 +21,7 @@ import pytest
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, STRICT_MODE_LINE,
+from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, STRICT_MODE_LINE, TRACE_FIELDS,
                                                    bound_commands, render_nextflow, run_lines)
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
@@ -89,6 +89,11 @@ def _record(**kw):
 def _one_row(**kw):
     """A seal that proved ONE trial: a one-row samplesheet, not a different pipeline."""
     return pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one", **kw)
+
+
+def _threads(**kw):
+    """The how-to with its aligner's thread count declared as a slot (`format: threads`)."""
+    return pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="rnaseq_counts", **kw)
 
 
 def _two_images(rec):
@@ -388,6 +393,75 @@ class TestMainNf:
 
 
 # ===========================================================================
+# main.nf — the launch record
+# ===========================================================================
+
+
+class TestLaunchRecord:
+    """`record_launch()` is the one thing only the script can do: write what was asked
+    before any task runs, so a killed run still has it. It is called right after the
+    container guard and defined at the bottom of main.nf, under a comment that says
+    what it writes and that nextflow.config writes the rest."""
+
+    def test_the_workflow_calls_it_after_the_guard_and_before_the_rows_channel(self):
+        wf = _workflow_block(render_nextflow(_record())["main.nf"])
+        assert wf.startswith(GUARD_ONE + _guard_error(DIGEST)
+                             + "    record_launch()   // runs/<stamp>/run.json and samples.csv, before any task\n"
+                             "    rows = Channel.fromPath(params.samplesheet, checkIfExists: true)\n")
+
+    def test_it_is_defined_once_after_the_workflow_block_with_no_import(self):
+        rec = _record()
+        main = render_nextflow(rec)["main.nf"]
+        assert main.count("def record_launch() {") == 1
+        assert main.index("def record_launch() {") > main.index("workflow {")
+        assert "import " not in main                        # the strict syntax refuses imports
+        i = main.index("// The launch record, runs/<stamp>/run.json, written before any task runs: the launch line,")
+        assert main[i:] == (
+            "// The launch record, runs/<stamp>/run.json, written before any task runs: the launch line,\n"
+            "// every param as resolved (a command-line value shows as overridden), the SLURM job id\n"
+            "// under sbatch, and the pipeline's provenance; samples.csv is copied beside it as read.\n"
+            "// nextflow.config writes the rest of the directory: trace.txt, report.html, timeline.html.\n"
+            "def record_launch() {\n"
+            '    def run_dir = file("runs/${params.run_stamp}")\n'
+            "    run_dir.mkdirs()\n"
+            "    file(params.samplesheet, checkIfExists: true).copyTo(run_dir.resolve('samples.csv'))\n"
+            "    run_dir.resolve('run.json').text = groovy.json.JsonOutput.prettyPrint("
+            "groovy.json.JsonOutput.toJson([\n"
+            "        command: workflow.commandLine,\n"
+            "        run_name: workflow.runName,\n"
+            "        session_id: workflow.sessionId.toString(),\n"
+            "        started: workflow.start.toString(),\n"
+            "        profile: workflow.profile,\n"
+            "        launch_dir: workflow.launchDir.toString(),\n"
+            "        nextflow: nextflow.version.toString(),\n"
+            "        container_engine: workflow.containerEngine,\n"
+            "        slurm_job_id: System.getenv('SLURM_JOB_ID'),\n"
+            "        pipeline: [\n"
+            "            name: 'rnaseq_counts',\n"
+            "            version: '1',\n"
+            f"            rendered: '{rec.created_at}',\n"
+            "            sealed_workflow: 'rnaseq_counts_workflow',\n"
+            "            sealed_workflow_sha256: null,\n"
+            f"            images: ['{DIGEST}'],\n"
+            "        ],\n"
+            "        params: params,\n"
+            "    ]))\n"
+            '    log.info "run records: runs/${params.run_stamp}/\\n"\n'   # the newline keeps the banner off this line
+            "}\n")
+
+    def test_the_provenance_names_every_image_and_the_sealed_spec_hash_when_known(self):
+        two = render_nextflow(_two_images(_record()))["main.nf"]
+        assert f"            images: ['{DIGEST}', '{OTHER}'],\n" in two
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts", spec_sha256="ab" * 32)
+        assert f"            sealed_workflow_sha256: '{'ab' * 32}',\n" in render_nextflow(rec)["main.nf"]
+
+    def test_the_launcher_comment_names_the_run_records(self):
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (run.json, samples.csv, trace.txt,\n"
+                "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.\n") in sh
+
+
+# ===========================================================================
 # nextflow.config — each profile names the image it runs
 # ===========================================================================
 
@@ -444,14 +518,21 @@ class TestConfig:
         assert _sif_set(DIGEST, SIF, 12) in _profile(cfg, "slurm")
         assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-1]
 
-    def test_trace_and_report_land_under_a_timestamped_run_dir_and_the_trace_carries_each_command(self):
+    def test_the_run_records_land_under_a_timestamped_run_dir_trace_report_and_timeline(self):
         cfg = render_nextflow(_record())["nextflow.config"]
         assert "params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')" in cfg
         assert "def " not in cfg                           # the strict config parser allows no declarations
         assert ('trace {\n    enabled = true\n    file = "runs/${params.run_stamp}/trace.txt"\n'
-                "    fields = 'task_id,name,status,exit,container,realtime,%cpu,peak_rss,workdir,script'\n}") in cfg
+                f"    fields = '{TRACE_FIELDS}'\n}}") in cfg
+        # which task, which SLURM job, how it ended, when, how long, what it cost, where, and the command
+        assert TRACE_FIELDS == ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
+                                "container,workdir,script")
         assert 'report {\n    enabled = true\n    file = "runs/${params.run_stamp}/report.html"\n}' in cfg
-        assert "timeline" not in cfg
+        assert 'timeline {\n    enabled = true\n    file = "runs/${params.run_stamp}/timeline.html"\n}' in cfg
+        assert "dag {" not in cfg                          # the page's picture is the DAG; Nextflow's needs a CDN
+        assert cfg.count("runs/${params.run_stamp}/") == 3
+        assert "// One directory per run, runs/<stamp>/, named by its launch time and never overwritten:" in cfg
+        assert "main.nf adds run.json and the samplesheet" in cfg
 
     def test_without_an_env_there_is_no_module_load_no_account_no_queue(self):
         cfg = render_nextflow(_record())["nextflow.config"]
@@ -601,6 +682,46 @@ class TestParamsYaml:
         assert DIGEST not in y and OTHER not in y and SIF not in y
         assert "bioinf_rnaseq_cli" not in y and OTHER_IMAGE not in y
         assert "REQUIRED" not in y
+
+
+# ===========================================================================
+# the thread slot — the command's thread count IS the stage's cpus request
+# ===========================================================================
+
+
+class TestThreadSlot:
+    """A how-to input declared `format: threads` binds to `${task.cpus}` and sizes the
+    stage's cpus from the sealed count, so the command and the request cannot
+    disagree; it is never a params.yaml key. A literal count stays a literal."""
+
+    def test_the_slot_binds_to_task_cpus_and_the_stage_requests_the_sealed_count(self):
+        rec = _threads()
+        files = render_nextflow(rec)
+        assert _script_lines(files["main.nf"], "HISAT2") == [ALIGN_LINE.replace("-p 4", "-p ${task.cpus}")]
+        assert bound_commands(rec, rec.stage("HISAT2")) == _script_lines(files["main.nf"], "HISAT2")
+        assert ("    withName: 'HISAT2' {   // measured on 3 sealed steps on the workflow's test data: "
+                "wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
+                "        cpus = 4   // the thread count the command runs with, through task.cpus; the sealed run used 4\n"
+                "    }\n") in files["nextflow.config"]
+        assert "// DEFAULT request — not sized for your data" in files["nextflow.config"]   # mem and time still default
+        assert "THREADS" not in "".join(files.values())
+        assert "threads" not in files["params.yaml"] and "params.threads" not in files["main.nf"]
+        keys = [ln.split(":", 1)[0] for ln in files["params.yaml"].splitlines() if ln and not ln.startswith("#")]
+        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir"]
+
+    def test_a_caller_sized_stage_keeps_the_binding_and_runs_with_its_own_count(self):
+        files = render_nextflow(_threads(resources=SIZED))
+        assert "hisat2 -p ${task.cpus} " in files["main.nf"]
+        assert "        cpus = 8   // the thread count the command runs with, through task.cpus\n" in files["nextflow.config"]
+        assert "the sealed run used" not in files["nextflow.config"]
+
+    def test_a_literal_count_stays_a_literal_and_no_stage_mentions_task_cpus(self):
+        files = render_nextflow(_record())
+        assert "hisat2 -p 4 " in files["main.nf"] and "task.cpus" not in "".join(files.values())
+
+    def test_the_directory_lint_accepts_the_binding(self):
+        from agent.skills.pipeline_render import render_pipeline_files
+        assert "hisat2 -p ${task.cpus} " in render_pipeline_files(_threads())["main.nf"]
 
 
 # ===========================================================================
@@ -880,15 +1001,35 @@ class TestRealNextflow:
         assert ("nextflow.config, profile slurm: process.container is empty; set it to the .sif "
                 f"built from image {DIGEST}") in run.stdout + run.stderr
 
-    def test_with_the_sif_named_the_run_passes_the_guard_under_both_profiles(self, tmp_path):
+    def test_with_the_sif_named_the_run_passes_the_guard_under_both_profiles_and_leaves_its_launch_record(self, tmp_path):
+        """`record_launch()` runs in the preview too — the workflow body does — so the
+        strict parser is known to accept it and the record is known to be written:
+        run.json carries the launch line, the profile and the provenance, the
+        samplesheet is copied as read, and each run names its own directory."""
+        import json
         rec = _point_at_real_files(
             _record(sif_paths={REQUEST_KEY: str(tmp_path / "data" / "img.sif")}, compute_env="cluster"),
             tmp_path / "data")
         d = _write(render_nextflow(rec, env=ENV), tmp_path / "pipe")
         for profile in ("slurm", "local"):
-            run = _nextflow(d, "run", "main.nf", "-profile", profile, "-params-file", "params.yaml", "-preview")
+            run = _nextflow(d, "run", "main.nf", "-profile", profile, "-params-file", "params.yaml", "-preview",
+                            "--run_stamp", f"preview_{profile}")
             assert run.returncode == 0, profile + "\n" + run.stdout + run.stderr
             assert "process.container is empty" not in run.stdout + run.stderr
+            assert f"run records: runs/preview_{profile}/" in run.stdout + run.stderr
+            run_dir = d / "runs" / f"preview_{profile}"
+            record = json.loads((run_dir / "run.json").read_text())
+            assert record["command"] == (f"nextflow run main.nf -profile {profile} -params-file params.yaml -preview "
+                                         f"--run_stamp preview_{profile}")
+            assert record["profile"] == profile and record["slurm_job_id"] is None
+            assert record["pipeline"] == {"name": "rnaseq_counts", "version": "1", "rendered": rec.created_at,
+                                          "sealed_workflow": "rnaseq_counts_workflow", "sealed_workflow_sha256": None,
+                                          "images": [DIGEST]}
+            assert record["params"]["samplesheet"] == "samples.csv" and record["params"]["outdir"] == "results"
+            assert record["params"]["run_stamp"] == f"preview_{profile}"
+            assert (run_dir / "samples.csv").read_text() == (d / "samples.csv").read_text()
+            assert (run_dir / "trace.txt").is_file()
+        assert sorted(p.name for p in (d / "runs").iterdir()) == ["preview_local", "preview_slurm"]
 
     def test_several_images_stop_the_run_when_no_stage_names_a_sif_and_pass_when_every_stage_does(self, tmp_path):
         empty = _write(render_nextflow(_two_images(_record())), tmp_path / "empty")

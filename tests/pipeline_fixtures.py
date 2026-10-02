@@ -23,31 +23,42 @@ TEMPLATES = [
     "samtools index {OUTPUT_DIR}/aligned.bam",
     "htseq-count -s {STRANDED} -f bam {OUTPUT_DIR}/aligned.bam {GTF} > {OUTPUT_DIR}/{SAMPLE}.counts.tsv",
 ]
+#: The same how-to with the aligner's thread count declared as a slot (`format: threads`)
+#: instead of written as a literal: the sealed run bound 4, so every step's command is
+#: the same text either way.
+TEMPLATES_THREADS = [TEMPLATES[0].replace("-p 4", "-p {THREADS}")] + TEMPLATES[1:]
+THREADS = "4"
 
 
 def _reads(sample: str) -> str:
     return f"/data/reads/{sample}_10K_R1.fastq.gz"
 
 
-def _usage(stranded: str = "reverse") -> dict:
+def _usage(stranded: str = "reverse", threads: bool = False) -> dict:
+    inputs = [
+        {"name": "HISAT2_INDEX", "format": "hisat2_index", "description": "HISAT2 index prefix"},
+        {"name": "READS", "format": "fastq", "description": "single-end reads"},
+        {"name": "STRANDED", "format": "option", "description": "htseq-count -s: yes | no | reverse"},
+        {"name": "GTF", "format": "gtf", "description": "gene annotation"},
+        {"name": "SAMPLE", "format": "id", "description": "sample identifier"},
+    ]
+    if threads:
+        inputs.append({"name": "THREADS", "format": "threads", "description": "hisat2 -p: alignment threads"})
     return {
         "description": "Align RNA-seq reads with HISAT2 and count reads per gene with htseq-count",
-        "command_template": list(TEMPLATES),
-        "inputs": [
-            {"name": "HISAT2_INDEX", "format": "hisat2_index", "description": "HISAT2 index prefix"},
-            {"name": "READS", "format": "fastq", "description": "single-end reads"},
-            {"name": "STRANDED", "format": "option", "description": "htseq-count -s: yes | no | reverse"},
-            {"name": "GTF", "format": "gtf", "description": "gene annotation"},
-            {"name": "SAMPLE", "format": "id", "description": "sample identifier"},
-        ],
+        "command_template": list(TEMPLATES_THREADS if threads else TEMPLATES),
+        "inputs": inputs,
         "outputs": [{"name": "OUTPUT_DIR", "files": ["*.counts.tsv", "aligned.bam"]}],
-        "trials": [{"name": s, "substitutions": _subs(s, stranded, f"/out/{s}")} for s in SAMPLES],
+        "trials": [{"name": s, "substitutions": _subs(s, stranded, f"/out/{s}", threads)} for s in SAMPLES],
     }
 
 
-def _subs(sample: str, stranded: str, outdir: str) -> dict:
-    return {"HISAT2_INDEX": INDEX, "READS": _reads(sample), "STRANDED": stranded,
+def _subs(sample: str, stranded: str, outdir: str, threads: bool = False) -> dict:
+    subs = {"HISAT2_INDEX": INDEX, "READS": _reads(sample), "STRANDED": stranded,
             "GTF": GTF, "SAMPLE": sample, "OUTPUT_DIR": outdir}
+    if threads:
+        subs["THREADS"] = THREADS
+    return subs
 
 
 def _resolved(template: str, subs: dict) -> str:
@@ -75,11 +86,12 @@ def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wal
 
 def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "reverse",
                        templates: Optional[list[str]] = None,
-                       with_index_step: bool = True, proven: bool = True):
-    """A validated `WorkflowSpec` for the align + count chain over `samples`."""
+                       with_index_step: bool = True, proven: bool = True, threads: bool = False):
+    """A validated `WorkflowSpec` for the align + count chain over `samples`. With
+    `threads=True` the aligner's thread count is a declared slot (`TEMPLATES_THREADS`)."""
     from agent.models.core_data import WorkflowSpec
     samples = list(samples if samples is not None else SAMPLES)
-    templates = list(templates if templates is not None else TEMPLATES)
+    templates = list(templates if templates is not None else (TEMPLATES_THREADS if threads else TEMPLATES))
     steps: list[dict] = []
     if with_index_step:
         steps.append(_step("hisat2-build", f"hisat2-build {GENOME} {INDEX}", [GENOME],
@@ -87,7 +99,7 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
     trials = []
     for s in samples:
         run = f"/runs/{s}"
-        subs = _subs(s, stranded, run)
+        subs = _subs(s, stranded, run, threads)
         cmds = [_resolved(t, subs) for t in templates]
         steps.append(_step("hisat2", cmds[0], [f"{INDEX}.1.ht2", _reads(s)], [f"{run}/aligned.bam"],
                            wall=61.0 + len(steps), rss=1500.0 + 10 * len(steps)))
@@ -98,7 +110,7 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
             steps.append(_step("htseq-count", cmds[2], [f"{run}/aligned.bam", GTF],
                                [f"{run}/{s}.counts.tsv"], wall=30.0, rss=300.0))
         scratch = f"/scratch/i4/{s}"
-        tsubs = _subs(s, stranded, scratch)
+        tsubs = _subs(s, stranded, scratch, threads)
         trials.append({"name": s, "ok": True,
                        "commands_run": [_resolved(t, tsubs) for t in templates],
                        "substitutions": tsubs, "output_slots": ["OUTPUT_DIR"],
@@ -106,9 +118,9 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
                        "validation_results": []})
     for n, st in enumerate(steps, 1):
         st["step"] = n
-    usage = _usage(stranded)
+    usage = _usage(stranded, threads)
     usage["command_template"] = templates
-    usage["trials"] = [{"name": s, "substitutions": _subs(s, stranded, f"/out/{s}")} for s in samples]
+    usage["trials"] = [{"name": s, "substitutions": _subs(s, stranded, f"/out/{s}", threads)} for s in samples]
     spec = {
         "workflow_name": "rnaseq_counts_workflow",
         "description": "HISAT2 alignment + htseq-count over the airway samples",

@@ -185,9 +185,87 @@ class TestRecordOnDisk:
         assert {d.key: d.value for d in rec.defaults}["errors"] == (
             "finish: a failure submits nothing new and in-flight tasks complete; `-resume` re-runs what failed; "
             "no retries")
+        assert {d.key: d.value for d in rec.defaults}["run_records"] == (
+            "one directory per run, runs/<timestamp>/, never overwritten: run.json (the launch line, every param "
+            "as resolved, the pipeline's provenance), samples.csv as read, trace.txt (every task), report.html, "
+            "timeline.html")
         rec2 = _record(stages=[[0, 1, 2]])
         srcs = {d.key: d.source for d in rec2.defaults}
         assert srcs["stage_cut"] == "caller" and srcs["publish"] == "default"
+
+
+def _bind_threads(spec, i: int, value: str):
+    """Rebind the thread slot in trial `i` — in the proven transcript the record reads
+    and in the declared trials it falls back on."""
+    uv = spec.usage_verification
+    trials = uv["trials"] if isinstance(uv, dict) else uv.trials
+    t = trials[i]
+    (t["substitutions"] if isinstance(t, dict) else t.substitutions)["THREADS"] = value
+    spec.usage.trials[i].substitutions["THREADS"] = value
+
+
+class TestThreadSlot:
+    """A how-to input declared `format: threads` is a `cpus` param: bound to the stage's
+    CPU request, never a column or a params.yaml value, with the sealed count as the
+    request unless the caller sizes the stage."""
+
+    def test_a_threads_input_is_a_cpus_param_and_the_stage_that_uses_it_requests_the_sealed_count(self):
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="t")
+        p = rec.param("THREADS")
+        assert (p.kind, p.value_kind, p.default, p.source, p.format) == ("cpus", "value", "4", "literal", "threads")
+        assert p.reason == "declared format 'threads': the stage's CPU request, 4 in the sealed run"
+        assert p.used_by == ["HISAT2"]
+        assert [c.name for c in rec.samplesheet.columns] == ["sample", "reads"]       # not a column
+        r = rec.stage("HISAT2").resources
+        assert (r.cpus, r.mem, r.time, r.requested_by, r.threads_slot) == (4, None, None, "seal", "THREADS")
+        assert {i.name: i.origin for i in rec.stage("HISAT2").inputs}["THREADS"] == "request"
+        for name in ("SAMTOOLS", "HTSEQ_COUNT"):
+            rr = rec.stage(name).resources
+            assert (rr.cpus, rr.requested_by, rr.threads_slot) == (None, "default", None)
+        assert "THREADS: cpus (declared format 'threads': the stage's CPU request, 4 in the sealed run)" in rec.notes
+        assert rec.stage("HISAT2").commands == [TEMPLATES[0].replace("-p 4", "-p {THREADS}")]
+
+    def test_a_caller_request_wins_over_the_sealed_count_and_the_slot_stays(self):
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="t", resources={"HISAT2": {"cpus": 8}})
+        r = rec.stage("HISAT2").resources
+        assert (r.cpus, r.requested_by, r.threads_slot) == (8, "caller", "THREADS")
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="t", resources={"HISAT2": {"mem": "32G"}})
+        r = rec.stage("HISAT2").resources
+        assert (r.cpus, r.mem, r.requested_by, r.threads_slot) == (4, "32G", "caller", "THREADS")
+
+    def test_without_the_declaration_a_literal_count_stays_in_the_command_and_nothing_is_a_slot(self):
+        rec = _record()
+        assert all(p.kind != "cpus" for p in rec.params)
+        assert all(s.resources.threads_slot is None and s.resources.requested_by == "default" for s in rec.stages)
+        assert rec.stage("HISAT2").commands == [TEMPLATES[0]] and "-p 4" in TEMPLATES[0]
+
+    def test_a_count_that_is_not_a_positive_whole_number_is_refused(self):
+        for bad in ("four", "0", "4.5", "-2"):
+            spec = sealed_rnaseq_spec(threads=True)
+            _bind_threads(spec, 0, bad)
+            with pytest.raises(pr.PipelineDerivationError) as e:
+                pr.derive_pipeline_record(spec, name="t")
+            assert e.value.code == "pipeline.threads_not_a_count", bad
+            assert f"['{bad}']" in e.value.error and "positive whole number" in e.value.remedy
+
+    def test_counts_that_differ_across_trials_are_refused(self):
+        spec = sealed_rnaseq_spec(threads=True)
+        _bind_threads(spec, 1, "8")
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            pr.derive_pipeline_record(spec, name="t")
+        assert e.value.code == "pipeline.threads_vary"
+        assert "['4', '8']" in e.value.error and e.value.remedy == "bind the same thread count in every trial"
+
+    def test_a_caller_naming_the_slot_as_a_column_or_a_param_is_refused(self):
+        for kw in ({"per_sample": ["THREADS"]}, {"shared": ["THREADS"]}):
+            with pytest.raises(pr.PipelineDerivationError) as e:
+                pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="t", **kw)
+            assert e.value.code == "pipeline.threads_kind", kw
+            assert "drop it from per_sample= / shared=" in e.value.remedy
+
+    def test_the_slot_round_trips_through_yaml(self, tmp_path):
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="t")
+        assert pr.load_pipeline_record(pr.write_pipeline_record(rec, tmp_path / "t")) == rec
 
 
 class TestClusterFields:

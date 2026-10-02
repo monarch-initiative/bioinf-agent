@@ -20,6 +20,10 @@ Vocabulary
   samplesheet  always: `sample` (the row key) first, then one column per per-sample
              input, one row per trial the seal proved — the worked example a user
              replaces with their own samples. A one-trial seal is a one-row sheet
+  thread slot  a how-to input declared `format: threads`: the count a tool's thread
+             flag takes. It binds to the stage's CPU request (`task.cpus`), never to
+             params.yaml, and the sealed run's count IS that request unless the
+             caller sizes the stage — so the command and the request cannot disagree
 """
 from __future__ import annotations
 
@@ -44,6 +48,9 @@ _TOKEN_CHARS = r"[^\s'\"|;&<>()]+"
 _READ_FORMATS = frozenset({"fastq", "fq", "fastq.gz", "fq.gz", "bam", "ubam", "cram",
                            "pod5", "fast5", "sam"})
 _SAMPLE_NAMES = frozenset({"SAMPLE", "SAMPLE_ID", "SAMPLE_NAME", "ID"})
+#: A how-to input declared with this format is a THREAD SLOT (see the vocabulary).
+THREADS_FORMAT = "threads"
+_COUNT_RE = re.compile(r"^[1-9][0-9]*$")
 
 #: The request a stage gets when the caller sized nothing. A job script must carry
 #: SOME request; this one is labelled as unsized wherever it is rendered, and the
@@ -73,7 +80,7 @@ class PipelineDerivationError(ValueError):
 class PipelineParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # placeholder, e.g. STRANDED
-    kind: Literal["shared", "per_sample"]
+    kind: Literal["shared", "per_sample", "cpus"]   # cpus: a thread slot, bound to the stage's CPU request
     value_kind: Literal["path", "prefix", "value"]   # prefix: names a FAMILY of files (an aligner index)
     default: Optional[str]                     # the sealed trial's value for a shared param; None for a per-sample one, whose values are the samplesheet's rows
     source: str                                # usage_input | literal | test_data:<key> | reference_database:<name> | sealed_step:<n>
@@ -86,7 +93,7 @@ class PipelineParam(BaseModel):
 class StageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # a placeholder, or an artifact name
-    origin: Literal["param", "column", "stage"]
+    origin: Literal["param", "column", "stage", "request"]   # request: the stage's own cpus (a thread slot)
     from_stage: Optional[str]
     artifact: Optional[str]                    # origin=stage: the artifact (templated basename or glob)
 
@@ -105,7 +112,8 @@ class StageResources(BaseModel):
     mem: Optional[str]
     time: Optional[str]
     gpus: int
-    requested_by: Literal["caller", "default"]
+    requested_by: Literal["caller", "seal", "default"]   # seal: cpus is the how-to's thread count, the rest default
+    threads_slot: Optional[str]                # the thread slot the stage's command binds to task.cpus, else None
     measured_wall_seconds: Optional[float]
     measured_peak_rss_mb: Optional[float]
     measured_max_cpu_percent: Optional[float]
@@ -321,6 +329,36 @@ def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
 # ── derivation ──────────────────────────────────────────────────────────────
 
 
+def _thread_slot(ph: str, values: list[str], declared: Mapping, caller_named: set[str]) -> PipelineParam:
+    """A placeholder declared `format: threads`, as a `cpus` param: every trial must
+    bind one and the same positive whole number — the stage's CPU request needs ONE
+    count, and a count is what a thread flag takes. Refuses, naming the remedy, when
+    the caller tried to make it a column or a params.yaml value instead."""
+    if ph in caller_named:
+        raise PipelineDerivationError(
+            "pipeline.threads_kind",
+            f"{ph} is declared `format: {THREADS_FORMAT}`, which binds it to the stage's CPU request; "
+            f"it cannot be a samplesheet column or a params.yaml value",
+            "drop it from per_sample= / shared=, or change the how-to input's format")
+    bad = sorted({v for v in values if not _COUNT_RE.match(v)})
+    if bad:
+        raise PipelineDerivationError(
+            "pipeline.threads_not_a_count",
+            f"{ph} is declared `format: {THREADS_FORMAT}` but the trials bind {bad}, not a positive whole "
+            f"number of threads",
+            "bind a positive whole number in every trial, or change the how-to input's format")
+    if len(set(values)) > 1:
+        raise PipelineDerivationError(
+            "pipeline.threads_vary",
+            f"{ph} is declared `format: {THREADS_FORMAT}` but the trials bind different counts "
+            f"{sorted(set(values))}; the stage's CPU request needs one",
+            "bind the same thread count in every trial")
+    return PipelineParam(
+        name=ph, kind="cpus", value_kind="value", default=values[0], source="literal",
+        format=declared.get("format"), description=declared.get("description"), used_by=[],
+        reason=f"declared format {THREADS_FORMAT!r}: the stage's CPU request, {values[0]} in the sealed run")
+
+
 def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            spec_sha256: Optional[str] = None,
                            stages: Optional[list[list[int]]] = None,
@@ -421,9 +459,13 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
 
     params: list[PipelineParam] = []
     for ph in in_placeholders:
-        kind, why = classify(ph)
         values = [str((r.get("substitutions") or {})[ph]) for r in rows]
         v0 = values[0]
+        if str((declared_inputs.get(ph) or {}).get("format") or "").lower() == THREADS_FORMAT:
+            params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            notes.append(f"{ph}: cpus ({params[-1].reason})")
+            continue
+        kind, why = classify(ph)
         value_kind = "path" if core_data.is_path_like(v0) else "value"
         source = "usage_input" if ph in declared_inputs else "literal"
         if value_kind == "value":
@@ -448,6 +490,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         notes.append(f"{ph}: {kind} ({why})")
     per_sample_names = [p.name for p in params if p.kind == "per_sample"]
     value_per_sample = [p.name for p in params if p.kind == "per_sample" and p.value_kind == "value"]
+    cpus_of = {p.name: int(p.default or 0) for p in params if p.kind == "cpus"}
 
     # ── match sealed steps to (template, row) ──────────────────────────────
     matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
@@ -679,12 +722,16 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             cs = s.get("cluster_slurm") or {}
             gpus = max(gpus, int(gp.get("gpus") or 0), int(cs.get("gpus") or 0))
         req = dict((resources or {}).get(nm) or {})
+        # a thread slot in any of the stage's commands: the caller's cpus if sized, else the
+        # sealed count — either way the command reads task.cpus
+        slot = next((ph for i in g for ph in placeholders(templates[i]) if ph in cpus_of), None)
         res = StageResources(
-            cpus=int(req["cpus"]) if req.get("cpus") is not None else None,
+            cpus=int(req["cpus"]) if req.get("cpus") is not None else (cpus_of[slot] if slot else None),
             mem=str(req["mem"]) if req.get("mem") else None,
             time=str(req["time"]) if req.get("time") else None,
             gpus=int(req.get("gpus", gpus) or 0),
-            requested_by="caller" if req else "default",
+            requested_by="caller" if req else ("seal" if slot else "default"),
+            threads_slot=slot,
             measured_wall_seconds=max(walls) if walls else None,
             measured_peak_rss_mb=max(rss) if rss else None,
             measured_max_cpu_percent=max(cpu) if cpu else None,
@@ -714,7 +761,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 p = next(pp for pp in params if pp.name == ph)
                 p.used_by.append(st.name)
                 st.inputs.append(StageInput(
-                    name=ph, origin="column" if p.kind == "per_sample" else "param",
+                    name=ph, origin={"per_sample": "column", "cpus": "request"}.get(p.kind, "param"),
                     from_stage=None, artifact=None))
             for tok in template_tokens[i]:
                 src = produced_by.get(tok)
@@ -803,7 +850,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                         "`-resume` re-runs what failed; no retries", source="default"),
         PipelineDefault(key="cache", value="lenient on the cluster, standard locally", source="default"),
         PipelineDefault(key="queue_size", value="50", source="default"),
-        PipelineDefault(key="run_records", value="trace (each task's command) + report under runs/<timestamp>/; the launch line in `nextflow log`", source="default"),
+        PipelineDefault(key="run_records", value="one directory per run, runs/<timestamp>/, never overwritten: "
+                        "run.json (the launch line, every param as resolved, the pipeline's provenance), "
+                        "samples.csv as read, trace.txt (every task), report.html, timeline.html", source="default"),
         PipelineDefault(key="cleanup", value="never automatic; `nextflow clean -f` when you are done", source="default"),
         PipelineDefault(key="sheet_preflight", value="the samplesheet and every file column are checked as the run starts",
                         source="default"),
@@ -879,5 +928,5 @@ __all__ = [
     "StageInput", "StageOutput", "StageResources", "Samplesheet", "SamplesheetColumn", "LocalRuntime",
     "PipelineDefault", "ProvenanceStep", "derive_pipeline_record", "write_pipeline_record",
     "record_yaml", "load_pipeline_record", "placeholders", "artifact_tokens", "RECORD_FILENAME",
-    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "render_samplesheet",
+    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "THREADS_FORMAT", "render_samplesheet",
 ]

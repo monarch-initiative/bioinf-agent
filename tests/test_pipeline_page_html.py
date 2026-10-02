@@ -1,6 +1,6 @@
-"""The explain page: the header banner, how the files fit together, the picture, the
-parameters and samples, how to run it locally, how to run it on the cluster, the
-stages, the footer — and nothing else. A pipeline directory offers ONE way to run —
+"""The explain page: the header banner, the picture, the directory, an example
+samples.csv, how to run it locally, how to run it on the cluster, the stages, the
+footer — and nothing else. A pipeline directory offers ONE way to run —
 every row of samples.csv, with Nextflow — so the page shows three steps at home
 (change directory, make nextflow available, run) and three on the cluster (change
 directory, submit, watch), and never a by-hand item. Every run line it prints is the
@@ -10,8 +10,11 @@ the renderer writes (`SAMPLESHEET_PARAM` / `OUTDIR_PARAM`), so the page and the 
 cannot disagree. The page speaks the FILES' vocabulary — `params.gtf`, the `reads`
 column, `<sample>.counts.tsv`, `results/<sample>/` — never the seal's `{PLACEHOLDER}`s.
 The picture is a faithful, non-overlapping drawing of the record's graph, in which the
-row key is drawn but never wired; the files section draws nothing — it is the one
-launch line and the directory as a listing, every cell read off the record.
+row key is drawn but never wired; the directory section draws nothing — it is a
+two-column box, the files you put there and what a run adds, every line read off the
+record; what params.yaml holds is read in params.yaml, so the page names its keys and
+repeats nothing. A how-to whose thread count is a declared slot (`format: threads`)
+renders the stage's command with `${task.cpus}` and its request as the sealed count.
 
 Rendered from the same fixture the record tests use (`sealed_rnaseq_spec`: three rows,
 three stages, one image), its one-row, cluster-named, two-image and runtime-env
@@ -29,14 +32,14 @@ from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, SAMPLES, TEMPLATE
 
 from agent.skills import pipeline_record as pr
 from agent.skills.env_report_html import _close_page, _e, _open_page
-from agent.skills.pipeline_page_html import FOOTER, FileRow, files_tree, picture_layout, render_pipeline_page
-from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_LOCAL, SAMPLESHEET_PARAM,
-                                                   bound_commands)
+from agent.skills.pipeline_page_html import (FOOTER, DirEntry, _ticks_to_code, directory_tree, picture_layout,
+                                             render_pipeline_page)
+from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, bound_commands
 
 SPEC_PATH = "/ws/reports/rnaseq_counts_workflow.workflow.yaml"
 SIF = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
 MODULES = ["apptainer/1.3.2", "nextflow/24.10.0"]
-SECTION_IDS = ["picture", "files", "params", "run-local", "run-hpc", "stages"]
+SECTION_IDS = ["picture", "directory", "samplesheet", "run-local", "run-hpc", "stages"]
 DIGEST_2 = "sha256:" + "c" * 64
 #: How this machine provides nextflow, as the render tool records it: the checkout's
 #: activate script, and the binary it puts on PATH — or None when it was not there.
@@ -44,12 +47,11 @@ ACTIVATE = "/ck/scripts/activate.sh"
 NEXTFLOW = "/ck/.conda_runtime/bin/nextflow"
 RUNTIME = pr.LocalRuntime(activate=ACTIVATE, nextflow=NEXTFLOW)
 RUNTIME_NO_NEXTFLOW = pr.LocalRuntime(activate=ACTIVATE, nextflow=None)
-#: Why the launch directory matters, verbatim — both cd steps and the files caption carry it.
-LAUNCH_NOTE = ("Nextflow works out of the directory it is started in: <code>work/</code> (each task's "
-               "sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) and the run records "
-               "appear here, so launch from this directory every time.")
-#: The seal's placeholders for the fixture — words the page must never speak.
-PLACEHOLDERS = ["{SAMPLE}", "{READS}", "{GTF}", "{STRANDED}", "{HISAT2_INDEX}", "{OUTPUT_DIR}"]
+#: The local first step, verbatim: change directory — the directory section said what goes there.
+_LOCAL_CD = ("Change into the run directory: the files above, with your <code>samples.csv</code> beside them and "
+             "<code>params.yaml</code> edited where your data differs.")
+#: The seal's placeholders for the fixture and its thread-slot variant — words the page must never speak.
+PLACEHOLDERS = ["{SAMPLE}", "{READS}", "{GTF}", "{STRANDED}", "{HISAT2_INDEX}", "{OUTPUT_DIR}", "{THREADS}"]
 #: The I6 reading of a placeholder, as the seal scans it.
 _PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
 #: The SVG attributes that ADDRESS a node or an edge for the hover JS. They are keyed by
@@ -82,6 +84,12 @@ def _local() -> pr.PipelineRecord:
 def _local_no_nextflow() -> pr.PipelineRecord:
     """The record rendered on a machine whose runtime env was recorded without nextflow."""
     return _record(local_runtime=RUNTIME_NO_NEXTFLOW)
+
+
+def _threads(**kw) -> pr.PipelineRecord:
+    """The record of the how-to with its aligner's thread count declared as a slot
+    (`format: threads`), bound 4 in every trial."""
+    return pr.derive_pipeline_record(sealed_rnaseq_spec(threads=True), name="rnaseq_counts", spec_path=SPEC_PATH, **kw)
 
 
 def _two_images(rec: pr.PipelineRecord | None = None) -> pr.PipelineRecord:
@@ -142,26 +150,24 @@ def _bullets(sec: str) -> list[str]:
     return re.findall(r"<li>(.*?)</li>", ul, re.S)
 
 
-def _conventions(sec: str) -> list[tuple[str, str, str]]:
-    """The conventions table's rows: (convention, setting, decided by), cells verbatim —
-    the table after the listing, which has three columns too."""
-    return re.findall(r"<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>", sec[sec.index("Our conventions"):])
+def _entries(rec: pr.PipelineRecord) -> dict[str, DirEntry]:
+    """The directory box's entries, by name."""
+    return {e.name: e for e in directory_tree(rec)}
 
 
-def _rows(rec: pr.PipelineRecord) -> dict[str, FileRow]:
-    """The directory listing's rows, by file name."""
-    return {r.name: r for r in files_tree(rec)}
+def _box(sec: str) -> str:
+    """The directory box, out of the directory section."""
+    start = sec.index('<div class="dir">')
+    return sec[start: sec.index('<p class="note"><code>pipeline.html</code>', start)]
 
 
-def _listing(sec: str) -> str:
-    """The directory listing's table, out of the files section."""
-    start = sec.index('<div class="tbl-wrap"><table><tr><th>File</th>')
-    return sec[start: sec.index("</table></div>", start) + len("</table></div>")]
-
-
-def _listing_rows(tbl: str) -> list[tuple[str, str, str]]:
-    """The listing's file rows: (file cell, how cell, holds cell), verbatim."""
-    return re.findall(r"<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>", tbl)
+def _box_items(box: str) -> dict[str, list[tuple[str, str, str]]]:
+    """Per column title, the entries as (name, role, what), cells verbatim."""
+    out: dict[str, list[tuple[str, str, str]]] = {}
+    for title, body in re.findall(r'<div class="col"><div class="col-title">(.*?)</div><ul>(.*?)</ul></div>', box, re.S):
+        out[title] = re.findall(r'<li><code>(.*?)</code>(?: <span class="muted">· (.*?)</span>)?<div class="what">(.*?)</div></li>',
+                                body, re.S)
+    return out
 
 
 class _Spoken(HTMLParser):
@@ -257,7 +263,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
             sif_sha256=None, sif_path=None, inputs=inputs, outputs=outputs, consumes_workdir=False,
             stage_in_copy=False,
             resources=pr.StageResources(cpus=None, mem=None, time=None, gpus=0, requested_by="default",
-                                        measured_wall_seconds=None, measured_peak_rss_mb=None,
+                                        threads_slot=None, measured_wall_seconds=None, measured_peak_rss_mb=None,
                                         measured_max_cpu_percent=None, measured_authority="none",
                                         measured_on=None)))
     return pr.PipelineRecord(
@@ -356,309 +362,156 @@ class TestHeader:
             assert gone not in html, gone
 
 
-# ── how the files fit together ─────────────────────────────────────────────────
+# ── the directory ────────────────────────────────────────────────────────────
 
 
-#: The records the files picture is measured on: every shape it promises to draw.
-_FILES_RECORDS = {"three_rows": _record, "one_row": _one_row, "cluster": _cluster, "two_images": _two_images,
-                  "staged_but_one": _staged_but_one, "cohort": _cohort, "no_shared": _no_shared,
-                  "no_outputs": _no_outputs, "wide": _wide_record, "local": _local}
-#: The listing's two rules, scoped to the section.
-_FILES_STYLE = "<style>#files td:first-child{white-space:nowrap}#files code{white-space:nowrap}</style>"
-#: How to run it elsewhere, verbatim: the files to copy, the sheet to write, the launch-directory rule.
-_COPY_PARAGRAPH = ('<p class="note">To run it on your own data: make a new directory where the run should live, copy '
-                   "<code>main.nf</code>, <code>nextflow.config</code>, <code>params.yaml</code> and "
-                   "<code>launcher.sh</code> into it, write a new <code>samples.csv</code> there — one row per sample, "
-                   "naming it and the file each stage needs — and set in <code>params.yaml</code> whatever differs "
-                   "from the sealed values. Launch from inside that directory. " + LAUNCH_NOTE + "</p>")
+_DIR_RECORDS = {"three_rows": _record, "one_row": _one_row, "cluster": _cluster, "two_images": _two_images,
+                "staged_but_one": _staged_but_one, "cohort": _cohort, "no_shared": _no_shared, "wide": _wide_record,
+                "no_outputs": _no_outputs, "threads": _threads}
+_INTRO = ('<p class="note">Copy these files into the directory where you want to run Nextflow, and write your '
+          '<code>samples.csv</code> there. Launch from inside it: Nextflow works out of the directory it is started '
+          'in.</p>')
+_STAYS = ('<p class="note"><code>pipeline.html</code> (this page) and <code>.pipeline/</code> (the record it was '
+          'rendered from) stay with the template.</p>')
+_RUNS_ENTRY = ("one directory per run, never overwritten: `run.json`, `samples.csv`, `trace.txt`, `report.html`, "
+               "`timeline.html` — `run.json` (the launch line, every param as resolved, the pipeline's provenance) "
+               "and the samplesheet as read are written by main.nf at launch; the trace (every task: status, when, "
+               "how long, resources, work dir, command), report and timeline are set in nextflow.config")
 
 
-class TestHowTheFilesFitTogether:
-    def test_the_section_is_the_launch_line_the_listing_the_copy_paragraph_then_the_conventions(self):
-        sec = _section(_page(), "files")
-        assert '<h2>How the files fit together <span class="note">one launch line, one directory</span></h2>' in sec
-        intro = ('<p class="note">Every Nextflow pipeline is run by one line. Its flags name the files you copy; a run '
-                 "adds the rest beside them.</p>")
-        line = f"<pre>{RUN_LOCAL}</pre>"
-        cluster = ('<p class="note">On the cluster, <code>sbatch launcher.sh</code> runs the same line with '
-                   "<code>-profile slurm</code> under an <code>#SBATCH</code> header. A value for this run only goes on "
-                   "the line after the file, and the command line wins over <code>params.yaml</code>: "
-                   "<code>--stranded &lt;value&gt;</code>.</p>")
-        head = '<div class="tbl-wrap"><table><tr><th>File</th>'
-        assert (sec.index(_FILES_STYLE) < sec.index(intro) < sec.index(line) < sec.index(cluster) < sec.index(head)
-                < sec.index(_COPY_PARAGRAPH) < sec.index("Our conventions"))
-        assert sec.count("<table>") == 2 and sec.count("<pre>") == 1 and sec.count("<style>") == 1
-        assert "<svg" not in sec and "<script" not in sec and "Hover" not in sec
+class TestTheDirectory:
+    def test_the_section_is_the_copy_note_the_box_then_what_stays_with_the_template(self):
+        sec = _section(_page(_cluster()), "directory")
+        assert '<h2>The directory <span class="note">what you put there, what a run adds</span></h2>' in sec
+        body = sec[sec.index('<div class="bx-body">') + len('<div class="bx-body">'):]
+        assert body.startswith("<style>#directory .dir{")
+        after_style = body[body.index("</style>") + len("</style>"):]
+        assert after_style.startswith(_INTRO + '<div class="dir"><div class="path">path/to/your/project/</div>')
+        assert body.endswith(_STAYS + "</div></section>")
+        assert sec.count('<div class="col">') == 2 and sec.count("<style>") == 1
+        for gone in ("<table", "<pre>", "<svg", "<script", "<h3", "<dl"):
+            assert gone not in sec, gone
 
-    def test_the_listing_is_these_rows_in_this_order_what_you_launch_from_then_what_a_run_writes(self):
-        rows = files_tree(_record())
-        assert [(r.group, r.name, r.role) for r in rows] == [
-            ("edit", "main.nf", "copy"), ("edit", "nextflow.config", "copy"), ("edit", "params.yaml", "copy, then edit"),
-            ("edit", "samples.csv", "write your own"), ("edit", "launcher.sh", "copy, cluster only"),
-            ("edit", "pipeline.html", "this page"), ("edit", ".pipeline/", "the record"),
-            ("written", "results/<sample>/", ""), ("written", "runs/<timestamp>/", ""), ("written", "work/", ""),
-            ("written", ".nextflow/", "")]
-        tbl = _listing(_section(_page(), "files"))
-        assert tbl.startswith('<div class="tbl-wrap"><table><tr><th>File</th><th>How it is used</th><th>What it holds'
-                              '</th></tr><tr><th colspan="3">in the directory you launch from</th></tr>')
-        assert tbl.count('<tr><th colspan="3">') == 2
-        assert tbl.index('<tr><th colspan="3">written by a run</th></tr>') > tbl.index("<code>.pipeline/</code>")
-        names = re.findall(r'<span class="muted">(├─|└─)</span> <code>([^<]*)</code>', tbl)
-        assert names == [("├─", "main.nf"), ("├─", "nextflow.config"), ("├─", "params.yaml"), ("├─", "samples.csv"),
-                         ("├─", "launcher.sh"), ("├─", "pipeline.html"), ("└─", ".pipeline/"),
-                         ("├─", "results/&lt;sample&gt;/"), ("├─", "runs/&lt;timestamp&gt;/"), ("├─", "work/"),
-                         ("└─", ".nextflow/")]
-        assert len(_listing_rows(tbl)) == 11
+    def test_the_box_lists_the_five_files_you_put_there_then_what_a_run_adds(self):
+        items = _box_items(_box(_section(_page(_cluster()), "directory")))
+        assert list(items) == ["you put here", "a run adds"]
+        assert [(n, role) for n, role, _ in items["you put here"]] == [
+            ("main.nf", "copy"), ("nextflow.config", "copy"), ("params.yaml", "copy, then edit"),
+            ("samples.csv", "write your own"), ("launcher.sh", "copy, cluster only")]
+        assert [(n, role) for n, role, _ in items["a run adds"]] == [
+            ("results/&lt;sample&gt;/", ""), ("runs/&lt;timestamp&gt;/", ""), ("work/", "")]
+        entries = directory_tree(_cluster())
+        assert [e.group for e in entries] == ["files"] * 5 + ["written"] * 3
+        assert all(e.role == "" for e in entries if e.group == "written")
 
-    def test_each_row_is_its_glyph_name_and_role_then_how_then_what_it_holds_with_command_spans_as_code(self):
-        rows = _listing_rows(_listing(_section(_page(_cluster()), "files")))
-        assert rows[0] == ('<span class="muted">├─</span> <code>main.nf</code><br><span class="muted">copy</span>',
-                           "<code>nextflow run main.nf</code>",
-                           "the stages HISAT2 → SAMTOOLS → HTSEQ_COUNT: one process per stage, run once per samples.csv "
-                           "row; the sealed command of each, with its placeholders bound")
-        assert rows[2][0] == ('<span class="muted">├─</span> <code>params.yaml</code><br><span class="muted">copy, then '
-                              "edit</span>")
-        assert rows[5] == ('<span class="muted">├─</span> <code>pipeline.html</code><br><span class="muted">this page'
-                           '</span>', '<span class="muted">—</span>', "what you are reading, rendered from the record")
-        assert rows[7][0] == '<span class="muted">├─</span> <code>results/&lt;sample&gt;/</code>'   # no role: a run writes it
-        assert rows[10][0] == '<span class="muted">└─</span> <code>.nextflow/</code>'
-        assert all(cell.count("<code>") == cell.count("</code>") for row in rows for cell in row)
-        assert "`" not in "".join("".join(r) for r in rows)
+    def test_each_entry_is_the_records_own_words_with_command_spans_as_code(self):
+        for make in (_cluster, _record, _cohort, _threads):
+            rec = make()
+            items = _box_items(_box(_section(_page(rec), "directory")))
+            shown = {n: what for col in items.values() for n, _, what in col}
+            for e in directory_tree(rec):
+                assert shown[_e(e.name)] == _ticks_to_code(e.what), (make.__name__, e.name)
+            assert len(shown) == len(directory_tree(rec))
 
-    def test_main_nf_says_the_stages_in_order_and_how_often_each_runs(self):
-        r = _rows(_record())["main.nf"]
-        assert r.how == "`nextflow run main.nf`"
-        assert r.holds == ("the stages HISAT2 → SAMTOOLS → HTSEQ_COUNT: one process per stage, run once per samples.csv "
-                           "row; the sealed command of each, with its placeholders bound")
-        assert _rows(_cohort())["main.nf"].holds.startswith(
-            "the stages STAGE_00 → STAGE_01 → STAGE_02: one process per stage; a per-sample stage runs once per "
-            "samples.csv row, a cohort stage once;")
-        none = _wide_record(n_stages=2).model_copy(update={"stages": []})
-        assert _rows(none)["main.nf"].holds.startswith("the stages (no stages):")
-        assert " → ".join(f"STAGE_{i:02d}" for i in range(12)) in _rows(_wide_record())["main.nf"].holds
+    def test_main_nf_names_the_stages_in_order_and_how_often_each_runs(self):
+        assert _entries(_record())["main.nf"].what == (
+            "the stages HISAT2 → SAMTOOLS → HTSEQ_COUNT, one process each, run once per samples.csv row")
+        assert _entries(_cohort())["main.nf"].what == (
+            "the stages STAGE_00 → STAGE_01 → STAGE_02, one process each; a per-sample stage runs once per "
+            "samples.csv row, a cohort stage once")
+        empty = _wide_record(n_stages=2).model_copy(update={"stages": []})
+        assert _entries(empty)["main.nf"].what == "the stages (no stages), one process each, run once per samples.csv row"
 
     def test_nextflow_config_names_what_each_profile_runs_in_and_says_set_me_when_no_sif_is_recorded(self):
-        r = _rows(_record())["nextflow.config"]
-        assert r.how == "`-profile local` on this machine · `-profile slurm` on the cluster"
-        assert r.holds == ("local: docker, `bioinf_rnaseq_cli:latest` · slurm: apptainer, `container = ''` (SET ME), "
-                           "one SLURM job per task · sizing per stage · run records")
-        assert _rows(_cluster())["nextflow.config"].holds == (
-            "local: docker, `bioinf_rnaseq_cli:latest` · slurm: apptainer, `rnaseq_cli_48ac8c5b25d2.sif` on hpc, "
-            "one SLURM job per task · sizing per stage · run records")
+        assert _entries(_record())["nextflow.config"].what == (
+            "where it runs — `-profile local`: docker, `bioinf_rnaseq_cli:latest` · `-profile slurm`: apptainer, "
+            "`container = ''` (SET ME) — each stage's request · what a run records")
+        assert _entries(_cluster())["nextflow.config"].what == (
+            "where it runs — `-profile local`: docker, `bioinf_rnaseq_cli:latest` · `-profile slurm`: apptainer, "
+            "`rnaseq_cli_48ac8c5b25d2.sif` on hpc — each stage's request · what a run records")
         rec = _record()
         untagged = rec.model_copy(update={"stages": [s.model_copy(update={"image": None}) for s in rec.stages]})
-        assert _rows(untagged)["nextflow.config"].holds.startswith("local: docker, `aaaa1111aaaa` ·")
-        assert _rows(_wide_record())["nextflow.config"].holds.startswith("local: docker, image unrecorded ·")
-        tbl = _listing(_section(_page(_cluster()), "files"))
-        assert ("<td>local: docker, <code>bioinf_rnaseq_cli:latest</code> · slurm: apptainer, "
-                "<code>rnaseq_cli_48ac8c5b25d2.sif</code> on hpc, one SLURM job per task · sizing per stage · "
-                "run records</td>") in tbl
-        assert SIF not in tbl                              # the basename and where; the full path is the cluster section's
-        assert "<code>container = &#x27;&#x27;</code> (SET ME)" in _listing(_section(_page(), "files"))
+        assert "docker, `aaaa1111aaaa` ·" in _entries(untagged)["nextflow.config"].what
+        assert "docker, image unrecorded ·" in _entries(_wide_record(n_stages=2))["nextflow.config"].what
 
     def test_with_several_images_nextflow_config_names_one_image_per_stage_under_each_profile(self):
-        assert _rows(_two_images())["nextflow.config"].holds == (
-            "local: docker, HISAT2 `bioinf_rnaseq_cli:latest`, SAMTOOLS `bioinf_rnaseq_cli:latest`, "
-            "HTSEQ_COUNT `other_img:2` · slurm: apptainer, HISAT2 `container = ''` (SET ME), "
-            "SAMTOOLS `container = ''` (SET ME), HTSEQ_COUNT `container = ''` (SET ME), one SLURM job per task · "
-            "sizing per stage · run records")
-        assert ("slurm: apptainer, HISAT2 `rnaseq_cli_48ac8c5b25d2.sif` on hpc, SAMTOOLS `rnaseq_cli_48ac8c5b25d2.sif` "
-                "on hpc, HTSEQ_COUNT `container = ''` (SET ME), one SLURM job per task") in _rows(
-                    _staged_but_one())["nextflow.config"].holds
+        what = _entries(_staged_but_one())["nextflow.config"].what
+        assert ("docker, HISAT2 `bioinf_rnaseq_cli:latest`, SAMTOOLS `bioinf_rnaseq_cli:latest`, HTSEQ_COUNT "
+                "`other_img:2` · `-profile slurm`: apptainer, HISAT2 `rnaseq_cli_48ac8c5b25d2.sif` on hpc, SAMTOOLS "
+                "`rnaseq_cli_48ac8c5b25d2.sif` on hpc, HTSEQ_COUNT `container = ''` (SET ME) — each stage's request") in what
 
-    def test_params_yaml_lists_the_shared_params_then_the_samplesheet_and_the_output_directory(self):
-        r = _rows(_record())["params.yaml"]
-        assert r.how == "`-params-file params.yaml`"
-        assert r.holds == "hisat2_index, stranded, gtf · `samplesheet: samples.csv` · `outdir: results`"
-        assert r.holds.endswith(f"`{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}` · `{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}`")
-        assert _rows(_no_shared())["params.yaml"].holds == ("no shared parameters · `samplesheet: samples.csv` · "
-                                                            "`outdir: results`")
-        wide = _rows(_wide_record())["params.yaml"].holds
-        assert wide.split(" · ")[0].split(", ") == [f"param_{i:02d}_long" for i in range(12)]
-        assert ("<td>hisat2_index, stranded, gtf · <code>samplesheet: samples.csv</code> · <code>outdir: results</code>"
-                "</td>") in _listing(_section(_page(), "files"))
+    def test_a_thread_slot_is_named_on_nextflow_config_as_threads_equal_cpus(self):
+        assert _entries(_threads())["nextflow.config"].what.endswith(
+            "— each stage's request · threads = cpus (HISAT2 4) · what a run records")
+        assert "threads = cpus" not in _entries(_record())["nextflow.config"].what
+        assert "threads = cpus (HISAT2 8)" in _entries(_threads(resources={"HISAT2": {"cpus": 8}}))["nextflow.config"].what
 
-    def test_samples_csv_says_its_columns_its_row_key_and_how_many_example_rows_it_holds(self):
-        r = _rows(_record())["samples.csv"]
-        assert r.how == "`params.samplesheet`, set in params.yaml"
-        assert r.holds == ("one row per sample under one header line, columns `sample`, `reads`; `sample` is the row "
-                           "key · 3 example rows, the sealed run's own")
-        assert _rows(_one_row())["samples.csv"].holds.endswith("· 1 example row, the sealed run's own")
-        assert _rows(_wide_record())["samples.csv"].holds == (
-            "one row per sample under one header line, columns `sample`; `sample` is the row key · 2 example rows, "
-            "the sealed run's own")
-        assert ("<td>one row per sample under one header line, columns <code>sample</code>, <code>reads</code>; "
-                "<code>sample</code> is the row key · 3 example rows, the sealed run&#x27;s own</td>") in _listing(
-                    _section(_page(), "files"))
+    def test_params_yaml_names_its_keys_then_the_samplesheet_and_the_output_directory(self):
+        assert _entries(_record())["params.yaml"].what == (
+            "hisat2_index, stranded, gtf · `samplesheet: samples.csv` · `outdir: results`")
+        assert _entries(_no_shared())["params.yaml"].what == (
+            "no shared parameters · `samplesheet: samples.csv` · `outdir: results`")
+        assert _entries(_threads())["params.yaml"].what == _entries(_record())["params.yaml"].what   # a slot is no key
+
+    def test_samples_csv_says_its_columns_and_its_row_key_and_points_at_the_example(self):
+        assert _entries(_record())["samples.csv"].what == (
+            "one row per sample, columns `sample`, `reads`; `sample` is the row key — example below")
+        assert _entries(_one_row())["samples.csv"].what == _entries(_record())["samples.csv"].what
+        assert _entries(_no_shared())["samples.csv"].what == (
+            "one row per sample, columns `sample`; `sample` is the row key — example below")
 
     def test_launcher_sh_says_what_it_loads_in_each_cluster_state(self):
         tail = " the launch line with `-profile slurm`; flags after its name go through to Nextflow"
-        assert _rows(_record())["launcher.sh"].how == f"`{RUN_HPC}`"
-        assert _rows(_record())["launcher.sh"].holds == (
-            "the manager job: rendered without a cluster named, so it loads no modules; then" + tail)
-        assert _rows(_cluster())["launcher.sh"].holds == (
-            "the manager job: `module load apptainer/1.3.2 nextflow/24.10.0`, then" + tail)
-        assert _rows(_record(compute_env="hpc", modules=[]))["launcher.sh"].holds == (
-            "the manager job: loads no modules (the env declares none), then" + tail)
-        assert _rows(_record(compute_env="hpc", modules=["apptainer/1.3.2"]))["launcher.sh"].holds == (
-            "the manager job: `module load apptainer/1.3.2`, then" + tail)
-        html = _page(_cluster())
-        assert "<code>module load apptainer/1.3.2 nextflow/24.10.0</code>" in _listing(_section(html, "files"))
-        assert "module load" not in _svg(html)
+        assert _entries(_cluster())["launcher.sh"].what == (
+            "`sbatch launcher.sh`: the manager job — `module load apptainer/1.3.2 nextflow/24.10.0`, then" + tail)
+        assert _entries(_record(compute_env="hpc", modules=[]))["launcher.sh"].what == (
+            "`sbatch launcher.sh`: the manager job — loads no modules (the env declares none), then" + tail)
+        assert _entries(_record())["launcher.sh"].what == (
+            "`sbatch launcher.sh`: the manager job — rendered without a cluster named, so it loads no modules; then"
+            + tail)
 
-    def test_the_page_and_the_record_rows_name_the_renderers_own_files(self):
-        from agent.skills.pipeline_render import MANIFEST_PATH, PAGE_FILENAME, RECORD_DIR, RECORD_PATH
-        by = _rows(_record())
-        assert by[PAGE_FILENAME] == FileRow("edit", PAGE_FILENAME, "this page", "",
-                                            "what you are reading, rendered from the record")
-        rec = by[RECORD_DIR + "/"]
-        assert (rec.role, rec.how) == ("the record", "")
-        assert rec.holds == (f"`{RECORD_PATH.split('/')[-1]}`: what every file here was rendered from · "
-                             f"`{MANIFEST_PATH.split('/')[-1]}`: `shasum -a 256 -c {MANIFEST_PATH}` tells which files "
-                             "differ from the render")
-        assert "<code>shasum -a 256 -c .pipeline/MANIFEST.sha256</code>" in _listing(_section(_page(), "files"))
+    def test_what_a_run_adds_is_results_per_sample_the_run_records_and_work(self):
+        e = _entries(_record())
+        assert e["results/<sample>/"].what == (
+            "aligned.bam, aligned.bam.bai, <sample>.counts.tsv — copied there by Nextflow as each stage finishes "
+            "(`publishDir` in main.nf, under `outdir` from params.yaml); always the latest run's")
+        assert e["runs/<timestamp>/"].what == _RUNS_ENTRY
+        assert RUN_RECORD_FILES == ("run.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
+        assert e["work/"].what == (
+            "each task's sandbox and what `-resume` reads, with `.nextflow/`; never cleaned for you — "
+            "`nextflow clean -f` once the results are where you want them")
+        assert "results/" not in e                                     # no cohort stage: no flat results entry
+        assert _entries(_no_outputs())["results/<sample>/"].what.startswith("(nothing published) — copied there")
 
-    def test_what_a_run_writes_is_results_per_sample_the_run_records_work_and_the_cache(self):
-        by = _rows(_record())
-        assert by["results/<sample>/"] == FileRow(
-            "written", "results/<sample>/", "", "`publishDir`: copied by Nextflow itself, never inside the container",
-            "aligned.bam, aligned.bam.bai, <sample>.counts.tsv")
-        assert by["runs/<timestamp>/"].how == "trace · report, one directory per run"
-        assert by["runs/<timestamp>/"].holds == ("`trace.txt`: every task's command · `report.html`: time, memory, "
-                                                 "CPU · the launch line itself: `nextflow log`")
-        assert by["work/"] == FileRow("written", "work/", "", "every task's sandbox",
-                                      "where tasks run and `-resume` finds their results · never cleaned for you: "
-                                      "`nextflow clean -f`")
-        assert by[".nextflow/"].how == "`-resume` reads it"
-        assert by[".nextflow/"].holds == ("the cache and history of every run launched from here; `.nextflow.log` "
-                                          "beside it is the latest run's log · on the cluster the launcher keeps "
-                                          "Nextflow's own files in `.nextflow_home/`")
-        assert "results/" not in by
-        assert _rows(_sample_named(_record()))["results/<sample>/"].holds == (
-            "<sample>.bam, <sample>.bam.bai, <sample>.counts.tsv")
-        assert _rows(_no_outputs())["results/<sample>/"].holds == "(nothing published)"
-        assert _rows(_wide_record())["results/<sample>/"].holds.split(", ") == [f"artifact_{i:02d}.bam"
-                                                                                for i in range(12)]
-        tbl = _listing(_section(_page(), "files"))
-        assert "<td>aligned.bam, aligned.bam.bai, &lt;sample&gt;.counts.tsv</td>" in tbl
-        assert "<td><code>publishDir</code>: copied by Nextflow itself, never inside the container</td>" in tbl
-
-    def test_a_cohort_stage_adds_a_flat_results_row_and_only_then(self):
-        rows = files_tree(_cohort())
-        assert [r.name for r in rows if r.group == "written"] == ["results/<sample>/", "results/", "runs/<timestamp>/",
-                                                                  "work/", ".nextflow/"]
-        by = {r.name: r for r in rows}
-        assert by["results/"] == FileRow("written", "results/", "", "`publishDir`, the cohort stages' outputs",
-                                         "artifact_01.bam")
-        assert by["results/<sample>/"].holds == "artifact_00.bam, artifact_02.bam"
-        silent = _cohort()
-        silent = silent.model_copy(update={"stages": [s.model_copy(update={"outputs": []}) if s.name == "STAGE_01"
-                                                      else s for s in silent.stages]})
-        assert "results/" not in _rows(silent)
-        assert _listing(_section(_page(_cohort()), "files")).count("<code>publishDir</code>") == 2
-
-    def test_the_override_example_is_a_literal_valued_param_then_any_shared_param_then_outdir_in_one_spelling(self):
-        for rec, example in ((_record(), "--stranded <value>"), (_wide_record(), "--param_00_long <path>"),
-                             (_no_shared(), "--outdir <directory>")):
-            html = _page(rec)
-            assert html.count(f"<code>{_e(example)}</code>") == 3, example   # the files section, the two run steps
-            for sid in ("files", "run-local", "run-hpc"):
-                assert _e(example) in _section(html, sid), (example, sid)
-        assert re.findall(r"<code>--[a-z0-9_]+ &lt;[a-z]+&gt;</code>", _page()) == [
-            "<code>--stranded &lt;value&gt;</code>"] * 3
-
-    def test_the_copy_paragraph_names_the_files_to_copy_the_sheet_to_write_and_the_launch_directory_rule(self):
-        for make in (_record, _cluster, _local, _one_row, _wide_record):
-            sec = _section(_page(make()), "files")
-            assert _COPY_PARAGRAPH in sec, make.__name__
-            assert sec.index(_COPY_PARAGRAPH) > sec.index("</table></div>")
-        html = _page()
-        assert "Copy the whole directory" not in html and "next to the data" not in html
+    def test_a_cohort_stage_adds_a_flat_results_entry_and_only_then(self):
+        e = _entries(_cohort())
+        assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
+            "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
+        assert e["results/"].what == "artifact_01.bam — the cohort stages' outputs, published the same way"
+        assert e["results/<sample>/"].what.startswith("artifact_00.bam, artifact_02.bam — copied there")
 
     def test_the_section_speaks_the_files_words_and_no_placeholder(self):
-        sec = _section(_page(_sample_named(_cluster())), "files")
-        spoken = _spoken(sec)
-        assert not _PLACEHOLDER_RE.search(spoken) and not _PLACEHOLDER_RE.search(sec)
-        for word in ("main.nf", "nextflow.config", "params.yaml", "samples.csv", "launcher.sh", "pipeline.html",
-                     ".pipeline/", "results/<sample>/", "runs/<timestamp>/", "work/", ".nextflow/",
-                     "params.samplesheet", "-params-file", "-profile local", "-profile slurm", "sbatch launcher.sh",
-                     "publishDir", "<sample>.bam", "<sample>.counts.tsv", "rnaseq_cli_48ac8c5b25d2.sif",
-                     "module load apptainer/1.3.2 nextflow/24.10.0", RUN_LOCAL, "--stranded <value>"):
+        for make in _DIR_RECORDS.values():
+            spoken = _spoken(_section(_page(make()), "directory"))
+            assert not _PLACEHOLDER_RE.search(spoken), (make.__name__, _PLACEHOLDER_RE.findall(spoken))
+        spoken = _spoken(_section(_page(_cluster()), "directory"))
+        for word in ("params.yaml", "samples.csv", "-profile local", "-profile slurm", "sbatch launcher.sh",
+                     "publishDir", "-resume", "nextflow clean -f", "run.json", "trace.txt", "timeline.html",
+                     "module load apptainer/1.3.2 nextflow/24.10.0", "results/<sample>/", "runs/<timestamp>/"):
             assert word in spoken, word
-        assert "SAMPLE" not in spoken.replace("SAMPLES", "") and "OUTPUT_DIR" not in spoken
+        for gone in ("How it is used", "What it holds", "Our conventions", "Decided by", "nextflow run main.nf",
+                     "MANIFEST", "copy this directory", "Copy this directory"):
+            assert gone not in spoken, gone
 
-    @pytest.mark.parametrize("which", sorted(_FILES_RECORDS))
-    def test_the_listing_is_computed_from_the_record_alone_and_is_the_same_every_time(self, which):
-        make = _FILES_RECORDS[which]
-        assert files_tree(make()) == files_tree(make())
-        rows = files_tree(make())
-        assert all(isinstance(r, FileRow) for r in rows) and len(rows) in (11, 12)
-        assert [r.group for r in rows] == sorted((r.group for r in rows), key=["edit", "written"].index)
-        assert all(r.role == "" for r in rows if r.group == "written")
-        assert all(r.role for r in rows if r.group == "edit") and all(r.holds for r in rows)
+    @pytest.mark.parametrize("which", sorted(_DIR_RECORDS))
+    def test_the_box_is_computed_from_the_record_alone_and_is_the_same_every_time(self, which):
+        rec = _DIR_RECORDS[which]()
+        assert directory_tree(rec) == directory_tree(rec)
+        assert all(isinstance(e, DirEntry) for e in directory_tree(rec))
+        assert _section(_page(rec), "directory") == _section(_page(rec), "directory")
 
-    def test_a_one_row_seal_lists_the_same_directory_as_the_three_row_one_but_for_the_example_rows(self):
-        one, three = files_tree(_one_row()), files_tree(_record())
-        assert [(r.group, r.name, r.role, r.how) for r in one] == [(r.group, r.name, r.role, r.how) for r in three]
-        diff = [(a, b) for a, b in zip(one, three) if a != b]
-        assert [a.name for a, _ in diff] == ["samples.csv"]
-        assert diff[0][0].holds.replace("1 example row,", "3 example rows,") == diff[0][1].holds
-
-    def test_the_section_draws_nothing_and_scripts_nothing_so_the_page_has_one_picture(self):
-        html = _page(_cluster())
-        sec = _section(html, "files")
-        assert "<svg" not in sec and "<script" not in sec and "data-id" not in sec
-        assert html.count("<svg") == 1 and html.count('getElementById("pipeline-') == 1
-        assert "pipeline-files" not in html
-        assert sec.startswith('<section class="bx" id="files"><h2>') and sec.count(_FILES_STYLE) == 1
-        assert html.count("<style>") == _open_page("x").count("<style>") + 2   # the shell's, the picture's, the listing's
-
-
-class TestConventions:
-    def test_the_table_is_every_record_default_in_words_with_who_decided_it(self):
-        rec = _record()
-        sec = _section(_page(rec), "files")
-        assert ('<p class="note">Our conventions — the same for every pipeline this system renders, unless a row '
-                'says otherwise:</p><div class="tbl-wrap"><table><tr><th>Convention</th><th>Setting</th>'
-                "<th>Decided by</th></tr>") in sec
-        rows = _conventions(sec)
-        assert [d.key for d in rec.defaults] == ["stage_cut", "publish", "resume", "errors", "cache", "queue_size",
-                                                 "run_records", "cleanup", "sheet_preflight", "resources"]
-        assert [r[0] for r in rows] == ["Stage cut", "Publishing", "Resume", "Errors", "Cache", "Queue size",
-                                        "Run records", "Cleanup", "Samplesheet check", "Resources"]
-        assert all(d.source == "default" for d in rec.defaults) and all(r[2] == "our default" for r in rows)
-        assert rows[0] == ("Stage cut", "one stage per how-to command", "our default")
-        assert rows[5] == ("Queue size", "50", "our default")
-        assert rows[8] == ("Samplesheet check", "the samplesheet and every file column are checked as the run starts",
-                           "our default")
-        assert [r[1] for r in rows] == [_e(d.value) if "`" not in d.value else r[1] for d, r in zip(rec.defaults, rows)]
-        assert len(rows) == len(rec.defaults) == 10
-
-    def test_a_values_backticked_spans_are_code_and_everything_is_escaped(self):
-        rows = _conventions(_section(_page(), "files"))
-        assert rows[7] == ("Cleanup", "never automatic; <code>nextflow clean -f</code> when you are done", "our default")
-        assert rows[6] == ("Run records", "trace (each task&#x27;s command) + report under runs/&lt;timestamp&gt;/; "
-                           "the launch line in <code>nextflow log</code>", "our default")
-        assert "`" not in "".join("".join(r) for r in rows)
-
-    def test_who_decided_reads_as_our_default_set_when_rendered_or_from_the_seal(self):
-        assert _conventions(_section(_page(_record(stages=[[0, 1], [2]])), "files"))[0] == (
-            "Stage cut", "explicit groups", "set when rendered")
-        rec = _record().model_copy(update={"defaults": [
-            pr.PipelineDefault(key="stage_cut", value="explicit groups", source="caller"),
-            pr.PipelineDefault(key="publish", value="only what the seal declared", source="seal"),
-            pr.PipelineDefault(key="future_key", value="a `quoted` value", source="default")]})
-        assert _conventions(_section(_page(rec), "files")) == [
-            ("Stage cut", "explicit groups", "set when rendered"),
-            ("Publishing", "only what the seal declared", "from the seal"),
-            ("future_key", "a <code>quoted</code> value", "our default")]   # an unknown key is printed raw, not dropped
-
-    def test_a_record_stating_no_conventions_says_so(self):
-        sec = _section(_page(_wide_record()), "files")
-        assert '<p class="empty">the record states no conventions</p>' in sec
-        assert sec.count("<table>") == 1 and "Our conventions" not in sec   # the listing stays; the conventions go
-        assert sec.endswith('<p class="empty">the record states no conventions</p></div></section>')
-
+    def test_a_one_row_seal_lists_the_same_directory_as_the_three_row_one(self):
+        assert directory_tree(_one_row()) == directory_tree(_record())
 
 # ── the picture ────────────────────────────────────────────────────────────────
 
@@ -880,102 +733,49 @@ class TestThePicture:
         assert "fetch(" not in html and "XMLHttpRequest" not in html
 
 
-# ── parameters and samples ─────────────────────────────────────────────────────
+    def test_a_thread_slot_is_not_drawn_as_a_params_yaml_value_nor_wired(self):
+        svg = _svg(_page(_threads()))
+        assert "THREADS" not in svg
+        assert re.findall(r'data-node="param" data-id="([^"]+)"', svg) == ["p:HISAT2_INDEX", "p:STRANDED", "p:GTF"]
+        assert "request cpus 4, the sealed thread count · mem and time default · gpus 0" in svg
+        assert 'class="node stage unsized"' not in _svg(_page(_threads())).split('data-id="s:HISAT2"')[0].rsplit("<g", 1)[1]
 
 
-class TestParametersAndSamples:
-    def test_the_section_opens_with_two_bullets_what_params_yaml_is_then_what_samples_csv_is(self):
-        sec = _section(_page(), "params")
-        assert ('<h2>Parameters and samples <span class="note">what params.yaml and samples.csv hold, with the '
-                "sealed run&#x27;s example values</span></h2>") in sec
-        assert sec.count("<ul>") == 1 and sec.count("<li>") == 2
-        one, two = _bullets(sec)
-        assert one == ("<code>params.yaml</code> defines the parameters the pipeline runs with. It also names the "
-                       "samplesheet to use (<code>samples.csv</code>) and the output directory (<code>results</code>). "
-                       "Every value below is what the sealed run was validated with.")
-        assert two == ("<code>samples.csv</code> holds one row per sample under a single header line naming the "
-                       "columns (<code>sample</code>, <code>reads</code>); <code>sample</code> is the row key. "
-                       "<b>The example rows are the sealed run's own trials — replace them with your samples.</b>")
-        assert f"(<code>{SAMPLESHEET_PARAM[1]}</code>)" in one and f"(<code>{OUTDIR_PARAM[1]}</code>)" in one
-        assert (sec.index("<ul>") < sec.index("</ul>") < sec.index("<th>params.yaml</th>")
-                < sec.index("<tr><th>sample</th>"))
-        assert sec.count('<p class="note">') == 0 and "<p>" not in sec     # the bullets are the section's only prose
+# ── the example samplesheet ──────────────────────────────────────────────────
 
-    def test_the_shared_params_are_a_table_keyed_as_params_yaml_names_them_with_the_sealed_example_value(self):
-        sec = _section(_page(), "params")
-        assert "<tr><th>params.yaml</th><th>Example value</th><th>What it is</th></tr>" in sec
-        assert f"<tr><td><code>params.hisat2_index</code></td><td><code>{INDEX}</code></td>" in sec
-        assert "<tr><td><code>params.stranded</code></td><td><code>reverse</code></td>" in sec
-        assert f"<tr><td><code>params.gtf</code></td><td><code>{GTF}</code></td>" in sec
-        assert sec.count("<tr><td><code>params.") == 3 + 2             # the shared params, then the two standing rows
-        assert sec.index("params.hisat2_index") < sec.index("params.stranded") < sec.index("params.gtf")
-        for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "SAMPLE"):
-            assert f"<code>{ph}</code>" not in sec, ph
-        assert "<td>shared</td>" not in sec and "<td>per sample" not in sec   # kind is the table you are in
 
-    def test_two_standing_rows_the_samplesheet_and_the_output_directory_follow_the_shared_params(self):
-        sec = _section(_page(), "params")
-        rows = re.findall(r"<tr><td><code>(params\.\w+)</code></td><td>(.*?)</td><td>(.*?)</td></tr>", sec)
-        assert [r[0] for r in rows] == ["params.hisat2_index", "params.stranded", "params.gtf",
-                                        f"params.{SAMPLESHEET_PARAM[0]}", f"params.{OUTDIR_PARAM[0]}"]
-        assert rows[-2:] == [("params.samplesheet", "<code>samples.csv</code>", "the samplesheet: one row per sample"),
-                             ("params.outdir", "<code>results</code>",
-                              "where published outputs land, one directory per sample")]
-        assert rows[-2][1] == f"<code>{SAMPLESHEET_PARAM[1]}</code>" and rows[-1][1] == f"<code>{OUTDIR_PARAM[1]}</code>"
+class TestExampleSamplesheet:
+    def test_the_section_is_one_pre_with_the_header_and_the_first_example_row_then_the_columns_in_words(self):
+        sec = _section(_page(), "samplesheet")
+        assert ('<h2>Example samples.csv <span class="note">one sample: the header and the sealed run&#x27;s first '
+                "row</span></h2>") in sec
+        assert sec.count("<pre>") == 1
+        assert "<pre>sample,reads\nSRR1039508,/data/reads/SRR1039508_10K_R1.fastq.gz</pre>" in sec
+        assert sec.endswith(
+            '<p class="note"><code>sample</code> — the row key: it tags every task and names results/&lt;sample&gt;/; '
+            "<code>reads</code> — single-end reads · fastq. One row per sample, paths absolute.</p></div></section>")
+        assert "SRR1039509" not in sec and "SRR1039512" not in sec                 # one sample, not the sheet
+        assert "<table" not in sec and "<ul>" not in sec
 
-    def test_what_it_is_carries_the_value_kind_the_description_and_the_producing_sealed_step(self):
-        sec = _section(_page(), "params")
-        assert "a prefix — a family of files named after it · HISAT2 index prefix · produced by sealed step 1" in sec
-        assert "a value · htseq-count -s: yes | no | reverse" in sec
-        assert "a path · gene annotation" in sec
-        assert "sealed_step:1" not in sec                    # the source is read out, not echoed
-        assert "<td><code>none</code></td>" not in sec
+    def test_the_example_is_the_samplesheets_own_first_row_whatever_the_record(self):
+        for make in (_record, _one_row, _cluster, _cohort, _no_shared, _threads):
+            rec = make()
+            cols = [c.name for c in rec.samplesheet.columns]
+            first = ",".join(str(rec.samplesheet.rows[0].get(c, "")) for c in cols)
+            assert f"<pre>{_e(','.join(cols))}\n{_e(first)}</pre>" in _section(_page(rec), "samplesheet"), make.__name__
+        assert "<pre>sample\nS1</pre>" in _section(_page(_no_shared()), "samplesheet")
+
+    def test_a_column_without_a_description_or_format_is_still_named_by_its_kind(self):
         rec = _record()
-        params = [p.model_copy(update={"default": None}) if p.name == "STRANDED" else p for p in rec.params]
-        sec = _section(_page(rec.model_copy(update={"params": params})), "params")
-        assert '<tr><td><code>params.stranded</code></td><td><span class="muted">none</span></td>' in sec
+        cols = [c.model_copy(update={"description": None, "format": None}) if c.name == "reads" else c
+                for c in rec.samplesheet.columns]
+        bare = rec.model_copy(update={"samplesheet": rec.samplesheet.model_copy(update={"columns": cols})})
+        assert "<code>reads</code> — a path. One row per sample, paths absolute." in _section(_page(bare), "samplesheet")
 
-    def test_the_example_rows_follow_the_params_table_directly_one_row_per_trial(self):
-        sec = _section(_page(), "params")
-        assert ('</table></div><div class="tbl-wrap"><table><tr><th>sample</th><th>reads</th></tr>'
-                f"<tr><td>{SAMPLES[0]}</td>") in sec                        # nothing between the two tables
-        for s in SAMPLES:
-            assert f"<tr><td>{s}</td><td>/data/reads/{s}_10K_R1.fastq.gz</td></tr>" in sec
-        assert sec.count("<tr><td>SRR") == len(SAMPLES)
-        assert sec.count("<table>") == 2
-        assert sec.endswith("</tr></table></div></div></section>")
-
-    def test_a_one_row_seal_renders_a_one_row_sheet_and_otherwise_the_same_section(self):
-        three, one = _section(_page(), "params"), _section(_page(_one_row()), "params")
-        assert one.count("<tr><td>SRR") == 1
-        assert f"<tr><td>{SAMPLES[0]}</td><td>/data/reads/{SAMPLES[0]}_10K_R1.fastq.gz</td></tr>" in one
-        rows = re.compile(r"<tr><td>SRR\w+</td><td>[^<]*</td></tr>")
-        assert rows.sub("", one) == rows.sub("", three)
-        assert "replace them with your samples" in one
-        for gone in ("implicit row", "params only", "commands.sh", "linear"):
-            assert gone not in one, gone
-
-    def test_the_row_key_is_a_column_even_when_no_command_names_it(self):
-        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(templates=TEMPLATES[:2]), name="two")
-        assert "SAMPLE" not in {p.name for p in rec.params}
-        sec = _section(_page(rec), "params")
-        assert sec.count("<tr><td><code>params.") == 1 + 2 and "<code>params.hisat2_index</code>" in sec
-        assert ("naming the columns (<code>sample</code>, <code>reads</code>); <code>sample</code> is the row "
-                "key.") in sec
-        assert "<tr><th>sample</th><th>reads</th></tr>" in sec
-        layout = picture_layout(rec)
-        assert [n.id for n in layout.nodes if n.kind == "column"] == ["c:SAMPLE", "c:READS"]
-        assert not [e for e in layout.edges if e.src == "c:SAMPLE"]
-
-    def test_a_record_with_no_shared_params_keeps_the_two_standing_rows_and_the_samplesheet(self):
-        sec = _section(_page(_no_shared()), "params")
-        rows = re.findall(r"<tr><td><code>(params\.\w+)</code></td>", sec)
-        assert rows == ["params.samplesheet", "params.outdir"]           # what params.yaml still holds
-        assert sec.count("<table>") == 2
-        assert "naming the columns (<code>sample</code>); <code>sample</code> is the row key." in sec
-        assert "<tr><th>sample</th></tr><tr><td>S1</td></tr><tr><td>S2</td></tr>" in sec
-        assert _rows(_no_shared())["params.yaml"].holds.startswith("no shared parameters")
-
+    def test_a_record_with_no_example_rows_shows_the_header_alone(self):
+        rec = _record()
+        empty = rec.model_copy(update={"samplesheet": rec.samplesheet.model_copy(update={"rows": []})})
+        assert "<pre>sample,reads</pre>" in _section(_page(empty), "samplesheet")
 
 # ── run it locally ─────────────────────────────────────────────────────────────
 
@@ -988,10 +788,7 @@ class TestRunLocally:
                 "docker</span></h2>") in sec
         assert sec.count("<ol>") == 1 and sec.count("<li>") == 3
         cd, make, run = _steps(sec)
-        assert cd == ("Make a directory for the run and change into it: copy <code>main.nf</code>, "
-                      "<code>nextflow.config</code> and <code>params.yaml</code> there, write your "
-                      "<code>samples.csv</code>, and set in <code>params.yaml</code> whatever differs from the sealed "
-                      "values. " + LAUNCH_NOTE + "<pre>cd /path/to/rnaseq_counts</pre>")
+        assert cd == _LOCAL_CD + "<pre>cd /path/to/rnaseq_counts</pre>"
         assert "launcher.sh" not in cd                                  # the launcher is the cluster's
         assert make.startswith("Make <code>nextflow</code> available")
         assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
@@ -999,10 +796,10 @@ class TestRunLocally:
                        "after the line — <code>--stranded &lt;value&gt;</code> — and wins over "
                        f"<code>params.yaml</code>.<pre>{RUN_LOCAL}</pre>")
         assert RUN_LOCAL == "nextflow run main.nf -profile local -params-file params.yaml -resume"
-        # one spelling on the whole page: the line itself (the files section and this step) and the
-        # listing's bare `nextflow run main.nf`
-        assert set(re.findall(r"nextflow run main\.nf[^<]*", html)) == {RUN_LOCAL, "nextflow run main.nf"}
-        assert html.count(f"<pre>{RUN_LOCAL}</pre>") == 2
+        # one spelling on the whole page, in this step alone
+        assert set(re.findall(r"nextflow run main\.nf[^<]*", html)) == {RUN_LOCAL}
+        assert html.count(f"<pre>{RUN_LOCAL}</pre>") == 1
+        assert sec.endswith("</ol></div></section>")                     # the steps are the whole section
 
     def test_with_the_runtime_env_recorded_step_two_is_source_its_activate_script(self):
         html = _page(_local())
@@ -1047,27 +844,12 @@ class TestRunLocally:
         assert "bioinf_rnaseq_cli" not in sec
         assert "Docker" not in cd and "Docker" not in run                 # the requirement lives in step two only
 
-    def test_the_first_step_carries_the_launch_directory_note(self):
-        for rec in (_record(), _local(), _cluster(), _one_row()):
-            cd = _steps(_section(_page(rec), "run-local"))[0]
-            assert LAUNCH_NOTE + "<pre>cd /path/to/" in cd
-            assert "<code>work/</code>" in cd and "<code>.nextflow/</code>" in cd and "<code>-resume</code>" in cd
-
-    def test_the_note_says_where_results_land_and_where_the_run_records_what_ran(self):
-        sec = _section(_page(), "run-local")
-        assert sec.endswith(
-            '<p class="note">Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample. '
-            "What ran: <code>runs/&lt;timestamp&gt;/trace.txt</code> lists every task's command, "
-            "<code>runs/&lt;timestamp&gt;/report.html</code> the resources, and <code>nextflow log</code> "
-            "the launch line.</p></div></section>")
-        assert _section(_page(_one_row()), "run-local").count("Results land in") == 1
-
-    def test_a_cohort_stage_publishes_flat_and_the_note_says_which(self):
-        one = _section(_page(_cohort()), "run-local")
-        assert ("Results land in <code>results/&lt;sample&gt;/</code>, one directory per sample (cohort stage "
-                "STAGE_01 in <code>results/</code>).") in one
-        two = _section(_page(_with_cohort(_wide_record(n_stages=3), "STAGE_01", "STAGE_02")), "run-local")
-        assert "(cohort stages STAGE_01, STAGE_02 in <code>results/</code>)." in two
+    def test_the_first_step_points_at_the_files_above_whatever_the_record(self):
+        for rec in (_record(), _local(), _cluster(), _one_row(), _cohort(), _threads()):
+            sec = _section(_page(rec), "run-local")
+            assert _steps(sec)[0] == _LOCAL_CD + f"<pre>cd /path/to/{rec.name}</pre>"
+            assert sec.endswith("</ol></div></section>")
+            assert "Results land in" not in sec and "What ran" not in sec   # the directory section says both
 
     def test_there_is_no_by_hand_item_and_no_docker_line_anywhere_on_the_page(self):
         for make in (_record, _one_row, _cluster, _two_images, _wide_record, _local, _local_no_nextflow):
@@ -1090,12 +872,10 @@ class TestRunLocally:
 # ── run it on the cluster ──────────────────────────────────────────────────────
 
 
-#: The cluster's first step, verbatim: change directory, and why that directory.
-_HPC_CD = ("Make a directory for the run inside your project directory on the cluster and change into it: copy "
-           "<code>main.nf</code>, <code>nextflow.config</code>, <code>params.yaml</code> and <code>launcher.sh</code> "
-           "there, write your <code>samples.csv</code>, and set in <code>params.yaml</code> whatever differs — every "
-           "path in both must be a cluster path. SLURM starts the manager job here and " + LAUNCH_NOTE[0].lower()
-           + LAUNCH_NOTE[1:] + " The launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.")
+#: The cluster's first step, verbatim: change directory, every path a cluster path, and what lives there.
+_HPC_CD = ("Change into the run directory on the cluster: the files above, with your <code>samples.csv</code> beside "
+           "them, every path in it and in <code>params.yaml</code> a cluster path. SLURM starts the manager job here; "
+           "the launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it.")
 #: The sentence every submit step ends with: extra flags reach Nextflow, and win.
 _PASSTHROUGH = (" Flags after <code>launcher.sh</code> go through to Nextflow: <code>--stranded &lt;value&gt;</code> "
                 "overrides <code>params.yaml</code> for this run.")
@@ -1117,7 +897,7 @@ class TestRunOnTheCluster:
                 "Nothing to activate by hand." + _PASSTHROUGH + f"<pre>{RUN_HPC}</pre>") in sec
         assert "stage_apptainer_image(" not in sec                      # nothing to stage: the .sif is there
         assert "module load" not in sec                                 # the launcher does the loading
-        assert _banner(html).count("module load") == 1 and _section(html, "files").count("module load") == 1
+        assert _banner(html).count("module load") == 1 and _section(html, "directory").count("module load") == 1
         assert html.count("module load") == 2
 
     def test_without_a_cluster_named_a_warning_says_the_container_is_empty_and_how_to_set_it(self):
@@ -1176,26 +956,23 @@ class TestRunOnTheCluster:
             assert submit.endswith(_PASSTHROUGH + f"<pre>{RUN_HPC}</pre>")
             assert RUN_HPC == "sbatch launcher.sh"
             assert watch == "Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.<pre>squeue -u $USER</pre>"
-            # one spelling: the files section's sentence, the listing's launcher row, this step
-            assert html.count(f"<pre>{RUN_HPC}</pre>") == 1 and html.count(RUN_HPC) == 3
+            # one spelling: the directory box's launcher entry and this step
+            assert html.count(f"<pre>{RUN_HPC}</pre>") == 1 and html.count(RUN_HPC) == 2
             assert "apptainer shell" not in html
 
-    def test_the_first_step_says_why_the_launch_directory_matters_and_where_the_launcher_keeps_nextflows_files(self):
+    def test_the_first_step_says_every_path_is_a_cluster_path_and_where_the_launcher_keeps_nextflows_files(self):
         cd = _steps(_section(_page(_cluster()), "run-hpc"))[0]
-        assert cd.startswith("Make a directory for the run inside your project directory on the cluster")
-        assert ("SLURM starts the manager job here and nextflow works out of the directory it is started in: "
-                "<code>work/</code> (each task's sandbox), <code>.nextflow/</code> (what <code>-resume</code> reads) "
-                "and the run records appear here, so launch from this directory every time. The launcher keeps "
-                "Nextflow's own files under <code>.nextflow_home</code> inside it.<pre>cd /path/in/your/project/"
-                "rnaseq_counts</pre>") in cd
-        assert "Nextflow works out of" not in cd                         # one sentence, joined mid-way
+        assert cd.startswith("Change into the run directory on the cluster: the files above")
+        assert ("every path in it and in <code>params.yaml</code> a cluster path. SLURM starts the manager job here; "
+                "the launcher keeps Nextflow's own files under <code>.nextflow_home</code> inside it."
+                "<pre>cd /path/in/your/project/rnaseq_counts</pre>") in cd
 
-    def test_the_note_after_the_steps_is_the_results_and_what_ran_sentence_the_local_section_ends_with(self):
+    def test_the_steps_are_the_whole_section_and_neither_run_section_repeats_the_directory(self):
         html = _page(_cluster())
-        hpc, local = _section(html, "run-hpc"), _section(html, "run-local")
-        notes = re.findall(r'<p class="note">Results land in .*?</p>', hpc)
-        assert len(notes) == 1 and notes == re.findall(r'<p class="note">Results land in .*?</p>', local)
-        assert hpc.endswith(notes[0] + "</div></section>")
+        for sid in ("run-hpc", "run-local"):
+            sec = _section(html, sid)
+            assert sec.endswith("</ol></div></section>")
+            assert "Results land in" not in sec and "What ran" not in sec and "runs/&lt;timestamp&gt;" not in sec
 
 
 # ── stages ─────────────────────────────────────────────────────────────────────
@@ -1284,6 +1061,19 @@ class TestStages:
     def test_a_gpu_the_sealed_run_used_is_shown_on_an_unsized_request(self):
         row = _stage_row(_page(_with_resources(_record(), "HISAT2", gpus=2)), "HISAT2")
         assert "(DEFAULT 4:00:00 · 8G · 1 cpu · 2 gpus)" in row
+
+    def test_a_thread_slot_makes_the_request_the_sealed_count_and_says_the_rest_is_default(self):
+        row = _stage_row(_page(_threads()), "HISAT2")
+        assert ("<td>cpus 4 <span class=\"muted\">— the command&#x27;s thread count, as the sealed run used it; mem and "
+                "time DEFAULT 8G · 4:00:00</span></td>") in row
+        assert "unsized" not in row
+        assert ("<pre>hisat2 -p ${task.cpus} -x ${file(params.hisat2_index).name} -U ${reads} | samtools sort -o "
+                "aligned.bam</pre>") in row
+        assert "unsized" in _stage_row(_page(_threads()), "SAMTOOLS")
+        sized = _page(_threads(resources={"HISAT2": {"cpus": 8, "mem": "32G", "time": "4:00:00"}}))
+        assert "<td>cpus 8 (the command&#x27;s thread count) · mem 32G · time 4:00:00 · gpus 0</td>" in _stage_row(sized, "HISAT2")
+        gpu = _page(_with_resources(_threads(), "HISAT2", gpus=1))
+        assert "mem and time DEFAULT 8G · 4:00:00 · 1 gpu</span></td>" in _stage_row(gpu, "HISAT2")
 
     def test_measured_numbers_are_printed_with_their_authority_word(self):
         row = _stage_row(_page(), "HISAT2")
@@ -1382,7 +1172,7 @@ class _Balance(HTMLParser):
 
 _RECORDS = {"three_rows": _record, "one_row": _one_row, "wide": _wide_record, "cluster": _cluster,
             "two_images": _two_images, "local": _local, "local_no_nextflow": _local_no_nextflow,
-            "cohort": _cohort}
+            "cohort": _cohort, "threads": _threads}
 
 
 class TestPageShape:
@@ -1408,7 +1198,8 @@ class TestPageShape:
         html = _page(_RECORDS[which]())
         assert re.findall(r'<section class="bx" id="([^"]+)"', html) == SECTION_IDS
         assert html.index('id="stages"') < html.index(f'<p class="gen">{FOOTER}')
-        assert html.count("<svg") == 1 and html.index('id="picture"') < html.index('id="files"')
+        assert html.count("<svg") == 1 and html.index('id="picture"') < html.index('id="directory"')
+        assert html.index('id="directory"') < html.index('id="samplesheet"') < html.index('id="run-local"')
 
     @pytest.mark.parametrize("which", sorted(_RECORDS))
     def test_the_page_speaks_the_files_vocabulary_and_never_the_seals_placeholders(self, which):
@@ -1427,7 +1218,7 @@ class TestPageShape:
         spoken = _spoken(_page())
         for word in ("params.gtf", "params.stranded", "params.hisat2_index", "reads", "<sample>.counts.tsv",
                      "results/<sample>/", "${params.stranded}", "${gtf}", "${reads}", "${meta.sample}.counts.tsv",
-                     "params.samplesheet", "samplesheet: samples.csv", "outdir: results"):
+                     "samplesheet: samples.csv", "outdir: results", "runs/<timestamp>/", "run.json"):
             assert word in spoken, word
         for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "OUTPUT_DIR"):
             assert ph not in spoken, ph
@@ -1435,7 +1226,7 @@ class TestPageShape:
 
     def test_the_removed_items_are_gone(self):
         html = _page(_cluster())
-        for sid in ("samplesheet", "stages-cards", "defaults", "provenance", "howto", "notes", "by-hand", "commands"):
+        for sid in ("files", "params", "stages-cards", "defaults", "provenance", "howto", "notes", "by-hand", "commands"):
             assert f'id="{sid}"' not in html
         for gone in ("Bytes", "sha256sum -c", "run_all.sh", "run_local.sh", "nextflow_local.sh",
                      "--stages", "every derivation the caller did not dictate", "Inputs</h3>", "Outputs</h3>",
@@ -1445,7 +1236,10 @@ class TestPageShape:
                      '<p class="note"><code>params.yaml</code> also names', "one row per sample, columns:",
                      "must be on your PATH", "carries no shared parameters", "Copy the whole directory next to the data",
                      "Hover a box to trace what it feeds", 'id="pipeline-files"', "what you copy and edit → the engine",
-                     "Copy this directory next to your data", "Copy this directory into your project directory"):
+                     "Copy this directory next to your data", "Copy this directory into your project directory",
+                     "How the files fit together", "Our conventions", "Parameters and samples", "Decided by",
+                     "What it holds", "How it is used", "Results land in", "What ran:", "MANIFEST",
+                     "Make a directory for the run", "<h3", "<dl"):
             assert gone not in html, gone
 
     def test_the_same_record_renders_the_same_bytes(self):
@@ -1481,9 +1275,8 @@ class TestPageShape:
                     "<script>q</script>", "<script>s.sif", "<script>e</script>", "<script>m</script>",
                     "<script>a</script>", "<script>k</script>", "<script>d</script>", "x<y"):
             assert raw not in html, raw
-        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in _section(html, "params")
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in _svg(html)                    # the param's tooltip
-        assert _section(html, "params").count("&lt;script&gt;x&lt;/script&gt;") == 1  # the example row
+        assert _section(html, "samplesheet").count("&lt;script&gt;x&lt;/script&gt;") == 1  # the example row
         assert "&lt;script&gt;y" in _svg(html) and "&lt;script&gt;y" in _section(html, "stages")
         assert "<pre>cd /path/to/&lt;script&gt;z&lt;/script&gt;</pre>" in html
         assert "<pre>cd /path/in/your/project/&lt;script&gt;z&lt;/script&gt;</pre>" in html
@@ -1495,16 +1288,14 @@ class TestPageShape:
         assert "<b>&lt;script&gt;e&lt;/script&gt;</b> — module load <code>&lt;script&gt;m&lt;/script&gt;</code>" in _banner(html)
         local = _section(html, "run-local")
         assert "<pre>source /ck/&lt;script&gt;a&lt;/script&gt;/activate.sh</pre>" in local
-        files = _section(html, "files")
-        assert ("<tr><td>&lt;script&gt;k&lt;/script&gt;</td><td>&lt;script&gt;d&lt;/script&gt; <code>x&lt;y</code></td>"
-                "<td>from the seal</td></tr>") in files
-        listing = _listing(files)
-        assert "<code>&lt;script&gt;s.sif</code> on &lt;script&gt;e&lt;/script&gt;" in listing
-        assert "<code>module load &lt;script&gt;m&lt;/script&gt;</code>" in listing
+        directory = _section(html, "directory")
+        assert "<code>&lt;script&gt;s.sif</code> on &lt;script&gt;e&lt;/script&gt;" in directory
+        assert "<code>module load &lt;script&gt;m&lt;/script&gt;</code>" in directory
+        assert "script&gt;k" not in html and "script&gt;d" not in html     # the defaults table is gone, not escaped
         assert html.count("<script>") == _page().count("<script>")          # the shell's and the hover JS only
 
     def test_a_record_with_no_outputs_still_renders(self):
         html = _page(_no_outputs())
-        assert _svg(html).count("(nothing published)") == 1                 # the picture and the listing say so, once each
-        assert _listing(_section(html, "files")).count("<td>(nothing published)</td>") == 1
+        assert _svg(html).count("(nothing published)") == 1                 # the picture and the directory say so, once each
+        assert _section(html, "directory").count("(nothing published)") == 1
         assert re.findall(r'<section class="bx" id="([^"]+)"', html) == SECTION_IDS
