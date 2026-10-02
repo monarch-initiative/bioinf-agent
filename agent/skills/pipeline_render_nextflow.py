@@ -91,8 +91,17 @@ _RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -r
 #: How a run starts at each locus — the ONE spelling the launcher and the page share.
 RUN_LOCAL = _RUN_LINE.format(profile="local")
 RUN_HPC = "sbatch launcher.sh"
-#: What a run leaves under runs/<stamp>/ — the launch record and the page name the same five.
-RUN_RECORD_FILES = ("run.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
+#: What a run leaves under runs/<stamp>/: each file, what it holds, and which rendered
+#: file writes it — main.nf at launch (`record_launch`), or nextflow.config as the run
+#: goes. The launch record, the config and the page name these five from here.
+RUN_RECORDS = (
+    ("run.json", "the launch line, every param as resolved, the pipeline's provenance", "main.nf"),
+    ("samples.csv", "the samplesheet as read", "main.nf"),
+    ("trace.txt", "every task: status, when, how long, cpu and memory, work dir, command", "nextflow.config"),
+    ("report.html", "Nextflow's run report", "nextflow.config"),
+    ("timeline.html", "Nextflow's timeline", "nextflow.config"),
+)
+RUN_RECORD_FILES = tuple(name for name, _, _ in RUN_RECORDS)
 #: The trace's columns: which task, which SLURM job, how it ended, when, how long, what it
 #: cost, where it ran, and the command it ran.
 TRACE_FIELDS = ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
@@ -841,4 +850,4 @@ def run_lines(record: PipelineRecord, locus: str) -> list[str]:
 
 
 __all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC",
-           "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM"]
+           "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM", "RUN_RECORDS", "RUN_RECORD_FILES"]

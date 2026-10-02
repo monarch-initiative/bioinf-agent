@@ -11,9 +11,10 @@ cannot disagree. The page speaks the FILES' vocabulary — `params.gtf`, the `re
 column, `<sample>.counts.tsv`, `results/<sample>/` — never the seal's `{PLACEHOLDER}`s.
 The picture is a faithful, non-overlapping drawing of the record's graph, in which the
 row key is drawn but never wired; the directory section draws nothing — it is a
-two-column box, the files you put there and what a run adds, every line read off the
-record; what params.yaml holds is read in params.yaml, so the page names its keys and
-repeats nothing. A how-to whose thread count is a declared slot (`format: threads`)
+two-column box of names, the files you put there and what a run adds, beside a legend
+of one line per directory read off the record (the run records from the renderer's own
+list, each file with what writes it); what params.yaml holds is read in params.yaml,
+so the page names nothing twice. A how-to whose thread count is a declared slot (`format: threads`)
 renders the stage's command with `${task.cpus}` and its request as the sealed count.
 
 Rendered from the same fixture the record tests use (`sealed_rnaseq_spec`: three rows,
@@ -34,7 +35,7 @@ from agent.skills import pipeline_record as pr
 from agent.skills.env_report_html import _close_page, _e, _open_page
 from agent.skills.pipeline_page_html import (FOOTER, DirEntry, _ticks_to_code, directory_tree, picture_layout,
                                              render_pipeline_page)
-from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, bound_commands
+from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, RUN_RECORDS, bound_commands
 
 SPEC_PATH = "/ws/reports/rnaseq_counts_workflow.workflow.yaml"
 SIF = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
@@ -156,17 +157,32 @@ def _entries(rec: pr.PipelineRecord) -> dict[str, DirEntry]:
 
 
 def _box(sec: str) -> str:
-    """The directory box, out of the directory section."""
+    """The directory box, out of the directory section: from its opening to the legend."""
     start = sec.index('<div class="dir">')
-    return sec[start: sec.index('<p class="note"><code>pipeline.html</code>', start)]
+    return sec[start: sec.index('<ul class="legend">', start)]
 
 
-def _box_items(box: str) -> dict[str, list[tuple[str, str, str]]]:
-    """Per column title, the entries as (name, role, what), cells verbatim."""
-    out: dict[str, list[tuple[str, str, str]]] = {}
+def _box_items(box: str) -> dict[str, list[tuple[str, str]]]:
+    """Per column title, the entries as (name, role), cells verbatim."""
+    out: dict[str, list[tuple[str, str]]] = {}
     for title, body in re.findall(r'<div class="col"><div class="col-title">(.*?)</div><ul>(.*?)</ul></div>', box, re.S):
-        out[title] = re.findall(r'<li><code>(.*?)</code>(?: <span class="muted">· (.*?)</span>)?<div class="what">(.*?)</div></li>',
-                                body, re.S)
+        out[title] = re.findall(r'<li><code>(.*?)</code>(?: <span class="muted">· (.*?)</span>)?</li>', body, re.S)
+    return out
+
+
+def _legend(sec: str) -> str:
+    """The legend beside the box: one item per directory a run adds."""
+    start = sec.index('<ul class="legend">')
+    return sec[start: sec.index('</div><p class="note"><code>pipeline.html</code>', start)]
+
+
+def _legend_items(legend: str) -> list[tuple[str, str, list[tuple[str, str, str]]]]:
+    """Per directory, (name, what, [(file, what, written by)]), cells verbatim."""
+    body = legend[len('<ul class="legend">'): -len("</ul>")]
+    out = []
+    for name, what, sub in re.findall(r'<li><code>(.*?)</code> — (.*?)(?:<ul>(.*?)</ul>)?</li>', body, re.S):
+        out.append((name, what, re.findall(r'<li><code>(.*?)</code> — (.*?) <span class="muted">· from (.*?)</span></li>',
+                                           sub, re.S)))
     return out
 
 
@@ -373,134 +389,82 @@ _INTRO = ('<p class="note">Copy these files into the directory where you want to
           'in.</p>')
 _STAYS = ('<p class="note"><code>pipeline.html</code> (this page) and <code>.pipeline/</code> (the record it was '
           'rendered from) stay with the template.</p>')
-_RUNS_ENTRY = ("one directory per run, never overwritten: `run.json`, `samples.csv`, `trace.txt`, `report.html`, "
-               "`timeline.html` — `run.json` (the launch line, every param as resolved, the pipeline's provenance) "
-               "and the samplesheet as read are written by main.nf at launch; the trace (every task: status, when, "
-               "how long, resources, work dir, command), report and timeline are set in nextflow.config")
-
-
 class TestTheDirectory:
-    def test_the_section_is_the_copy_note_the_box_then_what_stays_with_the_template(self):
+    def test_the_section_is_the_copy_note_the_box_with_its_legend_then_what_stays_with_the_template(self):
         sec = _section(_page(_cluster()), "directory")
         assert '<h2>The directory <span class="note">what you put there, what a run adds</span></h2>' in sec
         body = sec[sec.index('<div class="bx-body">') + len('<div class="bx-body">'):]
-        assert body.startswith("<style>#directory .dir{")
+        assert body.startswith("<style>#directory .dirwrap{")
         after_style = body[body.index("</style>") + len("</style>"):]
-        assert after_style.startswith(_INTRO + '<div class="dir"><div class="path">path/to/your/project/</div>')
-        assert body.endswith(_STAYS + "</div></section>")
-        assert sec.count('<div class="col">') == 2 and sec.count("<style>") == 1
-        for gone in ("<table", "<pre>", "<svg", "<script", "<h3", "<dl"):
+        assert after_style.startswith(
+            _INTRO + '<div class="dirwrap"><div class="dir"><div class="path">path/to/your/project/</div>'
+            '<div class="cols"><div class="col"><div class="col-title">you put here</div><ul>')
+        assert '</ul></div></div></div><ul class="legend"><li>' in after_style   # the box closes, the legend follows
+        assert body.endswith("</li></ul></div>" + _STAYS + "</div></section>")
+        assert sec.count('<div class="col">') == 2 and sec.count("<style>") == 1 and sec.count('class="legend"') == 1
+        for gone in ("<table", "<pre>", "<svg", "<script", "<h3", "<dl", 'class="what"'):
             assert gone not in sec, gone
 
-    def test_the_box_lists_the_five_files_you_put_there_then_what_a_run_adds(self):
+    def test_the_box_names_the_five_files_with_their_role_then_what_a_run_adds_and_nothing_more(self):
         items = _box_items(_box(_section(_page(_cluster()), "directory")))
         assert list(items) == ["you put here", "a run adds"]
-        assert [(n, role) for n, role, _ in items["you put here"]] == [
+        assert items["you put here"] == [
             ("main.nf", "copy"), ("nextflow.config", "copy"), ("params.yaml", "copy, then edit"),
             ("samples.csv", "write your own"), ("launcher.sh", "copy, cluster only")]
-        assert [(n, role) for n, role, _ in items["a run adds"]] == [
-            ("results/&lt;sample&gt;/", ""), ("runs/&lt;timestamp&gt;/", ""), ("work/", "")]
+        assert items["a run adds"] == [("results/&lt;sample&gt;/", ""), ("runs/&lt;timestamp&gt;/", ""), ("work/", "")]
         entries = directory_tree(_cluster())
         assert [e.group for e in entries] == ["files"] * 5 + ["written"] * 3
+        assert all(e.what == "" and e.files == () for e in entries if e.group == "files")
         assert all(e.role == "" for e in entries if e.group == "written")
 
-    def test_each_entry_is_the_records_own_words_with_command_spans_as_code(self):
-        for make in (_cluster, _record, _cohort, _threads):
+    def test_the_legend_is_one_line_per_directory_in_the_records_own_words_with_command_spans_as_code(self):
+        for make in (_cluster, _record, _cohort, _threads, _no_outputs):
             rec = make()
-            items = _box_items(_box(_section(_page(rec), "directory")))
-            shown = {n: what for col in items.values() for n, _, what in col}
-            for e in directory_tree(rec):
-                assert shown[_e(e.name)] == _ticks_to_code(e.what), (make.__name__, e.name)
-            assert len(shown) == len(directory_tree(rec))
-
-    def test_main_nf_names_the_stages_in_order_and_how_often_each_runs(self):
-        assert _entries(_record())["main.nf"].what == (
-            "the stages HISAT2 → SAMTOOLS → HTSEQ_COUNT, one process each, run once per samples.csv row")
-        assert _entries(_cohort())["main.nf"].what == (
-            "the stages STAGE_00 → STAGE_01 → STAGE_02, one process each; a per-sample stage runs once per "
-            "samples.csv row, a cohort stage once")
-        empty = _wide_record(n_stages=2).model_copy(update={"stages": []})
-        assert _entries(empty)["main.nf"].what == "the stages (no stages), one process each, run once per samples.csv row"
-
-    def test_nextflow_config_names_what_each_profile_runs_in_and_says_set_me_when_no_sif_is_recorded(self):
-        assert _entries(_record())["nextflow.config"].what == (
-            "where it runs — `-profile local`: docker, `bioinf_rnaseq_cli:latest` · `-profile slurm`: apptainer, "
-            "`container = ''` (SET ME) — each stage's request · what a run records")
-        assert _entries(_cluster())["nextflow.config"].what == (
-            "where it runs — `-profile local`: docker, `bioinf_rnaseq_cli:latest` · `-profile slurm`: apptainer, "
-            "`rnaseq_cli_48ac8c5b25d2.sif` on hpc — each stage's request · what a run records")
-        rec = _record()
-        untagged = rec.model_copy(update={"stages": [s.model_copy(update={"image": None}) for s in rec.stages]})
-        assert "docker, `aaaa1111aaaa` ·" in _entries(untagged)["nextflow.config"].what
-        assert "docker, image unrecorded ·" in _entries(_wide_record(n_stages=2))["nextflow.config"].what
-
-    def test_with_several_images_nextflow_config_names_one_image_per_stage_under_each_profile(self):
-        what = _entries(_staged_but_one())["nextflow.config"].what
-        assert ("docker, HISAT2 `bioinf_rnaseq_cli:latest`, SAMTOOLS `bioinf_rnaseq_cli:latest`, HTSEQ_COUNT "
-                "`other_img:2` · `-profile slurm`: apptainer, HISAT2 `rnaseq_cli_48ac8c5b25d2.sif` on hpc, SAMTOOLS "
-                "`rnaseq_cli_48ac8c5b25d2.sif` on hpc, HTSEQ_COUNT `container = ''` (SET ME) — each stage's request") in what
-
-    def test_a_thread_slot_is_named_on_nextflow_config_as_threads_equal_cpus(self):
-        assert _entries(_threads())["nextflow.config"].what.endswith(
-            "— each stage's request · threads = cpus (HISAT2 4) · what a run records")
-        assert "threads = cpus" not in _entries(_record())["nextflow.config"].what
-        assert "threads = cpus (HISAT2 8)" in _entries(_threads(resources={"HISAT2": {"cpus": 8}}))["nextflow.config"].what
-
-    def test_params_yaml_names_its_keys_then_the_samplesheet_and_the_output_directory(self):
-        assert _entries(_record())["params.yaml"].what == (
-            "hisat2_index, stranded, gtf · `samplesheet: samples.csv` · `outdir: results`")
-        assert _entries(_no_shared())["params.yaml"].what == (
-            "no shared parameters · `samplesheet: samples.csv` · `outdir: results`")
-        assert _entries(_threads())["params.yaml"].what == _entries(_record())["params.yaml"].what   # a slot is no key
-
-    def test_samples_csv_says_its_columns_and_its_row_key_and_points_at_the_example(self):
-        assert _entries(_record())["samples.csv"].what == (
-            "one row per sample, columns `sample`, `reads`; `sample` is the row key — example below")
-        assert _entries(_one_row())["samples.csv"].what == _entries(_record())["samples.csv"].what
-        assert _entries(_no_shared())["samples.csv"].what == (
-            "one row per sample, columns `sample`; `sample` is the row key — example below")
-
-    def test_launcher_sh_says_what_it_loads_in_each_cluster_state(self):
-        tail = " the launch line with `-profile slurm`; flags after its name go through to Nextflow"
-        assert _entries(_cluster())["launcher.sh"].what == (
-            "`sbatch launcher.sh`: the manager job — `module load apptainer/1.3.2 nextflow/24.10.0`, then" + tail)
-        assert _entries(_record(compute_env="hpc", modules=[]))["launcher.sh"].what == (
-            "`sbatch launcher.sh`: the manager job — loads no modules (the env declares none), then" + tail)
-        assert _entries(_record())["launcher.sh"].what == (
-            "`sbatch launcher.sh`: the manager job — rendered without a cluster named, so it loads no modules; then"
-            + tail)
+            legend = _legend_items(_legend(_section(_page(rec), "directory")))
+            written = [e for e in directory_tree(rec) if e.group == "written"]
+            assert [n for n, _, _ in legend] == [_e(e.name) for e in written], make.__name__
+            for (_, what, files), e in zip(legend, written):
+                assert what == _ticks_to_code(e.what), (make.__name__, e.name)
+                assert files == [(_e(n), _ticks_to_code(w), _e(by)) for n, w, by in e.files], (make.__name__, e.name)
 
     def test_what_a_run_adds_is_results_per_sample_the_run_records_and_work(self):
         e = _entries(_record())
         assert e["results/<sample>/"].what == (
-            "aligned.bam, aligned.bam.bai, <sample>.counts.tsv — copied there by Nextflow as each stage finishes "
-            "(`publishDir` in main.nf, under `outdir` from params.yaml); always the latest run's")
-        assert e["runs/<timestamp>/"].what == _RUNS_ENTRY
-        assert RUN_RECORD_FILES == ("run.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
-        assert e["work/"].what == (
-            "each task's sandbox and what `-resume` reads, with `.nextflow/`; never cleaned for you — "
-            "`nextflow clean -f` once the results are where you want them")
+            "where each sample's results are published, always the latest run's; set by `outdir:` in params.yaml")
+        assert e["runs/<timestamp>/"].what == "one directory per run, never overwritten"
+        assert e["work/"].what == "Nextflow's canonical work directory"
         assert "results/" not in e                                     # no cohort stage: no flat results entry
-        assert _entries(_no_outputs())["results/<sample>/"].what.startswith("(nothing published) — copied there")
+        assert all(x.files == () for n, x in e.items() if n != "runs/<timestamp>/")
 
-    def test_a_cohort_stage_adds_a_flat_results_entry_and_only_then(self):
-        e = _entries(_cohort())
+    def test_the_run_records_are_the_renderers_own_list_each_file_with_what_writes_it(self):
+        files = _entries(_record())["runs/<timestamp>/"].files
+        assert files == RUN_RECORDS
+        assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
+            "run.json", "samples.csv", "trace.txt", "report.html", "timeline.html"]
+        assert [by for _, _, by in files] == ["main.nf", "main.nf", "nextflow.config", "nextflow.config",
+                                              "nextflow.config"]
+        assert files[0][1] == "the launch line, every param as resolved, the pipeline's provenance"
+        assert files[1][1] == "the samplesheet as read"
+
+    def test_a_results_directory_is_listed_only_when_a_stage_publishes_into_it(self):
+        assert [x.name for x in directory_tree(_no_outputs()) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
         assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
             "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
-        assert e["results/"].what == "artifact_01.bam — the cohort stages' outputs, published the same way"
-        assert e["results/<sample>/"].what.startswith("artifact_00.bam, artifact_02.bam — copied there")
+        assert _entries(_cohort())["results/"].what == (
+            "where the cohort stages' results are published, beside the per-sample directories")
 
     def test_the_section_speaks_the_files_words_and_no_placeholder(self):
         for make in _DIR_RECORDS.values():
             spoken = _spoken(_section(_page(make()), "directory"))
             assert not _PLACEHOLDER_RE.search(spoken), (make.__name__, _PLACEHOLDER_RE.findall(spoken))
         spoken = _spoken(_section(_page(_cluster()), "directory"))
-        for word in ("params.yaml", "samples.csv", "-profile local", "-profile slurm", "sbatch launcher.sh",
-                     "publishDir", "-resume", "nextflow clean -f", "run.json", "trace.txt", "timeline.html",
-                     "module load apptainer/1.3.2 nextflow/24.10.0", "results/<sample>/", "runs/<timestamp>/"):
+        for word in ("main.nf", "nextflow.config", "params.yaml", "samples.csv", "launcher.sh", "outdir:", "run.json",
+                     "trace.txt", "report.html", "timeline.html", "results/<sample>/", "runs/<timestamp>/", "work/",
+                     "from main.nf", "from nextflow.config"):
             assert word in spoken, word
         for gone in ("How it is used", "What it holds", "Our conventions", "Decided by", "nextflow run main.nf",
-                     "MANIFEST", "copy this directory", "Copy this directory"):
+                     "MANIFEST", "copy this directory", "Copy this directory", "publishDir", "-profile", "module load",
+                     "HISAT2", "aligned.bam", ".sif", "nextflow clean", ".nextflow/", "threads"):
             assert gone not in spoken, gone
 
     @pytest.mark.parametrize("which", sorted(_DIR_RECORDS))
@@ -897,8 +861,7 @@ class TestRunOnTheCluster:
                 "Nothing to activate by hand." + _PASSTHROUGH + f"<pre>{RUN_HPC}</pre>") in sec
         assert "stage_apptainer_image(" not in sec                      # nothing to stage: the .sif is there
         assert "module load" not in sec                                 # the launcher does the loading
-        assert _banner(html).count("module load") == 1 and _section(html, "directory").count("module load") == 1
-        assert html.count("module load") == 2
+        assert _banner(html).count("module load") == 1 and html.count("module load") == 1   # the banner, once
 
     def test_without_a_cluster_named_a_warning_says_the_container_is_empty_and_how_to_set_it(self):
         html = _page()
@@ -956,8 +919,8 @@ class TestRunOnTheCluster:
             assert submit.endswith(_PASSTHROUGH + f"<pre>{RUN_HPC}</pre>")
             assert RUN_HPC == "sbatch launcher.sh"
             assert watch == "Watch it; <code>sacct -j &lt;jobid&gt;</code> once it has ended.<pre>squeue -u $USER</pre>"
-            # one spelling: the directory box's launcher entry and this step
-            assert html.count(f"<pre>{RUN_HPC}</pre>") == 1 and html.count(RUN_HPC) == 2
+            # one spelling, said once: this step (the directory box names launcher.sh and no more)
+            assert html.count(f"<pre>{RUN_HPC}</pre>") == 1 and html.count(RUN_HPC) == 1
             assert "apptainer shell" not in html
 
     def test_the_first_step_says_every_path_is_a_cluster_path_and_where_the_launcher_keeps_nextflows_files(self):
@@ -1218,7 +1181,7 @@ class TestPageShape:
         spoken = _spoken(_page())
         for word in ("params.gtf", "params.stranded", "params.hisat2_index", "reads", "<sample>.counts.tsv",
                      "results/<sample>/", "${params.stranded}", "${gtf}", "${reads}", "${meta.sample}.counts.tsv",
-                     "samplesheet: samples.csv", "outdir: results", "runs/<timestamp>/", "run.json"):
+                     "outdir:", "runs/<timestamp>/", "run.json"):
             assert word in spoken, word
         for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "OUTPUT_DIR"):
             assert ph not in spoken, ph
@@ -1288,14 +1251,14 @@ class TestPageShape:
         assert "<b>&lt;script&gt;e&lt;/script&gt;</b> — module load <code>&lt;script&gt;m&lt;/script&gt;</code>" in _banner(html)
         local = _section(html, "run-local")
         assert "<pre>source /ck/&lt;script&gt;a&lt;/script&gt;/activate.sh</pre>" in local
-        directory = _section(html, "directory")
-        assert "<code>&lt;script&gt;s.sif</code> on &lt;script&gt;e&lt;/script&gt;" in directory
-        assert "<code>module load &lt;script&gt;m&lt;/script&gt;</code>" in directory
+        assert ("<code>/sif/&lt;script&gt;s.sif</code> — where <code>stage_apptainer_image</code> put it on "
+                "<b>&lt;script&gt;e&lt;/script&gt;</b>") in hpc
+        assert "<script>" not in _section(html, "directory") and "script&gt;" not in _section(html, "directory")
         assert "script&gt;k" not in html and "script&gt;d" not in html     # the defaults table is gone, not escaped
         assert html.count("<script>") == _page().count("<script>")          # the shell's and the hover JS only
 
     def test_a_record_with_no_outputs_still_renders(self):
         html = _page(_no_outputs())
-        assert _svg(html).count("(nothing published)") == 1                 # the picture and the directory say so, once each
-        assert _section(html, "directory").count("(nothing published)") == 1
+        assert _svg(html).count("(nothing published)") == 1                 # the picture says so, once
+        assert "results/" not in _section(html, "directory")                 # and the directory lists no results entry
         assert re.findall(r'<section class="bx" id="([^"]+)"', html) == SECTION_IDS

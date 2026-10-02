@@ -4,9 +4,10 @@ reads before running it on real data, rendered PURELY from the typed
 `PipelineRecord` (agent/skills/pipeline_record.py).
 
 The page has one fixed shape: the header banner, the picture (what runs, per
-sample), the directory (the files you copy in on the left, what a run adds on the
-right, each with what it holds and where it is set), an example samples.csv, how to
-run it locally, how to run it on the cluster, the stages, the footer. A pipeline
+sample), the directory (a box naming the files you copy in on the left and what a run
+adds on the right, beside one line per directory saying what it is and where it is
+set), an example samples.csv, how to run it locally, how to run it on the cluster,
+the stages, the footer. A pipeline
 directory offers ONE way to run — every row of samples.csv, with Nextflow — and the
 page shows it at each locus as the steps a person follows without thinking: change
 directory, make nextflow available (locally: source the checkout's runtime env; on the
@@ -43,8 +44,8 @@ from typing import Optional
 from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources, _PLACEHOLDER_RE)
-from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_HPC, RUN_RECORD_FILES, SAMPLESHEET_PARAM,
-                                                   bound_commands, run_lines)
+from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_RECORDS, SAMPLESHEET_PARAM, bound_commands,
+                                                   run_lines)
 
 #: The standing footer, verbatim — the claim the page makes and the one it does not.
 FOOTER = ("This page shows a pipeline derived from a sealed run; it proves the render is "
@@ -76,19 +77,27 @@ _LAUNCHER = "launcher.sh"
 _PAGE, _RECORD_DIR = "pipeline.html", ".pipeline/"
 #: The directory's two columns, in order: what you put there, what a run adds.
 _DIR_GROUPS = (("files", "you put here"), ("written", "a run adds"))
-#: The directory box's own rules, scoped to the section: two columns that stack on a
-#: narrow screen, and a file name that never breaks mid-word.
+#: The section's own rules: the box hugs its names, the legend takes the rest of the
+#: width beside it, and both stack on a narrow screen; a name never breaks mid-word.
 _DIR_STYLE = (
-    "<style>#directory .dir{display:grid;grid-template-columns:minmax(240px,2fr) minmax(280px,3fr);"
-    "border:1px solid var(--border);background:var(--surface);margin:8px 0}"
-    "#directory .dir .path{grid-column:1/-1;padding:8px 16px;border-bottom:1px solid var(--border);"
-    "font-family:var(--mono);font-size:12.5px;color:var(--muted)}"
-    "#directory .dir .col{padding:12px 16px}#directory .dir .col+.col{border-left:1px solid var(--border)}"
-    "#directory .dir .col-title{margin:0 0 10px;font-size:10.5px;font-weight:700;letter-spacing:.08em;"
+    "<style>#directory .dirwrap{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:16px 36px;"
+    "align-items:start;margin:12px 0 4px}"
+    "#directory .dir{border:1px solid var(--border);background:var(--surface);justify-self:start;max-width:100%}"
+    "#directory .dir .path{padding:8px 18px;border-bottom:1px solid var(--border);font-family:var(--mono);"
+    "font-size:12.5px;color:var(--muted)}"
+    "#directory .dir .cols{display:grid;grid-template-columns:max-content max-content}"
+    "#directory .dir .col{padding:14px 18px 8px}#directory .dir .col+.col{border-left:1px solid var(--border)}"
+    "#directory .dir .col-title{margin:0 0 12px;font-size:10.5px;font-weight:700;letter-spacing:.08em;"
     "text-transform:uppercase;color:var(--cyan)}"
-    "#directory .dir ul{margin:0;padding:0;list-style:none}#directory .dir li{margin:0 0 10px;line-height:1.5}"
-    "#directory .dir code{white-space:nowrap}#directory .dir .what{font-size:12.5px;color:var(--muted)}"
-    "@media(max-width:720px){#directory .dir{grid-template-columns:1fr}"
+    "#directory .dir ul{margin:0;padding:0;list-style:none}"
+    "#directory .dir li{margin:0 0 10px;line-height:1.5;white-space:nowrap}"
+    "#directory .legend{margin:0;padding:0 0 0 18px;line-height:1.55}"
+    "#directory .legend>li{margin:0 0 10px}#directory .legend li::marker{color:var(--muted)}"
+    "#directory .legend ul{margin:4px 0 0;padding-left:18px;list-style:circle}"
+    "#directory .legend ul li{margin:3px 0;font-size:12.5px}"
+    "#directory code{white-space:nowrap}"
+    "@media(max-width:820px){#directory .dirwrap{grid-template-columns:1fr}}"
+    "@media(max-width:520px){#directory .dir .cols{grid-template-columns:1fr}"
     "#directory .dir .col+.col{border-left:none;border-top:1px solid var(--border)}}</style>")
 #: How the override example is spelled per value kind.
 _SLOT = {"path": "<path>", "prefix": "<prefix>", "value": "<value>"}
@@ -583,112 +592,66 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
 
 @dataclass(frozen=True)
 class DirEntry:
-    """One entry of the directory box. `group` is "files" (what you put there) or
+    """One entry of the directory. `group` is "files" (what you put there) or
     "written" (what a run adds); `role` is the verdict beside a file's name — copy ·
     copy, then edit · write your own · copy, cluster only — and empty for what a run
-    writes; `what` is one line read off the record — what it holds and where it is
-    set — with `command` spans in backticks."""
+    writes. The box names an entry and no more. A directory also has a legend line:
+    `what` says what it is and where it is set, `command` spans in backticks, and
+    `files` lists what it holds — (name, what it holds, which rendered file writes
+    it) — for the run records alone. Both are empty for a file."""
     group: str
     name: str
     role: str
     what: str
-
-
-def _image_words(record: PipelineRecord) -> tuple[str, str]:
-    """What each profile runs in, per the record: the docker tag and the .sif — one
-    image → one word each; several → one `STAGE word` per stage."""
-    imgs = _images(record)
-    where = f" on {record.compute_env}" if record.compute_env else ""
-
-    def sif_word(st: PipelineStage) -> str:
-        return f"`{st.sif_path.rsplit('/', 1)[-1]}`{where}" if st.sif_path else "`container = ''` (SET ME)"
-
-    def tag_word(st: PipelineStage) -> str:
-        if st.image:
-            return f"`{st.image}`"
-        return f"`{_short_digest(st.image_digest)}`" if st.image_digest else "image unrecorded"
-
-    if len(imgs) == 1:
-        return tag_word(imgs[0]), sif_word(imgs[0])
-    stages = _ordered(record)
-    return (", ".join(f"{s.name} {tag_word(s)}" for s in stages),
-            ", ".join(f"{s.name} {sif_word(s)}" for s in stages))
-
-
-def _loads_words(record: PipelineRecord) -> str:
-    """What the launcher loads before it runs the line, in each cluster state."""
-    if record.modules:
-        return f"`module load {' '.join(record.modules)}`, then"
-    if record.compute_env:
-        return "loads no modules (the env declares none), then"
-    return "rendered without a cluster named, so it loads no modules; then"
-
-
-def _threads_words(record: PipelineRecord) -> str:
-    """The stages whose command's thread count is their cpus request, if any."""
-    sized = [f"{s.name} {s.resources.cpus}" for s in _ordered(record) if s.resources.threads_slot]
-    return f" · threads = cpus ({', '.join(sized)})" if sized else ""
+    files: tuple[tuple[str, str, str], ...]
 
 
 def directory_tree(record: PipelineRecord) -> list[DirEntry]:
-    """The directory box, read off the record alone: the files you put there, then
-    what a run adds — each in one line that says what it holds and where it is set."""
-    sheet = record.samplesheet
-    names = [c.name for c in sheet.columns]
-    stages = _ordered(record)
-    cohort = [s for s in stages if s.scope == "cohort"]
-    shared = [p.name.lower() for p in record.params if p.kind == "shared"]
-    tag, sif = _image_words(record)
-    chain = " → ".join(s.name for s in stages) or "(no stages)"
-    often = ("one process each, run once per samples.csv row" if not cohort
-             else "one process each; a per-sample stage runs once per samples.csv row, a cohort stage once")
-    per_sample_arts = [_display(record, o.artifact) for s in stages if s.scope == "per_sample" for o in s.outputs]
-    cohort_arts = [_display(record, o.artifact) for s in cohort for o in s.outputs]
-    cols = ", ".join(f"`{n}`" for n in names)
-    rec = ", ".join(f"`{f}`" for f in RUN_RECORD_FILES)
-    rows = [
-        DirEntry("files", _COPY_FILES[0], "copy", f"the stages {chain}, {often}"),
-        DirEntry("files", _COPY_FILES[1], "copy",
-                 f"where it runs — `-profile local`: docker, {tag} · `-profile slurm`: apptainer, {sif} — "
-                 f"each stage's request{_threads_words(record)} · what a run records"),
-        DirEntry("files", _COPY_FILES[2], "copy, then edit",
-                 f"{', '.join(shared) or 'no shared parameters'} · `{SAMPLESHEET_PARAM[0]}: {SAMPLESHEET_PARAM[1]}` · "
-                 f"`{OUTDIR_PARAM[0]}: {OUTDIR_PARAM[1]}`"),
-        DirEntry("files", SAMPLESHEET_PARAM[1], "write your own",
-                 f"one row per sample, columns {cols}; `{names[0]}` is the row key — example below"),
-        DirEntry("files", _LAUNCHER, "copy, cluster only",
-                 f"`{RUN_HPC}`: the manager job — {_loads_words(record)} the launch line with `-profile slurm`; "
-                 "flags after its name go through to Nextflow"),
-        DirEntry("written", "results/<sample>/", "",
-                 f"{', '.join(per_sample_arts) or '(nothing published)'} — copied there by Nextflow as each "
-                 f"stage finishes (`publishDir` in main.nf, under `{OUTDIR_PARAM[0]}` from params.yaml); "
-                 "always the latest run's"),
-    ]
-    if cohort_arts:
+    """The directory, read off the record alone: the files you put there, each with
+    its role, then what a run adds — each directory with one line saying what it is
+    and where it is set; a results directory only when a stage publishes into it."""
+    per_sample = any(o for s in record.stages if s.scope == "per_sample" for o in s.outputs)
+    cohort = any(o for s in record.stages if s.scope == "cohort" for o in s.outputs)
+    rows = [DirEntry("files", _COPY_FILES[0], "copy", "", ()),
+            DirEntry("files", _COPY_FILES[1], "copy", "", ()),
+            DirEntry("files", _COPY_FILES[2], "copy, then edit", "", ()),
+            DirEntry("files", SAMPLESHEET_PARAM[1], "write your own", "", ()),
+            DirEntry("files", _LAUNCHER, "copy, cluster only", "", ())]
+    if per_sample:
+        rows.append(DirEntry("written", "results/<sample>/", "",
+                             "where each sample's results are published, always the latest run's; set by "
+                             f"`{OUTDIR_PARAM[0]}:` in params.yaml", ()))
+    if cohort:
         rows.append(DirEntry("written", "results/", "",
-                             f"{', '.join(cohort_arts)} — the cohort stages' outputs, published the same way"))
-    rows += [
-        DirEntry("written", "runs/<timestamp>/", "",
-                 f"one directory per run, never overwritten: {rec} — `run.json` (the launch line, every "
-                 "param as resolved, the pipeline's provenance) and the samplesheet as read are written by "
-                 "main.nf at launch; the trace (every task: status, when, how long, resources, work dir, "
-                 "command), report and timeline are set in nextflow.config"),
-        DirEntry("written", "work/", "",
-                 "each task's sandbox and what `-resume` reads, with `.nextflow/`; never cleaned for you — "
-                 "`nextflow clean -f` once the results are where you want them"),
-    ]
+                             "where the cohort stages' results are published, beside the per-sample directories", ()))
+    rows += [DirEntry("written", "runs/<timestamp>/", "", "one directory per run, never overwritten", RUN_RECORDS),
+             DirEntry("written", "work/", "", "Nextflow's canonical work directory", ())]
     return rows
 
 
 def _directory_box(rows: list[DirEntry]) -> str:
-    out = ['<div class="dir"><div class="path">path/to/your/project/</div>']
+    """The directory drawn as a box: its path on top, the files you put there on the
+    left with their role, what a run adds on the right — names only."""
+    out = ['<div class="dir"><div class="path">path/to/your/project/</div><div class="cols">']
     for group, title in _DIR_GROUPS:
         out.append(f'<div class="col"><div class="col-title">{_e(title)}</div><ul>')
         for r in (r for r in rows if r.group == group):
             role = f' <span class="muted">· {_e(r.role)}</span>' if r.role else ""
-            out.append(f"<li><code>{_e(r.name)}</code>{role}<div class=\"what\">{_ticks_to_code(r.what)}</div></li>")
+            out.append(f"<li><code>{_e(r.name)}</code>{role}</li>")
         out.append("</ul></div>")
-    out.append("</div>")
+    out.append("</div></div>")
+    return "".join(out)
+
+
+def _directory_legend(rows: list[DirEntry]) -> str:
+    """One line per directory a run adds, and under the run records one per file:
+    what it holds and, muted, which rendered file writes it."""
+    out = ['<ul class="legend">']
+    for r in (r for r in rows if r.group == "written"):
+        files = "".join(f'<li><code>{_e(n)}</code> — {_ticks_to_code(what)} <span class="muted">· from {_e(by)}</span></li>'
+                        for n, what, by in r.files)
+        out.append(f"<li><code>{_e(r.name)}</code> — {_ticks_to_code(r.what)}{f'<ul>{files}</ul>' if files else ''}</li>")
+    out.append("</ul>")
     return "".join(out)
 
 
@@ -804,8 +767,10 @@ def _directory_section(record: PipelineRecord) -> str:
              'it is started in.</p>')
     stays = (f'<p class="note"><code>{_PAGE}</code> (this page) and <code>{_RECORD_DIR}</code> (the record it '
              'was rendered from) stay with the template.</p>')
+    rows = directory_tree(record)
     return _section("directory", "The directory", "what you put there, what a run adds",
-                    _DIR_STYLE + intro + _directory_box(directory_tree(record)) + stays)
+                    _DIR_STYLE + intro + '<div class="dirwrap">' + _directory_box(rows) + _directory_legend(rows)
+                    + "</div>" + stays)
 
 
 def _samplesheet_section(record: PipelineRecord) -> str:

@@ -21,8 +21,9 @@ import pytest
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, STRICT_MODE_LINE, TRACE_FIELDS,
-                                                   bound_commands, render_nextflow, run_lines)
+from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, RUN_RECORDS,
+                                                   STRICT_MODE_LINE, TRACE_FIELDS, bound_commands, render_nextflow,
+                                                   run_lines)
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
 #: notification email, the Lmod names the launcher loads. Names nothing real.
@@ -402,6 +403,16 @@ class TestLaunchRecord:
     before any task runs, so a killed run still has it. It is called right after the
     container guard and defined at the bottom of main.nf, under a comment that says
     what it writes and that nextflow.config writes the rest."""
+
+    def test_each_run_record_file_is_written_by_the_rendered_file_the_list_names_for_it(self):
+        files = render_nextflow(_record())
+        launch = files["main.nf"][files["main.nf"].index("def record_launch() {"):]
+        for name, _, by in RUN_RECORDS:
+            in_launch = f"'{name}'" in launch
+            in_config = f'file = "runs/${{params.run_stamp}}/{name}"' in files["nextflow.config"]
+            assert (in_launch, in_config) == (by == "main.nf", by == "nextflow.config"), name
+        assert RUN_RECORD_FILES == tuple(name for name, _, _ in RUN_RECORDS)
+        assert RUN_RECORD_FILES == ("run.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
 
     def test_the_workflow_calls_it_after_the_guard_and_before_the_rows_channel(self):
         wf = _workflow_block(render_nextflow(_record())["main.nf"])
