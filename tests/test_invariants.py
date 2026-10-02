@@ -3493,7 +3493,7 @@ def test_env_report_html_separates_declared_policy_from_verified():
                 "accelerator": {"type": "cuda", "toolkit_version": "12.4"}})
     h = render_env_report_html(rec)
     assert "Declared policy" in h
-    assert "caller assertion" in h.lower() or "submitter-declared" in h.lower()
+    assert "declared by whoever requested" in h.lower()
     assert "proprietary-EULA" in h and "cuda" in h
 
 

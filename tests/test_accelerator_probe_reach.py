@@ -199,7 +199,7 @@ def test_the_env_report_says_the_image_carries_a_toolkit_nobody_claimed():
     from agent.skills.env_report_html import render_env_report_html
     html = render_env_report_html({**_BASE, "image_accelerator": _IMAGE_HAS_CUDA})
     assert "but the shipped image carries cuda 12.8" in html
-    assert "no GPU capability is CLAIMED" in html
+    assert "no GPU capability is claimed" in html
 
 
 def test_the_probe_now_runs_whether_or_not_a_claim_was_made():

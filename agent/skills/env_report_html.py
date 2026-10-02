@@ -145,6 +145,21 @@ section.bx h2{margin:0;padding:14px 22px 11px;border-bottom:none}
 section.bx .bx-body{padding:14px 22px 18px}
 section.bx .bx-body > *:first-child{margin-top:0}
 section.bx .bx-body > *:last-child{margin-bottom:0}
+/* GUARANTEE TABLE — the five Layer-1 guarantees, one row each. */
+table.g td.gn{width:230px}
+table.g td.gn .gt{color:var(--ink);font-weight:600}
+table.g td.gn b{display:block;margin-top:3px;font:11px/1.4 var(--mono);color:var(--muted);font-weight:500}
+table.g td.gr{width:150px;white-space:nowrap}
+table.g .why{margin:6px 0 0;padding-left:10px;border-left:2px solid var(--border)}
+/* SUB-FOLD — a folding sub-heading inside a section body. */
+details.sub{margin:1.4rem 0 0;border:none;background:transparent;padding:0}
+details.sub>summary{display:block;padding:0;font:inherit;color:inherit;list-style:none}
+details.sub>summary::before,details.sub[open]>summary::before{content:none}
+details.sub>summary h3{margin:0;font-size:13.5px;font-weight:700;color:var(--ink)}
+details.sub>summary h3::before{content:"▸";display:inline-block;width:16px;color:var(--cyan);font-size:12px}
+details.sub[open]>summary h3::before{content:"▾"}
+details.sub>summary h3 .note{font-weight:400}
+table.cov td:first-child code{white-space:nowrap}
 /* FOLDING SECTION — the heading is the disclosure; one arrow, on the heading. */
 section.bx > details.fold{margin:0;border:none;background:transparent;padding:0}
 section.bx > details.fold > summary{display:block;padding:0;font:inherit;color:inherit;
@@ -412,25 +427,25 @@ def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) ->
         otype = (obs.get("type") or "").strip().lower()
         if otype in ("", "none"):
             return (f'{declared or "none"} <span class="muted">— and the shipped image '
-                    f'carries no accelerator toolkit either</span>')
+                    f'carries no GPU toolkit either</span>')
         over = obs.get("version") or ""
         shown = f"{_e(otype)}{(' ' + _e(over)) if over else ''}"
         return (f'{declared or "none"} <span class="badge warn">but the shipped image '
                 f'carries {shown}</span> <span class="muted">({_e(obs.get("source") or "the image")})'
-                f' — no GPU capability is CLAIMED for this env, so nothing here has been '
-                f'checked against a driver; the toolkit is simply present</span>')
+                f' — no GPU capability is claimed for this environment, so the toolkit '
+                f'was not tested against a driver; it is simply present</span>')
     tv = (accel or {}).get("toolkit_version") or ""
     if tv:
         declared = f"{declared} {_e(tv)}"
 
     obs = r.get("image_accelerator")
     if not isinstance(obs, dict) or not obs.get("resolved"):
-        return (f'{declared} <span class="muted">— declared only; nothing read the '
-                f'toolkit off the shipped image</span>')
+        return (f'{declared} <span class="muted">— declared only; the shipped image was '
+                f'not opened to confirm it</span>')
     otype = (obs.get("type") or "").strip().lower()
     if otype == "none":
-        return (f'{declared} <span class="badge bad">shipped image carries no '
-                f'accelerator toolkit</span>')
+        return (f'{declared} <span class="badge bad">the shipped image carries no '
+                f'GPU toolkit</span>')
     over = obs.get("version") or ""
     shown = f"{_e(otype)}{(' ' + _e(over)) if over else ''}"
     src = _e(obs.get("source") or "the image")
@@ -646,6 +661,38 @@ _PLAIN_GAP = {
         "the shipped image was not opened to read its GPU toolkit, so the accelerator "
         "claim is not confirmed against it",
 }
+
+
+# The five guarantees in a reader's words: (short title, what it promises). The id
+# is still printed beside the title — it is the name the recipe, the attestation
+# and the agent's own answers use. Fallback is the roster's own statement.
+_PLAIN_GUARANTEE = {
+    "BUILT": (
+        "The image exists",
+        "The image is present in the local Docker daemon under the recorded checksum, and "
+        "its CPU architecture is the one the record claims."),
+    "VALIDATED_IN_IMAGE": (
+        "The tools work in the shipped image",
+        "Every requested tool's check was re-run inside the image that ships, and each "
+        "check is a real test of that tool: it names the tool, cannot succeed trivially, and "
+        "fails in an image without the tool."),
+    "POLICY_CLEAN": (
+        "The declared policy holds",
+        "The declared GPU and licence policy is consistent with itself and with what the "
+        "shipped image actually carries."),
+    "PROVENANCE_CLEAN": (
+        "Agent-written commands are traceable",
+        "Any install command the agent wrote itself carries its audit trail into the "
+        "recipe: each one is marked as copied from a named repository file or as "
+        "agent-authored. Not applicable when every install came from a package registry."),
+    "WELL_FORMED": (
+        "The record is well-formed",
+        "Every structured part of this record parses against its declared schema, so "
+        "nothing on this page was read out of a field that could mean something else."),
+}
+
+# What a coverage clause establishes when it passes, in a reader's words.
+_KIND_WORDS = {"assurance": "proof", "disclosure": "description"}
 
 
 def _plain_gap(c) -> str:
@@ -1145,15 +1192,20 @@ def render_env_report_html(record: dict) -> str:
     accel = r.get("accelerator") if isinstance(r.get("accelerator"), dict) else None
     accel_type = (accel or {}).get("type") or "none"
     P.append('<section class="bx">')
-    P.append('<h2>Declared policy <span class="note">submitter-declared; the contract checks '
-             'these for consistency (I12/I13), <b>not</b> a runtime-verified fact — a caller assertion</span></h2>')
+    P.append('<h2>Declared policy <span class="note">what was declared by whoever requested '
+             'this environment. The contract checks the declarations against each other and '
+             'against the shipped image; it cannot verify a licence</span></h2>')
     P.append('<div class="bx-body">')
+    redistributable = bool(r.get("redistributable", not gated))
     pol_rows = [
-        ("License-gated", "yes" if gated else "no"),
-        ("Redistributable", "yes" if r.get("redistributable", not gated) else "no"),
-        ("Licenses", ", ".join(_e(x) for x in licenses) if licenses
-                     else '<span class="muted">— (none declared)</span>'),
-        ("Accelerator", _accel_declared_vs_observed(r, accel, accel_type)),
+        ("License-gated",
+         'yes <span class="note">— the user must hold their own licence; the image is never '
+         'pushed to a registry</span>' if gated else
+         'no <span class="note">— no licence restricts who may run this image</span>'),
+        ("Redistributable", "yes" if redistributable else "no"),
+        ("Licenses declared", ", ".join(_e(x) for x in licenses) if licenses
+                              else '<span class="muted">none</span>'),
+        ("GPU accelerator", _accel_declared_vs_observed(r, accel, accel_type)),
     ]
     P.append(_kv_table(pol_rows))
     P.append('</div></section>')
@@ -1184,30 +1236,35 @@ def render_env_report_html(record: dict) -> str:
         return "\n".join(P)
 
     _rows = guarantee_verdicts(_contract)
-    P.append('<p class="note">One line per Layer-1 guarantee — what it promises, and what '
-             'the contract actually established <b>over this record</b>. A guarantee that had '
-             'nothing to examine says so; it is never reported as passed.</p>')
-    P.append('<ul class="foot">')
+    P.append('<p class="note">Five guarantees, each judged from this record alone: what it '
+             'promises, and what was actually established here. A guarantee that had nothing '
+             'to examine says so; it is never reported as passed.</p>')
+    P.append('<div class="tbl-wrap"><table class="g"><thead><tr><th>Guarantee</th>'
+             '<th>Result</th><th>What it means · what was found</th></tr></thead><tbody>')
     for g in _rows:
         badge = _VERDICT_BADGE.get(g["verdict"], _e(g["verdict"]))
+        title, plain = _PLAIN_GUARANTEE.get(g["guarantee"], ("", g["statement"]))
         bits: list[str] = []
         if g["observations"]:
-            bits.append(f"{g['observations']} observation(s) examined")
+            n = g["observations"]
+            bits.append(f"{n} observation{'s' if n != 1 else ''}")
         if g["failed_clauses"]:
             bits.append("objected: " + ", ".join(f"<code>{_e(c)}</code>" for c in g["failed_clauses"]))
-        if g["unobserved"]:
-            bits.append("nothing to examine: "
-                        + ", ".join(f"<code>{_e(c)}</code>" for c in g["unobserved"]))
-        tail = f'<span class="note"> — {" · ".join(bits)}</span>' if bits else ""
+        for c in g["unobserved"]:
+            bits.append(f"nothing to examine for <code>{_e(c)}</code>: "
+                        + _e(_PLAIN_GAP.get(c, "")).rstrip(".") if _PLAIN_GAP.get(c)
+                        else f"nothing to examine for <code>{_e(c)}</code>")
+        tail = f'<div class="note">{" · ".join(bits)}</div>' if bits else ""
         # The clause's own sentence for anything that did NOT check out. A verdict with
         # no reason sends the reader to the coverage table to discover things like "no
         # evidence was run in the shipped image" — the single most consequential fact
         # this page can carry, and it should not be a scavenger hunt.
-        why = "".join(f'<div class="note" style="margin-left:1rem">{_e(n)}</div>'
-                      for n in g["notes"])
-        P.append(f'<li><b>{_e(g["guarantee"])}</b> {badge}<br>'
-                 f'<span class="muted">{_e(g["statement"])}</span>{tail}{why}</li>')
-    P.append("</ul>")
+        why = "".join(f'<div class="note why">{_e(n)}</div>' for n in g["notes"])
+        head = f'<div class="gt">{_e(title)}</div>' if title else ""
+        P.append(f'<tr><td class="gn">{head}<b>{_e(g["guarantee"])}</b></td>'
+                 f'<td class="gr">{badge}</td>'
+                 f'<td>{_e(plain)}{tail}{why}</td></tr>')
+    P.append("</tbody></table></div>")
 
     # PROVENANCE is not a contract clause — it is where the bytes came from, which the
     # contract takes as its input rather than establishing. Kept separate from the list
@@ -1215,11 +1272,11 @@ def render_env_report_html(record: dict) -> str:
     P.append('<h3 style="margin-top:1.2rem">Provenance of the bytes</h3>')
     P.append('<ul class="foot">')
     if is_adopt:
-        P.append("<li><b>ADOPTED_BY_DIGEST</b> — these bytes were pulled by their immutable "
-                 "manifest digest (above), not built here. Their provenance IS that digest: you "
-                 "trust it exactly as far as you trust its publisher. What the digest cannot tell "
-                 "you — whether the image carries the tool you asked for — is the "
-                 "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
+        P.append("<li><b>Pulled by checksum</b> <code>ADOPTED_BY_DIGEST</code> — these bytes "
+                 "were pulled from their publisher "
+                 "by an immutable checksum, not built here. Trust them exactly as far as you "
+                 "trust the publisher. Whether the image carries the tool you asked for is the "
+                 "<code>VALIDATED_IN_IMAGE</code> row above.</li>")
     else:
         # PROVENANCE ONLY — no outcome verb. This bullet said "installed and VALIDATED
         # inside the image that ships … the bytes VALIDATED are the bytes that run on
@@ -1229,14 +1286,15 @@ def render_env_report_html(record: dict) -> str:
         # Where the bytes came from is a fact about the build; whether anything was
         # exercised in them is the VALIDATED_IN_IMAGE bullet above, and this section
         # must not answer that question a second time.
-        P.append("<li><b>BUILT IN-CONTAINER</b> — these bytes were assembled inside the image "
-                 "that ships, rather than built on the host and copied in, so install and ship "
+        P.append("<li><b>Built inside the container</b> — these bytes were assembled inside the "
+                 "image that ships, not built on this machine and copied in, so install and ship "
                  "are one event. What was exercised in them is the "
-                 "<code>VALIDATED_IN_IMAGE</code> line above.</li>")
-        P.append("<li><b>Reproducibility</b> — the content digest binds the conda/PyPI lock, the "
-                 "long-tail commands, the platform, and the digest-pinned base image. Release "
-                 "binaries are sha256-anchored. The apt runtime layer is captured but not "
-                 "version-pinned (<code>apt-get</code> is not reproducible across time).</li>")
+                 "<code>VALIDATED_IN_IMAGE</code> row above.</li>")
+        P.append("<li><b>Reproducibility</b> — the build inputs checksum covers the package "
+                 "lock, the install commands, the platform and the pinned base image, so the "
+                 "same inputs rebuild the same image. Downloaded binaries are pinned by their "
+                 "own checksum. The system (apt) layer is recorded but not pinned; apt installs "
+                 "are not reproducible over time.</li>")
     P.append("</ul>")
 
     # -- WHAT THE CONTRACT ACTUALLY LOOKED AT -------------------------------
@@ -1248,10 +1306,17 @@ def render_env_report_html(record: dict) -> str:
     _mark = {CHECKED: ('<span class="ok">checked</span>', ""),
              NOT_APPLICABLE: ('<span class="muted">n/a</span>', ""),
              UNOBSERVED: ('<span class="warn">unobserved</span>', "")}
-    P.append(f'<h3 style="margin-top:1.2rem">Contract coverage <span class="note">'
-             f'{_e(_contract.summary())}</span></h3>')
-    P.append('<table class="t"><thead><tr><th>Clause</th><th>Ran?</th><th>Establishes</th>'
-             '<th>What it examined</th></tr></thead><tbody>')
+    _cov_bits = [f"{len(_contract.checked)} clause{'s' if len(_contract.checked) != 1 else ''} "
+                 f"examined {_contract.observations} thing{'s' if _contract.observations != 1 else ''}"]
+    if _contract.not_applicable:
+        _cov_bits.append(f"{len(_contract.not_applicable)} not applicable")
+    if _contract.unobserved:
+        _cov_bits.append(f"{len(_contract.unobserved)} had nothing to examine")
+    P.append('<details class="sub"><summary>'
+             f'<h3>Contract coverage <span class="note">clause by clause · '
+             f'{_e(" · ".join(_cov_bits))}</span></h3></summary>')
+    P.append('<div class="tbl-wrap"><table class="cov"><thead><tr><th>Clause</th><th>Looked?</th>'
+             '<th>Kind</th><th>What it examined</th></tr></thead><tbody>')
     # A CLAUSE THAT RAN AND FAILED MUST NOT READ AS "checked" AND NOTHING ELSE.
     # This column answers "did it run", which is genuinely a different question from "did
     # it pass" — but for talos_v11 the effect was that the ONE mention of
@@ -1270,15 +1335,16 @@ def render_env_report_html(record: dict) -> str:
         badge = _mark.get(c.status, (_e(c.status), ""))[0]
         if _clause_failed(c.clause) or any(_clause_failed(x) for x in (c.covers or ())):
             badge += ' <span class="pill bad">and FAILED</span>'
+        kind = _KIND_WORDS.get(c.establishes, c.establishes)
         P.append(f'<tr><td><code>{_e(c.clause)}</code></td><td>{badge}</td>'
-                 f'<td class="muted">{_e(c.establishes)}</td><td>{_e(c.detail)}</td></tr>')
-    P.append('</tbody></table>')
+                 f'<td class="muted">{_e(kind)}</td><td>{_e(c.detail)}</td></tr>')
+    P.append('</tbody></table></div>')
     if _contract.unobserved:
-        P.append('<p class="note"><b>Read this page accordingly.</b> The clause(s) marked '
-                 '<i>unobserved</i> had nothing to examine — they neither passed nor failed, '
-                 'so nothing on this page rests on them. <i>n/a</i> is different: the '
-                 'precondition is genuinely absent (no accelerator claimed, not license-gated), '
-                 'which is itself a fact about the artifact.</p>')
+        P.append('<p class="note">A clause marked <i>unobserved</i> had nothing to look at, so '
+                 'it neither passed nor failed and nothing on this page rests on it. '
+                 '<i>n/a</i> is different: the question does not arise for this environment '
+                 '(no GPU claimed, not license-gated), which is itself a fact about it.</p>')
+    P.append('</details>')
     P.append('</div></section>')
 
     P.append(_close_page('<p class="gen">Generated deterministically from the freeze record'
