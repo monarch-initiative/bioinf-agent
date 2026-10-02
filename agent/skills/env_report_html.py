@@ -176,7 +176,15 @@ table{width:100%;border-collapse:collapse;background:var(--surface);
 border:1px solid var(--border);border-top:2px solid var(--cyan);font-size:13.5px}
 th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
 tr:last-child td{border-bottom:none}
-tr.id-row td{padding:4px 14px 10px 32px;font-size:12px;font-style:italic;border-bottom:1px solid var(--border)}
+tr.id-row td{padding:2px 14px 10px 32px;font-size:12px;border-bottom:1px solid var(--border)}
+tr.id-row td q{font-style:italic}
+/* EVIDENCE CELL — the words first, the literal command one click away. */
+.ev{display:block;margin:6px 0 0;border:none;background:transparent;padding:0}
+.ev>summary{display:inline-block;padding:0;font:11.5px/1.4 var(--mono);color:var(--muted);
+letter-spacing:.04em}
+.ev>summary:hover{color:var(--cyan)}
+.ev>summary::before{color:var(--muted)}
+.ev>pre{margin:6px 0 0;font-size:11.5px}
 th{background:var(--surface-2);color:var(--cyan);font-size:10.5px;font-weight:700;
 letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}
 /* LEFTMOST COLUMN — same muted color as the build-details key column, in EVERY table */
@@ -282,6 +290,54 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
         except Exception:
             depth = ""
     return f'<span class="badge {cls}">{mark}</span>{c}{depth}'
+
+
+# What each evidence-depth class means to a reader. Keyed by the classifier's own
+# vocabulary; an unlisted class falls back to its name so nothing renders blank.
+_DEPTH_WORDS = {
+    "presence":   "present in the image",
+    "version":    "present and reports a version",
+    "help":       "present and prints its help",
+    "import":     "loads as a library",
+    "functional": "ran on data",
+    "unknown":    "check ran (what it exercised is unclassified)",
+}
+
+
+def _evidence_cell(v: dict, tool: str) -> str:
+    """The Tools table's evidence cell: ✓/✗, what the check showed in words, whether
+    the control experiment made the pass mean something, and the literal command
+    under a disclosure. Reads depth through the classifier, never re-derives it —
+    a hand-copied depth list drifts from `_SHALLOW_DEPTHS`."""
+    from agent.skills.env_honesty import (
+        CONTROL_DISCRIMINATING, CONTROL_UNCHECKED, CONTROL_VACUOUS,
+        evidence_depth, is_shallow_evidence)
+    check = v.get("check", "")
+    passed = v.get("passed")
+    bits: list[str] = []
+    if passed:
+        d = evidence_depth(check, tool)
+        shallow = is_shallow_evidence(check, tool) or d == "unknown"
+        words = _DEPTH_WORDS.get(d, d)
+        bits.append('<span class="badge ok">✓</span> ' + _e(words))
+        if shallow:
+            bits.append('<span class="muted">· not exercised</span>')
+    else:
+        rc = v.get("rc")
+        bits.append('<span class="badge bad">✗</span> failed'
+                    + (f' <span class="muted">(exit {_e(rc)})</span>' if rc not in (None, "") else ""))
+    control = v.get("control")
+    if control == CONTROL_DISCRIMINATING:
+        bits.append('<span class="muted">· fails in an image without the tool</span>')
+    elif control == CONTROL_VACUOUS:
+        bits.append('<span class="pill bad">passes without the tool too</span>')
+    elif control == CONTROL_UNCHECKED:
+        bits.append('<span class="muted">· not tried without the tool</span>')
+    out = " ".join(bits)
+    if check:
+        out += (f'<details class="ev"><summary>command</summary>'
+                f'<pre>{_e(check)}</pre></details>')
+    return out
 
 
 def _shallow_evidence_tools(r: dict) -> list[str]:
@@ -799,7 +855,7 @@ def render_env_report_html(record: dict) -> str:
             pkg = pidx.get(t.lower())
             v = vidx.get(t.lower())
             req_v = req_versions.get(t, "")
-            req_cell = f"={_e(req_v)}" if req_v else '<span class="muted">(any)</span>'
+            req_cell = _e(req_v) if req_v else '<span class="muted">any</span>'
             inst_v = _installed_version(t, is_adopt, pkg, v, shipped,
                                          adopt_source=adopt_source,
                                          image_digest=image_digest_raw)
@@ -830,10 +886,11 @@ def render_env_report_html(record: dict) -> str:
                               f'{_e(d["requested"])}</span>')
             tier_cell = _e(_tier_for(t, is_adopt, pkg, shipped))
             if v and (v or {}).get("check"):
-                # Real in-image evidence exists — show it (with its depth). A
-                # freeze_from_image adopt VALIDATES in-image, unlike a biocontainer adopt,
-                # so hiding it behind 'trusted by digest' would understate what we proved.
-                status = _badge(v.get("passed"), v.get("check", ""), t)
+                # Real in-image evidence exists — say what it showed, with the literal
+                # command one click away. A freeze_from_image adopt VALIDATES in-image,
+                # unlike a biocontainer adopt, so hiding it behind 'trusted by digest'
+                # would understate what we proved.
+                status = _evidence_cell(v, t)
             elif is_adopt:
                 status = '<span class="badge na">trusted by digest</span>'
             else:
@@ -846,12 +903,14 @@ def render_env_report_html(record: dict) -> str:
             # A human reads "Translate Spreadsheet Cell Ranges" under `cellranger` and knows.
             idn = identities.get(t.lower())
             if idn is not None and idn.self_description:
-                src = f" · {_e(idn.source)}" if idn.source else ""
+                who = _e(idn.source) if idn.source else "its registry"
                 P.append(
-                    f'<tr class="id-row"><td colspan="5">'
-                    f'<span class="badge na">self-described</span> '
-                    f'<span class="muted">unverified{src}:</span> '
-                    f'&ldquo;{_e(idn.self_description)}&rdquo;</td></tr>')
+                    f'<tr class="id-row"><td colspan="5" title="the package\'s own '
+                    f'description, as published by the registry it was installed from. '
+                    f'Not verified by this report: it is what the tool says it is, so a '
+                    f'name that resolved to the wrong project shows up here.">'
+                    f'<span class="muted">{who} describes it as</span> '
+                    f'<q>{_e(idn.self_description)}</q></td></tr>')
         P.append("</table></div>")
     else:
         P.append(_empty("(no tools recorded)"))
