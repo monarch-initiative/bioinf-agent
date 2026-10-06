@@ -32,7 +32,7 @@ import pytest
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, SAMPLES, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.env_report_html import _close_page, _e, _open_page
+from agent.skills.env_report_html import _close_page, _created_line, _e, _open_page
 from agent.skills.pipeline_page_html import (FOOTER, DirEntry, _ticks_to_code, directory_tree, picture_layout,
                                              render_pipeline_page)
 from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, RUN_RECORDS, bound_commands
@@ -359,7 +359,8 @@ class TestHeader:
         rec = _record()
         html = _page(rec)
         assert '<td class="k">Sealed workflow sha256</td><td><span class="muted">unrecorded</span></td>' in html
-        assert f'<td class="k">Created</td><td>{rec.created_at}</td>' in html
+        assert f'<td class="k">Created</td><td>{_created_line(rec.created_at)}</td>' in html
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", _created_line(rec.created_at))
         sha = "deadbeef" * 8
         assert f'<td class="k">Sealed workflow sha256</td><td><code>{sha}</code></td>' in _page(_record(spec_sha256=sha))
 

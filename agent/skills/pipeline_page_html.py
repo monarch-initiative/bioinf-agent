@@ -41,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from agent.skills.env_report_html import _close_page, _e, _empty, _header_banner, _open_page
+from agent.skills.env_report_html import _close_page, _created_line, _e, _empty, _header_banner, _open_page
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources, _PLACEHOLDER_RE)
 from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_RECORDS, SAMPLESHEET_PARAM, bound_commands,
@@ -748,7 +748,7 @@ def _header(record: PipelineRecord) -> str:
     rows = [
         ("Rendered from", f"sealed workflow <b>{_e(record.sealed_workflow)}</b> — {path}"),
         ("Sealed workflow sha256", _code(record.sealed_workflow_sha256)),
-        ("Created", _e(record.created_at)),
+        ("Created", _e(_created_line(record.created_at))),   # as the ENV and RUN reports print theirs
         ("Image", digests),
         ("Stages", f"{n_st} in execution order: "
                    + " → ".join(f"<code>{_e(s.name)}</code>" for s in _ordered(record))),
