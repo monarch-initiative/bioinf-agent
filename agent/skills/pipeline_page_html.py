@@ -78,7 +78,8 @@ _PAGE, _RECORD_DIR = "pipeline.html", ".pipeline/"
 #: The directory's two columns, in order: what you put there, what a run adds.
 _DIR_GROUPS = (("files", "you put here"), ("written", "a run adds"))
 #: The section's own rules: the box hugs its names, the legend takes the rest of the
-#: width beside it, and both stack on a narrow screen; a name never breaks mid-word.
+#: width beside it, and both stack on a narrow screen; a name never breaks mid-word. In
+#: the legend a name is plain mono, not a bordered chip — chips chop a sentence up.
 _DIR_STYLE = (
     "<style>#directory .dirwrap{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:16px 36px;"
     "align-items:start;margin:12px 0 4px}"
@@ -95,7 +96,9 @@ _DIR_STYLE = (
     "#directory .legend>li{margin:0 0 10px}#directory .legend li::marker{color:var(--muted)}"
     "#directory .legend ul{margin:4px 0 0;padding-left:18px;list-style:circle}"
     "#directory .legend ul li{margin:3px 0;font-size:12.5px}"
-    "#directory code{white-space:nowrap}"
+    "#directory code{white-space:nowrap}#directory .legend code{background:none;border:none;padding:0}"
+    "#directory ul.notes{margin:12px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;line-height:1.55}"
+    "#directory ul.notes li{margin:4px 0}#directory ul.notes li::marker{color:var(--muted)}"
     "@media(max-width:820px){#directory .dirwrap{grid-template-columns:1fr}}"
     "@media(max-width:520px){#directory .dir .cols{grid-template-columns:1fr}"
     "#directory .dir .col+.col{border-left:none;border-top:1px solid var(--border)}}</style>")
@@ -593,9 +596,9 @@ def _svg(layout: _Layout, record: PipelineRecord) -> str:
 @dataclass(frozen=True)
 class DirEntry:
     """One entry of the directory. `group` is "files" (what you put there) or
-    "written" (what a run adds); `role` is the verdict beside a file's name — copy ·
-    copy, then edit · write your own · copy, cluster only — and empty for what a run
-    writes. The box names an entry and no more. A directory also has a legend line:
+    "written" (what a run adds); `role` is what stands beside a name in the box —
+    `hpc / slurm` beside the launcher, nothing beside anything else. The box names an
+    entry and no more. A directory also has a legend line:
     `what` says what it is and where it is set, `command` spans in backticks, and
     `files` lists what it holds — (name, what it holds, which rendered file writes
     it) — for the run records alone. Both are empty for a file."""
@@ -607,20 +610,23 @@ class DirEntry:
 
 
 def directory_tree(record: PipelineRecord) -> list[DirEntry]:
-    """The directory, read off the record alone: the files you put there, each with
-    its role, then what a run adds — each directory with one line saying what it is
-    and where it is set; a results directory only when a stage publishes into it."""
+    """The directory, read off the record alone: the files you put there (the launcher
+    marked as the cluster's), then what a run adds — each directory with one line saying
+    what it is and where it is set; a results directory only when a stage publishes
+    into it."""
     per_sample = any(o for s in record.stages if s.scope == "per_sample" for o in s.outputs)
     cohort = any(o for s in record.stages if s.scope == "cohort" for o in s.outputs)
-    rows = [DirEntry("files", _COPY_FILES[0], "copy", "", ()),
-            DirEntry("files", _COPY_FILES[1], "copy", "", ()),
-            DirEntry("files", _COPY_FILES[2], "copy, then edit", "", ()),
-            DirEntry("files", SAMPLESHEET_PARAM[1], "write your own", "", ()),
-            DirEntry("files", _LAUNCHER, "copy, cluster only", "", ())]
+    rows = [DirEntry("files", _COPY_FILES[0], "", "", ()),
+            DirEntry("files", _COPY_FILES[1], "", "", ()),
+            DirEntry("files", _COPY_FILES[2], "", "", ()),
+            DirEntry("files", SAMPLESHEET_PARAM[1], "", "", ()),
+            DirEntry("files", _LAUNCHER, "hpc / slurm", "", ())]
+    key = record.samplesheet.columns[0].name
     if per_sample:
         rows.append(DirEntry("written", "results/<sample>/", "",
-                             "where each sample's results are published, always the latest run's; set by "
-                             f"`{OUTDIR_PARAM[0]}:` in params.yaml", ()))
+                             f"each sample gets its own directory under `{OUTDIR_PARAM[1]}/`, named by the `{key}` "
+                             f"column of samples.csv (one sample per row); `{OUTDIR_PARAM[1]}/` is defined in "
+                             f"params.yaml by the `{OUTDIR_PARAM[0]}:` parameter", ()))
     if cohort:
         rows.append(DirEntry("written", "results/", "",
                              "where the cohort stages' results are published, beside the per-sample directories", ()))
@@ -631,7 +637,7 @@ def directory_tree(record: PipelineRecord) -> list[DirEntry]:
 
 def _directory_box(rows: list[DirEntry]) -> str:
     """The directory drawn as a box: its path on top, the files you put there on the
-    left with their role, what a run adds on the right — names only."""
+    left, what a run adds on the right — names only, the launcher marked hpc / slurm."""
     out = ['<div class="dir"><div class="path">path/to/your/project/</div><div class="cols">']
     for group, title in _DIR_GROUPS:
         out.append(f'<div class="col"><div class="col-title">{_e(title)}</div><ul>')
@@ -648,7 +654,7 @@ def _directory_legend(rows: list[DirEntry]) -> str:
     what it holds and, muted, which rendered file writes it."""
     out = ['<ul class="legend">']
     for r in (r for r in rows if r.group == "written"):
-        files = "".join(f'<li><code>{_e(n)}</code> — {_ticks_to_code(what)} <span class="muted">· from {_e(by)}</span></li>'
+        files = "".join(f'<li><code>{_e(n)}</code> — {_ticks_to_code(what)} <span class="muted">· defined in {_e(by)}</span></li>'
                         for n, what, by in r.files)
         out.append(f"<li><code>{_e(r.name)}</code> — {_ticks_to_code(r.what)}{f'<ul>{files}</ul>' if files else ''}</li>")
     out.append("</ul>")
@@ -765,12 +771,15 @@ def _directory_section(record: PipelineRecord) -> str:
     intro = ('<p class="note">Copy these files into the directory where you want to run Nextflow, and write '
              'your <code>samples.csv</code> there. Launch from inside it: Nextflow works out of the directory '
              'it is started in.</p>')
-    stays = (f'<p class="note"><code>{_PAGE}</code> (this page) and <code>{_RECORD_DIR}</code> (the record it '
-             'was rendered from) stay with the template.</p>')
+    notes = ('<ul class="notes"><li><code>runs/&lt;timestamp&gt;/</code> directories are created and populated by '
+             'two blocks of code, one in <code>nextflow.config</code> and one in <code>main.nf</code>. Together they '
+             "document each run's settings automatically.</li>"
+             f'<li><code>{_PAGE}</code> (this page) and <code>{_RECORD_DIR}</code> (the record it was rendered from) '
+             'stay with the template.</li></ul>')
     rows = directory_tree(record)
-    return _section("directory", "The directory", "what you put there, what a run adds",
+    return _section("directory", "Run directory overview", "scripting files and run outputs",
                     _DIR_STYLE + intro + '<div class="dirwrap">' + _directory_box(rows) + _directory_legend(rows)
-                    + "</div>" + stays)
+                    + "</div>" + notes)
 
 
 def _samplesheet_section(record: PipelineRecord) -> str:
@@ -799,7 +808,7 @@ def _picture_section(record: PipelineRecord) -> str:
               'that reads it, labelled with its name. Yellow lines: what a stage publishes. A dashed stage '
               'box is <b>unsized</b> (default request). Stages on one row have no edge between them and '
               'may run side by side. Hover or focus a node to trace it.</p>')
-    return _section("picture", "The picture",
+    return _section("picture", "Nextflow pipeline overview",
                     "samples.csv and params.yaml → stages in execution order → published outputs",
                     _svg(layout, record) + _hover_js("pipeline-picture") + legend)
 

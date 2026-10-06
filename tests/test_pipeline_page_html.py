@@ -173,7 +173,7 @@ def _box_items(box: str) -> dict[str, list[tuple[str, str]]]:
 def _legend(sec: str) -> str:
     """The legend beside the box: one item per directory a run adds."""
     start = sec.index('<ul class="legend">')
-    return sec[start: sec.index('</div><p class="note"><code>pipeline.html</code>', start)]
+    return sec[start: sec.index('</div><ul class="notes">', start)]
 
 
 def _legend_items(legend: str) -> list[tuple[str, str, list[tuple[str, str, str]]]]:
@@ -181,7 +181,7 @@ def _legend_items(legend: str) -> list[tuple[str, str, list[tuple[str, str, str]
     body = legend[len('<ul class="legend">'): -len("</ul>")]
     out = []
     for name, what, sub in re.findall(r'<li><code>(.*?)</code> — (.*?)(?:<ul>(.*?)</ul>)?</li>', body, re.S):
-        out.append((name, what, re.findall(r'<li><code>(.*?)</code> — (.*?) <span class="muted">· from (.*?)</span></li>',
+        out.append((name, what, re.findall(r'<li><code>(.*?)</code> — (.*?) <span class="muted">· defined in (.*?)</span></li>',
                                            sub, re.S)))
     return out
 
@@ -387,12 +387,14 @@ _DIR_RECORDS = {"three_rows": _record, "one_row": _one_row, "cluster": _cluster,
 _INTRO = ('<p class="note">Copy these files into the directory where you want to run Nextflow, and write your '
           '<code>samples.csv</code> there. Launch from inside it: Nextflow works out of the directory it is started '
           'in.</p>')
-_STAYS = ('<p class="note"><code>pipeline.html</code> (this page) and <code>.pipeline/</code> (the record it was '
-          'rendered from) stay with the template.</p>')
+_NOTES = ('<ul class="notes"><li><code>runs/&lt;timestamp&gt;/</code> directories are created and populated by two '
+          'blocks of code, one in <code>nextflow.config</code> and one in <code>main.nf</code>. Together they document '
+          "each run's settings automatically.</li><li><code>pipeline.html</code> (this page) and <code>.pipeline/</code> "
+          '(the record it was rendered from) stay with the template.</li></ul>')
 class TestTheDirectory:
     def test_the_section_is_the_copy_note_the_box_with_its_legend_then_what_stays_with_the_template(self):
         sec = _section(_page(_cluster()), "directory")
-        assert '<h2>The directory <span class="note">what you put there, what a run adds</span></h2>' in sec
+        assert '<h2>Run directory overview <span class="note">scripting files and run outputs</span></h2>' in sec
         body = sec[sec.index('<div class="bx-body">') + len('<div class="bx-body">'):]
         assert body.startswith("<style>#directory .dirwrap{")
         after_style = body[body.index("</style>") + len("</style>"):]
@@ -400,7 +402,7 @@ class TestTheDirectory:
             _INTRO + '<div class="dirwrap"><div class="dir"><div class="path">path/to/your/project/</div>'
             '<div class="cols"><div class="col"><div class="col-title">you put here</div><ul>')
         assert '</ul></div></div></div><ul class="legend"><li>' in after_style   # the box closes, the legend follows
-        assert body.endswith("</li></ul></div>" + _STAYS + "</div></section>")
+        assert body.endswith("</li></ul></div>" + _NOTES + "</div></section>")
         assert sec.count('<div class="col">') == 2 and sec.count("<style>") == 1 and sec.count('class="legend"') == 1
         for gone in ("<table", "<pre>", "<svg", "<script", "<h3", "<dl", 'class="what"'):
             assert gone not in sec, gone
@@ -409,8 +411,8 @@ class TestTheDirectory:
         items = _box_items(_box(_section(_page(_cluster()), "directory")))
         assert list(items) == ["you put here", "a run adds"]
         assert items["you put here"] == [
-            ("main.nf", "copy"), ("nextflow.config", "copy"), ("params.yaml", "copy, then edit"),
-            ("samples.csv", "write your own"), ("launcher.sh", "copy, cluster only")]
+            ("main.nf", ""), ("nextflow.config", ""), ("params.yaml", ""), ("samples.csv", ""),
+            ("launcher.sh", "hpc / slurm")]
         assert items["a run adds"] == [("results/&lt;sample&gt;/", ""), ("runs/&lt;timestamp&gt;/", ""), ("work/", "")]
         entries = directory_tree(_cluster())
         assert [e.group for e in entries] == ["files"] * 5 + ["written"] * 3
@@ -430,7 +432,8 @@ class TestTheDirectory:
     def test_what_a_run_adds_is_results_per_sample_the_run_records_and_work(self):
         e = _entries(_record())
         assert e["results/<sample>/"].what == (
-            "where each sample's results are published, always the latest run's; set by `outdir:` in params.yaml")
+            "each sample gets its own directory under `results/`, named by the `sample` column of samples.csv "
+            "(one sample per row); `results/` is defined in params.yaml by the `outdir:` parameter")
         assert e["runs/<timestamp>/"].what == "one directory per run, never overwritten"
         assert e["work/"].what == "Nextflow's canonical work directory"
         assert "results/" not in e                                     # no cohort stage: no flat results entry
@@ -440,11 +443,11 @@ class TestTheDirectory:
         files = _entries(_record())["runs/<timestamp>/"].files
         assert files == RUN_RECORDS
         assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
-            "run.json", "samples.csv", "trace.txt", "report.html", "timeline.html"]
-        assert [by for _, _, by in files] == ["main.nf", "main.nf", "nextflow.config", "nextflow.config",
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html"]
+        assert [by for _, _, by in files] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
                                               "nextflow.config"]
-        assert files[0][1] == "the launch line, every param as resolved, the pipeline's provenance"
-        assert files[1][1] == "the samplesheet as read"
+        assert files[0][1] == "every param as resolved; re-runs as `-params-file`"
+        assert files[1][1] == "a copy of the samplesheet as read"
 
     def test_a_results_directory_is_listed_only_when_a_stage_publishes_into_it(self):
         assert [x.name for x in directory_tree(_no_outputs()) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
@@ -458,13 +461,16 @@ class TestTheDirectory:
             spoken = _spoken(_section(_page(make()), "directory"))
             assert not _PLACEHOLDER_RE.search(spoken), (make.__name__, _PLACEHOLDER_RE.findall(spoken))
         spoken = _spoken(_section(_page(_cluster()), "directory"))
-        for word in ("main.nf", "nextflow.config", "params.yaml", "samples.csv", "launcher.sh", "outdir:", "run.json",
-                     "trace.txt", "report.html", "timeline.html", "results/<sample>/", "runs/<timestamp>/", "work/",
-                     "from main.nf", "from nextflow.config"):
+        for word in ("main.nf", "nextflow.config", "params.yaml", "samples.csv", "launcher.sh", "outdir:",
+                     "params.json", "trace.txt", "report.html", "timeline.html", "results/<sample>/",
+                     "runs/<timestamp>/", "work/", "hpc / slurm", "defined in params.yaml", "defined in nextflow.config",
+                     "two blocks of code", "stay with the template"):
             assert word in spoken, word
         for gone in ("How it is used", "What it holds", "Our conventions", "Decided by", "nextflow run main.nf",
                      "MANIFEST", "copy this directory", "Copy this directory", "publishDir", "-profile", "module load",
-                     "HISAT2", "aligned.bam", ".sif", "nextflow clean", ".nextflow/", "threads"):
+                     "HISAT2", "aligned.bam", ".sif", "nextflow clean", ".nextflow/", "threads", "· copy",
+                     "copy, then edit", "write your own", "cluster only", "run.json", "from main.nf",
+                     "defined in main.nf"):
             assert gone not in spoken, gone
 
     @pytest.mark.parametrize("which", sorted(_DIR_RECORDS))
@@ -617,7 +623,7 @@ class TestThePicture:
 
     def test_the_legend_says_every_stage_runs_per_row_and_that_sample_is_the_row_key(self):
         sec = _section(_page(), "picture")
-        assert ('<h2>The picture <span class="note">samples.csv and params.yaml → stages in execution order → '
+        assert ('<h2>Nextflow pipeline overview <span class="note">samples.csv and params.yaml → stages in execution order → '
                 "published outputs</span></h2>") in sec
         assert ('<p class="note">Every stage runs once per row of <code>samples.csv</code>; <code>sample</code> '
                 "is the row key — it tags each task and names <code>results/&lt;sample&gt;/</code>. Thin grey "
@@ -1181,7 +1187,7 @@ class TestPageShape:
         spoken = _spoken(_page())
         for word in ("params.gtf", "params.stranded", "params.hisat2_index", "reads", "<sample>.counts.tsv",
                      "results/<sample>/", "${params.stranded}", "${gtf}", "${reads}", "${meta.sample}.counts.tsv",
-                     "outdir:", "runs/<timestamp>/", "run.json"):
+                     "outdir:", "runs/<timestamp>/", "params.json"):
             assert word in spoken, word
         for ph in ("HISAT2_INDEX", "STRANDED", "GTF", "READS", "OUTPUT_DIR"):
             assert ph not in spoken, ph

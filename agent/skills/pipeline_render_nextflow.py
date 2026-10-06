@@ -8,10 +8,9 @@ nothing run. A refusal is a `ValueError` that names the remedy.
 
 The file set
 ------------
-  main.nf            one INLINE process per stage, in stage order, wired in `workflow {}`;
-                     `record_launch()` writes runs/<stamp>/run.json (the launch line, every
-                     param as resolved, the pipeline's provenance) and copies the
-                     samplesheet beside it before any task runs
+  main.nf            one INLINE process per stage, in stage order, wired in `workflow {}`,
+                     which opens by writing runs/<stamp>/params.json (every param as
+                     resolved) and copying the samplesheet beside it, before any task runs
   nextflow.config    `local` (docker, local executor) and `slurm` (apptainer, SLURM
                      executor) profiles, each naming the image it runs — the docker tag
                      locally, the .sif on the cluster; per-stage resources; trace, report
@@ -92,11 +91,12 @@ _RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -r
 RUN_LOCAL = _RUN_LINE.format(profile="local")
 RUN_HPC = "sbatch launcher.sh"
 #: What a run leaves under runs/<stamp>/: each file, what it holds, and which rendered
-#: file writes it — main.nf at launch (`record_launch`), or nextflow.config as the run
-#: goes. The launch record, the config and the page name these five from here.
+#: file DEFINES it — params.yaml for the two the workflow writes as it opens (every param
+#: as resolved, the samplesheet as read), nextflow.config for the three observers. The
+#: workflow block, the config, the launcher and the page name these five from here.
 RUN_RECORDS = (
-    ("run.json", "the launch line, every param as resolved, the pipeline's provenance", "main.nf"),
-    ("samples.csv", "the samplesheet as read", "main.nf"),
+    ("params.json", "every param as resolved; re-runs as `-params-file`", "params.yaml"),
+    ("samples.csv", "a copy of the samplesheet as read", "params.yaml"),
     ("trace.txt", "every task: status, when, how long, cpu and memory, work dir, command", "nextflow.config"),
     ("report.html", "Nextflow's run report", "nextflow.config"),
     ("timeline.html", "Nextflow's timeline", "nextflow.config"),
@@ -106,6 +106,44 @@ RUN_RECORD_FILES = tuple(name for name, _, _ in RUN_RECORDS)
 #: cost, where it ran, and the command it ran.
 TRACE_FIELDS = ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
                 "container,workdir,script")
+#: THE RUN RECORDS — the standard of every rendered pipeline: two blocks, verbatim. The
+#: config names the run (one stamp, a params entry because the strict config parser allows
+#: no variables) and points Nextflow's three observers into runs/<stamp>/; the workflow
+#: opens by writing the two files only the script can write at start — every param as
+#: resolved and the samplesheet as read. One name, params.run_stamp, joins them, and
+#: nothing else about a run's records lives anywhere else.
+RUN_RECORD_CONFIG = f"""\
+// One directory per run, runs/<stamp>/, named by its launch time and never overwritten:
+// trace.txt (every task: status, when, how long, resources, work dir, command), then
+// report.html and timeline.html at the end; main.nf adds params.json and the samplesheet
+// as read, before any task runs.
+// (A params entry rather than a variable: the strict config parser allows no
+// declarations beside config statements.)
+params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')
+trace {{
+    enabled = true
+    file = "runs/${{params.run_stamp}}/trace.txt"
+    fields = '{TRACE_FIELDS}'
+}}
+report {{
+    enabled = true
+    file = "runs/${{params.run_stamp}}/report.html"
+}}
+timeline {{
+    enabled = true
+    file = "runs/${{params.run_stamp}}/timeline.html"
+}}"""
+#: The block's log line ends in a newline so Nextflow's own first banner line stays off it.
+RUN_RECORD_BLOCK = """\
+    // runs/<stamp>/: every param as resolved and the samplesheet as read, written before
+    // any task runs; nextflow.config writes trace.txt, report.html and timeline.html there.
+    // The stamp is left out of params.json so the file re-runs as -params-file.
+    run_dir = file("runs/${params.run_stamp}")
+    run_dir.mkdirs()
+    file(params.samplesheet, checkIfExists: true).copyTo(run_dir.resolve('samples.csv'))
+    run_dir.resolve('params.json').text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(params.findAll { k, v -> k != 'run_stamp' }))
+    log.info "run records: runs/${params.run_stamp}/\\n"
+"""
 #: The two params every pipeline carries beside its own: (key, value) as params.yaml
 #: and main.nf spell them. The page reads the same pair.
 SAMPLESHEET_PARAM = ("samplesheet", "samples.csv")
@@ -521,13 +559,15 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
         f"{_INDENT}if (workflow.profile.tokenize(',').contains('slurm') && {empty})"
         f"\n{_INDENT * 2}error \"nextflow.config, profile slurm: process.container is empty; set it "
         f"to the .sif built from image {digests}\"")
-    lines.append(f"{_INDENT}record_launch()   // runs/<stamp>/run.json and samples.csv, before any task")
+    # The launch record: what the run was given, written before any task runs so a run
+    # killed hard still has it (RUN_RECORD_BLOCK, the standard of every rendered pipeline).
+    lines.append(RUN_RECORD_BLOCK)
     meta = ", ".join(["sample: r.sample"] + [f"{c.name}: r.{c.name}" for c in ctx.value_cols])
     files = [f"file(r.{c.name}, checkIfExists: true)" for c in ctx.path_cols]
     item = f"tuple([{meta}], " + ", ".join(files) + ")" if files else f"[{meta}]"
     shape = "(meta, " + ", ".join(c.name for c in ctx.path_cols) + ")" if files else "meta"
     lines += [
-        f"{_INDENT}rows = Channel.fromPath(params.samplesheet, checkIfExists: true)",
+        f"{_INDENT}rows = channel.fromPath(params.samplesheet, checkIfExists: true)",
         f"{_INDENT * 2}.splitCsv(header: true)",
         f"{_INDENT * 2}.map {{ r -> {item} }}   // one {shape} per samples.csv row",
         "",
@@ -537,54 +577,6 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
         lines.append(_INDENT + call + (f"   // {comment}" if comment else ""))
     lines.append("}")
     return "\n".join(lines)
-
-
-def _groovy_literal(v: Any) -> str:
-    """A string, None or a list of strings as a Groovy literal."""
-    if v is None:
-        return "null"
-    if isinstance(v, (list, tuple)):
-        return "[" + ", ".join(_groovy_literal(x) for x in v) + "]"
-    return _nf_quote(str(v))
-
-
-def _render_record_launch(record: PipelineRecord, ctx: _Context) -> str:
-    """`record_launch()`: what only the script can see at launch, written before any
-    task runs so a killed run still has it. The strict syntax is the default now, so
-    the JSON writer is named in full rather than imported."""
-    prov = [("name", record.name), ("version", record.version), ("rendered", record.created_at),
-            ("sealed_workflow", record.sealed_workflow),
-            ("sealed_workflow_sha256", record.sealed_workflow_sha256),
-            ("images", [im["digest"] or im["ref"] for im in ctx.images])]
-    return "\n".join([
-        "// The launch record, runs/<stamp>/run.json, written before any task runs: the launch line,",
-        "// every param as resolved (a command-line value shows as overridden), the SLURM job id",
-        "// under sbatch, and the pipeline's provenance; samples.csv is copied beside it as read.",
-        "// nextflow.config writes the rest of the directory: trace.txt, report.html, timeline.html.",
-        "def record_launch() {",
-        f'{_INDENT}def run_dir = file("runs/${{params.run_stamp}}")',
-        f"{_INDENT}run_dir.mkdirs()",
-        f"{_INDENT}file(params.samplesheet, checkIfExists: true).copyTo(run_dir.resolve('samples.csv'))",
-        f"{_INDENT}run_dir.resolve('run.json').text = groovy.json.JsonOutput.prettyPrint("
-        f"groovy.json.JsonOutput.toJson([",
-        f"{_INDENT * 2}command: workflow.commandLine,",
-        f"{_INDENT * 2}run_name: workflow.runName,",
-        f"{_INDENT * 2}session_id: workflow.sessionId.toString(),",
-        f"{_INDENT * 2}started: workflow.start.toString(),",
-        f"{_INDENT * 2}profile: workflow.profile,",
-        f"{_INDENT * 2}launch_dir: workflow.launchDir.toString(),",
-        f"{_INDENT * 2}nextflow: nextflow.version.toString(),",
-        f"{_INDENT * 2}container_engine: workflow.containerEngine,",
-        f"{_INDENT * 2}slurm_job_id: System.getenv('SLURM_JOB_ID'),",
-        f"{_INDENT * 2}pipeline: [",
-        *[f"{_INDENT * 3}{k}: {_groovy_literal(v)}," for k, v in prov],
-        f"{_INDENT * 2}],",
-        f"{_INDENT * 2}params: params,",
-        f"{_INDENT}]))",
-        # the trailing newline: without it Nextflow's own first banner line joins this one
-        f'{_INDENT}log.info "run records: runs/${{params.run_stamp}}/\\n"',
-        "}",
-    ])
 
 
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
@@ -601,7 +593,7 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     ]
     for s in record.stages:
         parts += [_render_process(record, s, ctx), ""]
-    parts += [_render_workflow_block(record, ctx), "", _render_record_launch(record, ctx)]
+    parts.append(_render_workflow_block(record, ctx))
     return "\n".join(parts) + "\n"
 
 
@@ -729,21 +721,7 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         L.append(f"{_INDENT}}}")
     L += ["}", ""]
 
-    L += ["// One directory per run, runs/<stamp>/, named by its launch time and never overwritten:",
-          "// trace.txt (every task: status, when, how long, resources, work dir, command), then",
-          "// report.html and timeline.html at the end; main.nf adds run.json and the samplesheet",
-          "// as read, before any task runs.",
-          "// (A params entry rather than a variable: the strict config parser allows no",
-          "// declarations beside config statements.)",
-          "params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')",
-          "trace {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_stamp}}/trace.txt"',
-          f"{_INDENT}fields = '{TRACE_FIELDS}'",
-          "}",
-          "report {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_stamp}}/report.html"', "}",
-          "timeline {", f"{_INDENT}enabled = true",
-          f'{_INDENT}file = "runs/${{params.run_stamp}}/timeline.html"', "}"]
+    L.append(RUN_RECORD_CONFIG)
     return "\n".join(L) + "\n"
 
 
@@ -803,7 +781,7 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           'export NXF_HOME="$PWD/.nextflow_home"',
           "",
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
-          "# fresh run. Each run leaves its own runs/<timestamp>/ (run.json, samples.csv, trace.txt,",
+          "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
           "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.",
           _RUN_LINE.format(profile="slurm") + ' "$@"',
           "",
@@ -850,4 +828,5 @@ def run_lines(record: PipelineRecord, locus: str) -> list[str]:
 
 
 __all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC",
-           "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM", "RUN_RECORDS", "RUN_RECORD_FILES"]
+           "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM", "RUN_RECORDS", "RUN_RECORD_FILES",
+           "RUN_RECORD_CONFIG", "RUN_RECORD_BLOCK"]

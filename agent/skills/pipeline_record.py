@@ -851,8 +851,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         PipelineDefault(key="cache", value="lenient on the cluster, standard locally", source="default"),
         PipelineDefault(key="queue_size", value="50", source="default"),
         PipelineDefault(key="run_records", value="one directory per run, runs/<timestamp>/, never overwritten: "
-                        "run.json (the launch line, every param as resolved, the pipeline's provenance), "
-                        "samples.csv as read, trace.txt (every task), report.html, timeline.html", source="default"),
+                        "params.json (every param as resolved), samples.csv as read, trace.txt (every task), "
+                        "report.html, timeline.html", source="default"),
         PipelineDefault(key="cleanup", value="never automatic; `nextflow clean -f` when you are done", source="default"),
         PipelineDefault(key="sheet_preflight", value="the samplesheet and every file column are checked as the run starts",
                         source="default"),

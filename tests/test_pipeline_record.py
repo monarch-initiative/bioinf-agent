@@ -186,9 +186,8 @@ class TestRecordOnDisk:
             "finish: a failure submits nothing new and in-flight tasks complete; `-resume` re-runs what failed; "
             "no retries")
         assert {d.key: d.value for d in rec.defaults}["run_records"] == (
-            "one directory per run, runs/<timestamp>/, never overwritten: run.json (the launch line, every param "
-            "as resolved, the pipeline's provenance), samples.csv as read, trace.txt (every task), report.html, "
-            "timeline.html")
+            "one directory per run, runs/<timestamp>/, never overwritten: params.json (every param as resolved), "
+            "samples.csv as read, trace.txt (every task), report.html, timeline.html")
         rec2 = _record(stages=[[0, 1, 2]])
         srcs = {d.key: d.source for d in rec2.defaults}
         assert srcs["stage_cut"] == "caller" and srcs["publish"] == "default"
