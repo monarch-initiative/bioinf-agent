@@ -293,8 +293,12 @@ def _install_method(name: str, pkg: Optional[dict], shipped: list[dict]) -> str:
 
 
 def _locus_line(locus: str) -> str:
+    """Where the validation ran, for the ENV report's "Validated on" row. Plain
+    words: the reader of this row is a human deciding how far to trust the
+    resource figures, not the I7 gate."""
     return {
-        "native":   "native — I7 resource numbers are authoritative",
-        "emulated": "emulated — pass/fail is sound (faithful CPU emulation); I7 timings are NOT authoritative",
-        "adopted":  "adopted — image trusted by its published digest (not built/validated in-locus)",
+        "native":   "this machine, natively. Run-time and memory figures are representative.",
+        "emulated": ("this machine, under CPU emulation. Pass/fail results are exact; "
+                     "run-time and memory figures are not representative."),
+        "adopted":  "not run here. The image is trusted by its published digest.",
     }.get(locus or "", f"{locus or 'unknown'}")

@@ -205,7 +205,7 @@ def test_env_html_discloses_labelled_unverified():
     from agent.skills.env_report_html import render_env_report_html
     html = render_env_report_html(_record([_GOOD_ID]))
     assert "Translate Spreadsheet Cell Ranges" in html
-    assert "self-described" in html and "unverified" in html
+    assert "describes it as" in html and "Not verified by this report" in html
 
 
 def test_env_html_omits_row_when_no_description():
@@ -214,7 +214,7 @@ def test_env_html_omits_row_when_no_description():
     none_id = {"tool": "samtools", "self_description": None, "source": None,
                "package": None, "version": None}
     html = render_env_report_html(_record([none_id]))
-    assert "self-described" not in html
+    assert "describes it as" not in html
 
 
 def test_recipe_md_section_and_sanitization():
