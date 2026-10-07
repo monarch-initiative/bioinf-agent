@@ -859,6 +859,8 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
           "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
           "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.",
+          '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for',
+          "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>",
           _RUN_LINE.format(profile="slurm") + ' "$@"',
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",

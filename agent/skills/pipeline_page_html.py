@@ -898,7 +898,8 @@ def _run_hpc_section(record: PipelineRecord) -> str:
     key = next((s.request_key for s in _ordered(record) if s.request_key), None)
     env_arg = f'"{env}"' if env else "<the cluster's env>"
     key_arg = f'"{key}"' if key else "<the env's freeze_request_key>"
-    call = _e(f"stage_apptainer_image(project=<your project>, env={env_arg}, freeze_request_key={key_arg})")
+    call = _e(f"stage_apptainer_image(project_name=<your project>, compute_env_name={env_arg}, "
+              f"freeze_request_key={key_arg})")
     notes: list[str] = []
     for st in imgs:
         label = _short_digest(st.image_digest) or st.image or ""

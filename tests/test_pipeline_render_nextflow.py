@@ -468,6 +468,12 @@ class TestLaunchRecord:
         assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,\n"
                 "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.\n") in sh
 
+    def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for\n'
+                "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>\n"
+                'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n') in sh
+
 
 # ===========================================================================
 # nextflow.config — each profile names the image it runs

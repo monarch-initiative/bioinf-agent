@@ -884,8 +884,8 @@ class TestRunOnTheCluster:
         sec = _section(_page(_cluster()), "run-hpc")
         assert (f'<p class="warn-note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
                 f"<code>.sif</code> at <code>{SIF}</code>: the path <code>stage_apptainer_image</code> writes on "
-                "<b>hpc</b>. It has not been staged yet — run <code>stage_apptainer_image(project=&lt;your "
-                f"project&gt;, env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> before "
+                "<b>hpc</b>. It has not been staged yet — run <code>stage_apptainer_image(project_name=&lt;your "
+                f"project&gt;, compute_env_name=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> before "
                 "submitting.</p>") in sec
         assert "put it on" not in sec and "sha256 <code>" not in sec
         assert sec.count('class="warn-note"') == 1 and 'class="note">The <code>slurm</code>' not in sec
@@ -896,8 +896,8 @@ class TestRunOnTheCluster:
         assert (
             '<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
             "<code>nextflow.config</code> is empty: re-render with <code>env=</code> naming the cluster, or set it "
-            "to the <code>.sif</code> that <code>stage_apptainer_image(project=&lt;your project&gt;, "
-            f"env=&lt;the cluster&#x27;s env&gt;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports. "
+            "to the <code>.sif</code> that <code>stage_apptainer_image(project_name=&lt;your project&gt;, "
+            f"compute_env_name=&lt;the cluster&#x27;s env&gt;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports. "
             "The workflow refuses to start until it is set.</p>") in sec
         assert sec.index('class="warn-note"') < sec.index("<ol>")
         assert 'class="note">The <code>slurm</code>' not in sec
@@ -910,7 +910,7 @@ class TestRunOnTheCluster:
     def test_an_env_named_without_a_sif_names_that_env_in_the_call_and_loads_no_modules(self):
         sec = _section(_page(_record(compute_env="hpc", modules=[])), "run-hpc")
         assert 'class="warn-note"' in sec
-        assert f'env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
+        assert f'compute_env_name=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
         assert ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer and "
                 "nextflow available first; every stage of every sample is its own SLURM job." + _PASSTHROUGH
                 + f"<pre>{RUN_HPC}</pre>") in sec
@@ -928,7 +928,7 @@ class TestRunOnTheCluster:
                 "<code>stage_apptainer_image</code> writes on <b>hpc</b>. It has not been staged yet") in sec
         assert ('<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
                 "<code>nextflow.config</code> is empty for image <code>cccccccccccc</code>: re-render") in sec
-        assert f'env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
+        assert f'compute_env_name=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
         assert sec.count('class="warn-note"') == 2 and 'class="note">The <code>slurm</code>' not in sec
         assert sec.index("for image <code>aaaa1111aaaa</code>") < sec.index("for image <code>cccccccccccc</code>")
         staged = _section(_page(_staged(_staged_but_one())), "run-hpc")
