@@ -105,16 +105,26 @@ _RUN_LINE = "nextflow run main.nf -profile {profile} -params-file params.yaml -r
 #: How a run starts at each locus — the ONE spelling the launcher and the page share.
 RUN_LOCAL = _RUN_LINE.format(profile="local")
 RUN_HPC = "sbatch launcher.sh"
+#: The launcher's own nextflow line: RUN_LOCAL on the slurm profile, with Nextflow's log
+#: pointed into the run directory. `-log` is read before anything else, so the launcher
+#: takes the stamp itself and hands it on as --run_stamp; the caller's arguments follow.
+RUN_STAMP_LINE = "RUN_STAMP=$(date +%Y%m%d_%H%M%S)"
+RUN_HPC_NEXTFLOW = (_RUN_LINE.format(profile="slurm").replace("nextflow run", 'nextflow -log "runs/$RUN_STAMP/nextflow.log" run', 1)
+                    + ' --run_stamp "$RUN_STAMP" "$@"')
 #: What a run leaves under runs/<stamp>/: each file, what it holds, and which rendered
 #: file DEFINES it — params.yaml for the two the workflow writes as it opens (every param
-#: as resolved, the samplesheet as read), nextflow.config for the three observers. The
-#: workflow block, the config, the launcher and the page name these five from here.
+#: as resolved, the samplesheet as read), nextflow.config for the three observers,
+#: launcher.sh for Nextflow's own log (a laptop run keeps it at .nextflow.log unless
+#: started with the same `-log`). The workflow block, the config, the launcher and the
+#: page name these six from here.
 RUN_RECORDS = (
     ("params.json", "every param as resolved; re-runs as `-params-file`", "params.yaml"),
     ("samples.csv", "a copy of the samplesheet as read", "params.yaml"),
     ("trace.txt", "every task: status, when, how long, cpu and memory, work dir, command", "nextflow.config"),
     ("report.html", "Nextflow's run report", "nextflow.config"),
     ("timeline.html", "Nextflow's timeline", "nextflow.config"),
+    ("nextflow.log", "Nextflow's own log — through the launcher, or a laptop run started with `-log`",
+     "launcher.sh"),
 )
 RUN_RECORD_FILES = tuple(name for name, _, _ in RUN_RECORDS)
 #: The trace's columns: which task, which SLURM job, how it ended, when, how long, what it
@@ -131,7 +141,8 @@ RUN_RECORD_CONFIG = f"""\
 // One directory per run, runs/<stamp>/, named by its launch time and never overwritten:
 // trace.txt (every task: status, when, how long, resources, work dir, command), then
 // report.html and timeline.html at the end; main.nf adds params.json and the samplesheet
-// as read, before any task runs.
+// as read, before any task runs; launcher.sh adds Nextflow's own log by taking the stamp
+// first and passing it as --run_stamp, which wins over the one set here.
 // (A params entry rather than a variable: the strict config parser allows no
 // declarations beside config statements.)
 params.run_stamp = new java.util.Date().format('yyyyMMdd_HHmmss')
@@ -856,12 +867,18 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "# may not be able to write there, so it lives inside this directory.",
           'export NXF_HOME="$PWD/.nextflow_home"',
           "",
+          "# One directory per run, runs/<stamp>/. The stamp is taken here rather than in",
+          "# nextflow.config so Nextflow's own log can join the run records: -log is read before",
+          "# anything else, and --run_stamp hands the same stamp to nextflow.config and main.nf.",
+          RUN_STAMP_LINE,
+          "",
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
           "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
-          "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.",
+          "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is",
+          "# the manager's log.",
           '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for',
           "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>",
-          _RUN_LINE.format(profile="slurm") + ' "$@"',
+          RUN_HPC_NEXTFLOW,
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",
           "# you want them:  nextflow clean -f"]
@@ -908,6 +925,7 @@ def run_lines(record: PipelineRecord, locus: str) -> list[str]:
     raise ValueError(f"locus must be 'local' or 'hpc', got {locus!r}")
 
 
-__all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC",
+__all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC", "RUN_HPC_NEXTFLOW",
+           "RUN_STAMP_LINE",
            "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM", "RUN_RECORDS", "RUN_RECORD_FILES",
            "RUN_RECORD_CONFIG", "RUN_RECORD_BLOCK"]

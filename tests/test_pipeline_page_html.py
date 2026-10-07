@@ -450,9 +450,9 @@ class TestTheDirectory:
         files = _entries(_record())["runs/<timestamp>/"].files
         assert files == RUN_RECORDS
         assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html"]
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log"]
         assert [by for _, _, by in files] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                              "nextflow.config"]
+                                              "nextflow.config", "launcher.sh"]
         assert files[0][1] == "every param as resolved; re-runs as `-params-file`"
         assert files[1][1] == "a copy of the samplesheet as read"
 
@@ -771,7 +771,10 @@ class TestRunLocally:
         assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
                        "re-runs only the stages whose inputs or parameters changed. A value for this run only goes "
                        "after the line — <code>--stranded &lt;value&gt;</code> — and wins over "
-                       f"<code>params.yaml</code>.<pre>{RUN_LOCAL}</pre>")
+                       "<code>params.yaml</code>. Nextflow's own log stays at <code>.nextflow.log</code> here; to "
+                       "file it with the run records as the launcher does, start with <code>nextflow -log "
+                       "runs/&lt;stamp&gt;/nextflow.log run … --run_stamp &lt;stamp&gt;</code>."
+                       f"<pre>{RUN_LOCAL}</pre>")
         assert RUN_LOCAL == "nextflow run main.nf -profile local -params-file params.yaml -resume"
         # one spelling on the whole page, in this step alone
         assert set(re.findall(r"nextflow run main\.nf[^<]*", html)) == {RUN_LOCAL}

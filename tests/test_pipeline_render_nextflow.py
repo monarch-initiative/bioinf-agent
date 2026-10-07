@@ -22,7 +22,8 @@ import yaml
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, RUN_RECORD_BLOCK, RUN_RECORD_CONFIG,
+from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RUN_LOCAL, RUN_RECORD_BLOCK,
+                                                   RUN_RECORD_CONFIG, RUN_STAMP_LINE,
                                                    RUN_RECORD_FILES, RUN_RECORDS, STRICT_MODE_LINE, TRACE_FIELDS,
                                                    bound_commands, render_nextflow, run_lines)
 
@@ -446,14 +447,17 @@ class TestLaunchRecord:
     def test_each_run_record_file_is_defined_where_the_list_says(self):
         files = render_nextflow(_record())
         wf = _workflow_block(files["main.nf"])
+        launcher = render_nextflow(_record(), env=ENV)["launcher.sh"]
         for name, _, defined_in in RUN_RECORDS:
             by_block = f"'{name}'" in wf                                         # the block writes it
             by_observer = f'file = "runs/${{params.run_stamp}}/{name}"' in files["nextflow.config"]
-            assert (by_block, by_observer) == (defined_in == "params.yaml", defined_in == "nextflow.config"), name
+            by_launcher = f'-log "runs/$RUN_STAMP/{name}"' in launcher
+            assert (by_block, by_observer, by_launcher) == (
+                defined_in == "params.yaml", defined_in == "nextflow.config", defined_in == "launcher.sh"), name
         assert RUN_RECORD_FILES == tuple(n for n, _, _ in RUN_RECORDS) == (
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log")
         assert [d for _, _, d in RUN_RECORDS] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                                  "nextflow.config"]
+                                                  "nextflow.config", "launcher.sh"]
 
     def test_the_two_blocks_are_one_standard_verbatim_in_every_rendered_pipeline(self):
         assert RUN_RECORD_BLOCK + "\n" == LAUNCH_RECORD                  # the blank line after it is the join's
@@ -466,13 +470,30 @@ class TestLaunchRecord:
     def test_the_launcher_comment_names_the_run_records(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,\n"
-                "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.\n") in sh
+                "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is\n"
+                "# the manager's log.\n") in sh
 
     def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for\n'
                 "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>\n"
-                'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"\n') in sh
+                + RUN_HPC_NEXTFLOW + "\n") in sh
+
+    def test_the_launcher_takes_the_run_stamp_itself_and_points_nextflows_log_into_the_run_dir(self):
+        """`-log` is read before nextflow.config, so the config's stamp comes too late for
+        it: the launcher takes the stamp, names the log with it, and hands it on as
+        --run_stamp so params.json, the samplesheet copy and the three observers land in
+        the same runs/<stamp>/. The caller's arguments still come last."""
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert RUN_STAMP_LINE == "RUN_STAMP=$(date +%Y%m%d_%H%M%S)"
+        assert RUN_HPC_NEXTFLOW == ('nextflow -log "runs/$RUN_STAMP/nextflow.log" run main.nf -profile slurm '
+                                    '-params-file params.yaml -resume --run_stamp "$RUN_STAMP" "$@"')
+        assert sh.index(RUN_STAMP_LINE) < sh.index(RUN_HPC_NEXTFLOW)
+        assert ("# One directory per run, runs/<stamp>/. The stamp is taken here rather than in\n"
+                "# nextflow.config so Nextflow's own log can join the run records: -log is read before\n"
+                "# anything else, and --run_stamp hands the same stamp to nextflow.config and main.nf.\n"
+                + RUN_STAMP_LINE + "\n") in sh
+        assert "params.run_stamp = new java.util.Date()" in render_nextflow(_record())["nextflow.config"]  # laptop default
 
 
 # ===========================================================================
@@ -799,7 +820,8 @@ class TestLauncher:
         assert commands == [STRICT_MODE_LINE,
                             "module load apptainer/1.5.0 nextflow/25.04.7",
                             'export NXF_HOME="$PWD/.nextflow_home"',
-                            'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"']
+                            RUN_STAMP_LINE,
+                            RUN_HPC_NEXTFLOW]
         assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
         assert "nextflow clean -f" in sh and "never cleaned for you" in sh
 
@@ -808,9 +830,11 @@ class TestLauncher:
         cluster profile in place of the local one and the caller's arguments passed
         through — one spelling, two profiles."""
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
-        assert RUN_LOCAL.replace("local", "slurm") + ' "$@"\n' in sh
+        assert RUN_HPC_NEXTFLOW + "\n" in sh
+        assert RUN_LOCAL.replace("local", "slurm").removeprefix("nextflow ") in RUN_HPC_NEXTFLOW
+        assert RUN_HPC_NEXTFLOW.endswith('--run_stamp "$RUN_STAMP" "$@"')
         assert RUN_LOCAL not in sh
-        assert sh.count("nextflow run") == 1
+        assert sh.count("nextflow -log") == 1 and sh.count("nextflow run") == 0
 
     def test_the_strict_mode_line_is_bash_strict_mode_with_its_reason(self):
         assert STRICT_MODE_LINE.startswith("set -euo pipefail")
