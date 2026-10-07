@@ -78,9 +78,19 @@ def _set_me(digest: str, indent: int) -> str:
 
 
 def _sif_set(digest: str, sif: str, indent: int, where: str = "") -> str:
-    """The slurm profile's container lines for an image whose .sif the record carries."""
+    """The slurm profile's container lines for an image whose .sif PATH the record
+    carries but which nothing has staged yet: the path is a prediction, said so."""
     pad = " " * indent
-    return (f"{pad}// the .sif built from image {digest}, where stage_apptainer_image put it{where}\n"
+    return (f"{pad}// the .sif built from image {digest}: the path stage_apptainer_image writes{where}.\n"
+            f"{pad}// Not staged yet — run stage_apptainer_image before sbatch launcher.sh.\n"
+            f"{pad}container = '{sif}'\n")
+
+
+def _sif_staged(digest: str, sif: str, sha: str, indent: int, where: str = "") -> str:
+    """The slurm profile's container lines for an image whose .sif WAS staged: the
+    record carries the staged file's sha256, so the comment states it as a fact."""
+    pad = " " * indent
+    return (f"{pad}// the .sif built from image {digest}, staged{where} by stage_apptainer_image (sha256 {sha})\n"
             f"{pad}container = '{sif}'\n")
 
 
@@ -514,7 +524,30 @@ class TestConfig:
     def test_the_sif_comment_stops_at_where_it_was_put_when_no_compute_env_is_named(self):
         cfg = render_nextflow(_record(sif_paths={REQUEST_KEY: SIF}))["nextflow.config"]
         assert _sif_set(DIGEST, SIF, 12) in _profile(cfg, "slurm")
-        assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-1]
+        assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-2]
+
+    def test_a_predicted_sif_path_never_claims_the_file_was_staged(self):
+        """`render_pipeline(env=…)` fills the slurm container with the path
+        stage_apptainer_image WOULD write, computed from the env block and the local
+        cache alone — no cluster is contacted. The comment must say so, not report a
+        staging that never happened."""
+        cfg = render_nextflow(_record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster"), env=ENV)["nextflow.config"]
+        slurm = _profile(cfg, "slurm")
+        assert "put it" not in slurm and "staged on" not in slurm and "(sha256" not in slurm
+        assert "Not staged yet — run stage_apptainer_image before sbatch launcher.sh." in slurm
+
+    def test_a_staged_sif_is_stated_as_a_fact_with_its_sha256(self):
+        """When the sealed steps carry `cluster_sif_sha256` the record's stages carry
+        `sif_sha256`: the file was observed on the cluster, and the comment says so."""
+        rec = _record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster")
+        for st in rec.stages:
+            st.sif_sha256 = "ab" * 32
+        cfg = render_nextflow(rec, env=ENV)["nextflow.config"]
+        slurm = _profile(cfg, "slurm")
+        assert ("            executor = 'slurm'\n"
+                + _sif_staged(DIGEST, SIF, "ab" * 32, 12, " on cluster") +
+                "            cache = 'lenient'\n") in slurm
+        assert "Not staged yet" not in slurm and "writes" not in slurm
 
     def test_the_run_records_land_under_a_timestamped_run_dir_trace_report_and_timeline(self):
         cfg = render_nextflow(_record())["nextflow.config"]

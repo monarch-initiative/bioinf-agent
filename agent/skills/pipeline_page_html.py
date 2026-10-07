@@ -903,10 +903,17 @@ def _run_hpc_section(record: PipelineRecord) -> str:
     for st in imgs:
         label = _short_digest(st.image_digest) or st.image or ""
         which = f" for image <code>{_e(label)}</code>" if len(imgs) > 1 else ""
-        if st.sif_path:
+        on = f'<b>{_e(env or "the cluster")}</b>'
+        if st.sif_path and st.sif_sha256:
             notes.append(f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs '
                          f'the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code> — where '
-                         f'<code>stage_apptainer_image</code> put it on <b>{_e(env or "the cluster")}</b>.</p>')
+                         f'<code>stage_apptainer_image</code> put it on {on} (sha256 '
+                         f'<code>{_e(st.sif_sha256)}</code>).</p>')
+        elif st.sif_path:
+            notes.append(f'<p class="warn-note">The <code>slurm</code> profile in <code>nextflow.config</code> '
+                         f'runs the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code>: the path '
+                         f'<code>stage_apptainer_image</code> writes on {on}. It has not been staged yet — run '
+                         f'<code>{call}</code> before submitting.</p>')
         else:
             notes.append(f'<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
                          f'<code>nextflow.config</code> is empty{which}: re-render with <code>env=</code> naming '
@@ -1000,7 +1007,8 @@ def _stages_section(record: PipelineRecord) -> str:
     untrusted = [st.name for st in stages if st.resources.measured_authority in _UNTRUSTED_AUTHORITY]
     if untrusted:
         body += (f'<p class="warn-note">{_e(", ".join(untrusted))}: measured under emulation, or of unrecorded '
-                 'or mixed authority — do not size from these; size from a run on hardware matching the '
+                 'or mixed authority. Compute resource allocation for these stages (cpus, memory, walltime) '
+                 'should not be estimated from these measurements; measure on hardware matching the '
                  'image.</p>')
     return _section("stages", "Stages", "one row per stage, in execution order", body)
 

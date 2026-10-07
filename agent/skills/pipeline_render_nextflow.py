@@ -297,7 +297,7 @@ class _Context:
             hit = next((im for im in self.images if im["key"] == key), None)
             if hit is None:
                 hit = {"key": key, "ref": s.image or s.image_digest, "digest": s.image_digest,
-                       "sif_path": s.sif_path}
+                       "sif_path": s.sif_path, "sif_sha256": s.sif_sha256}
                 self.images.append(hit)
             self.image_of[s.name] = hit
         # the env's SLURM policy, merged the way every job header is
@@ -715,13 +715,20 @@ def _gpu_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
 
 
 def _sif_lines(im: dict, ctx: _Context) -> list[str]:
-    """The slurm profile's container for one image: the .sif `stage_apptainer_image`
-    put in the named cluster's container zone, or an empty value that says so — the
-    workflow refuses to start on it rather than running the tools on the bare node."""
+    """The slurm profile's container for one image: the .sif in the named cluster's
+    container zone — staged there when the record carries the staged file's sha256,
+    otherwise the path `stage_apptainer_image` writes, which the comment says is not
+    staged yet — or an empty value that says so; the workflow refuses to start on it
+    rather than running the tools on the bare node."""
     digest = im["digest"] or im["ref"]
     if im.get("sif_path"):
         where = f" on {ctx.record.compute_env}" if ctx.record.compute_env else ""
-        return [f"// the .sif built from image {digest}, where stage_apptainer_image put it{where}",
+        if im.get("sif_sha256"):
+            return [f"// the .sif built from image {digest}, staged{where} by stage_apptainer_image "
+                    f"(sha256 {im['sif_sha256']})",
+                    f"container = {_nf_quote(im['sif_path'])}"]
+        return [f"// the .sif built from image {digest}: the path stage_apptainer_image writes{where}.",
+                "// Not staged yet — run stage_apptainer_image before sbatch launcher.sh.",
                 f"container = {_nf_quote(im['sif_path'])}"]
     return [f"// SET ME: the .sif built from image {digest}. Render with env= naming the cluster,",
             "// or paste the path stage_apptainer_image reports.",
