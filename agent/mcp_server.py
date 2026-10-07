@@ -390,10 +390,12 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
     free_gb = usage.free / (1024 ** 3)
     if free_gb >= min_gb:
         return None
-    return {
-        "success": False, "stage": "disk_failsafe",
-        "free_gb": round(free_gb, 2), "min_gb": min_gb,
-        "message": (
+    from agent.skills.outcomes import refused
+    return refused(
+        "freeze.low_disk",
+        success=False, stage="disk_failsafe",
+        free_gb=round(free_gb, 2), min_gb=min_gb,
+        message=(
             f"refusing to start freeze() — only {free_gb:.1f} GB free on disk "
             f"(threshold {min_gb} GB). A container-native build's buildkit "
             f"intermediates can consume 10-30 GB per concurrent build; parallel "
@@ -403,7 +405,7 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
             f"  docker system prune -af --volumes      # full reclaim (heavier)\n"
             f"Override the threshold with BIOINF_FREEZE_MIN_DISK_GB=<gb> (0 to "
             f"disable; not recommended in shared workspaces)."),
-    }
+    )
 
 
 def _check_docker_available() -> Optional[dict]:
@@ -602,7 +604,8 @@ if "agent.mcp_tools" in sys.modules:  # noqa: E402 — reload path only
     import importlib as _importlib
     for _sub in ("bridge_tools", "data_tools", "env_tools", "freeze_tools",
                  "intent_tools", "plan_tools", "sealed_tools", "jobs_tools",
-                 "observability_tools", "run_tools", "service_tools", "workflow_tools"):
+                 "observability_tools", "pipeline_tools", "run_tools", "service_tools",
+                 "workflow_tools"):
         _full = f"agent.mcp_tools.{_sub}"
         if _full in sys.modules:
             _importlib.reload(sys.modules[_full])
@@ -692,6 +695,9 @@ from agent.mcp_tools.jobs_tools import (  # noqa: E402,F401
 from agent.mcp_tools.observability_tools import (  # noqa: E402,F401
     agent_status,
     snapshot_project,
+)
+from agent.mcp_tools.pipeline_tools import (  # noqa: E402,F401
+    render_pipeline,
 )
 from agent.mcp_tools.run_tools import (  # noqa: E402,F401
     run_pipeline_step,

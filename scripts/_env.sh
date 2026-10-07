@@ -20,7 +20,9 @@
 # private copy unconditionally; every clone bootstraps identically.
 # Pinned by tests/test_setup_surface_resolution.py.
 
-BIOINF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ${BASH_SOURCE[0]:-$0}: bash names the sourced file in BASH_SOURCE, zsh in $0, so a
+# user's zsh can `source scripts/activate.sh` (which sources this) and land here too.
+BIOINF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 BIOINF_RUNTIME="$BIOINF_ROOT/.conda_runtime"
 BIOINF_RUNTIME_PY="$BIOINF_RUNTIME/bin/python"
 BIOINF_PRIVATE_CONDA="$BIOINF_ROOT/.miniforge/condabin/conda"

@@ -519,7 +519,7 @@ def test_the_dashboard_shows_the_digest_when_there_is_one(tmp_path):
                    "test_data_integrity": {"status": TEST_DATA_VERIFIED}})
     assert anchor.sha256[:19] in html
     assert "not anchored" not in html
-    assert "re-verified at seal" in html
+    assert "re-checked at seal against the files originally selected" in html   # the heading, verified state only
 
 
 def test_the_dashboard_reads_paths_through_the_leaf(tmp_path):

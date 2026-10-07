@@ -100,7 +100,8 @@ def _battery():
     from agent.mcp_tools import (bridge_tools as B, data_tools as D, env_tools as E,
                                  freeze_tools as F, intent_tools as I, jobs_tools as J,
                                  observability_tools as O, plan_tools as P, run_tools as R,
-                                 sealed_tools as ST, service_tools as S, workflow_tools as W)
+                                 pipeline_tools as PL, sealed_tools as ST, service_tools as S,
+                                 workflow_tools as W)
     return [
         # -- bridge (auth must refuse before any ssh) -----------------------
         ("upload", B.upload, dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV,
@@ -169,6 +170,9 @@ def _battery():
         # side effects, dispatches nothing. Off the outcome-tag axis, so no tag required.
         ("describe_sealed_step", ST.describe_sealed_step,
          dict(workflow_name="no_such_workflow_zzz", step=1), False),
+        # -- the pipeline layer (a sealed workflow rendered as a directory) --
+        ("render_pipeline", PL.render_pipeline,
+         dict(sealed_workflow="no_such_workflow_zzz"), True),
         # -- env / install (missing env must refuse before subprocess) ------
         # search_package / resolve_tool are QUERIES: an unknown package returns a
         # not-found / no-decision dict (interpretable), tag optional.

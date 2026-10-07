@@ -328,6 +328,7 @@ FULLY_TAGGED = [
     "agent/mcp_tools/data_tools.py",
     "agent/mcp_tools/service_tools.py",
     "agent/mcp_tools/observability_tools.py",
+    "agent/mcp_tools/pipeline_tools.py",
     "agent/skills/run_cluster_step.py",
     "agent/skills/stage_apptainer.py",
     "agent/skills/cluster_jobs.py",

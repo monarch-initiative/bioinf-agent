@@ -28,6 +28,9 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
                         (JobManager surface for >10-min tool calls)
   observability_tools — agent_status + snapshot_project
                         (pure-read snapshot surfaces — "where am I?" + cluster)
+  pipeline_tools      — render_pipeline (the PIPELINE layer: a sealed workflow
+                        rendered as a samplesheet-driven directory, plain
+                        bash/SLURM by default, Nextflow on request)
   bridge_tools        — upload / download (unified transfer surface) +
                         stage_apptainer_image / submit_workflow_job /
                         run_step_on_cluster / cluster_* (Phase 2 HPC
@@ -64,6 +67,7 @@ from . import plan_tools           # noqa: F401  (plan_request — the compositi
 from . import sealed_tools         # noqa: F401  (describe_sealed_step — RUN_STEP-of-a-sealed-workflow: the typed reader for re-running one recorded step of a sealed pipeline)
 from . import jobs_tools           # noqa: F401  (run_in_background, check_job, cancel_job, list_jobs)
 from . import observability_tools  # noqa: F401  (agent_status, snapshot_project)
+from . import pipeline_tools       # noqa: F401  (render_pipeline — the pipeline layer: sealed workflow → samplesheet + stages directory)
 from . import run_tools            # noqa: F401  (run_pipeline_step, run_step_in_container, verify_installation, run_in_env, validate_output)
 from . import service_tools        # noqa: F401  (check_gpu, start_service, stop_service, check_service_health, verify_service_dependency)
 from . import workflow_tools       # noqa: F401  (seal_workflow, list_installed_pipelines, fetch_r_package_deps, start_pipeline, discard_pipeline_draft, show_pipeline_draft, patch_pipeline, stage_authored_artifact, mark_step_validated)

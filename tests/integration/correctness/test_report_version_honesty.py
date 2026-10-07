@@ -109,7 +109,7 @@ def test_env_html_installed_cell_never_echoes_request_when_unobserved():
     assert "not recorded" in cell.lower(), (
         f"absence must render as 'not recorded', got {cell!r}")
     # the request still shows in ITS OWN column
-    assert "=7.0.2" in _tools_table(html)
+    assert "7.0.2" in _tools_table(html)
 
 
 @pytest.mark.integration

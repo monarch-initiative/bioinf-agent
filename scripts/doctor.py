@@ -91,6 +91,33 @@ def check_conda() -> None:
 
 
 # --- the runtime env ---------------------------------------------------------
+def check_nextflow() -> None:
+    """The samplesheet form of a rendered pipeline runs on Nextflow, and the agent
+    proves it here before handing it over — so the engine has to be in the runtime env."""
+    prefix = RUNTIME_PY.parent.parent
+    nf = prefix / "bin" / "nextflow"
+    if not nf.exists():
+        row("FAIL", "nextflow", "not in .conda_runtime — re-run ./scripts/setup.sh (it installs "
+                                "nextflow into the runtime env)")
+        return
+    # Nextflow's launcher honours JAVA_HOME/JAVA_CMD over the JDK beside it; point it at
+    # the runtime env's own so a stray system Java cannot answer for it.
+    jvm = prefix / "lib" / "jvm"
+    env = dict(os.environ, JAVA_HOME=str(jvm), JAVA_CMD=str(jvm / "bin" / "java"))
+    try:
+        run_ = subprocess.run([str(nf), "-v"], capture_output=True, text=True, timeout=120, env=env)
+        out = (run_.stdout + run_.stderr).strip()
+        rc = run_.returncode
+    except Exception as e:
+        row("FAIL", "nextflow", f"{nf} does not answer: {type(e).__name__}: {e}")
+        return
+    if rc != 0:
+        row("FAIL", "nextflow", f"{nf} -v failed: {out.splitlines()[-1] if out else rc}",
+            "re-run ./scripts/setup.sh (re-installs nextflow and its JDK into the runtime env)")
+        return
+    row("PASS", "nextflow", (out.splitlines()[-1] if out else str(nf)) + " (runtime env)")
+
+
 def check_runtime_env() -> None:
     if not RUNTIME_PY.exists():
         row("FAIL", "runtime env", ".conda_runtime/ missing — the MCP server has no interpreter",
@@ -197,7 +224,7 @@ def print_layout() -> None:
         mark = "*" if Path(z[key]).exists() else " "
         print(f"   {mark} {key:<10} {z[key]}")
     print(f"  artifacts   {z['workspace_root']}  (what the agent produces — outlives any clone)")
-    for key in ("containers", "reports", "scratch"):
+    for key in ("containers", "reports", "scratch", "pipelines", "common_data"):
         mark = "*" if Path(z[key]).exists() else " "
         print(f"   {mark} {key:<10} {z[key]}")
     print("  (* = present; the rest are created on first write)")
@@ -329,6 +356,7 @@ def main() -> int:
     check_workspace()
     check_conda()
     check_runtime_env()
+    check_nextflow()
     check_agent_import()
     check_docker()
     check_mcp_registration()

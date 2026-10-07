@@ -100,6 +100,17 @@ else
     say "runtime env created ($("$RUNTIME_PY" -V 2>&1))"
 fi
 
+# --- 2b. nextflow in the runtime env ------------------------------------------
+# A rendered pipeline's samplesheet form runs on Nextflow; the agent proves it on
+# this machine before handing it over, so the engine lives in the runtime env
+# (conda-forge/bioconda `nextflow` carries its own JDK).
+if [ -x "$RUNTIME/bin/nextflow" ]; then
+    say "nextflow present in the runtime env — keeping it"
+else
+    say "installing nextflow into the runtime env..."
+    "$CONDA" install -y --prefix "$RUNTIME" -c conda-forge -c bioconda nextflow >/dev/null
+fi
+
 # --- 3. editable install -----------------------------------------------------
 say "installing bioinf-agent (editable) into the runtime env..."
 # [hpc] carries globus-cli so the Globus wire works out of the box; the only

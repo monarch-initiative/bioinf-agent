@@ -340,6 +340,21 @@ class TestHostFallbackLocusPrecondition:
         from agent.mcp_tools.workflow_tools import _local_trial_mounts
         assert _local_trial_mounts({"usage": {"command_template": ""}}) == []
 
+    def test_a_prefix_whose_family_is_on_disk_is_present(self, tmp_path):
+        """An aligner index prefix is neither a file nor a directory; its family is
+        what exists. The precondition once read it as a cluster-only input and
+        skipped I4 for every how-to with an index — mounted at the parent instead."""
+        from agent.mcp_tools.workflow_tools import _local_trial_mounts
+        for i in range(1, 9):
+            (tmp_path / f"chr22.{i}.ht2").write_text("x")
+        mounts = _local_trial_mounts(self._draft(str(tmp_path / "chr22")))
+        assert mounts == [(str(tmp_path), str(tmp_path))]
+
+    def test_a_prefix_with_no_family_is_still_absent(self, tmp_path):
+        from agent.mcp_tools.workflow_tools import _local_trial_mounts
+        (tmp_path / "unrelated.txt").write_text("x")
+        assert _local_trial_mounts(self._draft(str(tmp_path / "chr22"))) is None
+
     def test_image_runner_and_fallback_share_the_precondition(self):
         # one implementation: both decision sites must consult _local_trial_mounts
         import inspect

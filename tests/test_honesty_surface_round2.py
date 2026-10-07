@@ -55,9 +55,13 @@ def test_env_report_prints_degraded_and_the_advisory_for_an_unobserved_record():
     assert H.evaluate_build(rec).unobserved, "fixture must have coverage gaps"
     html = render_env_report_html(rec)
     assert ">degraded<" in html, "the README's word must appear on the deliverable"
-    # the advisory is the SAME sentence coverage_disclosure writes into the freeze
-    # return — the page and the chat answer must be checkable against each other
-    assert "coverage tag, not a failure" in html
+    # the page says in plain words that the tag is about coverage, and names every
+    # gap — the same facts coverage_disclosure writes into the freeze return, so the
+    # page and the chat answer stay checkable against each other through the ids
+    # in the coverage table
+    assert "could not be examined" in html
+    for c in H.evaluate_build(rec).unobserved:
+        assert c.clause in html
 
 
 def test_env_report_prints_no_outcome_tag_over_a_failed_contract():

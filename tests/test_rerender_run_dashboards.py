@@ -237,7 +237,7 @@ def test_a_clean_run_still_reads_clean():
 def test_the_sealed_run_status_is_rendered():
     html = _render(_spec_with_steps([_ok_step(1)], pipeline_status="fully_validated"))
     assert "Run status" in html
-    assert "fully_validated" in html
+    assert "fully validated" in html
 
 
 def test_a_stale_stamped_status_is_shown_as_a_disagreement_not_printed_as_fact():
@@ -251,7 +251,7 @@ def test_a_stale_stamped_status_is_shown_as_a_disagreement_not_printed_as_fact()
     winner silently is wrong both ways — `stated` ships the stale default, `derived` hides
     that the artifact is internally inconsistent."""
     html = _render(_spec_with_steps([_ok_step(1)], pipeline_status="in_progress"))
-    assert "fully_validated" in html, "the derived truth must be shown"
+    assert "fully validated" in html, "the derived truth must be shown"
     assert "in_progress" in html, "the stale stored value must be shown too"
     assert "does not match" in html
 
