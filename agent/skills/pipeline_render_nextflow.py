@@ -23,6 +23,9 @@ The file set
                      would read it as the header)
   launcher.sh        the manager job: `sbatch launcher.sh` on the cluster. On a laptop the
                      run is one line, `RUN_LOCAL`, which pipeline.html shows
+  bin/<script>       every authored script the how-to runs, verbatim from the record;
+                     params.yaml points at it (`bin/<script>`, relative to the run
+                     directory) and the stage stages it like any other path input
 
 The binding table — how a how-to placeholder reaches a process script
 ---------------------------------------------------------------------
@@ -35,6 +38,10 @@ The binding table — how a how-to placeholder reaches a process script
   per-sample value column    {SAMPLE}        ->  ${meta.sample}
   thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
                                                  (format: threads; the sealed count unless sized)
+  samplesheet slot           {SHEET}         ->  ${sheet}        staged: `path sheet`
+                                                 <- file(params.samplesheet) (format: samplesheet)
+  collected input            {COUNTS_DIR}    ->  counts_dir      staged: `path 'counts_dir/*'` <-
+                                                 every row's copy of the per-sample artifact, collected
   artifact in an output slot {OUT}/x.bam     ->  x.bam           (placeholders inside bind as above)
   bare output slot           {OUT}           ->  .
   `bound_commands` is that table applied to a stage — the page's command column, so
@@ -49,10 +56,16 @@ channels `.join()`ed on meta; one that also consumes a path column joins `rows` 
 (projected to the columns it uses); one consuming only columns takes `rows`; one
 consuming only the row identity takes `val(meta)`.
 
+A COHORT stage has no meta: it runs once. Each of its collected inputs is the
+producer's `(meta, path)` channel mapped to its paths and `.collect()`ed — Nextflow
+runs the process only once every row has emitted — staged into one directory named
+after the placeholder; an artifact from another cohort stage is that stage's plain
+`path` channel; it publishes flat under `params.outdir`.
+
 What is refused: a `$`, a backslash or a `\"\"\"` in a sealed command (the script
-block is a Groovy triple-quoted string, which rewrites all three in transit); a cohort
-stage; a stage, param or artifact name that is not a safe token; a stage that names no
-image.
+block is a Groovy triple-quoted string, which rewrites all three in transit); a stage,
+param or artifact name that is not a safe token; a stage that names no image; a
+script whose name is not a bare filename.
 """
 from __future__ import annotations
 
@@ -63,7 +76,7 @@ import yaml
 
 from agent.skills import compute_access
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
-                                          NEXTFLOW_QUEUE_SIZE, PipelineParam,
+                                          NEXTFLOW_QUEUE_SIZE, SCRIPT_DIR, PipelineParam,
                                           PipelineRecord, PipelineStage, placeholders,
                                           render_samplesheet)
 from agent.skills.submit_workflow import _resolve_slurm_and_email
@@ -75,6 +88,8 @@ from agent.skills.workflow_render import (_GPU_PLACEMENT_HEADER_NOTE, _MEM_RE, _
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: An artifact as the record names it: a bare filename, a glob, or a templated name.
 _ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_.\-*?{}]+$")
+#: A script's file name under bin/: a bare filename, nothing a shell or a path would read.
+_SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
 #: A default that renders as a Groovy/YAML number and still reads back as the same
 #: text. Integers only: a leading zero is an octal literal in Groovy and a decimal
 #: loses its trailing zeros through YAML.
@@ -207,10 +222,6 @@ def _check_record(record: PipelineRecord) -> None:
     for s in record.stages:
         _check_identifier(f"stage {s.name}: process name", s.name,
                           "pass stage_names= to derive_pipeline_record")
-        if s.scope == "cohort":
-            raise ValueError(
-                f"stage {s.name}: cohort stages are not supported yet; cut the how-to so every "
-                f"command runs per sample")
         if not (s.image or s.image_digest):
             raise ValueError(
                 f"stage {s.name} names no image; re-derive the record from a sealed workflow "
@@ -218,10 +229,18 @@ def _check_record(record: PipelineRecord) -> None:
         for c in s.commands:
             _check_command_expressible(s, c)
         for i in s.inputs:
-            if i.origin == "stage":
+            if i.origin in ("stage", "collect"):
                 _check_artifact(s, i.artifact or i.name, known)
+            if i.origin == "collect":
+                _check_identifier(f"stage {s.name}: collected input {i.name}: staged directory", i.name.lower(),
+                                  "rename the placeholder in the cohort how-to and re-seal")
         for o in s.outputs:
             _check_artifact(s, o.artifact, known)
+    for sc in record.scripts:
+        if not _SCRIPT_NAME_RE.match(sc.name):
+            raise ValueError(
+                f"script {sc.name!r} is not a bare filename (letters, digits, `_.-`); rename the "
+                f"authored artifact and re-seal")
 
 
 # ── the render context ─────────────────────────────────────────────────────
@@ -320,6 +339,8 @@ class _Context:
         low = p.name.lower()
         if p.kind == "cpus":
             return "${task.cpus}"
+        if p.kind == "samplesheet":
+            return "${" + low + "}"
         if p.kind == "per_sample":
             if p.value_kind == "value":
                 return "${meta." + self.col_of.get(ph, "sample") + "}"
@@ -336,8 +357,11 @@ class _Context:
         out = text
         for slot in self.record.output_slots:
             out = out.replace("{" + slot + "}/", "").replace("{" + slot + "}", ".")
+        collected = {i.name: i.name.lower() for i in stage.inputs if i.origin == "collect"}
 
         def sub(m: re.Match) -> str:
+            if m.group(1) in collected:
+                return collected[m.group(1)]              # the staged directory, every row's copy inside
             try:
                 return self.binding(m.group(1))
             except KeyError:
@@ -345,6 +369,11 @@ class _Context:
                     f"stage {stage.name}: placeholder {{{m.group(1)}}} is not a parameter "
                     f"of the record; re-derive the record from the sealed workflow") from None
         return _PLACEHOLDER_RE.sub(sub, out)
+
+    def words(self, artifact: str) -> str:
+        """An artifact as a comment names it: a placeholder becomes its samplesheet column
+        (`{SAMPLE}.counts.tsv` -> `<sample>.counts.tsv`), so no placeholder reaches a file."""
+        return _PLACEHOLDER_RE.sub(lambda m: f"<{self.col_of.get(m.group(1), m.group(1).lower())}>", artifact)
 
     def artifact_expr(self, stage: PipelineStage, artifact: str) -> str:
         """A `path(...)` argument for an artifact: single-quoted when literal,
@@ -359,9 +388,13 @@ class _Context:
 def _describe_source(record: PipelineRecord, p: PipelineParam) -> str:
     src = p.source
     if src.startswith("sealed_step:"):
-        n = src.split(":", 1)[1]
-        prov = next((ps for ps in record.provenance_steps if str(ps.step) == n), None)
-        return f"produced by sealed step {n}" + (f" ({prov.tool})" if prov and prov.tool else "")
+        n, _, wf = src.split(":", 1)[1].partition("@")
+        wf = wf or record.sealed_workflow
+        prov = next((ps for ps in record.provenance_steps if str(ps.step) == n and ps.workflow == wf), None)
+        where = f" of {wf}" if wf != record.sealed_workflow else ""
+        return f"produced by sealed step {n}{where}" + (f" ({prov.tool})" if prov and prov.tool else "")
+    if src.startswith("authored_artifact:"):
+        return f"an authored script, {SCRIPT_DIR}/{src.split(':', 1)[1]} beside this file — edit it there"
     if src.startswith("reference_database:"):
         return f"reference database {src.split(':', 1)[1]}"
     if src.startswith("test_data:"):
@@ -394,14 +427,18 @@ def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
     lines: list[str] = []
     for p in record.params:
         if p.kind != "shared":
-            continue                                  # a samplesheet column or a thread slot, not a param
+            continue                                  # a samplesheet column, a thread slot or a sheet slot, not a param
         lines.append(f"// {_param_comment(record, p)}.")
-        lines.append("// The default is what the sealed run was validated with.")
+        lines.append("// The default is what the sealed run was validated with."
+                     if not p.source.startswith("authored_artifact:") else
+                     "// The default is the script as the sealed run validated it, copied beside this file.")
         lines.append(f"params.{p.name.lower()} = {_param_default_expr(p)}")
     cols = ", ".join(c.name for c in record.samplesheet.columns)
     lines.append(f"// The samplesheet: one row per sample, columns {cols}.")
     lines.append(f"params.{SAMPLESHEET_PARAM[0]} = {_nf_quote(SAMPLESHEET_PARAM[1])}")
-    lines.append("// Where published outputs land, one directory per sample, shared by every stage.")
+    lines.append("// Where published outputs land, one directory per sample, shared by every stage"
+                 + ("; a cohort stage publishes flat into it." if any(s.scope == "cohort" for s in record.stages)
+                    else "."))
     lines.append(f"params.{OUTDIR_PARAM[0]} = {_nf_quote(OUTDIR_PARAM[1])}")
     return "\n".join(lines)
 
@@ -425,13 +462,15 @@ def _measured_comment(stage: PipelineStage) -> Optional[str]:
 def _stage_inputs(stage: PipelineStage, ctx: _Context) -> dict[str, list]:
     """The stage's inputs sorted into the four plumbing classes, record order kept."""
     arts = [i for i in stage.inputs if i.origin == "stage"]
+    collects = [i for i in stage.inputs if i.origin == "collect"]
+    sheets = [i for i in stage.inputs if i.origin == "samplesheet"]
     names = {i.name for i in stage.inputs if i.origin in ("param", "column")}
     params = [ctx.param(i.name) for i in stage.inputs if i.origin in ("param", "column")]
     shared_paths = [p for p in params if p.kind == "shared" and p.value_kind == "path"]
     prefixes = [p for p in params if p.kind == "shared" and p.value_kind == "prefix"]
     path_cols = [c for c in ctx.path_cols if c.placeholder in names]
-    return {"artifacts": arts, "shared_paths": shared_paths, "prefixes": prefixes,
-            "path_cols": path_cols}
+    return {"artifacts": arts, "collects": collects, "sheets": sheets, "shared_paths": shared_paths,
+            "prefixes": prefixes, "path_cols": path_cols}
 
 
 def _producer_slug(stage: PipelineStage, inp, ctx: _Context) -> str:
@@ -459,22 +498,34 @@ def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]
     io = _stage_inputs(stage, ctx)
     args: list[str] = []
     comment = None
-    chans = [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
-    items = [[i.artifact or i.name] for i in io["artifacts"]]
-    if io["path_cols"]:
-        chans.append(_rows_expr(io["path_cols"], ctx))
-        items.append([c.name for c in io["path_cols"]])
-    if chans:
-        primary = chans[0] + "".join(f".join({c})" for c in chans[1:])
-        if len(chans) > 1:
-            shapes = ["(meta, " + ", ".join(it) + ")" for it in items]
-            joined = ", ".join(x for it in items for x in it)
-            comment = ".join() on meta: " + " + ".join(shapes) + f" -> (meta, {joined})"
-    elif ctx.path_cols:
-        primary = "rows.map { it[0] }"
+    if stage.scope == "cohort":
+        # once over every row: each collected input is its producer's channel, paths only,
+        # collected — the process runs when every row has emitted; a cohort artifact is its
+        # producer's plain path channel
+        for i in io["collects"]:
+            args.append(f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}.map {{ meta, f -> f }}.collect()")
+        args += [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
+        if io["collects"]:
+            what = " + ".join(f"every row's {ctx.words(i.artifact or i.name)} from {i.from_stage}" for i in io["collects"])
+            comment = f"runs once, after {what}"
     else:
-        primary = "rows"
-    args.append(primary)
+        chans = [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
+        items = [[i.artifact or i.name] for i in io["artifacts"]]
+        if io["path_cols"]:
+            chans.append(_rows_expr(io["path_cols"], ctx))
+            items.append([c.name for c in io["path_cols"]])
+        if chans:
+            primary = chans[0] + "".join(f".join({c})" for c in chans[1:])
+            if len(chans) > 1:
+                shapes = ["(meta, " + ", ".join(it) + ")" for it in items]
+                joined = ", ".join(x for it in items for x in it)
+                comment = ".join() on meta: " + " + ".join(shapes) + f" -> (meta, {joined})"
+        elif ctx.path_cols:
+            primary = "rows.map { it[0] }"
+        else:
+            primary = "rows"
+        args.append(primary)
+    args += [f"file(params.{SAMPLESHEET_PARAM[0]}, checkIfExists: true)" for _ in io["sheets"]]
     args += [f"file(params.{p.name.lower()})" for p in io["shared_paths"]]
     args += ['files("${params.' + p.name.lower() + '}*")' for p in io["prefixes"]]
     return f"{stage.name}({', '.join(args)})", comment
@@ -484,8 +535,13 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     io = _stage_inputs(stage, ctx)
     n = len(record.stages)
     steps = ", ".join(str(s) for s in stage.sealed_steps) if stage.sealed_steps else "none"
+    cohort = stage.scope == "cohort"
     head = [f"// stage {stage.index + 1} of {n} · {stage.tool} · image "
             f"{stage.image_digest or stage.image} · derived from sealed step(s) [{steps}]"]
+    if cohort:
+        froms = sorted({i.from_stage for i in io["collects"] if i.from_stage})
+        head.append("// A cohort stage: runs ONCE, over every row"
+                    + (f", after {', '.join(froms)} has finished for every sample" if froms else "") + ".")
     measured = _measured_comment(stage)
     if measured:
         head.append(f"// {measured}")
@@ -496,25 +552,34 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     body: list[str] = []
     # Closures, not strings: a directive that names a task input must be evaluated
     # per task, and the strict parser refuses the string form outright.
-    body.append("tag { meta.sample }")
+    if not cohort:
+        body.append("tag { meta.sample }")
     if stage.outputs:
         # One results directory per row, shared by every stage — the layout the sealed
         # how-to ran in. Every artifact a stage writes is published; names are unique
         # within a row by construction (the seal wrote them all into one working
         # directory). `overwrite: true` because Nextflow's default is false on -resume:
         # a stage re-executed after a parameter change must replace its stale
-        # published copy.
-        base = '{ "${params.outdir}/${meta.sample}" }'
+        # published copy. A cohort stage publishes flat: it has no row.
+        base = '{ "${params.outdir}" }' if cohort else '{ "${params.outdir}/${meta.sample}" }'
         body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
     # inputs
     ins: list[str] = []
-    parts = ["val(meta)"]
-    parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
-    parts += [f"path({c.name})" for c in io["path_cols"]]
-    ins.append("tuple " + ", ".join(parts))
+    if cohort:
+        for i in io["collects"]:
+            ins.append(f"path '{i.name.lower()}/*'" + " " * max(1, 28 - len(i.name) - 9)
+                       + f"// every row's {ctx.words(i.artifact or i.name)}, from {i.from_stage}, in one directory")
+        ins += [f"path {ctx.artifact_expr(stage, i.artifact or i.name)}" for i in io["artifacts"]]
+    else:
+        parts = ["val(meta)"]
+        parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
+        parts += [f"path({c.name})" for c in io["path_cols"]]
+        ins.append("tuple " + ", ".join(parts))
+    ins += [f"path {i.name.lower()}" + " " * max(1, 28 - len(i.name) - 5)
+            + "// the samplesheet itself, as this run read it" for i in io["sheets"]]
     ins += [f"path {p.name.lower()}" for p in io["shared_paths"]]
     ins += [f"path {p.name.lower()}_files" for p in io["prefixes"]]
 
@@ -523,7 +588,7 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     for o in stage.outputs:
         slug = ctx.slugs[(stage.name, o.artifact)]
         expr = ctx.artifact_expr(stage, o.artifact)
-        outs.append(f"tuple val(meta), path({expr}), emit: {slug}")
+        outs.append(f"path({expr}), emit: {slug}" if cohort else f"tuple val(meta), path({expr}), emit: {slug}")
 
     script = [ctx.bind(stage, c) for c in stage.commands]
 
@@ -580,10 +645,14 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
 
 
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
+    n_cohort = sum(1 for s in record.stages if s.scope == "cohort")
+    how = ("each stage run once per samples.csv row" if not n_cohort else
+           f"{len(record.stages) - n_cohort} per-sample stage(s) run once per samples.csv row and "
+           f"{n_cohort} cohort stage(s) run once over every row")
     parts = [
         f"// {ctx.header}",
         f"// {len(record.stages)} stage(s) over {sum(len(s.commands) for s in record.stages)} how-to "
-        f"command(s), each stage run once per samples.csv row; every process runs its sealed "
+        f"command(s), {how}; every process runs its sealed "
         f"command(s) with the placeholders bound.",
         "",
         "nextflow.enable.dsl = 2",
@@ -802,13 +871,16 @@ def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> di
     anything the files cannot carry."""
     _check_record(record)
     ctx = _Context(record, env or {})
-    return {
+    files = {
         "main.nf": _render_main(record, ctx),
         "nextflow.config": _render_config(record, ctx),
         "params.yaml": _render_params_yaml(record, ctx),
         "samples.csv": render_samplesheet(record),
         "launcher.sh": _render_launcher(record, ctx),
     }
+    for sc in record.scripts:
+        files[f"{SCRIPT_DIR}/{sc.name}"] = sc.content       # verbatim: the seal anchored these bytes
+    return files
 
 
 def bound_commands(record: PipelineRecord, stage: PipelineStage) -> list[str]:

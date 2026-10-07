@@ -243,7 +243,8 @@ def _key_sheet(*samples: str) -> pr.Samplesheet:
     gets: one row per trial, nothing but the sample's name in it."""
     return pr.Samplesheet(
         columns=[pr.SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value", format=None,
-                                      description="the row key: it tags every task and names results/<sample>/")],
+                                      description="the row key: it tags every task and names results/<sample>/",
+                                      read_by=[])],
         rows=[{"sample": s} for s in samples])
 
 
@@ -287,7 +288,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
         sealed_workflow_path="", sealed_workflow_sha256=None, env_digests=["sha256:" + "b" * 64],
         params=list(params.values()), samplesheet=_key_sheet("S1", "S2"), output_slots=["OUTPUT_DIR"],
         compute_env=None, modules=[], local_runtime=None, stages=stages, provenance_steps=[], unmatched_steps=[],
-        defaults=[], notes=[])
+        scripts=[], cohort_workflows=[], defaults=[], notes=[])
 
 
 def _with_cohort(rec: pr.PipelineRecord, *names: str) -> pr.PipelineRecord:
@@ -455,7 +456,7 @@ class TestTheDirectory:
         assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
             "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
         assert _entries(_cohort())["results/"].what == (
-            "where the cohort stages' results are published, beside the per-sample directories")
+            "the cohort stages' results, published flat beside the per-sample directories (the same `outdir:`)")
 
     def test_the_section_speaks_the_files_words_and_no_placeholder(self):
         for make in _DIR_RECORDS.values():

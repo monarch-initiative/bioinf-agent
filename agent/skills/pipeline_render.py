@@ -31,6 +31,7 @@ The directory, LOCKED
     params.yaml                 the shared parameters
     samples.csv                 one row per sample
     launcher.sh                 the cluster job: `sbatch launcher.sh`
+    bin/<script>                every authored script the how-to runs (only when there is one)
     .pipeline/pipeline.yaml     the record — the ONE input of every file beside it
     .pipeline/MANIFEST.sha256   `sha256sum -c .pipeline/MANIFEST.sha256`, run from the
                                 directory, checks every file but itself
@@ -287,7 +288,7 @@ def render_pipeline_dir(record: PipelineRecord, out_dir: Path, *,
         p = out_dir / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
-        if rel.endswith(".sh"):
+        if rel.endswith(".sh") or rel.startswith("bin/"):
             p.chmod(p.stat().st_mode | 0o111)
     return {
         "dir": str(out_dir),

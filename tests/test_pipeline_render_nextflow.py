@@ -868,14 +868,16 @@ class TestRefusals:
         rec.stages[0].commands = ["echo 'quoted' > {OUTPUT_DIR}/aligned.bam"]
         assert "    echo 'quoted' > aligned.bam\n" in render_nextflow(rec)["main.nf"]
 
-    def test_a_cohort_stage_is_refused(self):
+    def test_a_command_binding_no_per_sample_value_still_runs_per_sample_as_the_seal_ran_it(self):
+        """The seal's self-test ran every how-to command once per trial; a cohort stage is
+        never inferred from a command's placeholders — it comes from a workflow attached
+        with cohort= (TestCohort)."""
         spec = sealed_rnaseq_spec(templates=[*TEMPLATES, "multiqc {OUTPUT_DIR}"])
-        rec = pr.derive_pipeline_record(spec, name="with_cohort")
-        assert rec.stage("MULTIQC").scope == "cohort"
-        with pytest.raises(ValueError) as e:
-            render_nextflow(rec)
-        assert str(e.value) == ("stage MULTIQC: cohort stages are not supported yet; cut the how-to so "
-                                "every command runs per sample")
+        rec = pr.derive_pipeline_record(spec, name="with_multiqc")
+        assert rec.stage("MULTIQC").scope == "per_sample"
+        main = render_nextflow(rec)["main.nf"]
+        assert "process MULTIQC {\n    tag { meta.sample }" in main
+        assert "    multiqc .\n" in main
 
     def test_a_stage_that_names_no_image_is_refused(self):
         rec = _record()

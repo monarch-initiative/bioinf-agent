@@ -141,3 +141,111 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
         "envs": [{"request_key": REQUEST_KEY, "image": f"bioinf_rnaseq_cli@{DIGEST}", "image_digest": DIGEST}],
     }
     return WorkflowSpec.model_validate(spec)
+
+
+# ── the cohort workflow: counts tables → one matrix → DESeq2 ────────────────
+
+IMAGE_DE = "bioinf_rnaseq_de:latest"
+DIGEST_DE = "sha256:dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444"
+REQUEST_KEY_DE = "fr_rnaseq_de_0001"
+COUNTS_DIR = "/data/de/counts"
+SHEET = "/data/de/samples.csv"
+MERGE_SCRIPT = "/data/de/scripts/merge_counts.R"
+DESEQ2_SCRIPT = "/data/de/scripts/deseq2.R"
+MERGE_TEXT = "#!/usr/bin/env Rscript\n# merge every *.counts.tsv in a directory into one matrix\nargs <- commandArgs(TRUE)\n"
+DESEQ2_TEXT = "#!/usr/bin/env Rscript\n# DESeq2 over a counts matrix, design from the samplesheet\nargs <- commandArgs(TRUE)\n"
+DESIGN = {"SRR1039508": ("N61311", "untrt"), "SRR1039509": ("N61311", "dex"), "SRR1039512": ("N052611", "untrt"),
+          "SRR1039513": ("N052611", "dex")}
+TEMPLATES_DE = [
+    "Rscript {MERGE_SCRIPT} {COUNTS_DIR} {OUTPUT_DIR}/counts_matrix.tsv",
+    'Rscript {DESEQ2_SCRIPT} {OUTPUT_DIR}/counts_matrix.tsv {SAMPLESHEET} --design "{DESIGN}" {OUTPUT_DIR}',
+]
+DE_OUTPUTS = ["deseq2_results.tsv", "normalized_counts.tsv", "ma_plot.png", "pca.png", "deseq2_session.txt"]
+
+
+def sheet_text(samples: Optional[list[str]] = None) -> str:
+    """The cohort's samplesheet as the sealed run read it: `sample` plus the design columns."""
+    rows = [f"{s},{DESIGN[s][0]},{DESIGN[s][1]}" for s in (samples if samples is not None else list(DESIGN))]
+    return "sample,donor,condition\n" + "\n".join(rows) + "\n"
+
+
+def _authored(path: str, role: str, content: Optional[str], language: str) -> dict:
+    import hashlib
+    raw = (content or "x").encode()
+    a = {"path": path, "role": role, "description": f"{role} at {path}", "sha256": hashlib.sha256(raw).hexdigest(),
+         "size_bytes": len(raw), "created_at": "2026-10-06T00:00:00+00:00", "language": language}
+    if content is not None:
+        a["content_excerpt"] = content
+    else:
+        a["generated_by"] = "nextflow run main.nf -profile local -params-file params.yaml"
+    return a
+
+
+def sealed_deseq2_spec(samples: Optional[list[str]] = None, *, design: str = "condition",
+                       templates: Optional[list[str]] = None, sheet: Optional[str] = None,
+                       trials: Optional[list[dict]] = None, script_text: Optional[str] = MERGE_TEXT):
+    """A validated `WorkflowSpec` for the cohort chain: one R env, two how-to commands
+    (merge the per-sample counts tables, DESeq2 over the matrix), the scripts and the
+    samplesheet as authored artifacts, the counts tables as staged inputs, one trial
+    over the whole cohort. `script_text=None` leaves the merge script's text out of the
+    record (a large artifact the seal only excerpted)."""
+    from agent.models.core_data import WorkflowSpec
+    samples = list(samples if samples is not None else DESIGN)
+    templates = list(templates if templates is not None else TEMPLATES_DE)
+    sheet = sheet if sheet is not None else SHEET
+    counts = [f"{COUNTS_DIR}/{s}.counts.tsv" for s in samples]
+    run = "/runs/de"
+    subs = {"MERGE_SCRIPT": MERGE_SCRIPT, "COUNTS_DIR": COUNTS_DIR, "DESEQ2_SCRIPT": DESEQ2_SCRIPT,
+            "SAMPLESHEET": sheet, "DESIGN": design, "OUTPUT_DIR": run}
+    cmds = [_resolved(t, subs) for t in templates]
+    steps = [_step("Rscript", cmds[0], [MERGE_SCRIPT, *counts], [f"{run}/counts_matrix.tsv"], wall=3.0, rss=120.0)]
+    if len(templates) > 1:
+        steps.append(_step("Rscript", cmds[1], [DESEQ2_SCRIPT, f"{run}/counts_matrix.tsv", sheet],
+                           [f"{run}/{o}" for o in DE_OUTPUTS], wall=25.0, rss=640.0))
+    for st in steps:
+        st["container_image"], st["container_image_digest"] = IMAGE_DE, DIGEST_DE
+    for n, st in enumerate(steps, 1):
+        st["step"] = n
+    scratch = "/scratch/i4/de"
+    tsubs = {**subs, "OUTPUT_DIR": scratch}
+    proven = [{"name": "airway_2x2", "ok": True, "commands_run": [_resolved(t, tsubs) for t in templates],
+               "substitutions": tsubs, "output_slots": ["OUTPUT_DIR"],
+               "produced_files": [f"{scratch}/counts_matrix.tsv"] + [f"{scratch}/{o}" for o in DE_OUTPUTS],
+               "validation_results": []}]
+    declared = trials if trials is not None else [{"name": "airway_2x2", "substitutions": subs}]
+    usage = {
+        "description": "Merge every sample's htseq-count table into one matrix, then DESeq2 over it",
+        "command_template": templates,
+        "inputs": [
+            {"name": "MERGE_SCRIPT", "format": "r_script", "description": "merge_counts.R"},
+            {"name": "COUNTS_DIR", "format": "directory", "description": "every sample's <sample>.counts.tsv"},
+            {"name": "DESEQ2_SCRIPT", "format": "r_script", "description": "deseq2.R"},
+            {"name": "SAMPLESHEET", "format": "samplesheet", "description": "sample + one column per design term"},
+            {"name": "DESIGN", "format": "value", "description": "the design's terms: condition, or donor + condition"},
+        ],
+        "outputs": [{"name": "OUTPUT_DIR", "files": ["counts_matrix.tsv", *DE_OUTPUTS]}],
+        "trials": declared,
+    }
+    spec = {
+        "workflow_name": "rnaseq_de_workflow",
+        "description": "DESeq2 over the airway cohort",
+        "created_at": "2026-10-06T00:00:00+00:00",
+        "env_request_key": REQUEST_KEY_DE,
+        "env_content_digest": "sha256:content_de00",
+        "env_image": f"bioinf_rnaseq_de@{DIGEST_DE}",
+        "pipeline_status": "fully_validated",
+        "usage_verified": True,
+        "usage_verification": {"status": "verified", "reason": "", "locus": "image", "trial_count": 1,
+                               "passed": 1, "trials": proven},
+        "validated_in_shipped_image": True,
+        "usage": usage,
+        "pipeline_steps": steps,
+        "authored_artifacts": [
+            _authored(MERGE_SCRIPT, "driver_script", script_text, "r"),
+            _authored(DESEQ2_SCRIPT, "driver_script", DESEQ2_TEXT, "r"),
+            _authored(sheet, "samplesheet", sheet_text(samples), "csv"),
+            *[_authored(c, "staged_input", None, "tsv") for c in counts],
+        ],
+        "envs": [{"request_key": REQUEST_KEY_DE, "image": f"bioinf_rnaseq_de@{DIGEST_DE}", "image_digest": DIGEST_DE}],
+    }
+    return WorkflowSpec.model_validate(spec)
