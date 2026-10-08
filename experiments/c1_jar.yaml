@@ -1,0 +1,11 @@
+# C1 — a Java jar tool. Trips to look for: the Java runtime missing from the image, the
+# jar fetched without a checksum, a how-to that hard-codes the jar's host path.
+name: c1_jar
+tier: C1
+prompt: |
+  Install Picard (the Java jar tool). Prove it by converting one of the single-end RNA-seq
+  fastq files in the core test data to an unmapped BAM with FastqToSam, freeze the
+  environment as a shippable image, and seal the workflow.
+models: [sonnet]
+budget_usd: 15
+timeout_s: 2700

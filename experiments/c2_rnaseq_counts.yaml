@@ -1,0 +1,19 @@
+# C2 — a recipe: three tools in one image, a reference database, a per-sample how-to with
+# a THREADS slot and a strandedness slot, proven on three samples. Trips to look for: the
+# GTF slice done outside a recorded step (provenance lost), the index built on the host,
+# the how-to hard-coding -p 4, an output written outside the output slot.
+name: c2_rnaseq_counts
+tier: C2
+prompt: |
+  Build and seal an RNA-seq alignment-and-counting workflow: HISAT2 to align, samtools to
+  sort and index, htseq-count to count reads per gene. Use the airway single-end RNA-seq
+  samples in the core test data against the chr22 reference, with the GENCODE v47 basic
+  annotation sliced to chr22. The how-to must run per sample, take the thread count as a
+  slot, and take htseq-count's strandedness as a slot; prove it on three airway samples.
+  Freeze everything as one shippable image and seal the workflow.
+models: [sonnet]
+budget_usd: 30
+timeout_s: 5400
+notes: >-
+  The corpus is shared, so a HISAT2 index and a chr22 GTF left under rnaseq_counts_test_data
+  by an earlier build may be found and reused; the recorded steps say whether they were.

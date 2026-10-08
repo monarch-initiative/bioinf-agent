@@ -58,7 +58,7 @@ def test_adopt_image_happy_path_registers_and_renders(tmp_path, monkeypatch):
     out = F.freeze_from_image(
         image="ghcr.io/org/talos@sha256:abc", name="talos_authors", version="11.0.0",
         tools=[{"name": "talos", "evidence": "python -m talos --help"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "proven", out
     assert out["build_method"] == "adopt-image"
     assert cache.registered, "env should be registered in the cache"
@@ -81,7 +81,7 @@ def test_failing_evidence_is_refused_by_honesty_contract(tmp_path, monkeypatch):
     cache = _Cache()
     out = F.freeze_from_image(
         image="img@sha256:abc", name="x", tools=[{"name": "talos", "evidence": "talos --run"}],
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "refused"
     assert out["code"] == "freeze_from_image.honesty_violation"
     assert not cache.registered, "a failing-evidence image must NOT be registered"
@@ -92,7 +92,7 @@ def test_echo_cheat_evidence_is_refused(tmp_path, monkeypatch):
     cache = _Cache()
     out = F.freeze_from_image(
         image="img@sha256:abc", name="x", tools=[{"name": "talos", "evidence": "echo hello"}],
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "refused", out
     assert out["code"] == "freeze_from_image.honesty_violation"
     kinds = {v["invariant"] for v in out["honesty_violations"]}
@@ -101,7 +101,7 @@ def test_echo_cheat_evidence_is_refused(tmp_path, monkeypatch):
 
 def test_no_tools_refused(tmp_path):
     out = F.freeze_from_image(image="img", name="x", tools=[],
-                             env_cache=_Cache(), reports_dir=tmp_path)
+                             env_cache=_Cache(), env_dir=tmp_path)
     assert out["outcome"] == "refused" and out["code"] == "freeze_from_image.no_tools"
 
 
@@ -129,7 +129,7 @@ def test_sbom_capture_failure_is_recorded_not_silently_empty(tmp_path, monkeypat
     out = F.freeze_from_image(
         image="img@sha256:abc", name="t", version="1",
         tools=[{"name": "talos", "evidence": "talos --help"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "proven", out          # not a refusal — disclosure, not a gate
     rec = cache.registered[out["request_key"]]
     assert rec["resolved_packages"] == []
@@ -153,7 +153,7 @@ def test_gated_image_without_licenses_is_refused_by_i13(tmp_path, monkeypatch):
         image="cellranger:8.0.0", name="cellranger", version="8.0.0",
         tools=[{"name": "cellranger", "evidence": "cellranger --version"}],
         build_method="adopt-image", gated=True, licenses=[],
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "refused", out
     assert any(v["invariant"] == "I13.gated_license_recorded"
                for v in out["honesty_violations"]), out["honesty_violations"]
@@ -169,7 +169,7 @@ def test_gated_image_with_licenses_registers_and_is_not_redistributable(tmp_path
         image="cellranger:8.0.0", name="cellranger", version="8.0.0",
         tools=[{"name": "cellranger", "evidence": "cellranger --version"}],
         build_method="adopt-image", gated=True, licenses=["10x Genomics EULA"],
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "proven", out
     rec = cache.registered[out["request_key"]]
     from agent.models.core_data import record_is_gated
@@ -187,7 +187,7 @@ def test_authors_dockerfile_records_pinned_source(tmp_path, monkeypatch):
         build_method="authors-dockerfile",
         dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
                            "commit": "c5a8f07", "tag": "v11.0.1"},
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "proven"
     rec = cache.registered[out["request_key"]]
     assert rec["build_method"] == "authors-dockerfile"
@@ -284,7 +284,7 @@ def test_freeze_from_image_captures_fork_self_report(tmp_path, monkeypatch):
         build_method="authors-dockerfile",
         dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
                            "commit": "c5a8f07", "tag": "v11.0.1"},
-        env_cache=cache, reports_dir=tmp_path)
+        env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] == "proven"
     rec = cache.registered[out["request_key"]]
     sb = {s["tool"]: s["version"] for s in rec["shipped_binaries"]}
@@ -377,7 +377,7 @@ def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_p
     out = F.freeze_from_image(
         image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
         tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] in ("proven", "degraded"), out
 
     # the PULLABLE address is the reproducibility anchor…
@@ -402,7 +402,7 @@ def test_an_unpullable_adopt_image_keeps_the_local_id_and_says_it_is_unpinnable(
     out = F.freeze_from_image(
         image="local-only:latest", name="localish", version="1",
         tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     assert out["outcome"] in ("proven", "degraded"), out
     assert out["content_digest"] == local_id
     rec = list(cache.registered.values())[0]
@@ -421,6 +421,6 @@ def test_the_cached_record_carries_the_pin_the_recipe_carries(tmp_path, monkeypa
     F.freeze_from_image(
         image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
         tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     rec = list(cache.registered.values())[0]
     assert rec["image_by_digest"] == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32

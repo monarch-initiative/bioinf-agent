@@ -381,13 +381,12 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
     the tool returned `count: 7` having understood exactly none of them. Broken
     for real users, and green in the suite: the disease in a user-facing tool.
     """
-    pipelines_dir = workspace.reports_dir()
 
     # --- Layer 1: frozen envs ------------------------------------------------
     envs: list[dict] = []
     if env_cache is None:
         from agent.skills.freeze import EnvCache
-        env_cache = EnvCache(pipelines_dir / "_env_cache.json")
+        env_cache = EnvCache(workspace.env_cache_path())
     for key, rec in sorted((env_cache.all() or {}).items()):
         if not isinstance(rec, dict):
             continue
@@ -473,7 +472,7 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
 
     # --- Layer 2: sealed workflows -------------------------------------------
     workflows: list[dict] = []
-    for spec_file in sorted(pipelines_dir.glob("*.workflow.yaml")):
+    for spec_file in workspace.sealed_workflow_paths():
         try:
             d = yaml.safe_load(spec_file.read_text()) or {}
             steps = d.get("pipeline_steps") or []

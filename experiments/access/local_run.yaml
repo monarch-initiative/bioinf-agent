@@ -1,0 +1,32 @@
+# A compute world inside one experiment run: a local compute env whose four zones are
+# directories under the run, and one project granted a working directory there. The
+# runner substitutes {run_dir}, creates the directories, and validates the file the way
+# the server will before the session starts. Nothing here reaches the host's zones.
+compute_envs:
+- name: run_local
+  type: local
+  container_upload_target:
+    path: "{run_dir}/compute/environments/"
+    permissions: [file_name_only, upload, download]
+    description: container images staged for this compute env
+  agent_scratch_target:
+    path: "{run_dir}/compute/scratch/"
+    permissions: [file_name_only, upload, download, exec]
+    description: the agent's sandbox on this compute env
+  agent_common_data_target:
+    path: "{run_dir}/compute/common_data/"
+    permissions: [file_name_only, upload, download, exec]
+    description: shared reference data on this compute env
+  agent_pipelines_target:
+    path: "{run_dir}/compute/pipelines/"
+    permissions: [file_name_only, upload, download, exec]
+    description: rendered pipelines run from here
+projects:
+- name: cold_start
+  description: the project a freshly set-up user is working in
+  compute_envs: [run_local]
+  directories:
+  - env: run_local
+    path: "{run_dir}/compute/project/"
+    permissions: [file_name_only, upload, download, exec]
+    description: the project's working directory

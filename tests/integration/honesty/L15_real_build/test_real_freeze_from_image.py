@@ -69,7 +69,7 @@ def test_real_freeze_from_image_is_honest_and_validated_in_image(tmp_path):
             tools=[{"name": "mytool", "evidence": "mytool"}],   # evidence that RUNS the tool
             build_method="authors-dockerfile",
             dockerfile_source={"repo": "local", "commit": "test"},
-            env_cache=cache, reports_dir=tmp_path, pull_if_absent=False)
+            env_cache=cache, env_dir=tmp_path, pull_if_absent=False)
 
         # proven, and the env registered by digest
         assert out["outcome"] == "proven", out
@@ -113,7 +113,7 @@ def test_real_freeze_from_image_refuses_non_running_evidence(tmp_path):
         out = F.freeze_from_image(
             image=_TAG, name="l15_ffi_bad", version="1.0",
             tools=[{"name": "notinstalled", "evidence": "notinstalled --version"}],
-            build_method="authors-dockerfile", env_cache=cache, reports_dir=tmp_path,
+            build_method="authors-dockerfile", env_cache=cache, env_dir=tmp_path,
             pull_if_absent=False)
         assert out["outcome"] == "refused", out
         assert out["code"] == "freeze_from_image.honesty_violation"

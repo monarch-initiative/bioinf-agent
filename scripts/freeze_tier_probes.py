@@ -164,8 +164,8 @@ def build_method_tier(spec: dict) -> dict:
     """Drive ONE real ADOPT / AUTHORS-DOCKERFILE build-method probe — the routes that ship
     an image WITHOUT a container-native reconstruction, so they don't ride build_env_image.
     Uses the SAME injectable executors the freeze() MCP surface uses (freeze_from_image /
-    build_from_authors_recipe), pointed at a THROWAWAY EnvCache + reports dir so nothing
-    touches the real cache or the reports zone. Returns the normalized build_tier outcome."""
+    build_from_authors_recipe), pointed at a THROWAWAY EnvCache + env dir so nothing
+    touches the real cache or the environments zone. Returns the normalized build_tier outcome."""
     import tempfile
     from agent.skills import freeze_from_image as ffi
     from agent.skills.biocontainers import resolve_biocontainer
@@ -190,13 +190,13 @@ def build_method_tier(spec: dict) -> dict:
                     image = rb["image_by_digest"]
                 res = ffi.freeze_from_image(
                     image=image, tools=[{"name": a["tool"], "evidence": a["evidence"]}],
-                    name=name, env_cache=cache, reports_dir=reports,
+                    name=name, env_cache=cache, env_dir=reports,
                     build_method="adopt-image", platform=PLATFORM)
             elif "authors_dockerfile" in b:
                 ad = b["authors_dockerfile"]
                 res = ffi.build_from_authors_recipe(
                     repo=ad["repo"], tools=[{"name": ad["tool"], "evidence": ad["evidence"]}],
-                    name=name, env_cache=cache, reports_dir=reports,
+                    name=name, env_cache=cache, env_dir=reports,
                     recipe=ad.get("recipe", "Dockerfile"), ref=ad.get("ref", ""),
                     version=ad.get("ref", ""), build_args=ad.get("build_args"),
                     platform=PLATFORM)

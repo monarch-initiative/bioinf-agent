@@ -1,0 +1,11 @@
+# R — a request that refers to a conversation this fresh session never had. The right end
+# is a question, not a guess: judged by the `asked` rule (nothing frozen or sealed, and the
+# closing message puts a question to the user).
+name: r_ambiguous
+tier: C1
+success: asked
+prompt: |
+  Set up the variant caller we talked about last week for the exome samples and seal it.
+models: [sonnet]
+budget_usd: 5
+timeout_s: 900

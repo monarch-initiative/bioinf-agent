@@ -459,7 +459,7 @@ def test_evidence_that_also_passes_without_the_tool_is_refused(tmp_path, monkeyp
     out = F.freeze_from_image(
         image="img@sha256:abc", name="t", version="1",
         tools=[{"name": "samtools", "evidence": '[ -n "samtools" ]'}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
 
     assert out["outcome"] == "refused", out
     assert out["code"] == "freeze_from_image.vacuous_evidence"
@@ -474,7 +474,7 @@ def test_evidence_that_fails_without_the_tool_is_accepted(tmp_path, monkeypatch)
     out = F.freeze_from_image(
         image="img@sha256:abc", name="t", version="1",
         tools=[{"name": "samtools", "evidence": "samtools --version"}],
-        build_method="adopt-image", env_cache=cache, reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
 
     assert out["outcome"] in ("proven", "degraded"), out
     assert cache.registered

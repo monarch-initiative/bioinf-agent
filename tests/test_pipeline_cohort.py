@@ -445,7 +445,8 @@ class TestTool:
         sheet.write_text(sheet_text())
         de = sealed_deseq2_spec(sheet=str(sheet))
         for spec in (sealed_rnaseq_spec(SAMPLES), de):
-            assert "workflow_spec_path" in write_workflow_spec(spec.model_dump(), {})
+            assert "workflow_spec_path" in write_workflow_spec(
+                spec.model_dump(), {}, env_name=spec.env_image.split("@")[0])
         return "rnaseq_counts_workflow", "rnaseq_de_workflow"
 
     def test_cohort_renders_the_composed_directory_and_reports_it(self, sealed_pair):

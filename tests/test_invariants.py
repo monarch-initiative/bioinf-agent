@@ -4499,7 +4499,7 @@ def test_shrink_stdio_for_response_truncates_to_head_tail_spills_full_to_disk(mo
     assert r["original_log_chars"] == len(big_stdout) + len(big_stderr)
     # log_path exists on disk and contains the FULL output verbatim.
     from agent.skills import workspace
-    log_path = workspace.reports_dir() / "install_logs"
+    log_path = workspace.scratch_dir("install_logs")
     files = list(log_path.glob("t.big.compile.*.log"))
     assert len(files) == 1, f"expected 1 log file; got {files}"
     log_content = files[0].read_text()
@@ -4517,7 +4517,7 @@ def test_shrink_stdio_for_response_handles_unsafe_label_chars(monkeypatch, tmp_p
     # Path-traversal attempts in label must be sanitized.
     m._shrink_stdio_for_response(dict(big), label="../../../etc/passwd")
     from agent.skills import workspace
-    log_path = workspace.reports_dir() / "install_logs"
+    log_path = workspace.scratch_dir("install_logs")
     # No file created outside the log dir.
     assert not (tmp_path / "etc" / "passwd").exists()
     # Every file created lives strictly inside log_path.
@@ -7155,31 +7155,18 @@ def test_pipeline_drafts_land_in_scratch_not_in_the_reports_zone(tmp_path):
     assert draft_path.parent == workspace.scratch_dir("pipeline_drafts"), (
         f"draft path was {draft_path}, expected the scratch zone")
     assert draft_path.exists()
-    leaked = list(workspace.reports_dir().glob("*.draft.yaml"))
-    assert not leaked, f"the reports zone should never hold a draft; found: {leaked}"
+    leaked = list(workspace.environments_dir().rglob("*.draft.yaml"))
+    assert not leaked, f"the environments zone should never hold a draft; found: {leaked}"
 
 
-def test_the_drafts_zone_and_the_reports_zone_are_different_directories():
-    """They used to be able to collapse onto one another: `drafts_dir` fell back
-    to `pipelines_dir` when the config key was unset, which made "drafts never
-    pollute the deliverables" true only for configured deployments. With the
-    zones resolved rather than configured, they cannot coincide."""
-    from agent.skills.pipeline_state import PipelineState
-    ps = PipelineState({})
-    assert ps.drafts_dir != ps.pipelines_dir
-
-
-def test_a_draft_left_in_the_reports_zone_is_still_found(tmp_path):
-    """_load_existing_drafts scans BOTH zones, so a draft written before the
-    split — or by a future writer that puts one in the wrong place — is loaded
-    rather than silently invisible. Same-id wins by scratch-first scan order."""
+def test_a_draft_on_disk_is_found_on_startup():
+    """_load_existing_drafts reads the scratch drafts dir, so a draft written by a
+    previous server process is loaded rather than silently invisible."""
     from agent.skills.pipeline_state import PipelineState
     from agent.skills import workspace
-    (workspace.reports_dir() / "legacy.draft.yaml").write_text("description: from legacy\n")
     (workspace.scratch_dir("pipeline_drafts") / "modern.draft.yaml").write_text(
         "description: from modern\n")
     ps = PipelineState({})
-    assert "legacy" in ps._drafts
     assert "modern" in ps._drafts
 
 
@@ -7204,10 +7191,10 @@ def test_freeze_background_writes_args_to_jobs_dir(monkeypatch, tmp_path):
     assert out["background"] is True
     args_files = list(jobs_dir.glob(f"{started['job_id']}.args.json"))
     assert args_files, "args.json must be in the scratch jobs dir, not the reports zone"
-    reports = jobs_dir.parent.parent / "reports"
-    bad = (list(reports.glob("*.freeze_args.*.json"))
-           + list(reports.glob("*.freeze_result.json"))) if reports.exists() else []
-    assert not bad, f"the reports zone should never see job ephemera; found {bad}"
+    envs = jobs_dir.parent.parent / "environments"
+    bad = (list(envs.rglob("*.freeze_args.*.json"))
+           + list(envs.rglob("*.freeze_result.json"))) if envs.exists() else []
+    assert not bad, f"the environments zone should never see job ephemera; found {bad}"
 
 
 def test_freeze_does_not_prune_on_pre_docker_failure(monkeypatch):
@@ -7438,11 +7425,11 @@ def test_run_pipeline_step_output_types_lookup_order(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def _reports():
-    """The reports zone `list_pipelines` reads — this test's tmp_path, via the
+    """An env directory `list_pipelines` reads — this test's tmp_path, via the
     root conftest. Writing the fixture anywhere else tests a directory nothing
     looks in, which reads as "found nothing" rather than as a broken fixture."""
     from agent.skills import workspace
-    return workspace.reports_dir()
+    return workspace.env_dir("inv_env")
 
 
 def test_list_pipelines_reports_both_layers_from_the_artifacts_that_exist(tmp_path):

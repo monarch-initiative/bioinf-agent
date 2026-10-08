@@ -79,7 +79,7 @@ def test_real_build_from_authors_recipe_clones_builds_and_freezes(tmp_path):
     out = F.build_from_authors_recipe(
         repo=url, ref="v1", name="l15_bar", version="1.0",
         tools=[{"name": "mytool", "evidence": "mytool"}],   # evidence that RUNS the tool
-        env_cache=cache, reports_dir=reports)
+        env_cache=cache, env_dir=reports)
     if out["outcome"] == "broke" and "build" in out.get("code", ""):
         pytest.skip(f"docker build unavailable in this env: {out.get('error', '')[:200]}")
 
@@ -151,7 +151,7 @@ def test_a_real_build_records_the_dockerfile_path_and_build_args_it_used(tmp_pat
         repo=f"file://{root}", ref="v9", name="l15_args", version="1.0",
         recipe="docker/Dockerfile.custom", build_args={"TOOL_VERSION": "9.9.9"},
         tools=[{"name": "mytool", "evidence": "mytool"}],
-        env_cache=cache, reports_dir=reports)
+        env_cache=cache, env_dir=reports)
     if out["outcome"] == "broke" and "build" in out.get("code", ""):
         pytest.skip(f"docker build unavailable: {out.get('error', '')[:200]}")
     assert out["outcome"] == "proven", out
@@ -183,7 +183,7 @@ def test_real_build_from_authors_recipe_refuses_non_running_evidence(tmp_path):
     out = F.build_from_authors_recipe(
         repo=url, ref="v1", name="l15_bar_bad", version="1.0",
         tools=[{"name": "notinstalled", "evidence": "notinstalled --version"}],
-        env_cache=cache, reports_dir=tmp_path / "reports")
+        env_cache=cache, env_dir=tmp_path / "reports")
     if out["outcome"] == "broke" and "build" in out.get("code", ""):
         pytest.skip(f"docker build unavailable in this env: {out.get('error', '')[:200]}")
     assert out["outcome"] == "refused", out
@@ -198,5 +198,5 @@ def test_build_from_authors_recipe_bad_repo_is_refused(tmp_path):
     out = F.build_from_authors_recipe(
         repo=f"file://{tmp_path}/not_a_repo", ref="", name="x",
         tools=[{"name": "t", "evidence": "t"}],
-        env_cache=_Cache(), reports_dir=tmp_path / "reports")
+        env_cache=_Cache(), env_dir=tmp_path / "reports")
     assert out["outcome"] == "broke" and out["code"] == "authors_recipe.clone_failed", out

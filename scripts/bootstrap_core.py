@@ -115,7 +115,7 @@ def load_datasets() -> dict:
 def install_core_tools(config: dict) -> dict[str, Any]:
     env_name      = config["core_tools"]["env_name"]
     env_path      = workspace.conda_envs_dir() / env_name
-    pipelines_dir = workspace.reports_dir()
+    pipelines_dir = workspace.environments_dir()
 
     # Idempotency: if env exists AND a finalized spec exists, skip
     existing = [p for p in pipelines_dir.glob(f"{env_name}_*.yaml")

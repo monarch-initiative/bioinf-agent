@@ -32,7 +32,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: The REAL reports zone. `conftest` captures the machine's workspace before it
+#: The REAL environments zone. `conftest` captures the machine's workspace before it
 #: redirects $BIOINF_WORKSPACE at a sandbox, and hands it over here — asking the
 #: resolver at this point would return the sandbox, and every artifact check in the
 #: suite would silently become a no-op against an empty directory.
@@ -51,7 +51,7 @@ REAL_WORKSPACE = Path(os.environ["BIOINF_REAL_WORKSPACE"])
 #: Everything else in the suite must use the redirected workspace. These are
 #: READ-ONLY by rule: a test that writes into the real workspace is a test that
 #: pollutes the user's audit trail.
-REPORTS = REAL_WORKSPACE / "reports"
+REPORTS = REAL_WORKSPACE / "environments"
 # The two SYSTEM zones live in the CHECKOUT (untracked), not the workspace —
 # and both have override seams the conftest redirects, so their real locations
 # are captured before the redirect, same as the workspace itself.
@@ -77,7 +77,7 @@ def real_dir_or_skip(path: Path, what: str) -> Path:
     return path
 
 #: Generated artifacts — may be empty or absent. Never in the checkout.
-SEALED_SPEC_GLOB = "*.workflow.yaml"
+SEALED_SPEC_GLOB = "*/*.workflow.yaml"      # environments/<env>/<workflow>.workflow.yaml
 
 
 def sealed_spec_paths() -> list[str]:

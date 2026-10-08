@@ -41,7 +41,7 @@ def _make_access(tmp_path: Path, *,
                  scratch_path: str = "",
                  common_path: str = "",
                  container_path: str = "",
-                 reports_path: str = "",
+                 pipelines_path: str = "",
                  project_dirs: list[dict] | None = None) -> Path:
     """Write a projects_access.yaml stub for tests. The compute env is
     `type: local` so the primitives do shutil.copy + no ssh."""
@@ -71,11 +71,11 @@ def _make_access(tmp_path: Path, *,
     # Declared only on request: the zone is optional, and leaving it out is
     # what lets a test prove the UNDECLARED case still falls through to
     # project_path rather than being silently swallowed.
-    if reports_path:
-        Path(reports_path).mkdir(parents=True, exist_ok=True)
-        env_block["agent_reports_target"] = {
-            "path":        reports_path,
-            "permissions": ["file_name_only", "upload", "download"],
+    if pipelines_path:
+        Path(pipelines_path).mkdir(parents=True, exist_ok=True)
+        env_block["agent_pipelines_target"] = {
+            "path":        pipelines_path,
+            "permissions": ["file_name_only", "upload", "download", "exec"],
         }
 
     project_block = {
@@ -237,16 +237,16 @@ class TestZoneRouting:
         assert out["zone"] == "container_upload"
 
     @pytest.mark.integration
-    def test_reports_zone_routes_correctly(self, tmp_path):
-        # A record file under agent_reports_target.path → reports zone.
-        # Env-implicit grant, no project prefix: a report is named for the
-        # ARTIFACT, so prefixing by project would file one record under N
-        # names. This is the regression guard for a zone that was declared,
-        # schema-validated, menu-offered and given an accessor while NO
-        # router branch read it — every path under it fell through to
-        # project_path and was refused.
+    def test_pipelines_zone_routes_correctly(self, tmp_path):
+        # A file under agent_pipelines_target.path → pipelines zone.
+        # Env-implicit grant, no project prefix: a pipeline directory is
+        # named for the pipeline, so prefixing by project would file it
+        # under N names. This is the regression guard for a zone that is
+        # declared, schema-validated, menu-offered and given an accessor —
+        # the router must read it, or every path under it falls through to
+        # project_path and is refused.
         access_path = _make_access(tmp_path,
-                                   reports_path=str(tmp_path / "records"))
+                                   pipelines_path=str(tmp_path / "records"))
         src = _src_file(tmp_path, "demo.RUN.html", b"<html>the record</html>")
         remote = str(tmp_path / "records" / "demo.RUN.html")
         out = transfer.upload(
@@ -256,15 +256,15 @@ class TestZoneRouting:
             remote_abs_path=remote,
             access_path=str(access_path))
         assert "error" not in out, out
-        assert out["zone"] == "reports"
+        assert out["zone"] == "pipelines"
 
     @pytest.mark.integration
-    def test_reports_zone_round_trips_back_down(self, tmp_path):
+    def test_pipelines_zone_round_trips_back_down(self, tmp_path):
         # The zone's whole point is that the record is READABLE at the
         # locus, so `download` must route it too — the router is shared, and
         # an upload-only mirror would be a write-only record.
         access_path = _make_access(tmp_path,
-                                   reports_path=str(tmp_path / "records"))
+                                   pipelines_path=str(tmp_path / "records"))
         remote_dir = tmp_path / "records"
         remote_dir.mkdir(parents=True, exist_ok=True)
         (remote_dir / "demo.workflow.yaml").write_text("name: demo\n")
@@ -275,13 +275,13 @@ class TestZoneRouting:
             local_path=str(tmp_path / "fetched.yaml"),
             access_path=str(access_path))
         assert "error" not in out, out
-        assert out["zone"] == "reports"
+        assert out["zone"] == "pipelines"
 
     @pytest.mark.integration
-    def test_undeclared_reports_target_still_falls_through(self, tmp_path):
+    def test_undeclared_pipelines_target_still_falls_through(self, tmp_path):
         # The branch must be inert when the zone is not declared — an env
         # that never opted in keeps the exact routing it had before.
-        access_path = _make_access(tmp_path)          # no reports_path
+        access_path = _make_access(tmp_path)          # no pipelines_path
         src = _src_file(tmp_path)
         remote = str(tmp_path / "nowhere" / "demo.RUN.html")
         out = transfer.upload(
@@ -291,7 +291,7 @@ class TestZoneRouting:
             remote_abs_path=remote,
             access_path=str(access_path))
         assert "error" in out
-        assert out["zone"] != "reports" if "zone" in out else True
+        assert out["zone"] != "pipelines" if "zone" in out else True
 
     @pytest.mark.integration
     def test_project_path_zone_directories_match(self, tmp_path):

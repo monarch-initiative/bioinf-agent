@@ -252,12 +252,10 @@ _ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
     "name", "type", "host", "user", "email",
     "job_manager", "slurm", "data_transfer",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
-    # The fourth zone: where ENV/RUN reports and sealed specs are MIRRORED so
-    # the record sits beside the .sif it describes. Local AUTHORS, remote
-    # mirrors. ADDED alongside the three above rather than renaming any of
-    # them — unknown keys are a hard error, so a rename breaks every file that
-    # already exists on a user's machine.
-    "agent_reports_target",
+    # Where rendered pipelines are copied to run on this env, and where their run
+    # records land. The record of an env (ENV/RUN reports, sealed specs) has no
+    # zone of its own: it sits beside the image under container_upload_target/<env>/.
+    "agent_pipelines_target",
     # Container-runtime module names for the CLUSTER production path
     # (run_production_pipeline / submit_workflow_job): the Lmod modules the
     # launcher `module load`s to get apptainer + nextflow on the compute node.
@@ -275,7 +273,7 @@ ENV_ZONE_KEYS: tuple[str, ...] = (
     "agent_scratch_target",
     "agent_common_data_target",
     "container_upload_target",
-    "agent_reports_target",
+    "agent_pipelines_target",
 )
 
 
@@ -349,15 +347,13 @@ def _validate_compute_env(env: object, idx: int, env_names: set[str], path: Path
         _validate_dir_block(common, f"{where_env}.agent_common_data_target",
                             path, must_include=["upload", "download", "exec"])
 
-    reports = env.get("agent_reports_target")
-    if reports is not None:
-        # The record. Requires `upload` (the agent mirrors reports up) and
-        # `download` (so a later session can read back what a previous one
-        # left), but NOT `exec`: nothing is ever run out of this zone, and a
-        # zone that cannot execute is one fewer place a compromised artifact
-        # could be launched from.
-        _validate_dir_block(reports, f"{where_env}.agent_reports_target",
-                            path, must_include=["upload", "download"])
+    pipelines = env.get("agent_pipelines_target")
+    if pipelines is not None:
+        # Rendered pipelines run from here: the directory is uploaded, the run
+        # happens in it, and its run records are downloaded — all three are
+        # intrinsic to what the zone is FOR.
+        _validate_dir_block(pipelines, f"{where_env}.agent_pipelines_target",
+                            path, must_include=["upload", "download", "exec"])
 
     # job_manager: which batch scheduler this env runs jobs through. A CONTROLLED
     # enum (VALID_JOB_MANAGERS) — only 'slurm' is wired today. Optional: an env
@@ -688,7 +684,7 @@ def _check_env_paths_disjoint(env: dict, where: str, path: Path) -> None:
     """No declared path on this env may be a prefix of (or equal to) another.
     A breach of one target dir must never grant access to another. The check
     is across all four env-level zones — container_upload_target,
-    agent_scratch_target, agent_common_data_target and agent_reports_target.
+    agent_scratch_target, agent_common_data_target and agent_pipelines_target.
     All are absolute paths on the same filesystem and they are trust-isolated
     by being disjoint subtrees.
 
@@ -792,13 +788,13 @@ def get_agent_common_data_target(env: dict) -> Optional[dict]:
     return blk if isinstance(blk, dict) else None
 
 
-def get_agent_reports_target(env: dict) -> Optional[dict]:
-    """Return the agent_reports_target dir-access block for this env, or None if
-    undeclared. Fourth env-level zone — where ENV/RUN reports and sealed specs
-    are mirrored so the record sits next to the .sif it describes. Block carries
-    `path`, `permissions` (validator enforces `upload` + `download`, never
-    `exec`), and `description`."""
-    blk = env.get("agent_reports_target")
+def get_agent_pipelines_target(env: dict) -> Optional[dict]:
+    """Return the agent_pipelines_target dir-access block for this env, or None if
+    undeclared. The env's pipelines zone — where a rendered pipeline directory is
+    copied to run on this env and where its run records land. Block carries
+    `path`, `permissions` (validator enforces `upload` + `download` + `exec`),
+    and `description`."""
+    blk = env.get("agent_pipelines_target")
     return blk if isinstance(blk, dict) else None
 
 

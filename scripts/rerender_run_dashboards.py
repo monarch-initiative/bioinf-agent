@@ -38,6 +38,9 @@ from agent.skills.run_dashboard_html import render_run_dashboard_html   # noqa: 
 from agent.skills.spec_writer import load_workflow_spec                  # noqa: E402
 
 
+_cache_path: Path = workspace.env_cache_path()
+
+
 def _env_record(request_key: str) -> dict:
     """The frozen env record a spec pins, for the ENV.html link + stale-detection.
 
@@ -50,9 +53,7 @@ def _env_record(request_key: str) -> dict:
         return {}
     try:
         from agent.skills.freeze import EnvCache
-        # Same location the server constructs it at (mcp_server.py:118) and the same one
-        # resources.py:240 reads — env_reports/_env_cache.json, NOT a config key.
-        return EnvCache(workspace.reports_dir() / "_env_cache.json").lookup(request_key) or {}
+        return EnvCache(_cache_path).lookup(request_key) or {}
     except Exception:
         return {}
 
@@ -64,11 +65,17 @@ def main() -> int:
     ap.add_argument("--check", action="store_true",
                     help="report which dashboards are stale; write nothing (CI-friendly)")
     ap.add_argument("--dir", default=None,
-                    help="directory holding the artifacts (default: the workspace reports zone)")
+                    help="the environments zone to re-render (default: the workspace's)")
     args = ap.parse_args()
 
-    out_dir = Path(args.dir).expanduser().resolve() if args.dir else workspace.reports_dir()
-    specs = sorted(out_dir.glob("*.workflow.yaml"))
+    global _cache_path
+    if args.dir:
+        out_dir = Path(args.dir).expanduser().resolve()
+        _cache_path = out_dir / workspace.ENV_CACHE_FILE
+        specs = sorted(out_dir.glob("*/*.workflow.yaml"))
+    else:
+        out_dir = workspace.environments_dir()
+        specs = workspace.sealed_workflow_paths()
     if args.names:
         wanted = set(args.names)
         specs = [p for p in specs if p.name[: -len(".workflow.yaml")] in wanted]
@@ -93,7 +100,7 @@ def main() -> int:
 
         d = spec.model_dump(exclude_none=True)
         html = render_run_dashboard_html(d, env_record=_env_record(d.get("env_request_key", "")))
-        page = out_dir / f"{name}.RUN.html"
+        page = spec_path.parent / f"{name}.RUN.html"
         current = page.read_text() if page.exists() else ""
         if current == html:
             print(f"  =  {name}: current")

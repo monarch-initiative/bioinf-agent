@@ -384,11 +384,9 @@ def _load_sealed_spec(sealed_workflow: str) -> tuple:
     acting on one. A malformed artifact fails here, loudly, rather than
     surfacing as a bogus divergence."""
     from agent.skills.spec_writer import load_workflow_spec
-    reports = workspace.reports_dir()
-    path = reports / f"{sealed_workflow}.workflow.yaml"
-    if not path.is_file():
-        available = sorted(p.name[: -len(".workflow.yaml")]
-                           for p in reports.glob("*.workflow.yaml"))
+    path = workspace.sealed_workflow_path(sealed_workflow)
+    if path is None:
+        available = workspace.sealed_workflow_names()
         return None, (f"no sealed workflow named {sealed_workflow!r} "
                       f"(have: {', '.join(available) or 'none'})")
     try:

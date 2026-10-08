@@ -49,6 +49,13 @@ def _spec(*, name="wf1", image_digest="sha256:AAA", content_digest="cd-AAA",
     }
 
 
+def _env():
+    """The env directory a seal files into, in the sandboxed workspace the root
+    conftest provides — the guard looks across every env directory there."""
+    from agent.skills import workspace
+    return workspace.env_dir("e")
+
+
 def _write(out_dir, spec):
     p = out_dir / f"{spec['workflow_name']}.workflow.yaml"
     p.write_text(yaml.dump(spec, sort_keys=False))
@@ -88,13 +95,13 @@ def test_validated_step_count_counts_only_evidence_bearing_steps():
 # ── the guard's decisions ──────────────────────────────────────────────────────
 
 def test_first_seal_writes_through(tmp_path):
-    proceed, refusal = _guard_spec_overwrite(_spec(), tmp_path, supersede=False)
+    proceed, refusal = _guard_spec_overwrite(_spec(), _env(), supersede=False)
     assert proceed is True and refusal is None
 
 
 def test_accretion_same_env_same_evidence_writes_through(tmp_path):
-    _write(tmp_path, _spec(validated_steps=1))
-    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=1), tmp_path, supersede=False)
+    _write(_env(), _spec(validated_steps=1))
+    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=1), _env(), supersede=False)
     assert proceed is True and refusal is None
 
 
@@ -102,24 +109,24 @@ def test_accretion_same_env_MORE_evidence_writes_through(tmp_path):
     """The documented locus-accretion flow: seal locally, later run on cluster,
     re-seal so the dashboard accretes the new locus. Same env, more validated
     steps — must write without a supersede."""
-    _write(tmp_path, _spec(validated_steps=1))
-    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=3), tmp_path, supersede=False)
+    _write(_env(), _spec(validated_steps=1))
+    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=3), _env(), supersede=False)
     assert proceed is True and refusal is None
 
 
 def test_dropping_evidence_over_the_same_env_refuses_without_supersede(tmp_path):
     """Same env but FEWER validated steps is a thinner spec replacing a richer
     one — that is evidence loss, not accretion, so it must not silently write."""
-    _write(tmp_path, _spec(validated_steps=3))
-    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=1), tmp_path, supersede=False)
+    _write(_env(), _spec(validated_steps=3))
+    proceed, refusal = _guard_spec_overwrite(_spec(validated_steps=1), _env(), supersede=False)
     assert proceed is False
     assert refusal["code"] == "seal.would_clobber_sealed_spec"
 
 
 def test_different_env_refuses_and_names_supersede(tmp_path):
-    _write(tmp_path, _spec(image_digest="sha256:AAA", content_digest="cd-AAA"))
+    _write(_env(), _spec(image_digest="sha256:AAA", content_digest="cd-AAA"))
     newer = _spec(image_digest="sha256:BBB", content_digest="cd-BBB")   # rebuilt env
-    proceed, refusal = _guard_spec_overwrite(newer, tmp_path, supersede=False)
+    proceed, refusal = _guard_spec_overwrite(newer, _env(), supersede=False)
     assert proceed is False
     assert refusal["code"] == "seal.would_clobber_sealed_spec"
     assert refusal["success"] is False
@@ -127,34 +134,34 @@ def test_different_env_refuses_and_names_supersede(tmp_path):
     assert "supersede=True" in refusal["error"]
     assert refusal["existing_env_identity"] != refusal["new_env_identity"]
     # and it must not have written anything yet
-    assert not (tmp_path / "wf1.superseded.1.workflow.yaml").exists()
+    assert not (_env() / "wf1.superseded.1.workflow.yaml").exists()
 
 
 def test_supersede_preserves_the_prior_spec_and_stamps_a_note(tmp_path):
-    prior = _write(tmp_path, _spec(image_digest="sha256:AAA", content_digest="cd-AAA"))
+    prior = _write(_env(), _spec(image_digest="sha256:AAA", content_digest="cd-AAA"))
     prior_bytes = prior.read_text()
     newer = _spec(image_digest="sha256:BBB", content_digest="cd-BBB")
-    proceed, refusal = _guard_spec_overwrite(newer, tmp_path, supersede=True)
+    proceed, refusal = _guard_spec_overwrite(newer, _env(), supersede=True)
     assert proceed is True and refusal is None
     # the prior spec is PRESERVED, not destroyed
-    preserved = tmp_path / "wf1.superseded.1.workflow.yaml"
+    preserved = _env() / "wf1.superseded.1.workflow.yaml"
     assert preserved.exists()
     assert preserved.read_text() == prior_bytes
     # the original path is now free for the caller (seal) to write the new spec
-    assert not (tmp_path / "wf1.workflow.yaml").exists()
+    assert not (_env() / "wf1.workflow.yaml").exists()
     # the new spec carries a supersession note (persisted — WorkflowSpec is extra=allow)
     assert newer["superseded"]["replaced_spec"] == "wf1.superseded.1.workflow.yaml"
     assert newer["superseded"]["prior_env_identity"] == sorted(_spec_env_identity(_spec()))
 
 
 def test_repeated_supersede_never_collides(tmp_path):
-    _write(tmp_path, _spec(content_digest="cd-A", image_digest="sha256:A"))
-    _guard_spec_overwrite(_spec(content_digest="cd-B", image_digest="sha256:B"), tmp_path, supersede=True)
+    _write(_env(), _spec(content_digest="cd-A", image_digest="sha256:A"))
+    _guard_spec_overwrite(_spec(content_digest="cd-B", image_digest="sha256:B"), _env(), supersede=True)
     # simulate the caller having written the new current spec, then supersede AGAIN
-    _write(tmp_path, _spec(content_digest="cd-B", image_digest="sha256:B"))
-    _guard_spec_overwrite(_spec(content_digest="cd-C", image_digest="sha256:C"), tmp_path, supersede=True)
-    assert (tmp_path / "wf1.superseded.1.workflow.yaml").exists()
-    assert (tmp_path / "wf1.superseded.2.workflow.yaml").exists()
+    _write(_env(), _spec(content_digest="cd-B", image_digest="sha256:B"))
+    _guard_spec_overwrite(_spec(content_digest="cd-C", image_digest="sha256:C"), _env(), supersede=True)
+    assert (_env() / "wf1.superseded.1.workflow.yaml").exists()
+    assert (_env() / "wf1.superseded.2.workflow.yaml").exists()
 
 
 def test_next_superseded_path_picks_the_first_free_integer(tmp_path):
@@ -166,8 +173,8 @@ def test_next_superseded_path_picks_the_first_free_integer(tmp_path):
 def test_one_env_many_workflows_do_not_collide(tmp_path):
     """Sealing workflow B (different name) from the same draft/env is legal today
     (seal doesn't pop the draft). Different filenames => the guard never fires."""
-    _write(tmp_path, _spec(name="wfA"))
-    proceed, refusal = _guard_spec_overwrite(_spec(name="wfB"), tmp_path, supersede=False)
+    _write(_env(), _spec(name="wfA"))
+    proceed, refusal = _guard_spec_overwrite(_spec(name="wfB"), _env(), supersede=False)
     assert proceed is True and refusal is None
 
 
@@ -175,7 +182,7 @@ def test_a_corrupt_prior_spec_is_treated_as_a_clobber_not_a_crash(tmp_path):
     """If the on-disk prior spec can't be parsed, its identity is empty and the
     new (non-empty) identity differs — so the guard refuses rather than raising,
     and a supersede still preserves the unreadable bytes."""
-    (tmp_path / "wf1.workflow.yaml").write_text(":\n  not: [valid: yaml")
-    proceed, refusal = _guard_spec_overwrite(_spec(), tmp_path, supersede=False)
+    (_env() / "wf1.workflow.yaml").write_text(":\n  not: [valid: yaml")
+    proceed, refusal = _guard_spec_overwrite(_spec(), _env(), supersede=False)
     assert proceed is False
     assert refusal["code"] == "seal.would_clobber_sealed_spec"

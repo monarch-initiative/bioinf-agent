@@ -395,7 +395,7 @@ def freeze(
         never silently swallowed."""
         nonlocal push_status
         idg = _ms._docker.image_digest(image)
-        tar_path = _workspace.images_dir() / name / f"{name}.tar"
+        tar_path = _workspace.env_dir(name) / f"{name}.tar"
         save = _ms._docker.save_archive(image, tar_path)
         tball = save.get("tarball") if save.get("success") else None
         pushed = None
@@ -740,8 +740,7 @@ def freeze(
     # Two view artifacts: ENV.html (the canonical Layer-1 deliverable) +
     # attestation.json.
     report_html_path = attestation_path = None
-    reports_dir = _workspace.reports_dir()
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir = _workspace.env_dir(name)
     try:
         (reports_dir / f"{name}.ENV.html").write_text(_ms._env_report_html.render_env_report_html(record))
         report_html_path = str(reports_dir / f"{name}.ENV.html")
@@ -978,8 +977,8 @@ def generate_user_guide(
         # A SEALED spec carries workflow_name, not pipeline_name — reading only
         # the latter writes every sealed guide to the literal "pipeline.GUIDE.md".
         stem = s.get("workflow_name") or s.get("pipeline_name") or "pipeline"
-        out = _workspace.reports_dir() / f"{stem}.GUIDE.md"
-        out.parent.mkdir(parents=True, exist_ok=True)
+        spec_path = _workspace.sealed_workflow_path(stem)
+        out = (spec_path.parent if spec_path else _workspace.environments_dir()) / f"{stem}.GUIDE.md"
         out.write_text(md)
         result["path"] = str(out)
     return result
@@ -1028,7 +1027,7 @@ def freeze_from_image(
         dockerfile_source=dict(dockerfile_source) if dockerfile_source else None,
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        reports_dir=_workspace.reports_dir())
+        env_dir=_workspace.env_dir(name))
 
 
 @mcp.tool()
@@ -1069,4 +1068,4 @@ def build_env_from_authors_recipe(
         version=version, platform=platform, build_args=dict(build_args or {}),
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        reports_dir=_workspace.reports_dir())
+        env_dir=_workspace.env_dir(name))

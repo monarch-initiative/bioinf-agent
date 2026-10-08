@@ -77,7 +77,7 @@ def test_only_the_resolver_walks_up_to_a_root():
         "these walk up from __file__ to reach a root instead of asking "
         "agent/skills/workspace.py:\n  " + "\n  ".join(offenders) +
         "\n\nUse workspace.code_root() for the checkout, or the zone accessor "
-        "(reports_dir / conda_envs_dir / images_dir / scratch_dir / "
+        "(environments_dir / env_dir / conda_envs_dir / scratch_dir / "
         "resources_root) for anything generated.")
 
 
@@ -86,7 +86,7 @@ def test_only_the_resolver_walks_up_to_a_root():
 #: points at a directory the agent no longer writes to. Deliberately not
 #: "pipeline_drafts": that is now a subdirectory name INSIDE the scratch zone, and
 #: `scratch_dir("pipeline_drafts")` is the correct way to say it.
-_DEAD_ZONE_NAMES = ("env_reports", "docker_images")
+_DEAD_ZONE_NAMES = ("env_reports", "docker_images", "containers")
 
 
 def test_nothing_names_a_zone_that_moved(monkeypatch):
@@ -105,7 +105,7 @@ def test_nothing_names_a_zone_that_moved(monkeypatch):
     assert not offenders, (
         "these name a directory that moved out of the checkout:\n  " +
         "\n  ".join(offenders) +
-        "\n\nAsk workspace.reports_dir() / images_dir() / scratch_dir(...).")
+        "\n\nAsk workspace.environments_dir() / env_dir(name) / scratch_dir(...).")
 
 
 def test_no_paths_block_in_the_config():
@@ -145,7 +145,7 @@ def test_the_ambiguous_name_is_gone():
 #: The checkout holds the SYSTEM and nothing that outlives it: everything on
 #: this list is rebuilt by ./scripts/setup.sh from a fresh clone, so deleting
 #: the clone costs nothing but a re-download. What the agent PRODUCES
-#: (reports, containers, scratch) must resolve OUTSIDE — a new version of the
+#: (environments, pipelines, scratch) must resolve OUTSIDE — a new version of the
 #: system plugs into the artifacts previous versions made. This list exists to
 #: make adding to it expensive: every entry must be worthless-once-deleted.
 CHECKOUT_ALLOWED = {
@@ -161,7 +161,8 @@ CHECKOUT_ALLOWED = {
 #: ARTIFACT (must never resolve into it). A new zone has to pick a side here,
 #: which is the point.
 SYSTEM_ZONES = {"envs", "resources"}
-ARTIFACT_ZONES = {"containers", "reports", "scratch", "pipelines", "common_data", "projects_access"}
+ARTIFACT_ZONES = {"environments", "scratch", "pipelines", "common_data", "experiments",
+                  "projects_access"}
 
 
 def test_the_checkout_allowlist_is_small_and_justified():
@@ -279,9 +280,9 @@ def test_zone_accessors_do_create(monkeypatch, tmp_path):
     monkeypatch.setenv("BIOINF_WORKSPACE", str(tmp_path / "ws"))
     monkeypatch.setenv("BIOINF_RESOURCES", str(tmp_path / "res"))
     monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "envs"))
-    for fn in (workspace.conda_envs_dir, workspace.images_dir, workspace.reports_dir,
-               workspace.resources_root):
+    for fn in (workspace.conda_envs_dir, workspace.environments_dir, workspace.resources_root):
         assert fn().is_dir()
+    assert workspace.env_dir("e").is_dir()
     assert workspace.scratch_dir("jobs").is_dir()
 
 
@@ -295,7 +296,7 @@ def test_the_system_zones_are_independently_relocatable(monkeypatch, tmp_path):
     monkeypatch.setenv("BIOINF_ENVS", str(tmp_path / "elsewhere"))
     assert workspace.resources_root() == (tmp_path / "shared").resolve()
     assert workspace.conda_envs_dir() == (tmp_path / "elsewhere").resolve()
-    assert workspace.reports_dir().is_relative_to(tmp_path / "ws")
+    assert workspace.environments_dir().is_relative_to(tmp_path / "ws")
 
 
 def test_home_containment_is_one_implementation(monkeypatch, tmp_path):

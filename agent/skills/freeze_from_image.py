@@ -204,7 +204,7 @@ def freeze_from_image(
     tools: list[dict],
     name: str,
     env_cache,
-    reports_dir: str | Path,
+    env_dir: str | Path,
     version: str = "",
     platform: str = "linux/amd64",
     build_method: str = "adopt-image",
@@ -228,8 +228,8 @@ def freeze_from_image(
     if not tools:
         return refused("freeze_from_image.no_tools",
                        error="declare at least one tool with an evidence command that RUNS it in-image")
-    reports_dir = Path(reports_dir)
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    env_dir = Path(env_dir)
+    env_dir.mkdir(parents=True, exist_ok=True)
 
     # -- BUILT: ensure the image resolves locally (pull if allowed) --
     if not _image_present(image):
@@ -488,8 +488,8 @@ def freeze_from_image(
          lambda: env_recipe_render.render_recipe_markdown(recipe, record)),
     ):
         try:
-            (reports_dir / fname).write_text(render())
-            out_paths[label] = str(reports_dir / fname)
+            (env_dir / fname).write_text(render())
+            out_paths[label] = str(env_dir / fname)
         except Exception as e:
             out_paths[label] = f"({label} render failed: {e!r})"
 
@@ -531,7 +531,7 @@ def build_from_authors_recipe(
     tools: list[dict],
     name: str,
     env_cache,
-    reports_dir: str | Path,
+    env_dir: str | Path,
     recipe: str = "Dockerfile",
     ref: str = "",
     version: str = "",
@@ -547,7 +547,7 @@ def build_from_authors_recipe(
     silently DROP. The pinned source (repo + resolved commit + tag + Dockerfile verbatim)
     is recorded so the build is reproducible. Docker + git (+ network for a remote repo).
 
-    Kept a thin, injectable executor (env_cache + reports_dir params) so it mirrors
+    Kept a thin, injectable executor (env_cache + env_dir params) so it mirrors
     freeze_from_image and is testable on real bytes without the MCP singletons."""
     if not tools:
         return refused("authors_recipe.no_tools",
@@ -601,4 +601,4 @@ def build_from_authors_recipe(
                            "recipe_path": recipe, "build_args": dict(build_args or {}),
                            "platform": platform, "dockerfile": dockerfile_text},
         gated=gated, licenses=list(licenses or []), pull_if_absent=False,
-        env_cache=env_cache, reports_dir=reports_dir)
+        env_cache=env_cache, env_dir=env_dir)

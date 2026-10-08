@@ -38,7 +38,7 @@ from agent.skills import workspace
 # Per-subsystem queries (private; each is fault-tolerant)
 # ---------------------------------------------------------------------------
 
-def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
+def _drafts_summary(pipeline_state, env_cache) -> list[dict]:
     """In-progress pipeline drafts the agent has been building. Every entry is a draft
     that hasn't been discarded yet (a sealed draft persists — seal doesn't pop it — so
     `state` may read 'sealed').
@@ -52,7 +52,7 @@ def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
         out: list[dict] = []
         # ONE lifecycle answer per draft, re-earned from the artifacts — replaces
         # the dead env_status/pipeline_status nominal stamps.
-        checks = state_checks(env_cache, reports_dir)
+        checks = state_checks(env_cache)
         drafts = pipeline_state.all_drafts() or {}
         drafts_dir = getattr(pipeline_state, "drafts_dir", None)
         for pid, draft in drafts.items():
@@ -84,13 +84,16 @@ def _drafts_summary(pipeline_state, env_cache, reports_dir: Path) -> list[dict]:
         return [{"error": f"drafts query failed: {e}"}]
 
 
-def _frozen_envs_summary(env_cache, env_reports_dir: Path) -> list[dict]:
+def _frozen_envs_summary(env_cache) -> list[dict]:
     """Frozen envs registered in the EnvCache + their associated deliverables
-    on disk (ENV.html report, attestation.json). One row per EnvCache entry."""
+    on disk (ENV.html report, attestation.json) under environments/<name>/. One
+    row per EnvCache entry."""
     try:
         out: list[dict] = []
+        envs_root = Path(workspace.zones()["environments"])
         for req_key, rec in (env_cache.all() or {}).items():
             name = rec.get("name") or rec.get("env_name") or req_key.split("|")[0]
+            env_reports_dir = envs_root / name
             html = env_reports_dir / f"{name}.ENV.html"
             attest = env_reports_dir / f"{name}.attestation.json"
             recipe = env_reports_dir / f"{name}.recipe.yaml"
@@ -117,21 +120,19 @@ def _frozen_envs_summary(env_cache, env_reports_dir: Path) -> list[dict]:
         return [{"error": f"frozen envs query failed: {e}"}]
 
 
-def _sealed_workflows_summary(env_reports_dir: Path) -> list[dict]:
+def _sealed_workflows_summary() -> list[dict]:
     """Sealed Layer-2 workflow specs on disk. One row per
-    env_reports/*.workflow.yaml — these are the user-facing deliverables
-    from seal_workflow."""
+    environments/<env>/<name>.workflow.yaml — these are the user-facing
+    deliverables from seal_workflow."""
     try:
-        if not env_reports_dir.is_dir():
-            return []
         out: list[dict] = []
-        for spec_path in sorted(env_reports_dir.glob("*.workflow.yaml")):
+        for spec_path in workspace.sealed_workflow_paths():
             try:
                 spec = yaml.safe_load(spec_path.read_text()) or {}
             except Exception:
                 spec = {}
             name = spec.get("workflow_name") or spec_path.stem.replace(".workflow", "")
-            run_report = env_reports_dir / f"{name}.RUN.html"
+            run_report = spec_path.parent / f"{name}.RUN.html"
             # Envs the spec pins (multi-env workflows record several).
             env_blocks = spec.get("envs") or []
             env_digests = [b.get("image_digest") for b in env_blocks if b.get("image_digest")]
@@ -350,7 +351,6 @@ def agent_status(
     """
     data_dir = workspace.resources_root()
     envs_root = workspace.conda_envs_dir()
-    env_reports_dir = workspace.reports_dir()
 
     out: dict[str, Any] = {
         # WHERE, first. The workspace split moved every artifact out of the
@@ -360,10 +360,10 @@ def agent_status(
         # the two answers resolution used (env | default) so a surprising path
         # is traceable.
         "workspace":         workspace.zones(),
-        "drafts":            _drafts_summary(pipeline_state, env_cache, env_reports_dir),
+        "drafts":            _drafts_summary(pipeline_state, env_cache),
         "envs_on_disk":      _envs_on_disk_summary(envs_root),
-        "frozen_envs":       _frozen_envs_summary(env_cache, env_reports_dir),
-        "sealed_workflows":  _sealed_workflows_summary(env_reports_dir),
+        "frozen_envs":       _frozen_envs_summary(env_cache),
+        "sealed_workflows":  _sealed_workflows_summary(),
         "core_test_data":    _core_test_data_summary(data_dir),
         "compute_env_bridge": _compute_env_bridge_summary(access_path),
         "background_jobs":   _background_jobs_summary(job_manager),

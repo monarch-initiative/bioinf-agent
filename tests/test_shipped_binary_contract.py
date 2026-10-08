@@ -83,7 +83,7 @@ def _produce_from_authors_image(tmp_path, monkeypatch) -> list[dict]:
     F.freeze_from_image(
         image="ghcr.io/org/talos@sha256:abc", name="talos_authors", version="11.0.0",
         tools=[{"name": "bcftools", "evidence": "bcftools --version"}],
-        build_method="adopt-image", env_cache=_Cache(), reports_dir=tmp_path)
+        build_method="adopt-image", env_cache=_Cache(), env_dir=tmp_path)
     return captured["rec"]["shipped_binaries"]
 
 

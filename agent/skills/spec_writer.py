@@ -9,7 +9,7 @@ env is now solved once by freeze() and verified IN the shipped image by
 env_honesty.check_build (install==ship). What survives here is the Layer-2
 surface that consumes a frozen env:
 
-    write_workflow_spec(workflow, config)   -> {workflow_spec_path}
+    write_workflow_spec(workflow, config, env_name=None) -> {workflow_spec_path}
     check_workflow_invariants(spec)         -> run-side violations (roster:
                                                agent/skills/invariants.py)
     self_test_usage(spec, env_manager, ...) -> executes usage.command_template (I4)
@@ -200,7 +200,7 @@ def _shape_fix_hint(err: Exception) -> str:
             "patch_pipeline(pipeline_id, {...}) and seal again — " + " | ".join(lines))
 
 
-def write_workflow_spec(workflow: dict, config: dict) -> dict:
+def write_workflow_spec(workflow: dict, config: dict, env_name: str | None = None) -> dict:
     """Validate + write a Layer-2 WorkflowSpec as YAML.
 
     The human-facing how-to is rendered as HTML into {name}.RUN.html by the seal
@@ -210,7 +210,6 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     # (helper below is module-level; see _shape_fix_hint)
     from agent.models.core_data import WorkflowSpec
 
-    out_dir = workspace.reports_dir()
     try:
         wf = WorkflowSpec.model_validate(workflow)
     except Exception as e:
@@ -218,8 +217,19 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
                        error=f"WorkflowSpec validation failed: {e}",
                        fix=_shape_fix_hint(e))
 
+    # The spec is filed under the env it runs on (environments/<env>/), beside the
+    # ENV report and the image. The seal passes the env's name; any other caller
+    # has the registry answer it from the request key the spec pins.
+    if not env_name:
+        env_name = _registered_env_name(wf.env_request_key)
+        if not env_name:
+            return refused("spec_writer.env_unknown",
+                           error=(f"no frozen env is registered for env_request_key "
+                                  f"{wf.env_request_key!r}, so there is no environment "
+                                  f"directory to file this workflow under"),
+                           fix="freeze the env first, or pass env_name=")
     name = wf.workflow_name
-    yaml_path = out_dir / f"{name}.workflow.yaml"
+    yaml_path = workspace.env_dir(env_name) / f"{name}{workspace.WORKFLOW_SUFFIX}"
     # NOT `exclude_none=True`. That made this function a one-way door: the dict
     # validated on the way IN, then every None was stripped on the way OUT, so a
     # model field that is REQUIRED-but-nullable came back MISSING and
@@ -241,6 +251,15 @@ def write_workflow_spec(workflow: dict, config: dict) -> dict:
     data.pop("user_guide_path", None)
     yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
     return {"workflow_spec_path": str(yaml_path)}
+
+
+def _registered_env_name(request_key: str) -> str | None:
+    from agent.skills.freeze import EnvCache
+    try:
+        rec = EnvCache(workspace.env_cache_path()).lookup(request_key) or {}
+    except Exception:
+        return None
+    return rec.get("name") or None
 
 
 def load_workflow_spec(path: Any) -> Any:

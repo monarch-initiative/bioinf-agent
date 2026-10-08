@@ -52,8 +52,8 @@ everything else **into the repo directory**, untracked. This produces a core set
 
 Re-runs will skip what already exists and never delete anything that already exists.
 
-What the agent **produces** — reports, build recipes, staged containers — lands
-*outside* the repo, in `~/bioinf_workspace` by default.
+What the agent **produces** — environments with their reports and recipes,
+rendered pipelines — lands *outside* the repo, in `~/bioinf_workspace` by default.
 
 ## Step 2 — declare your compute: `config.sh`
 
@@ -84,7 +84,7 @@ comments) — the previous version is kept with an extra extension of `.bak`.
 - **Compute environments** — the machines the agent may use: `local` (this
   machine) and/or `ssh` (an HPC cluster / external compute resource). Each env
   also names the agent's own working zones on that machine — scratch space,
-  shared reference data, containers, and reports. All four directories are required to be specified for each compute env with defaults provided. This system was developed around apptainer and nextflow for scaling up bioinformatic workflows. If your system uses an Lmod system for module management, we recommend setting the apptainer and nextflow modules within the configuration menu. These are the module paths you would normally load with a `module load your/module/path/here` command, so the agent knows to use them to run your data.
+  shared reference data, environments (staged images, each with its record beside it), and pipelines (rendered pipelines copied there to run). All four directories are required for each compute env, with defaults provided. This system was developed around apptainer and nextflow for scaling up bioinformatic workflows. If your system uses an Lmod system for module management, we recommend setting the apptainer and nextflow modules within the configuration menu. These are the module paths you would normally load with a `module load your/module/path/here` command, so the agent knows to use them to run your data.
 
 #### How to leverage an HPC (recommended)
 If you want to leverage an HPC to run your bioinformatic workflows, we recommend setting up an ssh profile. To do so, paste the following template into your home `~/.ssh/config` file and change the `HostName` and `User` fields to match your HPC information instead.
@@ -152,7 +152,8 @@ Three ways to use the system (all use the same engine under the hood):
   window onto it.
 - **Headless, for scripting** — `claude -p "install samtools 1.21 and freeze it"
   --allowedTools "mcp__bioinf__*"` runs one request with no interactive session; the
-  tool grant flag is required or every call is denied.
+  tool grant flag is required or every call is denied. `scripts/experiments.py` runs such
+  sessions from cold, in bulk, and measures them (see its docstring and `experiments/`).
 - To give the agent access to your HPC, you will need to login with the ssh profile you setup `ssh hpc-agent`
 - To give the agent access to globus connect for file transfers, you will need to login to globus via a `globus login` command
 
@@ -180,8 +181,8 @@ flowchart TB
     end
 
     subgraph store[" YOUR ARTIFACTS · ~/bioinf_workspace "]
-        reports("reports/<br/>env reports · build recipes<br/>sealed workflows · run dashboards")
-        containers("containers/<br/>HPC-shippable images")
+        reports("environments/&lt;env&gt;/<br/>the image · env report · build recipe<br/>sealed workflows · run dashboards")
+        containers("pipelines/&lt;name&gt;/<br/>rendered pipelines, ready to copy next to the data")
     end
 
     subgraph hpc[" EXTERNAL COMPUTE · your HPC cluster "]
@@ -191,8 +192,8 @@ flowchart TB
     you -->|plain-language requests| agent
     access -. gates every remote call .-> agent
     agent -->|install · validate · freeze · seal| reports
-    agent -->|ship images| containers
-    containers -->|staged up as .sif| jobs
+    agent -->|render over a samplesheet| containers
+    reports -->|staged up as .sif| jobs
     agent -->|submit · status · fetch| jobs
 
     classDef sys fill:#6366f120,stroke:#6366f1,stroke-width:1.5px
@@ -235,7 +236,7 @@ otherwise. (The last six rows need an external compute env defined in the config
 | *"Install STAR and check that it actually works."* | The latest version will be installed and test read data run through it: a matching test dataset is picked from the bundled corpus and every input is checksummed. "Works" means every output exists, is non-empty, and the run exited cleanly — plus format-specific checks (BAM, VCF, …) where the format is known. |
 | *"Download the human reference genome onto the cluster."* | Here, the agent will do its best to avoid using the login node for downloading and or uploading. If a SLURM job manager is selected in the configuration menu, then the download runs through a script submitted to the scheduler (SLURM is only supported for now). If this is not configured, then the download will occur locally, and be pushed up to the cluster via Globus connect if it is configured, or the fallback is scp over the login node (checksum verified after the upload is complete). |
 | *"Upload these fastq files to the cluster."* | Copied up, then checksum-verified on the far side before the transfer is called done. Plain scp by default; if you configured Globus, every transfer uses it instead — and a really big one hands back a task id to check on later rather than blocking for hours. This is a generic request, but the more context here the better so the agent knows exactly what you need. |
-| *"Make sure this pipeline works on the cluster."* | The pipeline runs in the agent's own scratch area on the cluster — then the outputs are pulled back, validated, and the cluster-side proof goes on the record in the containers and reports directories. |
+| *"Make sure this pipeline works on the cluster."* | The pipeline runs in the agent's own scratch area on the cluster — then the outputs are pulled back, validated, and the cluster-side proof goes on the record in the environment's directory. |
 | *"Run the pipeline over the data in my project directory."* | It writes a readable workflow plus a SLURM launcher, submits the job, saves a record of the submission, and gets out of the way. Ask later *"how's the job doing?"* for status, and *"grab the results"* to fetch the outputs back, verified. |
 | *"Submit the job."* — with no account, partition, or memory given | The cluster's declared defaults fill in what you left out; anything still unknown is written on the record as unspecified rather than guessed. It can also read the available partitions and QoS off the live cluster for you. |
 | *"Write the outputs to my colleague's directory."* — one you never granted | Refused, before anything touches the cluster. And there is no delete permission to grant at all, while uploads only ever write *new* files — the transfer surface cannot overwrite anything, anywhere. |
@@ -255,7 +256,7 @@ What the system does:
   and you get the same solved artifact back by hash, no re-install
 
 What you end up with: the environment itself is a **container image in your local
-Docker daemon**, registered by digest. Its paper trail lands in `~/bioinf_workspace/reports/`:
+Docker daemon**, registered by digest. Its paper trail lands in `~/bioinf_workspace/environments/{name}/`:
 
 | Artifact reports | Description |
 |----------|-----------|
@@ -266,8 +267,8 @@ Docker daemon**, registered by digest. Its paper trail lands in `~/bioinf_worksp
 | Artifact environments | Description |
 |----------|-----------|
 | the env image — in your local Docker daemon | for a clean conda tool like samtools, this is the community's pre-built BioContainer, adopted and pinned by content digest (`docker image ls` shows it) — the thing that actually runs; no image file is written anywhere |
-| its registry entry — in `~/bioinf_workspace/reports/` | maps your request to that digest, with the full package list and where validation ran — this entry is how the same ask next month comes back by hash instead of re-installing |
-| `containers/{name}/{name}.tar` — only once it ships | a registry-free `docker save` of the image, staged in `~/bioinf_workspace/containers/`. The Apptainer conversion happens **on your machine** (apptainer running inside a pinned Linux container, so it works even on a Mac) and only the finished `.sif` is uploaded; until you ship somewhere, none of this exists |
+| its registry entry — `~/bioinf_workspace/environments/_env_cache.json` | maps your request to that digest, with the full package list and where validation ran — this entry is how the same ask next month comes back by hash instead of re-installing |
+| `environments/{name}/{name}.tar` — only once it ships | a registry-free `docker save` of the image, staged beside its record. The Apptainer conversion happens **on your machine** (apptainer running inside a pinned Linux container, so it works even on a Mac) and only the finished `.sif` is uploaded; until you ship somewhere, none of this exists |
 
 ### More complicated example — a full RNA-seq pipeline, local first, then the cluster
 
@@ -328,7 +329,7 @@ One request, but it exercises most of the system. What happens, in order:
 - Every path it touches must fall inside a directory your step-2 config granted,
   with the right permission — anything else is refused before a single ssh happens.
 
-What you end up with, in `~/bioinf_workspace/reports/`:
+What you end up with, in `~/bioinf_workspace/environments/{env}/` (each env's directory holds its own record and the workflow sealed on it):
 
 | Artifact reports | Description |
 |----------|-----------|
@@ -337,14 +338,14 @@ What you end up with, in `~/bioinf_workspace/reports/`:
 | `{env}.attestation.json` — one per env | in-toto/SLSA provenance |
 | `{name}.workflow.yaml` | **the sealed workflow spec** — the machine-verified record of the run: every step, every input traced to its source, both env digests pinned. Self-contained: it re-checks its own invariants without this repo in the loop |
 | `{name}.RUN.html` | **the run dashboard** — what ran, on which data, in which image, with the evidence per compute locus (local and cluster) and the proven how-to commands |
-| `job_submissions/{project}/{name}_{job_id}.submission.json` | one manifest per cluster submission — everything a future session needs to find and follow up on that job |
+| `scratch/job_submissions/{project}/{name}_{job_id}.submission.json` | one manifest per cluster submission — everything a future session needs to find and follow up on that job |
 
 And the environments themselves:
 
 | Artifact environments | Description |
 |----------|-----------|
 | two env images — in your local Docker daemon | the CLI env (fastp + HISAT2 + samtools + htseq-count) and the R env (DESeq2), each a Docker image content-addressed by digest and registered in the env registry |
-| `containers/{env}/{env}.tar` — one per env | registry-free `docker save` tarballs of those images, staged in `~/bioinf_workspace/containers/` for shipping |
+| `environments/{env}/{env}.tar` — one per env | registry-free `docker save` tarballs of those images, staged beside their records for shipping |
 | two `.sif` images — on the cluster | built **on your machine** (apptainer-in-docker; the cluster never builds or pulls anything) and uploaded as finished files to the cluster's declared container zone, named `{env}_{digest}.sif` — content-digest names, so a re-freeze never clobbers the old one |
 
 Plus **your count tables and DE results in your project directory** — and asking

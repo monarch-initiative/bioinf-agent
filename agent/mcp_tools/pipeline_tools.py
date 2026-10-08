@@ -166,14 +166,11 @@ def render_pipeline(sealed_workflow: str,
     from agent.skills.pipeline_render import render_pipeline_dir
     from agent.skills.spec_writer import load_workflow_spec
 
-    reports_dir = _workspace.reports_dir()
-
     def _load(name: str):
         """The sealed spec, or the refusal to return."""
-        path = reports_dir / f"{name}.workflow.yaml"
-        if not path.exists():
-            available = sorted(p.name[: -len(".workflow.yaml")]
-                               for p in reports_dir.glob("*.workflow.yaml"))
+        path = _workspace.sealed_workflow_path(name)
+        if path is None:
+            available = _workspace.sealed_workflow_names()
             return None, path, refused(
                 "pipeline.no_sealed_workflow", success=False,
                 error=f"no sealed workflow '{name}' at {path}", available_workflows=available,

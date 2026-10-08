@@ -82,15 +82,11 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
     """
     from agent.skills.spec_writer import load_workflow_spec, select_pipeline_step
 
-    reports_dir = _workspace.reports_dir()
-    spec_path = reports_dir / f"{workflow_name}.workflow.yaml"
-    if not spec_path.exists():
-        available = (sorted(p.name[: -len(".workflow.yaml")]
-                            for p in reports_dir.glob("*.workflow.yaml"))
-                     if reports_dir.is_dir() else [])
+    spec_path = _workspace.sealed_workflow_path(workflow_name)
+    if spec_path is None:
         return {"ok": False,
-                "error": f"no sealed workflow '{workflow_name}' at {spec_path}",
-                "available_workflows": available}
+                "error": f"no sealed workflow '{workflow_name}'",
+                "available_workflows": _workspace.sealed_workflow_names()}
 
     try:
         spec = load_workflow_spec(spec_path)

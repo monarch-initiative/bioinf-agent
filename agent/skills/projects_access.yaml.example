@@ -131,8 +131,8 @@ compute_envs:
     apptainer_module: apptainer/1.5.0
     nextflow_module:  nextflow/25.04.7
 
-    container_upload_target:
-      path: /scratch/alice/containers/
+    container_upload_target:                     # the env's environments zone
+      path: /scratch/alice/CLAUDE_ENVIRONMENTS/
       permissions: [upload]
       description: "where the agent uploads .sif container images for this env"
 
@@ -141,8 +141,8 @@ compute_envs:
     # primitives on this env; omit it to keep them disabled. All paths must be
     # disjoint subtrees on this env.
     #
-    # These are the SAME four zones the local workspace has — full parity, which
-    # is what lets a production run be the same kind of thing on either locus.
+    # These are the SAME zones the local workspace has — full parity, which is
+    # what lets a production run be the same kind of thing on either locus.
 
     agent_scratch_target:                        # the agent's sandbox on this env
       path: /scratch/alice/CLAUDE_SCRATCH/
@@ -154,12 +154,10 @@ compute_envs:
       permissions: [file_name_only, upload, download, exec]
       description: "shared reference data — genomes, public DBs, etc."
 
-    agent_reports_target:                        # the record, mirrored from local
-      path: /work/users/a/alice/CLAUDE_REPORTS/
-      permissions: [file_name_only, upload, download]
-      description: "ENV/RUN reports + sealed specs, mirrored so the record sits
-                    next to the .sif it describes. No `exec`: reports are read,
-                    never run."
+    agent_pipelines_target:                      # where rendered pipelines are copied to run
+      path: /work/users/a/alice/CLAUDE_PIPELINES/
+      permissions: [file_name_only, upload, download, exec]
+      description: "rendered pipelines and their run records"
 
     slurm:                                       # OPTIONAL — the HPC's scheduler POLICY.
                                                  # EVERY key optional; typos still REFUSED. Omit
