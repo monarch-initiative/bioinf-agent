@@ -1,0 +1,18 @@
+# C3 — two sealed workflows composed into one pipeline: per-sample counting, then a cohort
+# stage that runs once over every sample's counts. Judged by the `pipeline` rule (sealed,
+# plus a rendered pipeline directory with main.nf). Trips to look for: the fan-in inferred
+# rather than declared, the samplesheet not bound as a trial input, the R script not
+# carried into bin/.
+name: c3_cohort_deseq2
+tier: C3
+prompt: |
+  Starting from nothing, build two sealed workflows and compose them into one pipeline.
+  First a per-sample RNA-seq counts workflow (HISAT2 alignment, samtools sort and index,
+  htseq-count) over three airway single-end samples from the core test data against chr22
+  with the GENCODE v47 basic annotation sliced to chr22. Second a cohort DESeq2 workflow
+  that takes every sample's counts table and a samplesheet with the condition column and
+  writes the dex-versus-untrt results. Then render one pipeline in which DESeq2 runs once
+  over all samples after the counting stage, and say where the pipeline directory is.
+models: [sonnet]
+budget_usd: 50
+timeout_s: 7200

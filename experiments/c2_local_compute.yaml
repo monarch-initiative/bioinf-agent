@@ -1,0 +1,15 @@
+# C2 — the compute-env leg on a local env declared inside the run: seal a workflow, then
+# run it in production through the compute tools (stage, transfer, run_production) rather
+# than by hand. Judged by the `sealed` rule; the production leg is read off the
+# run_production and transfer outcome codes in the runs table.
+name: c2_local_compute
+tier: C2
+prompt: |
+  Install seqkit and seal a seqkit stats workflow proven on one of the single-end RNA-seq
+  fastq files in the core test data. Then run the sealed workflow in production on the
+  compute environment run_local for the project cold_start, with the outputs in the
+  project's working directory, and say where they landed.
+models: [sonnet]
+projects_access: access/local_run.yaml
+budget_usd: 20
+timeout_s: 3600

@@ -1,0 +1,15 @@
+# C1 — one conda tool, core test data, the whole two-layer protocol from cold: install,
+# prove it on data already on disk, freeze, seal. Judged by the `sealed` rule: a workflow
+# record whose usage self-test passed, with the ENV and RUN reports written.
+name: c1_seqkit
+tier: C1
+prompt: |
+  Install seqkit, prove it works by running seqkit stats on one of the RNA-seq fastq files
+  in the core test data, freeze it as a shippable image, and seal the workflow. When done,
+  say what was sealed and where the ENV and RUN reports are.
+models: [sonnet]
+budget_usd: 15
+timeout_s: 2700
+notes: >-
+  The BioContainers image is adopted by digest and removed after the run, so every run
+  pays for the pull; the daemon's layer cache still warms a repeat on the same machine.

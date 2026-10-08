@@ -1,0 +1,13 @@
+# C1 — a tool built from its own source at a pinned ref. Trips to look for: an unpinned
+# default branch, a build on the host that never reaches the image, a freeze that adopts a
+# conda build the request did not ask for.
+name: c1_github_source
+tier: C1
+prompt: |
+  Install seqtk by building it from source out of its GitHub repository
+  (https://github.com/lh3/seqtk) at a pinned release. Prove it by converting one of the
+  single-end RNA-seq fastq files in the core test data to FASTA with `seqtk seq -A`,
+  freeze the environment as a shippable image, and seal the workflow.
+models: [sonnet]
+budget_usd: 15
+timeout_s: 2700

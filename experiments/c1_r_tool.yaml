@@ -1,0 +1,14 @@
+# C1 — an R / Bioconductor package, proven by RUNNING it on real counts rather than by an
+# import. Trips to look for: a functional check that only loads the library, an R script
+# written outside MCP and never staged (an orphan to I8), the samplesheet read by a path
+# the image cannot see.
+name: c1_r_tool
+tier: C1
+prompt: |
+  Install the Bioconductor package DESeq2. Prove it by running a differential expression
+  of dex against untrt over the per-sample counts tables and samples.csv under the
+  rnaseq_de_test_data directory of the test-data corpus, writing a results table. Freeze
+  the environment as a shippable image and seal the workflow.
+models: [sonnet]
+budget_usd: 20
+timeout_s: 3600

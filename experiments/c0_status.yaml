@@ -1,0 +1,14 @@
+# C0 — the bootstrap tier: a fresh session finds the server and reads the system's state,
+# including a compute env it has never seen. Judged by the `completed` rule (the session
+# ended cleanly and the bioinf server answered).
+name: c0_status
+tier: C0
+prompt: |
+  Where is this agent? In a few lines, report what is already installed here, what test
+  data is on disk, and which compute environments are reachable. Read it from the system;
+  do not guess.
+models: [sonnet]
+repeats: 2
+projects_access: access/local_run.yaml
+budget_usd: 2
+timeout_s: 600

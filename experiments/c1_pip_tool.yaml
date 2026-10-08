@@ -1,0 +1,12 @@
+# C1 — the pip tier: a tool whose home is PyPI, proven on reads from the corpus. Trips to
+# look for: routing to conda against the stated request, an adapter sequence invented
+# rather than read, outputs written where the step cannot see them.
+name: c1_pip_tool
+tier: C1
+prompt: |
+  Install cutadapt from PyPI. Prove it works by trimming the standard Illumina TruSeq
+  adapter off one of the single-end RNA-seq fastq files in the core test data, freeze the
+  environment as a shippable image, and seal the workflow. Say what was sealed.
+models: [sonnet]
+budget_usd: 15
+timeout_s: 2700
