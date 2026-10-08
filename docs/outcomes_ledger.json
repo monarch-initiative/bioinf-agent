@@ -2105,8 +2105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:182",
-    "end_line": 199,
+    "where": "agent/mcp_tools/pipeline_tools.py:266",
+    "end_line": 286,
     "named_in_test": true
   },
   {
@@ -3214,9 +3214,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:129",
-    "end_line": 132,
+    "func": "_load",
+    "where": "agent/mcp_tools/pipeline_tools.py:177",
+    "end_line": 180,
     "named_in_test": true
   },
   {
@@ -3224,9 +3224,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:136",
-    "end_line": 139,
+    "func": "_load",
+    "where": "agent/mcp_tools/pipeline_tools.py:184",
+    "end_line": 188,
     "named_in_test": true
   },
   {
@@ -3234,9 +3234,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:148",
-    "end_line": 150,
+    "func": "_groups",
+    "where": "agent/mcp_tools/pipeline_tools.py:198",
+    "end_line": 200,
     "named_in_test": true
   },
   {
@@ -3245,8 +3245,18 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:159",
-    "end_line": 162,
+    "where": "agent/mcp_tools/pipeline_tools.py:217",
+    "end_line": 220,
+    "named_in_test": true
+  },
+  {
+    "code": "pipeline.bad_cohort",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "render_pipeline",
+    "where": "agent/mcp_tools/pipeline_tools.py:226",
+    "end_line": 229,
     "named_in_test": true
   },
   {

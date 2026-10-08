@@ -77,6 +77,11 @@ def _cluster(**kw) -> pr.PipelineRecord:
                    compute_env="hpc", modules=MODULES, **kw)
 
 
+def _staged(rec: pr.PipelineRecord, sha: str = "ab" * 32) -> pr.PipelineRecord:
+    """The record after stage_apptainer_image ran: every stage carries the staged .sif's sha256."""
+    return rec.model_copy(update={"stages": [s.model_copy(update={"sif_sha256": sha}) for s in rec.stages]})
+
+
 def _local() -> pr.PipelineRecord:
     """The record rendered on a machine whose runtime env was recorded, nextflow in it."""
     return _record(local_runtime=RUNTIME)
@@ -243,7 +248,8 @@ def _key_sheet(*samples: str) -> pr.Samplesheet:
     gets: one row per trial, nothing but the sample's name in it."""
     return pr.Samplesheet(
         columns=[pr.SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value", format=None,
-                                      description="the row key: it tags every task and names results/<sample>/")],
+                                      description="the row key: it tags every task and names results/<sample>/",
+                                      read_by=[])],
         rows=[{"sample": s} for s in samples])
 
 
@@ -287,7 +293,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
         sealed_workflow_path="", sealed_workflow_sha256=None, env_digests=["sha256:" + "b" * 64],
         params=list(params.values()), samplesheet=_key_sheet("S1", "S2"), output_slots=["OUTPUT_DIR"],
         compute_env=None, modules=[], local_runtime=None, stages=stages, provenance_steps=[], unmatched_steps=[],
-        defaults=[], notes=[])
+        scripts=[], cohort_workflows=[], defaults=[], notes=[])
 
 
 def _with_cohort(rec: pr.PipelineRecord, *names: str) -> pr.PipelineRecord:
@@ -444,9 +450,9 @@ class TestTheDirectory:
         files = _entries(_record())["runs/<timestamp>/"].files
         assert files == RUN_RECORDS
         assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html"]
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log"]
         assert [by for _, _, by in files] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                              "nextflow.config"]
+                                              "nextflow.config", "launcher.sh"]
         assert files[0][1] == "every param as resolved; re-runs as `-params-file`"
         assert files[1][1] == "a copy of the samplesheet as read"
 
@@ -455,7 +461,7 @@ class TestTheDirectory:
         assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
             "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
         assert _entries(_cohort())["results/"].what == (
-            "where the cohort stages' results are published, beside the per-sample directories")
+            "the cohort stages' results, published flat beside the per-sample directories (the same `outdir:`)")
 
     def test_the_section_speaks_the_files_words_and_no_placeholder(self):
         for make in _DIR_RECORDS.values():
@@ -765,7 +771,10 @@ class TestRunLocally:
         assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
                        "re-runs only the stages whose inputs or parameters changed. A value for this run only goes "
                        "after the line — <code>--stranded &lt;value&gt;</code> — and wins over "
-                       f"<code>params.yaml</code>.<pre>{RUN_LOCAL}</pre>")
+                       "<code>params.yaml</code>. Nextflow's own log stays at <code>.nextflow.log</code> here; to "
+                       "file it with the run records as the launcher does, start with <code>nextflow -log "
+                       "runs/&lt;stamp&gt;/nextflow.log run … --run_stamp &lt;stamp&gt;</code>."
+                       f"<pre>{RUN_LOCAL}</pre>")
         assert RUN_LOCAL == "nextflow run main.nf -profile local -params-file params.yaml -resume"
         # one spelling on the whole page, in this step alone
         assert set(re.findall(r"nextflow run main\.nf[^<]*", html)) == {RUN_LOCAL}
@@ -832,12 +841,15 @@ class TestRunLocally:
             assert not re.search(r"\s-v\s", html), make.__name__
             assert _section(html, "run-local").count("<ol>") == 1
 
-    def test_the_local_section_never_mentions_the_cluster_and_the_cluster_section_never_docker(self):
-        for rec in (_cluster(), _cluster(local_runtime=RUNTIME)):
+    def test_the_local_section_never_mentions_the_cluster_and_the_cluster_section_never_the_laptop(self):
+        """The cluster section's one laptop-side word is the docker image the agent is
+        asked to convert; the steps themselves never mention docker, nor sourcing anything."""
+        for rec in (_cluster(), _cluster(local_runtime=RUNTIME), _staged(_cluster(local_runtime=RUNTIME))):
             html = _page(rec)
             local, hpc = _section(html, "run-local"), _section(html, "run-hpc")
             assert "sbatch" not in local and "apptainer" not in local and "module load" not in local
-            assert "docker" not in hpc and "source " not in hpc and ACTIVATE not in hpc
+            assert "source " not in hpc and ACTIVATE not in hpc and "<details" not in hpc and "<pre>python" not in hpc
+            assert "docker" not in hpc[hpc.index("<ol>"):]
 
 
 # ── run it on the cluster ──────────────────────────────────────────────────────
@@ -854,13 +866,13 @@ _PASSTHROUGH = (" Flags after <code>launcher.sh</code> go through to Nextflow: <
 
 class TestRunOnTheCluster:
     def test_with_a_cluster_named_the_note_says_where_the_sif_is_and_the_launcher_loads_the_modules(self):
-        html = _page(_cluster())
+        html = _page(_staged(_cluster()))
         sec = _section(html, "run-hpc")
         assert ('<h2>Run it on the cluster <span class="note">the same files, through the .sif and SLURM'
                 "</span></h2>") in sec
         assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
-                f"<code>.sif</code> at <code>{SIF}</code> — where <code>stage_apptainer_image</code> put it on "
-                "<b>hpc</b>.</p>") in sec
+                f"<code>.sif</code> at <code>{SIF}</code>.</p>"
+                f'<p class="note">Staged there by <code>stage_apptainer_image</code> — sha256 <code>{"ab" * 32}</code>.</p>') in sec
         assert sec.count('class="note">The <code>slurm</code>') == 1 and 'class="warn-note"' not in sec
         assert sec.index("</p>") < sec.index("<ol>")                    # the note comes first
         assert ("Submit. <code>launcher.sh</code> loads <code>apptainer/1.3.2</code> <code>nextflow/24.10.0</code> "
@@ -870,15 +882,29 @@ class TestRunOnTheCluster:
         assert "module load" not in sec                                 # the launcher does the loading
         assert _banner(html).count("module load") == 1 and html.count("module load") == 1   # the banner, once
 
+    def test_a_predicted_sif_path_is_a_warning_that_names_the_staging_call_not_a_claim_it_was_staged(self):
+        """`render_pipeline(env=…)` computes the .sif path from the env block and the
+        local cache; nothing on the cluster was looked at. Until the record carries
+        the staged file's sha256 the page must say the file is NOT there yet and how
+        to put it there — never "where stage_apptainer_image put it"."""
+        sec = _section(_page(_cluster(local_runtime=RUNTIME)), "run-hpc")
+        assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
+                f"<code>.sif</code> at <code>{SIF}</code>.</p>"
+                '<p class="warn-note">It has not been staged yet: ask the agent to convert the docker image '
+                "<code>bioinf_rnaseq_cli:latest</code> to a <code>.sif</code> and ship it to <b>hpc</b>.</p>") in sec
+        assert "put it on" not in sec and "sha256" not in sec and "writes on" not in sec and "Staged there" not in sec
+        assert sec.count('class="warn-note"') == 1 and sec.count('class="note">The <code>slurm</code>') == 1
+        assert "stage_apptainer_image" not in sec                          # the agent is the way; no call to paste
+
     def test_without_a_cluster_named_a_warning_says_the_container_is_empty_and_how_to_set_it(self):
         html = _page()
         sec = _section(html, "run-hpc")
         assert (
             '<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
-            "<code>nextflow.config</code> is empty: re-render with <code>env=</code> naming the cluster, or set it "
-            "to the <code>.sif</code> that <code>stage_apptainer_image(project=&lt;your project&gt;, "
-            f"env=&lt;the cluster&#x27;s env&gt;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports. "
-            "The workflow refuses to start until it is set.</p>") in sec
+            "<code>nextflow.config</code> is empty; the workflow refuses to start until it is set. Re-render with "
+            "<code>env=</code> naming the cluster, or ask the agent to convert the docker image "
+            "<code>bioinf_rnaseq_cli:latest</code> to a <code>.sif</code> and ship it to <b>the cluster</b>. "
+            "Then set <code>container</code> to the <code>.sif</code> it reports.</p>") in sec
         assert sec.index('class="warn-note"') < sec.index("<ol>")
         assert 'class="note">The <code>slurm</code>' not in sec
         assert SIF not in html and "module load" not in html
@@ -889,28 +915,27 @@ class TestRunOnTheCluster:
 
     def test_an_env_named_without_a_sif_names_that_env_in_the_call_and_loads_no_modules(self):
         sec = _section(_page(_record(compute_env="hpc", modules=[])), "run-hpc")
-        assert 'class="warn-note"' in sec
-        assert f'env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
+        assert 'class="warn-note"' in sec and "ship it to <b>hpc</b>." in sec
         assert ("Submit. <code>launcher.sh</code> runs Nextflow as a small manager job — make apptainer and "
                 "nextflow available first; every stage of every sample is its own SLURM job." + _PASSTHROUGH
                 + f"<pre>{RUN_HPC}</pre>") in sec
         assert "rendered without a cluster named" not in sec and "module load" not in sec
         assert "Nothing to activate by hand." not in sec
 
-    def test_a_record_without_a_request_key_states_the_slot_instead_of_inventing_one(self):
-        sec = _section(_page(_wide_record(n_stages=2)), "run-hpc")
-        assert "freeze_request_key=&lt;the env&#x27;s freeze_request_key&gt;)</code> reports." in sec
-
     def test_one_note_per_image_each_naming_its_image_when_there_are_several(self):
         sec = _section(_page(_staged_but_one()), "run-hpc")
         assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
-                f"<code>.sif</code> for image <code>aaaa1111aaaa</code> at <code>{SIF}</code> — where "
-                "<code>stage_apptainer_image</code> put it on <b>hpc</b>.</p>") in sec
+                f"<code>.sif</code> for image <code>aaaa1111aaaa</code> at <code>{SIF}</code>.</p>"
+                '<p class="warn-note">It has not been staged yet') in sec
         assert ('<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
-                "<code>nextflow.config</code> is empty for image <code>cccccccccccc</code>: re-render") in sec
-        assert f'env=&quot;hpc&quot;, freeze_request_key=&quot;{REQUEST_KEY}&quot;)</code> reports.' in sec
-        assert sec.count('class="note">The <code>slurm</code>') == 1 and sec.count('class="warn-note"') == 1
+                "<code>nextflow.config</code> is empty for image <code>cccccccccccc</code>; the workflow refuses") in sec
+        assert sec.count('class="warn-note"') == 2 and sec.count('class="note">The <code>slurm</code>') == 1
         assert sec.index("for image <code>aaaa1111aaaa</code>") < sec.index("for image <code>cccccccccccc</code>")
+        staged = _section(_page(_staged(_staged_but_one())), "run-hpc")
+        assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
+                f"<code>.sif</code> for image <code>aaaa1111aaaa</code> at <code>{SIF}</code>.</p>"
+                f'<p class="note">Staged there by <code>stage_apptainer_image</code> — sha256 <code>{"ab" * 32}</code>.</p>') in staged
+        assert staged.count('class="note">The <code>slurm</code>') == 1 and staged.count('class="warn-note"') == 1
         assert "Submit. <code>launcher.sh</code> loads <code>apptainer/1.3.2</code> and runs Nextflow" in sec
         bare = _section(_page(_two_images()), "run-hpc")
         assert bare.count('class="warn-note"') == 2 and 'class="note">The <code>slurm</code>' not in bare
@@ -1079,7 +1104,8 @@ class TestStages:
             assert sec.count('class="warn-note"') == 1, authority
             note = sec[sec.index('class="warn-note"'):]
             assert note.startswith('class="warn-note">HISAT2: ') and "measured under emulation" in note
-            assert "do not size from these; size from a run on hardware matching the image." in note
+            assert ("Compute resource allocation for these stages (cpus, memory, walltime) should not be "
+                    "estimated from these measurements; measure on hardware matching the image.") in note
         two = _with_resources(_with_resources(_record(), "HISAT2", measured_authority="mixed"),
                               "HTSEQ_COUNT", measured_authority="not_authoritative")
         sec = _section(_page(two), "stages")
@@ -1253,13 +1279,12 @@ class TestPageShape:
         assert "&lt;script&gt;q&lt;/script&gt; &gt; aligned.bam</pre>" in _section(html, "stages")
         hpc = _section(html, "run-hpc")
         assert "<code>/sif/&lt;script&gt;s.sif</code>" in hpc
-        assert "put it on <b>&lt;script&gt;e&lt;/script&gt;</b>" in hpc
+        assert "ship it to <b>&lt;script&gt;e&lt;/script&gt;</b>" in hpc and "<script>" not in hpc
         assert "loads <code>&lt;script&gt;m&lt;/script&gt;</code> and runs" in hpc
         assert "<b>&lt;script&gt;e&lt;/script&gt;</b> — module load <code>&lt;script&gt;m&lt;/script&gt;</code>" in _banner(html)
         local = _section(html, "run-local")
         assert "<pre>source /ck/&lt;script&gt;a&lt;/script&gt;/activate.sh</pre>" in local
-        assert ("<code>/sif/&lt;script&gt;s.sif</code> — where <code>stage_apptainer_image</code> put it on "
-                "<b>&lt;script&gt;e&lt;/script&gt;</b>") in hpc
+        assert "<code>/sif/&lt;script&gt;s.sif</code>.</p>" in hpc and "It has not been staged yet: ask the agent" in hpc
         assert "<script>" not in _section(html, "directory") and "script&gt;" not in _section(html, "directory")
         assert "script&gt;k" not in html and "script&gt;d" not in html     # the defaults table is gone, not escaped
         assert html.count("<script>") == _page().count("<script>")          # the shell's and the hover JS only

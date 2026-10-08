@@ -22,7 +22,8 @@ import yaml
 from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
-from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_LOCAL, RUN_RECORD_BLOCK, RUN_RECORD_CONFIG,
+from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RUN_LOCAL, RUN_RECORD_BLOCK,
+                                                   RUN_RECORD_CONFIG, RUN_STAMP_LINE,
                                                    RUN_RECORD_FILES, RUN_RECORDS, STRICT_MODE_LINE, TRACE_FIELDS,
                                                    bound_commands, render_nextflow, run_lines)
 
@@ -78,9 +79,19 @@ def _set_me(digest: str, indent: int) -> str:
 
 
 def _sif_set(digest: str, sif: str, indent: int, where: str = "") -> str:
-    """The slurm profile's container lines for an image whose .sif the record carries."""
+    """The slurm profile's container lines for an image whose .sif PATH the record
+    carries but which nothing has staged yet: the path is a prediction, said so."""
     pad = " " * indent
-    return (f"{pad}// the .sif built from image {digest}, where stage_apptainer_image put it{where}\n"
+    return (f"{pad}// the .sif built from image {digest}: the path stage_apptainer_image writes{where}.\n"
+            f"{pad}// Not staged yet — run stage_apptainer_image before sbatch launcher.sh.\n"
+            f"{pad}container = '{sif}'\n")
+
+
+def _sif_staged(digest: str, sif: str, sha: str, indent: int, where: str = "") -> str:
+    """The slurm profile's container lines for an image whose .sif WAS staged: the
+    record carries the staged file's sha256, so the comment states it as a fact."""
+    pad = " " * indent
+    return (f"{pad}// the .sif built from image {digest}, staged{where} by stage_apptainer_image (sha256 {sha})\n"
             f"{pad}container = '{sif}'\n")
 
 
@@ -436,14 +447,17 @@ class TestLaunchRecord:
     def test_each_run_record_file_is_defined_where_the_list_says(self):
         files = render_nextflow(_record())
         wf = _workflow_block(files["main.nf"])
+        launcher = render_nextflow(_record(), env=ENV)["launcher.sh"]
         for name, _, defined_in in RUN_RECORDS:
             by_block = f"'{name}'" in wf                                         # the block writes it
             by_observer = f'file = "runs/${{params.run_stamp}}/{name}"' in files["nextflow.config"]
-            assert (by_block, by_observer) == (defined_in == "params.yaml", defined_in == "nextflow.config"), name
+            by_launcher = f'-log "runs/$RUN_STAMP/{name}"' in launcher
+            assert (by_block, by_observer, by_launcher) == (
+                defined_in == "params.yaml", defined_in == "nextflow.config", defined_in == "launcher.sh"), name
         assert RUN_RECORD_FILES == tuple(n for n, _, _ in RUN_RECORDS) == (
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html")
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log")
         assert [d for _, _, d in RUN_RECORDS] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                                  "nextflow.config"]
+                                                  "nextflow.config", "launcher.sh"]
 
     def test_the_two_blocks_are_one_standard_verbatim_in_every_rendered_pipeline(self):
         assert RUN_RECORD_BLOCK + "\n" == LAUNCH_RECORD                  # the blank line after it is the join's
@@ -456,7 +470,30 @@ class TestLaunchRecord:
     def test_the_launcher_comment_names_the_run_records(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,\n"
-                "# report.html, timeline.html), never overwritten; this job's .out file is the manager's log.\n") in sh
+                "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is\n"
+                "# the manager's log.\n") in sh
+
+    def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for\n'
+                "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>\n"
+                + RUN_HPC_NEXTFLOW + "\n") in sh
+
+    def test_the_launcher_takes_the_run_stamp_itself_and_points_nextflows_log_into_the_run_dir(self):
+        """`-log` is read before nextflow.config, so the config's stamp comes too late for
+        it: the launcher takes the stamp, names the log with it, and hands it on as
+        --run_stamp so params.json, the samplesheet copy and the three observers land in
+        the same runs/<stamp>/. The caller's arguments still come last."""
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert RUN_STAMP_LINE == "RUN_STAMP=$(date +%Y%m%d_%H%M%S)"
+        assert RUN_HPC_NEXTFLOW == ('nextflow -log "runs/$RUN_STAMP/nextflow.log" run main.nf -profile slurm '
+                                    '-params-file params.yaml -resume --run_stamp "$RUN_STAMP" "$@"')
+        assert sh.index(RUN_STAMP_LINE) < sh.index(RUN_HPC_NEXTFLOW)
+        assert ("# One directory per run, runs/<stamp>/. The stamp is taken here rather than in\n"
+                "# nextflow.config so Nextflow's own log can join the run records: -log is read before\n"
+                "# anything else, and --run_stamp hands the same stamp to nextflow.config and main.nf.\n"
+                + RUN_STAMP_LINE + "\n") in sh
+        assert "params.run_stamp = new java.util.Date()" in render_nextflow(_record())["nextflow.config"]  # laptop default
 
 
 # ===========================================================================
@@ -481,7 +518,16 @@ class TestConfig:
                 "        apptainer.enabled = true\n"
                 "        apptainer.autoMounts = true\n"
                 "        apptainer.runOptions = '--cleanenv'") in cfg
-        assert "        executor.queueSize = 50\n" in cfg
+        assert ("        // Throughput: at most 500 jobs queued or running at once, submitted at no\n"
+                "        // more than 100 a minute — one pipeline never floods the scheduler or pins a user's\n"
+                "        // whole job allowance. Raise or lower them here, per pipeline.\n"
+                "        executor.queueSize = 500\n"
+                "        executor.submitRateLimit = '100/1min'\n"
+                "        // work/ lives beside main.nf. It is the heavy directory: point it at scratch when\n"
+                "        // this filesystem is quota-bound.\n"
+                "        // workDir = '/path/on/scratch/rnaseq_counts/work'\n") in cfg
+        assert (pr.NEXTFLOW_QUEUE_SIZE, pr.NEXTFLOW_SUBMIT_RATE) == (500, "100/1min")   # the comment spells these
+        assert "workDir =" not in _profile(cfg, "local") and cfg.count("workDir") == 1   # a hint, not a setting
         assert ("            executor = 'slurm'\n"
                 + _set_me(DIGEST, 12) +
                 "            cache = 'lenient'\n"
@@ -514,7 +560,30 @@ class TestConfig:
     def test_the_sif_comment_stops_at_where_it_was_put_when_no_compute_env_is_named(self):
         cfg = render_nextflow(_record(sif_paths={REQUEST_KEY: SIF}))["nextflow.config"]
         assert _sif_set(DIGEST, SIF, 12) in _profile(cfg, "slurm")
-        assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-1]
+        assert " on " not in _profile(cfg, "slurm").split("container = ")[0].splitlines()[-2]
+
+    def test_a_predicted_sif_path_never_claims_the_file_was_staged(self):
+        """`render_pipeline(env=…)` fills the slurm container with the path
+        stage_apptainer_image WOULD write, computed from the env block and the local
+        cache alone — no cluster is contacted. The comment must say so, not report a
+        staging that never happened."""
+        cfg = render_nextflow(_record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster"), env=ENV)["nextflow.config"]
+        slurm = _profile(cfg, "slurm")
+        assert "put it" not in slurm and "staged on" not in slurm and "(sha256" not in slurm
+        assert "Not staged yet — run stage_apptainer_image before sbatch launcher.sh." in slurm
+
+    def test_a_staged_sif_is_stated_as_a_fact_with_its_sha256(self):
+        """When the sealed steps carry `cluster_sif_sha256` the record's stages carry
+        `sif_sha256`: the file was observed on the cluster, and the comment says so."""
+        rec = _record(sif_paths={REQUEST_KEY: SIF}, compute_env="cluster")
+        for st in rec.stages:
+            st.sif_sha256 = "ab" * 32
+        cfg = render_nextflow(rec, env=ENV)["nextflow.config"]
+        slurm = _profile(cfg, "slurm")
+        assert ("            executor = 'slurm'\n"
+                + _sif_staged(DIGEST, SIF, "ab" * 32, 12, " on cluster") +
+                "            cache = 'lenient'\n") in slurm
+        assert "Not staged yet" not in slurm and "writes" not in slurm
 
     def test_the_run_records_land_under_a_timestamped_run_dir_trace_report_and_timeline(self):
         cfg = render_nextflow(_record())["nextflow.config"]
@@ -760,7 +829,8 @@ class TestLauncher:
         assert commands == [STRICT_MODE_LINE,
                             "module load apptainer/1.5.0 nextflow/25.04.7",
                             'export NXF_HOME="$PWD/.nextflow_home"',
-                            'nextflow run main.nf -profile slurm -params-file params.yaml -resume "$@"']
+                            RUN_STAMP_LINE,
+                            RUN_HPC_NEXTFLOW]
         assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
         assert "nextflow clean -f" in sh and "never cleaned for you" in sh
 
@@ -769,9 +839,11 @@ class TestLauncher:
         cluster profile in place of the local one and the caller's arguments passed
         through — one spelling, two profiles."""
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
-        assert RUN_LOCAL.replace("local", "slurm") + ' "$@"\n' in sh
+        assert RUN_HPC_NEXTFLOW + "\n" in sh
+        assert RUN_LOCAL.replace("local", "slurm").removeprefix("nextflow ") in RUN_HPC_NEXTFLOW
+        assert RUN_HPC_NEXTFLOW.endswith('--run_stamp "$RUN_STAMP" "$@"')
         assert RUN_LOCAL not in sh
-        assert sh.count("nextflow run") == 1
+        assert sh.count("nextflow -log") == 1 and sh.count("nextflow run") == 0
 
     def test_the_strict_mode_line_is_bash_strict_mode_with_its_reason(self):
         assert STRICT_MODE_LINE.startswith("set -euo pipefail")
@@ -868,14 +940,16 @@ class TestRefusals:
         rec.stages[0].commands = ["echo 'quoted' > {OUTPUT_DIR}/aligned.bam"]
         assert "    echo 'quoted' > aligned.bam\n" in render_nextflow(rec)["main.nf"]
 
-    def test_a_cohort_stage_is_refused(self):
+    def test_a_command_binding_no_per_sample_value_still_runs_per_sample_as_the_seal_ran_it(self):
+        """The seal's self-test ran every how-to command once per trial; a cohort stage is
+        never inferred from a command's placeholders — it comes from a workflow attached
+        with cohort= (TestCohort)."""
         spec = sealed_rnaseq_spec(templates=[*TEMPLATES, "multiqc {OUTPUT_DIR}"])
-        rec = pr.derive_pipeline_record(spec, name="with_cohort")
-        assert rec.stage("MULTIQC").scope == "cohort"
-        with pytest.raises(ValueError) as e:
-            render_nextflow(rec)
-        assert str(e.value) == ("stage MULTIQC: cohort stages are not supported yet; cut the how-to so "
-                                "every command runs per sample")
+        rec = pr.derive_pipeline_record(spec, name="with_multiqc")
+        assert rec.stage("MULTIQC").scope == "per_sample"
+        main = render_nextflow(rec)["main.nf"]
+        assert "process MULTIQC {\n    tag { meta.sample }" in main
+        assert "    multiqc .\n" in main
 
     def test_a_stage_that_names_no_image_is_refused(self):
         rec = _record()

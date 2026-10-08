@@ -178,8 +178,10 @@ class TestRecordOnDisk:
     def test_the_defaults_table_states_every_unsaid_thing_with_its_source(self):
         rec = _record()
         keys = {d.key for d in rec.defaults}
-        assert {"stage_cut", "publish", "resume", "errors", "cache", "queue_size",
+        assert {"stage_cut", "publish", "resume", "errors", "cache", "queue_size", "submit_rate",
                 "run_records", "cleanup", "sheet_preflight", "resources"} <= keys
+        assert {d.key: d.value for d in rec.defaults}["queue_size"] == "500 jobs queued or running at once on the cluster"
+        assert {d.key: d.value for d in rec.defaults}["submit_rate"] == "100/1min: at most 100 SLURM submissions a minute"
         assert {d.source for d in rec.defaults} <= {"default", "caller", "seal"}
         # a failing sample must not kill the other samples' in-flight work
         assert {d.key: d.value for d in rec.defaults}["errors"] == (

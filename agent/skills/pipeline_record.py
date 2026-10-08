@@ -24,6 +24,20 @@ Vocabulary
              flag takes. It binds to the stage's CPU request (`task.cpus`), never to
              params.yaml, and the sealed run's count IS that request unless the
              caller sizes the stage — so the command and the request cannot disagree
+  samplesheet slot  a how-to input declared `format: samplesheet`: the pipeline's own
+             samples.csv, handed to the stage as a file. The seal's trial file shows
+             which columns the stage reads; columns the per-sample inputs do not
+             already give are added to the sheet, their example values taken from
+             that file, matched on `sample`
+  cohort stage  a stage that runs ONCE, over every sample, after the per-sample
+             stage it collects from has finished for every row. It comes from a
+             SECOND sealed workflow attached to the first (`cohort=`), and its
+             fan-in is DECLARED at render — `collect={PLACEHOLDER: artifact}` names
+             which per-sample artifact the cohort how-to's input receives, every
+             row's copy staged into one directory — never inferred
+  script     a shared path input whose sealed value is an authored artifact of the
+             workflow (`stage_authored_artifact`): the record carries its text, the
+             render puts it in `bin/` beside the files, and params.yaml points there
 """
 from __future__ import annotations
 
@@ -50,6 +64,12 @@ _READ_FORMATS = frozenset({"fastq", "fq", "fastq.gz", "fq.gz", "bam", "ubam", "c
 _SAMPLE_NAMES = frozenset({"SAMPLE", "SAMPLE_ID", "SAMPLE_NAME", "ID"})
 #: A how-to input declared with this format is a THREAD SLOT (see the vocabulary).
 THREADS_FORMAT = "threads"
+#: A how-to input declared with this format is a SAMPLESHEET SLOT (see the vocabulary).
+SAMPLESHEET_FORMAT = "samplesheet"
+#: Where an authored script lands in the rendered directory (Nextflow's own convention).
+SCRIPT_DIR = "bin"
+#: Interpreters whose first argument is the script that names the stage.
+_INTERPRETERS = frozenset({"Rscript", "python", "python3", "bash", "sh", "perl", "julia"})
 _COUNT_RE = re.compile(r"^[1-9][0-9]*$")
 
 #: The request a stage gets when the caller sized nothing. A job script must carry
@@ -59,8 +79,12 @@ _COUNT_RE = re.compile(r"^[1-9][0-9]*$")
 DEFAULT_STAGE_REQUEST: dict[str, Any] = {"time": "4:00:00", "mem": "8G", "cpus": 1}
 #: The manager job (Nextflow form): tiny, long-lived, never does the work.
 MANAGER_JOB_REQUEST: dict[str, Any] = {"time": "2-00:00:00", "mem": "4G", "cpus": 1}
-#: Nextflow executor defaults the record's `defaults` table states.
-NEXTFLOW_QUEUE_SIZE = 50
+#: Nextflow's slurm throughput, stated in the record's `defaults` table: at most this
+#: many jobs queued or running at once, submitted at no more than this rate. One
+#: pipeline then never floods the scheduler or pins a user's whole job allowance, and a
+#: second pipeline can run beside it. Both are per-pipeline knobs in nextflow.config.
+NEXTFLOW_QUEUE_SIZE = 500
+NEXTFLOW_SUBMIT_RATE = "100/1min"
 
 ScopeT = Literal["per_sample", "cohort"]
 
@@ -80,10 +104,12 @@ class PipelineDerivationError(ValueError):
 class PipelineParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # placeholder, e.g. STRANDED
-    kind: Literal["shared", "per_sample", "cpus"]   # cpus: a thread slot, bound to the stage's CPU request
+    kind: Literal["shared", "per_sample", "cpus", "samplesheet", "collected"]
+    #   cpus: a thread slot, bound to the stage's CPU request · samplesheet: the pipeline's own
+    #   samples.csv · collected: every row's copy of a per-sample artifact (a cohort stage's fan-in)
     value_kind: Literal["path", "prefix", "value"]   # prefix: names a FAMILY of files (an aligner index)
     default: Optional[str]                     # the sealed trial's value for a shared param; None for a per-sample one, whose values are the samplesheet's rows
-    source: str                                # usage_input | literal | test_data:<key> | reference_database:<name> | sealed_step:<n>
+    source: str                                # usage_input | literal | test_data:<key> | reference_database:<name> | sealed_step:<n> | authored_artifact:<name> | collect:<artifact>
     format: Optional[str]
     description: Optional[str]
     used_by: list[str]                         # stage names
@@ -93,9 +119,11 @@ class PipelineParam(BaseModel):
 class StageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # a placeholder, or an artifact name
-    origin: Literal["param", "column", "stage", "request"]   # request: the stage's own cpus (a thread slot)
+    origin: Literal["param", "column", "stage", "request", "samplesheet", "collect"]
+    #   request: the stage's own cpus (a thread slot) · samplesheet: the pipeline's samples.csv ·
+    #   collect: every row's copy of a per-sample artifact, from `from_stage`
     from_stage: Optional[str]
-    artifact: Optional[str]                    # origin=stage: the artifact (templated basename or glob)
+    artifact: Optional[str]                    # origin=stage|collect: the artifact (templated basename or glob)
 
 
 class StageOutput(BaseModel):
@@ -146,10 +174,11 @@ class PipelineStage(BaseModel):
 class SamplesheetColumn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # column header (placeholder, lower-cased)
-    placeholder: str
+    placeholder: str                           # the per-sample input it binds, or the column name for a sheet-slot column
     value_kind: Literal["path", "prefix", "value"]
     format: Optional[str]
     description: Optional[str]
+    read_by: list[str]                         # stages that read the column THROUGH the samplesheet slot; [] for a bound input
 
 
 class Samplesheet(BaseModel):
@@ -168,9 +197,39 @@ class PipelineDefault(BaseModel):
 class ProvenanceStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     step: int
+    workflow: str                              # the sealed workflow the step belongs to
     tool: str
     command: str
     produces_param: str
+
+
+class PipelineScript(BaseModel):
+    """An authored script the how-to runs, carried verbatim: the render writes it to
+    `bin/<name>` and the param that names it defaults to that path."""
+    model_config = ConfigDict(extra="forbid")
+    param: str                                 # the placeholder bound to it
+    name: str                                  # its basename, the file under bin/
+    sha256: str                                # as the seal anchored it
+    content: str
+    sealed_path: str                           # where the sealed run read it
+
+
+class CollectedInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    placeholder: str                           # the cohort how-to's input
+    artifact: str                              # the per-sample artifact (templated basename), every row's copy
+    from_stage: str                            # the per-sample stage that writes it
+    stage: str                                 # the cohort stage that receives them
+
+
+class CohortWorkflow(BaseModel):
+    """A second sealed workflow attached as the pipeline's cohort stages."""
+    model_config = ConfigDict(extra="forbid")
+    sealed_workflow: str
+    sealed_workflow_path: str
+    sealed_workflow_sha256: Optional[str]
+    stages: list[str]
+    collect: list[CollectedInput]
 
 
 class LocalRuntime(BaseModel):
@@ -199,6 +258,8 @@ class PipelineRecord(BaseModel):
     stages: list[PipelineStage]
     provenance_steps: list[ProvenanceStep]
     unmatched_steps: list[int]
+    scripts: list[PipelineScript]              # authored scripts the how-to runs, rendered into bin/
+    cohort_workflows: list[CohortWorkflow]     # the sealed workflows attached as cohort stages, with their fan-in
     defaults: list[PipelineDefault]
     notes: list[str]
 
@@ -359,6 +420,81 @@ def _thread_slot(ph: str, values: list[str], declared: Mapping, caller_named: se
         reason=f"declared format {THREADS_FORMAT!r}: the stage's CPU request, {values[0]} in the sealed run")
 
 
+def _sheet_slot(ph: str, values: list[str], declared: Mapping, caller_named: set[str]) -> PipelineParam:
+    """A placeholder declared `format: samplesheet`: the pipeline's own samples.csv,
+    handed to the stage as a file. Every trial binds the sheet it was proven with;
+    the render binds `params.samplesheet` instead. Refuses a caller who tried to make
+    it a column or a params.yaml value."""
+    if ph in caller_named:
+        raise PipelineDerivationError(
+            "pipeline.samplesheet_kind",
+            f"{ph} is declared `format: {SAMPLESHEET_FORMAT}`, which binds it to the pipeline's own "
+            f"samplesheet; it cannot be a samplesheet column or a params.yaml value",
+            "drop it from per_sample= / shared=, or change the how-to input's format")
+    return PipelineParam(
+        name=ph, kind="samplesheet", value_kind="path", default=values[0], source="usage_input",
+        format=declared.get("format"), description=declared.get("description"), used_by=[],
+        reason=f"declared format {SAMPLESHEET_FORMAT!r}: the pipeline's samples.csv; the sealed run read {values[0]}")
+
+
+def _parse_csv(text: str) -> tuple[list[str], list[dict[str, str]]]:
+    import csv
+    import io
+    reader = csv.DictReader(io.StringIO(text))
+    cols = [c.strip() for c in (reader.fieldnames or [])]
+    rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
+    return cols, rows
+
+
+def _extend_sheet(sheet: Samplesheet, ph: str, csv_text: str, stage_names: list[str],
+                  notes: list[str]) -> None:
+    """Add to the pipeline's samplesheet the columns a samplesheet-slot input reads
+    that the per-sample inputs do not already give — their example values from the
+    slot's trial file, matched on `sample`. The trial file must carry a `sample`
+    column: it is the row key the stage joins on."""
+    cols, rows = _parse_csv(csv_text)
+    if "sample" not in cols:
+        raise PipelineDerivationError(
+            "pipeline.samplesheet_slot_no_key",
+            f"the samplesheet the sealed run bound to {ph} has columns {cols} and no `sample` column, "
+            f"the row key every stage joins on",
+            "give the trial's samplesheet a `sample` column naming each row, and re-seal")
+    by_sample = {r.get("sample", ""): r for r in rows}
+    existing = {c.name for c in sheet.columns}
+    for c in cols:
+        if c == "sample":
+            continue
+        if c in existing:
+            col = next(x for x in sheet.columns if x.name == c)
+            col.read_by = sorted(set(col.read_by) | set(stage_names))
+            continue
+        sheet.columns.append(SamplesheetColumn(
+            name=c, placeholder=c, value_kind="value", format=None,
+            description=None, read_by=list(stage_names)))
+        for row in sheet.rows:
+            row[c] = by_sample.get(row.get("sample", ""), {}).get(c, "")
+        notes.append(f"samples.csv column `{c}`: read by {', '.join(stage_names)} through {ph}; "
+                     f"example values from the sealed run's own samplesheet")
+    unmatched = [s for s in (r.get("sample") for r in sheet.rows) if s not in by_sample]
+    if unmatched and len(cols) > 1:
+        notes.append(f"the sealed run's samplesheet for {ph} has no row for {unmatched}; their example "
+                     f"cells are empty")
+
+
+class CohortRequest(BaseModel):
+    """A second sealed workflow to attach as cohort stages: `spec` (a WorkflowSpec),
+    where it was read from, and `collect` — which per-sample artifact each of its
+    fan-in inputs receives, declared, never inferred."""
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    spec: Any
+    spec_path: str = ""
+    spec_sha256: Optional[str] = None
+    collect: dict[str, str]
+    stages: Optional[list[list[int]]] = None
+    stage_names: Optional[list[str]] = None
+    shared: Optional[list[str]] = None
+
+
 def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            spec_sha256: Optional[str] = None,
                            stages: Optional[list[list[int]]] = None,
@@ -370,11 +506,20 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            sif_paths: Optional[Mapping[str, str]] = None,
                            compute_env: Optional[str] = None,
                            modules: Optional[list[str]] = None,
-                           local_runtime: Optional[LocalRuntime] = None) -> PipelineRecord:
+                           local_runtime: Optional[LocalRuntime] = None,
+                           samplesheet_files: Optional[Mapping[str, str]] = None,
+                           cohort: Optional[list[CohortRequest]] = None,
+                           _collected: Optional[Mapping[str, str]] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
     PipelineDerivationError (a refusal with a remedy) when the seal cannot support
-    the render; every derivation the caller did not dictate is stated in `notes`."""
+    the render; every derivation the caller did not dictate is stated in `notes`.
+
+    `samplesheet_files` is `{path: csv text}` for every samplesheet the sealed trials
+    bound to a `format: samplesheet` input — the caller reads them, this stays pure.
+    `cohort` attaches further sealed workflows as cohort stages (see the vocabulary).
+    `_collected` is the attachment's own: the cohort how-to's fan-in placeholders."""
     notes: list[str] = []
+    collected_set = dict(_collected or {})
     usage = getattr(spec, "usage", None)
     if usage is None:
         raise PipelineDerivationError(
@@ -461,9 +606,29 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     for ph in in_placeholders:
         values = [str((r.get("substitutions") or {})[ph]) for r in rows]
         v0 = values[0]
-        if str((declared_inputs.get(ph) or {}).get("format") or "").lower() == THREADS_FORMAT:
+        fmt_declared = str((declared_inputs.get(ph) or {}).get("format") or "").lower()
+        if fmt_declared == THREADS_FORMAT:
             params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
             notes.append(f"{ph}: cpus ({params[-1].reason})")
+            continue
+        if fmt_declared == SAMPLESHEET_FORMAT:
+            params.append(_sheet_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            notes.append(f"{ph}: samplesheet ({params[-1].reason})")
+            continue
+        if ph in collected_set:
+            if ph in per_sample_set | shared_set:
+                raise PipelineDerivationError(
+                    "pipeline.collect_kind",
+                    f"{ph} is a collected input (collect=), every sample's {collected_set[ph]}; it cannot "
+                    f"be a samplesheet column or a params.yaml value",
+                    "drop it from per_sample= / shared=, or from collect=")
+            di = declared_inputs.get(ph) or {}
+            params.append(PipelineParam(
+                name=ph, kind="collected", value_kind="path", default=None, source=f"collect:{collected_set[ph]}",
+                format=di.get("format"), description=di.get("description"), used_by=[],
+                reason=f"declared collect=: every sample's {collected_set[ph]}, staged into one directory; "
+                       f"the sealed run read {v0}"))
+            notes.append(f"{ph}: collected ({params[-1].reason})")
             continue
         kind, why = classify(ph)
         value_kind = "path" if core_data.is_path_like(v0) else "value"
@@ -488,6 +653,35 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why))
         notes.append(f"{ph}: {kind} ({why})")
+    # a shared path that is an authored artifact of the workflow is a SCRIPT: carried
+    # verbatim, rendered into bin/, its param defaulting to that relative path
+    scripts: list[PipelineScript] = []
+    authored = [a for a in (spec_d.get("authored_artifacts") or []) if isinstance(a, dict)]
+    for p in params:
+        if p.kind != "shared" or p.value_kind != "path" or not p.default:
+            continue
+        art = next((a for a in authored if str(a.get("path") or "") == p.default), None)
+        if art is None:
+            continue
+        content = art.get("content_excerpt")
+        if not isinstance(content, str) or int(art.get("size_bytes") or 0) != len(content.encode("utf-8")):
+            raise PipelineDerivationError(
+                "pipeline.script_not_carried",
+                f"{p.name} names the authored artifact {p.default}, but the sealed record does not carry "
+                f"its full text (size {art.get('size_bytes')} bytes)",
+                "stage scripts under 64 KiB in content mode so the seal carries them verbatim")
+        bn = Path(p.default).name
+        if any(sc.name == bn for sc in scripts):
+            raise PipelineDerivationError(
+                "pipeline.script_name_clash",
+                f"two authored scripts share the basename {bn!r}; bin/ holds one file per name",
+                "rename one script and re-seal")
+        scripts.append(PipelineScript(param=p.name, name=bn, sha256=str(art.get("sha256") or ""),
+                                      content=content, sealed_path=p.default))
+        p.source = f"authored_artifact:{bn}"
+        p.default = f"{SCRIPT_DIR}/{bn}"
+        p.reason += f"; an authored script, rendered into {SCRIPT_DIR}/"
+        notes.append(f"{p.name}: an authored script ({bn}), carried into {SCRIPT_DIR}/{bn}")
     per_sample_names = [p.name for p in params if p.kind == "per_sample"]
     value_per_sample = [p.name for p in params if p.kind == "per_sample" and p.value_kind == "value"]
     cpus_of = {p.name: int(p.default or 0) for p in params if p.kind == "cpus"}
@@ -527,7 +721,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                     p.value_kind = "prefix"
                     notes.append(f"{p.name}: a prefix — sealed step {int(s['step'])} wrote a family "
                                  f"of files named after it")
-                provenance.append(ProvenanceStep(step=int(s["step"]), tool=str(s.get("tool") or ""),
+                provenance.append(ProvenanceStep(step=int(s["step"]), workflow=str(spec.workflow_name),
+                                                 tool=str(s.get("tool") or ""),
                                                  command=str(s.get("command") or ""),
                                                  produces_param=p.name))
                 p.source = f"sealed_step:{int(s['step'])}"
@@ -654,31 +849,17 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     else:
         notes.append("stage cut: one stage per how-to command (default)")
 
-    # scope per template: per_sample if it binds a per-sample placeholder or consumes a
-    # per-sample artifact; else cohort (it runs once, over every row's work)
-    template_scope: list[ScopeT] = []
-    for ti, tmpl in enumerate(templates):
-        phs = placeholders(tmpl)
-        is_ps = any(p in per_sample_names for p in phs)
-        if not is_ps:
-            for tok in template_tokens[ti]:
-                src = produced_by.get(tok)
-                if src is not None and src < ti and template_scope[src] == "per_sample":
-                    is_ps = True
-                    break
-        template_scope.append("per_sample" if is_ps else "cohort")
+    # scope: the seal's self-test ran EVERY how-to command once per trial, so every
+    # command of a workflow rendered per sample ran per sample — a command that binds no
+    # per-sample value included. A cohort stage is never inferred: it comes from a
+    # workflow attached with `cohort=`, whose seal ran once over the cohort's inputs.
+    template_scope: list[ScopeT] = ["cohort" if _collected is not None else "per_sample"] * len(templates)
 
     stage_of_template: dict[int, int] = {}
     stage_recs: list[PipelineStage] = []
     used_names: set[str] = set()
     for gi, g in enumerate(groups):
         scopes = {template_scope[i] for i in g}
-        if len(scopes) > 1:
-            raise PipelineDerivationError(
-                "pipeline.stage_mixes_scopes",
-                f"stage {gi + 1} groups commands {g} of which some run per sample and some over "
-                f"the whole cohort",
-                "cut the stage where the data scope changes")
         steps_in = [s for i in g for _, s in matched[i]]
         digests = {str(s.get("container_image_digest")) for s in steps_in if s.get("container_image_digest")}
         if len(digests) > 1:
@@ -703,7 +884,15 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                      env.get("image"))
         sif = next((str(s.get("cluster_sif_sha256")) for s in steps_in if s.get("cluster_sif_sha256")), None)
         tool = str(core_data.default_step_tool(templates[g[0]]) or "stage")
-        base = (stage_names[gi] if stage_names and gi < len(stage_names) else _sanitize_name(tool))
+        base_from = tool
+        if tool in _INTERPRETERS:
+            # `Rscript {SCRIPT} …`: the script, not the interpreter, is what the stage does
+            m = re.search(re.escape(tool) + r"\s+\{([A-Z][A-Z0-9_]*)\}", templates[g[0]])
+            sc = next((sc for sc in scripts if m and sc.param == m.group(1)), None)
+            if sc is not None:
+                tool = f"{tool} {sc.name}"
+                base_from = Path(sc.name).stem
+        base = (stage_names[gi] if stage_names and gi < len(stage_names) else _sanitize_name(base_from))
         nm, k = base, 2
         while nm in used_names:
             nm, k = f"{base}_{k}", k + 1
@@ -760,9 +949,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 seen_in.add(ph)
                 p = next(pp for pp in params if pp.name == ph)
                 p.used_by.append(st.name)
+                origin = {"per_sample": "column", "cpus": "request", "samplesheet": "samplesheet",
+                          "collected": "collect"}.get(p.kind, "param")
                 st.inputs.append(StageInput(
-                    name=ph, origin={"per_sample": "column", "cpus": "request"}.get(p.kind, "param"),
-                    from_stage=None, artifact=None))
+                    name=ph, origin=origin, from_stage=None,
+                    artifact=collected_set.get(ph) if p.kind == "collected" else None))
             for tok in template_tokens[i]:
                 src = produced_by.get(tok)
                 if src is None or stage_of_template.get(src) == st.index:
@@ -824,13 +1015,14 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     id_ph = next((p.name for p in params if p.kind == "per_sample" and p.name in _SAMPLE_NAMES), None)
     cols = [SamplesheetColumn(name="sample", placeholder=id_ph or "SAMPLE", value_kind="value",
                               format=None,
-                              description="the row key: it tags every task and names results/<sample>/")]
+                              description="the row key: it tags every task and names results/<sample>/",
+                              read_by=[])]
     for p in params:
         if p.kind != "per_sample" or p.name in _SAMPLE_NAMES:
             continue
         cols.append(SamplesheetColumn(name=p.name.lower(), placeholder=p.name,
                                       value_kind=p.value_kind, format=p.format,
-                                      description=p.description))
+                                      description=p.description, read_by=[]))
     srows: list[dict[str, str]] = []
     for r in rows:
         subs = r.get("substitutions") or {}
@@ -839,6 +1031,17 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             row[c.name] = str(subs.get(c.placeholder, ""))
         srows.append(row)
     sheet = Samplesheet(columns=cols, rows=srows)
+    for p in params:
+        if p.kind != "samplesheet" or _collected is not None:
+            continue                     # an attached workflow extends the PIPELINE's sheet, in _attach_cohort
+        text = (samplesheet_files or {}).get(str(p.default))
+        if text is None:
+            raise PipelineDerivationError(
+                "pipeline.samplesheet_slot_unread",
+                f"{p.name} is declared `format: {SAMPLESHEET_FORMAT}` and the sealed run bound {p.default}, "
+                f"whose text was not handed to the derivation",
+                "pass samplesheet_files={<that path>: <its text>} (the MCP tool reads it for you)")
+        _extend_sheet(sheet, p.name, text, list(p.used_by), notes)
 
     # ── the defaults table ─────────────────────────────────────────────────
     defaults = [
@@ -849,7 +1052,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         PipelineDefault(key="errors", value="finish: a failure submits nothing new and in-flight tasks complete; "
                         "`-resume` re-runs what failed; no retries", source="default"),
         PipelineDefault(key="cache", value="lenient on the cluster, standard locally", source="default"),
-        PipelineDefault(key="queue_size", value="50", source="default"),
+        PipelineDefault(key="queue_size", value=f"{NEXTFLOW_QUEUE_SIZE} jobs queued or running at once on the cluster",
+                        source="default"),
+        PipelineDefault(key="submit_rate", value=f"{NEXTFLOW_SUBMIT_RATE}: at most 100 SLURM submissions a minute",
+                        source="default"),
         PipelineDefault(key="run_records", value="one directory per run, runs/<timestamp>/, never overwritten: "
                         "params.json (every param as resolved), samples.csv as read, trace.txt (every task), "
                         "report.html, timeline.html", source="default"),
@@ -860,7 +1066,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                         source="caller" if resources else "default"),
     ]
 
-    return PipelineRecord(
+    record = PipelineRecord(
         name=name, version="1",
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         sealed_workflow=str(spec.workflow_name), sealed_workflow_path=spec_path,
@@ -870,7 +1076,153 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         output_slots=sorted(out_slots), compute_env=compute_env, modules=list(modules or []),
         local_runtime=local_runtime,
         stages=stage_recs, provenance_steps=provenance,
-        unmatched_steps=unmatched_steps, defaults=defaults, notes=notes)
+        unmatched_steps=unmatched_steps, scripts=scripts, cohort_workflows=[],
+        defaults=defaults, notes=notes)
+    for req in (cohort or []):
+        _attach_cohort(record, req, resources=resources, env_names=env_names, sif_paths=sif_paths,
+                       samplesheet_files=samplesheet_files)
+    return record
+
+
+# ── cohort stages: a second sealed workflow, attached ───────────────────────
+
+
+def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
+                   resources: Optional[Mapping[str, Mapping[str, Any]]],
+                   env_names: Optional[Mapping[str, str]], sif_paths: Optional[Mapping[str, str]],
+                   samplesheet_files: Optional[Mapping[str, str]]) -> None:
+    """Attach `req.spec` as cohort stages of `record`, in place. The cohort how-to is
+    derived like any other (its own sealed steps, images, measurements, scripts), then
+    composed: every stage runs once over the cohort; each `collect` input is wired to
+    the per-sample stage that writes the artifact, every row's copy; a samplesheet
+    slot reads the pipeline's own sheet; its params join params.yaml. Refuses, naming
+    the remedy, on an undeclared fan-in, an artifact no per-sample stage writes, one
+    not named after the sample (the copies would collide), or a placeholder both
+    how-tos use."""
+    spec = req.spec
+    wf = str(spec.workflow_name)
+    per_sample_stages = [s for s in record.stages if s.scope == "per_sample"]
+    produced: dict[str, str] = {}                       # templated artifact -> per-sample stage
+    for s in per_sample_stages:
+        for o in s.outputs:
+            produced.setdefault(o.artifact, s.name)
+    value_cols = {c.placeholder for c in record.samplesheet.columns if c.value_kind == "value"}
+    for ph, art in req.collect.items():
+        if art not in produced:
+            raise PipelineDerivationError(
+                "pipeline.collect_unknown_artifact",
+                f"collect= names {art!r} for {ph}, which no per-sample stage of {record.sealed_workflow} "
+                f"writes; the per-sample artifacts are {sorted(produced)}",
+                "name one of those artifacts, as the record spells it")
+        if not any(p in value_cols for p in placeholders(art)):
+            raise PipelineDerivationError(
+                "pipeline.collect_not_unique",
+                f"collect= names {art!r} for {ph}, but that name is the same for every sample, so the "
+                f"collected copies would overwrite each other in one directory",
+                "write the per-sample output with the sample id in its name (e.g. {SAMPLE}.counts.tsv) "
+                "and re-seal the per-sample workflow")
+    sub = derive_pipeline_record(
+        spec, name=record.name, spec_path=req.spec_path, spec_sha256=req.spec_sha256,
+        stages=req.stages, stage_names=req.stage_names, shared=req.shared,
+        resources=resources, env_names=env_names, sif_paths=sif_paths,
+        compute_env=record.compute_env, modules=record.modules, local_runtime=None,
+        samplesheet_files=samplesheet_files, _collected=req.collect)
+    undeclared = [i.name for i in sub.params if i.name in req.collect and i.kind != "collected"]
+    assert not undeclared
+    missing = sorted(set(req.collect) - {p.name for p in sub.params})
+    if missing:
+        raise PipelineDerivationError(
+            "pipeline.collect_unknown_placeholder",
+            f"collect= names {missing}, which the how-to of {wf} does not use "
+            f"({[p.name for p in sub.params]})",
+            "name a placeholder of the cohort how-to")
+    per_sample = [p.name for p in sub.params if p.kind == "per_sample"]
+    if per_sample:
+        raise PipelineDerivationError(
+            "pipeline.cohort_binds_per_sample",
+            f"the how-to of {wf} binds {per_sample} per sample (values differ across its trials, or a "
+            f"reads / sample-id input), but a cohort stage runs once over every sample",
+            "declare the fan-in with collect=, or pass shared= for a value that is one per run")
+    # params: the two how-tos may not share a placeholder (each name is one params.yaml key)
+    base_names = {p.name for p in record.params}
+    for p in sub.params:
+        if p.kind in ("collected",):
+            continue
+        if p.name in base_names:
+            raise PipelineDerivationError(
+                "pipeline.param_collision",
+                f"placeholder {p.name} is used by both {record.sealed_workflow} and {wf}; one name is one "
+                f"params.yaml key",
+                f"rename the placeholder in the how-to of {wf} and re-seal it")
+    for sc in sub.scripts:
+        if any(x.name == sc.name for x in record.scripts):
+            raise PipelineDerivationError(
+                "pipeline.script_name_clash",
+                f"both workflows carry a script named {sc.name!r}; {SCRIPT_DIR}/ holds one file per name",
+                f"rename the script in {wf} and re-seal it")
+    # stages: renamed past any clash, re-indexed after the per-sample stages, cohort-scoped
+    offset = len(record.stages)
+    used = {s.name for s in record.stages}
+    rename: dict[str, str] = {}
+    for s in sub.stages:
+        nm, k = s.name, 2
+        while nm in used:
+            nm, k = f"{s.name}_{k}", k + 1
+        used.add(nm)
+        rename[s.name] = nm
+    cohort_names = [rename[s.name] for s in sub.stages]
+    collected: list[CollectedInput] = []
+    for s in sub.stages:
+        s.name = rename[s.name]
+        s.index += offset
+        s.scope = "cohort"
+        for i in s.inputs:
+            if i.origin == "stage" and i.from_stage:
+                i.from_stage = rename.get(i.from_stage, i.from_stage)
+            elif i.origin == "collect":
+                art = req.collect[i.name]
+                i.from_stage = produced[art]
+                i.artifact = art
+                collected.append(CollectedInput(placeholder=i.name, artifact=art,
+                                                from_stage=produced[art], stage=s.name))
+                record.stage(produced[art]).outputs[
+                    [o.artifact for o in record.stage(produced[art]).outputs].index(art)].consumed_by.append(s.name)
+        for o in s.outputs:
+            o.consumed_by = [rename.get(c, c) for c in o.consumed_by]
+    for p in sub.params:
+        p.used_by = [rename.get(u, u) for u in p.used_by]
+        if p.source.startswith("sealed_step:"):
+            p.source = f"{p.source}@{wf}"
+    for c in sub.samplesheet.columns:
+        c.read_by = [rename.get(r, r) for r in c.read_by]
+    # the sheet: the cohort how-to's samplesheet slot adds the columns it reads
+    for p in sub.params:
+        if p.kind == "samplesheet":
+            text = (samplesheet_files or {}).get(str(p.default))
+            if text is None:
+                raise PipelineDerivationError(
+                    "pipeline.samplesheet_slot_unread",
+                    f"{p.name} is declared `format: {SAMPLESHEET_FORMAT}` and the sealed run of {wf} bound "
+                    f"{p.default}, whose text was not handed to the derivation",
+                    "pass samplesheet_files={<that path>: <its text>} (the MCP tool reads it for you)")
+            _extend_sheet(record.samplesheet, p.name, text, list(p.used_by), record.notes)
+    record.params.extend(p for p in sub.params if p.kind != "collected")
+    record.stages.extend(sub.stages)
+    record.scripts.extend(sub.scripts)
+    record.provenance_steps.extend(sub.provenance_steps)
+    record.env_digests = sorted(set(record.env_digests) | set(sub.env_digests))
+    record.output_slots = sorted(set(record.output_slots) | set(sub.output_slots))
+    record.cohort_workflows.append(CohortWorkflow(
+        sealed_workflow=wf, sealed_workflow_path=req.spec_path, sealed_workflow_sha256=req.spec_sha256,
+        stages=cohort_names, collect=collected))
+    if not any(d.key == "cohort" for d in record.defaults):
+        record.defaults.append(PipelineDefault(
+            key="cohort", value="a cohort stage runs once, after every sample has passed the stage it collects "
+            "from; its results are published flat under results/", source="default"))
+    record.notes.append(f"cohort stages {cohort_names} from sealed workflow {wf}: "
+                        + "; ".join(f"{c.placeholder} = every sample's {c.artifact} from {c.from_stage}"
+                                    for c in collected))
+    record.notes.extend(f"{wf}: {n}" for n in sub.notes)
 
 
 # ── the samplesheet, ONE rendering ──────────────────────────────────────────
@@ -926,7 +1278,10 @@ def sha256_of(path: Path) -> Optional[str]:
 __all__ = [
     "PipelineDerivationError", "PipelineRecord", "PipelineStage", "PipelineParam",
     "StageInput", "StageOutput", "StageResources", "Samplesheet", "SamplesheetColumn", "LocalRuntime",
-    "PipelineDefault", "ProvenanceStep", "derive_pipeline_record", "write_pipeline_record",
+    "PipelineDefault", "ProvenanceStep", "PipelineScript", "CollectedInput", "CohortWorkflow", "CohortRequest",
+    "derive_pipeline_record", "write_pipeline_record",
     "record_yaml", "load_pipeline_record", "placeholders", "artifact_tokens", "RECORD_FILENAME",
-    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "THREADS_FORMAT", "render_samplesheet",
+    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "NEXTFLOW_SUBMIT_RATE", "THREADS_FORMAT",
+    "SAMPLESHEET_FORMAT",
+    "SCRIPT_DIR", "render_samplesheet",
 ]
