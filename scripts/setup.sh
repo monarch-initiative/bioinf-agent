@@ -7,7 +7,7 @@
 # UNATTENDED — no questions, no prompts, same result on every machine. Everything
 # it installs lands inside the repo dir, untracked: the clone stays small (git
 # tracks only code + the download instructions), and deleting the clone undoes
-# all of it. What the agent later PRODUCES (reports, containers) goes outside the
+# all of it. What the agent later PRODUCES (environments, pipelines) goes outside the
 # repo — see agent/skills/workspace.py.
 #
 # The five steps:

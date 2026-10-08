@@ -39,12 +39,14 @@ def _run(out_dir: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _corpus(tmp_path: Path, records: list[dict]) -> Path:
-    d = tmp_path / "env_reports"
+    """An environments zone: the registry at the top, one directory per env."""
+    d = tmp_path / "environments"
     d.mkdir()
     (d / "_env_cache.json").write_text(json.dumps(
         {f"key{i}": r for i, r in enumerate(records)}))
     for r in records:
-        (d / f"{r['name']}.ENV.html").write_text("<html>STALE PAGE</html>")
+        (d / r["name"]).mkdir()
+        (d / r["name"] / f"{r['name']}.ENV.html").write_text("<html>STALE PAGE</html>")
     return d
 
 
@@ -52,7 +54,7 @@ def test_a_stale_page_is_rewritten_from_the_record(tmp_path):
     d = _corpus(tmp_path, [env_record(name="alpha")])
     r = _run(d)
     assert r.returncode == 0, r.stdout + r.stderr
-    page = (d / "alpha.ENV.html").read_text()
+    page = (d / "alpha" / "alpha.ENV.html").read_text()
     assert "STALE PAGE" not in page
     assert "Bioinfo install report" in page
 
@@ -60,17 +62,17 @@ def test_a_stale_page_is_rewritten_from_the_record(tmp_path):
 def test_it_is_idempotent(tmp_path):
     d = _corpus(tmp_path, [env_record(name="alpha")])
     _run(d)
-    first = (d / "alpha.ENV.html").read_text()
+    first = (d / "alpha" / "alpha.ENV.html").read_text()
     second_run = _run(d)
     assert "0 stale" in second_run.stdout
-    assert (d / "alpha.ENV.html").read_text() == first
+    assert (d / "alpha" / "alpha.ENV.html").read_text() == first
 
 
 def test_check_writes_nothing_and_exits_nonzero_when_stale(tmp_path):
     d = _corpus(tmp_path, [env_record(name="alpha")])
     r = _run(d, "--check")
     assert r.returncode == 1, r.stdout
-    assert (d / "alpha.ENV.html").read_text() == "<html>STALE PAGE</html>"
+    assert (d / "alpha" / "alpha.ENV.html").read_text() == "<html>STALE PAGE</html>"
     assert "STALE" in r.stdout
 
 
@@ -85,14 +87,14 @@ def test_it_never_touches_the_records(tmp_path):
     not be able to upgrade one. If this script could rewrite `_env_cache.json`,
     `recipe.yaml` or `attestation.json`, a renderer bug would become a provenance bug."""
     d = _corpus(tmp_path, [env_record(name="alpha")])
-    (d / "alpha.recipe.yaml").write_text(yaml.safe_dump(
+    (d / "alpha" / "alpha.recipe.yaml").write_text(yaml.safe_dump(
         {"name": "alpha", "version": "1", "content_digest": "sha256:" + "ab" * 32}))
-    (d / "alpha.attestation.json").write_text('{"provenance": "original"}')
-    before = {p.name: p.read_bytes() for p in d.iterdir()
-              if p.name in ("_env_cache.json", "alpha.recipe.yaml", "alpha.attestation.json")}
+    (d / "alpha" / "alpha.attestation.json").write_text('{"provenance": "original"}')
+    records = [d / "_env_cache.json", d / "alpha" / "alpha.recipe.yaml", d / "alpha" / "alpha.attestation.json"]
+    before = {p: p.read_bytes() for p in records}
     _run(d)
-    for name, blob in before.items():
-        assert (d / name).read_bytes() == blob, f"{name} was modified"
+    for p, blob in before.items():
+        assert p.read_bytes() == blob, f"{p.name} was modified"
 
 
 def test_a_broken_recipe_render_does_not_block_the_env_report(tmp_path):
@@ -109,15 +111,15 @@ def test_a_broken_recipe_render_does_not_block_the_env_report(tmp_path):
                      shipped_binaries=[{"command": "make install", "name": "talos",
                                         "assurance": "commit_pin", "verified": True}])
     d = _corpus(tmp_path, [rec])
-    (d / "talos_like.recipe.yaml").write_text(yaml.safe_dump(
+    (d / "talos_like" / "talos_like.recipe.yaml").write_text(yaml.safe_dump(
         {"name": "talos_like", "version": "1", "shipped_binaries": rec["shipped_binaries"]}))
-    (d / "talos_like.recipe.md").write_text("STALE RECIPE")
+    (d / "talos_like" / "talos_like.recipe.md").write_text("STALE RECIPE")
     r = _run(d)
     # the ENV report was corrected…
-    assert "STALE PAGE" not in (d / "talos_like.ENV.html").read_text()
-    assert "FAILS the honesty contract" in (d / "talos_like.ENV.html").read_text()
+    assert "STALE PAGE" not in (d / "talos_like" / "talos_like.ENV.html").read_text()
+    assert "FAILS the honesty contract" in (d / "talos_like" / "talos_like.ENV.html").read_text()
     # …the unrenderable view was left alone rather than replaced by a guess…
-    assert (d / "talos_like.recipe.md").read_text() == "STALE RECIPE"
+    assert (d / "talos_like" / "talos_like.recipe.md").read_text() == "STALE RECIPE"
     # …and the failure was NAMED, not swallowed.
     assert "would not render" in r.stdout
     assert r.returncode == 2, "an unrenderable view must not exit green"
@@ -143,6 +145,6 @@ def test_the_flags_do_not_write(tmp_path, flag):
     falls through to the default action. That wart is not repeated here: argparse owns the
     flags, so `-h` prints usage and exits without touching a byte."""
     d = _corpus(tmp_path, [env_record(name="alpha")])
-    before = (d / "alpha.ENV.html").read_text()
+    before = (d / "alpha" / "alpha.ENV.html").read_text()
     _run(d, flag)
-    assert (d / "alpha.ENV.html").read_text() == before
+    assert (d / "alpha" / "alpha.ENV.html").read_text() == before

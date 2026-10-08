@@ -457,7 +457,7 @@ class TestReferenceRebind:
         Which is the workspace reports zone — already redirected at this test's
         tmp_path by the root conftest, so there is nothing to override here."""
         from agent.skills import workspace
-        reports = workspace.reports_dir()
+        reports = workspace.env_dir("e")
         (reports / f"{name}.workflow.yaml").write_text(yaml.safe_dump(spec))
         return name
 

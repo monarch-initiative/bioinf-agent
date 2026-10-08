@@ -74,7 +74,7 @@ def _cfg(tmp_path):
 
 def _reports():
     from agent.skills import workspace
-    return workspace.reports_dir()
+    return workspace.env_dir("w_env")
 
 
 def _rec(**over):

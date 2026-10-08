@@ -256,7 +256,7 @@ def _live_records() -> set[str]:
     dirs, and the user's REAL workspace."""
     out: set[str] = set()
     for base in ([_REPO / d for d in _RECORD_DIRS]
-                 + [REAL_WORKSPACE / "reports", REAL_WORKSPACE / "scratch"]):
+                 + [REAL_WORKSPACE / "environments", REAL_WORKSPACE / "scratch"]):
         if base.exists():
             out |= {str(p) for p in base.rglob("*.json")}
     return out

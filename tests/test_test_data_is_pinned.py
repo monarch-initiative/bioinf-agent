@@ -539,7 +539,7 @@ def _inventory(tmp_path: Path, spec: dict, **kw):
     "where the writer put it" and "where the reader looks" are one path."""
     from agent.skills.resources import list_pipelines
     from agent.skills import workspace
-    d = workspace.reports_dir()
+    d = workspace.env_dir("x")
     (d / f"{spec['workflow_name']}.workflow.yaml").write_text(yaml.safe_dump(spec))
     return list_pipelines({}, **kw)["workflows"][0]
 

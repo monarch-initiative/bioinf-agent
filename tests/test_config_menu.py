@@ -319,18 +319,19 @@ def test_project_name_rule_still_admits_every_real_name(tmp_path):
 
 
 def test_all_four_zones_are_required_in_the_spec(cfgmod):
-    """The menu (both renderers) must not offer 'skip' for any zone (menu
-    review, 2026-09-18): scratch + common_data are what the run primitives
-    refuse without, containers is where every staged .sif lands, reports is
-    where the record mirrors. Menu-level by design: the loader gate was
-    measured at 153 fixture breaks and deliberately not taken."""
+    """The menu (both renderers) must not offer 'skip' for any zone: scratch +
+    common_data are what the run primitives refuse without, environments is
+    where every staged image lands with its record beside it, pipelines is
+    where a rendered pipeline is copied to run. Menu-level by design: the
+    loader gate was measured at 153 fixture breaks and deliberately not taken."""
     required = {k for k, _, _, req in cfgmod.ZONES if req}
     assert required == {k for k, _, _, _ in cfgmod.ZONES}
+    assert set(cfgmod.ZONE_LABELS.values()) == {"scratch", "common_data", "environments", "pipelines"}
 
 
 def test_local_zone_defaults_are_the_flat_convention_not_a_resolver_lookup(cfgmod):
     """User-set convention (menu review): ~/bioinf_workspace/{scratch,
-    common_data, containers, reports} — flat, zone-named, and NOT routed
+    common_data, environments, pipelines} — flat, zone-named, and NOT routed
     through workspace_root(), whose pointer on an older machine made the
     offered defaults follow a legacy directory and read as broken. (The two
     earlier shapes were both wrong: a nest under scratch/local_env/ filed the
@@ -341,8 +342,8 @@ def test_local_zone_defaults_are_the_flat_convention_not_a_resolver_lookup(cfgmo
     base = _P.home() / "bioinf_workspace"
     assert d["agent_scratch_target"] == f"{base}/scratch/"
     assert d["agent_common_data_target"] == f"{base}/common_data/"
-    assert d["container_upload_target"] == f"{base}/containers/"
-    assert d["agent_reports_target"] == f"{base}/reports/"
+    assert d["container_upload_target"] == f"{base}/environments/"
+    assert d["agent_pipelines_target"] == f"{base}/pipelines/"
 
 
 def test_a_required_zone_is_never_offered_a_decline(cfgmod, monkeypatch):

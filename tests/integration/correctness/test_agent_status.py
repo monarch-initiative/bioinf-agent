@@ -92,8 +92,8 @@ def test_agent_status_top_level_shape(tmp_path):
     # agent carrying a "look in env_reports/" habit is looking at a directory
     # that is not there any more.
     ws = rec["workspace"]
-    assert {"workspace_root", "workspace_source", "reports", "scratch",
-            "envs", "containers", "resources"} <= set(ws)
+    assert {"workspace_root", "workspace_source", "environments", "scratch",
+            "envs", "pipelines", "resources"} <= set(ws)
     assert ws["workspace_source"] in ("env", "default")
 
 
@@ -130,7 +130,7 @@ def test_drafts_summary_extracts_useful_fields(tmp_path):
             "verifications": {"dorado": {"verify_output": "2.0.0"}},
         },
     })
-    rows = _drafts_summary(ps, _FakeEnvCache(), tmp_path)
+    rows = _drafts_summary(ps, _FakeEnvCache())
     assert len(rows) == 1
     r = rows[0]
     assert r["pipeline_id"] == "dorado_install"
@@ -146,7 +146,7 @@ def test_drafts_summary_fault_tolerant(tmp_path):
     """A PipelineState-like object without `_drafts` should NOT crash the
     whole call — degrades to `[]` (empty list)."""
     obj = MagicMock(spec=[])   # no attrs
-    rows = _drafts_summary(obj, _FakeEnvCache(), tmp_path)
+    rows = _drafts_summary(obj, _FakeEnvCache())
     # Either empty (graceful) or {error: ...} — both are tolerated by the
     # higher-level call. We just require it's a list.
     assert isinstance(rows, list)
@@ -160,8 +160,8 @@ def test_drafts_summary_fault_tolerant(tmp_path):
 def test_frozen_envs_summary_attaches_deliverable_paths(tmp_path):
     """Frozen envs surface their deliverable paths (ENV.html, attestation,
     recipe) when those files exist on disk — None when they don't."""
-    env_reports = tmp_path / "env_reports"
-    env_reports.mkdir()
+    from agent.skills import workspace
+    env_reports = workspace.env_dir("bioinf_samtools")      # the sandboxed workspace
     # Create deliverables for one env but not the other
     (env_reports / "bioinf_samtools.ENV.html").write_text("<html>")
     (env_reports / "bioinf_samtools.attestation.json").write_text("{}")
@@ -181,7 +181,7 @@ def test_frozen_envs_summary_attaches_deliverable_paths(tmp_path):
             "image_digest": "sha256:xyz",
         },
     })
-    rows = _frozen_envs_summary(cache, env_reports)
+    rows = _frozen_envs_summary(cache)
     assert len(rows) == 2
 
     by_name = {r["name"]: r for r in rows}
@@ -202,8 +202,8 @@ def test_frozen_envs_summary_attaches_deliverable_paths(tmp_path):
 def test_sealed_workflows_summary_walks_workflow_yamls(tmp_path):
     """One row per workflow.yaml on disk, with the RUN.html dashboard sibling
     when it exists, and `validated_in_shipped_image` surfaced from the spec."""
-    er = tmp_path / "env_reports"
-    er.mkdir()
+    from agent.skills import workspace
+    er = workspace.env_dir("wgs_env")           # specs are filed under their env
     # A complete workflow (spec + run dashboard)
     (er / "wgs.workflow.yaml").write_text(yaml.safe_dump({
         "workflow_name": "wgs",
@@ -221,7 +221,7 @@ def test_sealed_workflows_summary_walks_workflow_yamls(tmp_path):
         "pipeline_steps": [],
     }))
 
-    rows = _sealed_workflows_summary(er)
+    rows = _sealed_workflows_summary()
     by_name = {r["name"]: r for r in rows}
     assert "wgs" in by_name and "rnaseq" in by_name
 

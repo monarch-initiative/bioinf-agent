@@ -722,7 +722,7 @@ function renderEnvs() {
     <p class="hint">Where the agent may run jobs. <b>local</b> is this machine —
     a first-class environment that unlocks production runs on your own hardware;
     <b>ssh</b> is a remote machine (an HPC cluster / external compute resource).
-    Each env declares the same kind of four zones, so data processing happens in
+    Each env declares the same four zones, so data processing happens in
     the same way between compute resources (local, or remote HPC / external
     compute).</p>
     <div class="leghead">the compute env directories (* = required)</div>

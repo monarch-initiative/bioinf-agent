@@ -37,7 +37,7 @@ FILES = [".pipeline/MANIFEST.sha256", ".pipeline/pipeline.yaml", "launcher.sh", 
 def sealed() -> str:
     """The fixture spec written to the sandbox reports zone, as seal writes it."""
     spec = sealed_rnaseq_spec()
-    out = write_workflow_spec(spec.model_dump(), {})
+    out = write_workflow_spec(spec.model_dump(), {}, env_name=CACHED_ENV["name"])
     assert "workflow_spec_path" in out, out
     return spec.workflow_name
 
@@ -166,7 +166,7 @@ class TestRefusals:
         assert out["outcome"] == "proven" and "stranded: 'yes'" not in params.read_text()
 
     def test_a_malformed_spec_on_disk_is_refused_not_scraped(self, sealed):
-        path = workspace.reports_dir() / f"{sealed}.workflow.yaml"
+        path = workspace.sealed_workflow_path(sealed)
         path.write_text("workflow_name: x\n")
         out = _tool(sealed_workflow=sealed)
         assert out["code"] == "pipeline.spec_invalid"

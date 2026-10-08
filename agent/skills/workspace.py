@@ -11,8 +11,9 @@ in another. Concretely:
     works; delete it and the *system* is gone, but never your artifacts.
 
 ``workspace_root()`` — THE ARTIFACTS
-    Everything the agent PRODUCES: ENV/RUN reports, build recipes, sealed
-    specs (``reports/``), staged container tarballs (``containers/``), job
+    Everything the agent PRODUCES: one directory per environment holding its
+    image tarball, ENV report, recipes, attestation and the workflows sealed on
+    it (``environments/<name>/``), rendered pipelines (``pipelines/``), job
     state and drafts (``scratch/``). Default ``~/bioinf_workspace`` —
     deliberately the same place the config menu offers as the local compute
     env's zone defaults, so one folder holds everything the agent makes.
@@ -91,11 +92,16 @@ def workspace_root() -> Path:
 #     resources    expensive to refetch, but refetchable — setup pulls them
 #
 #   ARTIFACTS (under workspace_root() — they outlive any clone):
-#     scratch      delete freely             never share
-#     containers   delete, rebuild from the frozen env    share as .sif
-#     reports      NEVER delete — the record    it IS the deliverable
-#     pipelines    delete, re-render from the sealed workflow   hand over as a directory
-#     common_data  delete, refetch from the source URL the record names
+#     scratch       delete freely — job state, drafts, step logs, the bridge's receipts
+#     environments  NEVER delete — one directory per env: the record (ENV report,
+#                   recipes, attestation, every workflow sealed on it with its RUN
+#                   page) beside the image tarball it describes; the registry
+#                   (_env_cache.json) at the top. The tarball alone is rebuildable
+#                   from the recipe; the rest IS the deliverable
+#     pipelines     delete, re-render from the sealed workflow   hand over as a directory
+#     common_data   delete, refetch from the source URL the record names
+#     experiments   delete freely — headless runs of the agent (scripts/experiments.py),
+#                   each one a transcript plus the isolated workspace it produced
 #
 # Local zones auto-create on demand. The no-auto-mkdir rule is a CLUSTER rule
 # about the user's territory; here the agent owns these directories, and a
@@ -122,20 +128,56 @@ def conda_envs_dir() -> Path:
     return _zone(_envs_path())
 
 
-def images_dir() -> Path:
-    """Container tarballs staged for Apptainer conversion. An ARTIFACT —
-    ``<workspace>/containers``, the same name the config menu offers as the
-    local compute env's container zone. Rebuildable from the frozen env."""
-    return _zone(workspace_root() / "containers")
+ENVIRONMENTS = "environments"
+ENV_CACHE_FILE = "_env_cache.json"
+WORKFLOW_SUFFIX = ".workflow.yaml"
 
 
-def reports_dir() -> Path:
-    """ENV reports, attestations, recipes, sealed WorkflowSpecs, RUN dashboards.
+def environments_dir() -> Path:
+    """The environments zone — ``<workspace>/environments``, the same folder the
+    config menu offers as the local compute env's container zone. One
+    subdirectory per frozen env (``env_dir``) and the registry at the top
+    (``env_cache_path``)."""
+    return _zone(workspace_root() / ENVIRONMENTS)
 
-    The product. Small, textual, portable — what an auditor or a paper's
-    supplement receives. A peer of the other zones, not a child of any.
-    """
-    return _zone(workspace_root() / "reports")
+
+def env_dir(name: str) -> Path:
+    """One frozen environment's directory: ``<name>.tar`` once it ships, the ENV
+    report, attestation and both recipe forms, and every workflow sealed on the
+    env (``<workflow>.workflow.yaml`` + ``<workflow>.RUN.html``). Created on
+    demand — the caller is about to write."""
+    return _zone(environments_dir() / name)
+
+
+def env_cache_path() -> Path:
+    """The registry of frozen envs (the EnvCache file)."""
+    return environments_dir() / ENV_CACHE_FILE
+
+
+def sealed_workflow_paths() -> list[Path]:
+    """Every sealed workflow spec, across every env directory, sorted by name."""
+    root = workspace_root() / ENVIRONMENTS
+    if not root.is_dir():
+        return []
+    return sorted((p for p in root.glob(f"*/*{WORKFLOW_SUFFIX}") if p.is_file()),
+                  key=lambda p: (p.name, str(p)))
+
+
+def sealed_workflow_names() -> list[str]:
+    return [p.name[: -len(WORKFLOW_SUFFIX)] for p in sealed_workflow_paths()]
+
+
+def find_sealed_workflows(name: str) -> list[Path]:
+    """Every spec named ``name`` — more than one means two envs each sealed a
+    workflow under the same name, which the seal's overwrite guard refuses."""
+    return [p for p in sealed_workflow_paths() if p.name == f"{name}{WORKFLOW_SUFFIX}"]
+
+
+def sealed_workflow_path(name: str) -> Path | None:
+    """The one sealed spec named ``name``, or None when there is none or the name
+    is not unique (``find_sealed_workflows`` shows the duplicates)."""
+    found = find_sealed_workflows(name)
+    return found[0] if len(found) == 1 else None
 
 
 def common_data_dir() -> Path:
@@ -153,6 +195,13 @@ def pipelines_dir() -> Path:
     template, the explain page). An ARTIFACT: rendered from a sealed workflow,
     handed over as a directory, run without the agent."""
     return _zone(workspace_root() / "pipelines")
+
+
+def experiments_dir() -> Path:
+    """Headless runs of the agent (scripts/experiments.py) — one directory per
+    experiment, one per run under it, each holding the transcript and the isolated
+    workspace that run produced. An ARTIFACT: delete freely."""
+    return _zone(workspace_root() / "experiments")
 
 
 def scratch_dir(*parts: str) -> Path:
@@ -225,11 +274,11 @@ def zones() -> dict[str, str]:
         "envs":             str(_envs_path()),
         "resources":        str(_resources_path()),
         # ARTIFACT zones — under workspace_root(), they outlive any clone.
-        "containers":       str(root / "containers"),
-        "reports":          str(root / "reports"),
+        "environments":     str(root / ENVIRONMENTS),
         "scratch":          str(root / "scratch"),
         "pipelines":        str(root / "pipelines"),
         "common_data":      str(root / "common_data"),
+        "experiments":      str(root / "experiments"),
         # Through the resolver, never re-derived: the config home is DECOUPLED
         # from the workspace (fixed ~/.bioinf_agent), and a second spelling
         # here is exactly how the doctor once validated a file the agent

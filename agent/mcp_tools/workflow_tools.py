@@ -435,6 +435,13 @@ def _next_superseded_path(out_dir: Path, wname: str) -> Path:
         n += 1
 
 
+def _env_name_of(frozen: dict, draft: dict) -> str:
+    """The env directory a seal files under: the frozen record's name, else the
+    draft's conda env (the name freeze was given)."""
+    return (frozen.get("name") or frozen.get("env_name") or draft.get("conda_env")
+            or frozen.get("request_key", "env").split("|")[0])
+
+
 def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[bool, Optional[dict]]:
     """The seal write-guard.
 
@@ -463,9 +470,12 @@ def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[boo
     and append-only, so a re-freeze cannot silently clobber a shipped env."""
     import yaml
     wname = wf.get("workflow_name", "")
-    path = out_dir / f"{wname}.workflow.yaml"
-    if not path.exists():
+    # Across every env directory: a workflow name is unique over the whole store,
+    # so a re-seal on a different env finds the prior spec where it was filed.
+    found = _workspace.find_sealed_workflows(wname)
+    if not found:
         return True, None
+    path = found[0]
     try:
         prior = yaml.safe_load(path.read_text()) or {}
     except Exception:
@@ -487,7 +497,7 @@ def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[boo
             new_env_identity=sorted(_spec_env_identity(wf)),
             existing_validated_steps=_validated_step_count(prior),
             new_validated_steps=_validated_step_count(wf))
-    backup = _next_superseded_path(out_dir, wname)
+    backup = _next_superseded_path(path.parent, wname)
     path.rename(backup)
     wf["superseded"] = {"replaced_spec": backup.name,
                         "at": datetime.now(timezone.utc).isoformat(),
@@ -851,7 +861,8 @@ def seal_workflow(
                       f"was run, and a pass/fail badge cannot show the difference."),
         )
     if write:
-        out_dir = _workspace.reports_dir()
+        env_name = _env_name_of(fr, draft)
+        out_dir = _workspace.env_dir(env_name)
         # refuse to silently clobber a prior sealed spec that
         # pins a DIFFERENT env (locus accretion writes through). See
         # _guard_spec_overwrite — this is the terminal-WRITE gate, and it fires
@@ -861,7 +872,7 @@ def seal_workflow(
             return refusal
         if wf.get("superseded"):
             result["superseded"] = wf["superseded"]
-        out = write_workflow_spec(wf, _ms.config)
+        out = write_workflow_spec(wf, _ms.config, env_name=env_name)
         if out.get("error"):
             return broke("seal.spec_write_failed", success=False, **out)
         result.update(out)
@@ -1156,8 +1167,7 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
         # env_status/pipeline_status nominal stamps that were never transitioned
         #. state_checks binds the re-earned frozen/sealed checks.
         from agent.skills.pipeline_state import current_state, state_checks
-        _reports_dir = _workspace.reports_dir()
-        _state = current_state(draft, **state_checks(_ms._env_cache, _reports_dir))
+        _state = current_state(draft, **state_checks(_ms._env_cache))
         r["summary"] = {
             "conda_env":              draft.get("conda_env"),
             "state":                  _state,

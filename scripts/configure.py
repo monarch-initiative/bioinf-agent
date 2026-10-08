@@ -90,11 +90,12 @@ DIR_DEFAULT_PERMS = ["file_name_only"]
 #: key, `default_perms` the tokens the bridge needs to use the zone as intended
 #: (the menu's "defaults" reset writes exactly these), `required` whether the
 #: menu insists the zone be declared. ALL FOUR are required: scratch +
-#: common_data are what the run primitives refuse
-#: without, containers is where every staged .sif lands, and reports is where
-#: the record mirrors — an env missing any of them fails far from where it was
-#: typed. Same four zones the local workspace has — full parity, so a
-#: production run is the same kind of thing on either locus.
+#: common_data are what the run primitives refuse without, environments is
+#: where every staged image lands with its record beside it, and pipelines is
+#: where a rendered pipeline is copied to run — an env missing any of them
+#: fails far from where it was typed. The same four zones the local workspace
+#: has — full parity, so a production run is the same kind of thing on either
+#: locus.
 ZONES = [
     ("agent_scratch_target", "agent sandbox — job working dirs, logs, per-run staging",
      ["file_name_only", "upload", "download", "exec"], True),
@@ -103,18 +104,17 @@ ZONES = [
     # `download` has no consumer in the staging flow (verification is a remote
     # checksum) but is granted by default so a staged .sif can be pulled back
     # whenever needed (user call).
-    ("container_upload_target", "where .sif container images are staged",
+    ("container_upload_target", "environments — staged images, each with its record beside it",
      ["file_name_only", "upload", "download"], True),
-    # No `exec`: reports are read, never run.
-    ("agent_reports_target", "the record — ENV/RUN reports mirrored next to the .sif",
-     ["file_name_only", "upload", "download"], True),
+    ("agent_pipelines_target", "pipelines — rendered pipelines copied here to run, with their run records",
+     ["file_name_only", "upload", "download", "exec"], True),
 ]
 
 ZONE_LABELS = {
     "agent_scratch_target": "scratch",
     "agent_common_data_target": "common_data",
-    "container_upload_target": "containers",
-    "agent_reports_target": "reports",
+    "container_upload_target": "environments",
+    "agent_pipelines_target": "pipelines",
 }
 
 #: Every compute_envs[] key the menu can write, in the order it writes them.
@@ -126,7 +126,7 @@ ENV_KEYS = (
     "name", "type", "host", "user", "job_manager", "email",
     "apptainer_module", "nextflow_module",
     "agent_scratch_target", "agent_common_data_target", "container_upload_target",
-    "agent_reports_target", "data_transfer", "slurm",
+    "agent_pipelines_target", "data_transfer", "slurm",
 )
 
 HEADER = """\
@@ -444,27 +444,28 @@ def ssh_defaults(user: str) -> dict[str, str]:
     validator requires — a breach of one zone must not reach another."""
     base = f"/scratch/{user}"
     return {
-        "agent_reports_target": f"{base}/CLAUDE_REPORTS/",
         "agent_scratch_target": f"{base}/CLAUDE_SCRATCH/",
         "agent_common_data_target": f"{base}/CLAUDE_GENOMES/",
-        "container_upload_target": f"{base}/CLAUDE_CONTAINERS/",
+        "container_upload_target": f"{base}/CLAUDE_ENVIRONMENTS/",
+        "agent_pipelines_target": f"{base}/CLAUDE_PIPELINES/",
     }
 
 
 def local_defaults() -> dict[str, str]:
-    """Conventional local layout — the four zones FLAT under
-    ~/bioinf_workspace, mirroring how `ssh_defaults` is a convention
-    (/scratch/{user}/CLAUDE_*) rather than a resolver lookup. A menu default
-    only, machine-independent on purpose: routing it through workspace_root()
-    once made the offered paths follow whatever dir this machine's older
-    setup had recorded, which read as broken. The zone names ARE the
-    directory names, so the structure explains itself."""
+    """Conventional local layout — the zones FLAT under ~/bioinf_workspace,
+    the same directories the agent writes to on this machine, mirroring how
+    `ssh_defaults` is a convention (/scratch/{user}/CLAUDE_*) rather than a
+    resolver lookup. A menu default only, machine-independent on purpose:
+    routing it through workspace_root() once made the offered paths follow
+    whatever dir this machine's older setup had recorded, which read as
+    broken. The zone names ARE the directory names, so the structure explains
+    itself."""
     base = Path.home() / workspace.DEFAULT_WORKSPACE_NAME
     return {
         "agent_scratch_target": f"{base}/scratch/",
         "agent_common_data_target": f"{base}/common_data/",
-        "container_upload_target": f"{base}/containers/",
-        "agent_reports_target": f"{base}/reports/",
+        "container_upload_target": f"{base}/{workspace.ENVIRONMENTS}/",
+        "agent_pipelines_target": f"{base}/pipelines/",
     }
 
 

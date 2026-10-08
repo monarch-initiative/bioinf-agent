@@ -65,9 +65,11 @@ def staged(tmp_path):
     text), so a re-render has something real to correct."""
     for name, uv in (("never", {"status": "not_attempted", "reason": "cluster inputs"}),
                      ("ran",   {"status": "verified", "reason": ""})):
-        (tmp_path / f"{name}.workflow.yaml").write_text(
+        env = tmp_path / "e"            # the env directory the specs are filed under
+        env.mkdir(exist_ok=True)
+        (env / f"{name}.workflow.yaml").write_text(
             yaml.safe_dump(_sealed_spec(name, uv)))
-        (tmp_path / f"{name}.RUN.html").write_text(
+        (env / f"{name}.RUN.html").write_text(
             "<html><body><tr><td>Usage self-tested</td><td>False</td></tr></body></html>")
     return tmp_path
 
@@ -78,7 +80,7 @@ def _run(*args, cwd=ROOT):
 
 
 def test_check_reports_stale_pages_and_writes_nothing(staged):
-    before = {p: p.read_text() for p in staged.glob("*.RUN.html")}
+    before = {p: p.read_text() for p in staged.glob("*/*.RUN.html")}
     r = _run("--dir", str(staged), "--check")
     assert r.returncode == 1, f"--check must fail on a stale tree:\n{r.stdout}{r.stderr}"
     assert "STALE" in r.stdout
@@ -90,8 +92,8 @@ def test_rerender_replaces_the_bare_bool_with_the_stated_three_state(staged):
     r = _run("--dir", str(staged))
     assert r.returncode == 0, f"{r.stdout}{r.stderr}"
 
-    never = (staged / "never.RUN.html").read_text()
-    ran = (staged / "ran.RUN.html").read_text()
+    never = (staged / "e" / "never.RUN.html").read_text()
+    ran = (staged / "e" / "ran.RUN.html").read_text()
     assert "not attempted" in never
     assert "Usage self-tested</td><td>False" not in never, (
         "the page still renders the verdict nobody reached")
@@ -102,7 +104,7 @@ def test_rerender_replaces_the_bare_bool_with_the_stated_three_state(staged):
 
 
 def test_only_the_html_is_ever_rewritten(staged):
-    specs = {p: p.read_text() for p in staged.glob("*.workflow.yaml")}
+    specs = {p: p.read_text() for p in staged.glob("*/*.workflow.yaml")}
     _run("--dir", str(staged))
     for p, text in specs.items():
         assert p.read_text() == text, (
@@ -114,15 +116,15 @@ def test_an_unparseable_spec_is_reported_and_its_page_left_alone(staged):
     """A spec that no longer validates is a real failure, and the honest response is to
     say so and STOP — not to render a confident page from a record we could not read, and
     not to exit 0 as if absence of a re-render were success."""
-    (staged / "broken.workflow.yaml").write_text("workflow_name: broken\n")  # missing required
-    (staged / "broken.RUN.html").write_text("<html>stale but untouched</html>")
+    (staged / "e" / "broken.workflow.yaml").write_text("workflow_name: broken\n")  # missing required
+    (staged / "e" / "broken.RUN.html").write_text("<html>stale but untouched</html>")
 
     r = _run("--dir", str(staged))
     assert r.returncode == 2, f"{r.stdout}{r.stderr}"
     assert "broken" in r.stdout and "left untouched" in r.stdout
-    assert (staged / "broken.RUN.html").read_text() == "<html>stale but untouched</html>"
+    assert (staged / "e" / "broken.RUN.html").read_text() == "<html>stale but untouched</html>"
     # the healthy siblings are still corrected — one bad artifact does not block the rest
-    assert "not attempted" in (staged / "never.RUN.html").read_text()
+    assert "not attempted" in (staged / "e" / "never.RUN.html").read_text()
 
 
 def test_the_repo_dashboards_are_current():
@@ -136,7 +138,7 @@ def test_the_repo_dashboards_are_current():
     compliance defect this whole change set exists to remove. It would be absurd to
     reintroduce it here. A skip is visible in the report; a vacuous pass is not."""
     from _artifacts import REPORTS
-    specs = sorted(REPORTS.glob("*.workflow.yaml"))
+    specs = sorted(REPORTS.glob("*/*.workflow.yaml"))
     if not specs:
         pytest.skip(f"no sealed workflows in {REPORTS} — nothing to ratchet; this check "
                     f"is meaningful only on a machine that has driven a seal")

@@ -574,7 +574,7 @@ class TestSubmissionManifest:
 
         manifest_path = result["manifest_path"]
         from agent.skills import workspace
-        expected = (workspace.reports_dir() / "job_submissions" / "demo"
+        expected = (workspace.scratch_dir() / "job_submissions" / "demo"
                     / "demo_run_555000.submission.json")
         assert manifest_path == str(expected)
         assert expected.exists()

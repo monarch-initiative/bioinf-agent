@@ -1659,7 +1659,7 @@ class EnvManager:
         platforms = platforms or ["linux-64"]
         env_yml = self.export_environment_yml(env_name, from_history=True)
         out = Path(out_path) if out_path else (
-            workspace.reports_dir() / f"{env_name}.conda-lock.yml"
+            workspace.env_dir(env_name) / f"{env_name}.conda-lock.yml"
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as td:

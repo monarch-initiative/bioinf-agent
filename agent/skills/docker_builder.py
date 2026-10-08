@@ -33,7 +33,7 @@ class DockerBuilder:
         self.config = config
         self.envs_dir = workspace.conda_envs_dir()
         # NO `self.output_dir`: the sole producer of a freeze tarball asks
-        # `workspace.images_dir()`, and `save_archive` mkdirs that parent on
+        # `workspace.env_dir(name)`, and `save_archive` mkdirs that parent on
         # demand — a config key here would relocate nothing.
 
     # -----------------------------------------------------------------------

@@ -104,15 +104,17 @@ def test_verify_frozen_true_only_when_green():
         "violated":  ({"image_digest": "sha256:A"}, [{"clause": "VALIDATED_IN_IMAGE"}]),
         "missing":   (None, []),
     })
-    checks = state_checks(ec, "/nonexistent")
+    checks = state_checks(ec)
     assert checks["verify_frozen"]("green") is True
     assert checks["verify_frozen"]("violated") is False
     assert checks["verify_frozen"]("missing") is False
 
 
-def _write_spec(reports_dir, name, *, env_request_key, image_digest):
+def _write_spec(_tmp, name, *, env_request_key, image_digest):
+    """Filed where seal files it: under an env directory in the sandboxed workspace."""
     import yaml
-    p = reports_dir / f"{name}.workflow.yaml"
+    from agent.skills import workspace
+    p = workspace.env_dir("some_env") / f"{name}.workflow.yaml"
     p.write_text(yaml.dump({
         "workflow_name": name,
         "env_request_key": env_request_key,
@@ -125,7 +127,7 @@ def test_spec_sealed_requires_existence_identity_and_a_live_digest(tmp_path):
     # the sealed spec pins env digest sha256:A via request_key rk-1
     _write_spec(tmp_path, "mywf", env_request_key="rk-1", image_digest="sha256:A")
     ec = _FakeEnvCache(records={"rk-1": {"image_digest": "sha256:A"}})   # digest live in cache
-    checks = state_checks(ec, tmp_path)
+    checks = state_checks(ec)
 
     # matches: sealed_as names it, frozen_as identity-matches, digest is live
     assert checks["spec_sealed"]({"sealed_as": ["mywf"], "frozen_as": "rk-1"}) is True
@@ -141,7 +143,7 @@ def test_spec_sealed_rejects_a_colliding_filename_from_another_pipeline(tmp_path
     env_request_key), or a stranger's spec would read as OUR seal."""
     _write_spec(tmp_path, "shared", env_request_key="rk-OTHER", image_digest="sha256:A")
     ec = _FakeEnvCache(records={"rk-OTHER": {"image_digest": "sha256:A"}})
-    checks = state_checks(ec, tmp_path)
+    checks = state_checks(ec)
     # our pipeline froze rk-MINE, but the on-disk spec belongs to rk-OTHER
     assert checks["spec_sealed"]({"sealed_as": ["shared"], "frozen_as": "rk-MINE"}) is False
 
@@ -151,7 +153,7 @@ def test_spec_sealed_false_when_the_pinned_env_is_evicted(tmp_path):
     EnvCache is not 'sealed' any more (self-heals down), never a bare os.stat."""
     _write_spec(tmp_path, "mywf", env_request_key="rk-1", image_digest="sha256:GONE")
     ec = _FakeEnvCache(records={"rk-1": {"image_digest": "sha256:STILL_HERE"}})
-    checks = state_checks(ec, tmp_path)
+    checks = state_checks(ec)
     assert checks["spec_sealed"]({"sealed_as": ["mywf"], "frozen_as": "rk-1"}) is False
 
 

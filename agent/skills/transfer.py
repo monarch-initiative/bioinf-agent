@@ -32,16 +32,14 @@ Zones (routed by where `remote_abs_path` lives on the env)
                      and recipe artifacts go here, reference DBs go in
                      common_data.
 
-  reports          — under env.agent_reports_target.path
+  pipelines        — under env.agent_pipelines_target.path
                      Authorization: env-implicit grant. NO project
-                     prefix (a report is named for the ARTIFACT, not
-                     for the session that sealed it). Where the record —
-                     ENV/RUN pages, attestations, sealed specs — is
-                     mirrored so it sits beside the .sif it describes,
-                     readable by anyone with cluster access. The target
-                     validator allows `upload`/`download` and never
-                     `exec`: the record is evidence, not an input to a
-                     job.
+                     prefix (a pipeline directory is named for the
+                     pipeline, and one artifact store serves every
+                     session). Where a rendered pipeline is copied to run
+                     on the env and where its run records land; the
+                     target validator requires `upload`, `download` and
+                     `exec`.
 
   project_path     — anywhere else on the env
                      Authorization: explicit. The path must longest-
@@ -392,7 +390,7 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
          env-target capability. No project-prefix isolation.
       3. container_upload zone: if under env.container_upload_target, check
          env-target capability. No project prefix (staged images are shared).
-      4. reports zone: if under env.agent_reports_target, check env-target
+      4. pipelines zone: if under env.agent_pipelines_target, check env-target
          capability. No project prefix (see below).
       5. project_path zone: otherwise, defer to check_permission which
          walks project.directories[] for the longest-prefix match.
@@ -402,7 +400,7 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
     scratch = compute_access.get_agent_scratch_target(env)
     common = compute_access.get_agent_common_data_target(env)
     container = compute_access.get_container_upload_target(env)
-    reports = compute_access.get_agent_reports_target(env)
+    pipelines = compute_access.get_agent_pipelines_target(env)
 
     # 1) scratch
     if scratch and _under(scratch.get("path") or "", remote_abs_path):
@@ -446,35 +444,26 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
                 "auth_target": "container_upload_target",
                 "container_root": (container.get("path") or "").rstrip("/")}
 
-    # 4) agent_reports_target — env-implicit grant, same shape as the three
-    # above. This is where the RECORD is mirrored so it sits next to the .sif
-    # it describes: a colleague with cluster access can read what an artifact
-    # IS without reaching the machine that produced it.
+    # 4) agent_pipelines_target — env-implicit grant, same shape as the three
+    # above: where a rendered pipeline directory is copied to run on the env and
+    # where its run records are read back from.
     #
     # No project-prefix isolation, for the same reason the container zone has
     # none: one workspace is one artifact store shared by many sessions, and a
-    # report is named for the artifact (`{name}.RUN.html`), not for the project
-    # that happened to seal it. Prefixing by project would file the same record
-    # under N names.
-    #
-    # The zone was declared, schema-validated, menu-offered and given an
-    # accessor, and NO router branch ever read it — so an `agent_reports_target`
-    # path fell through to project_path and was refused unless the user ALSO
-    # declared it as a project directory. A zone you can configure but cannot
-    # reach is the "gate present, absent in effect" shape the slurm caps were
-    # deleted for (see the removal note in compute_access).
-    if reports and _under(reports.get("path") or "", remote_abs_path):
+    # pipeline directory is named for the pipeline, not for the project that
+    # happened to render it.
+    if pipelines and _under(pipelines.get("path") or "", remote_abs_path):
         compute_access.check_env_target_capability(
-            project, env_name, reports, primitive_name,
-            "agent_reports_target")
-        return {"zone": "reports",
-                "auth_target": "agent_reports_target",
-                "reports_root": (reports.get("path") or "").rstrip("/")}
+            project, env_name, pipelines, primitive_name,
+            "agent_pipelines_target")
+        return {"zone": "pipelines",
+                "auth_target": "agent_pipelines_target",
+                "pipelines_root": (pipelines.get("path") or "").rstrip("/")}
 
     # 5) project_path
     # _ad_hoc has empty directories[] so this WILL raise PermissionDenied
     # for any abs path that isn't under scratch / common_data /
-    # container_upload_target / agent_reports_target — by design.
+    # container_upload_target / agent_pipelines_target — by design.
     compute_access.check_permission(
         project, env_name, remote_abs_path, primitive_name)
     return {"zone": "project_path",
@@ -486,13 +475,10 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
 # ---------------------------------------------------------------------------
 
 def _record_root() -> Path:
-    """Where transfer receipts and submission manifests are written.
-
-    The reports zone: these are the durable record of what moved where and which
-    job it fed, which is the thing you go looking for months later. NOT the
-    checkout — the record must outlive any clone.
-    """
-    return workspace.reports_dir()
+    """Where transfer receipts and submission manifests are written: the scratch
+    zone (``transfer_history/`` and ``job_submissions/`` under it). Every receipt
+    is also returned to the caller when the transfer or submission happens."""
+    return workspace.scratch_dir()
 
 
 def _short_hash(*parts: str) -> str:

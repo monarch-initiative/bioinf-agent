@@ -77,19 +77,22 @@ def _write_spec(dir_, spec_dict: dict) -> str:
     tests were exercising a parallel implementation that merely happened to agree.
     Call the real writer and a change in it reaches these tests.
     """
-    res = write_workflow_spec(spec_dict, {})
+    res = write_workflow_spec(spec_dict, {}, env_name=ENV)
     assert "workflow_spec_path" in res, f"write_workflow_spec refused the fixture: {res}"
     return res["workflow_spec_path"]
 
 
+ENV = "bioinf_talos"      # the env the fixture spec pins; its directory holds the specs
+
+
 @pytest.fixture()
 def reports_dir():
-    """The reports zone the tool actually reads. The root conftest has already
+    """The env directory the tool actually reads. The root conftest has already
     pointed the workspace at this test's tmp_path, so asking the resolver gives a
     hermetic directory AND the exact one `describe_sealed_step` will look in —
     no override, and no second spelling of the path to keep in sync."""
     from agent.skills import workspace
-    return workspace.reports_dir()
+    return workspace.env_dir(ENV)
 
 
 # ---------------------------------------------------------------------------

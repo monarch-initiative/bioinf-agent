@@ -142,16 +142,16 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
 
     # ---- where the deliverables land ---------------------------------------
     # write_workflow_spec and the Layer-2 {workflow}.RUN.html renderer both write
-    # to the workspace reports zone, which the root conftest has pointed at this
-    # test's tmp_path. Asking the resolver is what keeps the shim below writing
-    # where the real writer would.
+    # into the env's directory under the workspace, which the root conftest has
+    # pointed at this test's tmp_path. Asking the resolver is what keeps the shim
+    # below writing where the real writer would.
     from agent.skills import workspace
-    out_dir = workspace.reports_dir()
+    out_dir = workspace.env_dir("bioinf_fake_pkg")       # the env the fixture pins
 
     from agent.skills import spec_writer
     real_write = spec_writer.write_workflow_spec
 
-    def _shim_write(workflow: dict, _config: dict) -> dict:
+    def _shim_write(workflow: dict, _config: dict, env_name: str | None = None) -> dict:
         # Mirror the real writer: YAML only, no markdown guide (retired).
         from agent.models.core_data import WorkflowSpec
         import yaml as _yaml

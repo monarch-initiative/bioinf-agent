@@ -5,16 +5,12 @@ Each merging MCP tool can optionally pass `pipeline_id`; the accumulator
 appends or patches the right slot in a disk-backed draft so the LLM never
 has to hand-assemble the final spec.
 
-  Draft path  → data/pipeline_drafts/{pipeline_id}.draft.yaml   (during install)
-  Final path  → env_reports/{pipeline_name}_{version}.yaml      (after finalize)
+  Draft path  → <workspace>/scratch/pipeline_drafts/{pipeline_id}.draft.yaml
 
-The split keeps env_reports/ as the SHIPPABLE deliverables dir — a directory
-listing tells the operator exactly what env images exist on disk + their
-companion ENV.html/attestation/recipe. Drafts are workspace state and live
-under data/pipeline_drafts/ (sibling of data/jobs/), so a half-finished
-install isn't visually confused with a frozen artifact. Configurable via
-`paths.drafts_dir` (back-compat: falls back to `paths.pipelines_dir` if
-drafts_dir is unset, which preserves any caller still on the old layout).
+Drafts are in-flight state and live in the scratch zone, never beside the
+deliverables: a listing of environments/<name>/ shows only what shipped (the
+image, its ENV report, recipes, attestation and sealed workflows), so a
+half-finished install is never confused with a frozen artifact.
 
 The accumulator is opt-in: every merging tool also works without a
 pipeline_id (no merge, original return value unchanged). This preserves
@@ -74,10 +70,9 @@ def validation_covers(validation: dict, output_path: str) -> bool:
 class PipelineState:
     def __init__(self, config: dict):
         self.config = config
-        self.pipelines_dir = workspace.reports_dir()
         # Drafts live in scratch, NOT with the deliverables — see module docstring.
-        # A draft is in-flight state: listing the reports zone must show only what
-        # shipped.
+        # A draft is in-flight state: listing the environments zone must show only
+        # what shipped.
         self.drafts_dir = workspace.scratch_dir("pipeline_drafts")
         self._drafts: dict[str, dict] = {}
         self._load_existing_drafts()
@@ -205,20 +200,11 @@ class PipelineState:
         return out
 
     def _known_draft_ids(self) -> set[str]:
-        """Draft ids present on disk right now, across both the drafts dir and the
-        legacy pipelines dir. One reading of "which drafts exist", shared by
-        `all_drafts` and `_load_existing_drafts`."""
-        ids: set[str] = set()
-        for d in self._draft_scan_dirs():
-            if d.exists():
-                ids.update(f.name.removesuffix(".draft.yaml") for f in d.glob("*.draft.yaml"))
-        return ids
-
-    def _draft_scan_dirs(self) -> list[Path]:
-        dirs = [self.drafts_dir]
-        if self.pipelines_dir != self.drafts_dir:
-            dirs.append(self.pipelines_dir)
-        return dirs
+        """Draft ids present on disk right now. One reading of "which drafts
+        exist", shared by `all_drafts` and `_load_existing_drafts`."""
+        if not self.drafts_dir.exists():
+            return set()
+        return {f.name.removesuffix(".draft.yaml") for f in self.drafts_dir.glob("*.draft.yaml")}
 
     def pop_for_finalize(self, pipeline_id: str) -> Optional[dict]:
         """Remove the in-memory draft and return it. Caller deletes the file."""
@@ -678,23 +664,16 @@ class PipelineState:
         return data if isinstance(data, dict) else None
 
     def _load_existing_drafts(self) -> None:
-        """Recover drafts from disk on server startup. Scans both the new
-        drafts_dir AND the legacy pipelines_dir location so an upgrade picks
-        up drafts that pre-date the split. New writes always go to drafts_dir."""
-        seen: set[str] = set()
-        for d in self._draft_scan_dirs():
-            if not d.exists():
+        """Recover drafts from disk on server startup."""
+        if not self.drafts_dir.exists():
+            return
+        for f in self.drafts_dir.glob("*.draft.yaml"):
+            pid = f.name.removesuffix(".draft.yaml")
+            try:
+                with open(f) as fp:
+                    self._drafts[pid] = yaml.safe_load(fp) or {}
+            except Exception:
                 continue
-            for f in d.glob("*.draft.yaml"):
-                pid = f.name.removesuffix(".draft.yaml")
-                if pid in seen:
-                    continue
-                seen.add(pid)
-                try:
-                    with open(f) as fp:
-                        self._drafts[pid] = yaml.safe_load(fp) or {}
-                except Exception:
-                    continue
 
 
 # Lists whose elements are merged by their `step` field rather than replaced
@@ -800,12 +779,11 @@ def current_state(draft: Optional[dict], *, verify_frozen, spec_sealed) -> str:
     return DRAFT
 
 
-def state_checks(env_cache, reports_dir) -> dict:
+def state_checks(env_cache) -> dict:
     """Build current_state's two RE-EARNED checks, bound to the live deps. ONE
     definition, injected by every caller — so agent_status and the resume summary
     ask the IDENTICAL question rather than forking the derivation (this codebase's
-    signature defect). `reports_dir` is where {name}.workflow.yaml lives."""
-    reports_dir = Path(reports_dir)
+    signature defect). Sealed specs are found through the workspace resolver."""
 
     def verify_frozen(request_key: str) -> bool:
         try:
@@ -830,8 +808,8 @@ def state_checks(env_cache, reports_dir) -> dict:
             live_digests = set()
         frozen_key = draft.get("frozen_as")
         for nm in names:
-            p = reports_dir / f"{nm}.workflow.yaml"
-            if not p.exists():
+            p = workspace.sealed_workflow_path(nm)
+            if p is None:
                 continue
             try:
                 spec = yaml.safe_load(p.read_text()) or {}

@@ -85,8 +85,8 @@ def test_the_meta_payload_is_the_field_spec_not_a_copy(cfgmod, client):
     assert meta["project_name_pattern"] == compute_access.PROJECT_NAME_RE.pattern
     # ssh templates carry the {user} slot the page substitutes; local defaults
     # are real resolved paths on this machine.
-    assert all("{user}" in p for p in meta["ssh_zone_templates"].values())
-    assert all(p.startswith("/") for p in meta["local_zone_defaults"].values())
+    assert all("{user}" in p for p in meta["ssh_zone_templates"].values() if p)
+    assert all(p.startswith("/") for p in meta["local_zone_defaults"].values() if p)
 
 
 def test_the_page_carries_the_spec_and_the_lock(client):

@@ -116,7 +116,7 @@ _docker         = DockerBuilder(config)
 _validator      = OutputValidator(config)
 _pipeline_state = PipelineState(config)
 _job_manager    = JobManager(config)
-_env_cache      = _freeze.EnvCache(workspace.reports_dir() / "_env_cache.json")
+_env_cache      = _freeze.EnvCache(workspace.env_cache_path())
 
 # Reap stale PID files from prior agent sessions whose owning process has
 # already exited. Living services owned by other processes are left alone.
@@ -193,8 +193,7 @@ def _shrink_stdio_for_response(result: dict, *, label: str) -> dict:
         return result
 
     import time
-    log_dir = workspace.reports_dir() / "install_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = workspace.scratch_dir("install_logs")
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in label)[:60]
     log_path = log_dir / f"{safe}.{int(time.time() * 1000)}.log"
     full = (f"=== COMMAND ===\n{result.get('command','')}\n"

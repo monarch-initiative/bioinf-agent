@@ -30,7 +30,7 @@ could not read.
     python scripts/rerender_env_reports.py             # re-render all, report diffs
     python scripts/rerender_env_reports.py --check     # report only; write nothing
     python scripts/rerender_env_reports.py NAME ...    # just these envs
-    python scripts/rerender_env_reports.py --dir PATH  # a corpus elsewhere
+    python scripts/rerender_env_reports.py --dir PATH  # an environments zone elsewhere
 """
 from __future__ import annotations
 
@@ -116,11 +116,11 @@ def main() -> int:
     ap.add_argument("--check", action="store_true",
                     help="report which pages are stale; write nothing (CI-friendly)")
     ap.add_argument("--dir", default=None,
-                    help="directory holding the artifacts (default: the workspace reports zone)")
+                    help="the environments zone to re-render (default: the workspace's)")
     args = ap.parse_args()
 
-    out_dir = Path(args.dir).expanduser().resolve() if args.dir else workspace.reports_dir()
-    records = _records(out_dir / "_env_cache.json")
+    out_dir = Path(args.dir).expanduser().resolve() if args.dir else workspace.environments_dir()
+    records = _records(out_dir / workspace.ENV_CACHE_FILE)
     if args.names:
         wanted = set(args.names)
         found = {r["name"] for r in records}
@@ -137,7 +137,7 @@ def main() -> int:
     failed: list[str] = []
     for record in records:
         name = record["name"]
-        pairs, errors = _rendered(record, out_dir)
+        pairs, errors = _rendered(record, out_dir / name)
         for err in errors:
             failed.append(f"{name}/{err.split(':', 1)[0]}")
             print(f"  !  {name}: {err.split(':', 1)[0]} would not render, left untouched — "
