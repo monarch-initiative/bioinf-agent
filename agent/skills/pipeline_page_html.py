@@ -895,19 +895,41 @@ def _run_local_section(record: PipelineRecord) -> str:
     return _section("run-local", "Run it locally", "every row of samples.csv, with Nextflow through docker", steps)
 
 
+def _staging_block(record: PipelineRecord, st: PipelineStage) -> str:
+    """The staging call for one image, folded under its note as a block to paste into a
+    shell on this machine: the .sif is built here and shipped, nothing runs on the cluster.
+    Every value the record carries is filled in; the slots it cannot know stay as slots."""
+    env = record.compute_env
+    rt = record.local_runtime
+    env_arg = env or "<the cluster's env>"
+    key_arg = st.request_key or "<the env's freeze_request_key>"
+    code = "\n".join([
+        f"source {rt.activate}" if rt else "# from the bioinf-agent checkout, with its runtime env on PATH",
+        "python - <<'EOF'",
+        "import agent.mcp_server  # registers the tools",
+        "from agent.mcp_tools import bridge_tools",
+        "print(bridge_tools.stage_apptainer_image(",
+        '    project_name="<your project>",',
+        f'    compute_env_name="{env_arg}",',
+        f'    freeze_request_key="{key_arg}",',
+        "))",
+        "EOF"])
+    return ('<details class="sub"><summary><div class="run-title">The staging call <span class="note">builds the '
+            f'.sif on this machine and ships it to {_e(env or "the cluster")}</span></div></summary>'
+            f"<pre>{_e(code)}</pre></details>")
+
+
 def _run_hpc_section(record: PipelineRecord) -> str:
     env = record.compute_env
     imgs = _images(record)
-    key = next((s.request_key for s in _ordered(record) if s.request_key), None)
-    env_arg = f'"{env}"' if env else "<the cluster's env>"
-    key_arg = f'"{key}"' if key else "<the env's freeze_request_key>"
-    call = _e(f"stage_apptainer_image(project_name=<your project>, compute_env_name={env_arg}, "
-              f"freeze_request_key={key_arg})")
     notes: list[str] = []
     for st in imgs:
         label = _short_digest(st.image_digest) or st.image or ""
         which = f" for image <code>{_e(label)}</code>" if len(imgs) > 1 else ""
         on = f'<b>{_e(env or "the cluster")}</b>'
+        docker = f"the docker image <code>{_e(st.image)}</code>" if st.image else "the frozen image"
+        ask = (f"ask the agent to convert {docker} to a <code>.sif</code> and ship it to {on} (recommended), "
+               "or run the call below yourself.")
         if st.sif_path and st.sif_sha256:
             notes.append(f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs '
                          f'the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code> — where '
@@ -915,14 +937,14 @@ def _run_hpc_section(record: PipelineRecord) -> str:
                          f'<code>{_e(st.sif_sha256)}</code>).</p>')
         elif st.sif_path:
             notes.append(f'<p class="warn-note">The <code>slurm</code> profile in <code>nextflow.config</code> '
-                         f'runs the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code>: the path '
-                         f'<code>stage_apptainer_image</code> writes on {on}. It has not been staged yet — run '
-                         f'<code>{call}</code> before submitting.</p>')
+                         f'runs the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code>. It has not been '
+                         f'staged yet: {ask}</p>' + _staging_block(record, st))
         else:
             notes.append(f'<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
-                         f'<code>nextflow.config</code> is empty{which}: re-render with <code>env=</code> naming '
-                         f'the cluster, or set it to the <code>.sif</code> that <code>{call}</code> reports. '
-                         f'The workflow refuses to start until it is set.</p>')
+                         f'<code>nextflow.config</code> is empty{which}; the workflow refuses to start until it '
+                         f'is set. Re-render with <code>env=</code> naming the cluster, or {ask} Then set '
+                         f'<code>container</code> to the <code>.sif</code> it reports.</p>'
+                         + _staging_block(record, st))
     if record.modules:
         mods = " ".join(f"<code>{_e(m)}</code>" for m in record.modules)
         submit = (f"Submit. <code>launcher.sh</code> loads {mods} and runs Nextflow as a small manager "

@@ -79,8 +79,12 @@ _COUNT_RE = re.compile(r"^[1-9][0-9]*$")
 DEFAULT_STAGE_REQUEST: dict[str, Any] = {"time": "4:00:00", "mem": "8G", "cpus": 1}
 #: The manager job (Nextflow form): tiny, long-lived, never does the work.
 MANAGER_JOB_REQUEST: dict[str, Any] = {"time": "2-00:00:00", "mem": "4G", "cpus": 1}
-#: Nextflow executor defaults the record's `defaults` table states.
-NEXTFLOW_QUEUE_SIZE = 50
+#: Nextflow's slurm throughput, stated in the record's `defaults` table: at most this
+#: many jobs queued or running at once, submitted at no more than this rate. One
+#: pipeline then never floods the scheduler or pins a user's whole job allowance, and a
+#: second pipeline can run beside it. Both are per-pipeline knobs in nextflow.config.
+NEXTFLOW_QUEUE_SIZE = 500
+NEXTFLOW_SUBMIT_RATE = "100/1min"
 
 ScopeT = Literal["per_sample", "cohort"]
 
@@ -1048,7 +1052,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         PipelineDefault(key="errors", value="finish: a failure submits nothing new and in-flight tasks complete; "
                         "`-resume` re-runs what failed; no retries", source="default"),
         PipelineDefault(key="cache", value="lenient on the cluster, standard locally", source="default"),
-        PipelineDefault(key="queue_size", value="50", source="default"),
+        PipelineDefault(key="queue_size", value=f"{NEXTFLOW_QUEUE_SIZE} jobs queued or running at once on the cluster",
+                        source="default"),
+        PipelineDefault(key="submit_rate", value=f"{NEXTFLOW_SUBMIT_RATE}: at most 100 SLURM submissions a minute",
+                        source="default"),
         PipelineDefault(key="run_records", value="one directory per run, runs/<timestamp>/, never overwritten: "
                         "params.json (every param as resolved), samples.csv as read, trace.txt (every task), "
                         "report.html, timeline.html", source="default"),
@@ -1274,6 +1281,7 @@ __all__ = [
     "PipelineDefault", "ProvenanceStep", "PipelineScript", "CollectedInput", "CohortWorkflow", "CohortRequest",
     "derive_pipeline_record", "write_pipeline_record",
     "record_yaml", "load_pipeline_record", "placeholders", "artifact_tokens", "RECORD_FILENAME",
-    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "THREADS_FORMAT", "SAMPLESHEET_FORMAT",
+    "DEFAULT_STAGE_REQUEST", "MANAGER_JOB_REQUEST", "NEXTFLOW_QUEUE_SIZE", "NEXTFLOW_SUBMIT_RATE", "THREADS_FORMAT",
+    "SAMPLESHEET_FORMAT",
     "SCRIPT_DIR", "render_samplesheet",
 ]

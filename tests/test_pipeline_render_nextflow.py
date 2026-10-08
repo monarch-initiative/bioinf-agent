@@ -518,7 +518,16 @@ class TestConfig:
                 "        apptainer.enabled = true\n"
                 "        apptainer.autoMounts = true\n"
                 "        apptainer.runOptions = '--cleanenv'") in cfg
-        assert "        executor.queueSize = 50\n" in cfg
+        assert ("        // Throughput: at most 500 jobs queued or running at once, submitted at no\n"
+                "        // more than 100 a minute — one pipeline never floods the scheduler or pins a user's\n"
+                "        // whole job allowance. Raise or lower them here, per pipeline.\n"
+                "        executor.queueSize = 500\n"
+                "        executor.submitRateLimit = '100/1min'\n"
+                "        // work/ lives beside main.nf. It is the heavy directory: point it at scratch when\n"
+                "        // this filesystem is quota-bound.\n"
+                "        // workDir = '/path/on/scratch/rnaseq_counts/work'\n") in cfg
+        assert (pr.NEXTFLOW_QUEUE_SIZE, pr.NEXTFLOW_SUBMIT_RATE) == (500, "100/1min")   # the comment spells these
+        assert "workDir =" not in _profile(cfg, "local") and cfg.count("workDir") == 1   # a hint, not a setting
         assert ("            executor = 'slurm'\n"
                 + _set_me(DIGEST, 12) +
                 "            cache = 'lenient'\n"

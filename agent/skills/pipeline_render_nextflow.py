@@ -76,7 +76,7 @@ import yaml
 
 from agent.skills import compute_access
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
-                                          NEXTFLOW_QUEUE_SIZE, SCRIPT_DIR, PipelineParam,
+                                          NEXTFLOW_QUEUE_SIZE, NEXTFLOW_SUBMIT_RATE, SCRIPT_DIR, PipelineParam,
                                           PipelineRecord, PipelineStage, placeholders,
                                           render_samplesheet)
 from agent.skills.submit_workflow import _resolve_slurm_and_email
@@ -764,7 +764,14 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
           f"{_INDENT * 2}apptainer.autoMounts = true",
           f"{_INDENT * 2}apptainer.runOptions = '--cleanenv'       // the image's own environment, "
           f"never the login node's",
+          f"{_INDENT * 2}// Throughput: at most {NEXTFLOW_QUEUE_SIZE} jobs queued or running at once, submitted at no",
+          f"{_INDENT * 2}// more than 100 a minute — one pipeline never floods the scheduler or pins a user's",
+          f"{_INDENT * 2}// whole job allowance. Raise or lower them here, per pipeline.",
           f"{_INDENT * 2}executor.queueSize = {NEXTFLOW_QUEUE_SIZE}",
+          f"{_INDENT * 2}executor.submitRateLimit = '{NEXTFLOW_SUBMIT_RATE}'",
+          f"{_INDENT * 2}// work/ lives beside main.nf. It is the heavy directory: point it at scratch when",
+          f"{_INDENT * 2}// this filesystem is quota-bound.",
+          f"{_INDENT * 2}// workDir = '/path/on/scratch/{ctx.record.name}/work'",
           f"{_INDENT * 2}process {{", f"{_INDENT * 3}executor = 'slurm'"]
     if len(ctx.images) == 1:
         L += [f"{_INDENT * 3}{c}" for c in _sif_lines(ctx.images[0], ctx)]
