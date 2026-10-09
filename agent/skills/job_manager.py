@@ -52,6 +52,9 @@ from agent.skills import workspace
 #: `check` on a job that is over, and undershooting reports a finished job as
 #: running.
 _DONE_REAP_GRACE_S = 2.0
+#: The longest a single `check_job(wait_s=…)` may block: under the ~600 s stream watchdog.
+WAIT_S_MAX = 540.0
+_WAIT_POLL_S = 2.0
 
 
 class JobManager:
@@ -195,14 +198,24 @@ class JobManager:
             "state":       "running",
         }
 
-    def check(self, job_id: str, log_tail_lines: int = 30) -> dict[str, Any]:
-        """Return current status. Reads disk + polls the process.
+    def check(self, job_id: str, log_tail_lines: int = 30, wait_s: float = 0) -> dict[str, Any]:
+        """Return the job's current status, optionally waiting up to `wait_s`
+        seconds for it to leave the running state.
 
-        Does not block on a RUNNING job. The one bounded exception is the
-        sentinel-reconcile below: a job whose `.done` has appeared has finished
-        by its own testimony, and waiting out its teardown is what makes the
-        documented "wait on .done, then call check_job once" sequence true.
+        `wait_s` is capped at WAIT_S_MAX, under the stream watchdog, so one
+        call can stand in for a poll loop without being killed as silent.
         """
+        deadline = time.time() + min(max(float(wait_s or 0), 0.0), WAIT_S_MAX)
+        status = self._observe(job_id, log_tail_lines)
+        while status.get("state") == "running" and time.time() < deadline:
+            time.sleep(min(_WAIT_POLL_S, max(deadline - time.time(), 0.0)))
+            status = self._observe(job_id, log_tail_lines)
+        return status
+
+    def _observe(self, job_id: str, log_tail_lines: int) -> dict[str, Any]:
+        """One non-blocking read: disk status reconciled against the process.
+        A job whose `.done` sentinel has appeared is waited out through its
+        teardown so the first check after the sentinel reports it exited."""
         status = self._read_status(job_id)
         if not status:
             return refused("job_manager.unknown_job_check", error=f"unknown job_id: {job_id}", job_id=job_id)
@@ -267,19 +280,10 @@ class JobManager:
 
     def _inline_tool_result(self, job_id: str, status: dict) -> None:
         """For a job spawned by `@backgroundable`, carry the tool's real return
-        value on the status once the job is over.
-
-        This is what makes `check_job` the ONE place a detached outcome is read.
-        Before it, the caller polled here, saw `state='exited'`, and then had to
-        remember to open `result_path` — two calls, and a forgotten second one
-        looks exactly like success while the draft never got its step.
-
-        A job with no args file is a raw `run_in_background` shell command; it
-        was never going to produce a result and none is claimed. A job that WAS
-        a tool run and exited without writing one gets `result: None` plus an
-        explicit `result_missing` — the hole is stated, never left to look like
-        a pass.
-        """
+        value on the status once the job is over, so check_job is the one place a
+        detached outcome is read. A plain shell job never owed a result and claims
+        neither key; a tool job that exited without writing one gets `result: None`
+        plus an explicit `result_missing`."""
         if status.get("state") == "running" or not self.args_path(job_id).exists():
             return
         p = self.result_path(job_id)

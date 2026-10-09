@@ -117,19 +117,36 @@ def _nice_max(v: float) -> float:
     return 10 * mag
 
 
+def _group_label(g: dict, exps: set, models: set) -> str:
+    """What distinguishes this group on the page: the experiment when one model ran
+    them all, the model when one experiment was run by several, else both."""
+    if len(models) == 1:
+        return g["experiment"]
+    if len(exps) == 1:
+        return g["model"]
+    return f'{g["experiment"]} · {g["model"]}'
+
+
 def _bars(groups: list[dict], key: str, kind: str, title: str) -> str:
-    """One bar per (experiment, model), grouped by experiment, with the sd as a whisker."""
+    """One bar per group with the sd as a whisker. Labels turn diagonal once the
+    bars are too close for upright text."""
     if not groups:
         return ""
-    W, H, L, B, T = 520, 220, 48, 46, 12
+    n = len(groups)
+    exps = {g["experiment"] for g in groups}
+    models = {g["model"] for g in groups}
+    labels = [_group_label(g, exps, models) for g in groups]
+    W, L, T = 520, 48, 12
+    slot = (W - L - 10) / n
+    diagonal = slot < 7 * max(len(x) for x in labels)
+    B = 12 + (min(6.2 * max(len(x) for x in labels), 110) if diagonal else 14)
+    H = int(T + 160 + B)
     vals = [(g[f"{key}_mean"] or 0.0) for g in groups]
     sds = [(g[f"{key}_sd"] or 0.0) for g in groups]
     top = _nice_max(max(v + s for v, s in zip(vals, sds)) or 1.0)
-    n = len(groups)
-    slot = (W - L - 10) / n
     bw = min(44, slot * 0.7)
-    exps = sorted({g["experiment"] for g in groups})
-    colour = {e: _PALETTE[i % len(_PALETTE)] for i, e in enumerate(exps)}
+    palette = sorted(exps)
+    colour = {e: _PALETTE[i % len(_PALETTE)] for i, e in enumerate(palette)}
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{_e(title)}">']
     for i in range(5):
         y = T + (H - T - B) * (1 - i / 4)
@@ -147,9 +164,12 @@ def _bars(groups: list[dict], key: str, kind: str, title: str) -> str:
             y1 = H - B - (H - T - B) * min((v + s) / top, 1)
             y2 = H - B - (H - T - B) * max((v - s) / top, 0)
             out.append(f'<line x1="{cx:.1f}" x2="{cx:.1f}" y1="{y1:.1f}" y2="{y2:.1f}" stroke="var(--ink)" opacity=".6"/>')
-        out.append(f'<text class="lbl" x="{x + bw / 2:.1f}" y="{H - B + 14}" text-anchor="middle">{_e(g["model"])}</text>')
-        if len(exps) > 1:
-            out.append(f'<text x="{x + bw / 2:.1f}" y="{H - B + 27}" text-anchor="middle" font-size="9.5">{_e(g["experiment"][:14])}</text>')
+        cx = x + bw / 2
+        if diagonal:
+            out.append(f'<text class="lbl" x="{cx:.1f}" y="{H - B + 12}" text-anchor="end" '
+                       f'transform="rotate(-40 {cx:.1f} {H - B + 12})">{_e(labels[i])}</text>')
+        else:
+            out.append(f'<text class="lbl" x="{cx:.1f}" y="{H - B + 14}" text-anchor="middle">{_e(labels[i])}</text>')
     out.append(f'<line class="axis" x1="{L}" x2="{W - 6}" y1="{H - B}" y2="{H - B}"/></svg>')
     return "\n".join(out)
 
@@ -173,21 +193,28 @@ def _scatter(groups: list[dict]) -> str:
     out.append(f'<line class="axis" x1="{L}" x2="{W - R}" y1="{H - B}" y2="{H - B}"/>'
                f'<line class="axis" x1="{L}" x2="{L}" y1="{T}" y2="{H - B}"/>'
                f'<text x="{(L + W - R) / 2:.1f}" y="{H - 6}" text-anchor="middle">mean cost per run</text>')
-    for g in judged:
+    models = {g["model"] for g in judged}
+    placed: list[tuple[float, float, float]] = []      # (x_left, x_right, y) of each label
+    for g in sorted(judged, key=lambda g: (-(g["pass_at_1"] or 0), g["cost_usd_mean"] or 0)):
         x = L + (W - L - R) * ((g["cost_usd_mean"] or 0) / xmax)
         y = T + (H - T - B) * (1 - g["pass_at_1"])
         r = 5 + 2 * math.sqrt(g["n"])
+        label = _group_label(g, set(exps), models)
+        width = 6.6 * len(label)
         # a label to the right of a point near the right edge would leave the panel
-        flip = x + r + 4 + 6.6 * len(g["model"]) > W - R
+        flip = x + r + 4 + width > W - R
         lx, anchor = (x - r - 4, "end") if flip else (x + r + 4, "start")
+        x0, x1 = (lx - width, lx) if flip else (lx, lx + width)
+        # points that share a spot get their labels stacked away from the nearer edge
+        step = -12 if y > T + (H - T - B) / 2 else 12
+        ly = y + 4
+        while any(abs(ly - py) < 12 and x0 < px1 and x1 > px0 for px0, px1, py in placed):
+            ly += step
+        placed.append((x0, x1, ly))
         out.append(f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{colour[g["experiment"]]}" opacity=".9">'
                    f'<title>{_e(g["experiment"])} · {_e(g["model"])}: pass@1 {_e(_fmt(g["pass_at_1"], "pct"))}, '
                    f'{_e(_fmt(g["cost_usd_mean"], "usd"))}/run, n={g["n"]}</title></circle>'
-                   f'<text class="lbl" x="{lx:.1f}" y="{y + 4:.1f}" text-anchor="{anchor}">{_e(g["model"])}</text>')
-    if len(exps) > 1:
-        for i, e in enumerate(exps):
-            out.append(f'<rect x="{L + 4 + 120 * i}" y="{T}" width="9" height="9" fill="{colour[e]}"/>'
-                       f'<text x="{L + 17 + 120 * i}" y="{T + 9}">{_e(e[:16])}</text>')
+                   f'<text class="lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}">{_e(label)}</text>')
     out.append("</svg>")
     return "\n".join(out)
 
@@ -358,7 +385,7 @@ def _revisions_table(rows: list[dict]) -> str:
     changed. The numbers that move when the system improves: pass@1, cost, the context
     re-read per call (cache read), tool calls, ToolSearch calls, shell fallbacks, refusals
     and breakages."""
-    groups = aggregate(rows, by=("experiment", "code_rev"))
+    groups = aggregate(rows, by=("experiment", "code_rev", "code_dirty"))
     head = ("experiment", "code rev", "runs", "models", "pass@1", "cost/run", "cache read", "peak ctx", "api calls",
             "tool calls", "mcp", "search", "shell", "refused", "broke", "wall")
     body = []

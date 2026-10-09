@@ -103,152 +103,85 @@ def resolve_tool(
     language: str = "",
     user_said: str = "",
 ) -> dict:
-    """Decide WHICH install tier to use for `tool`, and record WHY (the
-    ResolutionDecision). Probes availability independently per tier and ranks by:
+    """Decide WHICH install tier to use for `tool` and record WHY (the
+    ResolutionDecision). Query-only: it does not install. Use the returned
+    `install_call` with the matching primitive, then freeze() — except the author
+    tiers, which freeze themselves.
 
-        PULL AN EXISTING IMAGE  >  clean registry package  >  build from source
+    Ranking: pull an existing image > clean registry package > build from source:
+
         author_image > conda > authors_recipe > pip/cran/bioconductor
                      > binary > synthesis > source > manual
 
-    PULL-AN-EXISTING-IMAGE FIRST. Prefer using what already exists over building anything.
-    `author_image` (the authors' OWN published image, adopted by digest — a pull, not a
-    build) tops the order; then a clean conda/bioconda package, which itself ships as a
-    pre-built BioContainer freeze ADOPTS by digest (so "conda wins" already means "pull an
-    image" downstream). Check the **`pullable_image`** field: it unifies "is there a pullable
-    image?" across both sources ({found, source: author_image|biocontainer, image_by_digest,
-    adopt_call, provenance}) — when found, `adopt_call` is the freeze_from_image shortcut that
-    skips building a host env entirely. Provenance is guaranteed (the authors' own anchored
-    repo, or the curated quay.io/biocontainers namespace — never a stranger's image claiming
-    to be the tool), and a pulled image is still VALIDATED_IN_IMAGE at freeze (pull, then
-    prove it runs).
+    `pullable_image` unifies "is there an image to pull?" across the authors' own
+    published image and the BioContainer a conda package ships as:
+    {found, source: author_image|biocontainer, image_by_digest, adopt_call, provenance}.
+    When found, `adopt_call` is the freeze_from_image shortcut that skips building a
+    host env. A pulled image is still VALIDATED_IN_IMAGE at freeze.
 
-    RELIABILITY GATE — `authors_recipe` is the LAST resort, not a shortcut. BUILDING the
-    authors' Dockerfile ranks BELOW conda: a build never beats a package the ecosystem
-    already built + containerized. It fires only when there is no pullable image AND no clean
-    conda package AND the registry route is a genuine RECONSTRUCTION that would silently DROP
-    deps (compiled/vendored/system/binary) — a pip/CRAN-only tool like Talos whose Dockerfile
-    compiles a bcftools fork + htslib + echtvar a pip reconstruction drops. For a cleanly
-    bioconda-packaged tool the gate stays SHUT and conda wins. (This corrected an over-fire
-    where self-build `make` / a self-source tarball read as "incomplete" and routed cleanly-
-    packaged tools like gatk4/miniprot to a heavy Dockerfile build.)
+    `authors_recipe` (building the authors' Dockerfile) ranks BELOW conda and fires only
+    when there is no pullable image, no clean conda package, and the registry route would
+    silently drop compiled/vendored/system deps. For a cleanly bioconda-packaged tool,
+    conda wins. If `probed.authors_gate_error` is set the gate failed to run
+    (network/API) and the ranking is registry-only — not evidence the authors ship
+    nothing.
 
     Returns {chosen, install_call, rationale, identity, pullable_image, alternatives,
-    ambiguous, probed, …}: the concrete install primitive call to make, why it was chosen
-    over the others, and the rejected-but-available alternatives. `install_call` names the
-    real executor for the chosen tier — for the author tiers that is `freeze_from_image` /
-    `build_env_from_authors_recipe`, which do the whole env (no separate freeze needed).
-    If `probed` carries `authors_gate_error`, the gate FAILED to run (network/API) and the
-    ranking below it is registry-only — it is not evidence the authors ship nothing.
+    ambiguous, probed, package_family, version_lineage, identity_corroboration,
+    license_evidence, …}.
 
-    ⭐ NORMALIZE BEFORE YOU CALL, AND SAY SO. Pass the package name YOU believe the request
-    means, with the user's own word in `user_said`. Do not pass a raw user word and wait to
-    be corrected — you know things this module cannot derive, and this is where you use them.
+    NORMALIZE BEFORE YOU CALL. Pass the package name you believe the request means and
+    the user's own word in `user_said`: bioconda's `gatk` is GATK 3.8, `gatk4` is the
+    current line; CRAN's `Seurat` is case-sensitive. The two names must belong to one
+    package family (a rename across a major version is fine; a different tool is refused
+    as `normalization_rejected`), and the pair is recorded so the ENV report shows
+    "you asked for X, we installed Y". If you do not know the tool, call with the raw
+    name, read `package_family` and `identity.self_description`, then decide.
 
-        user asks for "the latest gatk"
-          -> resolve_tool(tool="gatk4", user_said="gatk")     ✅ installs GATK 4.6.2.0
-          -> resolve_tool(tool="gatk")                        ❌ installs GATK 3.8 (2017)
+    `package_family` lists every package in the name's family (with versions and their
+    own descriptions) when the channels carry more than one and you did not name the
+    newest; the install_call is then comment-prefixed. It does not rank them:
+    `bowtie`→`bowtie2` is a live sibling, `gatk`→`gatk4` is a stale lineage, and only
+    you can tell which.
 
-    Because this field VERSIONS TOOLS BY RENAMING THE PACKAGE, the user's word is often not
-    the package: bioconda's `gatk` is GATK3, `gatk4` is the current line, and both are
-    correct packages with correct descriptions. Same shape for CRAN's case-sensitive
-    `Seurat`, and for a vendor tool whose registry namesake is a different project. You can
-    tell these apart from the name and the request's context; nothing here can.
+    IDENTITY — you are the judge; `identity` hands you the facts: `self_description`
+    (the entry's own words — CRAN's `cellranger` is a spreadsheet-range parser, PyPI's
+    `talos` is Keras tuning), `has_description` (false = nothing published, which is
+    missing evidence, not contrary evidence), `channel` (bioconda/bioconductor is
+    bio-only), `repo` + `repo_source` + `repo_anchored` (an anchored repo — a curated
+    conda dev_url or your `github_repo` — is adopted; a scraped pip/cran repo is a
+    candidate to confirm with `github_repo='owner/repo'`). If the facts point at the
+    tool, proceed; if you cannot tell after investigating, ask.
 
-    `user_said` is what keeps that from being a licence to substitute. The two names must
-    belong to one package family — a rename across a major version is supported, swapping in
-    a DIFFERENT tool is refused (`normalization_rejected`). The pair is recorded, so the ENV
-    report shows the human "you asked for X, we installed Y" instead of quietly shipping Y.
+    `identity_corroboration` asks github who else owns this exact name, on a hit as
+    well as a miss, because a squatted name resolves cleanly to the wrong software.
+    `diverges` names each competing repo with its own description; `unobserved` means
+    the search did not answer (10 req/min) and says nothing about contest.
 
-    If you genuinely do not know the tool: call this with the raw name, read `package_family`
-    and `identity.self_description`, THEN decide. What you must not do is let the raw name
-    install by default.
+    `license_evidence` distinguishes five silences; only `published` yields a
+    `license_disposition`. `no_channel` means the pick is a repo or release asset:
+    nothing published a licence for these bytes and nothing downstream will ask again.
+    That silence is also the shape of a vendor-gated tool.
 
-    `package_family` is the research step, and it runs on a HIT — not only at a dead end.
-    When the channels carry more than one package in this name's family and you did not name
-    the newest, you get every member with its version and its own words, and the install_call
-    is comment-prefixed so no member ships as the settled answer. It does NOT rank them:
-    `bowtie`→`bowtie2` looks identical to `gatk`→`gatk4` mechanically, and only one of those
-    is a stale lineage — bowtie1 is a live ungapped aligner with its own repo. Silent for the
-    ~7-in-10 tools that have no numbered siblings, and silent when you named the newest.
+    DISAMBIGUATION: pass `language` ('python'|'r') to restrict to one ecosystem (PyPI
+    `ape` ≠ CRAN `ape`); without it a name found in both comes back `ambiguous: true`.
+    `ambiguous` fires only on a real fork: a conda pick resolves the collision, and a
+    `degenerate_stub` (a registry hit with no summary, homepage or repo) is named in
+    `degenerate_stubs` and neither makes a name ambiguous nor wins. `prefer` forces a
+    tier when available. `github_repo` unlocks the binary/source tiers and is the
+    strongest signal for the reliability gate — pass it whenever you know it.
 
-    IDENTITY — YOU are the judge; these are the FACTS. `identity` answers nothing on its
-    own: it hands YOU the evidence to decide "is this registry entry the tool I MEANT?",
-    which nothing else in this system checks (every other gate verifies integrity — it
-    builds, it runs, it ships as validated — so a wrong-but-working tool passes all of them
-    and ships green with a digest and an attestation). The resolver does NOT stamp a verdict
-    and does NOT poison `install_call`; you know the context is bioinformatics and are a far
-    better judge of "ONT's dorado, not the PyPI astronomy package" than any word-list. The
-    facts: `self_description` (the entry's OWN words — the single strongest signal: CRAN's
-    `cellranger` says "Translate Spreadsheet Cell Ranges", PyPI's `talos` says "Tuning for
-    Keras"), `has_description` (false = the tier published nothing to read — MISSING
-    evidence, never confuse it with contrary evidence), `channel` (`bioconda`/`bioconductor`
-    membership is bio-only, weigh it heavily), and `repo` + `repo_source` + `repo_anchored`
-    (an anchored repo — a curated conda `dev_url` or your explicit `github_repo` — was safe
-    to auto-adopt; a scraped `pip`/`cran` repo is a CANDIDATE, `repo_anchored: false`, that
-    you confirm with `github_repo='owner/repo'` before trusting). Read the facts; if they
-    point at the tool, proceed (the honesty contract downstream catches a mechanical error);
-    if you genuinely cannot tell even after investigating, ASK.
+    `version_lineage` reports a successor package under a different name
+    ({successor, successor_latest, …}) and comment-prefixes the install_call; the
+    runnable line survives underneath. It also fires on `bowtie`→`bowtie2` and
+    `macs2`→`macs3`, where the older tool is legitimate — you decide.
 
-    `identity_corroboration` is the SECOND opinion on that same question, and it runs on a
-    HIT — a github name search asking who ELSE owns this name exactly. A HIT, not a dead
-    end, is where it matters: a squatted name resolves cleanly (`cellranger` → a CRAN
-    spreadsheet-range parser, `dorado` → a PyPI astronomy package — a clean, confident
-    install_call for the wrong software), so an investigation run only at dead ends is
-    switched off precisely when a squatter exists. `diverges` names each competing repo
-    and quotes its OWN description; the pick is unchanged and the judgment is still yours.
-    `unobserved` means the search did not answer (github search is 10 req/min) — nothing
-    there says the name is uncontested.
-
-    LICENCE — `license_evidence` says which of five silences you are in, because "we read a
-    licence and could not place it" and "nobody published one" are different facts and must
-    never share a value. `published` is the only one that yields a `license_disposition`; the
-    rest yield `unobserved`. `no_channel` is the one to read carefully: the pick is a repo
-    or a release asset, so nothing published a licence for these bytes AND nothing
-    downstream will ask again (I13 arms on a licence observed in the shipped image's
-    conda-meta, which a source build does not carry). That silence is also the shape of a
-    vendor-gated tool — see the paragraph below, which is yours to apply.
-
-    DISAMBIGUATION: bare tool names collide across registries (PyPI `ape` ≠
-    CRAN's R `ape`). Pass `language` ('python'|'r') to restrict the search to one
-    ecosystem; with no hint, a name found in both PyPI and CRAN comes back
-    `ambiguous: true`. `prefer` forces a tier when available. `github_repo`
-    ('owner/repo') unlocks the binary/source tiers AND is the strongest signal for the
-    reliability gate — pass it whenever you know the tool's repo.
-
-    `ambiguous` is calibrated to fire only on a REAL fork in the road, because a flag that
-    fires on the healthy case is one you learn to strip on the case that matters. It takes
-    two STATED meanings and no arbiter: a conda pick RESOLVES the collision (so a correct
-    `anndata` is not also accused over a CRAN reticulate wrapper of the same project), and a
-    `degenerate_stub` — a registry hit with no summary, homepage, project URL or repo — is a
-    name reservation rather than a rival project, so it neither makes a name ambiguous nor
-    wins the ranking. When one is disqualified it is named in `degenerate_stubs` and the
-    rationale, never dropped silently. (A blank PyPI `seurat` stub must not beat CRAN's
-    `Seurat`, on either axis.)
-
-    `version_lineage` — THE NAME IS A LINEAGE, and this field is a fact, not a warning.
-    Bioinformatics versions tools by RENAMING the package: bioconda's `gatk` is 3.8 and
-    GATK4 lives at `gatk4`, a different package. When the channel carries the next major
-    lineage under a different name you get `{successor, successor_latest, …}` and the
-    `install_call` is comment-prefixed — the runnable line survives underneath, so a caller
-    who genuinely wants the older lineage is not blocked. YOU decide which is meant: it also
-    fires on `bowtie` → `bowtie2` and `macs2` → `macs3`, where the older tool is a live and
-    legitimate choice, and nothing mechanical separates those from gatk. That separation is
-    world knowledge, which is yours.
-
-    A HUMAN MUST FETCH SOME OF THESE, and recognising which is YOUR job — the resolver
-    keeps no list of vendor-gated names, because a finite list of them rots and promises a
-    completeness it cannot keep. Some tools' runnable bytes sit behind a EULA
-    click-through or a customer account (Cell Ranger, DRAGEN, Guppy are the shape). For
-    those, no unattended install can reach the real artifact, so a public-registry hit
-    under that name is by construction a DIFFERENT project — CRAN's `cellranger` is a
-    spreadsheet cell-range parser, and installing it ships the wrong tool under the right
-    name. You will usually know this from the name alone; `self_description` confirms it.
-    Do not pass the `install_call` along. Tell the user where to get the bytes, then use
-    `install_release_binary(url=…, sha256=…)` on the URL they give you, or
+    VENDOR-GATED TOOLS are yours to recognise; no list is kept. Some tools' bytes sit
+    behind a EULA or a customer account (Cell Ranger, DRAGEN, Guppy are the shape), so a
+    public-registry hit under that name is a different project. Do not pass the
+    install_call along: tell the user where to get the bytes, then use
+    `install_release_binary(url=…, sha256=…)` on what they give you, or
     `stage_authored_artifact` on a file they already have.
-
-    Query-only: it does NOT install. Use the returned install_call with the
-    matching primitive, then freeze() (except the author tiers, which freeze themselves).
     """
     return _ms._resolver.resolve(tool, version=version, github_repo=github_repo,
                              prefer=(prefer or None), language=language,

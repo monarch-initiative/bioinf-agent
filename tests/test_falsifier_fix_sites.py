@@ -363,3 +363,31 @@ class TestHostFallbackLocusPrecondition:
             workflow_tools._image_usage_runner)
         seal_src = inspect.getsource(workflow_tools)
         assert "draft.get(\"conda_env\") and _local_trial_mounts(draft) is not None" in seal_src
+
+
+# ──────────────── the seal checks the usage block's shape before the self-test ──────────
+
+class TestSealValidatesUsageShapeFirst:
+    def test_a_malformed_usage_block_refuses_before_any_trial_runs(self, monkeypatch):
+        import agent.mcp_server as _ms
+        from agent.skills import spec_writer, typed_nouns
+        from agent.mcp_tools.workflow_tools import seal_workflow
+        draft = {"pipeline_name": "p", "pipeline_steps": [{"step": 1, "returncode": 0}],
+                 "usage": {"command_template": "t {IN} > {OUTPUT_DIR}/o",
+                           "outputs": [{"files": ["o"]}]}}
+        monkeypatch.setattr(_ms._pipeline_state, "get_draft", lambda pid: draft)
+        monkeypatch.setattr(_ms._env_cache, "lookup_verified",
+                            lambda rk: ({"request_key": rk, "image": "img", "content_digest": "d"}, []))
+        monkeypatch.setattr(_ms._env_cache, "all", lambda: {})
+        monkeypatch.setattr(spec_writer, "check_workflow_invariants", lambda d: [])
+        monkeypatch.setattr(typed_nouns, "check_draft", lambda *a, **k: None)
+
+        def _never(*a, **k):
+            raise AssertionError("the I4 self-test ran on a usage block the schema refuses")
+        monkeypatch.setattr(spec_writer, "self_test_usage", _never)
+
+        out = seal_workflow("p", "rk-1")
+        assert out.get("code") == "seal.usage_block_invalid"
+        assert out["stage"] == "usage_shape"
+        joined = " ".join(out["problems"])
+        assert "description" in joined and "outputs.0.name" in joined
