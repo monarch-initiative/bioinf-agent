@@ -750,13 +750,23 @@
     "named_in_test": false
   },
   {
+    "code": "env_manager.git_verify_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:1007",
+    "end_line": 1012,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.fetch_clone_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1018",
-    "end_line": 1020,
+    "where": "agent/skills/env_manager.py:1041",
+    "end_line": 1043,
     "named_in_test": false
   },
   {
@@ -765,8 +775,8 @@
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1025",
-    "end_line": 1027,
+    "where": "agent/skills/env_manager.py:1048",
+    "end_line": 1050,
     "named_in_test": false
   },
   {
@@ -775,8 +785,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1082",
-    "end_line": 1083,
+    "where": "agent/skills/env_manager.py:1105",
+    "end_line": 1106,
     "named_in_test": false
   },
   {
@@ -785,8 +795,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1096",
-    "end_line": 1098,
+    "where": "agent/skills/env_manager.py:1119",
+    "end_line": 1121,
     "named_in_test": false
   },
   {
@@ -795,8 +805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1100",
-    "end_line": 1101,
+    "where": "agent/skills/env_manager.py:1123",
+    "end_line": 1124,
     "named_in_test": false
   },
   {
@@ -805,8 +815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1231",
-    "end_line": 1232,
+    "where": "agent/skills/env_manager.py:1254",
+    "end_line": 1255,
     "named_in_test": false
   },
   {
@@ -815,8 +825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1236",
-    "end_line": 1240,
+    "where": "agent/skills/env_manager.py:1259",
+    "end_line": 1263,
     "named_in_test": false
   },
   {
@@ -825,8 +835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1368",
-    "end_line": 1370,
+    "where": "agent/skills/env_manager.py:1391",
+    "end_line": 1393,
     "named_in_test": false
   },
   {
@@ -835,8 +845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1483",
-    "end_line": 1485,
+    "where": "agent/skills/env_manager.py:1506",
+    "end_line": 1508,
     "named_in_test": false
   },
   {
@@ -845,8 +855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1500",
-    "end_line": 1500,
+    "where": "agent/skills/env_manager.py:1523",
+    "end_line": 1523,
     "named_in_test": false
   },
   {
@@ -855,8 +865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1527",
-    "end_line": 1529,
+    "where": "agent/skills/env_manager.py:1550",
+    "end_line": 1552,
     "named_in_test": false
   },
   {
@@ -865,8 +875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1551",
-    "end_line": 1551,
+    "where": "agent/skills/env_manager.py:1574",
+    "end_line": 1574,
     "named_in_test": false
   },
   {
@@ -875,8 +885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1574",
-    "end_line": 1576,
+    "where": "agent/skills/env_manager.py:1597",
+    "end_line": 1599,
     "named_in_test": false
   },
   {
@@ -885,8 +895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1597",
-    "end_line": 1597,
+    "where": "agent/skills/env_manager.py:1620",
+    "end_line": 1620,
     "named_in_test": false
   },
   {
@@ -895,8 +905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1701",
-    "end_line": 1701,
+    "where": "agent/skills/env_manager.py:1724",
+    "end_line": 1724,
     "named_in_test": false
   },
   {
@@ -905,8 +915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1778",
-    "end_line": 1779,
+    "where": "agent/skills/env_manager.py:1801",
+    "end_line": 1802,
     "named_in_test": false
   },
   {
@@ -915,8 +925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1798",
-    "end_line": 1804,
+    "where": "agent/skills/env_manager.py:1821",
+    "end_line": 1827,
     "named_in_test": false
   },
   {
@@ -925,8 +935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1887",
-    "end_line": 1888,
+    "where": "agent/skills/env_manager.py:1910",
+    "end_line": 1911,
     "named_in_test": false
   },
   {
@@ -935,8 +945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1901",
-    "end_line": 1902,
+    "where": "agent/skills/env_manager.py:1924",
+    "end_line": 1925,
     "named_in_test": false
   },
   {
@@ -945,8 +955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:278",
-    "end_line": 279,
+    "where": "agent/skills/env_manager.py:301",
+    "end_line": 302,
     "named_in_test": false
   },
   {
@@ -955,8 +965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:330",
-    "end_line": 337,
+    "where": "agent/skills/env_manager.py:353",
+    "end_line": 360,
     "named_in_test": false
   },
   {
@@ -965,8 +975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:383",
-    "end_line": 391,
+    "where": "agent/skills/env_manager.py:406",
+    "end_line": 414,
     "named_in_test": false
   },
   {
@@ -975,8 +985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:440",
-    "end_line": 450,
+    "where": "agent/skills/env_manager.py:463",
+    "end_line": 473,
     "named_in_test": false
   },
   {
@@ -985,8 +995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:464",
-    "end_line": 471,
+    "where": "agent/skills/env_manager.py:487",
+    "end_line": 494,
     "named_in_test": false
   },
   {
@@ -995,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:593",
-    "end_line": 593,
+    "where": "agent/skills/env_manager.py:616",
+    "end_line": 616,
     "named_in_test": true
   },
   {
@@ -1005,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_in_env",
-    "where": "agent/skills/env_manager.py:658",
-    "end_line": 659,
+    "where": "agent/skills/env_manager.py:681",
+    "end_line": 682,
     "named_in_test": true
   },
   {
@@ -1015,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:723",
-    "end_line": 725,
+    "where": "agent/skills/env_manager.py:746",
+    "end_line": 748,
     "named_in_test": false
   },
   {
@@ -1025,8 +1035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:735",
-    "end_line": 737,
+    "where": "agent/skills/env_manager.py:758",
+    "end_line": 760,
     "named_in_test": false
   },
   {
@@ -1035,32 +1045,12 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:740",
-    "end_line": 742,
+    "where": "agent/skills/env_manager.py:763",
+    "end_line": 765,
     "named_in_test": false
   },
   {
     "code": "env_manager.git_clone_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:836",
-    "end_line": 838,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.git_checkout_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:848",
-    "end_line": 852,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.git_rev_parse_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
@@ -1070,13 +1060,33 @@
     "named_in_test": false
   },
   {
+    "code": "env_manager.git_checkout_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:871",
+    "end_line": 875,
+    "named_in_test": false
+  },
+  {
+    "code": "env_manager.git_rev_parse_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:882",
+    "end_line": 884,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.git_build_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:872",
-    "end_line": 875,
+    "where": "agent/skills/env_manager.py:895",
+    "end_line": 898,
     "named_in_test": false
   },
   {
@@ -1085,8 +1095,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:883",
-    "end_line": 885,
+    "where": "agent/skills/env_manager.py:906",
+    "end_line": 908,
     "named_in_test": false
   },
   {
@@ -1095,8 +1105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:902",
-    "end_line": 904,
+    "where": "agent/skills/env_manager.py:925",
+    "end_line": 927,
     "named_in_test": false
   },
   {
@@ -1105,18 +1115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:948",
-    "end_line": 952,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.git_verify_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:984",
-    "end_line": 989,
+    "where": "agent/skills/env_manager.py:971",
+    "end_line": 975,
     "named_in_test": false
   },
   {
@@ -2490,13 +2490,23 @@
     "named_in_test": true
   },
   {
+    "code": "env_manager.git_installed",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "install_git_repo",
+    "where": "agent/skills/env_manager.py:1006",
+    "end_line": 1006,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.fetch_git_ok",
     "outcome": "proven",
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1047",
-    "end_line": 1048,
+    "where": "agent/skills/env_manager.py:1070",
+    "end_line": 1071,
     "named_in_test": false
   },
   {
@@ -2505,8 +2515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1118",
-    "end_line": 1120,
+    "where": "agent/skills/env_manager.py:1141",
+    "end_line": 1143,
     "named_in_test": false
   },
   {
@@ -2515,8 +2525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1255",
-    "end_line": 1256,
+    "where": "agent/skills/env_manager.py:1278",
+    "end_line": 1279,
     "named_in_test": false
   },
   {
@@ -2525,8 +2535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1429",
-    "end_line": 1442,
+    "where": "agent/skills/env_manager.py:1452",
+    "end_line": 1465,
     "named_in_test": false
   },
   {
@@ -2535,8 +2545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1499",
-    "end_line": 1499,
+    "where": "agent/skills/env_manager.py:1522",
+    "end_line": 1522,
     "named_in_test": false
   },
   {
@@ -2545,8 +2555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1550",
-    "end_line": 1550,
+    "where": "agent/skills/env_manager.py:1573",
+    "end_line": 1573,
     "named_in_test": false
   },
   {
@@ -2555,8 +2565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1596",
-    "end_line": 1596,
+    "where": "agent/skills/env_manager.py:1619",
+    "end_line": 1619,
     "named_in_test": false
   },
   {
@@ -2565,8 +2575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1700",
-    "end_line": 1700,
+    "where": "agent/skills/env_manager.py:1723",
+    "end_line": 1723,
     "named_in_test": false
   },
   {
@@ -2575,8 +2585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1786",
-    "end_line": 1787,
+    "where": "agent/skills/env_manager.py:1809",
+    "end_line": 1810,
     "named_in_test": false
   },
   {
@@ -2585,8 +2595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1885",
-    "end_line": 1886,
+    "where": "agent/skills/env_manager.py:1908",
+    "end_line": 1909,
     "named_in_test": false
   },
   {
@@ -2595,8 +2605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1898",
-    "end_line": 1899,
+    "where": "agent/skills/env_manager.py:1921",
+    "end_line": 1922,
     "named_in_test": false
   },
   {
@@ -2605,8 +2615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:256",
-    "end_line": 263,
+    "where": "agent/skills/env_manager.py:279",
+    "end_line": 286,
     "named_in_test": false
   },
   {
@@ -2615,8 +2625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:294",
-    "end_line": 301,
+    "where": "agent/skills/env_manager.py:317",
+    "end_line": 324,
     "named_in_test": false
   },
   {
@@ -2625,8 +2635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:374",
-    "end_line": 382,
+    "where": "agent/skills/env_manager.py:397",
+    "end_line": 405,
     "named_in_test": false
   },
   {
@@ -2635,8 +2645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:429",
-    "end_line": 439,
+    "where": "agent/skills/env_manager.py:452",
+    "end_line": 462,
     "named_in_test": false
   },
   {
@@ -2645,8 +2655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:456",
-    "end_line": 463,
+    "where": "agent/skills/env_manager.py:479",
+    "end_line": 486,
     "named_in_test": false
   },
   {
@@ -2655,8 +2665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:587",
-    "end_line": 587,
+    "where": "agent/skills/env_manager.py:610",
+    "end_line": 610,
     "named_in_test": true
   },
   {
@@ -2665,8 +2675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_in_env",
-    "where": "agent/skills/env_manager.py:657",
-    "end_line": 657,
+    "where": "agent/skills/env_manager.py:680",
+    "end_line": 680,
     "named_in_test": true
   },
   {
@@ -2675,18 +2685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:757",
-    "end_line": 767,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.git_installed",
-    "outcome": "proven",
-    "source": "helper",
-    "tagged": true,
-    "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:983",
-    "end_line": 983,
+    "where": "agent/skills/env_manager.py:780",
+    "end_line": 790,
     "named_in_test": false
   },
   {
@@ -4375,8 +4375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1308",
-    "end_line": 1309,
+    "where": "agent/skills/env_manager.py:1331",
+    "end_line": 1332,
     "named_in_test": false
   },
   {
@@ -4385,8 +4385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1319",
-    "end_line": 1322,
+    "where": "agent/skills/env_manager.py:1342",
+    "end_line": 1345,
     "named_in_test": true
   },
   {
@@ -4395,8 +4395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1324",
-    "end_line": 1326,
+    "where": "agent/skills/env_manager.py:1347",
+    "end_line": 1349,
     "named_in_test": true
   },
   {
@@ -4405,8 +4405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1335",
-    "end_line": 1342,
+    "where": "agent/skills/env_manager.py:1358",
+    "end_line": 1365,
     "named_in_test": true
   },
   {
@@ -4415,8 +4415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1347",
-    "end_line": 1348,
+    "where": "agent/skills/env_manager.py:1370",
+    "end_line": 1371,
     "named_in_test": false
   },
   {
@@ -4425,8 +4425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1378",
-    "end_line": 1381,
+    "where": "agent/skills/env_manager.py:1401",
+    "end_line": 1404,
     "named_in_test": true
   },
   {
@@ -4435,8 +4435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1462",
-    "end_line": 1463,
+    "where": "agent/skills/env_manager.py:1485",
+    "end_line": 1486,
     "named_in_test": false
   },
   {
@@ -4445,8 +4445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1478",
-    "end_line": 1482,
+    "where": "agent/skills/env_manager.py:1501",
+    "end_line": 1505,
     "named_in_test": true
   },
   {
@@ -4455,8 +4455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1514",
-    "end_line": 1515,
+    "where": "agent/skills/env_manager.py:1537",
+    "end_line": 1538,
     "named_in_test": false
   },
   {
@@ -4465,8 +4465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1562",
-    "end_line": 1563,
+    "where": "agent/skills/env_manager.py:1585",
+    "end_line": 1586,
     "named_in_test": false
   },
   {
@@ -4475,8 +4475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1675",
-    "end_line": 1676,
+    "where": "agent/skills/env_manager.py:1698",
+    "end_line": 1699,
     "named_in_test": false
   },
   {
@@ -4485,8 +4485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_lock",
-    "where": "agent/skills/env_manager.py:1735",
-    "end_line": 1737,
+    "where": "agent/skills/env_manager.py:1758",
+    "end_line": 1760,
     "named_in_test": false
   },
   {
@@ -4495,8 +4495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1891",
-    "end_line": 1893,
+    "where": "agent/skills/env_manager.py:1914",
+    "end_line": 1916,
     "named_in_test": false
   },
   {
@@ -4505,8 +4505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_lock_timeout",
-    "where": "agent/skills/env_manager.py:212",
-    "end_line": 216,
+    "where": "agent/skills/env_manager.py:235",
+    "end_line": 239,
     "named_in_test": true
   },
   {
@@ -4515,8 +4515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:591",
-    "end_line": 591,
+    "where": "agent/skills/env_manager.py:614",
+    "end_line": 614,
     "named_in_test": true
   },
   {
@@ -4525,8 +4525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:694",
-    "end_line": 697,
+    "where": "agent/skills/env_manager.py:717",
+    "end_line": 720,
     "named_in_test": true
   },
   {
@@ -4535,8 +4535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:816",
-    "end_line": 819,
+    "where": "agent/skills/env_manager.py:839",
+    "end_line": 842,
     "named_in_test": true
   },
   {
@@ -4545,8 +4545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:954",
-    "end_line": 960,
+    "where": "agent/skills/env_manager.py:977",
+    "end_line": 983,
     "named_in_test": false
   },
   {
@@ -4845,8 +4845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_deep_listing",
-    "where": "agent/skills/snapshot.py:320",
-    "end_line": 321,
+    "where": "agent/skills/snapshot.py:322",
+    "end_line": 323,
     "named_in_test": false
   },
   {
@@ -4855,8 +4855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_deep_listing",
-    "where": "agent/skills/snapshot.py:326",
-    "end_line": 329,
+    "where": "agent/skills/snapshot.py:328",
+    "end_line": 331,
     "named_in_test": false
   },
   {
@@ -4865,8 +4865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_deep_listing",
-    "where": "agent/skills/snapshot.py:332",
-    "end_line": 334,
+    "where": "agent/skills/snapshot.py:334",
+    "end_line": 336,
     "named_in_test": false
   },
   {
@@ -4875,8 +4875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "snapshot_project",
-    "where": "agent/skills/snapshot.py:476",
-    "end_line": 476,
+    "where": "agent/skills/snapshot.py:478",
+    "end_line": 478,
     "named_in_test": false
   },
   {
@@ -4885,8 +4885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "snapshot_project",
-    "where": "agent/skills/snapshot.py:505",
-    "end_line": 507,
+    "where": "agent/skills/snapshot.py:507",
+    "end_line": 509,
     "named_in_test": false
   },
   {

@@ -193,9 +193,11 @@ def _ssh_argv(env: dict, remote_cmd: str) -> list[str]:
     host = env["host"]
     user = env.get("user")
     target = f"{user}@{host}" if user else host
+    # `-n`: ssh reads its stdin and forwards it to the remote command. This
+    # process's stdin is the MCP transport, so ssh gets /dev/null instead.
     # `-o BatchMode=yes` so a missing ssh-agent fails fast instead of
     # interactively prompting for a password (which would deadlock the agent).
-    return ["ssh", "-o", "BatchMode=yes", target, remote_cmd]
+    return ["ssh", "-n", "-o", "BatchMode=yes", target, remote_cmd]
 
 
 def _ssh_failure_hint(stderr: str, host: str) -> Optional[str]:
