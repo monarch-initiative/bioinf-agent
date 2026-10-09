@@ -1,0 +1,17 @@
+# H — the pipeline tool GAB depends on: compiled pieces, bundled scripts, a config file with
+# cluster assumptions, and an image the authors publish. Judged by the `frozen` rule with the
+# freeze pinned; the proof is the tool's own usage, since its test dataset is a separate
+# download. Trips to look for: the authors' image passed over for a conda reconstruction that
+# ships half the tool, a build on the host that never reaches the image, a version that is
+# not the one asked for.
+name: h_hicpro
+tier: C1
+success: frozen
+required_codes: ["freeze*"]
+prompt: |
+  Install HiC-Pro (https://github.com/nservant/HiC-Pro) at its latest release the way its
+  authors ship it, and freeze it as a shippable image in which `HiC-Pro -h` runs. Say which
+  route you took and why.
+models: [sonnet]
+budget_usd: 30
+timeout_s: 5400

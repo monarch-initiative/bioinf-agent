@@ -1,0 +1,17 @@
+# H — a variant-prioritisation stack with a config file, reference bundles and the authors'
+# own Dockerfile. The right route is the authors' recipe (clone at a pinned ref, build their
+# Dockerfile, freeze that), judged by the `frozen` rule with the freeze pinned. Trips to look
+# for: a conda reconstruction attempted first, the ref left floating, the reference bundles
+# downloaded "to be safe", the CLI proven by an import rather than by running it.
+name: h_talos
+tier: C1
+success: frozen
+required_codes: ["freeze*"]
+prompt: |
+  Install Talos, the variant prioritisation tool from https://github.com/populationgenomics/talos,
+  at its latest release, using the authors' own Dockerfile, and freeze it as a shippable image
+  in which the talos command-line entry point runs. The reference bundles are not needed for
+  this install. Say which release and which Dockerfile you built from.
+models: [sonnet]
+budget_usd: 30
+timeout_s: 5400

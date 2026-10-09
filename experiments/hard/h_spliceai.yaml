@@ -1,0 +1,16 @@
+# H — a PyPI tool whose weights are a separate download and whose runtime is a deep-learning
+# stack. Judged by the `sealed` rule. Trips to look for: the model files fetched outside the
+# record (an orphan to I8), a TensorFlow build that cannot run in the shipped image, the
+# annotation "proven" on an empty VCF. The pip route emits no outcome code of its own yet,
+# so this definition cannot pin it; read the install steps in the runs table.
+name: h_spliceai
+tier: C2
+success: sealed
+prompt: |
+  Install SpliceAI from PyPI and prove it by annotating a VCF derived from the phenopacket
+  in the core test data against the chr22 reference, with the annotation file and genome it
+  needs recorded as inputs. Freeze the environment as a shippable image and seal the
+  workflow.
+models: [sonnet]
+budget_usd: 30
+timeout_s: 5400

@@ -77,6 +77,7 @@ DEFAULTS = {
     "repeats": 1,
     "success": None,
     "expected_codes": [],
+    "required_codes": [],
     "share": ["resources"],
     "projects_access": None,
     "cleanup": ["images"],
@@ -124,8 +125,10 @@ def load_experiment(path: Path) -> dict:
         raise ExperimentError(f"{path}: cleanup names {bad}; cleanable things are {CLEANABLE}")
     if not isinstance(exp["expected_codes"], list) or not all(isinstance(c, str) and c for c in exp["expected_codes"]):
         raise ExperimentError(f"{path}: expected_codes must be a list of outcome-code patterns")
-    if exp["expected_codes"] and exp["success"] != "refused":
-        raise ExperimentError(f"{path}: expected_codes only mean something under the refused rule")
+    if exp["expected_codes"] and exp["success"] not in ("refused", "declined"):
+        raise ExperimentError(f"{path}: expected_codes only mean something under the refused and declined rules")
+    if not isinstance(exp["required_codes"], list) or not all(isinstance(c, str) and c for c in exp["required_codes"]):
+        raise ExperimentError(f"{path}: required_codes must be a list of outcome-code patterns")
     if exp["projects_access"] is not None:
         if "projects_access" in exp["share"]:
             raise ExperimentError(f"{path}: projects_access names a prepared file AND share lists the host's; pick one")
@@ -293,7 +296,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
     before = docker_snapshot() if "images" in exp["cleanup"] else None
     meta = {
         "name": exp["name"], "tier": exp["tier"], "model": model, "repeat": repeat,
-        "success": exp["success"], "expected_codes": exp["expected_codes"],
+        "success": exp["success"], "expected_codes": exp["expected_codes"], "required_codes": exp["required_codes"],
         "share": exp["share"], "projects_access": access, "cleanup": exp["cleanup"], "memory": exp["memory"],
         "isolation": isolation_of(exp, access),
         "budget_usd": exp["budget_usd"], "timeout_s": exp["timeout_s"], "effort": exp["effort"],

@@ -1,0 +1,21 @@
+# H — the authors'-recipe case the user wrote to be hostile: no package, no setup file, an
+# unpinned list of `conda install` lines across three channels, a notebook, and an entry
+# script run as `python HIC_ASSEMBLER/run_hicAssembler.py -c <config>`. One tag, v1. The
+# install is the deliverable (its input is HiC-Pro output, none of which is here), judged by
+# the `frozen` rule with the route pinned: the repository's own instructions, read from the
+# repo and recorded as extracted or authored, carried into an image the entry script runs in.
+# Trips to look for: packages pinned to today's versions without saying so, the scripts left
+# on the host, a wrapper that hides which Python runs them, a seal attempted with no data.
+name: h_gab
+tier: C1
+success: frozen
+required_codes: ["freeze.built*"]
+prompt: |
+  Install the Genome Assembly Booster from https://github.com/baumannlab/Genome_Assembly_Booster
+  at its v1 tag, following the repository's own install instructions, and freeze it as a
+  shippable image in which `python run_hicAssembler.py -h` runs. There is no HiC data on this
+  machine; the install and its image are the deliverable. Say what the image contains and
+  which of the install commands came from the repository versus from you.
+models: [sonnet]
+budget_usd: 25
+timeout_s: 3600
